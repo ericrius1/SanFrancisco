@@ -25,6 +25,7 @@ const WIDTH = Number(process.env.SF_SHOT_WIDTH ?? 1600);
 const HEIGHT = Number(process.env.SF_SHOT_HEIGHT ?? 900);
 const TIME_OF_DAY = Number(process.env.SF_TIME ?? 22);
 const CENTER = { x: 208, z: 2456 };
+const PARTICIPANT = { x: CENTER.x + Math.cos(0.4) * 9.2, z: CENTER.z + Math.sin(0.4) * 9.2 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function executable(cands) {
@@ -99,6 +100,10 @@ async function capture(cdp, name) {
   console.log(`[shot] ${name}.png (${Math.round(buf.length / 1024)} KiB)`);
 }
 
+async function performanceSnapshot(cdp) {
+  return evaluate(cdp, `(async()=>{const s=window.__sf,a=s.afterlight,samples=[];for(let i=0;i<90;i++){const t=performance.now();s.tick(1/60);samples.push(performance.now()-t);await new Promise(r=>requestAnimationFrame(r));}samples.sort((x,y)=>x-y);let renderables=0,triangles=0,raymarched=0;a.root.traverse(o=>{if(!o.visible)return;if(o.isMesh||o.isPoints||o.isSprite){renderables++;const g=o.geometry;if(g){triangles+=(g.index?.count??g.attributes?.position?.count??0)/3;}const mats=Array.isArray(o.material)?o.material:[o.material];if(mats.some(m=>m?.fragmentNode))raymarched++;}});const info=s.renderer.info;return {frameCpuMs:{average:samples.reduce((sum,v)=>sum+v,0)/samples.length,p95:samples[Math.floor(samples.length*0.95)],max:samples.at(-1)},feature:{renderables,triangles:Math.round(triangles),raymarchedOrbs:raymarched,web:a.debugState().takeover.web},renderer:{calls:info.render.calls,triangles:info.render.triangles,geometries:info.memory.geometries,textures:info.memory.textures},viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio}};})()`);
+}
+
 async function main() {
   mkdirSync(OUT, { recursive: true });
   const chrome = await findChrome();
@@ -130,6 +135,7 @@ async function main() {
   const boot = new URL(URL_BASE);
   boot.searchParams.set("autostart", "1");
   boot.searchParams.set("fullfps", "1");
+  boot.searchParams.set("profile", "1");
   boot.searchParams.set("j", `${CENTER.x},175,${CENTER.z},0,walk`);
   console.log(`[shot] navigating ${boot}`);
   await cdp.send("Page.navigate", { url: boot.toString() });
@@ -158,6 +164,19 @@ async function main() {
   await settle(cdp, 30, 1 / 30, 16);
   await capture(cdp, "ambient-hero");
 
+  // Claim the east participant and drive a deliberate mirrored two-hand pull.
+  // This proves the avatar/halo side of the sculpture, not only its wide net.
+  await evaluate(cdp, `(()=>{const s=window.__sf,p=s.player,y=s.map.groundHeight(${PARTICIPANT.x},${PARTICIPANT.z});p.teleportTo({x:${PARTICIPANT.x},y:y+1.5,z:${PARTICIPANT.z},facing:Math.PI,mode:'walk'});return true;})()`);
+  const takeoverEye = [PARTICIPANT.x + 4.6, groundY + 3.4, PARTICIPANT.z + 6.4];
+  const takeoverTarget = [PARTICIPANT.x, groundY + 1.8, PARTICIPANT.z];
+  await setCamera(cdp, takeoverEye, takeoverTarget);
+  await settle(cdp, 18, 1 / 30, 14);
+  await capture(cdp, "approach-prompt");
+  await evaluate(cdp, `(()=>{const s=window.__sf,a=s.afterlight;a.tryInteract(s.player,s.hud);s.input.device='kb';s.input.mouseDX=155;s.input.mouseDY=-105;s.input.wheel=-95;return a.debugState();})()`);
+  await settle(cdp, 42, 1 / 30, 14);
+  await capture(cdp, "takeover-hero");
+  await evaluate(cdp, "(()=>{const s=window.__sf;if(s.afterlight.controlsCaptured)s.afterlight.tryInteract(s.player,s.hud);return true;})()");
+
   // Full energy (finale surge — spins up whale + max web energy + arms high).
   await evaluate(cdp, "window.__sf.afterlight.debugComplete(window.__sf.hud); true");
   await setCamera(cdp, eyeA, tgt);
@@ -166,6 +185,10 @@ async function main() {
   await setCamera(cdp, eyeB, tgt);
   await settle(cdp, 30, 1 / 30, 16);
   await capture(cdp, "full-hero");
+
+  const performance = await performanceSnapshot(cdp);
+  writeFileSync(path.join(OUT, "performance.json"), JSON.stringify(performance, null, 2));
+  console.log(`[shot] performance ${JSON.stringify(performance)}`);
 
   console.log(`[shot] done → ${OUT}`);
   try { process.kill(-proc.pid, "SIGTERM"); } catch { /* gone */ }

@@ -8,7 +8,7 @@
  * controller (`mountFoliage`) that runs one gentle rAF while the tab is open,
  * driving a scroll-linked "how a forest stays cheap" diagram and five little
  * interactive explainers (the LOD dial, the clump field, the following ring, the
- * one-wind meadow, and the streaming-budget bars). Nothing here touches the real
+ * one-wind meadow, and the GPU meadow pipeline). Nothing here touches the real
  * renderer — the diagrams are hand-drawn SVG that mirror, in miniature, what the
  * vegetation runtime (src/world/nativeTreeForest, wildlands, groundcover) does.
  */
@@ -17,13 +17,6 @@
 
 const clamp = (x: number, a = 0, b = 1) => Math.min(b, Math.max(a, x));
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-/** Sample a per-stage value array at a continuous position f (0..len-1). */
-function atStage(vals: number[], f: number): number {
-  const i = clamp(Math.floor(f), 0, vals.length - 1);
-  const j = clamp(i + 1, 0, vals.length - 1);
-  return lerp(vals[i], vals[j], clamp(f - i));
-}
-
 /* --- deterministic placement math, ported verbatim from world/groundcover/scatter.ts,
    so the clump toy clusters flowers with the exact algorithm the game plants them with. */
 
@@ -79,14 +72,18 @@ function createLodDial(): FoliageToy {
     <div class="ss-toy-head"><span class="ss-toy-ic">🌲</span>The distance dial
       <span class="ss-toy-hint">drag to walk away from the forest</span></div>
     <svg viewBox="0 0 700 260" class="ss-toysvg" role="img"
-         aria-label="A tree dropping through four level-of-detail tiers as it recedes, and a forest collapsing to a couple of draw calls">
+         aria-label="A tree moving through four genuine 3-D levels of detail while the forest is batched into visible chunks">
       <line x1="34" y1="220" x2="300" y2="220" stroke="rgba(190,225,240,0.16)"/>
       <ellipse cx="150" cy="221" rx="70" ry="7" fill="rgba(18,40,56,0.6)"/>
-      <text class="ss-sub" x="150" y="240" text-anchor="middle" data-el="herolabel">up close · every leaf</text>
+      <text class="ss-sub" x="150" y="240" text-anchor="middle" data-el="herolabel">up close · round branches + full crown</text>
 
       <g data-el="hero">
         <g data-el="h-canopy">
           <path d="M-7 0 L-4 -96 L4 -96 L7 0 Z" fill="#6e4f36"/>
+          <g fill="none" stroke="#74543a" stroke-width="4" stroke-linecap="round">
+            <path d="M-1 -75 Q-25 -92 -34 -113"/><path d="M1 -82 Q28 -96 35 -119"/>
+            <path d="M0 -99 Q-18 -116 -20 -137"/><path d="M1 -105 Q18 -121 18 -141"/>
+          </g>
           <ellipse cx="0" cy="-116" rx="34" ry="30" fill="#3f9d6a"/>
           <ellipse cx="-26" cy="-104" rx="22" ry="20" fill="#3f9d6a"/>
           <ellipse cx="26" cy="-104" rx="22" ry="20" fill="#3f9d6a"/>
@@ -104,6 +101,9 @@ function createLodDial(): FoliageToy {
         </g>
         <g data-el="h-grove">
           <path d="M-7 0 L-4 -96 L4 -96 L7 0 Z" fill="#6e4f36"/>
+          <g fill="none" stroke="#74543a" stroke-width="4" stroke-linecap="round">
+            <path d="M-1 -78 Q-24 -96 -29 -113"/><path d="M1 -88 Q23 -104 25 -122"/>
+          </g>
           <ellipse cx="0" cy="-114" rx="32" ry="28" fill="#3f9d6a"/>
           <ellipse cx="-22" cy="-102" rx="22" ry="20" fill="#3f9d6a"/>
           <ellipse cx="22" cy="-104" rx="22" ry="20" fill="#3f9d6a"/>
@@ -111,14 +111,16 @@ function createLodDial(): FoliageToy {
           <ellipse cx="-6" cy="-116" rx="18" ry="16" fill="#6fd7a2"/>
         </g>
         <g data-el="h-land">
-          <path d="M-22 -4 L-6 -8 L-2 -116 L-18 -110 Z" fill="rgba(63,157,106,0.32)" stroke="rgba(127,224,205,0.45)"/>
-          <path d="M6 -6 L24 -2 L18 -110 L4 -114 Z" fill="rgba(63,157,106,0.32)" stroke="rgba(127,224,205,0.45)"/>
-          <path d="M-8 -2 L10 -6 L6 -120 L-10 -114 Z" fill="rgba(63,157,106,0.42)" stroke="rgba(127,224,205,0.45)"/>
-          <path d="M0 -120 L18 -6 L-18 -6 Z" fill="#3f9d6a" opacity="0.85"/>
+          <path d="M-5 0 L-3 -91 L3 -91 L5 0 Z" fill="#6e4f36"/>
+          <g fill="none" stroke="#74543a" stroke-width="3.5" stroke-linecap="round"><path d="M0 -68 Q-29 -87 -36 -110"/><path d="M0 -75 Q31 -93 38 -116"/><path d="M0 -91 Q-10 -111 -7 -132"/></g>
+          <ellipse cx="-31" cy="-111" rx="21" ry="18" fill="#3f9d6a"/><ellipse cx="31" cy="-115" rx="23" ry="19" fill="#4fb47f"/>
+          <ellipse cx="-5" cy="-133" rx="24" ry="22" fill="#3f9d6a"/><ellipse cx="3" cy="-103" rx="27" ry="22" fill="#5cb987"/>
         </g>
         <g data-el="h-horiz">
-          <rect x="-18" y="-116" width="36" height="112" fill="rgba(63,157,106,0.13)" stroke="rgba(127,224,205,0.3)"/>
-          <path d="M0 -112 L14 -6 L-14 -6 Z" fill="#3f9d6a"/>
+          <path d="M-4 0 L-2 -86 L2 -86 L4 0 Z" fill="#6e4f36"/>
+          <path d="M0 -66 Q-27 -83 -31 -104 M0 -73 Q27 -91 32 -108 M0 -88 Q-7 -105 -4 -122" fill="none" stroke="#74543a" stroke-width="3" stroke-linecap="round"/>
+          <ellipse cx="-25" cy="-105" rx="19" ry="16" fill="#356f50"/><ellipse cx="25" cy="-109" rx="20" ry="17" fill="#3f805a"/>
+          <ellipse cx="-3" cy="-123" rx="21" ry="18" fill="#356f50"/><ellipse cx="2" cy="-99" rx="23" ry="19" fill="#438962"/>
         </g>
       </g>
 
@@ -127,7 +129,7 @@ function createLodDial(): FoliageToy {
       <line x1="330" y1="216" x2="672" y2="188" stroke="rgba(190,225,240,0.16)"/>
       <g data-el="row"></g>
       <text class="ss-sub" x="360" y="240" text-anchor="middle">near · lush</text>
-      <text class="ss-sub" x="588" y="176" text-anchor="middle">far forest · 1–2 instanced draws</text>
+      <text class="ss-sub" x="572" y="150" text-anchor="middle">far forest · instanced chunk batches</text>
     </svg>
     <div class="ss-controls" data-el="ctl">
       <button class="ss-btn active" type="button" data-el="stag">staggered transitions</button>
@@ -153,22 +155,22 @@ function createLodDial(): FoliageToy {
     const read = root.querySelector<HTMLElement>('[data-el="read"]')!;
     const heroLabel = root.querySelector<SVGTextElement>('[data-el="herolabel"]')!;
     const HEROLBL = [
-      "up close · every leaf",
-      "a little out · fewer clusters",
-      "farther · flat cards",
-      "far off · one silhouette",
+      "up close · round branches + full crown",
+      "a little out · retained 3-D crown",
+      "farther · simplified 3-D tree",
+      "far off · lean 3-D silhouette",
       "gone · culled",
     ];
 
-    // tier model — distances/tri magnitudes per the foliage FACTS
-    const B0 = 96, B1 = 160, B2 = 220, B3 = 520;
-    const TRIS = [1800, 700, 110, 6, 0];
+    // Wildlands tier model. Triangle ranges vary by its four native species.
+    const B0 = 50, B1 = 96, B2 = 220, B3 = 520;
+    const TRIS = ["10.3–17.0k", "4.4–6.8k", "2.0–2.8k", "1.3–1.9k", "0"];
     const TNAME = ["CANOPY", "GROVE", "LANDSCAPE", "HORIZON", "—"];
     const DRAWS = [
-      "near pool ≈ 46 draws",
-      "near pool ≈ 46 draws",
-      "far forest ≈ 2 draws",
-      "far forest ≈ 1 draw",
+      "bounded 46-tree near pool",
+      "bounded 46-tree near pool",
+      "instanced by visible chunk",
+      "instanced by visible chunk",
       "culled",
     ];
     const tierAt = (d: number): number => (d < B0 ? 0 : d < B1 ? 1 : d < B2 ? 2 : d < B3 ? 3 : 4);
@@ -200,14 +202,15 @@ function createLodDial(): FoliageToy {
         `</g>`;
       const land =
         `<g data-el="v2">` +
-        `<path d="M-11 -2 L-3 -5 L-1 -30 L-9 -27 Z" fill="rgba(63,157,106,0.32)" stroke="rgba(127,224,205,0.4)"/>` +
-        `<path d="M2 -4 L11 -1 L8 -29 L0 -31 Z" fill="rgba(63,157,106,0.4)" stroke="rgba(127,224,205,0.4)"/>` +
-        `<path d="M0 -32 L8 -2 L-8 -2 Z" fill="#3f9d6a" opacity="0.85"/>` +
+        `<path d="M-1.5 0 L-1 -22 L1 -22 L1.5 0 Z" fill="#6e4f36"/>` +
+        `<path d="M0 -16 Q-8 -21 -9 -27 M0 -18 Q8 -23 9 -29" fill="none" stroke="#74543a" stroke-width="1.4"/>` +
+        `<ellipse cx="-7" cy="-28" rx="7" ry="6" fill="#3f9d6a"/><ellipse cx="7" cy="-29" rx="7" ry="6" fill="#4fb47f"/><ellipse cx="0" cy="-34" rx="8" ry="7" fill="#3f9d6a"/>` +
         `</g>`;
       const horiz =
         `<g data-el="v3">` +
-        `<rect x="-8" y="-31" width="16" height="29" fill="rgba(63,157,106,0.13)" stroke="rgba(127,224,205,0.3)"/>` +
-        `<path d="M0 -30 L7 -2 L-7 -2 Z" fill="#3f9d6a"/>` +
+        `<path d="M-1.2 0 L-.8 -20 L.8 -20 L1.2 0 Z" fill="#6e4f36"/>` +
+        `<path d="M0 -15 Q-7 -20 -8 -25 M0 -17 Q7 -21 8 -26" fill="none" stroke="#74543a" stroke-width="1.2"/>` +
+        `<ellipse cx="-6" cy="-26" rx="6" ry="5" fill="#356f50"/><ellipse cx="6" cy="-27" rx="6" ry="5" fill="#3f805a"/><ellipse cx="0" cy="-31" rx="7" ry="6" fill="#356f50"/>` +
         `</g>`;
       return canopy + grove + land + horiz +
         `<circle data-el="pop" cx="0" cy="-22" r="3" fill="#ff8a7a" opacity="0"/>`;
@@ -247,20 +250,45 @@ function createLodDial(): FoliageToy {
     let walkPhase = 0;
     let lastT = 0;
     let lastReadKey = "";
-    const heroVis = [1, 0, 0, 0]; // eased per-tier opacity — only one is ever ~1
+    // Pairwise LOD crossfade: only the outgoing + incoming tiers are ever visible.
+    // A plain ease-toward-current left residual opacity on skipped tiers while
+    // scrubbing right, which stacked into the muddy "glitch" silhouette.
+    let heroFrom = 0;
+    let heroTo = 0;
+    let heroBlend = 1;
     let lastHeroTier = 0;
 
     // staggered -> per-chunk hash bias ±12 m so the grid never flips along one circle
     const biasOf = (i: number): number => (staggered ? hash2(i, 7, 3) * 24 - 12 : 0);
 
-    const prevTier: number[] = [];
-    const vis: number[][] = [];
+    const rowFrom: number[] = [];
+    const rowTo: number[] = [];
+    const rowBlend: number[] = [];
     for (let i = 0; i < N; i++) {
       const tier = tierAt(gbase[i] + (dist - 40) + biasOf(i));
-      prevTier.push(tier);
-      vis.push([tier === 0 ? 1 : 0, tier === 1 ? 1 : 0, tier === 2 ? 1 : 0, tier === 3 ? 1 : 0]);
+      rowFrom.push(tier);
+      rowTo.push(tier);
+      rowBlend.push(1);
     }
     const popStart: number[] = new Array<number>(N).fill(-1);
+
+    /** Retarget a pairwise blend when the wanted tier changes mid-scrub. */
+    const retarget = (
+      from: number,
+      to: number,
+      blend: number,
+      next: number
+    ): { from: number; to: number; blend: number } => {
+      if (next === to) return { from, to, blend };
+      const dominant = blend >= 0.5 || blend >= 1 ? to : from;
+      return { from: dominant, to: next, blend: 0 };
+    };
+
+    const tierOpacity = (k: number, from: number, to: number, blend: number): number => {
+      if (to === k) return to < 4 ? blend : 0;
+      if (from === k) return from < 4 ? 1 - blend : 0;
+      return 0;
+    };
 
     slider.addEventListener("input", () => {
       dist = parseFloat(slider.value);
@@ -279,7 +307,7 @@ function createLodDial(): FoliageToy {
     return (t: number): void => {
       const dt = lastT ? Math.min(0.05, t - lastT) : 0.016;
       lastT = t;
-      const ease = Math.min(1, dt * 9); // shared time-based crossfade rate
+      const easeAmt = Math.min(1, dt * 9); // shared time-based crossfade rate
 
       if (auto) {
         walkPhase += dt * 0.34;
@@ -287,15 +315,19 @@ function createLodDial(): FoliageToy {
         slider.value = String(Math.round(dist));
       }
 
-      // hero tree: show exactly ONE tier, eased in time (not blended by distance).
-      // Hovering inside a tier lets the opacities settle to a clean 1/0, so two
-      // silhouettes never sit ghosted over each other mid-drag — that overlap was the
-      // "glitch". Crossing a boundary is a quick clean dissolve. Sways from its base.
+      // hero tree: pairwise dissolve between the previous and current tier only.
+      // Scrubbing across several bands no longer leaves ghosted intermediate LODs.
       const curTier = tierAt(dist);
+      const hRet = retarget(heroFrom, heroTo, heroBlend, curTier);
+      heroFrom = hRet.from;
+      heroTo = hRet.to;
+      heroBlend = Math.min(1, hRet.blend + easeAmt);
       const hTiers = [hCanopy, hGrove, hLand, hHoriz];
       for (let k = 0; k < 4; k++) {
-        heroVis[k] += ((curTier === k ? 1 : 0) - heroVis[k]) * ease;
-        hTiers[k].setAttribute("opacity", heroVis[k].toFixed(3));
+        hTiers[k].setAttribute(
+          "opacity",
+          tierOpacity(k, heroFrom, heroTo, heroBlend).toFixed(3)
+        );
       }
       if (curTier !== lastHeroTier) {
         lastHeroTier = curTier;
@@ -312,7 +344,7 @@ function createLodDial(): FoliageToy {
       const key = Math.round(dist) + "|" + hTier;
       if (key !== lastReadKey) {
         lastReadKey = key;
-        const tris = hTier < 4 ? `≈${TRIS[hTier]} tris/tree` : "0 tris";
+        const tris = hTier < 4 ? `${TRIS[hTier]} tris/tree` : "0 tris";
         read.textContent = `${Math.round(dist)} m · ${TNAME[hTier]} · ${tris} · ${DRAWS[hTier]}`;
       }
 
@@ -321,20 +353,26 @@ function createLodDial(): FoliageToy {
       for (let i = 0; i < N; i++) {
         const eff = gbase[i] + off + biasOf(i);
         const tier = tierAt(eff);
-        if (tier !== prevTier[i]) {
-          if (!staggered) {
-            // hard flip: snap variants + fire an ugly pop jolt
-            for (let k = 0; k < 4; k++) vis[i][k] = tier === k ? 1 : 0;
-            popStart[i] = t;
+        if (!staggered) {
+          // hard flip: snap variants + fire an ugly pop jolt on change
+          if (tier !== rowTo[i] || rowBlend[i] < 1) {
+            if (tier !== rowTo[i]) popStart[i] = t;
+            rowFrom[i] = tier;
+            rowTo[i] = tier;
+            rowBlend[i] = 1;
           }
-          prevTier[i] = tier;
+        } else {
+          const r = retarget(rowFrom[i], rowTo[i], rowBlend[i], tier);
+          rowFrom[i] = r.from;
+          rowTo[i] = r.to;
+          rowBlend[i] = Math.min(1, r.blend + easeAmt);
         }
         const vr = rv[i];
         for (let k = 0; k < 4; k++) {
-          const target = tier === k ? 1 : 0;
-          if (staggered) vis[i][k] += (target - vis[i][k]) * ease; // gentle crossfade
-          else vis[i][k] = target;
-          vr[k].setAttribute("opacity", vis[i][k].toFixed(3));
+          vr[k].setAttribute(
+            "opacity",
+            tierOpacity(k, rowFrom[i], rowTo[i], rowBlend[i]).toFixed(3)
+          );
         }
 
         // pop jolt is only ever armed when staggering is OFF
@@ -900,196 +938,159 @@ function createOneWind(): FoliageToy {
   return { html, mount };
 }
 
-function createBudgetBars(): FoliageToy {
+function createGpuMeadowPipeline(): FoliageToy {
   const html = `
-  <div class="ss-interactive" data-ftoy="budgetBars">
-    <div class="ss-toy-head"><span class="ss-toy-ic">⏱️</span>Build the meadow
-      <span class="ss-toy-hint">watch the frame line</span></div>
-    <svg viewBox="0 0 700 300" class="ss-toysvg" role="img" aria-label="Two lanes comparing a blocking meadow build to one sliced through the frame budget">
-      <!-- lane A : old -->
-      <text class="ss-lbl" x="8" y="20">old — one blocking build</text>
-      <rect x="8" y="28" width="150" height="104" rx="6" fill="rgba(18,40,56,0.6)" stroke="rgba(190,225,240,0.16)"/>
-      <text class="ss-sub" x="83" y="126" text-anchor="middle" data-el="progA">0%</text>
-      <g data-el="grassA"></g>
-      <rect x="182" y="28" width="506" height="104" rx="6" fill="rgba(18,40,56,0.6)" stroke="rgba(190,225,240,0.16)"/>
-      <g data-el="barsA"></g>
-      <line x1="182" y1="48.8" x2="688" y2="48.8" stroke="rgba(127,224,205,0.45)" stroke-width="1" stroke-dasharray="5 4"/>
-      <text class="ss-sub" x="186" y="45" data-el="budA">16 ms · 60 fps budget</text>
-      <line x1="182" y1="132" x2="688" y2="132" stroke="rgba(190,225,240,0.16)" stroke-width="1"/>
-      <text x="0" y="0" data-el="spikeA" text-anchor="start" font-size="11" font-weight="600" fill="#ff8a7a" opacity="0">452 ms — one frozen frame</text>
-      <!-- lane B : new -->
-      <text class="ss-lbl" x="8" y="160">new — sliced through the budget</text>
-      <rect x="8" y="168" width="150" height="104" rx="6" fill="rgba(18,40,56,0.6)" stroke="rgba(190,225,240,0.16)"/>
-      <text class="ss-sub" x="83" y="266" text-anchor="middle" data-el="progB">0%</text>
-      <g data-el="grassB"></g>
-      <rect x="182" y="168" width="506" height="104" rx="6" fill="rgba(18,40,56,0.6)" stroke="rgba(190,225,240,0.16)"/>
-      <g data-el="barsB"></g>
-      <line x1="182" y1="188.8" x2="688" y2="188.8" stroke="rgba(127,224,205,0.45)" stroke-width="1" stroke-dasharray="5 4"/>
-      <text class="ss-sub" x="186" y="185" data-el="budB">16 ms · 60 fps budget</text>
-      <line x1="182" y1="272" x2="688" y2="272" stroke="rgba(190,225,240,0.16)" stroke-width="1"/>
-      <text class="ss-lbl" x="688" y="182" text-anchor="end" data-el="noteB" opacity="0">sliced ~0.8 ms / frame</text>
+  <div class="ss-interactive" data-ftoy="gpuMeadow">
+    <div class="ss-toy-head"><span class="ss-toy-ic">⚡</span>From ground to four draws
+      <span class="ss-toy-hint">one measured dense meadow</span></div>
+    <svg viewBox="0 0 700 310" class="ss-toysvg" role="img"
+         aria-label="The WebGPU grass pipeline: a player-following field feeds candidate generation, atomic compaction, and four indirect draws">
+      <defs>
+        <linearGradient id="gm-field" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#284f57"/><stop offset="0.48" stop-color="#477b59"/>
+          <stop offset="1" stop-color="#8f8847"/>
+        </linearGradient>
+        <linearGradient id="gm-scan" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="rgba(127,224,205,0)"/><stop offset="0.5" stop-color="#9ef2df"/>
+          <stop offset="1" stop-color="rgba(127,224,205,0)"/>
+        </linearGradient>
+        <filter id="gm-glow" x="-100%" y="-100%" width="300%" height="300%">
+          <feGaussianBlur stdDeviation="2.4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+
+      <path d="M166 125 H183 M336 125 H353 M506 125 H523" stroke="rgba(158,242,223,.52)" stroke-width="2" stroke-dasharray="3 4"/>
+      <path data-el="pulse" d="M160 125 H530" stroke="#9ef2df" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="1 369" filter="url(#gm-glow)"/>
+
+      <g data-el="stage0">
+        <rect x="8" y="28" width="158" height="214" rx="12" fill="rgba(18,40,56,.58)" stroke="rgba(127,224,205,.25)"/>
+        <circle cx="27" cy="49" r="11" fill="rgba(127,224,205,.15)" stroke="rgba(127,224,205,.5)"/><text x="27" y="53" class="ss-t ss-tc ss-lbl">1</text>
+        <text x="46" y="53" class="ss-lbl">FOLIAGE FIELD</text>
+        <rect x="20" y="70" width="134" height="116" rx="7" fill="url(#gm-field)"/>
+        <path d="M20 96 C53 73 76 119 105 91 S145 111 154 82 M20 143 C47 119 77 161 108 136 S142 159 154 130" fill="none" stroke="rgba(230,255,243,.2)"/>
+        <g stroke="rgba(230,255,243,.1)"><path d="M47 70V186M74 70V186M101 70V186M128 70V186"/><path d="M20 93H154M20 116H154M20 139H154M20 162H154"/></g>
+        <rect data-el="fieldScan" x="20" y="70" width="4" height="116" fill="url(#gm-scan)" opacity="0"/>
+        <text x="20" y="205" class="ss-sub">R height · G density</text><text x="20" y="219" class="ss-sub">B species · A vigour</text>
+        <text x="20" y="234" class="ss-lbl" fill="#9ef2df">288 × 288 · 1.27 MiB</text>
+      </g>
+
+      <g data-el="stage1">
+        <rect x="178" y="28" width="158" height="214" rx="12" fill="rgba(18,40,56,.58)" stroke="rgba(127,224,205,.25)"/>
+        <circle cx="197" cy="49" r="11" fill="rgba(127,224,205,.15)" stroke="rgba(127,224,205,.5)"/><text x="197" y="53" class="ss-t ss-tc ss-lbl">2</text>
+        <text x="216" y="53" class="ss-lbl">CANDIDATES</text>
+        <rect x="190" y="70" width="134" height="116" rx="7" fill="rgba(6,20,25,.42)" stroke="rgba(190,225,240,.12)"/>
+        <g data-el="candidateDots"></g>
+        <text x="190" y="205" class="ss-sub">R2 scatter + terrain</text><text x="190" y="219" class="ss-sub">slope · patch · exclusion</text>
+        <text x="190" y="234" class="ss-lbl" fill="#9ef2df">204,204 GPU threads</text>
+      </g>
+
+      <g data-el="stage2">
+        <rect x="348" y="28" width="158" height="214" rx="12" fill="rgba(18,40,56,.58)" stroke="rgba(127,224,205,.25)"/>
+        <circle cx="367" cy="49" r="11" fill="rgba(127,224,205,.15)" stroke="rgba(127,224,205,.5)"/><text x="367" y="53" class="ss-t ss-tc ss-lbl">3</text>
+        <text x="386" y="53" class="ss-lbl">COMPACT</text>
+        <rect x="360" y="70" width="134" height="116" rx="7" fill="rgba(6,20,25,.42)" stroke="rgba(190,225,240,.12)"/>
+        <g data-el="acceptedDots"></g>
+        <text x="427" y="126" text-anchor="middle" class="ss-t" font-size="21" font-weight="700" fill="#eafff9" data-el="acceptedCount">0</text>
+        <text x="427" y="143" text-anchor="middle" class="ss-sub">accepted clusters</text>
+        <text x="360" y="205" class="ss-sub">atomicAdd packs survivors</text><text x="360" y="219" class="ss-sub">straight into storage</text>
+        <text x="360" y="234" class="ss-lbl" fill="#9ef2df">no CPU grass arrays</text>
+      </g>
+
+      <g data-el="stage3">
+        <rect x="518" y="28" width="174" height="214" rx="12" fill="rgba(18,40,56,.58)" stroke="rgba(127,224,205,.25)"/>
+        <circle cx="537" cy="49" r="11" fill="rgba(127,224,205,.15)" stroke="rgba(127,224,205,.5)"/><text x="537" y="53" class="ss-t ss-tc ss-lbl">4</text>
+        <text x="556" y="53" class="ss-lbl">DRAW INDIRECT</text>
+        <g data-el="drawPills">
+          <g transform="translate(530 72)"><rect width="150" height="25" rx="7" fill="rgba(59,112,82,.5)"/><text x="10" y="17" class="ss-lbl">FAR</text><text x="140" y="17" text-anchor="end" class="ss-sub">16,588</text></g>
+          <g transform="translate(530 102)"><rect width="150" height="25" rx="7" fill="rgba(72,139,94,.52)"/><text x="10" y="17" class="ss-lbl">MID</text><text x="140" y="17" text-anchor="end" class="ss-sub">20,922</text></g>
+          <g transform="translate(530 132)"><rect width="150" height="25" rx="7" fill="rgba(87,171,113,.56)"/><text x="10" y="17" class="ss-lbl">NEAR</text><text x="140" y="17" text-anchor="end" class="ss-sub">4,595</text></g>
+          <g transform="translate(530 162)"><rect width="150" height="25" rx="7" fill="rgba(111,215,162,.62)"/><text x="10" y="17" class="ss-lbl">HERO</text><text x="140" y="17" text-anchor="end" class="ss-sub">977</text></g>
+        </g>
+        <text x="530" y="205" class="ss-sub">80-byte command buffer</text><text x="530" y="219" class="ss-sub">141,628 triangles</text>
+        <text x="530" y="234" class="ss-lbl" fill="#9ef2df">4 draws · 43,082 clusters</text>
+      </g>
+
+      <g transform="translate(8 263)"><rect width="684" height="34" rx="9" fill="rgba(127,224,205,.07)" stroke="rgba(127,224,205,.15)"/>
+        <text x="342" y="22" text-anchor="middle" class="ss-sub">A 6 m move samples only the entering 1,728-cell slab; the overlapping field stays bit-for-bit stable.</text></g>
     </svg>
     <div class="ss-toy-actions">
-      <button class="ss-btn ss-btn-primary" data-el="run">▶ Build the meadow</button>
+      <button class="ss-btn ss-btn-primary" data-el="run">▶ Run the compute pass</button>
       <button class="ss-btn ss-btn-ghost" data-el="reset">Reset</button>
-      <span class="ss-readout" data-el="read">idle — a game running smoothly</span>
+      <span class="ss-readout" data-el="read">field ready — the CPU is done placing grass</span>
     </div>
   </div>`;
 
   function mount(pane: HTMLElement): (t: number) => void {
-    const root = pane.querySelector<HTMLElement>('[data-ftoy="budgetBars"]')!;
+    const root = pane.querySelector<HTMLElement>('[data-ftoy="gpuMeadow"]')!;
     const SVGNS = 'http://www.w3.org/2000/svg';
     const make = <T extends SVGElement>(name: string): T => document.createElementNS(SVGNS, name) as T;
-
-    // --- constants ---
-    const N = 42;                 // bars per graph
-    const G = 46;                 // grass dots per meadow
-    const FPS = 10;               // animation frames/sec
-    const HITCH = 6;              // frame the old build blows up
-    const BUILD = 40;             // frames the sliced build takes
-    const MAXMS = 20;             // top of the graph in ms
-    const GX = 182, GW = 506, GH = 104;
-    const SLOT = GW / N, BARW = 8;
-    const GREEN = '#6fd7a2', RED = '#ff8a7a', GOLD = '#d2b46e';
-
-    interface Lane {
-      kind: 'old' | 'new';
-      salt: number;
-      yBase: number;   // baseline (bottom of graph)
-      top: number;     // top of the lane region (for the overflow spike)
-      mx: number; my: number; mw: number; mh: number;
-      bars: SVGRectElement[];
-      grass: SVGCircleElement[];
-      prog: SVGTextElement;
-      lastReveal: number;
-    }
-
-    const buildLane = (kind: 'old' | 'new', salt: number, yBase: number, top: number,
-                       barsSel: string, grassSel: string, progSel: string, my: number): Lane => {
-      const barsG = root.querySelector<SVGGElement>(barsSel)!;
-      const grassG = root.querySelector<SVGGElement>(grassSel)!;
-      const prog = root.querySelector<SVGTextElement>(progSel)!;
-      const mx = 8, mw = 150, mh = 104;
-      const bars: SVGRectElement[] = [];
-      for (let i = 0; i < N; i++) {
-        const r = make<SVGRectElement>('rect');
-        r.setAttribute('x', String(GX + i * SLOT + (SLOT - BARW) / 2));
-        r.setAttribute('width', String(BARW));
-        r.setAttribute('rx', '1.5');
-        r.setAttribute('y', String(yBase));
-        r.setAttribute('height', '0');
-        r.setAttribute('fill', GREEN);
-        r.setAttribute('opacity', '0.9');
-        barsG.appendChild(r);
-        bars.push(r);
-      }
-      const grass: SVGCircleElement[] = [];
-      for (let k = 0; k < G; k++) {
-        const c = make<SVGCircleElement>('circle');
-        const cx = mx + 9 + hash2(k, salt, 11) * (mw - 18);
-        const cy = my + 11 + hash2(k, salt, 23) * (mh - 22);
-        c.setAttribute('cx', String(cx));
-        c.setAttribute('cy', String(cy));
-        c.setAttribute('r', String(1.7 + hash2(k, salt, 41) * 1.2));
-        c.setAttribute('fill', hash2(k, salt, 31) < 0.16 ? GOLD : GREEN);
-        c.setAttribute('opacity', '0');
-        grassG.appendChild(c);
-        grass.push(c);
-      }
-      return { kind, salt, yBase, top, mx, my, mw, mh, bars, grass, prog, lastReveal: -1 };
-    };
-
-    const laneA = buildLane('old', 101, 132, 14, '[data-el="barsA"]', '[data-el="grassA"]', '[data-el="progA"]', 28);
-    const laneB = buildLane('new', 202, 272, 154, '[data-el="barsB"]', '[data-el="grassB"]', '[data-el="progB"]', 168);
-
-    const spikeA = root.querySelector<SVGTextElement>('[data-el="spikeA"]')!;
-    const noteB = root.querySelector<SVGTextElement>('[data-el="noteB"]')!;
+    const candidatesG = root.querySelector<SVGGElement>('[data-el="candidateDots"]')!;
+    const acceptedG = root.querySelector<SVGGElement>('[data-el="acceptedDots"]')!;
+    const fieldScan = root.querySelector<SVGRectElement>('[data-el="fieldScan"]')!;
+    const pulse = root.querySelector<SVGPathElement>('[data-el="pulse"]')!;
+    const acceptedCount = root.querySelector<SVGTextElement>('[data-el="acceptedCount"]')!;
+    const drawPills = root.querySelector<SVGGElement>('[data-el="drawPills"]')!;
     const read = root.querySelector<HTMLElement>('[data-el="read"]')!;
     const runBtn = root.querySelector<HTMLButtonElement>('[data-el="run"]')!;
     const resetBtn = root.querySelector<HTMLButtonElement>('[data-el="reset"]')!;
 
-    // --- state ---
-    let runStart: number | null = null; // global frame the build was launched
-    let lastG = 0;
-    let lastRead = '';
+    const candidates: SVGCircleElement[] = [];
+    const accepted: SVGCircleElement[] = [];
+    for (let i = 0; i < 90; i++) {
+      const keep = hash2(i, 91, 17) < 0.48;
+      const c = make<SVGCircleElement>('circle');
+      c.setAttribute('cx', (197 + (i % 10) * 13.3 + (i % 2) * 1.6).toFixed(1));
+      c.setAttribute('cy', (78 + Math.floor(i / 10) * 12.4).toFixed(1));
+      c.setAttribute('r', keep ? '2.3' : '1.7');
+      c.setAttribute('fill', keep ? '#6fd7a2' : '#79929a');
+      c.setAttribute('opacity', '0');
+      candidatesG.appendChild(c);
+      candidates.push(c);
+      if (!keep) continue;
+      const a = make<SVGCircleElement>('circle');
+      const j = accepted.length;
+      const angle = j * 2.399963;
+      const radius = 13 + Math.sqrt(j) * 7.2;
+      a.setAttribute('cx', (427 + Math.cos(angle) * radius).toFixed(1));
+      a.setAttribute('cy', (128 + Math.sin(angle) * radius * 0.62).toFixed(1));
+      a.setAttribute('r', '2.2');
+      a.setAttribute('fill', j % 7 === 0 ? '#d2b46e' : '#6fd7a2');
+      a.setAttribute('opacity', '0');
+      acceptedG.appendChild(a);
+      accepted.push(a);
+    }
 
-    runBtn.addEventListener('click', () => { runStart = lastG; });
+    let now = 0;
+    let runStart: number | null = 0.35;
+    let lastRead = '';
+    runBtn.addEventListener('click', () => { runStart = now; });
     resetBtn.addEventListener('click', () => { runStart = null; });
 
-    // ms cost for a lane at an absolute frame index
-    const costOf = (lane: Lane, gi: number): { ms: number; spike: boolean } => {
-      const idle = 4.6 + 1.9 * hash2(gi, lane.salt, 7);
-      if (runStart === null || gi < runStart) return { ms: idle, spike: false };
-      const rel = gi - runStart;
-      if (lane.kind === 'old') {
-        if (rel === HITCH) return { ms: 452, spike: true };
-        return { ms: idle, spike: false };
-      }
-      if (rel >= 0 && rel <= BUILD) return { ms: idle + 0.9, spike: false };
-      return { ms: idle, spike: false };
-    };
-
-    const drawLane = (lane: Lane, g: number): void => {
-      for (let i = 0; i < N; i++) {
-        const gi = g - (N - 1 - i);
-        const c = costOf(lane, gi);
-        const bar = lane.bars[i];
-        if (c.spike) {
-          bar.setAttribute('y', String(lane.top));
-          bar.setAttribute('height', String(lane.yBase - lane.top));
-          bar.setAttribute('fill', RED);
-        } else {
-          const hpx = clamp(c.ms / MAXMS) * GH;
-          bar.setAttribute('y', String(lane.yBase - hpx));
-          bar.setAttribute('height', String(hpx));
-          bar.setAttribute('fill', c.ms >= 16 ? RED : GREEN);
-        }
-      }
-      // meadow fill
-      const rel = runStart === null ? null : g - runStart;
-      let prog = 0;
-      if (rel !== null) prog = lane.kind === 'old' ? (rel >= HITCH ? 1 : 0) : clamp(rel / BUILD);
-      const reveal = Math.round(prog * G);
-      if (reveal !== lane.lastReveal) {
-        for (let k = 0; k < G; k++) lane.grass[k].setAttribute('opacity', k < reveal ? '0.95' : '0');
-        lane.prog.textContent = `${Math.round(prog * 100)}%`;
-        lane.lastReveal = reveal;
-      }
-    };
-
     return (t: number) => {
-      const g = Math.floor(t * FPS);
-      lastG = g;
-      drawLane(laneA, g);
-      drawLane(laneB, g);
-
-      // old-lane spike label follows the giant bar as it scrolls left
-      if (runStart !== null) {
-        const hitchGi = runStart + HITCH;
-        const i = N - 1 - (g - hitchGi);
-        if (i >= 0 && i < N) {
-          const x = GX + i * SLOT + SLOT / 2;
-          const anchorEnd = x > 540;
-          spikeA.setAttribute('x', String(anchorEnd ? x - 6 : x + 6));
-          spikeA.setAttribute('y', String(laneA.top + 11));
-          spikeA.setAttribute('text-anchor', anchorEnd ? 'end' : 'start');
-          spikeA.setAttribute('opacity', '1');
-        } else {
-          spikeA.setAttribute('opacity', '0');
-        }
-      } else {
-        spikeA.setAttribute('opacity', '0');
+      now = t;
+      const elapsed = runStart === null ? -1 : Math.max(0, t - runStart);
+      const fieldP = clamp(elapsed / 0.8);
+      const candidateP = clamp((elapsed - 0.65) / 1.05);
+      const compactP = clamp((elapsed - 1.5) / 1.05);
+      const drawP = clamp((elapsed - 2.35) / 0.7);
+      fieldScan.setAttribute('opacity', fieldP > 0 && fieldP < 1 ? '.75' : '0');
+      fieldScan.setAttribute('x', String(20 + fieldP * 130));
+      for (let i = 0; i < candidates.length; i++) {
+        candidates[i].setAttribute('opacity', candidateP * candidates.length > i ? (candidates[i].getAttribute('r') === '2.3' ? '.95' : '.25') : '0');
       }
+      for (let i = 0; i < accepted.length; i++) {
+        accepted[i].setAttribute('opacity', compactP * accepted.length > i ? '.88' : '0');
+      }
+      acceptedCount.textContent = compactP <= 0 ? '0' : Math.round(43_082 * compactP).toLocaleString();
+      drawPills.setAttribute('opacity', String(drawP));
+      pulse.setAttribute('stroke-dasharray', `1 369`);
+      pulse.setAttribute('stroke-dashoffset', String(-clamp(elapsed / 3.05) * 370));
 
-      // new-lane note while it fills
-      const relNew = runStart === null ? null : g - runStart;
-      noteB.setAttribute('opacity', relNew !== null && relNew >= 0 && relNew <= BUILD ? '1' : '0');
-
-      // readout
-      let txt: string;
-      if (runStart === null) txt = 'idle — a game running smoothly';
-      else if (relNew !== null && relNew <= BUILD) txt = 'old: 1 frame, 452 ms — dropped  ·  new: 40 frames, ~0.8 ms each';
-      else txt = 'same meadow — one froze a frame, one didn’t';
+      let txt = 'field ready — the CPU is done placing grass';
+      if (elapsed >= 0 && elapsed < 0.8) txt = 'page the terrain into height · density · species · vigour';
+      else if (elapsed < 1.7) txt = '204,204 candidate threads sample the field in parallel';
+      else if (elapsed < 2.55) txt = 'atomic compaction keeps only the 43,082 survivors';
+      else if (elapsed >= 2.55) txt = 'one command buffer submits far · mid · near · hero';
       if (txt !== lastRead) { read.textContent = txt; lastRead = txt; }
     };
   }
@@ -1101,15 +1102,18 @@ const lodDial = createLodDial();
 const clumpDial = createClumpDial();
 const followRing = createFollowRing();
 const oneWind = createOneWind();
-const budgetBars = createBudgetBars();
+const gpuMeadow = createGpuMeadowPipeline();
 
 /* --------------------------------------------------- scrolly: forest diagram */
 
 // "How a forest stays cheap" — a five-stage plan view. Element ids are the
 // contract with renderForest(); the painter only sets opacity / a few attrs.
 const DIAGRAM_FOREST = `
-  <svg viewBox="0 0 820 330" class="ss-svg" role="img" aria-label="How a forest is drawn cheaply">
+  <svg viewBox="145 0 530 330" class="ss-svg" style="overflow:hidden" role="img" aria-label="How a forest is drawn cheaply">
     <defs>
+      <linearGradient id="fo-bg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="rgba(15,38,47,.72)"/><stop offset="1" stop-color="rgba(9,25,31,.35)"/>
+      </linearGradient>
       <radialGradient id="fo-you-g" cx="0.5" cy="0.5" r="0.5">
         <stop offset="0" stop-color="#eafff9"/>
         <stop offset="1" stop-color="#7fe0cd"/>
@@ -1119,19 +1123,25 @@ const DIAGRAM_FOREST = `
         <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
       </filter>
     </defs>
+    <rect x="145" y="5" width="530" height="320" rx="16" fill="url(#fo-bg)" stroke="rgba(127,224,205,.12)"/>
 
     <!-- stage 0: one seed grows one tree -->
     <g id="fo-seed" opacity="0">
       <circle cx="410" cy="250" r="5" fill="#d2b46e"/>
       <path id="fo-sprout" d="M410 250 L410 250" stroke="#6fd7a2" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <g id="fo-seed-crown" opacity="0">
+        <path d="M410 206 Q382 187 374 162 M410 196 Q439 180 447 153 M410 177 Q397 156 400 133" fill="none" stroke="#76563b" stroke-width="4" stroke-linecap="round"/>
+        <ellipse cx="374" cy="159" rx="24" ry="19" fill="#3f805d"/><ellipse cx="447" cy="151" rx="26" ry="21" fill="#4f9d72"/>
+        <ellipse cx="400" cy="130" rx="28" ry="23" fill="#5fce93"/><ellipse cx="412" cy="169" rx="31" ry="23" fill="#4ba77a"/>
+      </g>
       <text x="410" y="284" class="ss-t ss-tc" style="font-size:9px">one seed → one mesh</text>
     </g>
 
     <!-- stage 1: that one mesh, instanced across a chunk -->
     <g id="fo-chunk" opacity="0">
-      <rect x="300" y="120" width="220" height="150" rx="8" fill="rgba(18,40,56,0.4)" stroke="rgba(127,224,205,0.3)"/>
+      <rect x="300" y="120" width="220" height="150" rx="10" fill="rgba(18,40,56,0.4)" stroke="rgba(127,224,205,0.3)"/>
       <g id="fo-instances"></g>
-      <text x="410" y="292" class="ss-t ss-tc ss-sub">one buffer, drawn many times (instanced)</text>
+      <text x="410" y="292" class="ss-t ss-tc ss-sub">176 m chunk · shared geometry · instance transforms</text>
     </g>
 
     <!-- stage 2: four rings of detail around you -->
@@ -1140,15 +1150,15 @@ const DIAGRAM_FOREST = `
       <circle id="fo-ring1" cx="410" cy="180" r="92" fill="rgba(111,215,196,0.09)" stroke="rgba(111,215,196,0.35)"/>
       <circle id="fo-ring2" cx="410" cy="180" r="140" fill="rgba(158,242,223,0.05)" stroke="rgba(158,242,223,0.22)"/>
       <circle id="fo-ring3" cx="410" cy="180" r="190" fill="none" stroke="rgba(190,225,240,0.16)"/>
-      <text x="410" y="132" class="ss-t ss-tc ss-lbl" style="font-size:9px">CANOPY</text>
-      <text x="410" y="86" class="ss-t ss-tc ss-sub">GROVE</text>
-      <text x="410" y="42" class="ss-t ss-tc ss-sub">LANDSCAPE · HORIZON</text>
+      <text x="410" y="132" class="ss-t ss-tc ss-lbl" style="font-size:9px">CANOPY · 50 m</text>
+      <text x="410" y="86" class="ss-t ss-tc ss-sub">GROVE · 96 m</text>
+      <text x="410" y="42" class="ss-t ss-tc ss-sub">LANDSCAPE → HORIZON · 220 m</text>
     </g>
 
     <!-- stage 3: frustum wedge — only what you can see is drawn -->
     <g id="fo-frustum" opacity="0">
       <path id="fo-wedge" d="M410 180 L150 20 L670 20 Z" fill="rgba(158,242,223,0.08)" stroke="rgba(158,242,223,0.4)" stroke-dasharray="4 4"/>
-      <text x="410" y="312" class="ss-t ss-tc ss-sub">chunks outside the view cone never draw</text>
+      <text x="410" y="312" class="ss-t ss-tc ss-sub">36 resident chunks in this view · 0.2 ms classifier p95</text>
     </g>
 
     <!-- the trees themselves (planted once in mount, coloured by tier here) -->
@@ -1164,6 +1174,148 @@ const DIAGRAM_FOREST = `
 /* ---------------------------------------------------------------- the content */
 
 export const FOLIAGE_TAB_HTML = `
+  <style>
+    #hud .fo-asset-flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 9px;
+      margin: 16px 0;
+    }
+    #hud .fo-asset-stage {
+      position: relative;
+      min-width: 0;
+      padding: 12px 11px;
+      border: 1px solid rgba(190, 225, 240, 0.14);
+      border-radius: 11px;
+      background: linear-gradient(180deg, rgba(18, 43, 58, 0.74), rgba(10, 26, 39, 0.74));
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.035);
+    }
+    #hud .fo-asset-stage:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      z-index: 1;
+      top: 50%;
+      right: -9px;
+      width: 9px;
+      transform: translateY(-50%);
+      color: rgba(111, 215, 196, 0.78);
+      font: 800 13px/1 var(--font);
+      text-align: center;
+    }
+    #hud .fo-asset-stage b,
+    #hud .fo-asset-stage small {
+      display: block;
+      overflow-wrap: anywhere;
+    }
+    #hud .fo-asset-stage b {
+      margin-bottom: 5px;
+      color: #b6f6e8;
+      font-size: 13px;
+      line-height: 1.2;
+    }
+    #hud .fo-asset-stage small {
+      color: #a9c8d2;
+      font: 600 11.5px/1.35 var(--font);
+    }
+    #hud .fo-asset-stage .fo-stage-n {
+      display: inline-grid;
+      place-items: center;
+      width: 19px;
+      height: 19px;
+      margin-bottom: 7px;
+      border-radius: 50%;
+      background: rgba(111, 215, 196, 0.14);
+      color: var(--accent-strong);
+      font: 800 10px/1 var(--font);
+    }
+    @media (max-width: 720px) {
+      #hud .fo-asset-flow { grid-template-columns: 1fr 1fr; }
+      #hud .fo-asset-stage:not(:last-child)::after { display: none; }
+      #hud .fo-asset-stage:last-child { grid-column: 1 / -1; }
+    }
+    #hud [data-diagram="forest"] .scrolly-graphic {
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: flex-start;
+    }
+    #hud .fo-scene-head {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      width: 100%;
+      padding: 1px 4px 9px;
+      border-bottom: 1px solid rgba(190, 225, 240, 0.1);
+    }
+    #hud .fo-scene-count {
+      color: var(--accent);
+      font: 800 9.5px/1 var(--font);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    #hud .fo-scene-title {
+      min-width: 0;
+      overflow: hidden;
+      color: #e4f6f2;
+      font: 800 13px/1.2 var(--font);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #hud .fo-scene-dots {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+    #hud .fo-scene-dots span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: rgba(190, 225, 240, 0.2);
+      box-shadow: 0 0 0 1px rgba(190, 225, 240, 0.08);
+    }
+    #hud .fo-scene-dots span.active {
+      background: var(--accent);
+      box-shadow: 0 0 8px rgba(111, 215, 196, 0.65);
+    }
+    #hud [data-diagram="forest"] .ss-svg {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    #hud [data-diagram="forest"] .scrolly-step:not(.active) p {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #hud [data-diagram="forest"] .scrolly-step p {
+      transition: none;
+    }
+    @media (max-width: 520px) {
+      #hud .fo-scene-head { grid-template-columns: auto 1fr; }
+      #hud .fo-scene-dots { display: none; }
+      #hud .fo-scene-title { font-size: 11.5px; }
+    }
+    #hud .fo-hero {
+      margin: 4px 0 2px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(190, 225, 240, 0.16);
+      background: rgba(6, 16, 25, 0.55);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    #hud .fo-hero img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    #hud .fo-hero figcaption {
+      margin: 0;
+      padding: 9px 12px 10px;
+      color: #a9c8d2;
+      font: 600 12.5px/1.4 var(--font);
+      border-top: 1px solid rgba(190, 225, 240, 0.1);
+    }
+  </style>
+
   <section>
     <p class="bts-lede">Stand in Golden Gate Park and turn a slow circle. There are trees to the horizon,
     grass moving under your feet, wildflowers clumped in the sun and scattered in the shade — and it keeps
@@ -1171,9 +1323,14 @@ export const FOLIAGE_TAB_HTML = `
     is placed by hand, and almost none of it is actually <em>there</em> until you're near it. This chapter
     is about the single hardest trick in a world this size: how to grow a believable amount of living
     green — millions of blades, thousands of trees — and still hold a smooth frame in a browser tab. The
-    answer is a stack of old ideas (grow a plant from a seed; cluster like nature clusters; fake the far
-    away) bent hard around one modern constraint — a GPU that will forgive you almost anything except doing
-    it all at once. A few of the diagrams below you can grab and play with.</p>
+    answer is a stack of old ideas (grow a plant from a seed; cluster like nature clusters; simplify the far
+    away) connected to a very modern WebGPU pipeline. The CPU pages a compact description of the ground;
+    compute shaders turn it into a meadow; instancing turns a few grown tree designs into a forest. A few
+    of the diagrams below you can grab and play with.</p>
+    <figure class="fo-hero">
+      <img src="/ui/bts-foliage-night.webp" width="1024" height="535" alt="Night hillside of procedural grass, trees and bushes under a bright moon" loading="lazy" decoding="async">
+      <figcaption>A night hillside of grown grass, trees and bushes — none of it hand-placed.</figcaption>
+    </figure>
   </section>
 
   <!-- WEB-DEPENDENT: SeedThree lineage / "it started as a seed" -->
@@ -1195,6 +1352,59 @@ export const FOLIAGE_TAB_HTML = `
     steady frame.</p>
   </section>
 
+  <div class="bts-act">Asset generation pipeline</div>
+
+  <section>
+    <h3><span class="bts-ic">🧬</span> How the tree assets are generated</h3>
+    <p>There is no redwood GLB, oak GLB or folder full of hand-exported tree models. The source asset is a
+    compact <strong>species recipe</strong>: height and trunk flare; how many branch levels to grow; where
+    children attach; their length, angle, gravity, taper and curvature; whether the canopy uses broad leaves,
+    needle sprays or blossom rosettes; and the palette and wind response. Ten archetypes — from coast redwood
+    and Monterey cypress to Japanese maple, flowering cherry and Chilean palm — use the same compiler with
+    different recipes. A seed changes the individual; the recipe changes the species.</p>
+
+    <div class="fo-asset-flow" role="list" aria-label="Tree asset generation pipeline">
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">1</span><b>Species recipe</b><small>Trunk, branching, foliage, colour, wind and four LOD budgets.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">2</span><b>Worker growth</b><small>A deterministic seed grows one centreline skeleton and stable foliage anchors.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">3</span><b>Mesh compiler</b><small>Tapered branch tubes and leaf, needle or rosette meshes become typed arrays.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">4</span><b>GPU prototype</b><small>Four nested LODs become shared vertex/index buffers, ready for instancing.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">5</span><b>Material pack</b><small>The nearby species requests its KTX2 leaf and bark maps only when needed.</small></div>
+    </div>
+
+    <p>The geometry compiler is deliberately renderer-free: <code>compileTree(recipe, seed)</code> is pure
+    TypeScript, so it runs in a worker without Three.js, the DOM or a texture loader. It first grows one
+    parented branch skeleton, then gives every branch and foliage anchor a stable keep score. All four detail
+    levels prune <em>that same tree</em>, always retaining the support branches beneath a surviving leaf. This
+    is why a tree can simplify without turning into a different random specimen at each distance.</p>
+    <p>Branches are skinned into merged tapered tubes with stable frames and world-scale bark UVs. Foliage is
+    flattened into merged leaf cards, crossed needle clusters or petal rosettes. Alongside position, normal
+    and UV, the compiler bakes the less visible assets the shader needs: each leaf's supporting anchor, wind
+    phase and stiffness, height and tip weights, palette variation and canopy opening. The result is one
+    interleaved vertex buffer plus one index buffer per branch/foliage pair, transferred out of the worker
+    without copying. Bounds, triangle and byte counts, a skeleton fingerprint and an analytic canopy-shadow
+    profile ride along in the same prototype.</p>
+  </section>
+
+  <section>
+    <h3><span class="bts-ic">🎨</span> Even the bark and leaves are generated</h3>
+    <p>The close-up texture assets are not photographs or a vendor foliage pack either. An offline compiler
+    draws them deterministically at 512×512 from species rules: serrated oak leaves, eucalyptus blades,
+    ginkgo fans, redwood and cypress sprays, black-pine tufts and palm fronds; then fibrous, plated, mottled,
+    twisted, ringed or lenticelled bark. It derives height and veins from those shapes, turns the gradients
+    into normals, assigns roughness and translucency, and generates every mip level while preserving the
+    cutout's alpha coverage so distant leaves do not evaporate.</p>
+    <p>The build packs colour/opacity and surface channels into GPU-compressed <strong>KTX2</strong> files,
+    validates orientation and mip chains, fingerprints the outputs into cache-safe filenames, and writes a
+    manifest recording their procedural seed and provenance. Seasonal palettes — new redwood growth,
+    juvenile eucalyptus, autumn maple and ginkgo, cherry blossom and dry palm — reuse the same generated
+    shape and surface data with a different colour map.</p>
+    <p>That rich pack is still optional. Landscape and horizon trees start with opaque, texture-free
+    silhouettes and do not even request the manifest. Only when a species enters the bounded close-detail
+    pool does the runtime fetch its selected leaf colour, leaf surface, bark colour and bark surface maps,
+    transcode them for the current WebGPU device and lease them from a bounded cache. Missing files fall back
+    to deterministic one-pixel maps, so a material problem can reduce detail but cannot stop the forest.</p>
+  </section>
+
   <section>
     <h3><span class="bts-ic">🌳</span> Grow it once, then cheat</h3>
     <p>A tree is expensive to <em>grow</em> — branching, bark, thousands of leaves — but you only pay that
@@ -1214,6 +1424,13 @@ export const FOLIAGE_TAB_HTML = `
 
   <div class="scrolly" data-diagram="forest">
     <div class="scrolly-graphic">
+      <div class="fo-scene-head" aria-live="polite" aria-atomic="true">
+        <span class="fo-scene-count" data-fo-stage-count>Stage 1 of 5</span>
+        <strong class="fo-scene-title" data-fo-stage-title>Grow one prototype</strong>
+        <span class="fo-scene-dots" aria-hidden="true">
+          <span class="active"></span><span></span><span></span><span></span><span></span>
+        </span>
+      </div>
       ${DIAGRAM_FOREST}
     </div>
     <div class="scrolly-steps">
@@ -1221,21 +1438,23 @@ export const FOLIAGE_TAB_HTML = `
       once — trunk, branches, a canopy of leaf cards — and frozen into buffers the GPU can keep. Nothing
       about this tree is special; it's a stamp, and the whole forest is made of stamps.</p></div>
 
-      <div class="scrolly-step"><p><strong>One stamp, drawn many times.</strong> Across an 800-metre chunk,
-      that same buffer is instanced into hundreds of trees — each with its own position, scale and yaw, but
-      sharing one set of vertices. Hundreds of trees, a single draw call. Add a second design for variety
-      and you've a whole believable wood for the cost of two.</p></div>
+      <div class="scrolly-step"><p><strong>One stamp, drawn many times.</strong> Inside each 176-metre
+      Wildlands chunk, that same buffer is instanced into many trees — each with its own position, scale and
+      yaw, all sharing one set of vertices. The renderer sorts them by design and detail tier into a small
+      set of batches. It is not literally one draw for the whole forest; it is the honest, scalable version:
+      one shared geometry per design, reused by every visible chunk.</p></div>
 
       <div class="scrolly-step"><p><strong>Four rings of "how much detail."</strong> Detail is spent by
-      distance, in concentric bands around you: <em>canopy</em> right here (every leaf), <em>grove</em> a
-      little out, flat <em>landscape</em> cards further still, and a single <em>horizon</em> silhouette for
-      the far smudge. As you walk, trees slide inward through the rings and gain detail; walk away and they
-      shed it.</p></div>
+      distance, in concentric bands around you: <em>canopy</em> right here, <em>grove</em> out to the edge
+      of the 96-metre near pool, <em>landscape</em> beyond it, and <em>horizon</em> after roughly 220 metres.
+      Every tier is still an opaque, branched 3-D tree; the far tiers merely retain fewer branch segments
+      and leaf clusters. As you walk, trees gain or shed real geometry.</p></div>
 
       <div class="scrolly-step"><p><strong>And most of it never draws at all.</strong> Only the chunks
-      inside your view cone are considered, and each is culled against its own bounding sphere before a
-      single triangle is submitted. The trees behind your head cost nothing. What's left — a few near hero
-      trees and a couple of instanced far batches — is a forest that fits in a frame.</p></div>
+      inside your view cone are considered, and each is classified against its own bounding sphere before a
+      single triangle is submitted. The trees behind your head cost nothing. In a dense Golden Gate Park
+      probe, that whole CPU decision took only 0.2 ms at the 95th percentile; the expensive part is the
+      geometry that survives, not deciding which chunks can draw.</p></div>
 
       <div class="scrolly-step"><p><strong>The shadows sit still.</strong> If tree shadows switched detail
       with the trees, every LOD swap would twitch the shade on the ground. So the shadows are cast by a
@@ -1255,18 +1474,19 @@ export const FOLIAGE_TAB_HTML = `
     <p>Three things soften the swap. Each chunk gets a small <strong>hash-bias</strong> to its transition
     distance — a few metres either way — so the grid never flips as one clean circle. Within a chunk, trees
     convert a <em>few at a time</em> across a wide band rather than all at once. And a band of
-    <strong>hysteresis</strong> — a tree that just became a silhouette won't become a card again until you
+    <strong>hysteresis</strong> — a tree that just entered the horizon tier won't return to landscape until you
     step meaningfully closer — stops a camera that's jittering on a boundary from strobing the whole wood
     back and forth. The result is a frontier of detail that dissolves rather than snaps.</p>
-    <p>There's a second, quieter tell to a distant tree. Those simplified crowns are really a handful of
-    crossed leaf cards, and a flat card lit off its own facing normal shades like cardboard — one side
-    catches the sun, the other falls dead black. So the far and horizon crowns now borrow a trick from
+    <p>There's a second, quieter tell to a distant tree. Its simplified crown still contains leaf planes,
+    and a plane lit only from its own facing normal shades like cardboard — one side catches the sun, the
+    other falls dead black. So the far and horizon crowns now borrow a trick from
     <a href="https://github.com/SkyeShark/SeedThree" target="_blank" rel="noopener noreferrer">SeedThree</a>
-    (and SpeedTree before it) called <strong>dome-normal shading</strong>: each leaf is lit not by the card
-    it sits on but as if it were a point on a sphere wrapped around the canopy's centre, tilted a little
-    toward the sky. The same normal lights both faces, so nothing blacks out, and a stand on a far hillside
+    (and SpeedTree before it) called <strong>dome-normal shading</strong>: each leaf is lit not by the plane
+    it sits on but from the gradient of an ellipsoid fitted to that particular crown, tilted a little toward
+    the sky. The same geometry normal lights both faces, so nothing blacks out, and a stand on a far hillside
     reads as rounded, sunlit masses instead of flat green stamps — for a few extra maths ops and not one
-    extra triangle.</p>
+    extra triangle. The transition itself deliberately avoids screen-door dithering: whole-tree population
+    handoffs stay stable in motion without a crawling pixel pattern.</p>
   </section>
 
   <section>
@@ -1278,7 +1498,7 @@ export const FOLIAGE_TAB_HTML = `
     drawn once through a single shared depth material and left alone. It never switches level, so the shade
     pooled under a stand of redwoods stays rock-steady while the redwoods themselves gain and drop leaves as
     you move. You get the weight of a forest's shadow without paying to re-shadow it every time a tree at
-    the edge of view flips to a billboard.</p>
+    the edge of view changes tier.</p>
   </section>
 
   <section>
@@ -1291,18 +1511,48 @@ export const FOLIAGE_TAB_HTML = `
     thins outward through <strong>four additive layers</strong>, each reaching farther and fading over its
     own band — 12 metres, 26, 60, out to about 110 — so there's no single distance where the grass visibly
     stops. It just gets sparser until it's gone.</p>
-    <p>The trouble with a dense meadow isn't drawing it — the GPU handles that — it's <em>building</em> it:
-    sampling the terrain for every blade, allocating buffers, uploading them. Do that in one go for a park's
-    worth of grass and you freeze for a third of a second. So the build was cut into slices and handed to
-    the game's frame-budget scheduler, which spends about <strong>0.8 milliseconds a frame</strong> on it
-    and no more — nearest patches first — until the meadow is quietly, invisibly complete. Watch the
-    difference.</p>
-    ${budgetBars.html}
-    <p>The old synchronous build blocked for around <strong>452 milliseconds</strong> — a visible, jarring
-    hitch. The sliced version costs under a millisecond on any given frame and you never catch it working.
-    (And when you <em>teleport</em> into a park, the same builder is handed a much bigger budget while the
-    loading cover is still up — so the meadow fills fast in the dark, then drops back to its polite trickle
-    the instant you can see.)</p>
+    <p>The trouble with a dense meadow isn't drawing it — the GPU handles that — it's deciding where every
+    cluster belongs. That work used to produce large CPU arrays before anything could draw. Now the CPU
+    maintains only a player-following <strong>RGBA foliage field</strong>: height, plantable density,
+    species/style and vigour at one-metre spacing. A WebGPU compute pass launches 204,204 possible clusters,
+    samples that field, rejects bad slope and bare ground, and atomically compacts the survivors straight
+    into storage buffers. An 80-byte indirect command buffer then submits the four distance layers. Run the
+    measured dense-meadow pass below.</p>
+    ${gpuMeadow.html}
+    <p>The first field fill is 82,944 terrain samples. Walking six metres does not rebuild it: the toroidal
+    field pages only the entering 1,728 cells and preserves the overlap exactly. At the dense Golden Gate
+    Park test point, compute accepted <strong>43,082 clusters</strong> and submitted 141,628 triangles in
+    <strong>four indirect draws</strong>. There is no CPU <code>GrassEntry</code> list, no per-tile grass
+    allocation, and no upload of newly placed instance arrays. Teleports still prepare and warm the four
+    pipelines under the arrival cover; ordinary movement just pages the thin field slab.</p>
+  </section>
+
+  <section>
+    <h3><span class="bts-ic">🌼</span> How the flower assets are generated</h3>
+    <p>The flowers use no downloaded models and almost no texture memory. Their source assets are small mesh
+    functions. A stem begins as two crossed tapered strips. A petal begins as a ruled surface: three points
+    across its width and a few rows along its length, widened into a rounded outline, curled upward and cupped
+    at the edges. The generator spins copies into rings, adds a tiny faceted pollen centre, computes real
+    normals, then merges several differently scaled and rotated stems into one reusable botanical clump.</p>
+
+    <div class="fo-asset-flow" role="list" aria-label="Flower asset generation pipeline">
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">1</span><b>Botanical rule</b><small>Poppy cup, lupine spike, yarrow umbel or goldfield daisy.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">2</span><b>Mesh parts</b><small>Curved petals, crossed stems and compact pollen centres.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">3</span><b>Merged clump</b><small>Three to five varied heads share one immutable geometry.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">4</span><b>Three LODs</b><small>Layered hero, simplified mid and a six-triangle far accent.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">5</span><b>Instanced field</b><small>Colour, root anchor, scale and yaw turn prototypes into a meadow.</small></div>
+    </div>
+
+    <p>Each vertex carries a head mask, a centre-to-tip colour gradient and a tip-weighted sway channel. Each
+    instance adds only a transform, bloom colour and root anchor. Nearby clumps keep curved layered petals,
+    subsurface scattering, fresnel light and the shared trample field; mid-distance versions keep the species
+    silhouette with simpler geometry and wind; beyond that, one shared six-triangle accent is enough to hold
+    a coloured fleck in the grass. Spatial buckets let whole off-camera meadow sectors disappear before draw
+    submission.</p>
+    <p>The same four generated prototypes serve two ownership models. Designed beds in gardens receive a
+    fixed authored list of positions, but use the exact same geometry, lighting, wind and trample material.
+    Wild meadows throw their instance lists away and deterministically rebuild the player-following ring.
+    The <em>asset</em> stays immutable; only the lightweight list of where it grows changes.</p>
   </section>
 
   <!-- WEB-DEPENDENT: False Earth attribution woven into the flower story -->
@@ -1310,8 +1560,9 @@ export const FOLIAGE_TAB_HTML = `
     <h3><span class="bts-ic">🌸</span> Where the flowers decide to grow</h3>
     <p>Real wildflowers don't sprinkle evenly across a field — they clump. A patch of the same species here,
     a lonely single there, bare ground between. Scatter flowers with an even random spray and the eye reads
-    it instantly as fake. So placement here borrows an idea from <a href="https://github.com/momentchan"
-    target="_blank" rel="noopener noreferrer">momentchan</a>'s generative piece <em>False&nbsp;Earth</em>:
+    it instantly as fake. So placement here borrows an idea from momentchan's generative piece
+    <a href="https://tympanus.net/codrops/2026/04/21/false-earth-from-webgl-limits-to-a-webgpu-driven-world/"
+    target="_blank" rel="noopener noreferrer"><em>False&nbsp;Earth</em></a>:
     <strong>Voronoi clustering</strong>. Every point on the ground asks
     a simple question — "which clump centre owns me, and how deep inside it am I?" Deep in a clump you get a
     dense, single-species patch; far from every centre you get sparse, mixed singles. Drag the knob to take
@@ -1357,8 +1608,8 @@ export const FOLIAGE_TAB_HTML = `
     <h3><span class="bts-ic">🌍</span> Bounded on a boundless map</h3>
     <p>All of this would still be hopeless if the cost grew with the size of the world — and San Francisco
     is a big world. The trick that makes it tractable is that grass and flowers don't belong to the
-    <em>map</em>; they belong to <strong>you</strong>. They live in a ring that follows you around,
-    re-sampling the ground as you move, so the amount of green being built and drawn is fixed no matter how
+    <em>map</em>; they belong to <strong>you</strong>. They live in a ring and density field that follow you,
+    paging the newly entered edge as you move, so the amount of green being built and drawn is fixed no matter how
     large the park is or how far you walk. An acre or a hundred acres cost exactly the same. Drag "you"
     across the map below and watch the ring come along — then flip to planting the whole map and watch the
     cost meter panic.</p>
@@ -1375,65 +1626,47 @@ export const FOLIAGE_TAB_HTML = `
     <h3><span class="bts-ic">🛠️</span> What this world did to it</h3>
     <p>The bones above are general — grow once, instance, LOD, cluster, follow the player. The pass that
     made this <em>specific</em> world hold its frame was a long list of un-glamorous, world-specific fixes,
-    most of them about smoothness rather than looks. Grass went from a single blocking build to the sliced,
-    budgeted streamer you saw above (about 452 ms of hitch, gone). The native-tree LOD transitions got their
+    most of them about smoothness rather than looks. Grass placement moved entirely to the density-field and
+    compute pipeline above. The native-tree LOD transitions got their
     hash-bias, banded conversion and hysteresis so the wood stops flipping in a circle. Distant tree
-    silhouettes were re-cut into more, smaller cards holding the same coverage — better outline, no extra
-    fill. Close broadleaf crowns gained a little leaflet detail without adding vertices. Flower fields learned
+    silhouettes were re-cut into more, smaller leaf clusters holding the same coverage — better outline,
+    no extra projected fill. Close trunks and primary branches gained rounder 10-segment geometry, while
+    close broadleaf twig tips split into six smaller leaflets, and close conifers gained a third rolled
+    needle spray. Flower fields learned
     to dissolve into scattered singles over a staggered band instead of ending on a hard rim. The shadow
     proxy was decoupled so LOD swaps stop twitching the shade. And destination foliage learned to prime
     itself under the teleport cover — compiled and warmed before it's shown — so arriving in a park no longer
-    means watching it grow in. Density went <em>up</em> (a good deal denser grass and flowers) while the cost
+    means watching it grow in. The close-detail handoff was also made transactional: a candidate stays in its
+    safe landscape representation until its complete detail material pack is loaded and compiled, so an
+    asynchronous load can no longer strand a low-poly tree beside the player. Density went <em>up</em> while the cost
     of a frame went down; that's the whole scorecard.</p>
     <p>The most recent pass went back to
     <a href="https://github.com/SkyeShark/SeedThree" target="_blank" rel="noopener noreferrer">SeedThree</a>
-    itself — the library these trees descend from — to see what it does <em>now</em>, and brought home three
-    ideas that raise quality without costing a frame. Distant crowns got the <strong>dome-normal shading</strong>
+    itself — the library these trees descend from — to see what it does <em>now</em>, and brought home several
+    ideas that raise quality without inflating the triangle budget. Distant crowns got the <strong>dome-normal shading</strong>
     above, so far stands finally read as volumes rather than cardboard. The one shared wind became a
     <strong>curl-noise flow field</strong>, so meadows swirl instead of leaning. And the placement jitter under
     the grass and flowers was swapped from a plain hash to a low-discrepancy <strong>R2 (plastic-ratio)
     sequence</strong> — the same in-cell budget, but with about a quarter as many near-touching clumps, so a
-    meadow spaces itself the even-yet-random way a real one does. All three are additive and free at the
-    triangle level; the only thing they cost was the thinking.</p>
+    meadow spaces itself the even-yet-random way a real one does. The new field adds an authored-paint hook,
+    too: gardens can override density, species and height without inventing a second renderer.</p>
   </section>
 
-  <!-- WEB-DEPENDENT: future improvements to try next pass -->
   <section>
-    <h3><span class="bts-ic">🔭</span> Next pass — ideas worth trying</h3>
-    <p>None of this is finished; it's just where the trade-offs currently sit. The last pass pulled three of
-    these threads all the way through — the dome normals, the wind flow field and blue-noise placement, all
-    described above. Here are the ones still worth pulling: a mix of well-worn graphics techniques this
-    project doesn't yet use and small experiments that fit its WebGPU-only, compute-friendly grain.</p>
-    <div>
-      <p><strong>Octahedral impostors for the far tier.</strong> Instead of a flat card, bake each tree
-      into a small atlas of views from every angle and blend between them at runtime — a billboard that
-      keeps a convincing 3-D silhouette as you circle it, so distant trees stop looking like the cutouts
-      they are. A clean WebGPU fit: it's one textured quad sampling an atlas in the fragment shader.</p>
-      <p><strong>Move the culling onto the GPU.</strong> Today the CPU decides which chunks and instances
-      to draw. A compute pass could frustum- and occlusion-cull every instance and build the draw list
-      itself, submitted in a single indirect draw. WebGPU has all the pieces — compute, storage buffers,
-      indirect draw — and this is probably the biggest chunk of headroom still on the table.</p>
-      <p><strong>Grow the grass on the GPU too.</strong> The blades are sliced across frames but still
-      sampled and placed on the CPU. A compute shader could generate the whole ring from a density field
-      straight into a buffer each frame — the Ghost of Tsushima / Acerola approach — so the streaming build
-      barely touches the main thread at all.</p>
-      <p><strong>Drive density from a clipmap.</strong> The terrain is already a camera-following clipmap;
-      foliage could ride the same structure — a texture that says how much grass, which species, how tall —
-      turning placement into a texture lookup and turning authored gardens into something you paint rather
-      than code.</p>
-      <p><strong>The one we deliberately did <em>not</em> do: dither the LOD swaps.</strong> A screen-door
-      blend between two tiers is the obvious way to hide a single tree's pop — but this world's whole
-      grass-and-tree LOD design is built to avoid exactly the crawling, shimmering dither pattern a moving
-      camera exposes. A temporal cross-fade would fight the thing it's meant to help, so it's left here as a
-      road not taken, on purpose.</p>
-      <p><strong>And eventually, continuous LOD.</strong> Unreal's Nanite treats geometry as streamable
-      micro-clusters with no discrete levels at all. A full version isn't a browser thing yet, but the
-      direction — seamless, continuous detail instead of four steps and a clever way to hide the seams
-      between them — is where this whole LOD story quietly wants to end up.</p>
-    </div>
-    <p class="bts-aside">If you try any of these, the honest test is the same one the whole pass was judged
-    by: does it add density or reach or smoothness <em>without</em> costing a frame — measured on an
-    ordinary laptop, walking, driving and flying, not just standing still?</p>
+    <h3><span class="bts-ic">🧭</span> Measure before machinery</h3>
+    <p>WebGPU makes a technique possible; a profile decides whether it belongs. Grass is the clean win:
+    hundreds of thousands of independent candidates are exactly the work a compute grid and atomic counter
+    want. Tree culling is the opposite. The existing coarse, chunk-level CPU classifier measured
+    <strong>0.2 ms at p95</strong> in the dense park probe. Replacing it with a global per-tree storage pool
+    would add synchronization and fight the world's lazy chunk ownership to remove work that is already
+    almost free, so the measured system keeps its CPU classifier.</p>
+    <p>Octahedral impostors got the same audit. They are excellent when the alternative is a distant flat
+    cutout. That is not this forest: the Wildlands horizon tier is already opaque, texture-free 3-D branch
+    and crown geometry, roughly <strong>1,300–1,900 triangles per native tree</strong>. A representative
+    park view held 806 horizon instances. Trading those for view-blended atlas quads would save vertices but
+    introduce atlas memory and requests, alpha overdraw and blend seams. With no cutout problem to solve,
+    the real geometry is the better trade here. The same evidence-first rule is why LOD swaps use stable
+    population handoffs rather than motion-shimmering dither.</p>
   </section>
 
   <section class="bts-colophon">
@@ -1446,7 +1679,8 @@ export const FOLIAGE_TAB_HTML = `
     your own, that was the whole point.</p>
     <div class="bts-chips">
       <a href="https://threejs.org/" target="_blank" rel="noopener noreferrer">three.js</a>
-      <a href="https://github.com/momentchan" target="_blank" rel="noopener noreferrer">momentchan · False Earth</a>
+      <a href="https://github.com/SkyeShark/SeedThree" target="_blank" rel="noopener noreferrer">SeedThree</a>
+      <a href="https://tympanus.net/codrops/2026/04/21/false-earth-from-webgl-limits-to-a-webgpu-driven-world/" target="_blank" rel="noopener noreferrer">False Earth</a>
       <a href="https://en.wikipedia.org/wiki/L-system" target="_blank" rel="noopener noreferrer">L-systems</a>
       <a href="https://github.com/ericrius1/SanFrancisco" target="_blank" rel="noopener noreferrer">This project on GitHub</a>
     </div>
@@ -1455,7 +1689,23 @@ export const FOLIAGE_TAB_HTML = `
 
 /* ------------------------------------------------------------- controller */
 
-type ScrollyState = { el: HTMLElement; steps: HTMLElement[]; svg: SVGSVGElement | null };
+type ScrollyState = {
+  el: HTMLElement;
+  steps: HTMLElement[];
+  svg: SVGSVGElement | null;
+  stageCount: HTMLElement | null;
+  stageTitle: HTMLElement | null;
+  stageDots: HTMLElement[];
+  lastStage: number;
+};
+
+const FOREST_STAGE_TITLES = [
+  "Grow one prototype",
+  "Instance it across a chunk",
+  "Spend detail by distance",
+  "Cull outside the camera view",
+  "Cast one stable shadow layer"
+] as const;
 
 function setOpacity(svg: SVGSVGElement, id: string, v: number) {
   const el = svg.getElementById(id) as SVGElement | null;
@@ -1468,13 +1718,17 @@ function setAttr(svg: SVGSVGElement, id: string, name: string, v: string | numbe
 
 export function mountFoliage(pane: HTMLElement, scrollEl: HTMLElement) {
   // wire the interactive toys — each returns a per-frame update
-  const frames = [lodDial, clumpDial, followRing, oneWind, budgetBars].map((toy) => toy.mount(pane));
+  const frames = [lodDial, clumpDial, followRing, oneWind, gpuMeadow].map((toy) => toy.mount(pane));
 
   // the one scroll-driven diagram
   const scrollies: ScrollyState[] = [...pane.querySelectorAll<HTMLElement>(".scrolly")].map((el) => ({
     el,
     steps: [...el.querySelectorAll<HTMLElement>(".scrolly-step")],
-    svg: el.querySelector<SVGSVGElement>("svg")
+    svg: el.querySelector<SVGSVGElement>("svg"),
+    stageCount: el.querySelector<HTMLElement>("[data-fo-stage-count]"),
+    stageTitle: el.querySelector<HTMLElement>("[data-fo-stage-title]"),
+    stageDots: [...el.querySelectorAll<HTMLElement>(".fo-scene-dots span")],
+    lastStage: -1
   }));
 
   // plant the diagram's trees + shadow proxies once (positions reused each frame)
@@ -1486,21 +1740,43 @@ export function mountFoliage(pane: HTMLElement, scrollEl: HTMLElement) {
 
   function paint(t: number) {
     const cr = scrollEl.getBoundingClientRect();
-    const trigger = cr.top + cr.height * 0.58;
+    const defaultTrigger = cr.top + cr.height * 0.58;
     for (const s of scrollies) {
+      const graphic = s.el.querySelector<HTMLElement>(".scrolly-graphic");
+      const graphicRect = graphic?.getBoundingClientRect();
+      const stacked = getComputedStyle(s.el).flexDirection === "column";
+      // In the narrow stacked layout the sticky illustration sits above the
+      // caption. Keep the reading line below it so the two never overlap.
+      const trigger = stacked && graphicRect
+        ? Math.max(defaultTrigger, graphicRect.bottom + 16)
+        : defaultTrigger;
       let stage = 0;
       let p = 0;
       for (let i = 0; i < s.steps.length; i++) {
-        const r = s.steps[i].getBoundingClientRect();
-        s.steps[i].classList.toggle("active", false);
+        // Switch the diagram when the caption itself reaches the reading line,
+        // rather than when its tall spacing wrapper does. This keeps the scene,
+        // title and visible explanation in lockstep throughout a slow scroll.
+        const card = s.steps[i].querySelector<HTMLElement>("p");
+        const r = (card ?? s.steps[i]).getBoundingClientRect();
         if (r.top <= trigger) {
           stage = i;
-          const next = s.steps[i + 1]?.getBoundingClientRect();
+          const nextStep = s.steps[i + 1];
+          const next = (nextStep?.querySelector<HTMLElement>("p") ?? nextStep)?.getBoundingClientRect();
           const span = (next ? next.top : r.bottom) - r.top;
           p = clamp((trigger - r.top) / Math.max(1, span));
         }
       }
-      s.steps[stage]?.classList.add("active");
+      for (let i = 0; i < s.steps.length; i++) {
+        s.steps[i].classList.toggle("active", i === stage);
+      }
+      if (stage !== s.lastStage) {
+        s.lastStage = stage;
+        if (s.stageCount) s.stageCount.textContent = `Stage ${stage + 1} of ${s.steps.length}`;
+        if (s.stageTitle) s.stageTitle.textContent = FOREST_STAGE_TITLES[stage] ?? "Forest pipeline";
+        for (let i = 0; i < s.stageDots.length; i++) {
+          s.stageDots[i].classList.toggle("active", i === stage);
+        }
+      }
       if (s.svg) renderForest(s.svg, stage, p, t);
     }
     for (const f of frames) f(t);
@@ -1566,14 +1842,15 @@ function plantForestDiagram(svg: SVGSVGElement) {
   }
   // shadow blobs (static) + tree marks (tinted per stage)
   const shadowSvg = diagTrees
-    .map((t) => `<ellipse data-i cx="${t.sx.toFixed(1)}" cy="${(t.sy + 3).toFixed(1)}" rx="7" ry="2.6" fill="rgba(0,10,8,0.35)"/>`)
+    .map((t) => `<ellipse data-i cx="${t.sx.toFixed(1)}" cy="${(t.sy + 3).toFixed(1)}" rx="8" ry="2.8" transform="rotate(-18 ${t.sx.toFixed(1)} ${(t.sy + 3).toFixed(1)})" fill="rgba(0,10,8,0.38)"/>`)
     .join("");
   shadows.innerHTML = shadowSvg;
   forest.innerHTML = diagTrees
     .map(
       (_t, i) =>
-        `<g data-tree="${i}"><path data-trunk stroke="#7a5a3a" stroke-width="1.4" fill="none"/>` +
-        `<circle data-crown fill="#4f9d72"/></g>`
+        `<g data-tree="${i}"><path data-trunk stroke="#7a5a3a" stroke-width="1.4" stroke-linecap="round" fill="none"/>` +
+        `<path data-branch stroke="#7a5a3a" stroke-width="1" stroke-linecap="round" fill="none"/>` +
+        `<circle data-crown fill="#4f9d72"/><circle data-crown2 fill="#3f805d"/><circle data-crown3 fill="#69be8f"/></g>`
     )
     .join("");
   // a small instanced grid for stage 1
@@ -1583,7 +1860,7 @@ function plantForestDiagram(svg: SVGSVGElement) {
       for (let c = 0; c < 6; c++) {
         const x = 320 + c * 36;
         const y = 140 + r * 34;
-        g += `<g transform="translate(${x} ${y})"><line x1="0" y1="0" x2="0" y2="-12" stroke="#7a5a3a" stroke-width="1.2"/><circle cx="0" cy="-15" r="7" fill="#4f9d72"/></g>`;
+        g += `<g transform="translate(${x} ${y})"><path d="M0 0 L0 -13 M0 -9 L-5 -14 M0 -10 L5 -16" stroke="#7a5a3a" stroke-width="1.2"/><circle cx="-4" cy="-16" r="5" fill="#3f805d"/><circle cx="4" cy="-17" r="5.5" fill="#4f9d72"/><circle cx="0" cy="-22" r="5" fill="#69be8f"/></g>`;
       }
     instances.innerHTML = g;
   }
@@ -1593,23 +1870,29 @@ function plantForestDiagram(svg: SVGSVGElement) {
 const TIER_FILL = ["#5fce93", "#4f9d72", "#3c7d5b", "#2f5f47"];
 
 function renderForest(svg: SVGSVGElement, stage: number, p: number, t: number) {
-  const f = stage + p; // 0..4 continuous
-  setOpacity(svg, "fo-seed", atStage([1, 0.15, 0, 0, 0], f));
-  setOpacity(svg, "fo-chunk", atStage([0, 1, 0.2, 0, 0], f));
-  setOpacity(svg, "fo-rings", atStage([0, 0.1, 1, 0.7, 0.5], f));
-  setOpacity(svg, "fo-frustum", atStage([0, 0, 0.1, 1, 0.7], f));
-  setOpacity(svg, "fo-shadows", atStage([0, 0, 0, 0.2, 1], f));
-  setOpacity(svg, "fo-forest", atStage([0, 0.2, 1, 1, 1], f));
-  setOpacity(svg, "fo-youlbl", atStage([0, 0, 1, 1, 1], f));
+  // Each caption owns one discrete visual scene. Do not cross-fade adjacent
+  // stages: rings + frustum + shadow layers read as one muddled diagram when
+  // their partial opacities overlap during a slow scroll.
+  const forestStage = stage >= 2;
+  setOpacity(svg, "fo-seed", stage === 0 ? 1 : 0);
+  setOpacity(svg, "fo-chunk", stage === 1 ? 1 : 0);
+  setOpacity(svg, "fo-rings", stage === 2 ? 1 : 0);
+  setOpacity(svg, "fo-frustum", stage === 3 ? 1 : 0);
+  setOpacity(svg, "fo-shadows", stage === 4 ? 1 : 0);
+  setOpacity(svg, "fo-forest", forestStage ? 1 : 0);
+  setOpacity(svg, "fo-you", forestStage ? 1 : 0);
+  setOpacity(svg, "fo-youlbl", forestStage ? 1 : 0);
 
   // seed sprout grows in stage 0
-  const grow = clamp(atStage([0, 1, 1, 1, 1], f));
-  setAttr(svg, "fo-sprout", "d", `M410 250 L410 ${(250 - 22 * grow).toFixed(1)}`);
+  const grow = stage === 0 ? clamp(0.62 + p * 0.38) : 1;
+  setAttr(svg, "fo-sprout", "d", `M410 250 L410 ${(250 - 112 * grow).toFixed(1)}`);
+  setOpacity(svg, "fo-seed-crown", smoothstep(0.34, 0.72, grow));
+  setAttr(svg, "fo-seed-crown", "transform", `translate(410 250) scale(${grow.toFixed(3)}) translate(-410 -250)`);
 
   // forest trees: size by tier (near = big/detailed), tint by tier, sway idle
   const forest = svg.getElementById("fo-forest");
   const wedge = { apexX: 410, apexY: 180, halfAng: 1.05, dir: -Math.PI / 2 }; // pointing up
-  const cullOn = clamp(atStage([0, 0, 0, 1, 1], f));
+  const cullOn = stage === 3 ? 1 : 0;
   if (forest) {
     for (let i = 0; i < diagTrees.length; i++) {
       const tr = diagTrees[i];
@@ -1628,13 +1911,28 @@ function renderForest(svg: SVGSVGElement, stage: number, p: number, t: number) {
       const vis = lerp(1, inView ? 1 : 0.12, cullOn);
       g.setAttribute("opacity", String(vis));
       const trunk = g.querySelector("[data-trunk]") as SVGPathElement | null;
+      const branch = g.querySelector("[data-branch]") as SVGPathElement | null;
       const crown = g.querySelector("[data-crown]") as SVGCircleElement | null;
+      const crown2 = g.querySelector("[data-crown2]") as SVGCircleElement | null;
+      const crown3 = g.querySelector("[data-crown3]") as SVGCircleElement | null;
       if (trunk) trunk.setAttribute("d", `M${tr.sx.toFixed(1)} ${tr.sy.toFixed(1)} L${(tr.sx + sway).toFixed(1)} ${(tr.sy - size * 1.5).toFixed(1)}`);
+      if (branch) branch.setAttribute("d", `M${(tr.sx + sway * .7).toFixed(1)} ${(tr.sy - size).toFixed(1)} l${(-size * .7).toFixed(1)} ${(-size * .7).toFixed(1)} M${(tr.sx + sway * .8).toFixed(1)} ${(tr.sy - size * 1.2).toFixed(1)} l${(size * .75).toFixed(1)} ${(-size * .65).toFixed(1)}`);
       if (crown) {
         crown.setAttribute("cx", (tr.sx + sway).toFixed(1));
         crown.setAttribute("cy", (tr.sy - size * 1.7).toFixed(1));
-        crown.setAttribute("r", size.toFixed(1));
+        crown.setAttribute("r", (size * .84).toFixed(1));
         crown.setAttribute("fill", TIER_FILL[tier]);
+      }
+      if (crown2) {
+        crown2.setAttribute("cx", (tr.sx + sway - size * .68).toFixed(1));
+        crown2.setAttribute("cy", (tr.sy - size * 1.45).toFixed(1));
+        crown2.setAttribute("r", (size * .62).toFixed(1));
+      }
+      if (crown3) {
+        crown3.setAttribute("cx", (tr.sx + sway + size * .66).toFixed(1));
+        crown3.setAttribute("cy", (tr.sy - size * 1.55).toFixed(1));
+        crown3.setAttribute("r", (size * .58).toFixed(1));
+        crown3.setAttribute("opacity", tier < 2 ? ".78" : ".48");
       }
     }
   }

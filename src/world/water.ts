@@ -23,6 +23,7 @@ import {
 import { PALACE_LAGOON, palaceLagoonMask, waterHeight, type WorldMap } from "./heightmap";
 import { bumpNormal, chopZoneMask, oceanBeachSurfField, oceanBeachSwell, swellBase, swellChop } from "./tslUtil";
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
+import { WaterEchoes } from "./waterEchoes";
 
 const PALACE_LAGOON_SEGMENTS = 112;
 const PALACE_LAGOON_RINGS = 18;
@@ -64,6 +65,7 @@ export class Water {
   near: THREE.Mesh;
   palaceLagoon: THREE.Mesh;
   underside!: THREE.Mesh; // the surface seen from below — only shown when submerged
+  readonly echoes: WaterEchoes;
 
   #uTime = uniform(0);
   #uNearRect = uniform(new THREE.Vector3(0, 0, NEAR_PATCH_MASK_OUTER));
@@ -418,6 +420,7 @@ export class Water {
     this.palaceLagoon.renderOrder = 10.5;
 
     scene.add(this.far, this.near, this.palaceLagoon, this.underside);
+    this.echoes = new WaterEchoes(scene, map);
   }
 
   update(t: number, camPos: THREE.Vector3, playerPos: THREE.Vector3, surfing = false) {

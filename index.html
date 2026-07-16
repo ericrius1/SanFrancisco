@@ -4,13 +4,29 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script>
-      // Boot-critical data starts downloading before the module graph parses (main.ts consumes via __sfPrefetch).
-      window.__sfPrefetch = Object.fromEntries(
-        ["/data/meta.json","/data/heightmap.bin","/data/surface.bin","/data/groundtop-delta.bin","/data/manifest.json"].map((u) => [u, fetch(u)])
-      );
+      (() => {
+        const read = new URLSearchParams(location.search).get("read") || "";
+        const readingEntry = read === "bts" || read.startsWith("bts.");
+        if (readingEntry) document.documentElement.classList.add("reading-entry");
+
+        // Normal visits retain the earliest possible city prefetch. A reading
+        // entry calls this only after its selected chapter has painted.
+        window.__sfStartPrefetch = () => {
+          if (window.__sfPrefetch) return;
+          const cover = document.createElement("link");
+          cover.rel = "preload";
+          cover.href = "/ui/san-francisco-survey-map.webp";
+          cover.as = "image";
+          cover.type = "image/webp";
+          document.head.appendChild(cover);
+          window.__sfPrefetch = Object.fromEntries(
+            ["/data/meta.json","/data/heightmap.bin","/data/surface.bin","/data/groundtop-delta.bin","/data/manifest.json"].map((u) => [u, fetch(u)])
+          );
+        };
+        if (!readingEntry) window.__sfStartPrefetch();
+      })();
     </script>
-    <title>San Francisco</title>
-    <link rel="preload" href="/ui/san-francisco-survey-map.webp" as="image" type="image/webp" />
+    <title>San Francisco - main</title>
     <link
       rel="preload"
       href="/fonts/Newsreader-Variable.woff2"
@@ -32,7 +48,7 @@
     <style>
 
       /* ============================================================
-         DESIGN TOKENS — shared period typography with restrained glass
+         DESIGN TOKENS — shared period typography with solid navy
          surfaces for live gameplay. Self-hosted font (offline; no CDN),
          semantic colors, radii, elevation, motion, and one z-index scale.
          ============================================================ */
@@ -76,11 +92,11 @@
         --warn: #f2b96f;
         --warn-strong: #ffdca8;
 
-        /* translucent navy glass surfaces */
-        --surface: rgba(10, 24, 36, 0.55);
-        --surface-strong: rgba(10, 24, 36, 0.72);
-        --surface-raised: rgba(18, 40, 56, 0.6);
-        --surface-sunken: rgba(6, 16, 25, 0.6);
+        /* solid navy surfaces behind HUD text */
+        --surface: #0a1824;
+        --surface-strong: #0a1824;
+        --surface-raised: #122838;
+        --surface-sunken: #061019;
         --scrim: rgba(4, 10, 16, 0.5);
 
         /* hairlines */
@@ -96,7 +112,7 @@
         --r-xl: 16px;
         --r-pill: 999px;
 
-        /* elevation + glass */
+        /* elevation */
         --shadow-sm: 0 6px 18px rgba(0, 6, 12, 0.28);
         --shadow-md: 0 10px 28px rgba(0, 6, 12, 0.3);
         --shadow-lg: 0 24px 70px rgba(0, 4, 10, 0.6);
@@ -161,6 +177,7 @@
         inset: 0;
         pointer-events: none;
         font-family: var(--font);
+        font-optical-sizing: auto;
         color: var(--text);
         text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
       }
@@ -196,17 +213,52 @@
         max-width: 420px;
         font-size: 12px;
         opacity: 0.92;
-        padding: 12px 14px;
+        padding: 10px 12px 12px;
         border-radius: var(--r-md);
         background: var(--surface);
         border: 1px solid var(--hairline);
         box-shadow: var(--shadow-sm), var(--edge-hi);
-        backdrop-filter: blur(var(--blur));
         /* bottom-anchored panel grows upward — cap it so short viewports scroll
            inside the panel instead of pushing rows off the top of the screen */
         max-height: calc(100dvh - 58px);
         overflow-y: auto;
         overscroll-behavior: contain;
+        pointer-events: auto;
+      }
+      #hud .help .help-toggle {
+        pointer-events: auto;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0 0 8px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text);
+        font: 700 11px var(--font);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.78;
+      }
+      #hud .help .help-toggle:hover {
+        opacity: 1;
+        color: var(--accent-strong);
+      }
+      #hud .help .help-toggle-chevron {
+        font-size: 10px;
+        opacity: 0.75;
+      }
+      #hud .help.collapsed {
+        padding: 8px 12px;
+        max-height: none;
+        overflow: visible;
+      }
+      #hud .help.collapsed .help-toggle {
+        margin-bottom: 0;
+      }
+      #hud .help.collapsed .help-body {
+        display: none;
       }
       /* movement grid + global shortcuts, side by side */
       #hud .help .cols {
@@ -249,7 +301,6 @@
         box-shadow:
           inset 0 1px 0 rgba(255, 255, 255, 0.06),
           0 6px 18px rgba(0, 6, 12, 0.28);
-        backdrop-filter: blur(6px);
         transition:
           border-color 0.15s,
           color 0.15s,
@@ -260,7 +311,7 @@
       #hud .place-history .history-btn:not(:disabled):hover {
         border-color: var(--accent-strong);
         color: var(--text);
-        background: rgba(22, 64, 70, 0.62);
+        background: #164046;
         transform: translateY(-1px);
       }
       #hud .place-history .history-btn:disabled {
@@ -320,6 +371,7 @@
         opacity: 0;
         transition: opacity 1s ease;
       }
+      #hud.faded .help,
       #hud.faded .toolbar,
       #hud.faded .audio,
       #hud.faded .chat,
@@ -421,8 +473,8 @@
         opacity: 0.72;
         font-size: 11px;
       }
-      /* center event toast — a restrained glass banner that rises + fades on
-         each message (hud.ts toggles .show); readable over bright or dark scenes */
+      /* center event toast — solid banner that rises + fades on each message
+         (hud.ts toggles .show); readable over bright or dark scenes */
       #hud .center {
         position: absolute;
         left: 50%;
@@ -430,10 +482,9 @@
         max-width: min(680px, 82vw);
         padding: 9px 18px;
         border-radius: var(--r-lg);
-        background: rgba(9, 22, 34, 0.62);
+        background: #091622;
         border: 1px solid var(--hairline-2);
         box-shadow: var(--shadow-md), var(--edge-hi);
-        backdrop-filter: blur(var(--blur));
         font-size: 16px;
         font-weight: 600;
         line-height: 1.35;
@@ -468,17 +519,16 @@
         padding: 5px 8px 5px 5px;
         border-radius: 9px;
         transform: translate(-50%, -112%);
-        background: rgba(7, 18, 28, 0.74);
+        background: #07121c;
         border: 1px solid hsla(var(--hue), 78%, 66%, 0.72);
         box-shadow:
           0 8px 20px rgba(0, 6, 12, 0.28),
           inset 0 1px 0 rgba(255, 255, 255, 0.06);
-        backdrop-filter: blur(5px);
         color: var(--text);
       }
       #hud .player-locator-marker.edge {
         transform: translate(-50%, -50%);
-        background: rgba(9, 22, 34, 0.86);
+        background: #091622;
       }
       #hud .player-locator-marker .pl-key {
         flex: 0 0 auto;
@@ -585,7 +635,7 @@
         width: 21px;
         height: 20px;
         border-radius: var(--r-xs);
-        background: rgba(22, 64, 70, 0.66);
+        background: #164046;
         border: 1px solid var(--accent-line);
         color: var(--accent-strong);
         font: 700 12px var(--font);
@@ -609,7 +659,6 @@
         background: var(--surface);
         border: 1px solid var(--hairline);
         box-shadow: var(--shadow-sm), var(--edge-hi);
-        backdrop-filter: blur(var(--blur));
         transition:
           background var(--dur) var(--ease),
           border-color var(--dur) var(--ease),
@@ -659,7 +708,7 @@
         background: var(--surface-raised);
         border: 1px solid var(--hairline-2);
         color: var(--text);
-        font: 600 11.5px var(--font);
+        font: 700 11.5px var(--font);
         letter-spacing: 0.02em;
         transition:
           border-color var(--dur) var(--ease),
@@ -707,7 +756,7 @@
       }
       #hud .toolbar .tool:hover {
         border-color: var(--hairline-strong);
-        background: rgba(26, 52, 70, 0.72);
+        background: #1a3446;
         transform: translateY(-1px);
       }
       #hud .toolbar .tool:active {
@@ -716,7 +765,7 @@
       #hud .toolbar .tool.on {
         border-color: var(--accent);
         color: var(--accent-strong);
-        background: rgba(22, 64, 70, 0.6);
+        background: #164046;
       }
       #hud .toolbar .tool.on .num {
         border-color: var(--accent-line);
@@ -816,7 +865,6 @@
         background: var(--surface);
         border: 1px solid var(--hairline);
         box-shadow: var(--shadow-sm), var(--edge-hi);
-        backdrop-filter: blur(var(--blur));
         color: #ffe9ae;
         font: 700 13px var(--font);
         font-variant-numeric: tabular-nums;
@@ -858,7 +906,6 @@
         background: var(--surface-strong);
         border: 1px solid var(--hairline-2);
         box-shadow: var(--shadow-sm), var(--edge-hi);
-        backdrop-filter: blur(var(--blur));
         opacity: 0;
         transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
         pointer-events: none;
@@ -931,7 +978,6 @@
         border-radius: var(--r-sm);
         background: var(--surface);
         border: 1px solid var(--hairline);
-        backdrop-filter: blur(var(--blur));
         font: 600 12px var(--font);
         color: rgba(233, 244, 250, 0.8);
         transition: border-color 0.15s var(--ease), color 0.15s var(--ease);
@@ -966,7 +1012,6 @@
         background: var(--surface-strong);
         border: 1px solid var(--hairline-2);
         box-shadow: var(--shadow-sm), var(--edge-hi);
-        backdrop-filter: blur(var(--blur));
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -1137,10 +1182,9 @@
         border: 1px solid var(--hairline-2);
         background: var(--surface-strong);
         color: var(--text-soft);
-        font: 600 11.5px var(--font);
+        font: 700 11.5px var(--font);
         letter-spacing: 0.02em;
         box-shadow: var(--edge-hi), var(--shadow-sm);
-        backdrop-filter: blur(var(--blur));
         transition:
           border-color var(--dur) var(--ease),
           color var(--dur) var(--ease),
@@ -1151,7 +1195,7 @@
         border-color: var(--accent);
         color: var(--accent-strong);
         transform: translateY(-1px);
-        background: rgba(15, 33, 47, 0.85);
+        background: #0f212f;
       }
       #hud .share-btn:active {
         transform: translateY(0);
@@ -1199,12 +1243,12 @@
       #hud .pause-btn.armed {
         border-color: #f2b96f;
         color: #ffdca8;
-        background: rgba(47, 30, 10, 0.72);
+        background: #2f1e0a;
       }
       #hud .pause-btn.armed:hover {
         border-color: #ffcf8c;
         color: #ffe6c2;
-        background: rgba(60, 39, 14, 0.85);
+        background: #3c270e;
       }
       /* tutorial objective card — top center, above the action */
       #hud .tutorial-panel {
@@ -1220,7 +1264,6 @@
         box-shadow:
           0 10px 28px rgba(0, 6, 12, 0.3),
           inset 0 1px 0 rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(6px);
         pointer-events: auto;
         user-select: none;
       }
@@ -1276,7 +1319,7 @@
         height: 19px;
         padding: 0 6px;
         border-radius: 4px;
-        background: rgba(18, 40, 56, 0.6);
+        background: #122838;
         border: 1px solid rgba(190, 225, 240, 0.35);
         box-shadow: 0 1px 0 rgba(190, 225, 240, 0.16);
         font-size: 11px;
@@ -1347,11 +1390,11 @@
         cursor: pointer;
         padding: 3px 9px;
         border-radius: 6px;
-        background: rgba(18, 40, 56, 0.5);
+        background: #122838;
         border: 1px solid rgba(190, 225, 240, 0.2);
         color: var(--text-dim);
         font:
-          600 10.5px var(--font);
+          700 10.5px var(--font);
         letter-spacing: 0.02em;
         transition:
           border-color 0.15s,
@@ -1391,7 +1434,6 @@
         background: var(--surface-strong);
         color: var(--text-soft);
         box-shadow: var(--edge-hi), var(--shadow-sm);
-        backdrop-filter: blur(var(--blur));
         transition:
           border-color var(--dur) var(--ease),
           color var(--dur) var(--ease),
@@ -1408,7 +1450,7 @@
         border-color: var(--accent);
         color: var(--accent-strong);
         transform: translateY(-1px);
-        background: rgba(15, 33, 47, 0.85);
+        background: #0f212f;
       }
       #hud .social-btn:active {
         transform: translateY(0);
@@ -1516,7 +1558,7 @@
         cursor: pointer;
         border-radius: 10px;
         border: 1px solid rgba(111, 215, 196, 0.4);
-        background: rgba(22, 64, 70, 0.5);
+        background: #164046;
         color: var(--accent-strong);
         font:
           700 13px var(--font);
@@ -1524,7 +1566,6 @@
         box-shadow:
           inset 0 1px 0 rgba(255, 255, 255, 0.06),
           0 6px 18px rgba(0, 6, 12, 0.28);
-        backdrop-filter: blur(6px);
         transition:
           border-color 0.15s,
           color 0.15s,
@@ -1533,7 +1574,7 @@
       }
       #hud .bts-share:hover {
         border-color: var(--accent);
-        background: rgba(28, 78, 84, 0.62);
+        background: #1c4e54;
         transform: translateY(-1px);
       }
       #hud .bts-share .ic {
@@ -1584,7 +1625,7 @@
         padding: 10px 14px;
         border-radius: 9px;
         border-left: 2px solid rgba(111, 215, 196, 0.5);
-        background: rgba(18, 40, 56, 0.45);
+        background: #122838;
         color: #b9dbe4;
         font-size: 15px;
       }
@@ -1619,7 +1660,7 @@
         font-size: 14px;
         font-family:
           "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
-        background: rgba(18, 40, 56, 0.7);
+        background: #122838;
         border: 1px solid rgba(190, 225, 240, 0.16);
         color: #b6ecdd;
       }
@@ -1660,7 +1701,7 @@
         font-size: 14px;
         font-weight: 600;
         border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(18, 40, 56, 0.5);
+        background: #122838;
         color: #cfe6ee;
       }
       #hud .bts-chips a:hover {
@@ -1775,6 +1816,21 @@
         #hud .scrolly-step {
           min-height: 68vh;
         }
+        #hud .ss-daybar {
+          flex-wrap: wrap;
+          gap: 9px;
+        }
+        #hud .ss-daybar .ss-slider {
+          flex: 1 1 150px;
+          min-width: 0;
+        }
+        #hud .ss-daybar .ss-readout,
+        #hud .ss-toy-actions .ss-readout {
+          flex: 1 0 100%;
+          min-width: 0;
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }
       }
       #hud .ss-t {
         fill: #cfe6ee;
@@ -1818,7 +1874,7 @@
         border-radius: 12px;
         border: 1px solid rgba(190, 225, 240, 0.12);
         border-left: 2px solid rgba(111, 215, 196, 0.25);
-        background: rgba(12, 30, 44, 0.72);
+        background: #0c1e2c;
         color: #bcd6df;
         opacity: 0.5;
         transform: translateY(6px);
@@ -1907,7 +1963,7 @@
         cursor: pointer;
         border-radius: 9px;
         border: 1px solid rgba(190, 225, 240, 0.16);
-        background: rgba(14, 32, 46, 0.6);
+        background: #0e202e;
         color: var(--text-mut);
         font:
           700 13.5px var(--font);
@@ -1950,7 +2006,7 @@
         cursor: pointer;
         border-radius: 9px;
         border: 1px solid rgba(190, 225, 240, 0.18);
-        background: rgba(14, 32, 46, 0.66);
+        background: #0e202e;
         color: #a9cbd7;
         font:
           700 13.5px var(--font);
@@ -2031,6 +2087,24 @@
         color: #8fb3c1;
         white-space: nowrap;
       }
+      /* LOD dial slider jitter fix: this toy's readout string changes width as you
+         scrub (tier name, digit count — biggest jump at the 520 m culling boundary).
+         With a `flex: 1 1 auto` slider beside a nowrap readout, that width change fed
+         back into the slider's track width mid-drag, so the native range remapped the
+         pointer and the thumb ping-ponged. Drop the readout onto its own line (as the
+         mobile layout already does) so the slider's width no longer depends on the
+         readout's text — the track stays fixed and the thumb tracks the pointer. */
+      #hud [data-ftoy="lodDial"] .ss-daybar {
+        flex-wrap: wrap;
+      }
+      #hud [data-ftoy="lodDial"] .ss-daybar .ss-slider {
+        flex: 1 1 0;
+        min-width: 0;
+      }
+      #hud [data-ftoy="lodDial"] .ss-daybar .ss-readout {
+        flex: 1 0 100%;
+        white-space: normal;
+      }
 
       /* lone affordance when Tab hides the HUD — hidden in immersive (display:none on #hud) */
       #hud .ui-restore {
@@ -2052,7 +2126,6 @@
         background: var(--surface-strong);
         color: var(--text-soft);
         box-shadow: var(--edge-hi), var(--shadow-sm);
-        backdrop-filter: blur(var(--blur));
         transition:
           opacity 0.35s ease,
           border-color var(--dur) var(--ease),
@@ -2068,7 +2141,7 @@
         border-color: var(--accent);
         color: var(--accent-strong);
         transform: translateY(-1px);
-        background: rgba(15, 33, 47, 0.85);
+        background: #0f212f;
       }
       #hud .ui-restore .ic {
         font-size: 15px;
@@ -2086,7 +2159,6 @@
         border: 1px solid var(--hairline-2);
         background: var(--surface-strong);
         box-shadow: var(--edge-hi), var(--shadow-sm);
-        backdrop-filter: blur(var(--blur));
         transition:
           border-color var(--dur) var(--ease),
           transform 0.12s var(--ease),
@@ -2096,7 +2168,7 @@
       #hud .avatar-ui.open .avatar-toggle {
         border-color: var(--accent);
         transform: translateY(-1px);
-        background: rgba(15, 33, 47, 0.85);
+        background: #0f212f;
       }
       #hud .customizer-icon {
         width: 44px;
@@ -2125,11 +2197,10 @@
         text-overflow: ellipsis;
         border-radius: var(--r-pill);
         border: 1px solid var(--hairline-2);
-        background: rgba(10, 24, 36, 0.76);
+        background: #0a1824;
         color: var(--text-soft);
         box-shadow: var(--edge-hi), var(--shadow-sm);
-        backdrop-filter: blur(var(--blur));
-        font: 650 11.5px/22px var(--font);
+        font: 700 11.5px/22px var(--font);
         letter-spacing: 0.01em;
         text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
       }
@@ -2141,12 +2212,11 @@
         overflow: auto;
         padding: 10px;
         border-radius: 12px;
-        background: rgba(10, 24, 36, 0.78);
+        background: #0a1824;
         border: 1px solid rgba(190, 225, 240, 0.18);
         box-shadow:
           0 10px 32px rgba(0, 6, 12, 0.38),
           inset 0 1px 0 rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(8px);
       }
       #hud .avatar-ui.open .avatar-panel {
         display: grid;
@@ -2187,7 +2257,7 @@
         padding: 0 10px;
         border-radius: 7px;
         border: 1px solid rgba(190, 225, 240, 0.24);
-        background: rgba(6, 16, 25, 0.55);
+        background: #061019;
         color: #eaf6fa;
         font:
           700 12px var(--font);
@@ -2201,7 +2271,7 @@
       }
       #hud .avatar-name-input:focus {
         border-color: var(--accent);
-        background: rgba(10, 24, 36, 0.7);
+        background: #0a1824;
       }
       #hud .avatar-name-roll {
         flex: 0 0 auto;
@@ -2210,7 +2280,7 @@
         cursor: pointer;
         border-radius: 7px;
         border: 1px solid rgba(190, 225, 240, 0.2);
-        background: rgba(18, 40, 56, 0.58);
+        background: #122838;
         font-size: 14px;
         line-height: 1;
         transition:
@@ -2229,7 +2299,7 @@
         cursor: pointer;
         border-radius: 7px;
         border: 1px solid rgba(190, 225, 240, 0.2);
-        background: rgba(18, 40, 56, 0.58);
+        background: #122838;
         color: var(--text-soft);
         font:
           700 11px var(--font);
@@ -2248,7 +2318,7 @@
       #hud .avatar-choice.on {
         border-color: var(--accent);
         color: var(--accent-strong);
-        background: rgba(22, 64, 70, 0.62);
+        background: #164046;
       }
       #hud .avatar-swatch {
         width: 24px;
@@ -2317,7 +2387,7 @@
         cursor: pointer;
         border-radius: 8px;
         border: 1px solid rgba(190, 225, 240, 0.3);
-        background: rgba(18, 40, 56, 0.58);
+        background: #122838;
       }
       #hud .board-panel .avatar-label {
         padding-top: 5px;
@@ -2367,7 +2437,7 @@
         min-height: 27px;
         padding-inline: 8px;
         border-radius: 6px;
-        background: rgba(14, 38, 50, 0.7);
+        background: #0e2632;
       }
       #hud .board-panel .avatar-choice.on {
         box-shadow: inset 0 -2px 0 rgba(110, 255, 218, 0.22);
@@ -2537,7 +2607,7 @@
         cursor: pointer;
         border: 1px solid rgba(113, 226, 216, 0.2);
         border-radius: 6px;
-        background: rgba(14, 44, 53, 0.72);
+        background: #0e2c35;
         color: rgba(220, 251, 246, 0.78);
         font: 750 15px/1 var(--font);
       }
@@ -2904,7 +2974,6 @@
         box-shadow:
           0 0 0 1px rgba(111, 215, 196, 0.06) inset,
           0 8px 22px rgba(0, 6, 12, 0.32);
-        backdrop-filter: blur(8px);
         pointer-events: auto;
       }
       #hud .chat-head {
@@ -2964,11 +3033,11 @@
         padding: 7px 9px;
         border-radius: 7px;
         border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(6, 16, 25, 0.65);
+        background: #061019;
         color: #eaf6fa;
         outline: none;
         font:
-          500 12.5px var(--font);
+          600 12.5px var(--font);
       }
       #hud .chat-input::placeholder {
         color: rgba(188, 217, 230, 0.45);
@@ -2985,18 +3054,30 @@
         flex-direction: column;
         align-items: stretch;
         gap: 6px;
-        padding: 6px 10px;
+        padding: 6px;
         border-radius: 10px;
         background: var(--surface);
         border: 1px solid var(--hairline);
-        backdrop-filter: blur(6px);
         pointer-events: auto;
       }
       #hud .audio-sliders {
         display: flex;
         flex-direction: column;
-        gap: 5px;
+        gap: 7px;
         min-width: 0;
+        width: 196px;
+        padding: 7px 8px 9px;
+        border-radius: 8px;
+        background: #06151f;
+        border: 1px solid rgba(190, 225, 240, 0.12);
+      }
+      #hud .audio-sliders[hidden] {
+        display: none;
+      }
+      #hud .audio-actions {
+        display: flex;
+        align-items: stretch;
+        gap: 5px;
       }
       #hud .audio-row {
         display: flex;
@@ -3005,7 +3086,7 @@
         min-width: 0;
       }
       #hud .audio-lbl {
-        flex: 0 0 42px;
+        flex: 0 0 45px;
         font:
           600 10px var(--font);
         letter-spacing: 0.04em;
@@ -3013,33 +3094,42 @@
         color: rgba(188, 217, 230, 0.72);
       }
       #hud .audio .mute-btn,
+      #hud .audio .mixer-btn,
       #hud .audio .mic-btn {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        padding: 5px 10px;
+        justify-content: center;
+        gap: 6px;
+        padding: 5px 8px;
         border-radius: 7px;
         cursor: pointer;
-        background: rgba(18, 40, 56, 0.6);
+        background: #122838;
         border: 1px solid rgba(190, 225, 240, 0.25);
         color: var(--text-dim);
         font:
-          600 11.5px var(--font);
+          700 11.5px var(--font);
         letter-spacing: 0.02em;
         transition:
           border-color 0.15s,
           color 0.15s;
       }
       #hud .audio .mute-btn .ic,
+      #hud .audio .mixer-btn .ic,
       #hud .audio .mic-btn .ic {
-        font-size: 18px;
+        font-size: 15px;
         line-height: 1;
       }
+      #hud .audio .mixer-btn .chev {
+        color: rgba(188, 217, 230, 0.56);
+        font-size: 9px;
+      }
       #hud .audio .mute-btn:hover,
+      #hud .audio .mixer-btn:hover,
       #hud .audio .mic-btn:hover {
         border-color: rgba(190, 225, 240, 0.55);
       }
       #hud .audio .mute-btn.off,
+      #hud .audio.mixer-open .mixer-btn,
       #hud .audio .mic-btn.on {
         border-color: var(--accent);
         color: var(--accent-strong);
@@ -3073,6 +3163,19 @@
       }
       #hud .audio input[type="range"].off {
         opacity: 0.35;
+      }
+      @media (max-width: 480px) {
+        #hud .audio {
+          left: max(10px, env(safe-area-inset-left));
+          bottom: max(42px, env(safe-area-inset-bottom));
+        }
+        #hud .audio .mute-btn .label,
+        #hud .audio .mic-btn .label {
+          display: none;
+        }
+        #hud .audio-sliders {
+          width: min(196px, calc(100vw - 32px));
+        }
       }
       #hud .minimap {
         position: absolute;
@@ -3119,7 +3222,7 @@
         letter-spacing: 0;
         text-transform: uppercase;
         color: var(--text);
-        background: rgba(12, 19, 27, 0.82);
+        background: #0c131b;
         border: 1px solid var(--hairline-2);
         box-shadow: 0 8px 18px rgba(0, 0, 0, 0.26);
       }
@@ -3146,7 +3249,7 @@
         justify-content: center;
         border-radius: var(--r-md);
         color: var(--text);
-        background: rgba(12, 19, 27, 0.82);
+        background: #0c131b;
         border: 1px solid var(--hairline-strong);
         box-shadow: var(--edge-hi), 0 8px 18px rgba(0, 0, 0, 0.26);
         font-size: 18px;
@@ -3161,7 +3264,7 @@
         border-color: var(--accent);
         color: var(--accent-strong);
         transform: translateY(-1px);
-        background: rgba(16, 30, 42, 0.9);
+        background: #101e2a;
       }
       #hud .minimap .mm-expand:active {
         transform: translateY(0);
@@ -3271,7 +3374,6 @@
         align-items: center;
         justify-content: center;
         background: rgba(4, 10, 16, 0.55);
-        backdrop-filter: blur(3px);
         font-family: var(--font);
       }
       .bigmap-inner {
@@ -3311,10 +3413,9 @@
         cursor: pointer;
         border-radius: 999px;
         border: 1px solid rgba(190, 225, 240, 0.34);
-        background: rgba(10, 24, 36, 0.94);
+        background: #0a1824;
         color: var(--text-soft);
         box-shadow: var(--edge-hi), 0 8px 24px rgba(0, 0, 0, 0.42);
-        backdrop-filter: blur(var(--blur));
         font:
           700 12px var(--font);
         transition:
@@ -3328,7 +3429,7 @@
       .bigmap-layer:hover {
         border-color: var(--accent);
         color: var(--accent-strong);
-        background: rgba(15, 35, 47, 0.98);
+        background: #0f232f;
         transform: scale(1.03);
       }
       .bigmap-layer:active {
@@ -3375,10 +3476,9 @@
         transform: none;
         border-radius: 50%;
         border: 1px solid rgba(190, 225, 240, 0.34);
-        background: rgba(10, 24, 36, 0.94);
+        background: #0a1824;
         color: var(--text-soft);
         box-shadow: var(--edge-hi), 0 8px 24px rgba(0, 0, 0, 0.42);
-        backdrop-filter: blur(var(--blur));
         transition:
           border-color var(--dur) var(--ease),
           color var(--dur) var(--ease),
@@ -3401,7 +3501,7 @@
       .bigmap-recenter:hover {
         border-color: var(--accent);
         color: var(--accent-strong);
-        background: rgba(15, 35, 47, 0.98);
+        background: #0f232f;
         transform: scale(1.04);
       }
       .bigmap-recenter:active {
@@ -3437,7 +3537,7 @@
         gap: 6px;
         padding: 5px 9px 5px 6px;
         border-radius: 10px;
-        background: rgba(8, 16, 24, 0.92);
+        background: #081018;
         border: 1px solid rgba(111, 215, 196, 0.55);
         box-shadow:
           inset 0 1px 0 rgba(255, 255, 255, 0.06),
@@ -3493,7 +3593,7 @@
         font-size: 10px;
         font-weight: 800;
         box-shadow: none;
-        background: rgba(12, 20, 32, 0.9);
+        background: #0c1420;
       }
       .bigmap-pin-hint .k.fx {
         border-color: #6aaaff;
@@ -3568,7 +3668,6 @@
         position: absolute;
         inset: 0;
         z-index: -2;
-        background-image: url("/ui/san-francisco-survey-map.webp");
         background-repeat: no-repeat;
         background-position: 44% 47%;
         background-size: max(900px, 80vw) auto;
@@ -3576,6 +3675,9 @@
         transform-origin: 62% 40%;
         animation: atlas-drift 54s ease-in-out infinite alternate;
         will-change: transform;
+      }
+      html:not(.reading-entry) #loading::before {
+        background-image: url("/ui/san-francisco-survey-map.webp");
       }
       /* Slow "living atlas" push toward the Golden Gate. */
       @keyframes atlas-drift {
@@ -4187,9 +4289,8 @@
         padding: 12px 16px 11px;
         border: 1px solid rgba(181, 239, 241, 0.34);
         border-radius: 15px;
-        background: linear-gradient(135deg, rgba(4, 26, 37, 0.91), rgba(6, 65, 74, 0.76));
+        background: linear-gradient(135deg, #041a25, #06414a);
         box-shadow: 0 14px 38px rgba(0, 12, 20, 0.32), inset 0 1px rgba(255, 255, 255, 0.12);
-        backdrop-filter: blur(14px) saturate(1.15);
         color: #edffff;
         pointer-events: none;
         transition: opacity 180ms ease, transform 220ms ease, visibility 220ms;
@@ -4357,10 +4458,11 @@
         <div class="controls-hint" aria-label="Essential controls">
           <div class="row"><span class="k">Tab</span><span>show or hide the folio</span></div>
           <div class="row"><span class="k">Esc</span><span>release the mouse</span></div>
+          <div class="row"><span class="k">L</span><span>pointer lock / free cursor</span></div>
         </div>
         <div class="start-imprint">Pacific coast · A city in motion</div>
       </main>
     </div>
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/startup.ts"></script>
   </body>
 </html>

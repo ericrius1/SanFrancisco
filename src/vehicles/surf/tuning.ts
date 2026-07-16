@@ -16,18 +16,18 @@ export const SURF_TUNING = tunables("movement.surf", {
   pumpResponse: { v: 7.5, min: 1, max: 14, step: 0.25, label: "pump response" },
   speedResponse: { v: 4.4, min: 0.5, max: 8, step: 0.1, label: "speed response" },
   stallResponse: { v: 6.5, min: 1, max: 16, step: 0.25, label: "stall response" },
-  // Kelly-Slater carve: A/D sets the rail and moves across the face while a
-  // wave-local contact solve keeps the board tangent to the rendered wall.
+  // Arcade carve: A/D turn the board left/right in board space (same both ways
+  // down the beach). Face height follows where the nose points, not which key
+  // was absolute-mapped to "up the face".
   carveYawAngle: { v: 0.68, min: 0.2, max: 1.05, step: 0.01, label: "carve heading angle" },
   yawResponse: { v: 6.5, min: 1, max: 14, step: 0.25, label: "carve heading response" },
-  // Continuous carve: full stick slides the across-face position (0..1) at this
-  // rate/sec, so a committed carve crosses the fall line into a cutback in ~1.1 s
-  // and holding it just parks you on the far line — bounded, never a spin-out.
-  carveTurnRate: { v: 0.95, min: 0.3, max: 2.5, step: 0.05, label: "carve turn rate" },
-  // How firmly a neutral stick eases the line back to the nearest down-line end.
-  yawRecenter: { v: 2.6, min: 0, max: 8, step: 0.1, label: "carve re-center" },
-  carveResponse: { v: 10, min: 1, max: 18, step: 0.25, label: "carve lean response" },
-  carveFaceRange: { v: 6.2, min: 0.5, max: 9, step: 0.1, label: "carve face range" },
+  // Full stick slides across-face heading (0..1)/sec — cutback in ~1 s, then
+  // parks on the opposite down-line without spinning out.
+  carveTurnRate: { v: 1.05, min: 0.3, max: 2.5, step: 0.05, label: "carve turn rate" },
+  // Neutral stick eases back to the nearest down-line end for a clean race line.
+  yawRecenter: { v: 2.2, min: 0, max: 8, step: 0.1, label: "carve re-center" },
+  carveResponse: { v: 8.5, min: 1, max: 18, step: 0.25, label: "face-from-nose response" },
+  carveFaceRange: { v: 5.8, min: 0.5, max: 9, step: 0.1, label: "carve face range" },
 
   // Wave-local rail contact. Neutral runs low enough that the player has to set
   // a high line, while stall assist holds the authored tube center once earned.
@@ -59,18 +59,22 @@ export const SURF_TUNING = tunables("movement.surf", {
   pitchFollow: { v: 1, min: 0, max: 1.5, step: 0.02, label: "pitch follow" },
   pitchResponse: { v: 8, min: 2, max: 18, step: 0.25, label: "pitch response" },
 
-  // automatic wave launch; reachable off a committed high-line pump at the lip
-  launchMinSpeed: { v: 16, min: 7, max: 34, step: 0.5, label: "auto launch speed" },
-  autoLaunchLip: { v: 0.34, min: 0.15, max: 0.9, step: 0.02, label: "auto launch lip" },
-  launchChargeRate: { v: 4.6, min: 0.2, max: 6, step: 0.05, label: "launch charge" },
+  // Lip pop: Space/A ollies when the board is on the lip; W + high line still
+  // auto-charges a launch. Manual pop is intentionally more forgiving.
+  launchMinSpeed: { v: 14, min: 7, max: 34, step: 0.5, label: "launch min speed" },
+  manualLaunchMinSpeed: { v: 11, min: 5, max: 28, step: 0.5, label: "Space pop min speed" },
+  autoLaunchLip: { v: 0.28, min: 0.15, max: 0.9, step: 0.02, label: "auto launch lip" },
+  manualLaunchLip: { v: 0.18, min: 0.05, max: 0.8, step: 0.02, label: "Space pop lip" },
+  manualLaunchCrest: { v: 6.8, min: 3, max: 12, step: 0.1, label: "Space pop crest dist" },
+  launchChargeRate: { v: 5.2, min: 0.2, max: 8, step: 0.05, label: "auto launch charge" },
   launchChargeDecay: { v: 1.1, min: 0, max: 3, step: 0.05, label: "launch decay" },
-  launchFacewardSpeed: { v: 0.25, min: 0, max: 6, step: 0.05, label: "lip approach speed" },
-  // Pop height: enough for a big, readable 360 (~9-11 m apex) without rocketing
-  // the rider so high the follow camera climbs out of the framed sky band.
+  launchFacewardSpeed: { v: 0.2, min: 0, max: 6, step: 0.05, label: "lip approach speed" },
+  // Pop height: readable aerial without flinging the chase cam into the sky.
   launchVelocity: { v: 6.5, min: 2, max: 18, step: 0.2, label: "launch lift" },
   launchSpeedLift: { v: 0.16, min: 0, max: 0.5, step: 0.01, label: "speed lift" },
   launchLipLift: { v: 3.2, min: 0, max: 8, step: 0.1, label: "lip lift" },
-  launchCooldown: { v: 0.85, min: 0.3, max: 4, step: 0.05, label: "launch cooldown" },
+  launchCooldown: { v: 0.75, min: 0.3, max: 4, step: 0.05, label: "launch cooldown" },
+  popBuffer: { v: 0.22, min: 0.05, max: 0.6, step: 0.01, label: "pop input buffer" },
   gravity: { v: 15.5, min: 6, max: 30, step: 0.25, label: "air gravity" },
   airYawStyle: { v: 3.45, min: 0, max: 4.5, step: 0.05, label: "air yaw style" },
   airRollStyle: { v: 0.85, min: 0, max: 1.5, step: 0.02, label: "air roll style" },

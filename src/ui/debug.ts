@@ -35,6 +35,7 @@ import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
 import { TERRAIN_CLIPMAP_TUNING } from "../world/terrainClipmapTuning";
+import { WATER_ECHO_TUNING } from "../world/waterEchoes";
 import type { ContactShadowComplement } from "../render/contactShadows";
 import { OVERLAY_TUNING } from "./overlays/tuning";
 import type { OverlayContextFlags } from "./overlays/manager";
@@ -44,6 +45,7 @@ type DebugRenderPipeline = {
   applyPostFx: () => void;
   applyRadialLightFx: () => void;
   setWireframe: (on: boolean) => void;
+  setWireframeLodGradient: (on: boolean) => void;
   warmupPostFx?: () => Promise<void>;
   contactShadows: Pick<ContactShadowComplement, "configure" | "setEnabled">;
 };
@@ -208,8 +210,22 @@ export class DebugPanel {
         throw err;
       });
     }
-    if (this.#root) this.#root.style.display = this.visible ? "" : "none";
+    this.#applyRootVisibility();
     if (this.visible) this.#onOpen();
+  }
+
+  /**
+   * Keep the completed pane in layout so reopening it does not synchronously
+   * restyle and lay out its large binding tree. Visibility/opacity are paint-
+   * only changes; pointer-events and aria-hidden keep the closed pane inert.
+   */
+  #applyRootVisibility() {
+    if (!this.#root) return;
+    const visible = this.visible;
+    this.#root.style.visibility = visible ? "visible" : "hidden";
+    this.#root.style.opacity = visible ? "1" : "0";
+    this.#root.style.pointerEvents = visible ? "auto" : "none";
+    this.#root.setAttribute("aria-hidden", visible ? "false" : "true");
   }
 
   /** Finish inactive post-FX graphs only when someone opens that folder. */
@@ -476,6 +492,7 @@ export class DebugPanel {
    * not overwritten by the wireframe draw path (see pipeline.setWireframe).
    */
   #applyWireframe(on: boolean) {
+    this.#postfx?.setWireframeLodGradient(RENDER_TUNING.values.wireframeLodGradient);
     this.#postfx?.setWireframe(on);
     this.#wireframeActive = on;
   }
@@ -500,11 +517,11 @@ export class DebugPanel {
 
     const root = document.createElement("div");
     root.style.cssText =
-      "position:fixed;top:12px;right:12px;z-index:40;width:300px;max-height:calc(100vh - 24px);overflow:auto;overscroll-behavior:contain";
-    // Honor current visibility in case "/" was toggled off before the shell landed.
-    root.style.display = this.visible ? "" : "none";
+      "position:fixed;top:12px;right:12px;z-index:40;width:300px;max-height:calc(100vh - 24px);overflow:auto;overscroll-behavior:contain;contain:layout style paint;transition:none";
     document.body.appendChild(root);
     this.#root = root;
+    // Honor current visibility in case "/" was toggled off before the shell landed.
+    this.#applyRootVisibility();
 
     const search = document.createElement("input");
     search.type = "search";
@@ -608,14 +625,6 @@ export class DebugPanel {
       target: lightingView,
       keys: ["timeOfDay", "realTime", "timeRatePercent", "nightBrightness"],
       onChange: onSkyChange
-    });
-
-    this.#wireframeBindings = RENDER_TUNING.bind(meta, {
-      keys: ["wireframe"],
-      onChange: (_key, value) => {
-        if (this.#syncingPane) return;
-        this.#applyWireframe(Boolean(value));
-      }
     });
 
     // Shell + metta are enough to show the pane; yield before the heavy folders.
@@ -756,6 +765,8 @@ export class DebugPanel {
         this.#renderer.setSize(window.innerWidth, window.innerHeight);
       }
     });
+    const waterEchoes = rendering.addFolder({ title: "water echoes", expanded: false });
+    WATER_ECHO_TUNING.bind(waterEchoes, { onChange: () => {} });
     const fog = rendering.addFolder({ title: "fog", expanded: false });
     WORLD_TUNING.bind(fog, {
       keys: [
@@ -799,6 +810,18 @@ export class DebugPanel {
     const terrain = pane.addFolder({ title: "terrain", expanded: false });
     TERRAIN_CLIPMAP_TUNING.bind(terrain, {
       onChange: () => this.#tiles?.terrainClipmap?.applyTuning()
+    });
+
+    // Scene-wide topology inspection: neutral grey remains available, while
+    // the default gradient reveals the near→far resolution falloff.
+    const wireframe = pane.addFolder({ title: "wireframe", expanded: false });
+    this.#wireframeBindings = RENDER_TUNING.bind(wireframe, {
+      keys: ["wireframe", "wireframeLodGradient"],
+      onChange: (key, value) => {
+        if (this.#syncingPane) return;
+        if (key === "wireframe") this.#applyWireframe(Boolean(value));
+        else this.#postfx?.setWireframeLodGradient(Boolean(value));
+      }
     });
 
     // Debug overlays — physics boxes, raycast, and context-sensitive site grids.

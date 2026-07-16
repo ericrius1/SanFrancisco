@@ -63,7 +63,7 @@ export type WildlandsExclusions = {
   groundcover?: (x: number, z: number) => boolean;
   /** Keep authored trees off tees/fairways/greens while retaining rough trees. */
   trees?: (x: number, z: number) => boolean;
-  /** App-wide frame-budget lane used by progressive grass tile construction. */
+  /** App-wide frame-budget lane used to page the player-following foliage field. */
   scheduleGroundcoverBuild?: (job: () => void | "again") => void;
 };
 
@@ -75,10 +75,10 @@ type GroundcoverRenderable = THREE.Object3D & {
 };
 
 /**
- * WebGPU render pipelines are reusable across streamed groundcover objects when
+ * WebGPU render pipelines are reusable across player-following groundcover objects when
  * they share a material and vertex-buffer layout. Instance capacity/count are
- * deliberately excluded: a newly entering grass tile has fresh buffers, but it
- * does not need another shader/pipeline compile for the same layer.
+ * deliberately excluded: grass keeps fixed storage buffers and only its indirect
+ * counts change, so movement never needs another shader/pipeline compile.
  */
 export function groundcoverPipelineLayoutKey(object: THREE.Object3D): string | null {
   const renderable = object as GroundcoverRenderable;
@@ -304,15 +304,13 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
 
   const prepareGroundcoverRoots = async (prepare: NativeTreePrepareUnit): Promise<void> => {
     groundcoverPreparer = prepare;
-    // Await only the nearest completed tile from each additive grass layer.
-    // This gives the destination a dense far→hero surface under the arrival
-    // cover while the optional outer ring keeps streaming after reveal.
+    // Wait for the foliage field and its one atomic four-layer compute pass.
+    // This gives the destination a complete far→hero surface under the cover.
     await grass.whenCriticalReady();
     for (const root of [flowers.group, grass.group]) {
       const units = groundcoverUnits(root);
-      // One detached-root compile warms every distinct material/layout in the
-      // current ring. Later streamed tiles sharing those layouts are admitted
-      // immediately instead of entering a serial compile-and-reveal queue.
+      // One detached-root compile warms every distinct layer material/layout.
+      // Later field pages reuse those fixed pipelines and storage buffers.
       if (await prepareGroundcoverRootPipelines(root, units, prepare, preparedGroundcover)) {
         await yieldToFrame();
       }
@@ -359,8 +357,8 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
       signal?.addEventListener("abort", onAbort, { once: true });
       try {
         // Retarget both destination rings immediately. Flowers update in place;
-        // grass only queues bounded nearest-first jobs, with every completed tile
-        // hidden until the shared preparation registry admits its layout.
+        // grass pages its toroidal field, then publishes all four compacted layers
+        // together after the shared preparation registry admits their layouts.
         flowers.update(focus);
         grass.update(focus);
         for (const unit of groundcoverUnits()) {

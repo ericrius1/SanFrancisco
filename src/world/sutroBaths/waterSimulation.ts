@@ -30,6 +30,7 @@ import {
   SUTRO_BATHS,
   SUTRO_POOLS,
   distanceToSutroWater,
+  isInsideSutroPool,
   poolAtLocal,
   sutroLocalToWorld,
   sutroWorldToLocal
@@ -108,20 +109,7 @@ export type SutroWaterImpulse = {
   foam?: number;
 };
 
-/** True when a WORLD-space point sits inside any of the seven pool rectangles. */
-export function isInsideSutroPool(x: number, z: number): boolean {
-  const local = sutroWorldToLocal(x, z);
-  return poolAtLocal(local.x, local.z, 0) !== null;
-}
-
-/**
- * Flat authored surface height of the pool a WORLD-space point sits in, or NaN
- * when the point is outside every pool. All seven basins share one still-water
- * plane, so this is the single source of truth interaction code samples against.
- */
-export function poolWaterY(x: number, z: number): number {
-  return isInsideSutroPool(x, z) ? SUTRO_BATHS.waterY : Number.NaN;
-}
+export { isInsideSutroPool, poolWaterY } from "./layout";
 
 export type SutroBathsWaterStats = {
   backend: string;

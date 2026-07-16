@@ -10,6 +10,7 @@ export class RendererDiagnostics {
 
   #renderer: THREE.WebGPURenderer;
   #inspector: Inspector | null = null;
+  #inspectorAttached = false;
   #stats = new Stats();
   #style: HTMLStyleElement | null = null;
 
@@ -46,8 +47,12 @@ export class RendererDiagnostics {
 
   dispose(): void {
     this.inspectorOn = false;
-    this.#applyInspector();
+    const backend = this.#renderer.backend as unknown as { trackTimestamp: boolean };
+    backend.trackTimestamp = false;
+    if (this.#inspectorAttached) this.#renderer.inspector = new THREE.InspectorBase();
+    this.#inspectorAttached = false;
     this.#stats.dom.remove();
+    this.#inspector?.domElement.remove();
     this.#style?.remove();
     this.#style = null;
   }
@@ -69,17 +74,22 @@ export class RendererDiagnostics {
         (this.#inspector as unknown as { setRenderer: (value: unknown) => unknown }).setRenderer = (value) =>
           value === null ? this.#inspector : attach(value as THREE.WebGPURenderer);
         this.#renderer.inspector = this.#inspector;
+        this.#inspectorAttached = true;
         this.#inspector.init();
-      } else {
+      } else if (!this.#inspectorAttached) {
         this.#renderer.inspector = this.#inspector;
+        this.#inspectorAttached = true;
       }
       backend.trackTimestamp = true;
       this.#inspector.domElement.style.display = "";
       return;
     }
-    this.#renderer.inspector = new THREE.InspectorBase();
+    // Keep the inspector attached after first use. Replacing renderer.inspector
+    // is a live renderer-state mutation and used to overlap the next frame,
+    // causing a long hitch and a transient atmosphere/fog-free render. Pausing
+    // timestamp collection and hiding its DOM are sufficient; reopening is now
+    // a presentation-only operation and preserves every renderer/game setting.
     backend.trackTimestamp = false;
     if (this.#inspector) this.#inspector.domElement.style.display = "none";
   }
 }
-

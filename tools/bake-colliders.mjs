@@ -34,6 +34,9 @@ const LM_BASE = 100000;
 const meta = JSON.parse(await readFile(new URL("public/data/meta.json", ROOT), "utf8"));
 const lmByTile = new Map();
 let lmBoxes = 0;
+const authoredByTile = new Map();
+const authoredReplacements = new Set();
+let authoredBoxes = 0;
 let nRoadFiltered = 0;
 try {
   const rawLms = JSON.parse(await readFile(new URL("data/landmark-colliders.json", ROOT), "utf8"));
@@ -67,6 +70,42 @@ try {
   console.log("[colliders] no data/landmark-colliders.json — landmarks stay ghost");
 }
 
+// Blender-authored regions publish their collider empties here. These boxes are
+// canonical and intentionally bypass road-overlap filtering: an authored deck,
+// stair, or interior wall may legitimately overlap an OSM road corridor.
+try {
+  const authoredDir = new URL("data/authored-sites/", ROOT);
+  for (const name of (await readdir(authoredDir)).filter((entry) => entry.endsWith(".json")).sort()) {
+    const site = JSON.parse(await readFile(new URL(name, authoredDir), "utf8"));
+    if (site.schema !== 2 || !site.id || !site.tile || !Array.isArray(site.colliders)) {
+      throw new Error(`invalid authored-region collider payload: ${name}`);
+    }
+    for (const replacement of site.replaces ?? []) {
+      authoredReplacements.add(`${replacement.tile}:${replacement.index}`);
+    }
+    const list = authoredByTile.get(site.tile) ?? [];
+    for (const collider of site.colliders) {
+      list.push({
+        i: collider.i,
+        p: 7,
+        x: collider.x,
+        z: collider.z,
+        y: collider.y,
+        hy: collider.hy,
+        hx: collider.hx,
+        hz: collider.hz,
+        yaw: collider.yaw,
+        vol: 1e9,
+        sfSite: site.id
+      });
+      authoredBoxes++;
+    }
+    authoredByTile.set(site.tile, list);
+  }
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+}
+
 let nBuildings = 0;
 let nBoxes = 0;
 let nSplit = 0;
@@ -77,6 +116,7 @@ const written = new Set();
 for (const [key, t] of Object.entries(city.tiles)) {
   const colliders = [];
   for (const b of t.buildings) {
+    if (authoredReplacements.has(`${key}:${b.i}`)) continue;
     const rect = minAreaRect(b.poly);
     if (!rect) continue;
     nBuildings++;
@@ -112,16 +152,26 @@ for (const [key, t] of Object.entries(city.tiles)) {
   }
   const { kept, dropped } = filterRoadOverlappingColliders(colliders, roadClearance);
   nRoadFiltered += dropped.length;
+  const authored = authoredByTile.get(key);
+  if (authored) {
+    kept.push(...authored);
+    authoredByTile.delete(key);
+  }
   await writeFile(new URL(`colliders/tile_${key}.json`, PUB), JSON.stringify(kept));
   written.add(`tile_${key}.json`);
 }
 
-// landmark boxes in tiles city.json doesn't know (e.g. open-water bridge
-// spans) still need a collider file — the streamer fetches by manifest key
-// and tolerates a missing GLB
-for (const [key, extra] of lmByTile) {
-  const { kept, dropped } = filterRoadOverlappingColliders(extra, roadClearance);
+// Landmark or authored boxes in tiles city.json doesn't know (e.g. open-water
+// bridge spans) still need a collider file — the streamer fetches by manifest
+// key and tolerates a missing GLB.
+const remainingKeys = new Set([...lmByTile.keys(), ...authoredByTile.keys()]);
+for (const key of remainingKeys) {
+  const { kept, dropped } = filterRoadOverlappingColliders(
+    lmByTile.get(key) ?? [],
+    roadClearance
+  );
   nRoadFiltered += dropped.length;
+  kept.push(...(authoredByTile.get(key) ?? []));
   await writeFile(new URL(`colliders/tile_${key}.json`, PUB), JSON.stringify(kept));
   written.add(`tile_${key}.json`);
 }
@@ -142,5 +192,5 @@ console.log(
     (100 * (nBoxes - nBuildings)) / nBuildings
   ).toFixed(1)}%), worst rect/poly cover ${worstBefore.toFixed(1)}x -> ${worstAfter.toFixed(
     1
-  )}x, +${lmBoxes} landmark boxes, filtered ${nRoadFiltered} road-overlap boxes, swept ${swept} stale files`
+  )}x, +${lmBoxes} landmark boxes, +${authoredBoxes} authored-region boxes, filtered ${nRoadFiltered} road-overlap boxes, swept ${swept} stale files`
 );

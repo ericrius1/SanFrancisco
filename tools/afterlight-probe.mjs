@@ -39,6 +39,10 @@ const DT = 1 / 30;
 const AFTERLIGHT_CENTER = Object.freeze({ x: 208, z: 2456 });
 const AFTERLIGHT_ARRIVAL = Object.freeze({ x: 208, z: 2472 });
 const MARA_INTERACTION = Object.freeze({ x: 204.4, z: 2463.1 });
+const PARTICIPANT_INTERACTION = Object.freeze({
+  x: AFTERLIGHT_CENTER.x + Math.cos(0.4) * 9.2,
+  z: AFTERLIGHT_CENTER.z + Math.sin(0.4) * 9.2
+});
 const ECHO_LAYOUT = Object.freeze([
   Object.freeze({ x: 171, z: 2444, note: "a low note returns" }),
   Object.freeze({ x: 186, z: 2487, note: "the grove answers" }),
@@ -281,6 +285,12 @@ const frameExpression = (dt) =>
 
 async function tick(cdp, dt = DT) {
   await evaluate(cdp, frameExpression(dt));
+}
+
+async function pressKeyboardE(cdp) {
+  await evaluate(cdp, "window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyE',key:'e',bubbles:true}));true");
+  await tick(cdp, DT);
+  await evaluate(cdp, "window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyE',key:'e',bubbles:true}));true");
 }
 
 async function settle(cdp, frames, dt = 0, gapMs = 25) {
@@ -642,6 +652,82 @@ async function main() {
     idle
   );
   check("map arrival has no dead E affordance", !idle.promptVisible, idle);
+
+  // Claim a real participant through the shared keyboard event path, then
+  // replace navigator.getGamepads with a standard-mapping test pad. Both sticks
+  // must move hands while locomotion and right-stick camera look stay captured;
+  // controller Y then releases through the same KeyE rail as production input.
+  await teleport(cdp, PARTICIPANT_INTERACTION.x, PARTICIPANT_INTERACTION.z, Math.PI);
+  await settle(cdp, 3, DT, 15);
+  const takeoverPrompt = await evaluate(
+    cdp,
+    `(()=>({visible:Boolean(document.querySelector('.afterlight-prompt.show')),copy:document.querySelector('.afterlight-prompt-copy')?.textContent||'',state:window.__sf.afterlight.debugState()}))()`
+  );
+  check(
+    "participant proximity exposes takeover prompt",
+    takeoverPrompt.visible &&
+      takeoverPrompt.copy.includes("take over") &&
+      takeoverPrompt.state.takeover.index == null &&
+      takeoverPrompt.state.takeover.beaconVisible,
+    takeoverPrompt
+  );
+  await pressKeyboardE(cdp);
+  await settle(cdp, 10, DT, 12);
+  const claimed = await evaluate(
+    cdp,
+    `(()=>{const s=window.__sf;return {state:s.afterlight.debugState(),player:[s.player.position.x,s.player.position.z],yaw:s.chase.yaw,localEmbodimentVisible:s.player.meshes.walk.visible};})()`
+  );
+  result.states.takeoverClaimed = claimed;
+  check(
+    "real E input claims the nearest participant",
+    claimed.state.takeover.index === 0 &&
+      claimed.state.takeover.playerEmbodied &&
+      claimed.state.takeover.observerOffset > 1.5 &&
+      claimed.state.takeover.beaconVisible &&
+      !claimed.localEmbodimentVisible &&
+      claimed.state.takeover.web?.solver === "verlet" &&
+      claimed.state.takeover.web?.nodes >= 2132 &&
+      claimed.state.takeover.web?.detailMultiplier >= 4,
+    claimed
+  );
+  await evaluate(
+    cdp,
+    `(()=>{window.__afterlightOriginalGetGamepads=navigator.getGamepads?.bind(navigator);window.__afterlightPad={axes:[-0.82,-0.62,0.76,-0.55],buttons:Array.from({length:16},()=>({pressed:false,value:0}))};Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[{id:'Afterlight QA pad',index:0,connected:true,mapping:'standard',timestamp:performance.now(),axes:window.__afterlightPad.axes,buttons:window.__afterlightPad.buttons,vibrationActuator:null,hapticActuators:[]}]});return true;})()`
+  );
+  await settle(cdp, 18, DT, 0);
+  const padDriven = await evaluate(
+    cdp,
+    `(()=>{const s=window.__sf;return {state:s.afterlight.debugState(),player:[s.player.position.x,s.player.position.z],yaw:s.chase.yaw,device:s.input.device};})()`
+  );
+  result.states.takeoverPadDriven = padDriven;
+  check(
+    "controller sticks drive hands while body and camera stay captured",
+    padDriven.device === "pad" &&
+      padDriven.state.takeover.index === 0 &&
+      padDriven.state.takeover.motion > 0.04 &&
+      Math.hypot(padDriven.player[0] - claimed.player[0], padDriven.player[1] - claimed.player[1]) < 0.08 &&
+      Math.abs(padDriven.yaw - claimed.yaw) < 0.002,
+    { claimed, padDriven }
+  );
+  await evaluate(cdp, "window.__afterlightPad.axes=[0,0,0,0];window.__afterlightPad.buttons[3]={pressed:true,value:1};true");
+  await tick(cdp, DT);
+  const released = await evaluate(
+    cdp,
+    `(()=>{const s=window.__sf;return {state:s.afterlight.debugState(),localEmbodimentVisible:s.player.meshes.walk.visible};})()`
+  );
+  result.states.takeoverReleased = released;
+  check(
+    "controller Y releases and restores the exploring avatar",
+    released.state.takeover.index == null &&
+      !released.state.takeover.playerEmbodied &&
+      released.localEmbodimentVisible,
+    released
+  );
+  await evaluate(
+    cdp,
+    `(()=>{window.__afterlightPad.buttons[3]={pressed:false,value:0};if(window.__afterlightOriginalGetGamepads)Object.defineProperty(navigator,'getGamepads',{configurable:true,value:window.__afterlightOriginalGetGamepads});delete window.__afterlightPad;delete window.__afterlightOriginalGetGamepads;return true;})()`
+  );
+
   await teleport(cdp, MARA_INTERACTION.x, MARA_INTERACTION.z, 0);
   await settle(cdp, 3, DT, 15);
   const maraPrompt = await evaluate(

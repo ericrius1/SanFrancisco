@@ -22,12 +22,18 @@ import {
 import type { WorldMap } from "./heightmap";
 import {
   createTerrainClipmapLayout,
+  createTerrainClipmapSourceGridCenter,
   terrainClipmapCenter,
   terrainClipmapTriangleCount,
   terrainClipmapVertexCount,
   type TerrainClipmapLevelLayout
 } from "./terrainClipmapLayout";
 import { TERRAIN_CLIPMAP_TUNING } from "./terrainClipmapTuning";
+import {
+  createTerrainDetailTextureData,
+  createTerrainNormalMipData,
+  createTerrainSurfaceMipData
+} from "./terrainMaterialData";
 
 // TSL's composed node types become unwieldy across texture-stage operations;
 // the project uses this local alias for shader graphs while retaining typed
@@ -74,6 +80,8 @@ export type TerrainClipmapStats = {
   vertices: number;
   triangles: number;
   nearSpacing: number;
+  activeNearSpacing: number;
+  adaptiveMeterMesh: boolean;
   farSpacing: number;
   coverageRadius: number;
   centerX: number;
@@ -81,6 +89,7 @@ export type TerrainClipmapStats = {
   buildMs: number;
   geometryBytes: number;
   heightTextureBytes: number;
+  normalTextureBytes: number;
   surfaceTextureBytes: number;
 };
 
@@ -88,6 +97,11 @@ type HeightTextureData = {
   texture: THREE.DataTexture;
   min: number;
   range: number;
+  bytes: number;
+};
+
+type FilteredTextureData = {
+  texture: THREE.DataTexture;
   bytes: number;
 };
 
@@ -253,45 +267,14 @@ function createHeightTexture(map: WorldMap): HeightTextureData {
   return { texture: textureData, min, range, bytes };
 }
 
-function createSurfaceTexture(map: WorldMap): { texture: THREE.DataTexture; bytes: number } {
-  let width = map.meta.grid.width;
-  let height = map.meta.grid.height;
-  let data = new Uint8Array(map.surface.length * 4);
-  for (let i = 0; i < map.surface.length; i++) {
-    // Class 4 is the separately rendered road mask; its underlying terrain is
-    // developed ground, never water (clamping 4 to 3 would tint roads as bay).
-    const surface = map.surface[i] === 4 ? 0 : Math.max(0, Math.min(3, map.surface[i]));
-    data[i * 4 + surface] = 255;
-  }
-  const mipmaps: { data: Uint8Array; width: number; height: number }[] = [];
-  let bytes = 0;
-  for (let level = 0; level < HEIGHT_MIP_LEVELS; level++) {
-    mipmaps.push({ data, width, height });
-    bytes += data.byteLength;
-    if (width === 1 && height === 1) break;
-    const nextWidth = Math.max(1, Math.floor(width / 2));
-    const nextHeight = Math.max(1, Math.floor(height / 2));
-    const next = new Uint8Array(nextWidth * nextHeight * 4);
-    for (let y = 0; y < nextHeight; y++) {
-      const y0 = y * 2;
-      const y1 = Math.min(height - 1, y0 + 1);
-      for (let x = 0; x < nextWidth; x++) {
-        const x0 = x * 2;
-        const x1 = Math.min(width - 1, x0 + 1);
-        for (let channel = 0; channel < 4; channel++) {
-          next[(y * nextWidth + x) * 4 + channel] = Math.round((
-            data[(y0 * width + x0) * 4 + channel] +
-            data[(y0 * width + x1) * 4 + channel] +
-            data[(y1 * width + x0) * 4 + channel] +
-            data[(y1 * width + x1) * 4 + channel]
-          ) * 0.25);
-        }
-      }
-    }
-    data = next;
-    width = nextWidth;
-    height = nextHeight;
-  }
+function createSurfaceTexture(map: WorldMap): FilteredTextureData {
+  const { width, height } = map.meta.grid;
+  const { mipmaps, bytes } = createTerrainSurfaceMipData(
+    map.surface,
+    width,
+    height,
+    HEIGHT_MIP_LEVELS
+  );
   const base = mipmaps[0];
   const textureData = new THREE.DataTexture(
     base.data,
@@ -310,22 +293,36 @@ function createSurfaceTexture(map: WorldMap): { texture: THREE.DataTexture; byte
   return { texture: textureData, bytes };
 }
 
-function hashByte(x: number, y: number, salt: number): number {
-  let h = Math.imul(x + salt, 0x45d9f3b) ^ Math.imul(y - salt, 0x119de1f3);
-  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
-  return (h ^ (h >>> 16)) & 255;
+function createNormalTexture(map: WorldMap): FilteredTextureData {
+  const { width, height, cellSize } = map.meta.grid;
+  const { mipmaps, bytes } = createTerrainNormalMipData(
+    map.heights,
+    width,
+    height,
+    cellSize,
+    HEIGHT_MIP_LEVELS
+  );
+  const base = mipmaps[0];
+  const textureData = new THREE.DataTexture(
+    base.data,
+    base.width,
+    base.height,
+    THREE.RGFormat,
+    THREE.UnsignedByteType
+  );
+  textureData.mipmaps = mipmaps;
+  textureData.magFilter = THREE.LinearFilter;
+  textureData.minFilter = THREE.LinearMipmapLinearFilter;
+  textureData.generateMipmaps = false;
+  textureData.wrapS = textureData.wrapT = THREE.ClampToEdgeWrapping;
+  textureData.needsUpdate = true;
+  textureData.name = "terrainNormalPyramid";
+  return { texture: textureData, bytes };
 }
 
 function createDetailTexture(): THREE.DataTexture {
   const size = 256;
-  const data = new Uint8Array(size * size * 2);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 2;
-      data[i] = hashByte(x, y, 17);
-      data[i + 1] = hashByte(x, y, 83);
-    }
-  }
+  const data = createTerrainDetailTextureData(size);
   const textureData = new THREE.DataTexture(data, size, size, THREE.RGFormat, THREE.UnsignedByteType);
   textureData.magFilter = THREE.LinearFilter;
   textureData.minFilter = THREE.LinearMipmapLinearFilter;
@@ -400,9 +397,11 @@ export class TerrainClipmap {
 
   readonly #layout = createTerrainClipmapLayout();
   readonly #levelMeshes: TerrainLevelMesh[] = [];
+  readonly #sourceGridCenter: TerrainLevelMesh;
   readonly #materials: THREE.MeshStandardNodeMaterial[] = [];
   readonly #height: HeightTextureData;
-  readonly #surface: { texture: THREE.DataTexture; bytes: number };
+  readonly #normal: FilteredTextureData;
+  readonly #surface: FilteredTextureData;
   readonly #detailTexture = createDetailTexture();
   readonly #bounds: TerrainHeightBounds;
   readonly #grid: WorldMap["meta"]["grid"];
@@ -424,12 +423,14 @@ export class TerrainClipmap {
   #geometryBytes = 0;
   #centerX = Number.NaN;
   #centerZ = Number.NaN;
+  #adaptiveMeterMesh = TERRAIN_CLIPMAP_TUNING.values.adaptiveMeterMesh;
 
   constructor(map: WorldMap) {
     const buildStarted = performance.now();
     this.group.name = "terrainClipmap";
     this.#grid = map.meta.grid;
     this.#height = createHeightTexture(map);
+    this.#normal = createNormalTexture(map);
     this.#surface = createSurfaceTexture(map);
     this.#bounds = new TerrainHeightBounds(map);
 
@@ -446,6 +447,20 @@ export class TerrainClipmap {
       this.#levelMeshes.push({ mesh, geometry, level });
       this.group.add(mesh);
     }
+    // Keep an 8 m source-lattice centre resident for an instantaneous visual
+    // A/B. Only this mesh or the adaptive 1/2/4/8 m inner levels is visible at
+    // once, so the comparison changes real topology without recompiling TSL.
+    const sourceGridLevel = createTerrainClipmapSourceGridCenter();
+    const sourceGridGeometry = createLevelGeometry(sourceGridLevel);
+    this.#geometryBytes += sourceGridGeometry.getAttribute("position").array.byteLength;
+    this.#geometryBytes += sourceGridGeometry.index?.array.byteLength ?? 0;
+    const sourceGridMesh = new THREE.Mesh(sourceGridGeometry, this.#materials[sourceGridLevel.level]);
+    sourceGridMesh.name = "terrainClipmapSourceGridCenter";
+    sourceGridMesh.receiveShadow = true;
+    sourceGridMesh.castShadow = false;
+    sourceGridMesh.visible = false;
+    this.#sourceGridCenter = { mesh: sourceGridMesh, geometry: sourceGridGeometry, level: sourceGridLevel };
+    this.group.add(sourceGridMesh);
     this.#buildMs = performance.now() - buildStarted;
   }
 
@@ -476,12 +491,17 @@ export class TerrainClipmap {
     return mix(mix(h00, h10, blend.x), mix(h01, h11, blend.x), blend.y);
   }
 
-  #heightNormalAt(worldXZ: N, sourceLod: number, sampleStep: number): N {
-    const hL = this.#heightAt(worldXZ.sub(vec2(sampleStep, 0)), sourceLod);
-    const hR = this.#heightAt(worldXZ.add(vec2(sampleStep, 0)), sourceLod);
-    const hD = this.#heightAt(worldXZ.sub(vec2(0, sampleStep)), sourceLod);
-    const hU = this.#heightAt(worldXZ.add(vec2(0, sampleStep)), sourceLod);
-    return normalize(vec3(hL.sub(hR), sampleStep * 2, hD.sub(hU)));
+  #normalAt(worldXZ: N, sourceLod: number): N {
+    const grid = this.#grid;
+    const texel = worldXZ
+      .sub(vec2(grid.minX, grid.minZ))
+      .div(grid.cellSize)
+      .add(0.5);
+    const uv = texel.div(vec2(grid.width, grid.height));
+    const packed = (texture(this.#normal.texture, uv) as N).level(float(sourceLod));
+    const xz = packed.rg.mul(2).sub(1);
+    const y = float(1).sub(xz.dot(xz)).max(0).sqrt();
+    return normalize(vec3(xz.x, y, xz.y));
   }
 
   /** Fragment visibility for one oriented authored-site handoff rectangle. */
@@ -522,19 +542,19 @@ export class TerrainClipmap {
     }
     material.positionNode = vec3(local.x, renderedHeight, local.z);
 
-    // A central difference of the same canonical height function is evaluated
-    // once per vertex and interpolated for fragments. Near rings use a 4 m
-    // kernel to smooth the 8 m source derivative without blurring geometry.
-    const normalStep = Math.max(4, level.spacing);
-    const fineNormal = this.#heightNormalAt(worldXZ, level.sourceLod, normalStep);
+    // Normals come from a prefiltered world-space pyramid. Sampling them in the
+    // fragment stage and normalizing after LOD blending prevents both triangle
+    // facets and 8 m source-cell derivative seams from entering lighting or the
+    // slope-driven material mask.
+    const fineNormal = this.#normalAt(worldXZ, level.sourceLod);
     const renderedNormal = parent
       ? (mix(
         fineNormal,
-        this.#heightNormalAt(worldXZ, parent.sourceLod, Math.max(4, parent.spacing)),
+        this.#normalAt(worldXZ, parent.sourceLod),
         morph
       ) as N).normalize()
       : fineNormal;
-    const worldNormal = vertexStage(renderedNormal) as N;
+    const worldNormal = (renderedNormal as N).normalize();
     material.normalNode = transformNormalToView(worldNormal);
 
     const grid = this.#grid;
@@ -544,9 +564,8 @@ export class TerrainClipmap {
       .add(0.5)
       .div(vec2(grid.width, grid.height));
     // Terrain classification is authored on the same 8 m source lattice as
-    // height. Sample it once per terrain vertex, then let raster interpolation
-    // do the per-pixel blend. This removes a full-screen texture read while the
-    // dense near rings still resolve class boundaries far above source detail.
+    // height, but the uploaded base is Gaussian-feathered by one source cell.
+    // Fragment sampling keeps class transitions independent of mesh triangles.
     const fineSurfaceSample = (texture(this.#surface.texture, surfaceUv) as N)
       .level(float(level.sourceLod));
     let renderedSurfaceSample: N = fineSurfaceSample;
@@ -555,7 +574,7 @@ export class TerrainClipmap {
         .level(float(parent.sourceLod));
       renderedSurfaceSample = mix(fineSurfaceSample, parentSurfaceSample, morph);
     }
-    const surfaceSample = vertexStage(renderedSurfaceSample) as N;
+    const surfaceSample = renderedSurfaceSample as N;
     const surfaceWeight = surfaceSample.r
       .add(surfaceSample.g)
       .add(surfaceSample.b)
@@ -571,11 +590,15 @@ export class TerrainClipmap {
       .add(grass.mul(surface.g))
       .add(sand.mul(surface.b))
       .add(bayFloor.mul(surface.a));
-    const slopeRock = smoothstep(0.82, 0.42, worldNormal.y)
+    const slopeRock = smoothstep(0.42, 0.82, worldNormal.y).oneMinus()
       .mul(surface.a.oneMinus())
       .mul(surface.b.oneMinus());
-    const altitudeRock = smoothstep(105, 185, (positionWorld as N).y)
-      .mul(0.55)
+    // Altitude may strengthen rock on shoulders, but no longer paints a broad
+    // grey slab across every flat hilltop between 105 and 185 metres.
+    const shoulderRock = smoothstep(0.66, 0.9, worldNormal.y).oneMinus();
+    const altitudeRock = smoothstep(125, 210, (positionWorld as N).y)
+      .mul(shoulderRock)
+      .mul(0.18)
       .mul(surface.a.oneMinus());
     terrainColor = mix(terrainColor, rock, (slopeRock as N).max(altitudeRock));
 
@@ -583,7 +606,9 @@ export class TerrainClipmap {
     // exceeds the source terrain's useful frequency, while avoiding two repeat
     // texture samples for every covered pixel. Explicit levels keep vertex-stage
     // sampling legal and progressively band-limit the coarser rings.
-    const detailUv = worldXZ.mul(1 / (18 * 256));
+    // The macro channel is a wrapped, prefiltered field at four metres/texel.
+    // Unlike the old 18 m independent hash cells it has no bilinear quilt.
+    const detailUv = worldXZ.mul(1 / (4 * 256));
     const macroLod = Math.max(0, level.level - 4);
     const fineMacroSample = (texture(this.#detailTexture, detailUv) as N)
       .level(float(macroLod));
@@ -669,7 +694,7 @@ export class TerrainClipmap {
     this.#centerZ = centerZ;
     this.#center.value.set(centerX, centerZ);
 
-    for (const entry of this.#levelMeshes) {
+    for (const entry of [...this.#levelMeshes, this.#sourceGridCenter]) {
       const halfExtent = entry.level.halfExtent;
       entry.mesh.position.set(centerX, 0, centerZ);
       const bounds = this.#bounds.query(
@@ -678,7 +703,11 @@ export class TerrainClipmap {
         centerZ - halfExtent,
         centerZ + halfExtent
       );
-      entry.mesh.visible = bounds !== null;
+      const isSourceGridCenter = entry === this.#sourceGridCenter;
+      const hiddenAdaptiveInnerLevel = !this.#adaptiveMeterMesh && entry.level.level <= 3;
+      entry.mesh.visible = bounds !== null && (
+        isSourceGridCenter ? !this.#adaptiveMeterMesh : !hiddenAdaptiveInnerLevel
+      );
       if (!bounds) continue;
       const box = entry.geometry.boundingBox ?? new THREE.Box3();
       box.min.set(-halfExtent, bounds.min, -halfExtent);
@@ -690,10 +719,20 @@ export class TerrainClipmap {
   }
 
   applyTuning(): void {
+    this.setAdaptiveMeterMesh(TERRAIN_CLIPMAP_TUNING.values.adaptiveMeterMesh);
     this.#morphBand.value = TERRAIN_CLIPMAP_TUNING.values.morphBand;
     this.#macroVariation.value = TERRAIN_CLIPMAP_TUNING.values.macroVariation;
     this.#microVariation.value = TERRAIN_CLIPMAP_TUNING.values.microVariation;
     this.setLevelDebug(TERRAIN_CLIPMAP_TUNING.values.debugLevels);
+  }
+
+  /** Switch between the adaptive 1 m near mesh and a direct 8 m source-grid mesh. */
+  setAdaptiveMeterMesh(enabled: boolean): void {
+    if (enabled === this.#adaptiveMeterMesh) return;
+    this.#adaptiveMeterMesh = enabled;
+    if (Number.isFinite(this.#centerX) && Number.isFinite(this.#centerZ)) {
+      this.update(this.#centerX, this.#centerZ, true);
+    }
   }
 
   /** Runtime/probe override; persisted UI changes still flow through applyTuning. */
@@ -709,6 +748,8 @@ export class TerrainClipmap {
       vertices: terrainClipmapVertexCount(this.#layout),
       triangles: terrainClipmapTriangleCount(this.#layout),
       nearSpacing: this.#layout[0].spacing,
+      activeNearSpacing: this.#adaptiveMeterMesh ? this.#layout[0].spacing : this.#sourceGridCenter.level.spacing,
+      adaptiveMeterMesh: this.#adaptiveMeterMesh,
       farSpacing: this.#layout.at(-1)!.spacing,
       coverageRadius: this.#layout.at(-1)!.halfExtent,
       centerX: this.#centerX,
@@ -716,14 +757,17 @@ export class TerrainClipmap {
       buildMs: Number(this.#buildMs.toFixed(2)),
       geometryBytes: this.#geometryBytes,
       heightTextureBytes: this.#height.bytes,
+      normalTextureBytes: this.#normal.bytes,
       surfaceTextureBytes: this.#surface.bytes
     };
   }
 
   dispose(): void {
     for (const entry of this.#levelMeshes) entry.geometry.dispose();
+    this.#sourceGridCenter.geometry.dispose();
     for (const material of this.#materials) material.dispose();
     this.#height.texture.dispose();
+    this.#normal.texture.dispose();
     this.#surface.texture.dispose();
     this.#detailTexture.dispose();
     this.group.clear();

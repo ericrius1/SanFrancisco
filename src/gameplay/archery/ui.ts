@@ -35,7 +35,6 @@ const STYLE = `
   background: var(--surface-strong);
   border: 1px solid var(--hairline-2);
   box-shadow: var(--shadow-sm), var(--edge-hi);
-  backdrop-filter: blur(var(--blur));
   opacity: 0;
   transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
   pointer-events: none;
@@ -106,7 +105,6 @@ const STYLE = `
   background: var(--surface-strong);
   border: 1px solid var(--hairline-2);
   box-shadow: var(--shadow-sm), var(--edge-hi);
-  backdrop-filter: blur(var(--blur));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -134,7 +132,6 @@ const STYLE = `
   border-radius: var(--r-sm);
   background: var(--surface);
   border: 1px solid var(--hairline);
-  backdrop-filter: blur(var(--blur));
   font: 600 11px var(--font);
   color: rgba(233, 244, 250, 0.8);
 }
@@ -148,7 +145,6 @@ const STYLE = `
   background: var(--surface-strong);
   border: 1px solid var(--hairline-2);
   box-shadow: var(--shadow-sm), var(--edge-hi);
-  backdrop-filter: blur(var(--blur));
   font: 800 26px var(--font);
   letter-spacing: 0.03em;
   opacity: 0;
@@ -168,10 +164,9 @@ const STYLE = `
   padding: 9px 15px;
   border-radius: var(--r-md);
   color: rgba(242, 249, 252, 0.96);
-  background: rgba(9, 22, 34, 0.78);
+  background: #091622;
   border: 1px solid var(--hairline-2);
   box-shadow: var(--shadow-sm), var(--edge-hi);
-  backdrop-filter: blur(var(--blur));
   font: 700 14px var(--font);
   letter-spacing: 0.01em;
   opacity: 0;

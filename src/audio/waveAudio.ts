@@ -1,6 +1,6 @@
 // Ocean wave audio — a reusable environmental layer for anywhere the world has
 // breaking or lapping water. It rides the shared NatureSoundscape AudioContext
-// (voiceBus) so it respects the HUD FX volume/mute and the browser's one-context
+// (voiceBus) so it respects the HUD World volume/mute and the browser's one-context
 // budget, and it keeps that context awake while the player is near water.
 //
 // Two voices, both driven by a single `energy` signal (0 calm … 1 heavy surf):
@@ -84,15 +84,15 @@ export class WaveAudio {
     if (this.#ready) return this.#ctx;
     const vb = this.#nature.voiceBus();
     if (!vb) return null;
-    const { ctx, alwaysBus, reverbSend, noise } = vb;
+    const { ctx, worldBus, worldReverbSend, noise } = vb;
     this.#ctx = ctx;
     this.#noise = noise;
-    this.#reverb = reverbSend;
+    this.#reverb = worldReverbSend;
     // Waves ride the presence-independent bus: the sea is heard at the coast even
     // when the inland nature bed has faded out.
     const out = ctx.createGain();
     out.gain.value = 1;
-    out.connect(alwaysBus);
+    out.connect(worldBus);
     this.#out = out;
 
     // continuous wash: looped noise through a gentle low/band shelf

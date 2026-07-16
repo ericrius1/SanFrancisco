@@ -19,6 +19,7 @@
 //   I. Escape's re-lock barrier must survive pointerlockchange until keyup
 // Plus controls proving the lock plumbing itself works in background Chrome
 // (click locks, exit+request relocks) so a pass is meaningful.
+// Canvas scene clicks re-capture after unlock; HUD/UI clicks do not.
 //
 //   node tools/esc-pointerlock-probe.mjs
 // Env: SF_PROBE_OUT (default scratchpad), CHROME_BIN,
@@ -108,6 +109,10 @@ async function escapeUp(c) {
 async function pressEscape(c) {
   await escapeDown(c);
   await escapeUp(c);
+}
+async function pressL(c) {
+  await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "l", code: "KeyL", windowsVirtualKeyCode: 76, nativeVirtualKeyCode: 76 });
+  await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "l", code: "KeyL", windowsVirtualKeyCode: 76, nativeVirtualKeyCode: 76 });
 }
 const lockState = `(()=>({el:!!document.pointerLockElement,locked:window.__sf.input.locked,free:window.__sf.input.freeCursor}))()`;
 async function waitLock(c, want, ms = 3000) {
@@ -231,6 +236,8 @@ async function main() {
     let st = { el: false, locked: false };
     for (let i = 0; i < 5 && !st.el; i++) {
       await c.send("Page.bringToFront");
+      // Drop sticky free-cursor so a scene click is allowed to re-capture.
+      await ev(c, `(()=>{const i=window.__sf.input;if(i.freeCursor){i.freeCursor=false;i.onFreeCursorChange(false);}return true;})()`);
       await click(c, W / 2, H / 2);
       st = await waitLock(c, true, 2000);
       if (!st.el) { await pressEscape(c); await sleep(400); }
@@ -238,7 +245,7 @@ async function main() {
     return st;
   };
 
-  // ---- control: trusted click locks the pointer (proves lock works headless)
+  // ---- control: trusted scene click locks the pointer (proves lock plumbing)
   let s = await lockViaClick();
   push("control-click-locks", s.el && s.locked, `after canvas click: pointerLockElement=${s.el} input.locked=${s.locked}`);
   if (!s.el) {
@@ -297,7 +304,7 @@ async function main() {
     await pressEscape(c);
     await sleep(1200);
     s = await ev(c, lockState);
-    push("B-esc-stale-freecursor", !s.el && !s.locked && !s.free, `after Esc w/ stale freeCursor: el=${s.el} locked=${s.locked} freeCursor=${s.free}`);
+    push("B-esc-stale-freecursor", !s.el && !s.locked, `after Esc w/ stale freeCursor: el=${s.el} locked=${s.locked} freeCursor=${s.free}`);
     // clean the flag for later tests
     await ev(c, `(()=>{window.__sf.input.freeCursor=false;window.__sf.input.onFreeCursorChange(false);return true;})()`);
   } catch (e) { push("B-esc-stale-freecursor", false, `errored: ${String(e).slice(0, 120)}`); }

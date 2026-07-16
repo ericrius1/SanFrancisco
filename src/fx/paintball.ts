@@ -17,6 +17,35 @@ const Z_AXIS = new THREE.Vector3(0, 0, 1);
 
 export const PAINTBALL_SPEED = 52;
 
+export type PaintWaterImpact = {
+  x: number;
+  y: number;
+  z: number;
+  velocityX: number;
+  velocityY: number;
+  velocityZ: number;
+  r: number;
+  g: number;
+  b: number;
+  shooter: number;
+};
+
+export type PaintWaterSegment = {
+  fromX: number;
+  fromY: number;
+  fromZ: number;
+  toX: number;
+  toY: number;
+  toZ: number;
+  velocityX: number;
+  velocityY: number;
+  velocityZ: number;
+  r: number;
+  g: number;
+  b: number;
+  shooter: number;
+};
+
 // Entity kinds whose paint hit becomes a decal stuck to the real mesh (a
 // PaintSkin), rather than a world graffiti burst. Kept here so the collision
 // branch reads clearly.
@@ -36,6 +65,36 @@ type Ball = {
   shooter: number;
 };
 
+export type PaintImpactMaterial =
+  | "concrete"
+  | "wood"
+  | "metal"
+  | "foliage"
+  | "fabric"
+  | "water"
+  | "generic";
+
+export type PaintImpactEvent = {
+  x: number;
+  y: number;
+  z: number;
+  material: PaintImpactMaterial;
+  speed: number;
+  r: number;
+  g: number;
+  b: number;
+  shooter: number;
+};
+
+const impactMaterial = (kind: string): PaintImpactMaterial => {
+  if (kind === "water") return "water";
+  if (kind === "vehicle" || kind === "mount") return "metal";
+  if (kind === "avatar" || kind === "player" || kind === "creature") return "fabric";
+  if (kind === "tree") return "wood";
+  if (kind === "building" || kind === "terrain") return "concrete";
+  return kind === "prop" ? "wood" : "generic";
+};
+
 /**
  * Paintballs: kinematic blobs of paint that actually fly — no physics bodies,
  * just a ballistic integrate + a per-step cast through the shared WorldQueries
@@ -48,8 +107,12 @@ type Ball = {
  */
 export class Paintballs {
   mesh: THREE.InstancedMesh;
-  /** Wall/ground impact hook (world splat + net-free extras like audio). */
-  onWater: (x: number, y: number, z: number) => void = () => {};
+  /** Water owns the visual response; paint color and momentum stay intact. */
+  onWater: (impact: PaintWaterImpact) => void = () => {};
+  /** Lazy authored water can consume the flight before hidden terrain wins. */
+  onWaterSegment: (segment: Readonly<PaintWaterSegment>) => boolean = () => false;
+  /** Presentation hook for local spatial audio; simulation remains net-safe. */
+  onImpact: (event: PaintImpactEvent) => void = () => {};
 
   #balls: Ball[] = [];
   #tint: THREE.InstancedBufferAttribute;
@@ -63,6 +126,21 @@ export class Paintballs {
   #ray = new THREE.Raycaster();
   #hits: THREE.Intersection[] = [];
   #normalMatrix = new THREE.Matrix3();
+  #waterSegment: PaintWaterSegment = {
+    fromX: 0,
+    fromY: 0,
+    fromZ: 0,
+    toX: 0,
+    toY: 0,
+    toZ: 0,
+    velocityX: 0,
+    velocityY: 0,
+    velocityZ: 0,
+    r: 0,
+    g: 0,
+    b: 0,
+    shooter: 0
+  };
 
   constructor(scene: THREE.Scene) {
     const geo = new THREE.SphereGeometry(BALL_RADIUS, 12, 8);
@@ -116,6 +194,28 @@ export class Paintballs {
         this.#pos.set(ball.x, ball.y, ball.z);
         this.#dir.set(stepX / stepLen, stepY / stepLen, stepZ / stepLen);
         const hit = queries.raycast(this.#pos, this.#dir, stepLen, { ignoreId: ball.shooter });
+        // Race lazy authored water against the nearest ordinary collision. If
+        // terrain/rock/entity wins first, the segment is truncated at that hit;
+        // otherwise the complete ballistic step is tested. The callback owns
+        // the exact surface solve and fluid response without adding a proxy box.
+        const segment = this.#waterSegment;
+        segment.fromX = ball.x;
+        segment.fromY = ball.y;
+        segment.fromZ = ball.z;
+        segment.toX = hit?.point.x ?? ball.x + stepX;
+        segment.toY = hit?.point.y ?? ball.y + stepY;
+        segment.toZ = hit?.point.z ?? ball.z + stepZ;
+        segment.velocityX = ball.vx;
+        segment.velocityY = ball.vy;
+        segment.velocityZ = ball.vz;
+        segment.r = ball.r;
+        segment.g = ball.g;
+        segment.b = ball.b;
+        segment.shooter = ball.shooter;
+        if (this.onWaterSegment(segment)) {
+          this.#balls.splice(i, 1);
+          continue;
+        }
         if (hit) {
           if (hit.object && SKINNABLE.has(hit.kind)) {
             // paint sticks to the moving mesh — refine the proxy hit to the exact
@@ -141,14 +241,47 @@ export class Paintballs {
               this.#nrm.copy(hit.normal);
             }
             skins.stamp(hit.object, this.#hit, this.#nrm, ball.r, ball.g, ball.b, 0.55);
+            this.onImpact({
+              x: this.#hit.x,
+              y: this.#hit.y,
+              z: this.#hit.z,
+              material: impactMaterial(hit.kind),
+              speed: Math.hypot(ball.vx, ball.vy, ball.vz),
+              r: ball.r,
+              g: ball.g,
+              b: ball.b,
+              shooter: ball.shooter
+            });
             this.#balls.splice(i, 1);
             continue;
           }
           if (hit.kind === "water") {
-            this.onWater(hit.point.x, hit.point.y, hit.point.z);
+            this.onWater({
+              x: hit.point.x,
+              y: hit.point.y,
+              z: hit.point.z,
+              velocityX: ball.vx,
+              velocityY: ball.vy,
+              velocityZ: ball.vz,
+              r: ball.r,
+              g: ball.g,
+              b: ball.b,
+              shooter: ball.shooter
+            });
           } else {
             graffiti.burst(hit.point, hit.normal, TMP_COLOR.setRGB(ball.r, ball.g, ball.b));
           }
+          this.onImpact({
+            x: hit.point.x,
+            y: hit.point.y,
+            z: hit.point.z,
+            material: impactMaterial(hit.kind),
+            speed: Math.hypot(ball.vx, ball.vy, ball.vz),
+            r: ball.r,
+            g: ball.g,
+            b: ball.b,
+            shooter: ball.shooter
+          });
           this.#balls.splice(i, 1);
           continue;
         }

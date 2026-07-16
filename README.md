@@ -122,9 +122,10 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
   Teleport to **Presidio Golf · Hole 1**, or find any glowing tee and press `E`.
   Aim with the camera, clubs with `1`–`9`, hold/release click to swing; `G`
   twice abandons a round. Ball and score state are shared online.
-- **Wildlands** — chunked unified groves across Golden Gate Park, the Presidio,
-  Marin Headlands, Mount Sutro / Buena Vista, with player-following wildflower
-  and grass rings.
+- **Wildlands** — chunk-resident four-tier native groves across Golden Gate Park,
+  the Presidio, Marin Headlands and Mount Sutro / Buena Vista, with a fixed
+  high-detail tree pool, player-following wildflowers, and grass generated on
+  WebGPU from a paged height/density/species field into four indirect draws.
 - **Skyline landmarks** — Golden Gate, Bay Bridge, Transamerica, Salesforce
   Tower, Coit Tower, the Ferry Building, Sutro Tower, the Palace of Fine Arts,
   Alcatraz — plus floating balloon islands if you can reach them.

@@ -204,12 +204,12 @@ export class TeaGardenRakeAudio {
 
     this.#dry = ctx.createGain();
     this.#dry.gain.value = 0;
-    // The rake is an environmental FX layer independent of the wildlife/bed
-    // enable switch, so it rides alwaysBus (HUD FX/mute + visibility) like water.
+    // The rake is player-action feedback independent of the wildlife/bed
+    // enable switch, so it rides alwaysBus (HUD FX/mute + visibility).
     this.#dry.connect(io.alwaysBus);
     this.#wet = ctx.createGain();
     this.#wet.gain.value = 0;
-    this.#wet.connect(io.reverbSend);
+    this.#wet.connect(io.effectsReverbSend);
 
     this.#panner = ctx.createPanner();
     this.#panner.panningModel = "HRTF";

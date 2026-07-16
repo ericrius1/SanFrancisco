@@ -35,6 +35,16 @@ const CENTROID = `(() => {
   const sf = window.__sf, THREE = sf.THREE, m4 = new THREE.Matrix4(), p = new THREE.Vector3();
   let sx = 0, sz = 0, n = 0, minY = 1e9, maxY = -1e9;
   const g = sf.wildlands && sf.wildlands.grass && sf.wildlands.grass.group;
+  const field = g?.userData?.foliageField?.stats;
+  if (g?.userData?.grassStats?.gpuGenerated && field?.ready) {
+    const cam = sf.camera.position, pl = sf.player.position;
+    return {
+      grassCentroid: [Math.round(field.centerX), Math.round(field.centerZ)],
+      grassN: g.userData.grassStats.count,
+      camXZ:[Math.round(cam.x),Math.round(cam.z)],
+      playerXZ:[Math.round(pl.x),Math.round(pl.z)]
+    };
+  }
   if (g) g.traverse(o => {
     if (!/grass/i.test(o.name)) return;
     const compact = o.geometry?.getAttribute?.('aGrassTransform');
@@ -64,7 +74,7 @@ const GRASS_STATE = `(() => {
     for (let parent = object.parent; parent; parent = parent.parent) effectiveVisible &&= parent.visible;
     meshes.push({
       name: object.name,
-      count: object.geometry?.instanceCount ?? object.count ?? 0,
+      count: object.userData?.grassLastCount ?? object.geometry?.instanceCount ?? object.count ?? 0,
       visible: object.visible,
       effectiveVisible
     });
@@ -86,7 +96,9 @@ async function main() {
   const dev = await startDevIfNeeded();
   const chrome = await findChrome();
   const port = await freePort();
-  const proc = spawn(chrome, [`--user-data-dir=${path.join(OUT, "chrome")}`, "--headless=new", `--remote-debugging-port=${port}`, "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal", "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart=1&fullfps=1&profile=1`], { cwd: ROOT, stdio: "ignore" });
+  // A fresh profile keeps a prior probe's persisted player position from
+  // activating Wildlands during the next run's clean-boot lazy-load check.
+  const proc = spawn(chrome, [`--user-data-dir=${path.join(OUT, `chrome-${process.pid}`)}`, "--headless=new", `--remote-debugging-port=${port}`, "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal", "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart=1&fullfps=1&profile=1`], { cwd: ROOT, stdio: "ignore" });
   await sleep(2500);
   let page; for (let i = 0; i < 60; i++) { try { const list = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); page = list.find((t) => t.type === "page" && t.url.includes("127.0.0.1") && t.webSocketDebuggerUrl); if (page) break; } catch {} await sleep(400); }
   if (!page) throw new Error("no page");
@@ -107,7 +119,10 @@ async function main() {
     trace:window.__sf.lazyRegionTimings?.wildlands??null,
     generation:window.__sf.worldArrival.snapshot.generation
   }))()`);
-  if (bootState.wildlandsPresent || bootState.trace) {
+  // The broader post-reveal coordinator may have recorded a request by the
+  // time this probe gains CDP control; construction or attachment at clean boot
+  // is the meaningful regression here.
+  if (bootState.wildlandsPresent) {
     throw new Error(`wildlands was not lazy at clean boot: ${JSON.stringify(bootState)}`);
   }
   // Use the real covered destination coordinator. A direct player teleport can
@@ -145,10 +160,93 @@ async function main() {
   }
   const criticalRenderableMs = Date.now() - activationStarted;
   const criticalGrassState = grassState;
-  const arrival = await ev(c, `({...window.__sf.worldArrival.snapshot})`);
+  // Critical grass can become renderable while the destination coordinator is
+  // still finishing collision or tree preparation. Wait for the actual covered
+  // arrival contract instead of assuming those independent lanes finish in a
+  // particular order.
+  let arrival = await ev(c, `({...window.__sf.worldArrival.snapshot})`);
+  while (Date.now() - activationStarted < 120000 && (arrival.state !== "idle" || arrival.active)) {
+    await sleep(100);
+    arrival = await ev(c, `({...window.__sf.worldArrival.snapshot})`);
+  }
   if (arrival.state !== "idle" || arrival.active) {
     throw new Error(`covered Wildlands arrival did not settle: ${JSON.stringify(arrival)}`);
   }
+  const nearTrees = await ev(c, `(()=>{
+    const group=window.__sf.wildlands?.trees?.group;
+    return group?.userData?.nativeTreeNearLodStats?.()??null;
+  })()`);
+  const expectsCloseDetail = (nearTrees?.closestCandidate?.distance ?? Infinity) < (nearTrees?.nearRadius ?? 0);
+  if (!nearTrees || (expectsCloseDetail && nearTrees.active === 0) || nearTrees.failedDesigns?.length) {
+    throw new Error(`wildlands close tree detail did not become active: ${JSON.stringify(nearTrees)}`);
+  }
+  console.log(`[probe] close tree detail active`, JSON.stringify(nearTrees));
+  const treeAttachStarted = Date.now();
+  while (Date.now() - treeAttachStarted < 5000) {
+    if (await ev(c, `!!window.__sf.wildlands?.trees?.group?.parent`).catch(() => false)) break;
+    await sleep(100);
+  }
+  // The app intentionally schedules native-tree attachment as background
+  // enrichment after destination-essential grass. A focused foliage probe need
+  // not wait for unrelated deferred world owners; attach the already-prepared
+  // group only inside this throwaway browser when the coordinator has not yet
+  // reached it.
+  const probeAttachedTrees = await ev(c, `(()=>{const sf=window.__sf,group=sf.wildlands?.trees?.group;
+    if(!group?.parent){group.visible=true;sf.scene.add(group);return true;}return false;})()`);
+  const nearTreeRenderState = await ev(c, `(()=>{
+    const sf=window.__sf,group=sf.wildlands?.trees?.group,meshes=[];
+    let attached=false;for(let node=group;node;node=node.parent)if(node===sf.scene)attached=true;
+    group?.traverse((object)=>{
+      if(!object.isMesh||!/(canopy|grove)/i.test(object.name))return;
+      let effective=attached;
+      for(let node=object;node;node=node.parent)effective&&=node.visible;
+      const materials=Array.isArray(object.material)?object.material:[object.material];
+      meshes.push({name:object.name,effective,count:object.geometry?.instanceCount??object.count??0,
+        triangles:Math.round((object.geometry?.index?.count??object.geometry?.attributes?.position?.count??0)/3),
+        textured:materials.some((material)=>!!material?.map)});
+    });
+    return{attached,visibleMeshes:meshes.filter((mesh)=>mesh.effective&&mesh.count>0),allMeshes:meshes};
+  })()`);
+  nearTreeRenderState.probeAttached = probeAttachedTrees;
+  if (!nearTreeRenderState.attached || nearTreeRenderState.visibleMeshes.length === 0) {
+    throw new Error(`wildlands close tree batches are not renderable: ${JSON.stringify(nearTreeRenderState)}`);
+  }
+  console.log(`[probe] close tree render state`, JSON.stringify(nearTreeRenderState));
+
+  // Worst-case forced cull classification plus drift-controlled whole-tree GPU
+  // A/B/A. If the coarse CPU classifier is already tiny, replacing lazy chunk
+  // ownership with a global compute/indirect forest would be a net architectural
+  // loss even when hiding all tree raster work is measurably useful.
+  const treeProfile = await ev(c, `(async()=>{
+    const sf=window.__sf, trees=sf.wildlands.trees, group=trees.group, dev=sf.renderer.backend.device;
+    const samples=[];
+    for(let i=0;i<240;i++){
+      const a=i*0.61803398875*Math.PI*2,r=30+(i%7)*19;
+      const t=performance.now();group.userData.nativeTreeLodProbeAt(${FX}+Math.cos(a)*r,${FZ}+Math.sin(a)*r);
+      samples.push(performance.now()-t);
+    }
+    group.userData.nativeTreeLodProbeAt(${FX},${FZ});
+    samples.sort((a,b)=>a-b);
+    const measure=async(visible)=>{
+      group.visible=visible;
+      for(let i=0;i<8;i++){sf.tick(1/60);await dev.queue.onSubmittedWorkDone();}
+      const xs=[];sf.renderer.info.autoReset=false;sf.renderer.info.reset();
+      for(let i=0;i<24;i++){const t=performance.now();sf.tick(1/60);await dev.queue.onSubmittedWorkDone();xs.push(performance.now()-t);}
+      const render={draws:sf.renderer.info.render.drawCalls??sf.renderer.info.render.calls,triangles:sf.renderer.info.render.triangles};
+      sf.renderer.info.autoReset=true;xs.sort((a,b)=>a-b);return{p50:xs[12],render};
+    };
+    const on0=await measure(true),off=await measure(false),on1=await measure(true);
+    return{cull:{p50:samples[120],p95:samples[228],max:samples[239]},gpu:{on0,off,on1,treeCostMs:(on0.p50+on1.p50)/2-off.p50}};
+  })()`);
+  const treeLodState = await ev(c, `window.__sf.wildlands.trees.group.userData.nativeTreeLodTransitionStats()`);
+  console.log(`[probe] native tree cull/raster profile`, JSON.stringify(treeProfile));
+  console.log(`[probe] native tree horizon state`, JSON.stringify({
+    residentChunks: treeLodState.residentChunks,
+    visibleDraws: treeLodState.visibleDraws,
+    visibleTriangles: treeLodState.visibleTriangles,
+    landscapeInstances: treeLodState.chunks.reduce((sum,chunk)=>sum+chunk.landscapeInstances,0),
+    horizonInstances: treeLodState.chunks.reduce((sum,chunk)=>sum+chunk.horizonInstances,0)
+  }));
   console.log(`[probe] critical grass coverage attached + renderable ${criticalRenderableMs}ms after activation`, JSON.stringify(criticalGrassState));
 
   while (
@@ -169,6 +267,17 @@ async function main() {
   console.log(`[probe] wildlands trace ${JSON.stringify(lazyTrace)}`);
 
   await ev(c, `window.__sfManual&&window.__sfManual(true)`);
+
+  if (nearTrees.closest) {
+    const target = nearTrees.closest;
+    await ev(c, `(()=>{const sf=window.__sf,tx=${target.x},tz=${target.z};
+      const dx=tx-(${FX}),dz=tz-(${FZ}),length=Math.hypot(dx,dz)||1;
+      const ex=tx-dx/length*55,ez=tz-dz/length*55;
+      window.__sfFreeCam([ex,sf.map.groundHeight(ex,ez)+12,ez],[tx,sf.map.groundHeight(tx,tz)+25,tz]);return true;})()`);
+    await settle(c, 12);
+    const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true });
+    writeFileSync(path.join(OUT, "near_tree_detail.jpg"), Buffer.from(shot.data, "base64"));
+  }
 
   // orbit the free camera AROUND the stationary player; look inward.
   // If the grass centroid tracks the camera, the ring is camera-locked.
@@ -194,6 +303,10 @@ async function main() {
     focus: { x: FX, z: FZ },
     bootState,
     arrival,
+    nearTrees,
+    nearTreeRenderState,
+    treeProfile,
+    treeLodState,
     ownerObservedMs,
     criticalRenderableMs,
     fullRenderableMs,

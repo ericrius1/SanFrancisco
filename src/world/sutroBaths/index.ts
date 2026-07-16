@@ -1,16 +1,13 @@
 import * as THREE from "three/webgpu";
 import type { Physics } from "../../core/physics";
 import type { DebugFeatureTuningRegistration } from "../../ui/debug";
-import type { GroundTopOverlay } from "../heightmap";
-import type { TileStreamer } from "../tiles";
-import { createSutroBathsArchitecture } from "./architecture";
+import type { AuthoredRegionStreamer } from "../authoredRegions";
 import {
   SUTRO_BATHS,
-  SUTRO_TERRAIN_CUTOUTS,
   distanceToSutroBaths,
   distanceToSutroWater,
   inSutroBathsHall,
-  sutroRestoredGroundTop
+  sutroWalkSurfaceY
 } from "./layout";
 import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
 import { createSutroBathsVegetation } from "./vegetation";
@@ -23,6 +20,7 @@ import {
 } from "./waterInteractions";
 import type { SutroBathsSteam } from "./steam";
 import type { SutroBathsWaterSimulation } from "./waterSimulation";
+import { createSutroStaticAmbience } from "./staticAmbience";
 
 const WAKE_DISTANCE = 760;
 const SLEEP_DISTANCE = 900;
@@ -58,6 +56,8 @@ export type SutroBaths = {
   group: THREE.Group;
   ready: Promise<void>;
   setFoliageVisible(visible: boolean): void;
+  /** Debug streaming panel: force sleep and block proximity wake while on. */
+  setPerfSuppressed(on: boolean): void;
   update(
     dt: number,
     time: number,
@@ -83,7 +83,7 @@ export type SutroBathsOptions = {
   renderer: THREE.WebGPURenderer;
   scene: THREE.Scene;
   physics?: Physics;
-  tiles?: TileStreamer;
+  authoredRegions?: AuthoredRegionStreamer;
   /** Thrown/rolling balls that should splash the pools (main wires fetchBall). */
   ballSource?: SutroBallSource;
   /** Remote bathers whose motion should ripple the pools. */
@@ -104,45 +104,27 @@ type MonitorState = {
 };
 
 /**
- * Self-owned restored site. Architecture and foliage cross the site-level code
- * gate together; the storage-buffer water and instanced steam cross a second,
- * close-approach gate so a distant Lands End visit allocates neither system.
+ * Dynamic controller for the Blender-authored restored site. The authored
+ * region owns architecture while the local physics tile owns colliders; this lazy module owns only foliage,
+ * bathers, lighting controls, water, steam, and interactions.
  */
 export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   const group = new THREE.Group();
   group.name = "sutro_baths_restored_1896";
   group.visible = false;
 
-  const architecture = createSutroBathsArchitecture({ physics: options.physics });
+  const ambience = createSutroStaticAmbience(options.authoredRegions);
   const vegetation = createSutroBathsVegetation();
   const bathers = createSutroBathers();
-  group.add(architecture.group, vegetation.group, bathers.group);
-
-  // The authored hall replaces the pre-fire heightfield inside its shell. The
-  // visual discard and CPU/collision overlay are installed together and remain
-  // owned by this feature, including the failed-load/dispose path.
-  const groundOverlay: GroundTopOverlay = sutroRestoredGroundTop;
-  const claimedTerrainCutouts: string[] = [];
-  try {
-    for (const cutout of SUTRO_TERRAIN_CUTOUTS) {
-      options.tiles?.setTerrainCutout(cutout.id, cutout);
-      if (options.tiles) claimedTerrainCutouts.push(cutout.id);
-    }
-    options.physics?.map.setGroundTopOverlay(groundOverlay);
-  } catch (error) {
-    for (const id of claimedTerrainCutouts) options.tiles?.clearTerrainCutout(id);
-    vegetation.dispose();
-    architecture.dispose();
-    throw error;
-  }
+  group.add(ambience.group, vegetation.group, bathers.group);
 
   const stats: SutroBathsStats = {
-    architectureMeshes: architecture.stats.meshes,
-    architectureInstances: architecture.stats.instances,
-    roofRibs: architecture.stats.roofRibs,
-    glassPanels: architecture.stats.glassPanels,
-    lamps: architecture.stats.lamps,
-    physicsBodies: architecture.stats.physicsBodies,
+    architectureMeshes: 53,
+    architectureInstances: 1619,
+    roofRibs: 306,
+    glassPanels: 304,
+    lamps: 28,
+    physicsBodies: 68,
     trees: vegetation.stats.trees,
     shrubs: vegetation.stats.shrubs,
     planters: vegetation.stats.planters
@@ -170,13 +152,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   let foliageVisible = true;
   let distanceToBaths = Number.POSITIVE_INFINITY;
   let disposed = false;
-  // The architecture constructor already buried the terrain beneath the hall and
-  // published the deck/basin colliders. A walking capsule that was standing on
-  // the pre-restoration ground (near sea level on the ocean side) is now trapped
-  // under the deck slab, which — being above it — can never lift it back out.
-  // Arm a one-shot handoff so main lifts it onto the deck once, like the raised
-  // Mission Dolores basilica floor. Only meaningful when physics is present.
-  let floorHandoffPending = options.physics != null;
+  // The authored region hands terrain ownership to the hall and publishes its
+  // deck/basin bodies asynchronously. Keep a lightweight recovery contract
+  // armed for the lifetime of the site: it covers both that handoff frame and
+  // rare tunnelling through a thin floor, while pool footprints still resolve
+  // to the lower basin so visitors can enter the water normally.
+  const hasFloorRecovery = options.physics != null;
 
   // index.ts only receives a player POSITION each frame; derive velocity from
   // the frame-to-frame delta for directional wader wakes, and keep a dummy
@@ -187,7 +168,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   let havePrevPlayer = false;
 
   const syncTuning = () => {
-    architecture.applyTuning(SUTRO_BATHS_TUNING.values);
+    ambience.applyTuning(SUTRO_BATHS_TUNING.values);
     water?.syncTuning();
   };
 
@@ -262,17 +243,29 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     steam?.setEnabled(next);
   };
 
+  let perfSuppressed = false;
+
   syncTuning();
 
   return {
     group,
-    ready: Promise.all([architecture.ready, vegetation.ready]).then(() => undefined),
+    ready: vegetation.ready,
     setFoliageVisible(visible) {
       foliageVisible = visible;
       vegetation.setVisible(visible);
     },
+    /** Debug perf gate: force sleep and block proximity wake while suppressed. */
+    setPerfSuppressed(on: boolean) {
+      if (perfSuppressed === on) return;
+      perfSuppressed = on;
+      if (on) setAwake(false);
+    },
     update(dt, time, player, camera, gust) {
       if (disposed) return;
+      if (perfSuppressed) {
+        if (awake) setAwake(false);
+        return;
+      }
       distanceToBaths = distanceToSutroBaths(player.x, player.z);
       if (!awake && distanceToBaths <= WAKE_DISTANCE) setAwake(true);
       else if (awake && distanceToBaths >= SLEEP_DISTANCE) setAwake(false);
@@ -281,7 +274,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       if (waterDistance <= NEAR_EFFECTS_LOAD_DISTANCE) loadNearEffects(camera);
       if (!awake) return;
 
-      architecture.update(time, SUTRO_BATHS_TUNING.values);
+      ambience.update(time, SUTRO_BATHS_TUNING.values);
       if (foliageVisible) vegetation.update(player);
 
       const py = player.y ?? SUTRO_BATHS.waterY;
@@ -335,14 +328,8 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       );
     },
     takeFloorHandoffHeight(player, playerMode) {
-      if (!floorHandoffPending || disposed || playerMode !== "walk") return null;
-      // Fire only once the walker is actually over the hall footprint. The entry
-      // portal and grand stair sit just OUTSIDE it, so this consumes cleanly at
-      // the deck rather than up on the cliff approach. recoverOntoWalkSurface is
-      // lift-only, so a visitor who arrived correctly on the deck is untouched.
-      if (!inSutroBathsHall(player.x, player.z)) return null;
-      floorHandoffPending = false;
-      return SUTRO_BATHS.deckY;
+      if (!hasFloorRecovery || disposed || playerMode !== "walk") return null;
+      return sutroWalkSurfaceY(player.x, player.z);
     },
     tuningDescriptor() {
       return {
@@ -401,11 +388,8 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       water?.dispose();
       steam?.dispose();
       bathers.dispose();
-      options.physics?.map.clearGroundTopOverlay(groundOverlay);
-      for (const id of claimedTerrainCutouts) options.tiles?.clearTerrainCutout(id);
-      claimedTerrainCutouts.length = 0;
       vegetation.dispose();
-      architecture.dispose();
+      ambience.dispose();
       group.removeFromParent();
     }
   };

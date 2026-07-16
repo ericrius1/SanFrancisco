@@ -4,22 +4,21 @@
  * WebGPU renderer, Box3D physics (compiled to WASM), and the multiplayer relay.
  * Lives in the top-right HUD stack under Tutorial, next to X/GitHub links.
  *
- * Self-contained: it owns its own DOM and Escape/backdrop close. main.ts only
- * hands it an `onToggle` so it can free the pointer lock while you're reading.
+ * Self-contained: it owns its own DOM and Escape/backdrop close. The shared host
+ * forwards toggle state so main.ts can free the pointer lock while you're reading.
  */
 
-import { SOUNDSCAPE_TAB_HTML, mountSoundscape } from "./btsSoundscape";
-import { FOLIAGE_TAB_HTML, mountFoliage } from "./btsFoliage";
 import { registerShareable, buildReadUrl, type ShareableModal } from "./deepLinks";
+import {
+  BTS_GH_ICON as GH_ICON,
+  BTS_REPO_URL as REPO_URL,
+  BTS_X_ICON as X_ICON,
+  BTS_X_URL as X_URL
+} from "./behindTheScenesLauncher";
 
-const X_URL = "https://x.com/EricLevin77";
-const REPO_URL = "https://github.com/ericrius1/SanFrancisco";
 const BOX3D_URL = "https://github.com/erincatto/box3d";
 const BOX3D_JS_REPO = "https://github.com/isaac-mason/box3d.js";
 const BOX3D_JS_DOCS = "https://isaac-mason.github.io/box3d.js/";
-
-const X_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24h-6.66l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>`;
-const GH_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.438 9.61 8.205 11.17.6.11.82-.26.82-.577 0-.285-.01-1.04-.015-2.04-3.338.72-4.042-1.61-4.042-1.61-.546-1.385-1.332-1.755-1.332-1.755-1.09-.744.083-.729.083-.729 1.205.084 1.84 1.236 1.84 1.236 1.07 1.83 2.807 1.302 3.492.996.108-.775.418-1.303.762-1.603-2.665-.303-5.466-1.324-5.466-5.896 0-1.303.47-2.37 1.235-3.203-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.4 3-.405 1.02.005 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.833 1.23 1.9 1.23 3.203 0 4.583-2.805 5.59-5.475 5.887.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.896 24 17.49 24 12.29 24 5.78 18.627.5 12 .5z"/></svg>`;
 
 /** External link that never steals focus from the game canvas. */
 function a(href: string, text: string): string {
@@ -122,8 +121,9 @@ const TAB_WORLD = `
     but they all submit those placements to shared tree, grass and wildflower renderers, so a garden keeps
     its own identity without quietly dragging a second foliage look along with it.</p>
     <p>Trees grow once per design, then a chunked far forest and a small capped pool of nearby hero trees
-    share the result across four levels of detail. Grass and flowers ride a <strong>ring that follows
-    you</strong> — a carpet that streams in around wherever you are, so a meadow costs the same whether
+    share the result across four levels of detail. Flowers ride a ring; grass grows from a compact
+    <strong>foliage field that follows you</strong>, with WebGPU compute placing and compacting four distance
+    layers directly into indirect draws. A meadow therefore costs the same whether
     the park is an acre or a mile — bending to one shared gust and one shared trample field. Placement is
     deterministic, so every player sees the same planting. This whole layer recently got a lot denser
     <em>and</em> a lot smoother without getting more expensive; how that's even possible is its own
@@ -329,15 +329,14 @@ const TAB_SMOOTH = `
     <h3><span class="bts-ic">🌲</span> Denser foliage, no hitch</h3>
     <p>The trees, grass and wildflowers went through a big density-and-quality pass, and the whole point
     was to add far <em>more</em> of them without adding cost you can feel. Two ideas do most of the work.
-    First, grass and flowers aren't strewn across the whole map — they ride a <strong>ring that follows
-    you</strong> and re-samples as you walk, so a meadow's cost is fixed no matter how large the region is,
-    and there's nothing to pay anywhere you aren't. Second, that ring is <strong>built through the
-    scheduler</strong>: a dense patch is sampled, allocated, uploaded and published a slice at a time,
-    budgeted to well under a millisecond a frame, nearest blades first so the ground under you is never
-    bare. The same grass generation that once blocked the main thread for <strong>~450&nbsp;ms</strong> in
-    one lump now costs <strong>under a millisecond</strong> per frame — and you never see the join.</p>
+    First, grass and flowers aren't strewn across the whole map — they follow <strong>you</strong>, so a
+    meadow's cost is fixed no matter how large the region is, and there's nothing to pay anywhere you
+    aren't. Second, the CPU now pages only a 288 × 288 texture containing terrain height, density, species
+    and vigour. WebGPU compute tests 204,204 candidate clusters in parallel, compacts the survivors into
+    storage buffers and submits the four layers with indirect draws. A six-metre move samples only the
+    1,728 newly entered field cells; it no longer builds or uploads CPU grass-instance arrays.</p>
     <p>Trees are instanced and batched across <strong>four levels of detail</strong> — lush and leafy up
-    close, then progressively cheaper cards out to the horizon. The hard part of any LOD system is the
+    close, then progressively leaner but still opaque 3-D geometry out to the horizon. The hard part of any LOD system is the
     <em>pop</em> when something swaps levels; here the swap distances are deliberately
     <strong>staggered</strong>, so a stand converts a few trees at a time across a wide band instead of the
     whole grid flipping at once along a circle, with a hysteresis margin so a jittering camera can't make
@@ -356,10 +355,9 @@ const TAB_SMOOTH = `
     scene</strong> — so the first frame you actually see has no shader stall and no bare-then-pop-in
     landscape. Only once the destination reports ready does the cover lift.</p>
     <p>A few things make that quick. The terrain is already there — it's a clipmap, so it just re-centres
-    on the spot instead of streaming a fresh hillside. The grass builder is handed a <strong>much fatter
-    time budget while the cover is up</strong> (there's no visible frame to protect yet), so the meadow
-    fills in fast in the dark and then drops back to its gentle per-frame trickle the instant you can see.
-    And each destination's activation is kept <strong>isolated</strong> — arriving at the Japanese Tea
+    on the spot instead of streaming a fresh hillside. The new foliage field fills progressively while the
+    cover is up, then one compute submission compacts all four grass layers and the renderer warms their
+    pipelines before reveal. And each destination's activation is kept <strong>isolated</strong> — arriving at the Japanese Tea
     Garden warms exactly the Tea Garden and doesn't drag in the far heavier wild-park foliage next door,
     which stays asleep until you actually walk toward it.</p>
   </section>
@@ -541,18 +539,45 @@ const TAB_PLAY = `
   </section>
 `;
 
-type Tab = { id: string; label: string; icon: string; html: string };
+type TabMount = { activate(): void; deactivate(): void };
+type Tab = {
+  id: string;
+  label: string;
+  icon: string;
+  html?: string;
+  load?: (pane: HTMLElement, body: HTMLElement) => Promise<TabMount>;
+};
 
 // Horizontal tabs across the top of the panel — the reading is long, so it's
 // split into chapters you can click between instead of one endless scroll.
 const TABS: Tab[] = [
   { id: "world", label: "Building the world", icon: "🏗️", html: TAB_WORLD },
   { id: "life", label: "Bringing it to life", icon: "🌆", html: TAB_LIFE },
-  { id: "foliage", label: "The living layer", icon: "🌿", html: FOLIAGE_TAB_HTML },
+  {
+    id: "foliage",
+    label: "The living layer",
+    icon: "🌿",
+    load: async (pane, body) => {
+      const { FOLIAGE_TAB_HTML, mountFoliage } = await import("./btsFoliage");
+      pane.innerHTML = FOLIAGE_TAB_HTML;
+      return mountFoliage(pane, body);
+    }
+  },
   { id: "smooth", label: "Making it smooth", icon: "⚡", html: TAB_SMOOTH },
   { id: "play", label: "Playing in it", icon: "🎮", html: TAB_PLAY },
-  { id: "sound", label: "The soundscape", icon: "🐦", html: SOUNDSCAPE_TAB_HTML }
+  {
+    id: "sound",
+    label: "The soundscape",
+    icon: "🐦",
+    load: async (pane, body) => {
+      const { SOUNDSCAPE_TAB_HTML, mountSoundscape } = await import("./btsSoundscape");
+      pane.innerHTML = SOUNDSCAPE_TAB_HTML;
+      return mountSoundscape(pane, body);
+    }
+  }
 ];
+
+const TAB_LOADING_HTML = `<section class="bts-lazy-state" role="status"><p class="bts-lede">Loading this chapter…</p></section>`;
 
 export class BehindTheScenes implements ShareableModal {
   /** Deep-link key: `?read=bts` opens this panel, `?read=bts.sound` a tab. */
@@ -562,31 +587,13 @@ export class BehindTheScenes implements ShareableModal {
   #open = false;
   #activeTab = "world";
   // per-tab controllers that run an rAF/scroll loop only while their tab is shown
-  #tabMounts = new Map<string, { activate(): void; deactivate(): void }>();
+  #tabMounts = new Map<string, TabMount>();
+  #tabLoads = new Map<string, Promise<void>>();
   #onToggle?: (open: boolean) => void;
 
   constructor(onToggle?: (open: boolean) => void) {
     this.#onToggle = onToggle;
     const hud = document.getElementById("hud")!;
-
-    // top-right stack: the wide button, then a row of X / GitHub icon links
-    const ui = document.createElement("div");
-    ui.className = "links-ui";
-
-    const btn = document.createElement("button");
-    btn.className = "share-btn";
-    btn.type = "button";
-    btn.title = "How this city is built — the Blender pipeline, physics and multiplayer";
-    btn.innerHTML = `<span class="ic">🎬</span><span>Behind the scenes</span>`;
-    btn.addEventListener("click", () => this.setOpen(true));
-
-    const social = document.createElement("div");
-    social.className = "social-row";
-    social.appendChild(this.#iconLink(X_URL, "Follow on X / Twitter", X_ICON));
-    social.appendChild(this.#iconLink(REPO_URL, "Source on GitHub", GH_ICON));
-
-    ui.append(btn, social);
-    hud.appendChild(ui);
 
     // the reading overlay — a tabbed, scrollable modal over a dimming backdrop
     const tabsHtml = TABS.map(
@@ -594,7 +601,9 @@ export class BehindTheScenes implements ShareableModal {
         `<button class="bts-tab" type="button" role="tab" data-tab="${t.id}">` +
         `<span class="bts-tab-ic">${t.icon}</span><span>${t.label}</span></button>`
     ).join("");
-    const panesHtml = TABS.map((t) => `<div class="bts-pane" data-pane="${t.id}">${t.html}</div>`).join("");
+    const panesHtml = TABS.map(
+      (t) => `<div class="bts-pane" data-pane="${t.id}">${t.html ?? TAB_LOADING_HTML}</div>`
+    ).join("");
 
     this.#overlay = document.createElement("div");
     this.#overlay.className = "bts-overlay";
@@ -619,19 +628,7 @@ export class BehindTheScenes implements ShareableModal {
       tab.addEventListener("click", () => this.#selectTab(tab.dataset.tab!));
     }
     // in-content cross-links ("The soundscape →") jump to a tab
-    for (const link of this.#overlay.querySelectorAll<HTMLAnchorElement>("[data-bts-tab]")) {
-      link.addEventListener("click", (e) => {
-        e.preventDefault();
-        this.#selectTab(link.dataset.btsTab!);
-      });
-    }
-
-    // the soundscape and foliage chapters animate their diagrams from scroll + a
-    // gentle rAF; each is mounted once and only loops while its tab is on screen
-    const soundPane = this.#overlay.querySelector<HTMLElement>('[data-pane="sound"]');
-    if (soundPane) this.#tabMounts.set("sound", mountSoundscape(soundPane, this.#body));
-    const foliagePane = this.#overlay.querySelector<HTMLElement>('[data-pane="foliage"]');
-    if (foliagePane) this.#tabMounts.set("foliage", mountFoliage(foliagePane, this.#body));
+    this.#bindTabLinks(this.#overlay);
 
     // backdrop click (but not clicks inside the modal) closes it
     this.#overlay.addEventListener("click", (e) => {
@@ -680,6 +677,11 @@ export class BehindTheScenes implements ShareableModal {
     return this.#activeTab;
   }
 
+  /** Resolves once the selected chapter's lazy UI has mounted (or shown its retry state). */
+  whenReady(): Promise<void> {
+    return this.#ensureTabLoaded(this.#activeTab);
+  }
+
   #selectTab(id: string) {
     this.#activeTab = id;
     for (const tab of this.#overlay.querySelectorAll<HTMLButtonElement>(".bts-tab")) {
@@ -690,10 +692,54 @@ export class BehindTheScenes implements ShareableModal {
     }
     this.#body.scrollTop = 0;
     this.#syncMounts();
+    void this.#ensureTabLoaded(id);
     // Only rewrite the URL while open (tab switches). Closing/stripping is owned by
     // setOpen — this guard keeps the constructor's initial select from wiping a
     // `?read=` param before openReadLink has had a chance to consume it.
     if (this.#open) this.#syncUrl();
+  }
+
+  /** Fetch and mount a heavyweight interactive chapter only on first use. */
+  #ensureTabLoaded(id: string): Promise<void> {
+    const tab = TABS.find((candidate) => candidate.id === id);
+    if (!tab?.load || this.#tabMounts.has(id)) return Promise.resolve();
+    const pending = this.#tabLoads.get(id);
+    if (pending) return pending;
+
+    const pane = this.#overlay.querySelector<HTMLElement>(`[data-pane="${id}"]`);
+    if (!pane) return Promise.resolve();
+
+    const load = tab
+      .load(pane, this.#body)
+      .then((mount) => {
+        this.#tabMounts.set(id, mount);
+        this.#bindTabLinks(pane);
+        this.#syncMounts();
+      })
+      .catch((error) => {
+        this.#tabLoads.delete(id);
+        pane.innerHTML =
+          `<section class="bts-lazy-state"><p class="bts-lede">This chapter could not load.</p>` +
+          `<button class="share-btn" type="button" data-bts-retry>Try again</button></section>`;
+        pane.querySelector<HTMLButtonElement>("[data-bts-retry]")?.addEventListener("click", () => {
+          pane.innerHTML = TAB_LOADING_HTML;
+          void this.#ensureTabLoaded(id);
+        });
+        console.warn(`[bts] ${id} chapter load failed:`, error);
+      });
+    this.#tabLoads.set(id, load);
+    return load;
+  }
+
+  #bindTabLinks(root: ParentNode) {
+    for (const link of root.querySelectorAll<HTMLAnchorElement>("[data-bts-tab]")) {
+      if (link.dataset.btsBound) continue;
+      link.dataset.btsBound = "true";
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        this.#selectTab(link.dataset.btsTab!);
+      });
+    }
   }
 
   /** Run only the active tab's animation loop (if the panel is open); pause the rest. */
@@ -702,17 +748,6 @@ export class BehindTheScenes implements ShareableModal {
       if (tabId === this.#activeTab && this.#open) ctrl.activate();
       else ctrl.deactivate();
     }
-  }
-
-  #iconLink(href: string, title: string, svg: string): HTMLAnchorElement {
-    const el = document.createElement("a");
-    el.className = "social-btn";
-    el.href = href;
-    el.target = "_blank";
-    el.rel = "noopener noreferrer";
-    el.title = title;
-    el.innerHTML = svg;
-    return el;
   }
 
   get isOpen() {

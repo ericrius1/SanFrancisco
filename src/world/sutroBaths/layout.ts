@@ -23,18 +23,10 @@ export type SutroPoolSpec = {
   heat: number;
 };
 
-export type SutroTerrainCutoutSpec = {
-  id: string;
-  centerX: number;
-  centerZ: number;
-  halfX: number;
-  halfZ: number;
-  yaw: number;
-  feather: number;
-};
-
 export const SUTRO_BATHS = {
   ...SUTRO_BATHS_GATE,
+  /** Architectural enclosure width; the streaming gate also covers the beach stair. */
+  hallHalfWidth: 38.7,
   /** Local +z (south) rotated so the north end sits slightly farther east. */
   deckY: 5.62,
   waterY: 5.18,
@@ -129,70 +121,80 @@ export function sutroWorldToLocal(x: number, z: number): { x: number; z: number 
   return { x: c * dx - s * dz, z: s * dx + c * dz };
 }
 
-const ENTRY_CUTOUT_LOCAL = {
-  minX: SUTRO_BATHS.halfWidth - 0.35,
-  maxX: SUTRO_BATHS.halfWidth + 5.75,
-  centerZ: SUTRO_BATHS.halfLength - 13,
-  halfZ: 4.6
-} as const;
-
-const entryCutoutCenter = sutroLocalToWorld(
-  (ENTRY_CUTOUT_LOCAL.minX + ENTRY_CUTOUT_LOCAL.maxX) * 0.5,
-  ENTRY_CUTOUT_LOCAL.centerZ
-);
-
-/**
- * The shipped terrain predates the restoration and climbs through the eastern
- * bleachers and the Point Lobos stair. These two small oriented rectangles are
- * the complete ownership handoff: the hall proper plus only the short stairwell
- * that tunnels from the pool deck into the surviving cliff shelf.
- */
-export const SUTRO_TERRAIN_CUTOUTS: readonly SutroTerrainCutoutSpec[] = [
-  {
-    id: "sutro-baths:hall",
-    centerX: SUTRO_BATHS.centerX,
-    centerZ: SUTRO_BATHS.centerZ,
-    halfX: SUTRO_BATHS.halfWidth + 0.35,
-    halfZ: SUTRO_BATHS.halfLength + 0.35,
-    yaw: SUTRO_BATHS.yaw,
-    feather: 0.22
-  },
-  {
-    id: "sutro-baths:entry-stairwell",
-    centerX: entryCutoutCenter.x,
-    centerZ: entryCutoutCenter.z,
-    halfX: (ENTRY_CUTOUT_LOCAL.maxX - ENTRY_CUTOUT_LOCAL.minX) * 0.5,
-    halfZ: ENTRY_CUTOUT_LOCAL.halfZ,
-    yaw: SUTRO_BATHS.yaw,
-    feather: 0.18
-  }
-] as const;
-
-export function inSutroTerrainCutout(x: number, z: number): boolean {
-  for (const cutout of SUTRO_TERRAIN_CUTOUTS) {
-    const dx = x - cutout.centerX;
-    const dz = z - cutout.centerZ;
-    const c = Math.cos(cutout.yaw);
-    const s = Math.sin(cutout.yaw);
-    const localX = c * dx - s * dz;
-    const localZ = s * dx + c * dz;
-    if (Math.abs(localX) <= cutout.halfX && Math.abs(localZ) <= cutout.halfZ) return true;
-  }
-  return false;
-}
-
-/** CPU/collision twin of the visual terrain cutout. Authored deck and basin
- * bodies become the surface authority above this deliberately buried floor. */
-export function sutroRestoredGroundTop(x: number, z: number, base: number): number {
-  return inSutroTerrainCutout(x, z) ? Math.min(base, SUTRO_BATHS.basinY - 0.55) : base;
-}
-
 export function inSutroBathsHall(x: number, z: number, pad = 0): boolean {
   const local = sutroWorldToLocal(x, z);
   return (
-    Math.abs(local.x) <= SUTRO_BATHS.halfWidth + pad &&
+    Math.abs(local.x) <= SUTRO_BATHS.hallHalfWidth + pad &&
     Math.abs(local.z) <= SUTRO_BATHS.halfLength + pad
   );
+}
+
+type SutroStairSurface = {
+  minAcross: number;
+  maxAcross: number;
+  startAlong: number;
+  endAlong: number;
+  startY: number;
+  endY: number;
+  steps: number;
+};
+
+const MAIN_ENTRY_FLIGHTS: readonly SutroStairSurface[] = [
+  { minAcross: 33.1, maxAcross: 36.9, startAlong: 68.2, endAlong: 50.2, startY: 31.02, endY: 24.67, steps: 25 },
+  { minAcross: 27.6, maxAcross: 31.4, startAlong: 50.2, endAlong: 68.2, startY: 24.67, endY: 18.32, steps: 25 },
+  { minAcross: 22.1, maxAcross: 25.9, startAlong: 68.2, endAlong: 50.2, startY: 18.32, endY: 11.97, steps: 25 },
+  { minAcross: 16.6, maxAcross: 20.4, startAlong: 50.2, endAlong: 68.2, startY: 11.97, endY: 5.62, steps: 25 }
+] as const;
+
+const BEACH_ENTRY_STAIR: SutroStairSurface = {
+  minAcross: 30.24,
+  maxAcross: 36.34,
+  startAlong: -57,
+  endAlong: -39,
+  startY: 2.33,
+  endY: 5.83,
+  steps: 23
+};
+
+function insideRect(x: number, z: number, minX: number, maxX: number, minZ: number, maxZ: number): boolean {
+  return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
+}
+
+function stairSurfaceY(across: number, along: number, stair: SutroStairSurface): number | null {
+  const treadHalfRun = Math.abs(stair.endAlong - stair.startAlong) / (stair.steps - 1) * 0.5 + 0.03;
+  if (
+    across < stair.minAcross ||
+    across > stair.maxAcross ||
+    along < Math.min(stair.startAlong, stair.endAlong) - treadHalfRun ||
+    along > Math.max(stair.startAlong, stair.endAlong) + treadHalfRun
+  ) return null;
+  const progress = (along - stair.startAlong) / (stair.endAlong - stair.startAlong);
+  const step = Math.round(Math.max(0, Math.min(1, progress)) * (stair.steps - 1));
+  return stair.startY + (stair.endY - stair.startY) * step / (stair.steps - 1);
+}
+
+/** Walk surface for the rebuilt road switchback and lower beach entrance. */
+export function sutroEntryWalkSurfaceY(x: number, z: number): number | null {
+  const local = sutroWorldToLocal(x, z);
+
+  // Natural road grade reaches this open two-bay promenade.
+  if (insideRect(local.x, local.z, 39, 49.5, 54.6, 71.6)) return 31.08;
+  if (insideRect(local.x, local.z, 32, 39, 68.6, 71.8)) return 31.08;
+
+  for (const flight of MAIN_ENTRY_FLIGHTS) {
+    const y = stairSurfaceY(local.x, local.z, flight);
+    if (y !== null) return y;
+  }
+  if (insideRect(local.x, local.z, 27.7, 36.8, 45.6, 49.8)) return 24.67;
+  if (insideRect(local.x, local.z, 22.2, 31.3, 68.6, 72.8)) return 18.32;
+  if (insideRect(local.x, local.z, 16.7, 25.8, 45.6, 49.8)) return 11.97;
+  if (insideRect(local.x, local.z, 16.7, 27.9, 68.6, 73.4)) return 5.66;
+
+  // The beach stair runs along local x, so swap the axes for the shared helper.
+  const beachY = stairSurfaceY(local.z, local.x, BEACH_ENTRY_STAIR);
+  if (beachY !== null) return beachY;
+  if (insideRect(local.x, local.z, -38.5, -34, 29.79, 36.79)) return 5.66;
+  return null;
 }
 
 export { SUTRO_BATHS_ARRIVAL, distanceToSutroBaths };
@@ -207,6 +209,34 @@ export function poolAtLocal(x: number, z: number, inset = 0): SutroPoolSpec | nu
     ) return pool;
   }
   return null;
+}
+
+/**
+ * Returns the lowest authored walk surface beneath a visitor inside the hall.
+ *
+ * The streamed Box3D colliders remain the primary collision source. This is a
+ * recovery contract for the frame in which those bodies replace the old
+ * terrain, or for an unusually fast capsule that crosses a thin floor slab.
+ * Pool footprints deliberately resolve to the basin instead of the deck so a
+ * visitor can still step into and wade through every bath.
+ */
+export function sutroWalkSurfaceY(x: number, z: number): number | null {
+  const entrySurface = sutroEntryWalkSurfaceY(x, z);
+  if (entrySurface !== null) return entrySurface;
+  if (!inSutroBathsHall(x, z)) return null;
+  const local = sutroWorldToLocal(x, z);
+  return poolAtLocal(local.x, local.z) ? SUTRO_BATHS.basinY : SUTRO_BATHS.deckY;
+}
+
+/** True when a WORLD-space point sits inside any of the seven pool rectangles. */
+export function isInsideSutroPool(x: number, z: number): boolean {
+  const local = sutroWorldToLocal(x, z);
+  return poolAtLocal(local.x, local.z) !== null;
+}
+
+/** Authored water plane at a pool point, or NaN outside every pool. */
+export function poolWaterY(x: number, z: number): number {
+  return isInsideSutroPool(x, z) ? SUTRO_BATHS.waterY : Number.NaN;
 }
 
 export function distanceToSutroWater(x: number, z: number): number {

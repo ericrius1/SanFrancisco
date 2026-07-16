@@ -18,7 +18,7 @@ function ensureStyle(): void {
         radial-gradient(90% 70% at 50% 46%, rgba(31, 67, 91, .38), rgba(7, 16, 27, 0) 65%),
         linear-gradient(180deg, #13283a 0%, #09131e 100%);
       color: rgba(239, 247, 251, .88);
-      font: 500 12px/1.3 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      font: 700 12px/1.3 var(--font, "Newsreader", Georgia, serif);
       letter-spacing: .16em;
       text-transform: uppercase;
       transition: opacity 160ms ease, visibility 160ms step-end;

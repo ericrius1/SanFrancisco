@@ -35,7 +35,8 @@ export const RENDER_TUNING = tunables("render", {
   // grey-card calibration chart (src/ui/calibrationChart.ts): camera-locked row
   // of matte spheres at 5/18/50/90% albedo — the referee for any grading change.
   greyCards: { v: false, label: "grey cards (5·18·50·90%)" },
-  wireframe: { v: false, label: "wireframe mode (R)" }
+  wireframe: { v: false, label: "wireframe mode (R)" },
+  wireframeLodGradient: { v: true, label: "resolution gradient" }
 });
 
 /** Free-orbit camera (C mode). Bound under advanced → camera in the "/" panel. */

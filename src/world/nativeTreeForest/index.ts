@@ -606,6 +606,8 @@ export function createNativeTreeForest(
   const nearAssets: (NativeTreeMaterialAssets | null)[] = designs.map(() => null);
   const nearMaterials: (NativeTreeMaterials | null)[] = designs.map(() => null);
   const nearLoads: (Promise<void> | null)[] = designs.map(() => null);
+  const nearLoadFailures = new Set<number>();
+  const wantedNearDesigns = new Set<number>();
   const chunks: Chunk[] = [];
   const chunkDescriptors: ChunkDescriptor[] = [];
   const descriptorsByKey = new Map<string, ChunkDescriptor>();
@@ -629,10 +631,13 @@ export function createNativeTreeForest(
   let residencyTail: Promise<void> = Promise.resolve();
   let horizonPrefetchPump: Promise<void> | null = null;
 
-  function ensureNearMaterials(design: number): void {
-    if (disposed || nearMaterials[design] || nearLoads[design]) return;
+  function ensureNearMaterials(design: number): Promise<void> {
+    if (disposed || nearMaterials[design] || nearLoadFailures.has(design)) {
+      return Promise.resolve();
+    }
+    if (nearLoads[design]) return nearLoads[design];
     const template = templates[design];
-    if (!template) return;
+    if (!template) return Promise.resolve();
     const task = (async () => {
       const detailAssets = await loadNativeTreeMaterialSet(template.archetype.species, {
         leafColorVariant: template.archetype.style.leafColorVariant,
@@ -642,11 +647,18 @@ export function createNativeTreeForest(
         releaseNativeTreeMaterialSet(detailAssets);
         return;
       }
-      const detailMaterials = createNativeTreeMaterials(
-        template.archetype.style,
-        detailAssets,
-        template.geometry.shadow.canopyCenter
-      );
+      let detailMaterials: NativeTreeMaterials;
+      try {
+        detailMaterials = createNativeTreeMaterials(
+          template.archetype.style,
+          detailAssets,
+          template.geometry.shadow.canopyCenter,
+          template.geometry.shadow.canopyRadii
+        );
+      } catch (error) {
+        releaseNativeTreeMaterialSet(detailAssets);
+        throw error;
+      }
       nearAssets[design] = detailAssets;
       nearMaterials[design] = detailMaterials;
       const pool = nearPools.get(design);
@@ -663,11 +675,16 @@ export function createNativeTreeForest(
         rebin(lastFocus.x, lastFocus.z, true);
       }
     })().catch((error) => {
+      // Do not spin forever retrying a missing or invalid optional detail pack.
+      // The landscape representation remains visible and the failure is exposed
+      // through the debug stats for diagnostics.
+      nearLoadFailures.add(design);
       console.warn(`[native trees:${options.name}] close material detail failed for ${template.archetype.species}`, error);
     }).finally(() => {
       nearLoads[design] = null;
     });
     nearLoads[design] = task;
+    return task;
   }
 
   function setFarHidden(chunk: Chunk, slot: Slot, hidden: boolean): void {
@@ -749,7 +766,10 @@ export function createNativeTreeForest(
   }
 
   function rebin(x: number, z: number, force = false): void {
-    if (nearMax === 0 || allNearSlots.length === 0) return;
+    if (nearMax === 0 || allNearSlots.length === 0) {
+      wantedNearDesigns.clear();
+      return;
+    }
     const now = performance.now();
     const moved = lastRebinFocus.distanceToSquared(new THREE.Vector2(x, z));
     if (!force && (now - lastRebin < REBIN_MS || moved < REBIN_MOVE_SQ)) return;
@@ -773,10 +793,12 @@ export function createNativeTreeForest(
     }
     candidates.sort((a, b) => a.d2 - b.d2);
     candidates.length = Math.min(candidates.length, nearMax);
+    wantedNearDesigns.clear();
+    for (const candidate of candidates) wantedNearDesigns.add(candidate.slot.design);
 
     const next = new Map<string, ActiveNear>();
     for (const candidate of candidates) {
-      ensureNearMaterials(candidate.slot.design);
+      void ensureNearMaterials(candidate.slot.design);
       // Loading or compiling close detail must never remove the already-good
       // landscape tree. It enters the near pool only once its full material pack
       // exists; setNearBatchEntries keeps that fallback until GPU preparation.
@@ -1380,13 +1402,21 @@ export function createNativeTreeForest(
       const close = Array.from(nearPreparations.values()).filter(
         (state) => state.wantedVisible && !state.prepared
       );
-      if (relevant.length === 0 && close.length === 0) return;
+      // `rebin` can discover close candidates before their optional full-detail
+      // texture pack has loaded. Treat those loads as preparation work, then
+      // loop once more so the newly populated near batches are compiled before
+      // the destination is declared visually ready.
+      const detailLoads = Array.from(wantedNearDesigns)
+        .filter((design) => !nearMaterials[design] && !nearLoadFailures.has(design))
+        .map((design) => ensureNearMaterials(design));
+      if (relevant.length === 0 && close.length === 0 && detailLoads.length === 0) return;
       for (const chunk of relevant) chunk.group.visible = false;
       for (const state of close) {
         state.batch.branch.visible = false;
         state.batch.foliage.visible = false;
       }
       await Promise.all([
+        ...detailLoads,
         ...relevant.map((chunk) => queueChunkPreparation(chunk)),
         ...close.map((state) => queueNearPreparation(state))
       ]);
@@ -1504,6 +1534,9 @@ export function createNativeTreeForest(
       nearExit,
       canopyRadius,
       nearMax,
+      wantedDesigns: Array.from(wantedNearDesigns),
+      loadingDesigns: nearLoads.flatMap((load, design) => load ? [design] : []),
+      failedDesigns: Array.from(nearLoadFailures),
       active: entries.length,
       canopy: entries.filter((entry) => entry.lod === LOD_CANOPY).length,
       grove: entries.filter((entry) => entry.lod === LOD_GROVE).length,
@@ -1526,7 +1559,8 @@ export function createNativeTreeForest(
         const materialPack = createNativeTreeMaterials(
           template.archetype.style,
           materialAssets,
-          template.geometry.shadow.canopyCenter
+          template.geometry.shadow.canopyCenter,
+          template.geometry.shadow.canopyRadii
         );
         return { index, template, materialAssets, materialPack };
       } catch (error) {

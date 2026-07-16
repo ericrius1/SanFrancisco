@@ -77,7 +77,7 @@ function makeTag(name: string, hue: number): THREE.Sprite {
   const r = 14 * ss;
   ctx.beginPath();
   ctx.roundRect(ss, ss, canvas.width - 2 * ss, canvas.height - 2 * ss, r);
-  ctx.fillStyle = "rgba(8, 20, 30, 0.72)";
+  ctx.fillStyle = "#08141e";
   ctx.fill();
   ctx.strokeStyle = `hsl(${hue} 75% 62%)`;
   ctx.lineWidth = 2.5 * ss;

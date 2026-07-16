@@ -18,6 +18,7 @@ import {
 } from "./gameplay/surfing/shack";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { Water } from "./world/water";
+import { emitEmbodimentWaterEcho } from "./world/waterEchoes";
 import { UnderwaterOverlay } from "./fx/underwater";
 import { syncBallGlowNight } from "./fx/ballGlow";
 import { SeaPillars } from "./world/seaPillars";
@@ -43,6 +44,8 @@ import {
   TEA_GARDEN_SUPPRESSED_BUILDINGS,
   isTeaGardenBuilding
 } from "./world/japaneseTeaGarden/layout";
+import { AuthoredRegionStreamer } from "./world/authoredRegions";
+import { warmStaticRegion } from "./render/warmStaticRegion";
 import type { CoronaHeightsPark } from "./world/coronaHeights";
 import { prepareCoronaHeightsGround } from "./world/coronaHeights/ground";
 import { CORONA_HEIGHTS_SUMMIT } from "./world/coronaHeights/meta";
@@ -69,7 +72,13 @@ import { BirdTrails } from "./fx/birdTrail";
 import { WaterSplashes } from "./fx/splash";
 import { Fireworks } from "./fx/fireworks";
 import { Graffiti, PAINT_COLORS } from "./fx/graffiti";
-import { Paintballs, PaintSkins, PAINTBALL_SPEED } from "./fx/paintball";
+import {
+  Paintballs,
+  PaintSkins,
+  PAINTBALL_SPEED,
+  type PaintWaterImpact,
+  type PaintWaterSegment
+} from "./fx/paintball";
 import { Bubbles } from "./fx/bubbles";
 import { WorldCursor } from "./fx/worldCursor";
 import { WorldQueries, ProxySet } from "./core/worldQueries";
@@ -82,6 +91,11 @@ import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
 import { SwimAudio } from "./fx/swimAudio";
+import { GameplaySfxBus } from "./audio/gameplaySfxBus";
+import { PlayerFoleyAudio } from "./fx/playerFoleyAudio";
+import { ModeTransitionAudio } from "./fx/modeTransitionAudio";
+import { JumpLandingAudio } from "./fx/jumpLandingAudio";
+import { DoorAudio } from "./fx/doorAudio";
 import { createNatureSoundscape, DogParkAudio, BallImpactAudio, BALL_IMPACT_AUDIO_TUNING } from "./audio";
 import { WaveAudio, oceanWaveEnergyAt } from "./audio/waveAudio";
 import { AbandonedMounts, ABANDONED_MOUNT_PROMPT } from "./gameplay/abandonedMounts";
@@ -105,13 +119,22 @@ import { REVERIE_CENTER } from "./gameplay/palaceReverie/meta";
 import type { LandsEndRegion } from "./world/landsEnd";
 import { LANDS_END_CENTER } from "./world/landsEnd/meta";
 import type { AfterlightExperience } from "./gameplay/afterlight";
-import { AFTERLIGHT_ARRIVAL } from "./gameplay/afterlight/meta";
+import {
+  AFTERLIGHT_ARRIVAL,
+  isAfterlightOpenAtHour
+} from "./gameplay/afterlight/meta";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
 import { PauseToggle } from "./ui/pauseToggle";
-// BehindTheScenes is deferred (dynamic import after start is ready)
-import { parseReadLink, openReadLink } from "./ui/deepLinks";
+// The launcher and reader stay dynamically loaded; a reading entry may create
+// the shared reader before this game module begins.
+import { beganAsReadingVisit, initialReadLink } from "./app/startupIntent";
+import {
+  getBehindTheScenes,
+  openBehindTheScenes,
+  subscribeBehindTheScenes
+} from "./ui/behindTheScenesHost";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
 import { POSTFX_TUNING, setFlowPostFx } from "./render/postfx";
@@ -239,6 +262,26 @@ async function boot() {
   const tiles = new TileStreamer(scene);
   tiles.onShadowCastersChanged = (scope) => sky.invalidateStaticShadows(scope);
   await tiles.init(map);
+  const authoredRegions = new AuthoredRegionStreamer({
+    scene,
+    map,
+    tiles,
+    prepareRoot: async (label, root) => {
+      try {
+        const warmup = await warmStaticRegion(renderer, camera, scene, root);
+        console.info(
+          `[authored-region] ${label} warmed ${warmup.representatives}/${warmup.meshes} meshes ` +
+          `(${warmup.renderSignatures} render paths) in ${(warmup.durationMs / 1000).toFixed(2)}s`
+        );
+      } catch (error) {
+        // Compilation is a covered presentation optimization. The parsed
+        // Blender visual remains valid and can compile on its first live frame.
+        console.warn(`[authored-region] ${label} covered compile failed`, error);
+      }
+    }
+  });
+  await authoredRegions.init();
+  import.meta.hot?.dispose(() => authoredRegions.dispose());
   bootMark("tiles");
 
   // Resolve the real initial destination and start its fixed-quality local tile
@@ -256,10 +299,17 @@ async function boot() {
     initialVisualState = "pending";
     initialVisualDeadlineAt = performance.now() + 15_000;
     const prime = tiles.primeAt(x, z);
-    void prime.ready.then((result) => {
+    void Promise.all([
+      prime.ready,
+      authoredRegions.prepareAt({ x, z })
+    ]).then(([result]) => {
       if (epoch !== initialVisualEpoch) return;
       if (result.status === "ready") initialVisualState = "ready";
-      else if (result.status === "failed") initialVisualState = "fallback";
+      else initialVisualState = "fallback";
+    }).catch((error) => {
+      if (epoch !== initialVisualEpoch) return;
+      initialVisualState = "fallback";
+      console.warn("[boot] required authored region unavailable", error);
     });
   };
   const initialArrivalPromise = (async () => {
@@ -271,7 +321,7 @@ async function boot() {
     const autoStartHiroTour = arrivalQuery.get("tour") === "hiro";
     const invite = parseInviteIntent(location.search);
     const reloadCandidate = import.meta.env.DEV ? consumeDevReloadSnapshot() : null;
-    const devReload = invite || parseReadLink(location.search) || arrivalQuery.has("demo")
+    const devReload = invite || beganAsReadingVisit || arrivalQuery.has("demo")
       ? null
       : reloadCandidate;
     const resumed = invite || requestedSpawn ? null : (devReload?.player ?? loadPlayerState());
@@ -305,6 +355,7 @@ async function boot() {
       requestedBakedSpawn ??
       map.meta.spawns[spawnKey] ??
       map.meta.spawns[START_DEFAULTS.spawn];
+    const authoredStart = invite || resumed ? null : authoredRegions.arrivalForKey(spawnKey);
     const inviteMode = invite?.animal ? "drive" : invite?.mode;
     const inviteSide = invite
       ? inviteMode === "boat" || inviteMode === "plane"
@@ -323,9 +374,9 @@ async function boot() {
     const resumeStart = resumed
       ? { x: resumed.x, z: resumed.z, heading: resumed.heading - Math.PI }
       : null;
-    const startAt = inviteStart ?? resumeStart ?? registeredStart;
+    const startAt = inviteStart ?? resumeStart ?? authoredStart ?? registeredStart;
     const scatterA = Math.random() * Math.PI * 2;
-    const scatterR = requestedSpawn || inviteStart || resumeStart
+    const scatterR = requestedSpawn || inviteStart || resumeStart || authoredStart
       ? 0
       : 0.8 + Math.random() * 1.6;
     const openSpawnOrFallback = async () => {
@@ -350,7 +401,7 @@ async function boot() {
         return await findOpenSpawn(map, tiles.manifest, fallback, 12, 400);
       }
     };
-    const spawn = inviteStart ?? resumeStart ?? await openSpawnOrFallback();
+    const spawn = inviteStart ?? resumeStart ?? authoredStart ?? await openSpawnOrFallback();
 
     // Arrival breadcrumb: which pool landmark (or resume/invite) placed the
     // player, and where they actually landed after the open-ground search.
@@ -449,18 +500,55 @@ async function boot() {
   // so perform its existing no-network prewarm under the loading cover; later
   // gesture handlers only resume the already-built suspended context.
   fireworks.prewarm();
+  // Fundamental player/interaction foley shares one small procedural graph.
+  // Prewarming here avoids synthesizing its noise/room buffers on the first W.
+  const gameplaySfxBus = new GameplaySfxBus();
+  gameplaySfxBus.prewarm();
 
   // Space / pad-X toys — ↑/↓ pick the toolbar row, ←/→ cycle within it
   const graffiti = new Graffiti(scene);
   const paintballs = new Paintballs(scene);
   const paintSkins = new PaintSkins();
-  paintballs.onWater = (x, y, z) => splashes.splash(x, y, z, elapsed, 0.5);
+  let teaGardenPaintWater: ((impact: PaintWaterImpact) => boolean) | null = null;
+  let teaGardenPaintWaterSegment: ((segment: Readonly<PaintWaterSegment>) => boolean) | null = null;
+  paintballs.onWaterSegment = (segment) => teaGardenPaintWaterSegment?.(segment) ?? false;
+  paintballs.onWater = (impact) => {
+    if (teaGardenPaintWater?.(impact)) return;
+    // The generic plume is designed for bodies and aircraft. Paint gets a much
+    // smaller fallback outside the Tea Garden so it cannot freeze into cyan
+    // camera-facing islands across the water plane.
+    splashes.splash(impact.x, impact.y, impact.z, elapsed, 0.3, 0.3);
+  };
   const bubbles = new Bubbles(scene, map, physics);
   const worldCursor = new WorldCursor(scene);
+  type PaintAudioInstance = import("./fx/paintAudio").PaintAudio;
+  type BubbleAudioInstance = import("./fx/bubbleAudio").BubbleAudio;
+  let paintAudio: PaintAudioInstance | null = null;
+  let paintAudioLoading: Promise<PaintAudioInstance> | null = null;
+  let bubbleAudio: BubbleAudioInstance | null = null;
+  let bubbleAudioLoading: Promise<BubbleAudioInstance> | null = null;
+  const ensurePaintAudio = () => {
+    if (paintAudio) return Promise.resolve(paintAudio);
+    if (paintAudioLoading) return paintAudioLoading;
+    paintAudioLoading = import("./fx/paintAudio")
+      .then(({ PaintAudio }) => paintAudio ??= new PaintAudio(gameplaySfxBus))
+      .finally(() => { paintAudioLoading = null; });
+    return paintAudioLoading;
+  };
+  const ensureBubbleAudio = () => {
+    if (bubbleAudio) return Promise.resolve(bubbleAudio);
+    if (bubbleAudioLoading) return bubbleAudioLoading;
+    bubbleAudioLoading = import("./fx/bubbleAudio")
+      .then(({ BubbleAudio }) => bubbleAudio ??= new BubbleAudio(gameplaySfxBus))
+      .finally(() => { bubbleAudioLoading = null; });
+    return bubbleAudioLoading;
+  };
   let tool: ToolName = "ball";
   let fetchBall: FetchBall | null = null; // built after coronaHeights; setTool runs once before it exists
   const setTool = (t: ToolName) => {
     tool = t;
+    if (t === "spray") void ensurePaintAudio();
+    else if (t === "bubbles") void ensureBubbleAudio();
     toolbar.setTool(t);
     hud.setToolVerb(TOOL_VERB[t]);
     // ball tool → hold-to-throw prop; leaving it hides the prop, but free balls,
@@ -483,9 +571,13 @@ async function boot() {
   setTool("ball");
   setColor(0);
 
-  // procedural vehicle hum + the HUD's master volume/mute widget (bottom-left)
+  // procedural vehicle hum + the HUD's compact four-group mixer (bottom-left)
   const vehicleAudio = new VehicleAudio();
   const swimAudio = new SwimAudio();
+  const playerFoleyAudio = new PlayerFoleyAudio(gameplaySfxBus);
+  const modeTransitionAudio = new ModeTransitionAudio(gameplaySfxBus);
+  const jumpLandingAudio = new JumpLandingAudio(gameplaySfxBus);
+  const doorAudio = new DoorAudio(gameplaySfxBus);
   const audioControls = new AudioControls();
   // procedural, layered nature soundscape (Botanical Garden / GG Park / Presidio
   // / Marin): sampled beds + gust-locked wind synth + spatial animal calls, all
@@ -529,6 +621,28 @@ async function boot() {
   setLocalSurfboardConfig(surfboardConfig);
   vehicleAudio.setBoardStyle(boardConfig);
   const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig, surfboardConfig, carConfig);
+  const updatePlayerFoley = (dt: number, active: boolean) => {
+    const speed = Math.hypot(player.velocity.x, player.velocity.z);
+    const surfaceType = map.surfaceType(player.position.x, player.position.z);
+    const onFoot = active && player.mode === "walk" && !player.riding;
+    jumpLandingAudio.update(dt, onFoot ? {
+      active: !player.swimming,
+      grounded: player.walkGrounded,
+      verticalSpeed: player.velocity.y,
+      horizontalSpeed: speed,
+      surfaceSoftness: surfaceType === 1 ? 0.82 : surfaceType === 2 ? 0.95 : 0.12
+    } : null);
+    playerFoleyAudio.update(dt, onFoot ? {
+      active: player.mode === "walk" && !player.riding,
+      grounded: player.walkGrounded,
+      swimming: player.swimming,
+      speed,
+      stridePhase: player.walkStridePhase,
+      surfaceType,
+      running: speed > 6.2,
+      indoor: player.indoor
+    } : null);
+  };
   player.holdForWorldArrival("boot-arrival");
   let initialCollisionEpoch = physics.prepareCollisionArrival(player.position);
   physics.activateCollisionArrival(initialCollisionEpoch);
@@ -541,6 +655,45 @@ async function boot() {
   chase.yaw = spawn.heading; // behind the player, looking the way they face (spawn.heading is raw facing)
   // Seed above the local ground — hilltop spawns sit well over y=30.
   camera.position.set(spawn.x + 20, map.effectiveGround(spawn.x, spawn.z) + 30, spawn.z + 20);
+  const localAudioPlacement = (x: number, y: number, z: number, reach = 70) => {
+    const dx = x - camera.position.x;
+    const dy = y - camera.position.y;
+    const dz = z - camera.position.z;
+    const distance = Math.hypot(dx, dy, dz);
+    if (distance > reach) return null;
+    const horizontal = Math.hypot(dx, dz) || 1;
+    return {
+      pan: THREE.MathUtils.clamp(
+        ((dx * Math.cos(chase.yaw) - dz * Math.sin(chase.yaw)) / horizontal) * 0.72,
+        -0.8,
+        0.8
+      ),
+      intensity: 1 / (1 + Math.pow(distance / 18, 1.35))
+    };
+  };
+  bubbles.onPop = (position, radius) => {
+    const placement = localAudioPlacement(position.x, position.y, position.z, 55);
+    if (!placement) return;
+    bubbleAudio?.pop({
+      radius,
+      pan: placement.pan,
+      intensity: placement.intensity
+    });
+  };
+  paintballs.onImpact = (event) => {
+    const placement = localAudioPlacement(event.x, event.y, event.z, 85);
+    if (!placement || !paintAudio) return;
+    paintAudio.impact({
+      material: event.material,
+      color: { r: event.r, g: event.g, b: event.b },
+      speed: event.speed,
+      intensity: placement.intensity,
+      wetness: event.material === "water" ? 0.92 : 0.76,
+      pan: placement.pan,
+      room: player.indoor ? 0.22 : 0.08,
+      sourceId: event.shooter
+    });
+  };
   let surfExperience: import("./gameplay/surfing/game").SurfExperience | null = null;
   let surfRuntimeLoading: Promise<void> | null = null;
   let surfShack: SurfShack | null = null;
@@ -662,7 +815,10 @@ async function boot() {
       tiles.forceScan();
     }
   };
+  let previousAudioMode = player.mode;
   player.onModeChange = (mode) => {
+    modeTransitionAudio.event(previousAudioMode, mode);
+    previousAudioMode = mode;
     const fresh = modeDiscovery.discover(mode);
     hud.setMode(mode);
     toolbar.setVehicle(mode);
@@ -1481,8 +1637,6 @@ async function boot() {
   // ephemeral text chat (T to type) — fire-and-forget over the relay, no history.
   // Esc-blur must not re-lock (see Escape priority stack below); Enter-submit may.
   let skipChatRelock = false;
-  // Constructed in the deferred loader; Escape stack checks .open when present.
-  let behindTheScenes: { isOpen: boolean; setOpen(open: boolean): void } | null = null;
   const chat = new Chat(
     (text) => {
       chat.addMessage(net.name, text, true); // local echo (server doesn't bounce back to sender)
@@ -1497,7 +1651,12 @@ async function boot() {
         skipChatRelock = false;
         return;
       }
-      if (!inOrbit() && document.body.classList.contains("started") && !input.suspended) {
+      if (
+        !inOrbit() &&
+        document.body.classList.contains("started") &&
+        !input.suspended &&
+        !input.freeCursor
+      ) {
         input.requestLock();
       }
     }
@@ -1507,7 +1666,7 @@ async function boot() {
   net.onGolf = (id, m) => golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {
     if (!locked && !inOrbit() && !input.freeCursor && !chat.focused) {
-      hud.message("Click to capture the mouse · Esc releases it", 2.8);
+      hud.message("Click the scene to capture · Esc releases · L toggles free cursor", 2.8);
     }
   };
   // passenger seat support: cars and scooters both publish a local seat anchor.
@@ -1611,6 +1770,8 @@ async function boot() {
     chase,
     tiles,
     physics,
+    prepareRequiredDestinationVisuals: (destination, signal) =>
+      authoredRegions.prepareAt(destination, signal),
     prepareDestinationVisuals: (destination, signal) =>
       prepareDestinationEssentials(destination, signal)
   });
@@ -1737,6 +1898,7 @@ async function boot() {
     remotes,
     embodiments,
     arrival: worldArrival,
+    resolveAuthoredArrival: (x, z, label) => authoredRegions.arrivalForDestination(x, z, label),
     releaseGameplay: releaseGameplayForNavigation
   });
   const applyPlaceHistory = (step: -1 | 1) => navigation.applyHistory(step);
@@ -1798,22 +1960,19 @@ async function boot() {
   };
   minimap.setDevice(input.device);
 
-  // Escape priority: dismiss an open overlay (stay unlocked) → else release pointer
-  // lock. Stops the old "Esc closes UI and immediately re-locks" double-tap.
-  // Registered after minimap exists so an early Esc can't hit a TDZ binding.
+  // Escape priority: dismiss an open overlay (stay unlocked). Pointer-lock exit
+  // is the browser's job — do not call releaseLock here. Registered after
+  // minimap exists so an early Esc can't hit a TDZ binding.
   //
-  // The three world overlays below can (only in a degenerate/future state) be
-  // open while the pointer is still locked, and Chrome reserves the *locked*
-  // Escape keydown for its native pointer-lock exit — the page never sees it.
-  // So route their dismissal through a shared closer driven by BOTH keydown and
-  // keyup: the browser still delivers the keyup, so one Escape both unlocks and
-  // closes the overlay no matter which phase survives. Idempotent — whichever
-  // phase runs first stops propagation and closes it; the other finds nothing.
+  // Chrome may reserve the *locked* Escape keydown for its native pointer-lock
+  // exit, so overlay dismissal also listens on keyup: one Esc both unlocks
+  // (browser) and closes the overlay when the keydown was swallowed.
   const dismissEscapeOverlay = (e: KeyboardEvent): boolean => {
+    const reader = getBehindTheScenes();
     if (missionDolores?.bookOpen) {
       missionDolores.closeBook();
-    } else if (behindTheScenes?.isOpen) {
-      behindTheScenes.setOpen(false);
+    } else if (reader?.isOpen) {
+      reader.setOpen(false);
     } else if (minimap.expanded) {
       minimap.setExpanded(false);
     } else {
@@ -1827,9 +1986,6 @@ async function boot() {
     "keydown",
     (e) => {
       if ((e.code !== "Escape" && e.key !== "Escape") || e.repeat) return;
-      // Input owns this invariant in an earlier capture listener. Keep this
-      // idempotent call here too so UI routing can never precede the unlock.
-      input.releaseLock();
       const t = e.target;
       // Debug search / other fields keep their own Esc behavior.
       if (
@@ -1846,8 +2002,6 @@ async function boot() {
         e.stopImmediatePropagation();
         return;
       }
-      // Lock already released above; don't preventDefault so the UA default
-      // unlock still runs if exitPointerLock is ignored.
     },
     true
   );
@@ -1884,7 +2038,10 @@ async function boot() {
     teleport: (t) => navigation.teleportToPose(t),
     message: (m, s) => hud.message(m, s)
   });
-  navigation.onTeleported = () => tutorial.note("teleport");
+  navigation.onTeleported = () => {
+    jumpLandingAudio.reset();
+    tutorial.note("teleport");
+  };
 
 
   const diagnostics = new RendererDiagnostics(renderer);
@@ -2095,11 +2252,10 @@ async function boot() {
   // Free the pointer lock while it's open so the cursor can reach the links.
   // While it's open the whole world stops rendering (see `btsReading` in tick)
   // and the frozen canvas dims a touch, so no live frames flicker behind the read.
-  // Esc-dismiss stays unlocked (click to capture); see Escape priority stack.
+  // Esc-dismiss stays unlocked (click the scene to recapture); see Escape priority stack.
   let btsReading = false;
-  // BehindTheScenes is built lazily. Both the deferred boot loader and a shared
-  // `?read=` link route through ensureBehindTheScenes so it's constructed exactly
-  // once, sharing one toggle.
+  // Both the post-reveal launcher and a shared `?read=` link route through this
+  // function so the optional reader chunk is fetched and constructed once.
   const onBtsToggle = (open: boolean) => {
     btsReading = open;
     app.classList.toggle("world-dimmed", open);
@@ -2109,23 +2265,33 @@ async function boot() {
     // it drops back to the normal start screen instead of leaving them mid-modal.
     if (!open) document.body.classList.remove("reading");
   };
-  let btsCtor: Promise<void> | null = null;
-  const ensureBehindTheScenes = (): Promise<void> => {
-    if (behindTheScenes) return Promise.resolve();
-    if (!btsCtor) {
-      btsCtor = import("./ui/behindTheScenes").then(({ BehindTheScenes }) => {
-        if (!behindTheScenes) behindTheScenes = new BehindTheScenes(onBtsToggle);
-      });
-    }
-    return btsCtor;
+  const unsubscribeBehindTheScenes = subscribeBehindTheScenes(onBtsToggle);
+  import.meta.hot?.dispose(unsubscribeBehindTheScenes);
+  let btsLauncherMounted = false;
+  const mountBehindTheScenesLauncher = async () => {
+    if (btsLauncherMounted) return;
+    btsLauncherMounted = true;
+    const { BehindTheScenesLauncher } = await import("./ui/behindTheScenesLauncher");
+    new BehindTheScenesLauncher(
+      async () => {
+        await openBehindTheScenes();
+      },
+      (error) => {
+        console.warn("[bts] reader load failed:", error);
+        hud.message("Behind the scenes couldn't load — please try again", 3.2);
+      }
+    );
   };
   // `?read=bts.<tab>` — a shared reading link. Drop straight into the panel with the
   // world still streaming behind it (no game entry, no name gate); closing it lands
   // on the normal start screen. Build the panel ASAP instead of waiting for the
   // deferred loader, and let `body.reading` reveal just the modal over the folio.
-  if (parseReadLink(location.search)) {
+  if (initialReadLink && !getBehindTheScenes()?.isOpen) {
     document.body.classList.add("reading");
-    void ensureBehindTheScenes().then(() => openReadLink());
+    void openBehindTheScenes(initialReadLink.sub).catch((error) => {
+      document.body.classList.remove("reading");
+      console.warn("[bts] reader load failed:", error);
+    });
   }
 
   // Debug overlays ("/" → overlays). Off unless toggled; tick gathers active
@@ -2169,7 +2335,7 @@ async function boot() {
   const aim = new THREE.Vector3();
   const rayOrigin = new THREE.Vector3(); // aimOrigin returns a shared tmp — keep our own copy
   // The interaction ray. Normally it's the centre-screen aim; while the free
-  // cursor is out (Command held) it's the camera-through-mouse ray instead, so
+  // cursor is out (L toggled) it's the camera-through-mouse ray instead, so
   // clicks and the hover glow track wherever the loose orb is pointing.
   const aimRay = (origin: THREE.Vector3, dir: THREE.Vector3) => {
     if (input.freeCursor) {
@@ -2240,6 +2406,27 @@ async function boot() {
   const revealedPromise = new Promise<void>((r) => {
     resolveRevealed = r;
   });
+  // Keep all Behind-the-scenes UI out of essential loading. After the visual +
+  // collision reveal, give the live world a quiet beat, then request only the
+  // tiny launcher during browser idle. The timeout guarantees it appears within
+  // a few seconds instead of waiting on optional garden/tree/golf completion.
+  // The reader itself waits for a click; its heavy chapters wait for their tabs.
+  void revealedPromise.then(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 2500));
+    await new Promise<void>((resolve) => {
+      if ("requestIdleCallback" in window) {
+        window.requestIdleCallback(() => resolve(), { timeout: 2000 });
+      } else {
+        setTimeout(resolve, 120);
+      }
+    });
+    try {
+      await mountBehindTheScenesLauncher();
+    } catch (error) {
+      btsLauncherMounted = false;
+      console.warn("[bts] deferred launcher load failed:", error);
+    }
+  });
   // Expand from the fixed-quality local boot bubble to the normal city radius
   // only after the first view has had a quiet beat. Asset quality is unchanged;
   // this merely stops unseen origin districts from occupying destination slots.
@@ -2256,7 +2443,7 @@ async function boot() {
       CONFIG.tileLoadRadius = fullTileRadius;
       CONFIG.tileUnloadRadius = fullTileRadius + 400;
     }
-    tiles.forceScan();
+    tiles.beginBackgroundExpansion();
   });
   void revealedPromise.then(async () => {
     await waitForWorldBackgroundWindow(1800);
@@ -2290,10 +2477,12 @@ async function boot() {
   minimap.addLandmark(CORONA_HEIGHTS_SUMMIT.x, CORONA_HEIGHTS_SUMMIT.z, "Corona Heights");
   // Buena Vista summit clearing — west of Corona Heights. Static pin so the
   // quest stays findable even if the site-gated experience fails to boot.
-  minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Afterlight");
+  minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Afterlight · 9 PM–5 AM");
   const missionDoloresSpawn = SPAWN_POINTS.missionDolores;
   minimap.addLandmark(missionDoloresSpawn.x, missionDoloresSpawn.z, missionDoloresSpawn.label);
-  minimap.addLandmark(SUTRO_BATHS_ARRIVAL.x, SUTRO_BATHS_ARRIVAL.z, "Sutro Baths · 1896");
+  for (const arrival of authoredRegions.landmarkArrivals()) {
+    minimap.addLandmark(arrival.x, arrival.z, arrival.label);
+  }
 
   type LazyRegionTimingEvent = { phase: string; atMs: number; elapsedMs: number };
   const lazyRegionTimings: Record<string, { startedAt: number; events: LazyRegionTimingEvent[] }> = {};
@@ -2523,6 +2712,8 @@ async function boot() {
           });
           site.deferOptionalFoliage();
           japaneseTeaGarden = site;
+          teaGardenPaintWater = (impact) => site?.paintWater(impact) ?? false;
+          teaGardenPaintWaterSegment = (segment) => site?.paintWaterSegment(segment) ?? false;
           debugPanel.registerFeatureTuning(site.tuningDescriptor());
           site.setFoliageVisible(foliageOn);
           site.update(0, performance.now() / 1000, player.renderPosition, camera, player.mode);
@@ -2553,6 +2744,8 @@ async function boot() {
         } catch (error) {
           site?.dispose();
           if (japaneseTeaGarden === site) japaneseTeaGarden = null;
+          if (japaneseTeaGarden === null) teaGardenPaintWater = null;
+          if (japaneseTeaGarden === null) teaGardenPaintWaterSegment = null;
           restoreTeaGardenBuildings();
           publishTeaGardenDebug();
           throw error;
@@ -2621,6 +2814,8 @@ async function boot() {
     forced: boolean;
     promise: Promise<void> | null;
     load: () => Promise<void>;
+    /** A false value prevents automatic import; explicit debug loads still work. */
+    available?: () => boolean;
   };
   const OPTIONAL_SITE_APPROACH_RADIUS = 1100;
   const OPTIONAL_SITE_RECHECK_RADIUS = OPTIONAL_SITE_APPROACH_RADIUS * 1.25;
@@ -2786,6 +2981,7 @@ async function boot() {
       restore();
     }
     afterlight = experience;
+    experience.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
     siteGate.register(experience.siteHooks());
     refreshOptionalSiteDebug();
   };
@@ -2846,26 +3042,21 @@ async function boot() {
     const { createSutroBaths } = await import("./world/sutroBaths");
     await waitForOptionalSiteStage();
     let candidate: import("./world/sutroBaths").SutroBaths | null = null;
-    let suppressed = false;
     try {
       candidate = createSutroBaths({
         renderer,
         scene,
         physics,
-        tiles,
+        authoredRegions,
         ballSource: { visitFreeBalls: (visitor) => fetchBall?.visitFreeBalls(visitor) },
         getRemotes: getSutroRemotes
       });
-      // Compile the complete period hall, including its foliage, while detached.
-      // The user's foliage preference is restored before the root is published.
+      // The geographic tile already owns and displays the period hall. Warm only
+      // its optional living layer (foliage, bathers and nearby effects) here.
       candidate.setFoliageVisible(true);
       await candidate.ready;
       await prepareOptionalRoot("sutro-baths", candidate.group);
 
-      // Keep the baked fallback present until the authored replacement is ready.
-      // CityGen excludes this footprint when its fixed roster is constructed.
-      tiles.suppressBuilding("1_12", 0);
-      suppressed = true;
       candidate.setFoliageVisible(foliageOn);
       scene.add(candidate.group);
       sutroBaths = candidate;
@@ -2888,7 +3079,6 @@ async function boot() {
     } catch (error) {
       if (sutroBaths === candidate) sutroBaths = null;
       candidate?.dispose();
-      if (suppressed) tiles.unsuppressBuilding("1_12", 0);
       refreshOptionalSiteDebug();
       throw error;
     }
@@ -2907,7 +3097,16 @@ async function boot() {
     },
     { id: "archery", label: "Archery Range", ...ARCHERY_CENTER, state: "dormant", forced: false, promise: null, load: loadArchery },
     { id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, state: "dormant", forced: false, promise: null, load: loadPalace },
-    { id: "afterlight", label: "Afterlight", ...AFTERLIGHT_ARRIVAL, state: "dormant", forced: false, promise: null, load: loadAfterlight },
+    {
+      id: "afterlight",
+      label: "Afterlight · 21:00–05:00",
+      ...AFTERLIGHT_ARRIVAL,
+      state: "dormant",
+      forced: false,
+      promise: null,
+      load: loadAfterlight,
+      available: () => isAfterlightOpenAtHour(sky.timeOfDay)
+    },
     { id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, state: "dormant", forced: false, promise: null, load: loadCorona },
     { id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, state: "dormant", forced: false, promise: null, load: loadLandsEnd },
     {
@@ -2921,6 +3120,188 @@ async function boot() {
       load: loadSutroBaths
     }
   ];
+
+  // One compact truth panel for the authored-site streaming contract. "ready"
+  // means a chunk/resource set is resident after first approach; runtime and
+  // scene state answer the more important question of whether it is doing work
+  // or drawing right now. The debug panel invokes this only while open (4 Hz).
+  const optionalSiteMonitorView: Record<string, string> = { summary: "—" };
+  for (const site of optionalWorldSites) optionalSiteMonitorView[site.id] = "dormant";
+
+  // Perf A/B toggles on the streaming monitor. Inspection is side-effect free:
+  // opening "/" must never suppress dormant sites or block first approach.
+  // Flipping one off explicitly hides + skips that site's work.
+  const optionalSitePerfEnabled: Record<OptionalSiteId, boolean> = {
+    goldman: true,
+    archery: true,
+    palace: true,
+    afterlight: true,
+    corona: true,
+    "lands-end": true,
+    "sutro-baths": true
+  };
+  let optionalSitePerfGating = false;
+  const OPTIONAL_SITE_GATE_ID: Partial<Record<OptionalSiteId, string>> = {
+    goldman: "pickleball",
+    archery: "archery",
+    palace: "palace-reverie",
+    afterlight: "afterlight"
+  };
+  const optionalSitePerfAllowed = (id: OptionalSiteId): boolean =>
+    !optionalSitePerfGating || optionalSitePerfEnabled[id];
+
+  const applyOptionalSitePerfGate = (site: OptionalWorldSite): void => {
+    if (!optionalSitePerfGating) return;
+    const on = optionalSitePerfEnabled[site.id];
+    const gateId = OPTIONAL_SITE_GATE_ID[site.id];
+    if (gateId) siteGate.suppress(gateId, !on);
+    switch (site.id) {
+      case "goldman":
+        if (goldenGateTennis) goldenGateTennis.group.visible = on;
+        break;
+      case "archery":
+        if (!on && archery) archery.root.visible = false;
+        break;
+      case "palace":
+        if (!on && palaceReverie) palaceReverie.root.visible = false;
+        break;
+      case "afterlight":
+        if (!on && afterlight) afterlight.root.visible = false;
+        break;
+      case "corona":
+        if (!on && coronaHeights) coronaHeights.group.visible = false;
+        break;
+      case "lands-end":
+        if (!on && landsEnd) landsEnd.group.visible = false;
+        break;
+      case "sutro-baths":
+        sutroBaths?.setPerfSuppressed(!on);
+        break;
+    }
+  };
+
+  const applyAllOptionalSitePerfGates = (): void => {
+    for (const site of optionalWorldSites) applyOptionalSitePerfGate(site);
+  };
+
+  const optionalSiteSceneState = (root: THREE.Object3D | null | undefined): string => {
+    if (!root?.parent) return "detached";
+    return root.visible ? "visible" : "hidden";
+  };
+
+  const optionalSiteRuntimeState = (
+    site: OptionalWorldSite
+  ): { runtime: "ACTIVE" | "DETAIL" | "STATIC" | "SLEEP"; sceneState: string } => {
+    switch (site.id) {
+      case "goldman":
+        return {
+          runtime: siteGate.awake("pickleball") ? "ACTIVE" : "STATIC",
+          sceneState: optionalSiteSceneState(goldenGateTennis?.group)
+        };
+      case "archery":
+        return {
+          runtime: siteGate.awake("archery") ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(archery?.root)
+        };
+      case "palace":
+        return {
+          runtime: siteGate.awake("palace-reverie") ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(palaceReverie?.root)
+        };
+      case "afterlight":
+        return {
+          runtime: siteGate.awake("afterlight") ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(afterlight?.root)
+        };
+      case "corona":
+        return {
+          runtime: !coronaHeights?.group.visible
+            ? "SLEEP"
+            : coronaHeights.activity.visible
+              ? "ACTIVE"
+              : "DETAIL",
+          sceneState: optionalSiteSceneState(coronaHeights?.group)
+        };
+      case "lands-end":
+        return {
+          runtime: landsEnd?.group.visible ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(landsEnd?.group)
+        };
+      case "sutro-baths":
+        return {
+          runtime: sutroBaths?.debugState().awake ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(sutroBaths?.group)
+        };
+    }
+  };
+
+  const refreshOptionalSiteMonitor = (): void => {
+    let ready = 0;
+    let working = 0;
+    for (const site of optionalWorldSites) {
+      const distance = Math.hypot(player.position.x - site.x, player.position.z - site.z);
+      const distanceText = `${Math.round(distance)}m`;
+      const availability = site.available?.() === false ? " | CLOSED" : "";
+      if (site.state !== "ready") {
+        optionalSiteMonitorView[site.id] = `${site.state} | — | — | ${distanceText}${availability}`;
+        continue;
+      }
+      ready++;
+      const state = optionalSiteRuntimeState(site);
+      if (state.runtime === "ACTIVE" || state.runtime === "DETAIL") working++;
+      const gated = optionalSitePerfGating && !optionalSitePerfEnabled[site.id] ? " | OFF" : "";
+      optionalSiteMonitorView[site.id] =
+        `ready | ${state.runtime} | ${state.sceneState} | ${distanceText}${availability}${gated}`;
+    }
+    optionalSiteMonitorView.summary =
+      `${ready}/${optionalWorldSites.length} resident | ${working} working`;
+  };
+
+  debugPanel.registerFeatureTuning({
+    id: "world-streaming-monitor",
+    title: "World streaming · optional sites",
+    build(folder) {
+      optionalSitePerfGating = true;
+      refreshOptionalSiteMonitor();
+      applyAllOptionalSitePerfGates();
+
+      const bindings = [
+        folder.addBinding(optionalSiteMonitorView, "summary", {
+          readonly: true,
+          label: "summary"
+        }),
+        ...optionalWorldSites.flatMap((site) => {
+          const toggle = folder.addBinding(optionalSitePerfEnabled, site.id, {
+            label: site.label
+          });
+          toggle.on("change", () => {
+            applyOptionalSitePerfGate(site);
+            if (optionalSitePerfEnabled[site.id]) {
+              void requestOptionalWorldSite(site, true);
+            }
+            refreshOptionalSiteMonitor();
+          });
+          return [
+            toggle,
+            folder.addBinding(optionalSiteMonitorView, site.id, {
+              readonly: true,
+              label: " "
+            })
+          ];
+        })
+      ];
+      refreshOptionalSiteMonitor();
+      return {
+        monitors: [{
+          refresh() {
+            refreshOptionalSiteMonitor();
+            applyAllOptionalSitePerfGates();
+            for (const binding of bindings) binding.refresh();
+          }
+        }]
+      };
+    }
+  });
   let optionalSiteQueue: Promise<void> = Promise.resolve();
 
   const requestOptionalWorldSite = (site: OptionalWorldSite, forced = false): Promise<void> => {
@@ -2932,7 +3313,7 @@ async function boot() {
       await revealedPromise;
       await waitForOptionalSiteStage();
       const distance = Math.hypot(player.position.x - site.x, player.position.z - site.z);
-      if (!site.forced && distance > OPTIONAL_SITE_RECHECK_RADIUS) {
+      if (!site.forced && (distance > OPTIONAL_SITE_RECHECK_RADIUS || site.available?.() === false)) {
         site.state = "dormant";
         site.forced = false;
         return;
@@ -2941,6 +3322,7 @@ async function boot() {
       await site.load();
       site.state = "ready";
       console.info(`[lazy-site] ${site.label} ready`);
+      applyOptionalSitePerfGate(site);
     }).catch((error) => {
       site.state = "failed";
       console.warn(`[lazy-site] ${site.label} unavailable:`, error);
@@ -2968,6 +3350,8 @@ async function boot() {
     let nearestDistanceSq = OPTIONAL_SITE_APPROACH_RADIUS * OPTIONAL_SITE_APPROACH_RADIUS;
     for (const site of optionalWorldSites) {
       if (site.state !== "dormant") continue;
+      if (!optionalSitePerfAllowed(site.id)) continue;
+      if (site.available?.() === false) continue;
       const dx = player.position.x - site.x;
       const dz = player.position.z - site.z;
       const distanceSq = dx * dx + dz * dz;
@@ -3267,11 +3651,6 @@ async function boot() {
       wildlandsGolfReady
     ].filter(Boolean));
 
-    // BehindTheScenes: the "how it was made" reading overlay (built once; a
-    // ?read= link may have already constructed it — see ensureBehindTheScenes).
-    // Closing does not re-lock — Esc (and backdrop/close) leave the cursor free.
-    await ensureBehindTheScenes();
-
   })()
     .catch((err) => {
       if (!japaneseTeaGarden) restoreTeaGardenBuildings();
@@ -3295,18 +3674,18 @@ async function boot() {
   // human identity gate. `?startscreen=1` keeps the real onboarding path easy
   // to inspect. Deployed browser tests opt in explicitly with `?autostart=1`.
   const autoEnter =
-    !parseReadLink(location.search) &&
+    !beganAsReadingVisit &&
     !bootQuery.has("startscreen") &&
     (import.meta.env.DEV || ["autostart", "demo", "profile"].some((key) => bootQuery.has(key)));
   // Explicit headless verification, demos and perf runs also skip the settle
   // hold because they measure live-frame behaviour rather than boot polish.
-  const skipGate = ["autostart", "demo"].some((key) => bootQuery.has(key));
+  const skipGate = ["demo", "skipsettle"].some((key) => bootQuery.has(key));
   // Local HMR reloads that were already in-game resume without the identity gate.
   // Production always waits for Start / Enter — returning players keep their saved
   // name prefilled in the form. Deployed tests still opt in via `?autostart` etc.
   // (handled by `autoEnter` above).
   const autoStartSaved =
-    !parseReadLink(location.search) &&
+    !beganAsReadingVisit &&
     !bootQuery.has("startscreen") &&
     Boolean(devReload?.started);
   const revealWorld = (reason = "settled") => {
@@ -3335,7 +3714,7 @@ async function boot() {
     // keeps the player's name instead of minting a fresh fun one.
     if (autoStartSaved) {
       // no click to consume, so pointer lock has no gesture — startGame still
-      // requests it (a no-op if the browser declines; first click re-locks)
+      // requests it (a no-op if the browser declines; first scene click re-locks)
       bootScreen.startNow(devReload!.name);
       return;
     }
@@ -3369,7 +3748,11 @@ async function boot() {
     else quietFrames = 0;
     // 15 s cap: a missing chunk or a genuinely slow connection falls back to
     // the old behaviour (reveal while still streaming) instead of wedging.
-    if (quietFrames >= 12) {
+    // One already-rendered covered destination frame plus this reveal tick are
+    // enough to prove the destination is stable: the browser cannot composite
+    // the removed cover until this tick's render has also returned. A 12-frame
+    // hold made slow GPUs wait much longer than fast ones after identical work.
+    if (quietFrames >= 2) {
       revealWorld();
       return;
     }
@@ -3400,7 +3783,7 @@ async function boot() {
     revealWorld("skip-gate");
   }
 
-  // A shared `?read=` link is handled earlier (see ensureBehindTheScenes): the
+  // A shared `?read=` link is handled earlier by startup.ts: the
   // panel is already opening over the loading folio while the world settles here
   // in the background. No auto-enter — the visitor meets the start screen only
   // when they close the panel.
@@ -3613,14 +3996,13 @@ async function boot() {
       }
     }
 
-    // Expanded map: gamepad pan / zoom / cursor / select / teleport / pin cycle.
+    // Expanded map: gamepad pan / zoom / select / teleport / pin cycle.
     // World + player are fully frozen while the map is open (kb or pad).
     if (minimap.expanded) {
       const axes = input.mapPadAxes();
       minimap.padPan(axes.lx, axes.ly, frameDt);
-      // RT zooms in, LT zooms out. Right stick moves the selection cursor.
-      minimap.padZoom(axes.rt - axes.lt, frameDt);
-      minimap.padMoveCursor(axes.rx, axes.ry, frameDt);
+      // RT / stick-up zoom in; LT / stick-down zoom out. Selector stays centered.
+      minimap.padZoom(axes.rt - axes.lt - axes.ry, frameDt);
       if (input.pressedRaw("Space")) minimap.padSelectAtCursor();
       if (input.firePressed) minimap.padTeleport();
       if (input.pressedRaw("Enter") || input.pressedRaw("NumpadEnter")) minimap.padTeleport();
@@ -3631,6 +4013,7 @@ async function boot() {
       dogParkAudio.setPaused(true);
       vehicleAudio.update(frameDt, null);
       swimAudio.update(frameDt, null);
+      updatePlayerFoley(frameDt, false);
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
@@ -3659,7 +4042,9 @@ async function boot() {
 
     // Crossing the generic approach radius requests at most one authored site;
     // the queue rechecks after the arrival-quiet window before importing it.
+    afterlight?.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
     updateOptionalWorldSites();
+    if (optionalSitePerfGating) applyAllOptionalSitePerfGates();
     // One wake/sleep pass over every registered minigame site (pickleball,
     // golf, …): a contains() test per site, setAwake only on transitions.
     if (!worldArrival.active) siteGate.update(player.position.x, player.position.z);
@@ -3667,7 +4052,10 @@ async function boot() {
     // The shared court keeps advancing even while the rest of the world is
     // paused, so a remote opponent never loses the match when authority opens
     // photo/pause controls.
-    const pickleballEConsumed = worldArrival.active ? false : updatePickleballGameplay(frameDt);
+    const pickleballEConsumed =
+      worldArrival.active || !optionalSitePerfAllowed("goldman")
+        ? false
+        : updatePickleballGameplay(frameDt);
     const playingPickleball = pickleballController?.playing ?? false;
     applyPickleballPlayerPose();
 
@@ -3677,6 +4065,7 @@ async function boot() {
     if (paused && freezePlayer && !worldArrival.active) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
       swimAudio.update(frameDt, null);
+      updatePlayerFoley(frameDt, false);
       // ambience keeps breathing while frozen — it's a chill/social feature
       nature.update(frameDt, {
         playerPos: player.renderPosition,
@@ -3716,12 +4105,12 @@ async function boot() {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
       if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-      if (
-        !playingPickleball &&
-        !input.suspended &&
-        player.mode === "surf" &&
-        (input.pressed("Space") || input.pressed("KeyX"))
-      ) player.requestSurfFlow();
+      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
+        player.requestSurfJump();
+      }
+      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
+        player.requestSurfFlow();
+      }
       if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
       chase.lookDir(aim);
       physics.maintainStreaming(player.position);
@@ -3758,7 +4147,9 @@ async function boot() {
       // stuck in the previous indoor/outdoor mode.
       if (!worldArrival.active) {
         citygenRing.current?.update(player.position, frameDt);
-        sutroBaths?.update(0, elapsed, player.renderPosition, camera, windGustValue());
+        if (optionalSitePerfAllowed("sutro-baths")) {
+          sutroBaths?.update(0, elapsed, player.renderPosition, camera, windGustValue());
+        }
       }
       if (inOrbit()) { chase.suspend(player); orbit.update(frameDt); }
       else {
@@ -3787,6 +4178,7 @@ async function boot() {
         speed: Math.hypot(player.velocity.x, player.velocity.z),
         vspeed: player.velocity.y
       });
+      updatePlayerFoley(frameDt, true);
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
@@ -3948,6 +4340,19 @@ async function boot() {
             const d = citygenRing.current.nearestDoor(player.position);
             if (d && d.dist < 2.6) {
               const r = citygenRing.current.toggleDoor(d.id);
+              if (r === "opened" || r === "closed" || r === "blocked") {
+                const dx = d.x - camera.position.x;
+                const dz = d.z - camera.position.z;
+                const distance = Math.hypot(dx, dz) || 1;
+                const pan = ((dx * Math.cos(chase.yaw) - dz * Math.sin(chase.yaw)) / distance) * 0.5;
+                doorAudio.event(r, {
+                  sourceId: d.id,
+                  pan,
+                  room: player.indoor ? 0.42 : 0.24,
+                  intensity: r === "blocked" ? 0.64 : 0.78,
+                  weight: 0.68
+                });
+              }
               if (r === "opened") hud.message("Door's open — step inside", 2.4);
               else if (r === "closed") hud.message("Door closed", 1.6);
               else if (r === "blocked") hud.message("Step out of the doorway first", 2);
@@ -3956,6 +4361,12 @@ async function boot() {
         }
       }
     }
+
+    // A claimed Afterlight participant owns locomotion, pointer/right-stick
+    // look, wheel and tool fire for this frame. Capture before the player fixed
+    // step so controller sticks move the two hands instead of the body/camera.
+    const afterlightControlsCaptured =
+      !worldArrival.active && (afterlight?.captureInput(input, frameDt, player) ?? false);
 
     // ".": factory reset for tweaks — every tweakpane value back to its
     // source-code default, saved tweaks wiped. Player stays put.
@@ -4096,6 +4507,17 @@ async function boot() {
         // is broadcast (origin+velocity+color) so everyone sees it fly.
         fireCooldown = 0.12;
         const col = graffiti.nextColor();
+        const paintColor = { r: col.r, g: col.g, b: col.b };
+        const soundPaintShot = (audio: PaintAudioInstance) => audio.shot({
+          color: paintColor,
+          pressure: 0.82,
+          intensity: 0.74,
+          pan: 0.035,
+          room: player.indoor ? 0.16 : 0.05,
+          sourceId: net.selfId
+        });
+        if (paintAudio) soundPaintShot(paintAudio);
+        else void ensurePaintAudio().then(soundPaintShot);
         // In a plane, fire down the nose, not the free-look camera: the mouse
         // steers the plane and the camera on different rates, so the view drifts
         // off the flight path. Inherit the full airspeed (not 0.6) and add the
@@ -4115,6 +4537,21 @@ async function boot() {
       } else if (tool === "bubbles" && fireCooldown <= 0) {
         fireCooldown = 0.14;
         bubbles.blow(rayOrigin, aim, player.velocity);
+        if (bubbleAudio) {
+          bubbleAudio.blow({
+            pan: 0.04,
+            intensity: 0.72,
+            duration: 0.24,
+            shimmer: 0.62
+          });
+        } else {
+          void ensureBubbleAudio().then((audio) => audio.blow({
+            pan: 0.04,
+            intensity: 0.72,
+            duration: 0.24,
+            shimmer: 0.62
+          }));
+        }
       }
     }
 
@@ -4190,13 +4627,19 @@ async function boot() {
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
     if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
+      player.requestSurfJump();
+    }
+    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
+      player.requestSurfFlow();
+    }
     if (
       !playingPickleball &&
+      !afterlightControlsCaptured &&
       !input.suspended &&
-      player.mode === "surf" &&
-      (input.pressed("Space") || input.pressed("KeyX"))
-    ) player.requestSurfFlow();
-    if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
+      player.mode === "walk" &&
+      input.pressed("Space")
+    ) player.requestWalkJump();
 
     chase.lookDir(aim); // drone moves along the true view direction (no shot bias)
     tracer.begin("physics");
@@ -4296,6 +4739,7 @@ async function boot() {
     }
     // high over the city streams buildings only — no park lawns / trees uploaded.
     // turbo while the loading cover is still up (see the settle gate)
+    if (!worldArrival.active) authoredRegions.update(player.position.x, player.position.z);
     tiles.update(player.position.x, player.position.z, highUp, !revealed);
     trafficLights?.update(player.position, performance.now() / 1000);
     streetLamps?.update(player.position);
@@ -4309,10 +4753,20 @@ async function boot() {
     // pickleball all read BALL_GLOW_NIGHT). Uses last sky.update's elevation —
     // fine; elevation only moves with the clock.
     syncBallGlowNight(sky.sunElevation);
-    if (!worldArrival.active) coronaHeights?.update(frameDt, elapsed, camera.position);
-    if (!worldArrival.active) landsEnd?.update(frameDt, elapsed, player.position);
-    if (!worldArrival.active && landsEnd && player.mode === "walk") {
-      landsEnd.keeper.updatePrompt(player.position.x, player.position.z, hud);
+    if (!worldArrival.active) {
+      if (optionalSitePerfAllowed("corona")) {
+        coronaHeights?.update(frameDt, elapsed, camera.position);
+      } else if (coronaHeights) {
+        coronaHeights.group.visible = false;
+      }
+      if (optionalSitePerfAllowed("lands-end")) {
+        landsEnd?.update(frameDt, elapsed, player.position);
+        if (landsEnd && player.mode === "walk") {
+          landsEnd.keeper.updatePrompt(player.position.x, player.position.z, hud);
+        }
+      } else if (landsEnd) {
+        landsEnd.group.visible = false;
+      }
     }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
@@ -4352,7 +4806,9 @@ async function boot() {
     oceanBeachKite?.update(frameDt, elapsed, player.renderPosition, windGustValue());
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
     if (!worldArrival.active) {
-      sutroBaths?.update(frameDt, elapsed, player.renderPosition, camera, windGustValue());
+      if (optionalSitePerfAllowed("sutro-baths")) {
+        sutroBaths?.update(frameDt, elapsed, player.renderPosition, camera, windGustValue());
+      }
       japaneseTeaGarden?.update(
         frameDt,
         elapsed,
@@ -4407,18 +4863,24 @@ async function boot() {
     if (!worldArrival.active) citygenRing.current?.update(player.position, frameDt);
     if (!worldArrival.active && !highUp) hunt.update(frameDt, elapsed, player.position);
     if (!worldArrival.active) golf?.update(frameDt, elapsed, { player, input, hud, chase, camera });
-    if (!worldArrival.active) palaceReverie?.update(frameDt, elapsed, player.position, hud);
-    if (!worldArrival.active) {
+    if (!worldArrival.active && optionalSitePerfAllowed("palace")) {
+      palaceReverie?.update(frameDt, elapsed, player.position, hud);
       const welcome = palaceReverie?.takeWelcome();
       if (welcome) hud.message(welcome, 6.2);
     }
     // Archery: site-gated, one boolean early-return when asleep with nothing live
-    if (!worldArrival.active) archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
+    if (!worldArrival.active && optionalSitePerfAllowed("archery")) {
+      archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
+    }
     // Afterlight: proximity collectibles, return flights, quest clock and the
     // completed sky performance; site-gated to a single asleep early return.
-    if (!worldArrival.active) afterlight?.update(frameDt, elapsed, player, hud);
+    if (!worldArrival.active && optionalSitePerfAllowed("afterlight")) {
+      afterlight?.update(frameDt, elapsed, player, hud);
+    }
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
-    if (!worldArrival.active) goldenGateTennis?.update(frameDt, elapsed, player.position);
+    if (!worldArrival.active && optionalSitePerfAllowed("goldman")) {
+      goldenGateTennis?.update(frameDt, elapsed, player.position);
+    }
     // Mission Dolores: dynamic code gate first, then shell/art proximity gates.
     if (!worldArrival.active) ensureMissionDolores(player.position);
     if (!worldArrival.active) missionDolores?.update(frameDt, elapsed, player.position, player.mode, hud);
@@ -4508,6 +4970,13 @@ async function boot() {
     // elapsed here let the visible crest and barrel envelope drift away after
     // loading, pause, or deterministic headless stepping.
     const surfaceTime = player.mode === "surf" ? player.time : elapsed;
+    water.echoes.beginFrame(surfaceTime, camera);
+    const activeEchoMesh = player.meshes[player.mode];
+    const birdReady = player.mode !== "bird" || Boolean(activeEchoMesh.userData.rig);
+    if (activeEchoMesh.visible && birdReady) {
+      emitEmbodimentWaterEcho(water.echoes, player);
+    }
+    water.echoes.endFrame();
     water.update(surfaceTime, camera.position, player.renderPosition, player.mode === "surf");
     const surfTubeState = player.surfTelemetry.tubeState;
     const surfTubeVisibility =
@@ -4598,6 +5067,7 @@ async function boot() {
       speed: Math.hypot(player.velocity.x, player.velocity.z),
       vspeed: player.velocity.y
     });
+    updatePlayerFoley(frameDt, true);
     // Keep the sim ticking for remotes / drone salvo / future area shows — no
     // player hold-to-fire binding (keyboard B / pad face B retired).
     fireworks.update(frameDt, {
@@ -4663,7 +5133,7 @@ async function boot() {
 
     // The in-world cursor: a glowing orb that rests where you're pointing. It
     // sits centre-screen while the mouse is captured (a soft aim reticle too),
-    // and rides the free mouse ray while Command is held. Runs after the entity
+    // and rides the free mouse ray while free-cursor mode is on (L). Runs after the entity
     // proxies are synced so its depth is world-aware: a hovered bus/car/avatar
     // lifts it onto their near face instead of letting the ray punch through to
     // the ground behind.
@@ -4808,7 +5278,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

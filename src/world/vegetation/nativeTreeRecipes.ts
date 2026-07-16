@@ -9,6 +9,8 @@ import type {
 export type NativeTreeSpecies =
   | "coast-redwood"
   | "monterey-cypress"
+  | "windswept-monterey-cypress"
+  | "monterey-pine"
   | "coast-live-oak"
   | "eucalyptus"
   | "japanese-black-pine"
@@ -61,7 +63,10 @@ const LODS: readonly TreeLodRecipe[] = [
     branchRetention: 1,
     foliageRetention: 1,
     maxBranchLevel: 3,
-    radialSegments: 7,
+    // The close pool is capped at 46 trees. Spend that bounded budget on a
+    // genuinely round trunk/primary-branch silhouette instead of exposing the
+    // former seven-sided prism a few metres from the camera.
+    radialSegments: 10,
     axialStride: 1,
     foliageScale: 1
   },
@@ -70,7 +75,7 @@ const LODS: readonly TreeLodRecipe[] = [
     branchRetention: 0.68,
     foliageRetention: 0.58,
     maxBranchLevel: 3,
-    radialSegments: 5,
+    radialSegments: 7,
     axialStride: 2,
     foliageScale: 1.12
   },
@@ -228,6 +233,97 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
     lods: lods(2),
     shadow: { opacity: 0.82, preferredLod: "landscape" },
     limits: { maxBranches: 192, maxFoliageAnchors: 1_600, maxVerticesPerLod: 72_000 }
+  },
+  "windswept-monterey-cypress": {
+    version: 1,
+    name: "windswept-monterey-cypress",
+    height: 15.5,
+    trunk: {
+      segments: 14,
+      radius: 0.62,
+      tipRadiusRatio: 0.085,
+      flare: 0.38,
+      curveDeg: 14,
+      curveNoiseDeg: 9,
+      leanDeg: 9,
+      leanAzimuthDeg: 68,
+      barkRepeat: 2.05
+    },
+    branchLevels: [
+      // Long, nearly horizontal primaries create the broad shelf silhouette in
+      // the Buena Vista references without needing oversized foliage cards.
+      level(10, 7, 0.24, 0.94, [0.42, 0.74], [0.3, 0.5], 79, 9, 0.015, {
+        downAngleJitterDeg: 8,
+        rotateJitterDeg: 28,
+        curveJitterDeg: 24
+      }),
+      level(4, 4, 0.34, 1, [0.3, 0.56], [0.28, 0.45], 52, 14, 0.035, {
+        rotateJitterDeg: 26
+      })
+    ],
+    foliage: foliage("needle", {
+      placement: {
+        minBranchLevel: 1,
+        start: 0.48,
+        anchorsPerMeter: 1.65,
+        tipBias: 1.8,
+        whorlSize: 2,
+        maxAnchors: 1_450
+      },
+      length: [0.62, 0.98],
+      width: [0.44, 0.7],
+      outwardAngleDeg: 38,
+      droop: 0.045,
+      stiffness: 0.66,
+      needleBlades: 2
+    }),
+    lods: lods(2),
+    shadow: { opacity: 0.8, preferredLod: "landscape" },
+    limits: { maxBranches: 196, maxFoliageAnchors: 1_450, maxVerticesPerLod: 72_000 }
+  },
+  "monterey-pine": {
+    version: 1,
+    name: "monterey-pine",
+    height: 20,
+    trunk: {
+      segments: 16,
+      radius: 0.56,
+      tipRadiusRatio: 0.055,
+      flare: 0.28,
+      curveDeg: 8,
+      curveNoiseDeg: 7,
+      leanDeg: 5,
+      barkRepeat: 2.3
+    },
+    branchLevels: [
+      // A tall clear bole and separated upper limbs give the grove a second
+      // vertical rhythm instead of repeating the dense redwood cone.
+      level(12, 6, 0.34, 0.95, [0.24, 0.46], [0.27, 0.45], 70, 10, 0.02, {
+        downAngleJitterDeg: 13,
+        rotateJitterDeg: 21,
+        curveJitterDeg: 18
+      }),
+      level(4, 4, 0.42, 1, [0.3, 0.55], [0.27, 0.43], 48, 11, 0.035)
+    ],
+    foliage: foliage("needle", {
+      placement: {
+        minBranchLevel: 1,
+        start: 0.56,
+        anchorsPerMeter: 1.35,
+        tipBias: 1.9,
+        whorlSize: 2,
+        maxAnchors: 1_100
+      },
+      length: [0.72, 1.08],
+      width: [0.4, 0.64],
+      outwardAngleDeg: 34,
+      droop: 0.055,
+      stiffness: 0.7,
+      needleBlades: 2
+    }),
+    lods: lods(2),
+    shadow: { opacity: 0.75, preferredLod: "landscape" },
+    limits: { maxBranches: 196, maxFoliageAnchors: 1_100, maxVerticesPerLod: 68_000 }
   },
   "coast-live-oak": {
     version: 1,
@@ -516,6 +612,22 @@ const STYLES: Record<NativeTreeSpecies, NativeTreeStyle> = {
     barkColor: 0x574034,
     barkAccent: 0x85624a,
     windAmplitude: 0.72
+  },
+  "windswept-monterey-cypress": {
+    foliageFamily: "conifer-needle",
+    foliageColor: 0x294b31,
+    foliageAccent: 0x687947,
+    barkColor: 0x604a3b,
+    barkAccent: 0x957257,
+    windAmplitude: 0.68
+  },
+  "monterey-pine": {
+    foliageFamily: "conifer-needle",
+    foliageColor: 0x304f32,
+    foliageAccent: 0x71804a,
+    barkColor: 0x4c3b31,
+    barkAccent: 0x7b5b43,
+    windAmplitude: 0.76
   },
   "coast-live-oak": {
     foliageFamily: "broadleaf",

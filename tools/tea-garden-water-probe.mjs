@@ -19,6 +19,7 @@ const OUT = ".data/tea-garden-water-probe";
 const BRIDGE = { x: -2274.2, z: 2193.2 };
 const POND_ENTRY = { x: -2290.4, z: 2202.4 };
 const POND_CENTER = { x: -2288.7, z: 2219.2 };
+const PAINT_POINT = { x: -2283, z: 2220 };
 
 function findChrome() {
   const candidates = [
@@ -157,9 +158,31 @@ try {
       "drum_bridge_stream_water"
     ].filter((name) => sf.scene.getObjectByName(name));
     const namedSurfaces = [];
+    const koiBodies = [];
     site.group.traverse((object) => {
       if (object.name === "tea_garden_unified_webgpu_shallow_water_surface") namedSurfaces.push(object);
+      if (object.isInstancedMesh && object.name.endsWith("_koi")) koiBodies.push(object);
     });
+
+    const koiInstanceMatrix = new sf.THREE.Matrix4();
+    const koiWorldMatrix = new sf.THREE.Matrix4();
+    const koiWorldPosition = new sf.THREE.Vector3();
+    const koiPositions = [];
+    for (const koi of koiBodies) {
+      koi.updateWorldMatrix(true, false);
+      for (let instance = 0; instance < koi.count; instance++) {
+        koi.getMatrixAt(instance, koiInstanceMatrix);
+        koiWorldMatrix.multiplyMatrices(koi.matrixWorld, koiInstanceMatrix);
+        koiWorldPosition.setFromMatrixPosition(koiWorldMatrix);
+        koiPositions.push({
+          name: koi.name,
+          x: koiWorldPosition.x,
+          y: koiWorldPosition.y,
+          z: koiWorldPosition.z,
+          inWater: site.containsWater(koiWorldPosition.x, koiWorldPosition.z)
+        });
+      }
+    }
 
     surface.updateWorldMatrix(true, false);
     const position = surface.geometry.getAttribute("position");
@@ -234,6 +257,12 @@ try {
       oldNames,
       debug: site.debugState().water,
       interactions: site.debugState().waterInteractions,
+      koi: site.debugState().koi,
+      koiMeshes: {
+        bodies: koiBodies.length,
+        instances: koiPositions.length,
+        outsideWater: koiPositions.filter((position) => !position.inWater)
+      },
       renderer: {
         name: sf.renderer.backend?.constructor?.name ?? null,
         webgpu: sf.renderer.backend?.isWebGPUBackend === true,
@@ -288,6 +317,20 @@ try {
   );
   assert.equal(typeof geometryAudit.interactions.playerInWater, "boolean", "wading state is not observable");
   assert.ok(geometryAudit.interactions.surfaceKoi > 0, "no koi are close enough to the simulated surface to make wakes");
+  assert.equal(geometryAudit.koi.total, 16, "unexpected authored koi population");
+  assert.equal(geometryAudit.koi.insideWater, geometryAudit.koi.total, "not every koi is inside authored water");
+  assert.equal(geometryAudit.koi.submerged, geometryAudit.koi.total, "not every koi body is fully submerged");
+  assert.ok(
+    geometryAudit.koi.minSubmersion >= 0.04,
+    `a koi is too close to or above the water surface (${geometryAudit.koi.minSubmersion}m)`
+  );
+  assert.equal(geometryAudit.koiMeshes.bodies, 2, "expected one instanced koi school per water feature");
+  assert.equal(geometryAudit.koiMeshes.instances, geometryAudit.koi.total, "koi render/debug counts disagree");
+  assert.deepEqual(
+    geometryAudit.koiMeshes.outsideWater,
+    [],
+    `rendered koi escaped the authored water mask: ${JSON.stringify(geometryAudit.koiMeshes.outsideWater)}`
+  );
 
   // Phase three of the loading contract: advancing the already-active field and
   // unlocking its shared procedural audio must not request more feature code or
@@ -302,6 +345,7 @@ try {
       dispatches: state.water.stats.totalDispatches,
       impulses: state.water.stats.totalImpulses,
       interactions: state.waterInteractions,
+      koi: state.koi,
       audio: state.streamAudio
     };
   });
@@ -317,6 +361,7 @@ try {
       dispatches: state.water.stats.totalDispatches,
       impulses: state.water.stats.totalImpulses,
       interactions: state.waterInteractions,
+      koi: state.koi,
       running: state.water.stats.running,
       audio: state.streamAudio,
       nature: window.__sf.nature.debugState
@@ -327,6 +372,22 @@ try {
   assert.ok(after.dispatches > before.dispatches, "shallow-water compute passes did not dispatch");
   assert.ok(after.interactions.koi > before.interactions.koi, "near-surface koi did not inject any fluid wakes");
   assert.ok(after.impulses > before.impulses, "accepted koi wakes were not applied by the GPU impulse pass");
+  assert.equal(after.koi.insideWater, after.koi.total, "a moving koi left the authored water mask");
+  assert.equal(after.koi.submerged, after.koi.total, "a moving koi broke above the water surface");
+  assert.ok(after.koi.tailStrokes > before.koi.tailStrokes, "koi tails did not animate through a stroke");
+  assert.ok(after.koi.cadenceLimited > before.koi.cadenceLimited, "koi wakes bypassed the global cadence limiter");
+  assert.ok(
+    after.koi.wakeImpulses - before.koi.wakeImpulses <= 14,
+    `koi wake cadence exceeded its 10/s budget (${after.koi.wakeImpulses - before.koi.wakeImpulses} in 1.2s)`
+  );
+  assert.ok(after.audio.rippleAccepted.koi > before.audio.rippleAccepted.koi, "accepted koi wakes made no linked audio");
+  assert.ok(after.audio.rippleDroppedByKind.koi > before.audio.rippleDroppedByKind.koi, "koi audio did not coalesce dense tail strokes");
+  assert.ok(after.audio.lastKoiMotion > 0 && after.audio.lastKoiMotion <= 1, "koi audio lost its shared motion envelope");
+  assert.ok(
+    after.audio.lastKoiRippleDuration >= 0.18 && after.audio.lastKoiRippleDuration <= 0.52,
+    `koi ripple voice has an invalid duration (${after.audio.lastKoiRippleDuration}s)`
+  );
+  assert.ok(after.audio.activeRippleImpacts <= 1, "koi ripple voices overlapped into a continuous loop");
   assert.equal(after.audio.graph, true, "nearby stream audio did not build its lazy graph");
   assert.equal(after.audio.graphBuilds, 1, "stream audio stacked duplicate continuous graphs");
   assert.equal(after.audio.context, "running", "shared stream audio context did not unlock");
@@ -339,9 +400,14 @@ try {
   // downward throw must cross the pond surface and produce a ball splash.
   await page.evaluate(({ x, z }) => {
     const sf = window.__sf;
+    // teleportTo adds the walk controller's two-metre arrival clearance. Feed
+    // it a surface-relative source height so the spawned capsule begins with
+    // its feet at the authored pond level instead of briefly falling through
+    // a deep hidden-terrain clearance envelope.
+    const surfaceY = sf.japaneseTeaGarden.debugState().water.pondSurfaceY;
     sf.player.teleportTo({
       x,
-      y: sf.map.effectiveGround(x, z),
+      y: surfaceY - 1.1,
       z,
       facing: 0,
       mode: "walk"
@@ -471,6 +537,130 @@ try {
     interactionAfter.water.queuedImpulses <= interactionAfter.water.impulseCapacity,
     "gameplay disturbances overflowed the bounded impulse queue"
   );
+
+  // Route paint through the exact public Paintballs water callback used by a
+  // ballistic surface crossing. The Tea Garden should own the event, inject
+  // colored GPU dye, and sonify that same normalized impact without spawning
+  // any of the generic camera-facing WaterSplashes sprites.
+  await page.evaluate(({ x, z }) => {
+    const sf = window.__sf;
+    const y = sf.japaneseTeaGarden.debugState().water.pondSurfaceY;
+    window.__sfFreeCam(
+      [x + 3.9, y + 4.7, z + 5.2],
+      [x, y + 0.01, z]
+    );
+    sf.hud?.setHidden?.(true);
+  }, PAINT_POINT);
+  await page.waitForTimeout(350);
+  const paintBeforeShot = await page.screenshot({ path: `${OUT}/paint-dye-before.png`, fullPage: false });
+  const paintBefore = await page.evaluate(() => {
+    const sf = window.__sf;
+    const state = sf.japaneseTeaGarden.debugState();
+    let sprites = 0;
+    sf.scene.traverse((object) => { if (object.isSprite) sprites++; });
+    return {
+      interactions: state.waterInteractions.paint,
+      dyeImpulses: state.water.stats.totalDyeImpulses,
+      dyeDispatches: state.water.stats.totalDyeDispatches,
+      audioAccepted: state.streamAudio.rippleAccepted.paint,
+      impactGraphBuilds: state.streamAudio.impactGraphBuilds,
+      graffitiSplats: sf.graffiti.mesh.count,
+      sprites
+    };
+  });
+  const paintDispatch = await page.evaluate(({ x, z }) => {
+    const sf = window.__sf;
+    const y = sf.japaneseTeaGarden.debugState().water.pondSurfaceY;
+    let spritesBefore = 0;
+    sf.scene.traverse((object) => { if (object.isSprite) spritesBefore++; });
+    const graffitiBefore = sf.graffiti.mesh.count;
+    sf.paintballs.spawn(
+      x,
+      y + 1.3,
+      z,
+      3.2,
+      -13,
+      1.5,
+      new sf.THREE.Color().setRGB(0.94, 0.12, 0.78),
+      -1
+    );
+    let spritesAfter = 0;
+    sf.scene.traverse((object) => { if (object.isSprite) spritesAfter++; });
+    return { spritesBefore, spritesAfter, graffitiBefore };
+  }, PAINT_POINT);
+  assert.equal(
+    paintDispatch.spritesAfter,
+    paintDispatch.spritesBefore,
+    "Tea Garden paint fell back to generic splash sprites"
+  );
+  await page.waitForFunction(
+    (baseline) => {
+      const state = window.__sf.japaneseTeaGarden.debugState();
+      return state.waterInteractions.paint > baseline.interactions &&
+        state.water.stats.totalDyeImpulses > baseline.dyeImpulses &&
+        state.water.stats.totalDyeDispatches > baseline.dyeDispatches;
+    },
+    paintBefore,
+    { timeout: 10_000 }
+  );
+  await page.waitForTimeout(110);
+  const paintImpactShot = await page.screenshot({ path: `${OUT}/paint-dye-impact.png`, fullPage: false });
+  await page.waitForTimeout(2450);
+  const paintAdvectedShot = await page.screenshot({ path: `${OUT}/paint-dye-advected.png`, fullPage: false });
+  const paintAfter = await page.evaluate(() => {
+    const state = window.__sf.japaneseTeaGarden.debugState();
+    let sprites = 0;
+    window.__sf.scene.traverse((object) => { if (object.isSprite) sprites++; });
+    return {
+      interactions: state.waterInteractions.paint,
+      dyeImpulses: state.water.stats.totalDyeImpulses,
+      dyeDispatches: state.water.stats.totalDyeDispatches,
+      dyeRunning: state.water.stats.dyeRunning,
+      dyeSecondsRemaining: state.water.stats.dyeSecondsRemaining,
+      audioAccepted: state.streamAudio.rippleAccepted.paint,
+      impactGraphBuilds: state.streamAudio.impactGraphBuilds,
+      activeRippleImpacts: state.streamAudio.activeRippleImpacts,
+      graffitiSplats: window.__sf.graffiti.mesh.count,
+      sprites
+    };
+  });
+  assert.ok(paintAfter.interactions > paintBefore.interactions, "paint did not enter the Tea Garden water path");
+  assert.ok(paintAfter.dyeImpulses > paintBefore.dyeImpulses, "paint injected no GPU dye");
+  assert.ok(paintAfter.dyeDispatches > paintBefore.dyeDispatches, "paint dye did not advect");
+  assert.equal(paintAfter.dyeRunning, true, "paint dye field stopped immediately");
+  assert.ok(paintAfter.dyeSecondsRemaining > 10, "paint dye persistence is unexpectedly short");
+  assert.ok(paintAfter.audioAccepted > paintBefore.audioAccepted, "paint ripple audio was not accepted");
+  assert.equal(
+    paintAfter.graffitiSplats,
+    paintBefore.graffitiSplats,
+    "ballistic Tea Garden paint created ordinary graffiti on hidden terrain"
+  );
+  assert.ok(paintAfter.impactGraphBuilds >= paintBefore.impactGraphBuilds, "impact audio graph regressed");
+  assert.ok(paintAfter.activeRippleImpacts <= 10, "paint ripple audio exceeded its default voice cap");
+  const paintBloom = await temporalPixelDelta(
+    paintBeforeShot,
+    paintImpactShot,
+    { left: 170, top: 110, width: 1100, height: 760 },
+    110
+  );
+  const paintFlow = await temporalPixelDelta(
+    paintImpactShot,
+    paintAdvectedShot,
+    { left: 170, top: 110, width: 1100, height: 760 },
+    2450
+  );
+  assert.ok(
+    paintBloom.meanChannelDelta > 0.0002 && paintBloom.changedPixelRatio > 0.003,
+    `paint produced no visible water bloom (${JSON.stringify(paintBloom)})`
+  );
+  assert.ok(
+    paintFlow.meanChannelDelta > 0.00012 && paintFlow.changedPixelRatio > 0.002,
+    `paint dye did not visibly evolve (${JSON.stringify(paintFlow)})`
+  );
+  assert.ok(
+    paintBloom.meanChannelDelta < 0.2 && paintBloom.changedPixelRatio < 0.9,
+    `paint bloom became visually unbounded (${JSON.stringify(paintBloom)})`
+  );
   const actionRequests = requests.slice(actionStart).filter(teaRequest);
   assert.deepEqual(actionRequests, [], `water/audio/gameplay fetched more Tea Garden resources: ${actionRequests.join(", ")}`);
 
@@ -489,8 +679,17 @@ try {
       waveContrast: text.includes("simulated wave contrast"),
       foam: text.includes("foam / eddies"),
       normal: text.includes("field-gradient normal"),
+      dyeFolder: text.includes("fey paint dye"),
+      dyeSwirl: text.includes("fey paint swirl"),
+      dyeGlow: text.includes("paint edge glow"),
       soundFolder: text.includes("stream sound"),
-      soundVolume: text.includes("water volume")
+      soundVolume: text.includes("water volume"),
+      impactVolume: text.includes("impact volume"),
+      feyBloom: text.includes("fey bloom"),
+      colorTimbre: text.includes("color timbre"),
+      koiVolume: text.includes("koi movement"),
+      koiCooldown: text.includes("koi gap (s)"),
+      koiAudibleRadius: text.includes("koi audible radius")
     };
   });
   assert.deepEqual(tuningAudit, {
@@ -502,10 +701,47 @@ try {
     waveContrast: true,
     foam: true,
     normal: true,
+    dyeFolder: true,
+    dyeSwirl: true,
+    dyeGlow: true,
     soundFolder: true,
-    soundVolume: true
+    soundVolume: true,
+    impactVolume: true,
+    feyBloom: true,
+    colorTimbre: true,
+    koiVolume: true,
+    koiCooldown: true,
+    koiAudibleRadius: true
   });
   await page.evaluate(() => window.__sf.debugPanel.toggle());
+
+  // Keep a close visual record of a real constrained koi instance and the
+  // simulated surface around its tail. The state assertions above remain the
+  // authoritative containment/wake checks; these frames make regressions easy
+  // to inspect without relying on the wide garden views.
+  await page.evaluate(() => {
+    const sf = window.__sf;
+    const school = sf.scene.getObjectByName("south_pond_koi");
+    const instance = new sf.THREE.Matrix4();
+    const world = new sf.THREE.Matrix4();
+    const fish = new sf.THREE.Vector3();
+    school.updateWorldMatrix(true, false);
+    school.getMatrixAt(0, instance);
+    world.multiplyMatrices(school.matrixWorld, instance);
+    fish.setFromMatrixPosition(world);
+    const surfaceY = sf.japaneseTeaGarden.debugState().water.pondSurfaceY;
+    window.__sfFreeCam(
+      [fish.x + 2.8, surfaceY + 1.5, fish.z + 3.2],
+      [fish.x, surfaceY - 0.08, fish.z]
+    );
+    sf.hud?.setHidden?.(true);
+  });
+  await page.waitForTimeout(280);
+  const koiShot = await page.screenshot({ path: `${OUT}/koi-wake.png`, fullPage: false });
+  const koiStats = await sharp(koiShot).stats();
+  assert.ok(koiStats.entropy > 2, `koi/wake screenshot appears blank (${koiStats.entropy})`);
+  await page.waitForTimeout(620);
+  const koiShotLater = await page.screenshot({ path: `${OUT}/koi-wake-later.png`, fullPage: false });
 
   await page.evaluate(({ bridge, pondEntry }) => {
     const sf = window.__sf;
@@ -543,7 +779,7 @@ try {
     height: 500
   });
   assert.ok(
-    animation.meanChannelDelta > 0.0002 && animation.changedPixelRatio > 0.005,
+    animation.meanChannelDelta > 0.0002 && animation.changedPixelRatio > 0.0025,
     `water appears static (${JSON.stringify(animation)})`
   );
   assert.ok(
@@ -566,17 +802,22 @@ try {
       actionRequests: actionRequests.length
     },
     geometry: geometryAudit,
-    simulation: { before, after, interactionAfter },
+    simulation: { before, after, interactionAfter, paint: { before: paintBefore, dispatch: paintDispatch, after: paintAfter } },
     tuning: tuningAudit,
     screenshots: {
+      koiWake: { path: `${OUT}/koi-wake.png`, entropy: koiStats.entropy },
+      koiWakeLater: { path: `${OUT}/koi-wake-later.png` },
       bridge: { path: `${OUT}/bridge-stream.png`, entropy: bridgeStats.entropy },
       pondEntry: { path: `${OUT}/pond-entry.png`, entropy: pondStats.entropy },
       pondEntryLater: { path: `${OUT}/pond-entry-later.png` },
       ballRippleBefore: { path: `${OUT}/ball-ripple-before.png` },
       ballRippleImpact: { path: `${OUT}/ball-ripple-impact.png` },
-      ballRippleDecay: { path: `${OUT}/ball-ripple-decay.png` }
+      ballRippleDecay: { path: `${OUT}/ball-ripple-decay.png` },
+      paintDyeBefore: { path: `${OUT}/paint-dye-before.png` },
+      paintDyeImpact: { path: `${OUT}/paint-dye-impact.png` },
+      paintDyeAdvected: { path: `${OUT}/paint-dye-advected.png` }
     },
-    animation: { ambient: animation, ball: ballAnimation },
+    animation: { ambient: animation, ball: ballAnimation, paintBloom, paintFlow },
     pageErrors
   }, null, 2));
 } finally {

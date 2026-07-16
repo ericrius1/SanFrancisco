@@ -1,16 +1,17 @@
-// Production-only three-phase network contract for dynamically authored sites.
+// Production-only network contract for dynamically authored sites.
 //
 // The authored-site chunks intentionally retain Vite's generic `index-<hash>.js`
 // names. Before launching Chrome this probe reads dist/index.html, excludes its
-// main entry, then identifies the Corona Heights and Lands End chunks from
+// main entry, then identifies the Afterlight, Corona Heights, and Lands End chunks from
 // stable strings in their compiled contents. That keeps the assertions tied to
 // the exact local production build without baking a content hash into this file.
 //
 // Phases:
-//   1. clean boot at distant Ocean Beach: neither authored-site chunk/asset;
-//   2. force Corona through __sf.ensureOptionalWorldSite: Corona only, ready;
-//   3. force Lands End: only the newly requested Lands End feature, no Corona
-//      refetch.
+//   1. clean boot at distant Ocean Beach: no authored-site chunk/asset;
+//   2. force Afterlight through __sf.ensureOptionalWorldSite: Afterlight only;
+//   3. teleport to a participant and take over: no follow-on feature request;
+//   4. force Corona: Corona only, ready;
+//   5. force Lands End: only the newly requested Lands End feature, no refetch.
 //
 // Usage (serve this worktree's dist directory first):
 //   SF_PROBE_URL=http://127.0.0.1:5240 \
@@ -33,6 +34,11 @@ const FEATURE_TIMEOUT_MS = 120_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const FEATURE_SPECS = {
+  afterlight: {
+    label: "Afterlight",
+    markers: ["YOUR HANDS ENTER THE CIRCUIT", "afterlight-web-veins"],
+    relatedMarkers: []
+  },
   corona: {
     label: "Corona Heights",
     // Both strings live in the park's top-level dynamic chunk. The separately
@@ -146,21 +152,27 @@ async function discoverProductionFeatures() {
     return { primary, related, media: [...media].sort() };
   };
 
+  const afterlight = discover(FEATURE_SPECS.afterlight);
   const corona = discover(FEATURE_SPECS.corona);
   const landsEnd = discover(FEATURE_SPECS.landsEnd);
-  const overlap = corona.primary.filter((name) => landsEnd.primary.includes(name));
-  if (overlap.length > 0) throw new Error(`Feature discovery overlapped: ${overlap.join(", ")}`);
+  const primaryChunks = [afterlight, corona, landsEnd].flatMap((feature) => feature.primary);
+  const overlap = primaryChunks.filter((name, index) => primaryChunks.indexOf(name) !== index);
+  if (overlap.length > 0) throw new Error(`Feature discovery overlapped: ${[...new Set(overlap)].join(", ")}`);
 
   return {
     distIndex: path.join(DIST, "index.html"),
     mainEntry,
     scannedChunks: names.length,
+    afterlight,
     corona,
     landsEnd
   };
 }
 
 function makeClassifier(discovery) {
+  const afterlightPrimary = new Set(discovery.afterlight.primary);
+  const afterlightRelated = new Set(discovery.afterlight.related);
+  const afterlightMedia = new Set(discovery.afterlight.media);
   const coronaPrimary = new Set(discovery.corona.primary);
   const coronaRelated = new Set(discovery.corona.related);
   const coronaMedia = new Set(discovery.corona.media);
@@ -176,6 +188,9 @@ function makeClassifier(discovery) {
     const basename = path.posix.basename(pathname);
     const kinds = [];
     if (basename === discovery.mainEntry) kinds.push("main-entry");
+    if (afterlightPrimary.has(basename)) kinds.push("afterlight-chunk");
+    if (afterlightRelated.has(basename)) kinds.push("afterlight-related-chunk");
+    if (afterlightMedia.has(pathname)) kinds.push("afterlight-asset");
     if (coronaPrimary.has(basename)) kinds.push("corona-chunk");
     if (coronaRelated.has(basename)) kinds.push("corona-related-chunk");
     if (coronaMedia.has(pathname)) kinds.push("corona-asset");
@@ -190,7 +205,9 @@ function makeClassifier(discovery) {
 }
 
 function isFeatureRecord(record) {
-  return record.kinds.some((kind) => kind.startsWith("corona-") || kind.startsWith("lands-end-"));
+  return record.kinds.some((kind) =>
+    kind.startsWith("afterlight-") || kind.startsWith("corona-") || kind.startsWith("lands-end-")
+  );
 }
 
 function publicRecord(record) {
@@ -228,7 +245,7 @@ async function siteState(page) {
   return page.evaluate(() => {
     const sf = window.__sf;
     const sites = Object.fromEntries(
-      ["corona", "lands-end"].map((id) => {
+      ["afterlight", "corona", "lands-end"].map((id) => {
         const site = sf.optionalWorldSites.find((candidate) => candidate.id === id);
         return [id, site ? {
           state: site.state,
@@ -242,10 +259,13 @@ async function siteState(page) {
     return {
       player: { x: sf.player.position.x, z: sf.player.position.z },
       sites,
+      afterlightReady: Boolean(sf.afterlight),
       coronaReady: Boolean(sf.coronaHeights),
       landsEndReady: Boolean(sf.landsEnd),
+      afterlightAttached: Boolean(sf.scene.getObjectByName("afterlight-grove")?.parent),
       coronaAttached: Boolean(sf.scene.getObjectByName("corona_heights_park")?.parent),
       landsEndAttached: Boolean(sf.scene.getObjectByName("landsEnd")?.parent),
+      takeover: sf.afterlight?.debugState?.().takeover ?? null,
       renderIdle: sf.renderIdle?.() === true
     };
   });
@@ -412,12 +432,73 @@ async function main() {
       records.filter((record) => hasKind(record, "vite-dev-runtime")).map(publicRecord));
     expect("boot-far-from-authored-sites", Object.values(bootState.sites).every((site) => site && site.distance > 1_500), bootState);
     expect("boot-sites-remain-dormant", Object.values(bootState.sites).every((site) => site?.state === "dormant"), bootState);
+    expect("boot-no-afterlight-chunk-or-asset", !boot.some((record) => record.kinds.some((kind) => kind.startsWith("afterlight-"))),
+      boot.filter(isFeatureRecord).map(publicRecord));
     expect("boot-no-corona-chunk-or-asset", !boot.some((record) => record.kinds.some((kind) => kind.startsWith("corona-"))),
       boot.filter(isFeatureRecord).map(publicRecord));
     expect("boot-no-lands-end-chunk-or-asset", !boot.some((record) => record.kinds.some((kind) => kind.startsWith("lands-end-"))),
       boot.filter(isFeatureRecord).map(publicRecord));
-    expect("boot-no-authored-site-root", !bootState.coronaReady && !bootState.landsEndReady &&
-      !bootState.coronaAttached && !bootState.landsEndAttached, bootState);
+    expect("boot-no-authored-site-root", !bootState.afterlightReady && !bootState.coronaReady && !bootState.landsEndReady &&
+      !bootState.afterlightAttached && !bootState.coronaAttached && !bootState.landsEndAttached, bootState);
+
+    // Afterlight is a world-time exhibit (21:00–05:00). Forced loading remains
+    // useful for the request-waterfall contract, but its interaction root only
+    // wakes during the authored night window.
+    await page.evaluate(() => window.__sf.sky.setTimeOfDay(22));
+
+    setPhase("afterlight");
+    await ensureSite(page, "afterlight");
+    await page.waitForFunction(() => Boolean(window.__sf.afterlight), null, { timeout: FEATURE_TIMEOUT_MS });
+    await waitForFeatureQuiet("afterlight");
+    const afterlightState = await siteState(page);
+    const afterlight = phaseRecords("afterlight");
+    const afterlightPrimaryRequests = afterlight.filter((record) => hasKind(record, "afterlight-chunk"));
+    const afterlightRequestedPrimary = [...new Set(afterlightPrimaryRequests.map((record) => record.basename))].sort();
+    expect("afterlight-reaches-ready", afterlightState.sites.afterlight?.state === "ready" &&
+      afterlightState.afterlightReady, afterlightState);
+    expect("afterlight-loads-discovered-feature-chunk-once",
+      JSON.stringify(afterlightRequestedPrimary) === JSON.stringify(discovery.afterlight.primary) &&
+      afterlightPrimaryRequests.length === 1,
+      { expected: discovery.afterlight.primary, requested: afterlightPrimaryRequests.map(publicRecord) });
+    expect("afterlight-activation-loads-only-afterlight-entry",
+      afterlight.filter(isFeatureRecord).length === 1 && afterlightPrimaryRequests.length === 1,
+      afterlight.filter(isFeatureRecord).map(publicRecord));
+
+    setPhase("afterlight-action");
+    await page.evaluate(() => {
+      const sf = window.__sf;
+      const x = 208 + Math.cos(0.4) * 9.2;
+      const z = 2456 + Math.sin(0.4) * 9.2;
+      const y = sf.map.groundHeight(x, z);
+      sf.player.teleportTo({ x, y: y + 1.5, z, facing: Math.PI, mode: "walk" });
+    });
+    await page.waitForFunction(() => Boolean(window.__sf.afterlight?.root?.parent), null, { timeout: FEATURE_TIMEOUT_MS });
+    await page.keyboard.press("e");
+    await page.waitForFunction(
+      () => window.__sf.afterlight?.debugState?.().takeover?.index != null,
+      null,
+      { timeout: 15_000 }
+    );
+    await waitForFeatureQuiet("afterlight-action");
+    const afterlightActionState = await siteState(page);
+    const afterlightAction = phaseRecords("afterlight-action");
+    expect("afterlight-takeover-captures-controls",
+      afterlightActionState.takeover?.index === 0 &&
+      afterlightActionState.takeover?.playerEmbodied === true &&
+      afterlightActionState.takeover?.web?.solver === "verlet" &&
+      afterlightActionState.takeover?.web?.nodes <= 400 &&
+      afterlightActionState.takeover?.web?.links <= 800 &&
+      afterlightActionState.takeover?.web?.detailMultiplier <= 0.75,
+      afterlightActionState);
+    expect("afterlight-takeover-loads-no-follow-on-feature-resources",
+      afterlightAction.filter(isFeatureRecord).length === 0,
+      afterlightAction.filter(isFeatureRecord).map(publicRecord));
+    await page.keyboard.press("e");
+    await page.waitForFunction(
+      () => window.__sf.afterlight?.debugState?.().takeover?.index == null,
+      null,
+      { timeout: 15_000 }
+    );
 
     setPhase("corona");
     await ensureSite(page, "corona");
@@ -427,6 +508,8 @@ async function main() {
     const corona = phaseRecords("corona");
     const coronaPrimaryRequests = corona.filter((record) => hasKind(record, "corona-chunk"));
     const coronaRequestedPrimary = [...new Set(coronaPrimaryRequests.map((record) => record.basename))].sort();
+    const coronaRelatedRequests = corona.filter((record) => hasKind(record, "corona-related-chunk"));
+    const coronaRequestedRelated = [...new Set(coronaRelatedRequests.map((record) => record.basename))].sort();
     expect("corona-reaches-ready", coronaState.sites.corona?.state === "ready" && coronaState.coronaReady &&
       coronaState.coronaAttached, coronaState);
     expect("corona-loads-discovered-feature-chunk-once",
@@ -435,9 +518,14 @@ async function main() {
     expect("corona-activation-does-not-load-lands-end",
       !corona.some((record) => record.kinds.some((kind) => kind.startsWith("lands-end-"))),
       corona.filter(isFeatureRecord).map(publicRecord));
-    expect("corona-activation-loads-only-corona-entry",
-      corona.filter(isFeatureRecord).length === 1 && coronaPrimaryRequests.length === 1,
+    expect("corona-activation-does-not-refetch-afterlight",
+      !corona.some((record) => record.kinds.some((kind) => kind.startsWith("afterlight-"))),
       corona.filter(isFeatureRecord).map(publicRecord));
+    expect("corona-activation-loads-only-discovered-corona-feature",
+      JSON.stringify(coronaRequestedRelated) === JSON.stringify(discovery.corona.related) &&
+      coronaRelatedRequests.length === discovery.corona.related.length &&
+      corona.filter(isFeatureRecord).length === coronaPrimaryRequests.length + coronaRelatedRequests.length,
+      { expectedRelated: discovery.corona.related, requested: corona.filter(isFeatureRecord).map(publicRecord) });
 
     setPhase("lands-end");
     await ensureSite(page, "lands-end");
@@ -456,6 +544,9 @@ async function main() {
       { expected: discovery.landsEnd.primary, requested: landsEnd.filter(isFeatureRecord).map(publicRecord) });
     expect("lands-end-does-not-refetch-corona",
       !landsEnd.some((record) => record.kinds.some((kind) => kind.startsWith("corona-"))),
+      landsEnd.filter(isFeatureRecord).map(publicRecord));
+    expect("lands-end-does-not-refetch-afterlight",
+      !landsEnd.some((record) => record.kinds.some((kind) => kind.startsWith("afterlight-"))),
       landsEnd.filter(isFeatureRecord).map(publicRecord));
     expect("corona-remains-ready-after-lands-end", landsEndState.sites.corona?.state === "ready" &&
       landsEndState.coronaReady && landsEndState.coronaAttached, landsEndState);
@@ -490,6 +581,12 @@ async function main() {
       checks,
       phases: {
         boot: { state: bootState, summary: summarize(boot), requests: boot.map(publicRecord) },
+        afterlight: { state: afterlightState, summary: summarize(afterlight), requests: afterlight.map(publicRecord) },
+        afterlightAction: {
+          state: afterlightActionState,
+          summary: summarize(afterlightAction),
+          requests: afterlightAction.map(publicRecord)
+        },
         corona: { state: coronaState, summary: summarize(corona), requests: corona.map(publicRecord) },
         landsEnd: { state: landsEndState, summary: summarize(landsEnd), requests: landsEnd.map(publicRecord) }
       },
@@ -500,10 +597,13 @@ async function main() {
     await writeFile(RESULT_PATH, `${JSON.stringify(result, null, 2)}\n`);
 
     console.log(`[optional-site-lazy] entry ${discovery.mainEntry}`);
+    console.log(`[optional-site-lazy] Afterlight chunk ${discovery.afterlight.primary.join(", ")}`);
     console.log(`[optional-site-lazy] Corona chunk ${discovery.corona.primary.join(", ")}`);
     console.log(`[optional-site-lazy] Lands End chunk ${discovery.landsEnd.primary.join(", ")}`);
     for (const check of checks) console.log(`[${check.pass ? "PASS" : "FAIL"}] ${check.id}`);
     console.log(`[optional-site-lazy] boot ${summarize(boot).featureRequests} feature request(s)`);
+    console.log(`[optional-site-lazy] Afterlight ${summarize(afterlight).featureRequests} feature request(s)`);
+    console.log(`[optional-site-lazy] Afterlight action ${summarize(afterlightAction).featureRequests} feature request(s)`);
     console.log(`[optional-site-lazy] Corona ${summarize(corona).featureRequests} feature request(s)`);
     console.log(`[optional-site-lazy] Lands End ${summarize(landsEnd).featureRequests} feature request(s)`);
     console.log(`[optional-site-lazy] report ${RESULT_PATH}`);

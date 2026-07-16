@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "regions": [
+    {
+      "id": "sutro-baths",
+      "label": "Sutro Baths · 1896",
+      "source": "assets-src/world/sites/sutro-baths.blend",
+      "collection": "SITE_sutro_baths",
+      "rootName": "sutro_baths_restored_architecture",
+      "asset": "/regions/sutro-baths.glb",
+      "tile": "1_12",
+      "colliderBase": 110000,
+      "bounds": {
+        "centerX": -6125,
+        "centerZ": 1117,
+        "halfX": 55.5,
+        "halfZ": 81.1,
+        "yaw": -0.077
+      },
+      "arrival": {
+        "spawnKey": "sutroBaths",
+        "x": -6084.38916,
+        "y": 31.26,
+        "z": 1183.420776,
+        "heading": 1.942
+      },
+      "arrivalDistance": 260,
+      "loadDistance": 1100,
+      "unloadDistance": 1600,
+      "replaces": [
+        { "tile": "1_12", "index": 0 }
+      ],
+      "terrain": {
+        "mode": "flat-ownership",
+        "groundY": 2.07,
+        "footprints": [
+          {
+            "id": "beach-entry",
+            "centerX": -6175.418457,
+            "centerZ": 1146.499023,
+            "halfX": 9.5,
+            "halfZ": 3.45,
+            "yaw": -0.077,
+            "feather": 0.35
+          },
+          {
+            "id": "hall",
+            "centerX": -6125,
+            "centerZ": 1117,
+            "halfX": 39.05,
+            "halfZ": 76.45,
+            "yaw": -0.077,
+            "feather": 0.22
+          }
+        ]
+      }
+    }
+  ]
+}

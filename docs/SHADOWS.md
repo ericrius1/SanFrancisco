@@ -10,11 +10,25 @@ FOV, orbit, shake, and indoor transitions cannot resize or phase-shift them.
 | Local | 96 m | 1536² | 6.25 cm | Stable nearby static geometry/proxies | 4.5 m anchor, 0.05° sun, or local content revision |
 | Far | 1024 m | 1024² | 1 m | Coarse skyline/massing proxies only | 8 m anchor, 0.15° sun, or far content revision |
 
-The three factors are selected with real light-space coordinates. Hero affects
-only its 32 m projection square. Local hands off to far across 42–48 m, and the
-raster far map hands off to the world-locked field across 420–500 m. Do not
-multiply the field over the far map: they represent the same direct occlusion
-and must replace/crossfade one another.
+The three factors are selected with real light-space coordinates. Every domain
+uses radial distance in the light's projection plane, so its transition cannot
+draw the square shape of its orthographic texture across the terrain. Hero
+fades to neutral over its final 5 m and finishes 0.125 m inside the map. Local
+hands off continuously to far over a broad 24 m feather (23.75–47.75 m), which
+prevents long, nearly solid low-sun shadows from revealing the local projection
+boundary anywhere in the world. Once the world-locked field has valid coverage
+it owns the far domain outside that local feather; the raster far map is the
+fallback during low/stale sun or a field rebuild. That fallback fades over its
+final 96 m and reaches neutral 4 m inside its projection edge. Do not multiply
+the field over the far map: they represent the same direct occlusion and must
+replace/crossfade one another.
+
+Projection-edge fades must be radial, broad enough for a dark field rather than
+only an isolated object shadow, and finish *inside* the corresponding
+orthographic map. Ending at or beyond the camera extent lets PCF filtering
+repeat a boundary texel into a long light-space wedge. A narrow or square-metric
+fade can still expose the projection footprint as a screen-spanning rectangle
+under a grazing sun even when the sampling itself is technically in bounds.
 
 ## Caster layers
 
@@ -67,6 +81,10 @@ npm run test:shadows:far-field
 npm run test:shadows:contact
 npm run test:shadows:temporal
 ```
+
+The analysis command includes the projection-edge contract: monotonic hero and
+local retirement, a broad local feather, fully neutral samples before map
+edges, and an inside-safe far handoff.
 
 The temporal probe uses a hero-only moving caster and neutral receiver material
 to detect stationary shimmer and 2/4-frame update impulses. It manually advances

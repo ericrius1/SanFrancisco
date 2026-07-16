@@ -59,7 +59,11 @@ const costumeSource = readFileSync(new URL("../src/world/japaneseTeaGarden/hiroC
 const guideSource = readFileSync(new URL("../src/world/japaneseTeaGarden/guide.ts", import.meta.url), "utf8");
 const teaMasterSource = readFileSync(new URL("../src/world/japaneseTeaGarden/teaMaster.ts", import.meta.url), "utf8");
 const teaGardenSources = [mainSource, tourSource, architectureSource, costumeSource, guideSource, teaMasterSource].join("\n");
-assert.match(mainSource, /excludeBuilding:\s*isTeaGardenBuilding/, "CityGen is not excluding authored Tea Garden buildings");
+assert.match(
+  mainSource,
+  /excludeBuilding:[\s\S]{0,240}isTeaGardenBuilding\(key, index\)/,
+  "CityGen is not excluding authored Tea Garden buildings"
+);
 assert.match(
   viteConfigSource,
   /if \(path === "\*"\)[\s\S]*module graph invalidated[\s\S]*return \(send/,
@@ -195,6 +199,18 @@ for (const fluidSeam of [
 ]) {
   assert.ok(waterSimulationSource.includes(fluidSeam), `boundary-fluid/impulse seam missing: ${fluidSeam}`);
 }
+for (const dyeSeam of [
+  "impulseDyes.value.needsUpdate = true",
+  "dyeAdvectionGroup",
+  "totalDyeImpulses",
+  "totalDyeDispatches",
+  "dyePersistence",
+  "dyeSwirl",
+  "dyeGlow",
+  "shoreDamping"
+]) {
+  assert.ok(waterSimulationSource.includes(dyeSeam), `GPU paint-dye seam missing: ${dyeSeam}`);
+}
 assert.equal(
   waterSimulationSource.includes("visibleEddyInfluence"),
   false,
@@ -228,6 +244,23 @@ for (const seam of [
 ]) {
   assert.ok(teaGardenIndexSource.includes(seam), `water gameplay-interaction seam missing: ${seam}`);
 }
+for (const seam of [
+  "paintWater(impact: TeaGardenPaintWaterImpact)",
+  "paintWaterSegment(segment: Readonly<PaintWaterSegment>)",
+  'queueInteraction("paint"',
+  "dyeR: r",
+  "playRippleImpact({"
+]) {
+  assert.ok(teaGardenIndexSource.includes(seam), `paint/water AV integration seam missing: ${seam}`);
+}
+for (const seam of [
+  "teaGardenPaintWater",
+  "teaGardenPaintWaterSegment",
+  "paintballs.onWaterSegment",
+  "paintballs.onWater = (impact)"
+]) {
+  assert.ok(mainSource.includes(seam), `paintball Tea Garden routing seam missing: ${seam}`);
+}
 for (const seam of ["#nextBallId", "visitFreeBalls(", "FetchBallWorldState"]) {
   assert.ok(fetchBallSource.includes(seam), `allocation-free thrown-ball sampling seam missing: ${seam}`);
 }
@@ -249,6 +282,23 @@ for (const seam of [
   "#destroyGraph()"
 ]) {
   assert.ok(streamAudioSource.includes(seam), `procedural stream-audio seam missing: ${seam}`);
+}
+for (const seam of [
+  "playRippleImpact(event: TeaGardenWaterRippleAudioEvent)",
+  "RIPPLE_KIND_COOLDOWN",
+  "maxImpactVoices",
+  "impactGraphBuilds",
+  "rippleAccepted",
+  "rippleDroppedByKind",
+  "lastKoiMotion",
+  "lastKoiRippleDuration",
+  "rippleRadius",
+  "koiCooldown",
+  "koiAudibleRadius",
+  "feyBloom",
+  "colorTimbre"
+]) {
+  assert.ok(streamAudioSource.includes(seam), `water-impact audio seam missing: ${seam}`);
 }
 for (const eagerAudio of ["new AudioContext", "fetch(", "new Audio("]) {
   assert.equal(streamAudioSource.includes(eagerAudio), false, `stream audio introduced its own/eager asset path: ${eagerAudio}`);
@@ -307,9 +357,10 @@ console.log(JSON.stringify({
   water: [
     "WebGPU boundary-constrained shallow-water field",
     "bounded GPU impulse queue",
+    "advected premultiplied paint dye",
     "unified stream + pond",
     "five eddy rocks",
-    "procedural positional audio"
+    "procedural positional and impact audio"
   ],
   cloth: ["shared-cloth-runtime", "static-layered-hiro-costume", "distance-driven-motion"]
 }, null, 2));

@@ -341,7 +341,7 @@ export class Player {
     physics: Physics,
     map: WorldMap,
     scene: THREE.Scene,
-    spawn: { x: number; z: number; heading: number },
+    spawn: { x: number; y?: number; z: number; heading: number },
     avatar: AvatarTraits = avatarFromSeed("local-default"),
     board?: BoardConfig,
     scooter?: ScooterConfig,
@@ -457,7 +457,7 @@ export class Player {
       setEmbodimentVisible(m, false);
       scene.add(m);
     }
-    this.position.set(spawn.x, map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
+    this.position.set(spawn.x, spawn.y ?? map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
     this.#spawnBody("walk", spawn.heading);
   }
 
@@ -471,6 +471,11 @@ export class Player {
     applyAvatarToRig(this.#helmRig, this.#avatar);
     applyAvatarToRig(this.#speedRig, this.#avatar);
     applyAvatarToRig(this.#pilotRig, this.#avatar);
+  }
+
+  /** Snapshot used by activity-owned embodiment rigs without exposing mutable player state. */
+  get avatarTraits(): AvatarTraits {
+    return { ...this.#avatar };
   }
 
   /** Hide only the local walk embodiment once the camera reaches the FPS eye. */
@@ -567,8 +572,8 @@ export class Player {
 
   /** Landmark teleport landing — always on foot. Callers should exitToWalk first
    *  so surf/vehicles leave an abandoned mount and fire mode-change cleanup. */
-  respawn(spawn: { x: number; z: number; heading: number }) {
-    this.position.set(spawn.x, this.map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
+  respawn(spawn: { x: number; y?: number; z: number; heading: number }) {
+    this.position.set(spawn.x, spawn.y ?? this.map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
     this.#spawnBody("walk", spawn.heading);
   }
 
@@ -1351,6 +1356,16 @@ export class Player {
   /** True while the walk controller has you in the bay (drives swim audio / pose). */
   get swimming(): boolean {
     return this.mode === "walk" && this.#modes.walk.swimming;
+  }
+
+  /** Stable contact bit used by movement foley and headless audio probes. */
+  get walkGrounded(): boolean {
+    return this.mode === "walk" && this.#modes.walk.grounded;
+  }
+
+  /** The exact animation phase that alternates the visible feet. */
+  get walkStridePhase(): number {
+    return this.#strideT;
   }
 
   /** Frame-rate flight steering — mouse aims the plane, A/D add banked yaw. */

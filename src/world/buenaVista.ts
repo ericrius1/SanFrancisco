@@ -56,6 +56,26 @@ export function inBuenaVistaPark(x: number, z: number): boolean {
   return inside;
 }
 
+/** Zero inside the park, otherwise the shortest horizontal distance to its
+ * real OSM outline. Close-only foliage uses this instead of the broad AABB so
+ * Corona Heights does not accidentally qualify as Buena Vista understory. */
+export function distanceToBuenaVistaPark(x: number, z: number): number {
+  if (inBuenaVistaPark(x, z)) return 0;
+  let nearest = Number.POSITIVE_INFINITY;
+  for (let i = 0, j = BUENA_VISTA_OUTLINE.length - 1; i < BUENA_VISTA_OUTLINE.length; j = i++) {
+    const [ax, az] = BUENA_VISTA_OUTLINE[j];
+    const [bx, bz] = BUENA_VISTA_OUTLINE[i];
+    const dx = bx - ax;
+    const dz = bz - az;
+    const lengthSq = dx * dx + dz * dz;
+    const t = lengthSq > 0
+      ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / lengthSq))
+      : 0;
+    nearest = Math.min(nearest, Math.hypot(x - (ax + dx * t), z - (az + dz * t)));
+  }
+  return nearest;
+}
+
 // Buena Vista is densely wooded but opens around the crown. This clearing is
 // intentionally large enough to remain legible from the Corona Heights orbit.
 export const BUENA_VISTA_SUMMIT_CLEARING = {

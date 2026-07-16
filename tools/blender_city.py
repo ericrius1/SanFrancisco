@@ -56,6 +56,10 @@ GRASS_GROUND = srgb_to_linear((124, 152, 102))
 ROCK_COLOR = srgb_to_linear((142, 134, 120))
 BAY_SHALLOW = srgb_to_linear((199, 189, 157))
 BAY_DEEP = srgb_to_linear((60, 105, 96))
+WATER_COLOR = (0.1, 0.45, 0.42, 1.0)
+# Keep the presentation surface clear of the terrain's zero-height ocean
+# triangles. Coplanar surfaces flicker badly in the city-scale Blender master.
+WATER_SURFACE_Z = 0.75
 INTL_ORANGE = srgb_to_linear((192, 62, 42))
 STEEL_GRAY = srgb_to_linear((139, 143, 148))
 WHITE_QUARTZ = srgb_to_linear((222, 217, 206))
@@ -259,10 +263,11 @@ def get_water_material():
     mat = bpy.data.materials.get("WATER")
     if mat is None:
         mat = bpy.data.materials.new("WATER")
-        mat.use_nodes = True
-        bsdf = mat.node_tree.nodes.get("Principled BSDF")
-        bsdf.inputs["Base Color"].default_value = (0.1, 0.45, 0.42, 1)
-        bsdf.inputs["Roughness"].default_value = 0.1
+    mat.use_nodes = True
+    mat.diffuse_color = WATER_COLOR
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    bsdf.inputs["Base Color"].default_value = WATER_COLOR
+    bsdf.inputs["Roughness"].default_value = 0.1
     return mat
 
 
@@ -728,6 +733,7 @@ def build_water():
     mesh.update()
     mesh.materials.append(get_water_material())
     obj = bpy.data.objects.new("WATER_bay", mesh)
+    obj.location.z = WATER_SURFACE_Z
     coll.objects.link(obj)
     return obj
 

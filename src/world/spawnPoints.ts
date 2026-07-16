@@ -12,15 +12,16 @@ export const SUTRO_BATHS_GATE = {
   centerX: -6125,
   centerZ: 1117,
   yaw: -0.077,
-  halfWidth: 38.7,
+  /** Includes the lower beach approach; the architectural hall remains 38.7 m wide. */
+  halfWidth: 55.5,
   halfLength: 76.1
 } as const;
 
 /** The dry Point Lobos portal above the broad descending museum stair. */
 export const SUTRO_BATHS_ARRIVAL = {
-  x: -6086,
-  z: 1184,
-  heading: Math.PI / 2
+  x: -6084.38916,
+  z: 1183.420776,
+  heading: 1.942
 } as const;
 
 export function distanceToSutroBaths(x: number, z: number): number {

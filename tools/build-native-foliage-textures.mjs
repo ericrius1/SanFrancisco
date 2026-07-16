@@ -120,6 +120,8 @@ const NATIVE_ALIASES = {
   redwood: "coast-redwood",
   "monterey-cypress": "monterey-cypress",
   cypress: "monterey-cypress",
+  "windswept-monterey-cypress": "monterey-cypress",
+  "monterey-pine": "japanese-black-pine",
   "coast-live-oak": "coast-live-oak",
   oak: "coast-live-oak",
   corona_coast_live_oak: "coast-live-oak",

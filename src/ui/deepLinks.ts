@@ -9,8 +9,8 @@
  *   ?read=bts          → open the modal registered as "bts"
  *   ?read=bts.sound    → open it on sub-view "sound"
  *
- * main.ts owns the boot-time behaviour (skip the name gate, hand out a fun name,
- * then open the modal); this module is just the plumbing both sides share.
+ * startup.ts owns the early reading route while main.ts continues normal boot
+ * behind it; this module is just the plumbing both sides share.
  */
 
 export interface ShareableModal {
