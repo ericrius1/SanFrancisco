@@ -74,11 +74,13 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Click"], label: "shoot" }
   ],
   surf: [
-    { c: ["Locked"], label: "camera behind you" },
-    { c: ["W", "S"], label: "pump · stall" },
-    { c: ["A", "D"], label: "carve left / right" },
-    { c: ["Space"], label: "lip pop · flow when ready" },
-    { c: ["Auto"], label: "high-line launch" },
+    { c: ["Locked"], label: "camera frames the shore" },
+    { c: ["A", "D"], label: "carve — wave side climbs, beach side speeds" },
+    { c: ["A", "A"], label: "double-tap = cutback" },
+    { c: ["Space"], label: "jump · big off the lip" },
+    { c: ["W", "S"], label: "flip in the air" },
+    { c: ["Shift"], label: "grab — style + control" },
+    { c: ["X"], label: "flow when ready" },
     { c: ["E"], label: "exit to beach" }
   ],
   bird: [
@@ -165,11 +167,13 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["X"], label: "shoot" }
   ],
   surf: [
-    { c: ["Locked"], label: "camera behind you" },
-    { c: ["RT", "LT"], label: "pump · stall" },
-    { c: ["LS"], label: "carve left / right" },
-    { c: ["A"], label: "lip pop · flow when ready" },
-    { c: ["Auto"], label: "high-line launch" },
+    { c: ["Locked"], label: "camera frames the shore" },
+    { c: ["LS"], label: "carve — wave side climbs, beach side speeds" },
+    { c: ["LS"], label: "double-flick = cutback" },
+    { c: ["A"], label: "jump · big off the lip" },
+    { c: ["RT", "LT"], label: "flip in the air" },
+    { c: ["B"], label: "grab — style + control" },
+    { c: ["X"], label: "flow when ready" },
     { c: ["Y"], label: "exit to beach" }
   ],
   bird: [
@@ -188,7 +192,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   drive: "LB boost · RB power-slide with steer · release for a snap boost · Space handbrake",
   scooter: "LB power-slide with steer · ramps launch cleanly · rear seat fits a friend",
   board: "White glow = nose · pull right stick back in the air to flip",
-  surf: "A/D carve either way · Space pops the lip · camera eases in behind you",
+  surf: "Carve toward the beach for speed, then up the wave and off the lip · double-tap A/D to cut back · hold the pocket for the barrel",
   bird: "Look down + Shift to stoop — skim the bay for spray"
 }
 

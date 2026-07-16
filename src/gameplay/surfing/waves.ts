@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import {
   positionGeometry,
   uniform,
+  vec2,
   vec3,
   color,
   float,
@@ -38,15 +39,30 @@ import { waterHeight } from "../../world/heightmap";
 const FACE_MIN_D = -52;
 const FACE_MAX_D = 64;
 const FACE_SPAN = FACE_MAX_D - FACE_MIN_D;
-const FACE_WINDOW_Z = 420;
+// The window must outrun the base ocean's displaced near patch (560 m square,
+// swell rim-faded to flat by 276 m from the player): the shore-view camera
+// looks straight down the line, and a 420 m window ended mid-frame — the crest
+// visibly collapsed onto the flat grey far sheet as a glitchy strip. 1080 m
+// carries the emerald wall into the marine fog.
+const FACE_WINDOW_Z = 1080;
 const FACE_SEG_U = 320;
-const FACE_SEG_Z = 120;
+const FACE_SEG_Z = 200;
 // Keep the roof local enough that its bright down-line aperture is visible.
 // The window follows the player, so 108 m still leaves ample geometry behind
 // the 6 m camera trail and beyond the 18 m aim point.
 const BARREL_WINDOW_Z = 108;
 const BARREL_SEG_U = 36;
 const BARREL_SEG_Z = 72;
+// Mid-distance swell sheet: the base ocean's displaced near patch flattens by
+// ~276 m from the player and the whole-map far sheet is a dead-flat plane, so
+// from the elevated surf camera every set beyond ~250 m used to collapse into
+// a glitchy grey strip. This coarse player-following grid rolls ALL the sets
+// out to the marine fog; it only draws where swell actually stands, so flat
+// troughs (and the analytic-masked land) still show the base ocean.
+const MID_SPAN_X = 1100;
+const MID_SPAN_Z = 2600;
+const MID_SEG_X = 44;
+const MID_SEG_Z = 104;
 
 /**
  * Player-following face grid with **graded Z resolution**: vertices bunch tight
@@ -65,11 +81,13 @@ function buildActiveFaceGeometry(): THREE.BufferGeometry {
   const idx: number[] = [];
   // centred, symmetric bunching: blend linear + cubic so ~⅓ of the rows sit in
   // the middle ~15 % of the window (dense) while the rim stays gentle (coarse).
+  // The wider 1080 m window leans harder on the cubic so rider-local rows stay
+  // ~1.3 m apart while the far rim (silhouette-only) coarsens to ~8 m.
   const gradeZ = (t: number) => {
     const u = t * 2 - 1; // [-1,1]
     const s = Math.sign(u);
     const a = Math.abs(u);
-    return s * (0.32 * a + 0.68 * a * a * a); // dense centre, coarse rim
+    return s * (0.24 * a + 0.76 * a * a * a); // dense centre, coarse rim
   };
   for (let j = 0; j < nz; j++) {
     const z = gradeZ(j / FACE_SEG_Z) * halfZ;
@@ -167,7 +185,11 @@ export class OceanBeachWaves {
   #tubeVisibility = 0;
   #face: THREE.Mesh;
   #barrel: THREE.Mesh;
+  #mid: THREE.Mesh;
   #uTime = uniform(0);
+  #uMidOrigin = uniform(
+    new THREE.Vector2(OCEAN_BEACH_SURF.entryX, OCEAN_BEACH_SURF.centerZ)
+  );
   #uOrigin = uniform(
     new THREE.Vector2(OCEAN_BEACH_SURF.entryX, OCEAN_BEACH_SURF.centerZ)
   );
@@ -176,13 +198,15 @@ export class OceanBeachWaves {
   );
   #uTubeVisibility = uniform(0);
 
-  constructor(scene: THREE.Scene) {
+  constructor() {
     this.group.name = "ocean_beach_breaking_waves";
 
     this.#face = this.#buildFaceMesh();
     this.group.add(this.#face);
     this.#barrel = this.#buildBarrelMesh();
     this.group.add(this.#barrel);
+    this.#mid = this.#buildMidSwellMesh();
+    this.group.add(this.#mid);
 
     const sprayCount = 220;
     this.#sprayPositions = new Float32Array(sprayCount * 3);
@@ -240,7 +264,9 @@ export class OceanBeachWaves {
     this.#foam.renderOrder = 15;
     this.group.add(this.#foam);
 
-    scene.add(this.group);
+    // The caller owns scene attachment: the group is built detached so its
+    // heavy TSL pipelines can be compiled via renderer.compileAsync() before
+    // the first visible frame (adding it raw stalled entry >1 s).
     this.update(0);
   }
 
@@ -276,23 +302,27 @@ export class OceanBeachWaves {
     // strip + window feathering so the patch melts into the flat bay water
     const stripFade = f.mask; // already 0 outside the break, feathered inside
     const zRim = smoothstep(
-      float(FACE_WINDOW_Z * 0.5 - 60),
+      float(FACE_WINDOW_Z * 0.5 - 140),
       float(FACE_WINDOW_Z * 0.5),
       positionGeometry.z.abs()
     ).oneMinus();
     const contactEdge = smoothstep(0.0, 0.075, uv().x)
       .mul(smoothstep(1.0, 0.9, uv().x));
 
-    // --- colour: deep blue-green mass, emerald thin water, cool breaking foam -
-    // Contrast is doing gameplay work here: the trough stays dark enough to
-    // silhouette a rider, while only the thin standing face catches green sun.
+    // --- colour: daylight-harmonized. The trough reads as the same bright bay
+    // turquoise as the base sheets (the old near-black body was tuned in fog
+    // and became a black hole at noon), the standing wall deepens to emerald,
+    // and everything shoreward of the break is pale opaque foam wash — the
+    // three water layers hand off without visible seams.
     const faceMask = smoothstep(0.12, 0.82, f.face).toVar();
-    const bodyGreen = mix(
-      color(0x02191d),
-      color(0x043b2f),
-      clamp(f.height.mul(0.22).add(0.25), 0, 1)
+    const wallMask = smoothstep(0.5, 6.0, f.height).toVar();
+    const wash = smoothstep(0.12, 0.7, f.white).toVar();
+    const bodyTeal = mix(
+      color(0x18a08e),
+      color(0x0d7f60),
+      clamp(f.height.mul(0.16).add(wallMask.mul(0.4)), 0, 1)
     );
-    const faceGreen = mix(bodyGreen, color(0x086044), faceMask);
+    const faceGreen = mix(bodyTeal, color(0x0d8f5c), faceMask);
     // Two scales break the lip longitudinally. A single broad noise sample
     // stayed above threshold for most of a portrait frame and read as a ruler-
     // straight white seam; the shorter ripple opens green gaps along the crown.
@@ -306,9 +336,7 @@ export class OceanBeachWaves {
       crestNoise.mul(0.64).add(crestRipple.mul(0.36))
     );
     const foam = clamp(
-      smoothstep(0.66, 0.96, f.lip)
-        .mul(crestBreakup.mul(0.42))
-        .add(f.white.mul(0.02)),
+      smoothstep(0.66, 0.96, f.lip).mul(crestBreakup.mul(0.5)),
       0,
       1
     ).toVar();
@@ -318,21 +346,36 @@ export class OceanBeachWaves {
       0.94,
       crestBreakup.mul(0.48).add(flowRib.mul(0.52))
     ).mul(faceMask).mul(foam.oneMinus());
-    const veinedGreen = mix(faceGreen, color(0x229b6d), sunVein.mul(0.16));
-    mat.colorNode = mix(veinedGreen, color(0x88b5ad), foam.mul(0.38));
+    const veinedGreen = mix(faceGreen, color(0x2fbd8a), sunVein.mul(0.2));
+    // Whitewater is bright broken foam, never dark water: noise keeps it from
+    // reading as one flat pale slab across the apron.
+    const washNoise = mx_noise_float(
+      vec3(wx.mul(0.35), wz.mul(0.35), t.mul(0.7))
+    ).mul(0.5).add(0.5);
+    const washTone = mix(color(0xbfe2d9), color(0xe9f6f0), washNoise);
+    mat.colorNode = mix(
+      mix(veinedGreen, color(0xd6ece6), foam.mul(0.55)),
+      washTone,
+      wash.mul(0.88)
+    );
 
-    // SSS backlight: the thin, steep face glows emerald where the sun rakes
-    // through it (stylized — KSPS look, not a physical transmission model).
+    // SSS backlight: the wall glows emerald where light rakes through it, and
+    // a broad wall-wide term keeps the sun-shadowed side luminous green — a
+    // 12 m wall with its back to the afternoon sun must never render black.
     const vein = smoothstep(
       0.68,
       0.94,
       mx_noise_float(vec3(wx.mul(0.16), wz.mul(0.08), t.mul(0.32))).mul(0.5).add(0.5)
     );
-    const glow = faceMask.mul(faceMask).mul(faceMask).mul(vein).mul(0.08 * LIGHT_SCALE);
-    mat.emissiveNode = vec3(0.04, 0.52, 0.25)
+    const glow = faceMask.mul(faceMask).mul(vein).mul(0.16 * LIGHT_SCALE);
+    mat.emissiveNode = vec3(0.05, 0.6, 0.32)
       .mul(glow)
-      .add(vec3(0.02, 0.34, 0.15).mul(faceMask.mul(0.12 * LIGHT_SCALE)))
-      .add(vec3(0.45, 0.58, 0.56).mul(foam.mul(0.02 * LIGHT_SCALE)));
+      .add(
+        vec3(0.03, 0.42, 0.2).mul(
+          max(faceMask, wallMask.mul(0.7)).mul(0.15 * LIGHT_SCALE)
+        )
+      )
+      .add(vec3(0.5, 0.62, 0.58).mul(max(foam, wash).mul(0.05 * LIGHT_SCALE)));
 
     // ripple bump from the wave height + a little chop so the face isn't glassy
     const chop = mx_noise_float(vec3(wx.mul(0.22), wz.mul(0.22), t.mul(0.6))).mul(0.08);
@@ -346,7 +389,7 @@ export class OceanBeachWaves {
       0.38,
       max(max(f.face, f.lip), f.white)
     ).toVar();
-    const alpha = mix(float(0.72), float(1.0), smoothstep(0.12, 0.62, max(f.face, f.lip)));
+    const alpha = mix(float(0.88), float(1.0), smoothstep(0.12, 0.62, max(f.face, f.lip)));
     const replacementCore = smoothstep(
       0.12,
       0.38,
@@ -356,8 +399,15 @@ export class OceanBeachWaves {
     // old alpha faded out across the crest, shoulder and back, so you saw the
     // flat ocean and sky straight through the wave. Anywhere the wave stands up
     // more than ~0.6 m it now fully occludes what is behind it.
-    const waveBody = smoothstep(float(0.6), float(2.6), f.height);
-    mat.opacityNode = max(mix(alpha, float(1), replacementCore).mul(presence), waveBody)
+    // Anything standing more than ~0.3 m is fully opaque — a translucent
+    // mid-face let the horizon/base sheets read straight through the wall.
+    const waveBody = smoothstep(float(0.3), float(1.4), f.height);
+    // Whitewater wash is opaque foam (it must fully replace the base sheet it
+    // cut out), not a translucent dark film over the bright bay water.
+    mat.opacityNode = max(
+      max(mix(alpha, float(1), replacementCore).mul(presence), waveBody),
+      wash.mul(0.92)
+    )
       .mul(contactEdge)
       .mul(stripFade)
       .mul(zRim);
@@ -445,6 +495,74 @@ export class OceanBeachWaves {
     return mesh;
   }
 
+  /**
+   * Rolling sets from the near-patch rim out to the marine fog. Vertex height
+   * is the same analytic field the rider surfs; opacity gates on standing
+   * swell so the sheet vanishes over flat water and the masked shoreline, and
+   * a ring around the player yields to the displaced near patch + hero face.
+   */
+  #buildMidSwellMesh(): THREE.Mesh {
+    const geo = new THREE.PlaneGeometry(MID_SPAN_X, MID_SPAN_Z, MID_SEG_X, MID_SEG_Z);
+    geo.rotateX(-Math.PI / 2);
+    const mat = new THREE.MeshStandardNodeMaterial({
+      roughness: 0.55,
+      metalness: 0,
+      transparent: true,
+      depthWrite: false
+    });
+    const t = this.#uTime;
+    const wx = positionGeometry.x.add(this.#uMidOrigin.x);
+    const wz = positionGeometry.z.add(this.#uMidOrigin.y);
+    const f = oceanBeachSurfField(wx, wz, t);
+    // Land the rim back on the flat far sheet so the grid never silhouettes.
+    const edge = smoothstep(
+      float(MID_SPAN_X * 0.5),
+      float(MID_SPAN_X * 0.5 - 140),
+      positionGeometry.x.abs()
+    ).mul(
+      smoothstep(
+        float(MID_SPAN_Z * 0.5),
+        float(MID_SPAN_Z * 0.5 - 200),
+        positionGeometry.z.abs()
+      )
+    );
+    const height = f.height.mul(edge);
+    mat.positionNode = vec3(wx, height.add(0.012), wz);
+    // Displaced walls must shade as walls — a flat normal mirrors the bright
+    // sky and reads as the same grey stripe this sheet exists to remove.
+    mat.normalNode = bumpNormal(height);
+    const faceMask = smoothstep(0.12, 0.82, f.face);
+    // Same daylight palette as the hero sheet so distant sets match near ones.
+    const body = mix(color(0x12857c), color(0x0d7f60), faceMask);
+    const crest = clamp(
+      smoothstep(0.7, 0.97, f.lip).mul(0.5).add(f.white.mul(0.25)),
+      0,
+      1
+    );
+    mat.colorNode = mix(body, color(0xd6ece6), crest);
+    // Sun-shadowed backsides must stay luminous water, not black vinyl.
+    mat.emissiveNode = vec3(0.02, 0.3, 0.18)
+      .mul(smoothstep(1.2, 6.0, f.height))
+      .mul(0.5 * LIGHT_SCALE);
+    mat.envMapIntensity = 0.2;
+    // Complement the base near patch's fragment opacity feather (210→276 m)
+    // exactly: identical analytic height on both sheets crossfades cleanly.
+    const playerDist = vec2(
+      wx.sub(this.#uOrigin.x),
+      wz.sub(this.#uOrigin.y)
+    ).length();
+    // Reach full opacity while the near patch still carries ~70% alpha — two
+    // half-faded sheets let the flat far ocean read through the wave's back.
+    const nearHole = smoothstep(float(180), float(240), playerDist);
+    mat.opacityNode = smoothstep(0.45, 2.1, height).mul(nearHole).mul(edge);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = "ocean_beach_mid_swell";
+    // After the base near sheet (11), before the hero contact sheet (12).
+    mesh.renderOrder = 11.5;
+    mesh.frustumCulled = false;
+    return mesh;
+  }
+
   update(time: number, focus?: { x: number; z: number }, tubeVisibility = 0) {
     const dt = Math.min(0.05, Math.max(0, time - this.#lastTime));
     this.#lastTime = time;
@@ -477,6 +595,12 @@ export class OceanBeachWaves {
         Math.round(THREE.MathUtils.clamp(focus.z, b.minZ, b.maxZ) / barrelSnap) *
         barrelSnap;
       this.#uBarrelOrigin.value.set(focus.x, barrelZ);
+      const midSnapX = MID_SPAN_X / MID_SEG_X;
+      const midSnapZ = MID_SPAN_Z / MID_SEG_Z;
+      this.#uMidOrigin.value.set(
+        Math.round(focus.x / midSnapX) * midSnapX,
+        Math.round(THREE.MathUtils.clamp(focus.z, b.minZ, b.maxZ) / midSnapZ) * midSnapZ
+      );
     }
 
     const focusZ = focus && focus.z > b.minZ - 600 && focus.z < b.maxZ + 600 ? focus.z : b.entryZ;

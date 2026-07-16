@@ -10,24 +10,29 @@ export const SURF_TUNING = tunables("movement.surf", {
   // first carve so the dedicated camera can settle.
   entryAssistDuration: { v: 0.22, min: 0, max: 2, step: 0.05, label: "entry assist" },
   trimSpeed: { v: 17.5, min: 5, max: 30, step: 0.5, label: "neutral cruise" },
-  pumpBoost: { v: 14, min: 0, max: 28, step: 0.5, label: "W / RT boost" },
-  stallSpeed: { v: 7.5, min: 3, max: 14, step: 0.25, label: "S / LT floor" },
+  stallSpeed: { v: 7.5, min: 3, max: 14, step: 0.25, label: "wash speed floor" },
   maxTrim: { v: 34, min: 12, max: 48, step: 0.5, label: "max line speed" },
-  pumpResponse: { v: 7.5, min: 1, max: 14, step: 0.25, label: "pump response" },
   speedResponse: { v: 4.4, min: 0.5, max: 8, step: 0.1, label: "speed response" },
+  speedDecay: { v: 0.35, min: 0, max: 3, step: 0.05, label: "over-trim bleed" },
   stallResponse: { v: 6.5, min: 1, max: 16, step: 0.25, label: "stall response" },
-  // Arcade carve: A/D turn the board left/right in board space (same both ways
-  // down the beach). Face height follows where the nose points, not which key
-  // was absolute-mapped to "up the face".
-  carveYawAngle: { v: 0.68, min: 0.2, max: 1.05, step: 0.01, label: "carve heading angle" },
+  // KSPS-style decoupled axes. A/D swing the rail relative to the remembered
+  // travel direction and clamp short of vertical (you can never accidentally
+  // flip); W/S place you up/down the face directly.
+  carveYawAngle: { v: 0.68, min: 0.2, max: 1.05, step: 0.01, label: "recovery heading angle" },
+  carveMaxAngle: { v: 1.12, min: 0.4, max: 1.5, step: 0.02, label: "max rail swing" },
   yawResponse: { v: 6.5, min: 1, max: 14, step: 0.25, label: "carve heading response" },
-  // Full stick slides across-face heading (0..1)/sec — cutback in ~1 s, then
-  // parks on the opposite down-line without spinning out.
-  carveTurnRate: { v: 1.05, min: 0.3, max: 2.5, step: 0.05, label: "carve turn rate" },
-  // Neutral stick eases back to the nearest down-line end for a clean race line.
-  yawRecenter: { v: 2.2, min: 0, max: 8, step: 0.1, label: "carve re-center" },
-  carveResponse: { v: 8.5, min: 1, max: 18, step: 0.25, label: "face-from-nose response" },
-  carveFaceRange: { v: 5.8, min: 0.5, max: 9, step: 0.1, label: "carve face range" },
+  carveResponse: { v: 8.5, min: 1, max: 18, step: 0.25, label: "rail swing response" },
+  // Deliberate roundhouse: double-tap the carve direction. Holding full lock
+  // is ordinary hard carving and must never reverse on its own.
+  cutbackTapWindow: { v: 0.34, min: 0.15, max: 0.8, step: 0.01, label: "cutback double-tap window" },
+  // The nose is the face position: full crestward carve parks this close to
+  // the lip; full beachward carve drops this far below the trim line.
+  faceLineLipOffset: { v: 1.7, min: 1.3, max: 4, step: 0.05, label: "lip hold distance" },
+  faceLineDropRange: { v: 6.2, min: 2, max: 8, step: 0.1, label: "drop range" },
+  // Carve energy loop: dropping down the face is free speed, climbing bleeds a
+  // little back — pumping IS the W/S rhythm, not a boost button.
+  dropCarveGain: { v: 9.5, min: 0, max: 24, step: 0.25, label: "drop-in speed gain" },
+  climbCarveCost: { v: 6.5, min: 0, max: 16, step: 0.2, label: "climb speed cost" },
 
   // Wave-local rail contact. Neutral runs low enough that the player has to set
   // a high line, while stall assist holds the authored tube center once earned.
@@ -73,12 +78,25 @@ export const SURF_TUNING = tunables("movement.surf", {
   launchVelocity: { v: 6.5, min: 2, max: 18, step: 0.2, label: "launch lift" },
   launchSpeedLift: { v: 0.16, min: 0, max: 0.5, step: 0.01, label: "speed lift" },
   launchLipLift: { v: 3.2, min: 0, max: 8, step: 0.1, label: "lip lift" },
+  // Vertical momentum carries: hitting the lip while still climbing (W held)
+  // adds real height — big airs come from reading the wave.
+  launchClimbLift: { v: 0.62, min: 0, max: 1.5, step: 0.02, label: "climb-rate lift" },
   launchCooldown: { v: 0.75, min: 0.3, max: 4, step: 0.05, label: "launch cooldown" },
   popBuffer: { v: 0.22, min: 0.05, max: 0.6, step: 0.01, label: "pop input buffer" },
+  // Space away from the lip is a small chop hop, never a dead button.
+  ollieVelocity: { v: 4.6, min: 1.5, max: 10, step: 0.1, label: "ollie lift" },
+  ollieSpeedLift: { v: 0.06, min: 0, max: 0.3, step: 0.01, label: "ollie speed lift" },
+  ollieCooldown: { v: 0.5, min: 0.2, max: 2, step: 0.05, label: "ollie cooldown" },
   gravity: { v: 15.5, min: 6, max: 30, step: 0.25, label: "air gravity" },
   airYawStyle: { v: 3.45, min: 0, max: 4.5, step: 0.05, label: "air yaw style" },
   airRollStyle: { v: 0.85, min: 0, max: 1.5, step: 0.02, label: "air roll style" },
   airAlignResponse: { v: 7.5, min: 2, max: 18, step: 0.25, label: "air auto-align" },
+  // Air tricks: W/S flip, Shift/B grab slows rotation for control + style.
+  airFlipStyle: { v: 4.4, min: 0, max: 8, step: 0.1, label: "air flip rate" },
+  grabRotationScale: { v: 0.55, min: 0.2, max: 1, step: 0.05, label: "grab rotation scale" },
+  // Landing forgiveness for rotation: within this pitch error the flip snaps
+  // level; beyond it the invisible recovery absorbs the slam.
+  flipSnapTolerance: { v: 0.75, min: 0.2, max: 1.6, step: 0.05, label: "flip snap tolerance" },
 
   // forgiving magnetic landing + on-surface recovery
   landingMagnet: { v: 1.05, min: 0.2, max: 2.5, step: 0.05, label: "landing magnet" },
@@ -96,6 +114,9 @@ export const SURF_TUNING = tunables("movement.surf", {
   tubeExitTime: { v: 0.75, min: 0.15, max: 2.5, step: 0.05, label: "tube exit grace" },
   tubeMinSpeed: { v: 8.5, min: 4, max: 20, step: 0.25, label: "tube minimum speed" },
   tubeStallDwellBoost: { v: 1.45, min: 1, max: 2.5, step: 0.05, label: "stall entry boost" },
+  // Exit spit: a real barrel rewards the exit with a speed burst + spray.
+  spitMinDwell: { v: 0.8, min: 0.2, max: 3, step: 0.05, label: "spit min barrel time" },
+  spitBoost: { v: 6.5, min: 0, max: 14, step: 0.25, label: "spit speed boost" },
 
   // earned local-only slow motion (world and multiplayer clocks stay normal)
   flowChargeRate: { v: 0.105, min: 0.02, max: 0.35, step: 0.005, label: "flow charge" },

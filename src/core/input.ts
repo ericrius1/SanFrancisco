@@ -375,7 +375,19 @@ export class Input {
           held.add(code);
           if (!this.#padPrev[i]) this.#justPressed.add(code);
         }
-      } else if (i === 2 && this.#mode !== "surf") {
+      } else if (i === 1 && this.#mode === "surf") {
+        // B in surf: grab (mirrors keyboard Shift — slows air rotation, style)
+        if (on) {
+          held.add("ShiftLeft");
+          if (!this.#padPrev[i]) this.#justPressed.add("ShiftLeft");
+        }
+      } else if (i === 2 && this.#mode === "surf") {
+        // X in surf: Flow (mirrors keyboard X — Space/A is always the jump)
+        if (on) {
+          held.add("KeyX");
+          if (!this.#padPrev[i]) this.#justPressed.add("KeyX");
+        }
+      } else if (i === 2) {
         // X: fire + map teleport
         if (on && !this.#padPrev[i]) this.firePressed = true;
         if (on) padFire = true;
@@ -592,6 +604,12 @@ export class Input {
   /** True when this keydown happened with Alt held on the event itself. */
   altPressed(code: string) {
     return this.#suspensionHolds.size === 0 && this.#altPresses.has(code);
+  }
+
+  /** True while a key (or pad-mapped code) is held, honoring suspension. */
+  held(code: string) {
+    if (this.suspended || this.#activityCaptured) return false;
+    return this.keys.has(code) || this.#padHeld.has(code);
   }
 
   /** −1..1: keyboard keys are digital, pad sticks/triggers merge in analog. */

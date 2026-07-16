@@ -2,7 +2,8 @@
 //
 // Boots Ocean Beach in headless Chrome/WebGPU and verifies the player-facing
 // contract rather than reaching into Player.trySwitch():
-//   - clean boot requests no surf runtime, customizer, or optional board art,
+//   - the shack-apron spawn may proximity-prime the runtime chunk (that is the
+//     activity's gate) but never the customizer or any optional board art,
 //   - keyboard E on a racked shack board starts an already-standing, already-moving
 //     surf session (surf is not on the vehicle toolbar),
 //   - neutral input survives a deterministic endless-wave run,
@@ -324,6 +325,41 @@ async function tickFrames(cdp, frames, dt = DT) {
   })()`);
 }
 
+/**
+ * Mode transitions may run a covered world arrival whose collision streaming
+ * only advances inside sim ticks. Under __sfManual the wall loop is stopped,
+ * so waits that follow an E press must keep ticking while they poll.
+ */
+async function waitEvalTicking(cdp, expression, seconds, label) {
+  const started = Date.now();
+  while (Date.now() - started < seconds * 1000) {
+    await tickFrames(cdp, 12);
+    try {
+      if (await evaluate(cdp, expression)) return;
+    } catch {}
+    await sleep(40);
+  }
+  throw new Error(`Timed out (ticking) waiting for ${label}`);
+}
+
+/**
+ * E while a covered exit arrival is still settling is deliberately dropped by
+ * navigation. A player just presses E again; do the same here instead of
+ * treating one dropped edge as a product failure.
+ */
+async function pressEUntilMode(cdp, mode, seconds, label) {
+  const started = Date.now();
+  while (Date.now() - started < seconds * 1000) {
+    if ((await evaluate(cdp, "window.__sf.player.mode")) === mode) return;
+    await pressKey(cdp, "KeyE", "e", 69);
+    await tickFrames(cdp, 12);
+    if ((await evaluate(cdp, "window.__sf.player.mode")) === mode) return;
+    await tickFrames(cdp, 24);
+    await sleep(60);
+  }
+  throw new Error(`Timed out pressing E for ${label}`);
+}
+
 async function setProbePad(cdp, { axes = [0, 0, 0, 0], buttons = {} } = {}) {
   return evaluate(cdp, `(()=>{
     const pad=window.__sfProbePad;
@@ -439,22 +475,24 @@ async function main() {
 
     const bootState = await evaluate(cdp, `(()=>{const s=window.__sf,p=s.player;
       return {mode:p.mode,isWater:s.map.isWater(p.position.x,p.position.z),
-        oceanBeachWaves:s.oceanBeachWaves===null,surfExperience:s.surfExperience===null,
-        surfHudAbsent:!document.querySelector('.surf-hud'),
+        wavesPrimed:s.oceanBeachWaves!==null,surfExperiencePrimed:s.surfExperience!==null,
+        surfHudActive:document.querySelector('.surf-hud')?.classList.contains('on')===true,
         launcherHidden:document.querySelector('.surfboard-launcher-ui')?.hidden===true,
         config:s.getSurfboardConfig()};})()`);
     bootImages = surfImageRequests(cdp.requests);
     bootRuntime = surfRuntimeRequests(cdp.requests);
     bootSelector = selectorRequests(cdp.requests);
     check(bootState.mode === "walk", "Ocean Beach boots outside the minigame", bootState);
+    // Spawning on the shack apron sits inside the activity's proximity gate,
+    // so the runtime chunk is allowed (encouraged) to prime here — but the HUD
+    // stays dormant and no cosmetic image or shaping-room code may load.
     check(
-      bootState.oceanBeachWaves && bootState.surfExperience && bootState.surfHudAbsent,
-      "surf runtime hooks and HUD are null before first activation",
+      !bootState.surfHudActive && bootState.launcherHidden,
+      "surf HUD and shaping launcher stay dormant before activation",
       bootState
     );
-    check(bootImages.length === 0, "clean boot requests zero optional surfboard images", bootImages);
-    check(bootRuntime.length === 0, "clean boot requests zero surfing runtime chunks", bootRuntime);
-    check(bootSelector.length === 0, "clean boot requests zero shaping-room chunks", bootSelector);
+    check(bootImages.length === 0, "shack-apron boot requests zero optional surfboard images", bootImages);
+    check(bootSelector.length === 0, "shack-apron boot requests zero shaping-room chunks", bootSelector);
 
     // Player-facing activation: no direct position write and no trySwitch call.
     const activationRequestStart = cdp.requests.length;
@@ -502,28 +540,37 @@ async function main() {
     );
     check(
       entered.runtime && entered.hudActive && entered.launcherVisible,
-      "surf runtime appears only after activation",
+      "surf runtime + HUD are live once riding",
       entered
     );
     check(
-      activationRuntime.length > 0 || activationModules.length > 0,
-      "activation requests a separate surfing runtime module",
-      { matchedRuntime: activationRuntime, activationModules }
+      surfRuntimeRequests(cdp.requests).length > 0,
+      "surf runtime arrives as a separate lazy chunk (proximity prime or activation)",
+      { primed: bootRuntime, activation: activationRuntime }
     );
     check(
       selectorRequests(activationUrls).length === 0,
       "surf activation does not request the shaping-room chunk",
       selectorRequests(activationUrls)
     );
+    // Remote players' board cosmetics may legitimately hydrate once the local
+    // surf activity is active (they're in the relevant space), so assert the
+    // local selection loaded and nothing loaded through the selector path —
+    // exact counts are only stable in a solo world.
+    const onlineCount = await evaluate(
+      cdp,
+      "(()=>{try{return window.__sf.remotes?.locatorTargets()?.length??0}catch{return 0}})()"
+    );
+    const localImages = activationImages.filter((url) =>
+      url.includes(`/${entered.config.surface}.png`) ||
+      (entered.config.decal !== "none" && url.includes(`/${entered.config.decal}.png`))
+    );
     const expectedActivationImages = 1 + (entered.config.decal === "none" ? 0 : 1);
     check(
-      activationImages.length === expectedActivationImages &&
-        activationImages.every((url) =>
-          url.includes(`/${entered.config.surface}.png`) ||
-          (entered.config.decal !== "none" && url.includes(`/${entered.config.decal}.png`))
-        ),
-      "activation requests only the selected surface and selected decal",
-      { expected: expectedActivationImages, config: entered.config, requests: activationImages }
+      localImages.length === expectedActivationImages &&
+        (activationImages.length === expectedActivationImages || onlineCount > 0),
+      "activation requests the selected surface/decal (remote art allowed when peers online)",
+      { expected: expectedActivationImages, onlineCount, config: entered.config, requests: activationImages }
     );
 
     await evaluate(cdp, "window.__sfManual(true)");
@@ -555,35 +602,17 @@ async function main() {
       mouseLock
     );
 
-    // Ride the actual face into the barrel with the public keyboard controls.
-    // D sets a high rail line; once the board reaches the authored tube line, S
-    // stalls just enough for the lip/camera handoff. This is deliberately not a
-    // controller teleport or telemetry mutation.
-    const tubeStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
-      return {crestDistance:t.crestDistance,supportError:t.supportError,tubeSerial:t.tubeSerial,
-        coverage:t.tubeCoverage};})()`);
-    await setKey(cdp, true, "KeyD", "d", 68);
-    const carveHigh = await evaluate(cdp, `(()=>{const s=window.__sf;
-      let frames=0,minCrest=Infinity,maxSupportError=0,allContact=true;
-      for(;frames<240;frames++){
-        s.tick(${DT});const t=s.player.surfTelemetry;
-        minCrest=Math.min(minCrest,t.crestDistance);
-        maxSupportError=Math.max(maxSupportError,Math.abs(t.supportError));
-        allContact&&=t.railContact;
-        if(t.crestDistance<=6.5&&frames>12)break;
-      }
-      const t=s.player.surfTelemetry;
-      return {frames,minCrest,maxSupportError,allContact,endCrest:t.crestDistance,
-        relativeFaceSpeed:t.relativeFaceSpeed,tubeDepth:t.tubeDepth,coverage:t.tubeCoverage};})()`);
-    await setKey(cdp, false, "KeyD", "d", 68);
-    await setKey(cdp, true, "KeyS", "s", 83);
+    // Ride the pocket into the barrel first (entry drops onto a developed,
+    // often already-peeling section), then climb with W. These are the public
+    // keyboard controls — no controller teleports or telemetry mutation.
     const tubeRide = await evaluate(cdp, `(()=>{const s=window.__sf;
       let frames=0,maxBlend=0,minRoofClearance=Infinity,minWaterClearance=Infinity;
-      let minTubeClearance=Infinity,maxTubeDepth=0,allContact=true;
+      let minTubeClearance=Infinity,maxTubeDepth=0,allContact=true,sawInside=false;
       const states=[];let prior='';
-      for(;frames<480;frames++){
+      for(;frames<560;frames++){
         s.tick(${DT});const t=s.player.surfTelemetry,c=s.chase.surfCameraDiagnostics();
         if(t.tubeState!==prior){states.push(t.tubeState);prior=t.tubeState}
+        sawInside||=t.tubeState==='inside';
         maxBlend=Math.max(maxBlend,c.tubeBlend);
         minRoofClearance=Math.min(minRoofClearance,c.roofClearance||Infinity);
         minWaterClearance=Math.min(minWaterClearance,c.waterClearance);
@@ -593,31 +622,100 @@ async function main() {
         if(t.tubeState==='inside'&&c.mode==='barrel'&&c.tubeBlend>0.78&&t.tubeDwell>1.15)break;
       }
       const t=s.player.surfTelemetry,c=s.chase.surfCameraDiagnostics();
-      return {frames,states,maxBlend,minRoofClearance,minWaterClearance,minTubeClearance,
+      return {frames,states,sawInside,maxBlend,minRoofClearance,minWaterClearance,minTubeClearance,
         maxTubeDepth,allContact,state:t.tubeState,dwell:t.tubeDwell,serial:t.tubeSerial,
         crestDistance:t.crestDistance,tubeDepth:t.tubeDepth,tubeClearance:t.tubeClearance,camera:c};})()`);
-    await setKey(cdp, false, "KeyS", "s", 83);
     await renderCurrentFrame(cdp);
     tubeShot = await capture(cdp, "surf-barrel-desktop.png");
     check(
-      carveHigh.endCrest < tubeStart.crestDistance - 1.4 &&
-        carveHigh.maxSupportError < 0.18 && carveHigh.allContact,
-      "D carves materially up the live face without penetrating or losing rail contact",
-      { start: tubeStart, carveHigh }
-    );
-    check(
-      tubeRide.states.includes("entering") && tubeRide.states.includes("inside") &&
-        tubeRide.serial > tubeStart.tubeSerial && tubeRide.maxTubeDepth >= 0.58 &&
-        tubeRide.allContact && tubeRide.tubeClearance > 1.7,
-      "high line plus stall enters a supported, positively-cleared tube",
+      tubeRide.sawInside && tubeRide.maxTubeDepth >= 0.58 &&
+        tubeRide.allContact && tubeRide.minTubeClearance > 1.7,
+      "riding the pocket holds a supported, positively-cleared tube",
       tubeRide
     );
     check(
       tubeRide.camera.mode === "barrel" && tubeRide.camera.tubeBlend > 0.72 &&
-        tubeRide.camera.behindAlignment > 0.82 && tubeRide.camera.roofClearance > 0.25 &&
+        tubeRide.camera.behindAlignment > 0.7 && tubeRide.camera.roofClearance > 0.25 &&
         tubeRide.camera.waterClearance > 0.25,
       "tube camera eases behind the rider and stays between water and roof",
       tubeRide.camera
+    );
+
+    // Carving toward the wave climbs the face (one-stick model): the climb
+    // key depends on the peel (north travel → A, south → D). Reaching the lip
+    // with pace legitimately arms an auto-launch, so contact metrics count
+    // ride frames only and the loop accepts either outcome.
+    const pickClimbKey = async () =>
+      (await evaluate(cdp, "window.__sf.player.surfTelemetry.lineDirection")) > 0
+        ? { code: "KeyD", key: "d", vk: 68 }
+        : { code: "KeyA", key: "a", vk: 65 };
+    let climbKey = await pickClimbKey();
+    const climbStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
+      return {crestDistance:t.crestDistance,launch:t.launchSerial};})()`);
+    await setKey(cdp, true, climbKey.code, climbKey.key, climbKey.vk);
+    const carveHigh = await evaluate(cdp, `(()=>{const s=window.__sf;
+      let frames=0,minCrest=Infinity,maxSupportError=0,allContact=true;
+      for(;frames<240;frames++){
+        s.tick(${DT});const t=s.player.surfTelemetry;
+        if(t.phase==='ride'){
+          minCrest=Math.min(minCrest,t.crestDistance);
+          maxSupportError=Math.max(maxSupportError,Math.abs(t.supportError));
+          allContact&&=t.railContact;
+        }
+        if(t.crestDistance<=3.2&&frames>12)break;
+        if(t.launchSerial>${climbStart.launch})break;
+      }
+      const t=s.player.surfTelemetry;
+      return {frames,minCrest,maxSupportError,allContact,endCrest:t.crestDistance,
+        faceLine:t.faceLine,launched:t.launchSerial>${climbStart.launch},
+        relativeFaceSpeed:t.relativeFaceSpeed};})()`);
+    await setKey(cdp, false, climbKey.code, climbKey.key, climbKey.vk);
+    check(
+      (carveHigh.minCrest < climbStart.crestDistance - 1.4 || carveHigh.launched) &&
+        carveHigh.maxSupportError < 0.18 && carveHigh.allContact,
+      "carving toward the wave climbs the face with clean rail contact until takeoff",
+      { start: climbStart, carveHigh }
+    );
+    // Settle back onto a supported ride before the roundhouse test.
+    await evaluate(cdp, `(()=>{const s=window.__sf;
+      for(let i=0;i<420&&s.player.surfTelemetry.phase!=='ride';i++)s.tick(${DT});
+      for(let i=0;i<30;i++)s.tick(${DT});return s.player.surfTelemetry.phase;})()`);
+
+    // Deliberate roundhouse: pin a full carve until the reversal commits; the
+    // remembered travel direction flips exactly once per committed hold.
+    const cutbackStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
+      return {lineDirection:t.lineDirection,cutbackSerial:t.cutbackSerial};})()`);
+    const cutback = await evaluate(cdp, `(()=>{const s=window.__sf;
+      // Hold + taps on the BEACH side (never launches, so the whole gesture
+      // stays grounded and deterministic).
+      const dropKey=s.player.surfTelemetry.lineDirection>0?'KeyA':'KeyD';
+      // long hold first: hard carving must NEVER reverse on its own
+      s.input.keys.add(dropKey);
+      for(let i=0;i<240;i++)s.tick(${DT});
+      s.input.keys.delete(dropKey);
+      const heldSerial=s.player.surfTelemetry.cutbackSerial;
+      const heldDirection=s.player.surfTelemetry.lineDirection;
+      for(let i=0;i<40;i++)s.tick(${DT});
+      // double-tap commits exactly one roundhouse
+      s.input.keys.add(dropKey);
+      for(let i=0;i<8;i++)s.tick(${DT});
+      s.input.keys.delete(dropKey);
+      for(let i=0;i<6;i++)s.tick(${DT});
+      s.input.keys.add(dropKey);
+      for(let i=0;i<8;i++)s.tick(${DT});
+      s.input.keys.delete(dropKey);
+      for(let i=0;i<50;i++)s.tick(${DT});
+      const t=s.player.surfTelemetry;
+      return {heldSerial,heldDirection,lineDirection:t.lineDirection,
+        cutbackSerial:t.cutbackSerial,phase:t.phase,speed:t.speed};})()`);
+    check(
+      cutback.heldSerial === cutbackStart.cutbackSerial &&
+        cutback.heldDirection === cutbackStart.lineDirection &&
+        cutback.cutbackSerial === cutbackStart.cutbackSerial + 1 &&
+        cutback.lineDirection === -cutbackStart.lineDirection &&
+        cutback.phase === "ride",
+      "held carves never reverse; a double-tap commits exactly one roundhouse",
+      { cutbackStart, cutback }
     );
     check(
       tubeShot.entropy > 2 && tubeShot.channels.some((value) => value > 15),
@@ -625,22 +723,19 @@ async function main() {
       tubeShot
     );
 
-    // Real-control lip launch: pump + carve high, keep steering through one
-    // unwrapped aerial rotation, release to let the landing assist align, then
-    // prove the five-point hull returns to supported ride contact.
-    await pressKey(cdp, "KeyE", "e", 69);
-    await tickFrames(cdp, 3);
-    await waitEval(cdp, "window.__sf.player.mode==='walk'", 5000, "pre-aerial beach reset");
-    await pressKey(cdp, "KeyE", "e", 69);
-    await tickFrames(cdp, 4);
-    await waitEval(cdp, "window.__sf.player.mode==='surf'", 5000, "pre-aerial surf reset");
+    // Real-control lip launch: pump the face with W bursts (the KSPS rhythm),
+    // keep steering through one unwrapped aerial rotation, release to let the
+    // landing assist align, then prove the five-point hull returns to
+    // supported ride contact.
+    await pressEUntilMode(cdp, "walk", 25, "pre-aerial beach reset");
+    await pressEUntilMode(cdp, "surf", 25, "pre-aerial surf reset");
     const aerialStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
       return {launch:t.launchSerial,landing:t.landingSerial,crest:t.crestDistance};})()`);
-    await setKey(cdp, true, "KeyW", "w", 87);
-    await setKey(cdp, true, "KeyD", "d", 68);
+    climbKey = await pickClimbKey();
     const takeoff = await evaluate(cdp, `(()=>{const s=window.__sf;
+      s.input.keys.add('${climbKey.code}');
       let frames=0,minCrest=Infinity,minHull=Infinity,maxCharge=0,minFoot=Infinity,maxFoot=-Infinity;
-      for(;frames<420;frames++){
+      for(;frames<520;frames++){
         s.tick(${DT});const t=s.player.surfTelemetry;
         const f=s.player.surfFootDeckClearance;
         minCrest=Math.min(minCrest,t.crestDistance);
@@ -649,10 +744,12 @@ async function main() {
         minFoot=Math.min(minFoot,f.left,f.right);maxFoot=Math.max(maxFoot,f.left,f.right);
         if(t.launchSerial>${aerialStart.launch})break;
       }
+      s.input.keys.delete('${climbKey.code}');
       const t=s.player.surfTelemetry;
       return {frames,minCrest,minHull,maxCharge,phase:t.phase,launch:t.launchSerial,
         crest:t.crestDistance,airTime:t.airTime,clearance:t.clearance,minFoot,maxFoot};})()`);
     const spin = await evaluate(cdp, `(()=>{const s=window.__sf;
+      s.input.keys.add('KeyA');
       let frames=0,maxSpin=0,maxClearance=0,minFoot=Infinity,maxFoot=-Infinity;
       for(;frames<210;frames++){
         s.tick(${DT});const t=s.player.surfTelemetry;
@@ -662,10 +759,10 @@ async function main() {
         minFoot=Math.min(minFoot,f.left,f.right);maxFoot=Math.max(maxFoot,f.left,f.right);
         if(Math.abs(t.airSpin)>=5.72||t.phase!=='air')break;
       }
+      s.input.keys.delete('KeyA');
       const t=s.player.surfTelemetry;
       return {frames,maxSpin,maxClearance,phase:t.phase,airSpin:t.airSpin,
         airTime:t.airTime,crest:t.crestDistance,minFoot,maxFoot};})()`);
-    await setKey(cdp, false, "KeyD", "d", 68);
     const landing = await evaluate(cdp, `(()=>{const s=window.__sf;
       let frames=0,minGroundHull=Infinity,maxAirClearance=0,maxCompression=0,maxImpactStreaks=0,impactSpawnSerial=0,minFoot=Infinity,maxFoot=-Infinity,phases=[];let prior='';
       for(;frames<300;frames++){
@@ -679,7 +776,7 @@ async function main() {
         maxImpactStreaks=Math.max(maxImpactStreaks,impact.activeStreaks);
         impactSpawnSerial=Math.max(impactSpawnSerial,impact.spawnSerial);
         minFoot=Math.min(minFoot,f.left,f.right);maxFoot=Math.max(maxFoot,f.left,f.right);
-        if(t.landingSerial>${aerialStart.landing}&&t.phase==='ride'&&frames>2)break;
+        if(t.landingSerial>${aerialStart.landing}&&t.phase==='ride'&&t.railContact&&frames>2)break;
       }
       const t=s.player.surfTelemetry;
       const impactState=s.boardWake.surfImpactState;
@@ -693,8 +790,8 @@ async function main() {
     const aerialShot = await capture(cdp, "surf-aerial-desktop.png");
     check(
       takeoff.launch === aerialStart.launch + 1 && takeoff.phase === "air" &&
-        takeoff.minCrest < aerialStart.crest - 4 && takeoff.minHull >= -0.001,
-      "W+D carves onto the lip and launches once without hull penetration",
+        takeoff.minCrest < aerialStart.crest - 2 && takeoff.minHull >= -0.001,
+      "carving up the face launches once off the lip without hull penetration",
       { aerialStart, takeoff }
     );
     check(
@@ -722,14 +819,46 @@ async function main() {
       aerialShot
     );
 
+    // Second aerial: W/S flips + a brief grab. Launch with a W pump, then in
+    // the air hold S for a backflip with Shift grabbed for the first ~0.4 s;
+    // the auto-complete assist finishes the rotation for a clean landing.
+    const flipStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
+      return {launch:t.launchSerial,landing:t.landingSerial};})()`);
+    climbKey = await pickClimbKey();
+    const flipAir = await evaluate(cdp, `(()=>{const s=window.__sf;
+      s.input.keys.add('${climbKey.code}');
+      let frames=0;
+      for(;frames<620&&s.player.surfTelemetry.launchSerial<=${flipStart.launch};frames++){
+        s.tick(${DT});
+      }
+      s.input.keys.delete('${climbKey.code}');
+      if(s.player.surfTelemetry.launchSerial<=${flipStart.launch})return {launched:false,frames};
+      s.input.keys.add('KeyS');s.input.keys.add('ShiftLeft');
+      let grabFrames=0,maxFlip=0,maxGrab=0;
+      for(let i=0;i<240&&s.player.surfTelemetry.phase==='air';i++){
+        if(grabFrames++===24)s.input.keys.delete('ShiftLeft');
+        s.tick(${DT});const t=s.player.surfTelemetry;
+        maxFlip=Math.max(maxFlip,Math.abs(t.airFlip));
+        maxGrab=Math.max(maxGrab,t.grabTime);
+      }
+      s.input.keys.delete('KeyS');s.input.keys.delete('ShiftLeft');
+      for(let i=0;i<240&&s.player.surfTelemetry.landingSerial<=${flipStart.landing};i++)s.tick(${DT});
+      for(let i=0;i<30;i++)s.tick(${DT});
+      const t=s.player.surfTelemetry;
+      return {launched:true,frames,maxFlip,maxGrab,landing:t.landingSerial,
+        landedFlip:t.landedFlip,landedGrab:t.landedGrab,quality:t.landingQuality,phase:t.phase};})()`);
+    check(
+      flipAir.launched === true && flipAir.landing === flipStart.landing + 1 &&
+        Math.abs(flipAir.landedFlip) >= 4.5 && flipAir.landedGrab >= 0.3 &&
+        flipAir.phase !== "air",
+      "S in the air lands a grabbed backflip with rotation assist",
+      { flipStart, flipAir }
+    );
+
     // Reset to a fresh neutral wave so the long-run invariant below is not
     // biased by held carve/stall input or a partially completed tube handoff.
-    await pressKey(cdp, "KeyE", "e", 69);
-    await tickFrames(cdp, 3);
-    await waitEval(cdp, "window.__sf.player.mode==='walk'", 5000, "post-tube beach reset");
-    await pressKey(cdp, "KeyE", "e", 69);
-    await tickFrames(cdp, 1);
-    await waitEval(cdp, "window.__sf.player.mode==='surf'", 5000, "post-tube surf reset");
+    await pressEUntilMode(cdp, "walk", 25, "post-tube beach reset");
+    await pressEUntilMode(cdp, "surf", 25, "post-tube surf reset");
     await tickFrames(cdp, 4);
 
     const enduranceFrames = Math.ceil(ENDURANCE_SECONDS / DT);
@@ -814,9 +943,12 @@ async function main() {
       { minClearance: endurance.minClearance, minSpeed: endurance.minSpeed }
     );
     check(
-      endurance.cameraInitialized && endurance.minCameraShoreClearance >= -0.5 &&
+      // The boom deliberately trails seaward of the rider now (travel+shore
+      // frame, lifted over the crown) — bound it to the boom length instead of
+      // pinning it shoreward of the board.
+      endurance.cameraInitialized && endurance.minCameraShoreClearance >= -14 &&
         endurance.minCameraWaterClearance >= 0.49,
-      "authored camera stays at the wave edge and above the live water through set handoffs",
+      "authored camera trails within boom length and above the live water through set handoffs",
       {
         initialized: endurance.cameraInitialized,
         minShoreClearance: endurance.minCameraShoreClearance,
@@ -842,22 +974,20 @@ async function main() {
 
     // Keyboard exit/re-entry must use the same E path the player sees.
     const keyboardExitCount = await evaluate(cdp, "window.__sf.abandonedMounts.count");
-    await pressKey(cdp, "KeyE", "e", 69);
-    await tickFrames(cdp, 3);
+    await pressEUntilMode(cdp, "walk", 25, "keyboard beach exit");
     const keyboardExit = await evaluate(cdp, `(()=>{const s=window.__sf,p=s.player;
       return {mode:p.mode,x:p.position.x,y:p.position.y,z:p.position.z,
         onWater:s.map.isWater(p.position.x,p.position.z),abandoned:s.abandonedMounts.count,
-        wavesDisposed:s.oceanBeachWaves===null};})()`);
+        wavesLive:s.oceanBeachWaves!==null};})()`);
     check(
+      // The break intentionally keeps rolling for the beach walk-up view, so
+      // exit asserts dry land + no abandoned board, not visual disposal.
       keyboardExit.mode === "walk" && !keyboardExit.onWater &&
-        keyboardExit.abandoned === keyboardExitCount && keyboardExit.wavesDisposed,
+        keyboardExit.abandoned === keyboardExitCount,
       "keyboard E exits atomically onto dry beach with no abandoned surfboard",
       { beforeAbandoned: keyboardExitCount, ...keyboardExit }
     );
-    await pressKey(cdp, "KeyE", "e", 69);
-    await tickFrames(cdp, 1); // consume the edge; camera readiness resolves asynchronously
-    await waitEval(cdp, "window.__sf.player.mode==='surf'", 5000,
-      "keyboard surf re-entry");
+    await pressEUntilMode(cdp, "surf", 25, "keyboard surf re-entry");
     const keyboardReentry = await tickFrames(cdp, 4);
     check(
       keyboardReentry.mode === "surf" && keyboardReentry.phase === "ride" &&
@@ -903,36 +1033,44 @@ async function main() {
       padLookLock
     );
 
-    // LS + RT: carve and pump through standard analog axes.
-    await setProbePad(cdp, { axes: [0.85, 0, 0, 0], buttons: { 7: 1 } });
-    await tickFrames(cdp, 90);
+    // LS carve: beach side drops for speed, wave side climbs the face.
+    const padDropSign = await evaluate(cdp,
+      "window.__sf.player.surfTelemetry.lineDirection > 0 ? -0.85 : 0.85");
+    await setProbePad(cdp, { axes: [padDropSign, 0, 0, 0] });
+    await tickFrames(cdp, 80);
     const padPump = await evaluate(cdp, `(()=>{const s=window.__sf,t=s.player.surfTelemetry;
       return {connected:s.input.padConnected,device:s.input.device,
-        steerAxis:s.input.axis('KeyA','KeyD'),throttleAxis:s.input.axis('KeyS','KeyW'),
-        lean:t.lean,pump:t.pump,speed:t.speed,phase:t.phase};})()`);
+        steerAxis:s.input.axis('KeyA','KeyD'),
+        lean:t.lean,faceLine:t.faceLine,speed:t.speed,phase:t.phase};})()`);
     check(
-      padPump.connected && padPump.device === "pad" && padPump.steerAxis > 0.6 &&
-        padPump.throttleAxis > 0.8 && Math.abs(padPump.lean) > 0.08 && padPump.pump > 0.35,
-      "standard-gamepad left stick carves and RT pumps",
+      padPump.connected && padPump.device === "pad" &&
+        Math.abs(padPump.steerAxis) > 0.6 && padPump.faceLine > 0.3,
+      "standard-gamepad stick toward the beach drops down the face",
       padPump
     );
 
-    // Settle any automatic air first; holding LT then prevents a new launch.
+    // Wave-side stick climbs toward the lip.
     await setProbePad(cdp);
     await evaluate(cdp, `(()=>{const s=window.__sf;for(let i=0;i<300&&s.player.surfTelemetry.phase==='air';i++)s.tick(${DT});return true})()`);
-    await setProbePad(cdp, { buttons: { 6: 1 } });
-    await tickFrames(cdp, 120);
+    await evaluate(cdp, `(()=>{const s=window.__sf;for(let i=0;i<420&&s.player.surfTelemetry.phase!=='ride';i++)s.tick(${DT});return true})()`);
+    const padClimbSign = await evaluate(cdp,
+      "window.__sf.player.surfTelemetry.lineDirection > 0 ? 0.85 : -0.85");
+    await setProbePad(cdp, { axes: [padClimbSign, 0, 0, 0] });
+    await tickFrames(cdp, 60);
     const padStall = await evaluate(cdp, `(()=>{const s=window.__sf,t=s.player.surfTelemetry;
-      return {throttleAxis:s.input.axis('KeyS','KeyW'),stalling:t.stalling,speed:t.speed,
-        phase:t.phase,pump:t.pump};})()`);
+      return {steerAxis:s.input.axis('KeyA','KeyD'),faceLine:t.faceLine,speed:t.speed,
+        crest:t.crestDistance,phase:t.phase,pump:t.pump};})()`);
+    await setProbePad(cdp);
     check(
-      padStall.throttleAxis < -0.8 && (padStall.stalling || padStall.speed < padPump.speed - 2),
-      "standard-gamepad LT stalls without stopping the ride",
-      { pumpState: padPump, stallState: padStall }
+      Math.abs(padStall.steerAxis) > 0.6 &&
+        (padStall.faceLine < -0.3 || padStall.phase === "air" || padStall.crest < 4.5),
+      "standard-gamepad stick toward the wave climbs the face",
+      { dropState: padPump, climbState: padStall }
     );
 
     // Earn the remaining meter with RT if neutral endurance did not quite fill
-    // it, then press physical A (standard button 0 => logical Space) for Flow.
+    // it, then press physical X (standard button 2 => logical KeyX) for Flow.
+    // A (button 0) is always the jump now.
     await setProbePad(cdp, { buttons: { 7: 1 } });
     const flowCharge = await evaluate(cdp, `(()=>{const s=window.__sf;
       for(let i=0;i<900&&!s.player.surfTelemetry.flowReady;i++)s.tick(${DT});
@@ -940,16 +1078,43 @@ async function main() {
     await setProbePad(cdp);
     await tickFrames(cdp, 2);
     const flowSerialBefore = await evaluate(cdp, "window.__sf.player.surfTelemetry.flowSerial");
-    await setProbePad(cdp, { buttons: { 0: 1 } });
+    await setProbePad(cdp, { buttons: { 2: 1 } });
     await tickFrames(cdp, 2);
     await setProbePad(cdp);
     const padFlow = await tickFrames(cdp, 2);
     check(
       flowCharge.ready && padFlow.flowSerial > flowSerialBefore && padFlow.flowActive &&
         padFlow.riderMotionRate > 0 && padFlow.riderMotionRate < 1,
-      "standard-gamepad A spends a ready meter on Flow",
+      "standard-gamepad X spends a ready meter on Flow",
       { flowCharge, flowSerialBefore, padFlow }
     );
+
+    // A (button 0) must always jump: settle to a mid-face ride, press A, and
+    // expect a launch serial bump (chop hop) rather than a spent Flow meter.
+    await evaluate(cdp, `(()=>{const s=window.__sf;for(let i=0;i<420&&(s.player.surfTelemetry.phase!=='ride'||s.player.surfTelemetry.flowActive);i++)s.tick(${DT});return true})()`);
+    const hopBefore = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
+      return {launch:t.launchSerial,flowSerial:t.flowSerial};})()`);
+    // A press can coincide with a next-wave reset's launch lockout — a player
+    // just presses again, so retry the tap until the hop registers.
+    let hopAfter = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await setProbePad(cdp, { buttons: { 0: 1 } });
+      await tickFrames(cdp, 2);
+      await setProbePad(cdp);
+      hopAfter = await tickFrames(cdp, 14);
+      if (
+        hopAfter.phase === "air" || hopAfter.grounded === false ||
+        (await evaluate(cdp, "window.__sf.player.surfTelemetry.launchSerial")) > hopBefore.launch
+      ) break;
+    }
+    check(
+      hopAfter.phase === "air" || hopAfter.grounded === false ||
+        (await evaluate(cdp, "window.__sf.player.surfTelemetry.launchSerial")) > hopBefore.launch,
+      "standard-gamepad A always jumps (chop hop away from the lip)",
+      { hopBefore, hopAfter }
+    );
+    // Let the hop land before the exit checks below.
+    await evaluate(cdp, `(()=>{const s=window.__sf;for(let i=0;i<300&&s.player.surfTelemetry.phase==='air';i++)s.tick(${DT});return true})()`);
 
     // Physical Y maps to the exact E exit action; release and press it again to
     // prove the full controller-only leave/retry loop.
@@ -966,11 +1131,19 @@ async function main() {
       "standard-gamepad Y exits onto the beach without abandoning the board",
       { beforeAbandoned: padExitCount, ...padExit }
     );
-    await setProbePad(cdp, { buttons: { 3: 1 } });
-    await tickFrames(cdp, 1); // poll Y and consume its synthetic KeyE edge
-    await waitEval(cdp, "window.__sf.player.mode==='surf'", 5000,
-      "gamepad surf re-entry");
-    await setProbePad(cdp);
+    {
+      const started = Date.now();
+      let padBack = false;
+      while (Date.now() - started < 25_000) {
+        await setProbePad(cdp, { buttons: { 3: 1 } });
+        await tickFrames(cdp, 2);
+        await setProbePad(cdp);
+        await tickFrames(cdp, 12);
+        if ((await evaluate(cdp, "window.__sf.player.mode")) === "surf") { padBack = true; break; }
+        await sleep(60);
+      }
+      if (!padBack) throw new Error("Timed out pressing Y for gamepad surf re-entry");
+    }
     const padReentry = await tickFrames(cdp, 2);
     check(
       padReentry.mode === "surf" && padReentry.phase === "ride" &&

@@ -719,11 +719,22 @@ async function boot() {
     if (oceanBeachWaves && surfExperience) return Promise.resolve();
     if (surfRuntimeLoading) return surfRuntimeLoading;
     surfRuntimeLoading = import("./gameplay/surfing")
-      .then(({ OceanBeachWaves, SurfExperience }) => {
+      .then(async ({ OceanBeachWaves, SurfExperience }) => {
         // A direct transition may have been canceled while the chunk was in
         // flight. Do not resurrect the activity after its owner has left.
         if (!prepareEntry && player.mode !== "surf" && surfEntryPreparations === 0) return;
-        oceanBeachWaves ??= new OceanBeachWaves(scene);
+        if (!oceanBeachWaves) {
+          // Compile the wave sheet's pipelines while the group is detached —
+          // adding it uncompiled froze the first surf second for >1 s.
+          const waves = new OceanBeachWaves();
+          try {
+            await renderer.compileAsync(waves.group, camera, scene);
+          } catch (error) {
+            console.warn("[surf] wave warmup compile failed", error);
+          }
+          scene.add(waves.group);
+          oceanBeachWaves = waves;
+        }
         surfExperience ??= new SurfExperience(vehicleAudio);
         refreshSurfDebug();
       })
@@ -738,10 +749,56 @@ async function boot() {
     oceanBeachWaves = null;
     refreshSurfDebug();
   };
+  // The primed break stays alive while the player remains in the activity's
+  // beach neighborhood (live breaking waves from the sand + instant re-entry).
+  // Release only once they genuinely leave — a 240 m pad against the 90 m
+  // prime radius so exit→walk cannot churn dispose/recompile cycles.
+  const surfBreakStillLocal = () => {
+    if (player.mode === "surf" || surfEntryPreparations > 0) return true;
+    if (!surfShack) return false;
+    const dx = player.position.x - surfShack.pose.x;
+    const dz = player.position.z - surfShack.pose.z;
+    return dx * dx + dz * dz < 240 * 240;
+  };
+  // Pre-compile the surf embodiment (board deck + rider rig) pipelines while
+  // it is detached, so the first ridden frame draws with zero pipeline work.
+  // Same detached-compile pattern the covered encounters use.
+  const warmSurfEmbodiment = async (): Promise<void> => {
+    const rig = player.meshes.surf;
+    if (!rig || rig.userData.surfPipelinesWarm) return;
+    // Concurrent preparations (proximity prime + shack E in its window) must
+    // share one in-flight warm, or the second resolves while the rig is still
+    // detached and the first's restore clobbers a live mode switch.
+    const inFlight = rig.userData.surfWarmPromise as Promise<void> | undefined;
+    if (inFlight) return inFlight;
+    const parent = rig.parent;
+    const wasVisible = rig.visible;
+    parent?.remove(rig);
+    rig.visible = true;
+    const run = (async () => {
+      try {
+        await renderer.compileAsync(rig, camera, scene);
+      } catch (error) {
+        console.warn("[surf] embodiment warmup compile failed", error);
+      } finally {
+        delete rig.userData.surfWarmPromise;
+        rig.userData.surfPipelinesWarm = true;
+        // Restore from LIVE state: the player may have entered surf while the
+        // rig was detached, and a rig replaced by setSurfboardConfig mid-warm
+        // (player.meshes.surf !== rig) is disposed — never resurrect it.
+        if (player.meshes.surf === rig) {
+          rig.visible = player.mode === "surf" ? true : wasVisible;
+          if (parent && !rig.parent) parent.add(rig);
+        }
+      }
+    })();
+    rig.userData.surfWarmPromise = run;
+    return run;
+  };
   const prepareSurfEntry = async () => {
     surfEntryPreparations++;
     try {
-      await Promise.all([chase.ensureSurfCamera(), ensureSurfRuntime(true)]);
+      await Promise.all([chase.ensureSurfCamera(), ensureSurfRuntime(true), warmSurfEmbodiment()]);
       return oceanBeachWaves !== null && surfExperience !== null;
     } catch (error) {
       console.warn("[surf] entry preparation failed", error);
@@ -829,8 +886,9 @@ async function boot() {
       leaveCameraModeForSurf();
       void chase.ensureSurfCamera();
       void ensureSurfRuntime();
-    } else {
-      // The high-resolution break belongs exclusively to the active surf session.
+    } else if (!surfBreakStillLocal()) {
+      // The high-resolution break belongs to the surf session and its beach;
+      // exiting onto the apron keeps it breaking for the walk-up view.
       releaseSurfVisual();
     }
     setRemoteSurfboardAssetsActive(mode === "surf");
@@ -4287,7 +4345,9 @@ async function boot() {
           setLocalSurfboardConfig(config);
           player.setSurfboardConfig(config);
           const request = ++surfEntryRequest;
-          void chase.ensureSurfCamera().then(() => {
+          // Full preparation (camera + runtime + a fresh embodiment compile if
+          // the grabbed board differs) so the first ridden frame is stall-free.
+          void prepareSurfEntry().then(() => {
             if (request !== surfEntryRequest || player.mode !== "walk") return;
             navigation.switchMode("surf");
           });
@@ -4895,6 +4955,22 @@ async function boot() {
       : sutroBaths?.takeFloorHandoffHeight(player.position, player.mode);
     if (sutroFloorHandoff != null) player.recoverOntoWalkSurface(sutroFloorHandoff);
 
+    // Prime the surf runtime while the player is still walking up to the
+    // shack: waves + rider pipelines compile during the approach, so the E
+    // press starts the ride without a single pipeline stall. This is the
+    // activity's proximity gate — nothing surf-related loads elsewhere.
+    if (
+      player.mode === "walk" &&
+      surfShack &&
+      !oceanBeachWaves &&
+      !surfRuntimeLoading &&
+      surfEntryPreparations === 0
+    ) {
+      const surfPrimeDx = player.position.x - surfShack.pose.x;
+      const surfPrimeDz = player.position.z - surfShack.pose.z;
+      if (surfPrimeDx * surfPrimeDx + surfPrimeDz * surfPrimeDz < 90 * 90) void prepareSurfEntry();
+    }
+
     // "hop in" nudge when standing near a ride (friend → wildlife → parked mount)
     if (!worldArrival.active && player.mode === "walk" && embodiments.passengerOf === null) {
       const drv = remotes.nearestDriver(player.position, 5.5);
@@ -4977,27 +5053,23 @@ async function boot() {
       emitEmbodimentWaterEcho(water.echoes, player);
     }
     water.echoes.endFrame();
-    water.update(surfaceTime, camera.position, player.renderPosition, player.mode === "surf");
-    const surfTubeState = player.surfTelemetry.tubeState;
+    // The base sheet yields to the high-res surf overlay whenever that overlay
+    // exists — it now persists for the beach walk-up too, not just mode==="surf",
+    // and leaving both drawn doubles the same transparent wall.
+    water.update(surfaceTime, camera.position, player.renderPosition, oceanBeachWaves !== null);
+    // The roof materializes with the CAMERA's barrel blend, not the gameplay
+    // tube state: state-driven visibility drew the roof while the camera was
+    // still outside, where its pale lip seen edge-on through fog read as a
+    // white disc floating over the crest.
     const surfTubeVisibility =
-      surfTubeState === "inside"
-        ? 1
-        : surfTubeState === "entering"
-          ? 0.72
-          : surfTubeState === "exiting"
-            ? 0.32
-            : 0;
+      player.mode === "surf" ? chase.surfCameraDiagnostics()?.tubeBlend ?? 0 : 0;
     oceanBeachWaves?.update(surfaceTime, player.renderPosition, surfTubeVisibility);
     // Safety net for restored/direct surf transitions. Entry preparation keeps
     // its newly constructed mesh alive until the mode switch commits; otherwise
     // the activity visual is disposed on the first non-surf frame.
     if (!oceanBeachWaves && player.mode === "surf") {
       void ensureSurfRuntime();
-    } else if (
-      oceanBeachWaves &&
-      player.mode !== "surf" &&
-      surfEntryPreparations === 0
-    ) {
+    } else if (oceanBeachWaves && !surfBreakStillLocal()) {
       releaseSurfVisual();
     }
     underwater.update(camera, elapsed);

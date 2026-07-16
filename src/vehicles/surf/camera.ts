@@ -39,8 +39,6 @@ const MIN_ABOVE_ANCHOR = 1.8
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value))
 const smoothstep = (value: number) => value * value * (3 - 2 * value)
 const expSmooth = (dt: number, response: number) => 1 - Math.exp(-dt * response)
-const shortestAngle = (from: number, to: number) =>
-  Math.atan2(Math.sin(to - from), Math.cos(to - from))
 
 /**
  * Exclusive surf camera: eye trails behind board facing, looks the same way,
@@ -67,7 +65,11 @@ export class SurfCameraController {
   #initialized = false
   #snapped = false
   #lineDirection: -1 | 1 = 1
-  /** Smoothed yaw the boom uses — lags board heading for readable cutbacks. */
+  /** Smoothed signed down-line travel direction (-1 north … +1 south). The
+   *  boom follows this, never the nose, so carves and cutbacks play out under
+   *  a steady frame instead of whipping the camera through 180°. */
+  #dirSmooth = 1
+  /** Yaw of the smoothed travel+shore frame (diagnostics only). */
   #followYaw = 0
   #viewYaw = 0
   #viewPitch = 0
@@ -89,6 +91,7 @@ export class SurfCameraController {
     this.#initialized = false
     this.#snapped = false
     this.#lineDirection = 1
+    this.#dirSmooth = 1
     this.#followYaw = 0
     this.#viewYaw = 0
     this.#viewPitch = 0
@@ -143,19 +146,22 @@ export class SurfCameraController {
     const telemetry = player.surfTelemetry
     const smoothDt = Number.isFinite(dt) ? Math.min(MAX_SMOOTH_DT, Math.max(0, dt)) : 0
 
-    // Board facing (storage heading is facing + π).
-    const facingYaw = player.heading - Math.PI
-    if (!this.#initialized) {
-      this.#followYaw = facingYaw
-    } else {
-      this.#followYaw +=
-        shortestAngle(this.#followYaw, facingYaw) *
-        expSmooth(smoothDt, tuning.followYawResponse)
-    }
-
-    const forwardX = -Math.sin(this.#followYaw)
-    const forwardZ = -Math.cos(this.#followYaw)
-    this.#lineDirection = forwardZ >= 0 ? 1 : -1
+    // KSPS frame: the boom follows the smoothed down-line travel direction
+    // blended TOWARD THE WAVE, from the flat side — the eye sits low over the
+    // trough looking back at the rider with the wall as backdrop, and it never
+    // crests behind the wave. Only a genuine travel reversal swings the frame,
+    // pivoting through the face-on view.
+    const rawDirection = telemetry.lineDirection >= 0 ? 1 : -1
+    if (!this.#initialized) this.#dirSmooth = rawDirection
+    else this.#dirSmooth += (rawDirection - this.#dirSmooth) * expSmooth(smoothDt, tuning.directionResponse)
+    const waveLook = THREE.MathUtils.clamp(tuning.waveLook, 0.05, 0.95)
+    let forwardX = -waveLook
+    let forwardZ = (1 - waveLook) * this.#dirSmooth
+    const forwardLen = Math.hypot(forwardX, forwardZ) || 1
+    forwardX /= forwardLen
+    forwardZ /= forwardLen
+    this.#lineDirection = this.#dirSmooth >= 0 ? 1 : -1
+    this.#followYaw = Math.atan2(-forwardX, -forwardZ)
 
     const surfaceFloor =
       Number.isFinite(telemetry.surfaceY) && telemetry.grounded
@@ -182,16 +188,27 @@ export class SurfCameraController {
     this.#mode =
       this.#tubeBlend >= 0.72 ? "barrel" : this.#tubeBlend > 0.035 ? "transition" : "chase"
 
-    const sideBias = tuning.sideBias * (1 - this.#tubeBlend * 0.85)
-    this.#chasePosition.set(
-      anchor.x - forwardX * tuning.distance + sideBias,
-      Math.max(anchor.y, surfaceFloor) + tuning.height,
-      anchor.z - forwardZ * tuning.distance
-    )
+    // Eye on the FLAT side of the rider (trailing −forward puts it shoreward
+    // + behind travel), seated just above the local water there — not above
+    // the rider — so airs launch the surfer up out of frame-center while the
+    // camera stays low and looks up, exactly the KSPS read.
+    const eyeX = anchor.x - forwardX * tuning.distance
+    const eyeZ = anchor.z - forwardZ * tuning.distance
+    const eyeWater = this.#waterFloor(eyeX, eyeZ, player.time)
+    const airLift = Math.max(0, anchor.y - surfaceFloor) * tuning.airFollow
+    this.#chasePosition.set(eyeX, eyeWater + tuning.height + airLift, eyeZ)
+    // Aim at the rider with a small down-line lead — rider stays big and
+    // near-centred, the wave ahead slides into the leading half of the frame.
+    // During airs the aim follows only part of the altitude, so the camera
+    // looks UP at the trick while the waterline stays in the bottom of frame.
+    const aimY =
+      surfaceFloor +
+      tuning.targetHeight +
+      Math.max(0, anchor.y - surfaceFloor) * tuning.airAim
     this.#chaseTarget.set(
-      anchor.x + forwardX * tuning.lookAhead,
-      Math.max(anchor.y, surfaceFloor) + tuning.targetHeight,
-      anchor.z + forwardZ * tuning.lookAhead
+      anchor.x,
+      aimY,
+      anchor.z + this.#dirSmooth * tuning.lookAhead
     )
 
     const chaseWater =
@@ -249,17 +266,21 @@ export class SurfCameraController {
     if (snap) {
       this.#basePosition.copy(this.#desiredPosition)
       this.#target.copy(this.#desiredTarget)
-      this.#followYaw = facingYaw
+      this.#dirSmooth = rawDirection
     } else {
       this.#basePosition.lerp(this.#desiredPosition, expSmooth(smoothDt, tuning.positionResponse))
       this.#target.lerp(this.#desiredTarget, expSmooth(smoothDt, tuning.aimResponse))
     }
 
-    const minimumAnchorLift = THREE.MathUtils.lerp(MIN_ABOVE_ANCHOR, 0.15, this.#tubeBlend)
-    this.#basePosition.y = Math.max(
-      this.#basePosition.y,
-      Math.max(anchor.y, surfaceFloor) + minimumAnchorLift
-    )
+    // Only the tube rig pins the eye relative to the rider; the KSPS chase
+    // deliberately sits BELOW a rider who is high on the wall or in the air.
+    if (this.#tubeBlend > 0.035) {
+      const minimumAnchorLift = THREE.MathUtils.lerp(MIN_ABOVE_ANCHOR, 0.15, this.#tubeBlend)
+      this.#basePosition.y = Math.max(
+        this.#basePosition.y,
+        Math.max(anchor.y, surfaceFloor) + minimumAnchorLift
+      )
+    }
 
     const activeWaterClearance = THREE.MathUtils.lerp(
       tuning.waterClearance,
