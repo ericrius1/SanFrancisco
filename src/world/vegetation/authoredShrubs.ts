@@ -13,7 +13,7 @@ import { groundSway, WIND_DIR } from "../groundcover/sway";
 
 type N = any;
 
-export type AuthoredShrubProfile = "natural" | "azalea" | "hedge" | "fern";
+export type AuthoredShrubProfile = "natural" | "azalea" | "hedge" | "fern" | "coastal-scrub";
 
 export type AuthoredShrubPalette = {
   foliageA: number;
@@ -52,11 +52,23 @@ const PROFILES: Record<AuthoredShrubProfile, {
   leafWidth: number;
   bloomEvery: number;
   wind: number;
+  woodyStems?: number;
 }> = {
   natural: { count: 42, radiusX: 0.9, radiusZ: 0.78, height: 1.08, leafLength: 0.34, leafWidth: 0.15, bloomEvery: 8, wind: 0.72 },
   azalea: { count: 48, radiusX: 0.96, radiusZ: 0.86, height: 0.86, leafLength: 0.31, leafWidth: 0.16, bloomEvery: 5, wind: 0.58 },
   hedge: { count: 58, radiusX: 1.0, radiusZ: 0.76, height: 0.94, leafLength: 0.28, leafWidth: 0.14, bloomEvery: 11, wind: 0.36 },
-  fern: { count: 30, radiusX: 1.05, radiusZ: 1.05, height: 1.18, leafLength: 0.62, leafWidth: 0.13, bloomEvery: 999, wind: 0.9 }
+  fern: { count: 30, radiusX: 1.05, radiusZ: 1.05, height: 1.18, leafLength: 0.62, leafWidth: 0.13, bloomEvery: 999, wind: 0.9 },
+  "coastal-scrub": {
+    count: 44,
+    radiusX: 1.16,
+    radiusZ: 0.96,
+    height: 1.36,
+    leafLength: 0.38,
+    leafWidth: 0.15,
+    bloomEvery: 999,
+    wind: 0.58,
+    woodyStems: 6
+  }
 };
 
 function seeded(index: number, salt: number): number {
@@ -104,6 +116,56 @@ function pushLeaf(
   );
 }
 
+function pushWoodyStem(
+  positions: number[],
+  colors: number[],
+  flex: number[],
+  blooms: number[],
+  bark: number[],
+  indices: number[],
+  start: THREE.Vector3,
+  end: THREE.Vector3,
+  baseRadius: number,
+  tipRadius: number,
+  phase: number
+) {
+  const sides = 5;
+  const base = positions.length / 3;
+  const direction = end.clone().sub(start).normalize();
+  const radialA = new THREE.Vector3().crossVectors(
+    Math.abs(direction.y) > 0.92 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0),
+    direction
+  ).normalize();
+  const radialB = new THREE.Vector3().crossVectors(direction, radialA).normalize();
+  for (let ring = 0; ring < 2; ring++) {
+    const center = ring === 0 ? start : end;
+    const radius = ring === 0 ? baseRadius : tipRadius;
+    for (let side = 0; side < sides; side++) {
+      const angle = (side / sides) * Math.PI * 2;
+      const vertex = center.clone()
+        .addScaledVector(radialA, Math.cos(angle) * radius)
+        .addScaledVector(radialB, Math.sin(angle) * radius);
+      positions.push(vertex.x, vertex.y, vertex.z);
+      const shade = 0.56 + (side / sides) * 0.2 + ring * 0.06;
+      colors.push(shade, shade, shade);
+      flex.push(ring === 0 ? 0.04 : 0.34, phase);
+      blooms.push(0);
+      bark.push(1);
+    }
+  }
+  for (let side = 0; side < sides; side++) {
+    const next = (side + 1) % sides;
+    indices.push(
+      base + side,
+      base + next,
+      base + sides + next,
+      base + side,
+      base + sides + next,
+      base + sides + side
+    );
+  }
+}
+
 function makeLeafSprayGeometry(profile: AuthoredShrubProfile): THREE.BufferGeometry {
   const p = PROFILES[profile];
   const positions: number[] = [];
@@ -116,15 +178,39 @@ function makeLeafSprayGeometry(profile: AuthoredShrubProfile): THREE.BufferGeome
   const outward = new THREE.Vector3();
   const tangent = new THREE.Vector3();
 
+  for (let i = 0; i < (p.woodyStems ?? 0); i++) {
+    const phase = (i / (p.woodyStems ?? 1)) * Math.PI * 2 + seeded(i, 41) * 0.6;
+    const reach = 0.3 + seeded(i, 43) * 0.32;
+    pushWoodyStem(
+      positions,
+      colors,
+      flex,
+      blooms,
+      bark,
+      indices,
+      new THREE.Vector3(Math.cos(phase) * 0.045, 0.02, Math.sin(phase) * 0.045),
+      new THREE.Vector3(
+        Math.cos(phase) * reach,
+        0.72 + seeded(i, 47) * 0.42,
+        Math.sin(phase) * reach * 0.82
+      ),
+      0.055 + seeded(i, 53) * 0.025,
+      0.025,
+      phase
+    );
+  }
+
   for (let i = 0; i < p.count; i++) {
     const level = (i + 0.65) / p.count;
-    const phase = i * 2.399963 + seeded(i, 3) * 0.42;
+    const coastal = profile === "coastal-scrub";
+    const phase = i * 2.399963 + seeded(i, 3) * (coastal ? 0.92 : 0.42);
     const shell = profile === "fern"
       ? 0.36 + level * 0.72
-      : Math.pow(Math.sin(Math.PI * Math.min(0.96, level)), 0.48) * (0.78 + seeded(i, 7) * 0.24);
+      : Math.pow(Math.sin(Math.PI * Math.min(0.96, level)), coastal ? 0.38 : 0.48) *
+        (coastal ? 0.7 + seeded(i, 7) * 0.38 : 0.78 + seeded(i, 7) * 0.24);
     const y = profile === "fern"
       ? 0.86 + seeded(i, 11) * 0.28 + (i % 3) * 0.07
-      : 0.12 + level * p.height * (0.82 + seeded(i, 13) * 0.2);
+      : 0.12 + level * p.height * (coastal ? 0.7 + seeded(i, 13) * 0.34 : 0.82 + seeded(i, 13) * 0.2);
     outward.set(Math.cos(phase), profile === "fern" ? 0.08 : 0.18 + level * 0.22, Math.sin(phase)).normalize();
     tangent.set(-Math.sin(phase), 0, Math.cos(phase)).normalize();
     center.set(
@@ -175,7 +261,12 @@ function makeLeafSprayGeometry(profile: AuthoredShrubProfile): THREE.BufferGeome
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  // Normalized bytes preserve the leaf/stem shading ramp while cutting this
+  // immutable vertex channel from 12 bytes to 3 bytes per vertex.
+  geometry.setAttribute(
+    "color",
+    new THREE.Uint8BufferAttribute(colors.map((value) => Math.round(Math.min(1, value) * 255)), 3, true)
+  );
   // Keep the whole shrub pipeline at eight vertex buffers on baseline WebGPU:
   // xy = flex/phase, z = bloom mask, w = bark mask. Three separate attributes
   // pushed MeshStandardNodeMaterial past maxVertexBuffers on common devices.
