@@ -30,6 +30,11 @@ import {
 } from "./terrainClipmapLayout";
 import { TERRAIN_CLIPMAP_TUNING } from "./terrainClipmapTuning";
 import {
+  setTerrainCutoutUniforms,
+  terrainCutoutMask,
+  type TerrainCutoutSpec
+} from "./terrainCutouts";
+import {
   createTerrainDetailTextureData,
   createTerrainNormalMipData,
   createTerrainSurfaceMipData
@@ -44,18 +49,7 @@ const HEIGHT_MIP_LEVELS = 4;
 const HEIGHT_BOUNDS_BLOCK_CELLS = 8;
 const BOUNDS_Y_MARGIN = 1;
 
-export type TerrainCutoutSpec = {
-  centerX: number;
-  centerZ: number;
-  halfX: number;
-  halfZ: number;
-  yaw: number;
-  /** Narrow transition band in metres around the authored ownership boundary. */
-  feather?: number;
-};
-
-/** Fixed graph capacity: changing active cutouts updates uniforms, not pipelines. */
-export const TERRAIN_CUTOUT_CAPACITY = 2;
+export { TERRAIN_CUTOUT_CAPACITY, type TerrainCutoutSpec } from "./terrainCutouts";
 
 const LEVEL_DEBUG_COLORS = [
   0x4ee6a8,
@@ -410,15 +404,6 @@ export class TerrainClipmap {
   readonly #macroVariation = uniform(TERRAIN_CLIPMAP_TUNING.values.macroVariation);
   readonly #microVariation = uniform(TERRAIN_CLIPMAP_TUNING.values.microVariation);
   readonly #debugLevels = uniform(TERRAIN_CLIPMAP_TUNING.values.debugLevels ? 1 : 0);
-  readonly #cutoutBounds = [
-    uniform(new THREE.Vector4(0, 0, 1, 1)),
-    uniform(new THREE.Vector4(0, 0, 1, 1))
-  ] as const;
-  // xy = cos/sin(yaw), z = enabled, w = feather.
-  readonly #cutoutFrames = [
-    uniform(new THREE.Vector4(1, 0, 0, 0.2)),
-    uniform(new THREE.Vector4(1, 0, 0, 0.2))
-  ] as const;
   #buildMs = 0;
   #geometryBytes = 0;
   #centerX = Number.NaN;
@@ -502,20 +487,6 @@ export class TerrainClipmap {
     const xz = packed.rg.mul(2).sub(1);
     const y = float(1).sub(xz.dot(xz)).max(0).sqrt();
     return normalize(vec3(xz.x, y, xz.y));
-  }
-
-  /** Fragment visibility for one oriented authored-site handoff rectangle. */
-  #cutoutVisibility(slot: 0 | 1): N {
-    const bound = this.#cutoutBounds[slot] as N;
-    const frame = this.#cutoutFrames[slot] as N;
-    const world = positionWorld as N;
-    const dx = world.x.sub(bound.x);
-    const dz = world.z.sub(bound.y);
-    const localX = dx.mul(frame.x).sub(dz.mul(frame.y));
-    const localZ = dx.mul(frame.y).add(dz.mul(frame.x));
-    const signedOutside = localX.abs().sub(bound.z).max(localZ.abs().sub(bound.w));
-    const outside = smoothstep(frame.w.negate(), frame.w, signedOutside);
-    return mix(float(1), outside, frame.z);
   }
 
   #createMaterial(level: TerrainClipmapLevelLayout): THREE.MeshStandardNodeMaterial {
@@ -651,9 +622,7 @@ export class TerrainClipmap {
       .mul(step((positionWorld as N).x, worldMaxX))
       .mul(step(grid.minZ, (positionWorld as N).z))
       .mul(step((positionWorld as N).z, worldMaxZ));
-    material.opacityNode = inBounds
-      .mul(this.#cutoutVisibility(0))
-      .mul(this.#cutoutVisibility(1));
+    material.opacityNode = inBounds.mul(terrainCutoutMask());
     material.alphaTestNode = float(0.5);
     material.envMapIntensity = 0.68;
     return material;
@@ -665,25 +634,7 @@ export class TerrainClipmap {
    * across ring and morph boundaries.
    */
   setCutouts(cutouts: readonly TerrainCutoutSpec[]): void {
-    if (cutouts.length > TERRAIN_CUTOUT_CAPACITY) {
-      throw new Error(`terrain cutout capacity ${TERRAIN_CUTOUT_CAPACITY} exceeded`);
-    }
-    for (let slot = 0; slot < TERRAIN_CUTOUT_CAPACITY; slot++) {
-      const cutout = cutouts[slot];
-      const bound = this.#cutoutBounds[slot].value;
-      const frame = this.#cutoutFrames[slot].value;
-      if (!cutout) {
-        frame.z = 0;
-        continue;
-      }
-      bound.set(cutout.centerX, cutout.centerZ, cutout.halfX, cutout.halfZ);
-      frame.set(
-        Math.cos(cutout.yaw),
-        Math.sin(cutout.yaw),
-        1,
-        Math.max(0.02, cutout.feather ?? 0.2)
-      );
-    }
+    setTerrainCutoutUniforms(cutouts);
   }
 
   update(x: number, z: number, force = false): void {

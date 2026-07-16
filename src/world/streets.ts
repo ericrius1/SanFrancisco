@@ -13,6 +13,7 @@ import {
   attribute
 } from "three/tsl";
 import { bumpNormal } from "./tslUtil";
+import { terrainCutoutMask } from "./terrainCutouts";
 
 /**
  * Street asphalt in the spirit of the reference city generator's road material:
@@ -66,6 +67,8 @@ export function createParkMaterial(): THREE.MeshStandardNodeMaterial {
   mat.roughnessNode = float(1);
   const detail = clamp(float(1).sub(p.distance(cameraPosition).div(400)), 0, 1);
   mat.normalNode = bumpNormal(tuft.mul(0.012).mul(detail));
+  mat.opacityNode = terrainCutoutMask();
+  mat.alphaTestNode = float(0.5);
   mat.envMapIntensity = 0.4;
   return mat;
 }
