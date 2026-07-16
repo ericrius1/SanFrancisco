@@ -4105,12 +4105,12 @@ async function boot() {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
       if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-      if (
-        !playingPickleball &&
-        !input.suspended &&
-        player.mode === "surf" &&
-        (input.pressed("Space") || input.pressed("KeyX"))
-      ) player.requestSurfFlow();
+      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
+        player.requestSurfJump();
+      }
+      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
+        player.requestSurfFlow();
+      }
       if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
       chase.lookDir(aim);
       physics.maintainStreaming(player.position);
@@ -4627,12 +4627,12 @@ async function boot() {
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
     if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-    if (
-      !playingPickleball &&
-      !input.suspended &&
-      player.mode === "surf" &&
-      (input.pressed("Space") || input.pressed("KeyX"))
-    ) player.requestSurfFlow();
+    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
+      player.requestSurfJump();
+    }
+    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
+      player.requestSurfFlow();
+    }
     if (
       !playingPickleball &&
       !afterlightControlsCaptured &&

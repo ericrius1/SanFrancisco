@@ -116,11 +116,12 @@ export type SurfTelemetry = {
  * by the fixed physics step; controller code no longer advances X/Z and then
  * asks physics to advance the same displacement a second time.
  *
- * Controls (Kelly Slater–style):
+ * Controls:
  *  - Neutral input auto-cruises forever; W pumps and S stalls without stopping.
- *  - A/D yaw the board left/right on screen; a soft face magnet keeps the pocket.
- *  - A fast pass through the lip launches automatically. Space is not a launch.
- *  - Space/A (or legacy X) spends a full flow meter. The camera never orbits.
+ *  - A/D turn the board left/right in board space (same both ways down the beach).
+ *    Face height follows where the nose points, so cutbacks climb/drop naturally.
+ *  - Space/A pops off the lip when you're there; otherwise spends Flow if ready.
+ *  - W + high line also auto-charges a lip launch. Camera never orbits.
  */
 export class SurfController implements ModeController {
   readonly spawnLift = 0;
@@ -198,6 +199,8 @@ export class SurfController implements ModeController {
   #landingCompression = 0;
   #launchCharge = 0;
   #launchCooldown = 0;
+  /** Seconds a Space/A press stays pending for a lip pop (or Flow fallback). */
+  #popRequest = 0;
   #recoveryTimer = 0;
   #flow = 0;
   #flowTimer = 0;
@@ -225,9 +228,9 @@ export class SurfController implements ModeController {
     return this.#flow >= SURF_TUNING.values.flowReadyThreshold && this.#flowTimer <= 0;
   }
 
-  /** Kept for Player's existing public API; surf launches are intentionally automatic. */
+  /** Buffer a lip pop / ollie. If the board is not launchable, Space falls through to Flow. */
   requestJump() {
-    // No-op by design. Speed + lip energy own takeoff, never a special jump button.
+    this.#popRequest = Math.max(this.#popRequest, SURF_TUNING.values.popBuffer);
   }
 
   spawnBody(ctx: PlayerCtx, _facing: number): number {
@@ -267,6 +270,7 @@ export class SurfController implements ModeController {
     this.#landingCompression = 0;
     this.#launchCharge = 0;
     this.#launchCooldown = 0;
+    this.#popRequest = 0;
     this.#recoveryTimer = 0;
     this.#flowTimer = 0;
     this.#flowRequest = 0;
@@ -306,15 +310,17 @@ export class SurfController implements ModeController {
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {
     const throttle = input.axis("KeyS", "KeyW");
-    // Screen-relative carve: pulling left (A / stick-left) turns the board left
-    // with the locked camera behind. axis(pos,neg) order flips the sign for both
-    // keyboard and pad in one place; lean/spin/launch all derive from `steer`
-    // so they stay consistent with the turn.
+    // Board-relative carve: A / stick-left always turns left of the nose, D
+    // right — independent of north vs south peel. Chase cam sits behind so
+    // screen-left matches board-left. Lean/spin share this `steer` sign.
     const steer = input.axis("KeyD", "KeyA");
-    if (!input.suspended && (input.pressed("Space") || input.pressed("KeyX"))) this.requestFlow();
-
     this.#launchCooldown = Math.max(0, this.#launchCooldown - dt);
+    this.#popRequest = Math.max(0, this.#popRequest - dt);
     this.#flowRequest = Math.max(0, this.#flowRequest - dt);
+    if (!input.suspended && input.pressed("Space")) this.requestJump();
+    // Explicit Flow bind (keyboard X). Space also falls through to Flow when
+    // a buffered pop cannot launch.
+    if (!input.suspended && input.pressed("KeyX")) this.requestFlow();
     if (
       this.#flowRequest > 0 &&
       this.#flowTimer <= 0 &&
@@ -357,41 +363,30 @@ export class SurfController implements ModeController {
     }
     const sample = this.#sampleLockedCrest(p.x, p.z, ctx.time);
 
-    // A/D sets a bounded cross-face heading around the current down-line trim.
-    // The old unbounded yaw accumulator could spin through 140° while the rail
-    // spring was still climbing one metre, flipping the peel direction and
-    // throwing the rider straight through the tube line.
     const entryBlend =
       tb.entryAssistDuration > 0
         ? THREE.MathUtils.clamp(1 - this.#entryAssist / tb.entryAssistDuration, 0.45, 1)
         : 1;
-    // A/D own the heading directly. The old model pinned yaw to a narrow cone
-    // around one fixed down-line trim, so the rider was railed one way and could
-    // never turn back — "on a track". Now steering turns the board continuously:
-    // hold a carve and the nose swings through the fall line into a real cutback
-    // the other way, with lineDirection following the resulting travel below.
-    // Neutral input eases toward whichever down-line trim is nearest, so you
-    // still settle onto a clean racing line instead of drifting or spinning.
-    // The range overshoots BOTH down-line ends so you can carve down toward the
-    // shoulder from either direction — not just up toward the crest. Without the
-    // overshoot the nose clamped exactly at the down-line trim, so one of A/D was
-    // dead (e.g. heading south, "carve toward shore" did nothing) and steering
-    // read as reversed.
+    // A/D own heading in board space. Hold a carve through the fall line for a
+    // real cutback; neutral eases to the nearest down-line trim. Range overshoots
+    // both ends so you can drop toward the shoulder from either peel direction.
     this.#linePos = THREE.MathUtils.clamp(
       this.#linePos + steer * tb.carveTurnRate * shape.carve * entryBlend * motionDt,
       -0.32,
       1.32
     );
     if (Math.abs(steer) < 0.15) {
-      // Neutral eases to the nearest down-line end so you keep cruising a clean
-      // line, instead of stalling straight up the face (linePos 0.5).
       const end = this.#linePos < 0.5 ? 0 : 1;
       this.#linePos += (end - this.#linePos) * (1 - Math.exp(-motionDt * tb.yawRecenter));
     }
     this.yaw = Math.PI * this.#linePos;
-    // Lean follows steer for readable body language (A leans screen-left).
+    // Face height follows the nose: facing west (crestward) climbs the wall,
+    // facing east drops to the shoulder. This keeps A/D as pure left/right turns
+    // instead of baking an absolute "A = always up the face" that flips feel when
+    // the peel reverses.
+    const crestward = Math.sin(this.yaw);
     this.#carve +=
-      (-steer - this.#carve) *
+      (crestward - this.#carve) *
       (1 - Math.exp(-motionDt * tb.carveResponse * shape.carve));
 
     this.#pump += (Math.max(0, throttle) - this.#pump) * Math.min(1, motionDt * tb.pumpResponse);
@@ -409,11 +404,9 @@ export class SurfController implements ModeController {
     const speed = this.#lineSpeed * riderRate;
     const authoredVx = -Math.sin(this.yaw) * speed;
     let vz = -Math.cos(this.yaw) * speed;
-    // #carve = -steer, so holding the up-carve key drives this negative and the
-    // rail dwells the board high on the face (near the lip) regardless of which
-    // down-line direction #linePos is sweeping toward — that dwell is what lets
-    // launch charge accumulate. Down-carve drops onto the shoulder for speed.
-    let desiredFaceOffset = tb.faceOffset + this.#carve * tb.carveFaceRange;
+    // #carve tracks crestward nose (+1 = west / up the face). Climbing the wall
+    // lowers desired face offset toward the lip; dropping toward shore raises it.
+    let desiredFaceOffset = tb.faceOffset - this.#carve * tb.carveFaceRange;
     // Stalling under an available roof settles onto the tube line. The player
     // still has to climb into the pocket; S/LT then gives a readable way to let
     // the pitching lip catch up without a hidden hard snap.
@@ -491,20 +484,44 @@ export class SurfController implements ModeController {
       0,
       1
     );
-    // A committed high-line carve (D with this peel direction) stays armed as
-    // the board settles onto the lip. Requiring >1.4 m/s faceward velocity for
-    // an entire one-second charge window made launch practically unreachable:
-    // the rail spring correctly slowed to zero exactly where takeoff should
-    // happen. The intent + lip corridor now own the final part of the charge.
-    const highLineIntent = this.#carve < -0.42 && desiredFaceOffset <= 5.2;
+    // Nose pointed crestward + dwelling near the lip arms auto-launch (and Space).
+    const highLineIntent = this.#carve > 0.38 && desiredFaceOffset <= 5.4;
     const approachingLip =
       this.#relativeFaceSpeed < -tb.launchFacewardSpeed ||
       (highLineIntent && sample.crestDistance <= 6.5);
+
+    // Space/A pop: jump off the lip when you're there. If the press cannot launch,
+    // fall through to Flow so pad A still spends a ready meter mid-face.
+    if (this.#popRequest > 0 && this.#launchCooldown <= 0) {
+      const manualLip = THREE.MathUtils.clamp(
+        (sample.lip - tb.manualLaunchLip) / Math.max(0.05, 1 - tb.manualLaunchLip),
+        0,
+        1
+      );
+      const nearLip =
+        manualLip > 0 ||
+        sample.crestDistance <= tb.manualLaunchCrest ||
+        (highLineIntent && sample.crestDistance <= 7.2);
+      const popFastEnough = launchSpeed >= tb.manualLaunchMinSpeed * (2 - shape.launch);
+      if (nearLip && popFastEnough) {
+        this.#popRequest = 0;
+        this.#beginAutoLaunch(launchSpeed, Math.max(sample.lip, 0.35), shape);
+        this.#orientRide(ctx, motionDt, steer, vx, vz, vy, sample);
+        this.#commit(ctx, y, vx, this.#airVy * riderRate, vz);
+        this.#syncTelemetry(ctx, frame, sample, totalSpeed, y, riderRate);
+        return;
+      }
+      if (this.#flow >= tb.flowReadyThreshold && this.#flowTimer <= 0) {
+        this.#popRequest = 0;
+        this.requestFlow();
+      }
+    }
+
     if (
       fastEnough &&
       lipEnergy > 0 &&
       this.#launchCooldown <= 0 &&
-      throttle > 0.2 &&
+      throttle > 0.15 &&
       highLineIntent &&
       approachingLip
     ) {
@@ -699,12 +716,13 @@ export class SurfController implements ModeController {
     this.yaw +=
       shortestAngle(recoveryYaw, this.yaw) *
       (1 - Math.exp(-motionDt * tb.yawResponse * 0.7));
-    this.#carve += (-steer - this.#carve) * (1 - Math.exp(-motionDt * tb.carveResponse));
+    const crestward = Math.sin(this.yaw);
+    this.#carve += (crestward - this.#carve) * (1 - Math.exp(-motionDt * tb.carveResponse));
     const sample = this.#sampleLockedCrest(p.x, p.z, ctx.time);
     const speed = tb.recoverySpeed * riderRate;
     const authoredVx = -Math.sin(this.yaw) * speed;
     let vz = -Math.cos(this.yaw) * speed;
-    const desiredFaceOffset = tb.faceOffset + this.#carve * tb.carveFaceRange * 0.2;
+    const desiredFaceOffset = tb.faceOffset - this.#carve * tb.carveFaceRange * 0.2;
     const faceError = desiredFaceOffset - sample.crestDistance;
     this.#lineDirection = vz >= 0 ? 1 : -1;
     const nz = p.z + vz * dt;
@@ -1012,6 +1030,7 @@ export class SurfController implements ModeController {
     this.#landingCompression = 0;
     this.#launchCharge = 0;
     this.#launchCooldown = Math.max(this.#launchCooldown, nextWave ? 0.45 : 0);
+    this.#popRequest = 0;
     this.#relativeFaceSpeed = 0;
     this.#tubeState = "outside";
     this.#tubeDwell = 0;

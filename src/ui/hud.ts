@@ -74,11 +74,11 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Click"], label: "shoot" }
   ],
   surf: [
-    { c: ["Locked"], label: "camera follows the wave" },
+    { c: ["Locked"], label: "camera behind you" },
     { c: ["W", "S"], label: "pump · stall" },
     { c: ["A", "D"], label: "carve left / right" },
-    { c: ["Space"], label: "flow when ready" },
-    { c: ["Auto"], label: "lip launch" },
+    { c: ["Space"], label: "lip pop · flow when ready" },
+    { c: ["Auto"], label: "high-line launch" },
     { c: ["E"], label: "exit to beach" }
   ],
   bird: [
@@ -165,11 +165,11 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["X"], label: "shoot" }
   ],
   surf: [
-    { c: ["Locked"], label: "camera follows the wave" },
+    { c: ["Locked"], label: "camera behind you" },
     { c: ["RT", "LT"], label: "pump · stall" },
     { c: ["LS"], label: "carve left / right" },
-    { c: ["A"], label: "flow when ready" },
-    { c: ["Auto"], label: "lip launch" },
+    { c: ["A"], label: "lip pop · flow when ready" },
+    { c: ["Auto"], label: "high-line launch" },
     { c: ["Y"], label: "exit to beach" }
   ],
   bird: [
@@ -188,7 +188,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   drive: "LB boost · RB power-slide with steer · release for a snap boost · Space handbrake",
   scooter: "LB power-slide with steer · ramps launch cleanly · rear seat fits a friend",
   board: "White glow = nose · pull right stick back in the air to flip",
-  surf: "Neutral input keeps you riding · mouse and right stick cannot move this camera",
+  surf: "A/D carve either way · Space pops the lip · camera eases in behind you",
   bird: "Look down + Shift to stoop — skim the bay for spray"
 }
 

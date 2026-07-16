@@ -226,7 +226,7 @@ export function createSurfShack(map: Ground): SurfShack {
       if (!slot) return false;
       startSurf(slot.config);
       hud.message(
-        `Grabbed the ${slot.label} — A/D carve · W pump · S stall · E exits to the beach`,
+        `Grabbed the ${slot.label} — A/D carve · W pump · S stall · Space pops the lip · E exits`,
         4
       );
       return true;

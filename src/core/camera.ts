@@ -392,24 +392,26 @@ export class ChaseCamera {
       } else {
         // The activity chunk normally arrives within a frame. Until then, use a
         // tiny authored fallback with the same invariant: no world-camera input,
-        // shoreward eye, and visible line ahead.
+        // chase boom behind the board, looking the way they face.
         void this.ensureSurfCamera()
         const tuning = SURF_CAMERA_TUNING.values
-        const direction = player.surfTelemetry.lineDirection < 0 ? -1 : 1
         const anchor = player.renderPosition
+        const facingYaw = player.heading - Math.PI
+        const forwardX = -Math.sin(facingYaw)
+        const forwardZ = -Math.cos(facingYaw)
         this.#chasePos.set(
-          anchor.x + tuning.shoreOffset,
+          anchor.x - forwardX * tuning.distance + tuning.sideBias,
           anchor.y + tuning.height,
-          anchor.z - direction * tuning.distance
+          anchor.z - forwardZ * tuning.distance
         )
         this.#chasePos.y = Math.max(
           this.#chasePos.y,
           Math.max(waterHeight(this.#chasePos.x, this.#chasePos.z, player.time), 0) + tuning.waterClearance
         )
         this.#target.set(
-          anchor.x,
+          anchor.x + forwardX * tuning.lookAhead,
           anchor.y + tuning.targetHeight,
-          anchor.z + direction * tuning.lookAhead
+          anchor.z + forwardZ * tuning.lookAhead
         )
         this.camera.position.copy(this.#chasePos)
         this.camera.up.copy(this.#up)

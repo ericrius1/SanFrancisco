@@ -9,19 +9,19 @@ import {
 import { SURF_CAMERA_TUNING } from "./cameraTuning"
 
 /**
- * Dedicated surf rig: a readable shore-side arcade shot that eases into a low
- * over-tail barrel view. It never inherits orbit-camera state or mouse input
- * from the normal-world camera.
+ * Dedicated surf rig: chase boom behind the board that slerps onto heading,
+ * easing into a low over-tail barrel view in the tube. Never inherits orbit
+ * state or mouse look from the normal-world camera.
  */
 export type SurfCameraDiagnostics = {
   initialized: boolean
   snapped: boolean
-  mode: "side" | "transition" | "barrel"
+  mode: "chase" | "transition" | "barrel"
   tubeBlend: number
   behindAlignment: number
   roofClearance: number
   lineDirection: -1 | 1
-  lineBlend: number
+  followYaw: number
   viewYaw: number
   viewPitch: number
   fov: number
@@ -34,33 +34,29 @@ export type SurfCameraDiagnostics = {
 const WORLD_UP = new THREE.Vector3(0, 1, 0)
 const MAX_SMOOTH_DT = 0.1
 const SIGHTLINE_SAMPLES = 10
-// Even after follow lag, preserve an unmistakable shore-side (+X) viewpoint.
-const MIN_SHORE_CLEARANCE = 0.75
-// Never let follow lag put the eye below the rider's deck by more than this.
-const MIN_ABOVE_ANCHOR = 2.5
-// Ignore near-zero Z travel so a carve through east/west never flips the trail.
-const LINE_HYSTERESIS = 0.28
+const MIN_ABOVE_ANCHOR = 1.8
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value))
 const smoothstep = (value: number) => value * value * (3 - 2 * value)
 const expSmooth = (dt: number, response: number) => 1 - Math.exp(-dt * response)
+const shortestAngle = (from: number, to: number) =>
+  Math.atan2(Math.sin(to - from), Math.cos(to - from))
 
 /**
- * Exclusive surf camera: shoreward eye (+X), trails/looks along a *smoothed*
- * along-beach blend, then moves behind the board when it reaches the tube line.
- * Position always lerps; orientation always slerps. The only hard cut is first
- * enter / a true wave-reset teleport — never a mid-carve lineDirection flip.
+ * Exclusive surf camera: eye trails behind board facing, looks the same way,
+ * and slerps through cutbacks. Position lerps; orientation slerps. Hard cuts
+ * only on first enter / wave-reset teleport.
  */
 export class SurfCameraController {
   readonly #baseFov: number
   readonly #position = new THREE.Vector3()
   readonly #basePosition = new THREE.Vector3()
   readonly #desiredPosition = new THREE.Vector3()
-  readonly #sidePosition = new THREE.Vector3()
+  readonly #chasePosition = new THREE.Vector3()
   readonly #tubePosition = new THREE.Vector3()
   readonly #target = new THREE.Vector3()
   readonly #desiredTarget = new THREE.Vector3()
-  readonly #sideTarget = new THREE.Vector3()
+  readonly #chaseTarget = new THREE.Vector3()
   readonly #tubeTarget = new THREE.Vector3()
   readonly #riderSightTarget = new THREE.Vector3()
   readonly #lastAnchor = new THREE.Vector3()
@@ -70,16 +66,15 @@ export class SurfCameraController {
 
   #initialized = false
   #snapped = false
-  /** Discrete telemetry side, for diagnostics only. */
   #lineDirection: -1 | 1 = 1
-  /** Continuous trail/look blend in [-1, 1]; this is what framing actually uses. */
-  #lineBlend = 1
+  /** Smoothed yaw the boom uses — lags board heading for readable cutbacks. */
+  #followYaw = 0
   #viewYaw = 0
   #viewPitch = 0
   #fov: number
   #sightlineLiftSmooth = 0
   #waterClearance = 0
-  #mode: SurfCameraDiagnostics["mode"] = "side"
+  #mode: SurfCameraDiagnostics["mode"] = "chase"
   #tubeBlend = 0
   #behindAlignment = 0
   #roofClearance = 0
@@ -89,34 +84,31 @@ export class SurfCameraController {
     this.#fov = this.#baseFov
   }
 
-  /** Forget all follow history so the next surf frame starts on the arcade rig. */
+  /** Forget all follow history so the next surf frame starts on the chase rig. */
   reset() {
     this.#initialized = false
     this.#snapped = false
     this.#lineDirection = 1
-    this.#lineBlend = 1
+    this.#followYaw = 0
     this.#viewYaw = 0
     this.#viewPitch = 0
     this.#fov = this.#baseFov
     this.#sightlineLiftSmooth = 0
     this.#waterClearance = 0
-    this.#mode = "side"
+    this.#mode = "chase"
     this.#tubeBlend = 0
     this.#behindAlignment = 0
     this.#roofClearance = 0
   }
 
-  /** Canonical yaw of the locked shot, for systems that need the rendered view. */
   get viewYaw(): number {
     return this.#viewYaw
   }
 
-  /** Canonical pitch of the locked shot; zero is level and negative looks up. */
   get viewPitch(): number {
     return this.#viewPitch
   }
 
-  /** Allocation-on-demand probe; the per-frame update path allocates nothing. */
   diagnostics(): SurfCameraDiagnostics {
     return {
       initialized: this.#initialized,
@@ -126,7 +118,7 @@ export class SurfCameraController {
       behindAlignment: this.#behindAlignment,
       roofClearance: this.#roofClearance,
       lineDirection: this.#lineDirection,
-      lineBlend: this.#lineBlend,
+      followYaw: this.#followYaw,
       viewYaw: this.#viewYaw,
       viewPitch: this.#viewPitch,
       fov: this.#fov,
@@ -149,25 +141,21 @@ export class SurfCameraController {
     const tuning = SURF_CAMERA_TUNING.values
     const anchor = player.renderPosition
     const telemetry = player.surfTelemetry
-    const telemetryLine: -1 | 1 = telemetry.lineDirection < 0 ? -1 : 1
     const smoothDt = Number.isFinite(dt) ? Math.min(MAX_SMOOTH_DT, Math.max(0, dt)) : 0
 
-    // Board facing (storage heading is facing + π). Prefer that over raw
-    // lineDirection so a carve through east/west does not bang the trail side.
+    // Board facing (storage heading is facing + π).
     const facingYaw = player.heading - Math.PI
-    const travelZ = -Math.cos(facingYaw)
-    let desiredLine = this.#lineDirection
-    if (travelZ > LINE_HYSTERESIS) desiredLine = 1
-    else if (travelZ < -LINE_HYSTERESIS) desiredLine = -1
-    else if (telemetryLine === this.#lineDirection) desiredLine = telemetryLine
-
     if (!this.#initialized) {
-      this.#lineBlend = desiredLine
-      this.#lineDirection = desiredLine
+      this.#followYaw = facingYaw
     } else {
-      this.#lineBlend += (desiredLine - this.#lineBlend) * expSmooth(smoothDt, tuning.lineResponse)
-      this.#lineDirection = this.#lineBlend >= 0 ? 1 : -1
+      this.#followYaw +=
+        shortestAngle(this.#followYaw, facingYaw) *
+        expSmooth(smoothDt, tuning.followYawResponse)
     }
+
+    const forwardX = -Math.sin(this.#followYaw)
+    const forwardZ = -Math.cos(this.#followYaw)
+    this.#lineDirection = forwardZ >= 0 ? 1 : -1
 
     const surfaceFloor =
       Number.isFinite(telemetry.surfaceY) && telemetry.grounded
@@ -192,30 +180,27 @@ export class SurfCameraController {
     }
     this.#tubeBlend = clamp01(this.#tubeBlend)
     this.#mode =
-      this.#tubeBlend >= 0.72 ? "barrel" : this.#tubeBlend > 0.035 ? "transition" : "side"
+      this.#tubeBlend >= 0.72 ? "barrel" : this.#tubeBlend > 0.035 ? "transition" : "chase"
 
-    // Shoreward X is fixed; Z trail / look-ahead use the smoothed blend so a
-    // cutback orbits the rider instead of cutting to the opposite side.
-    this.#sidePosition.set(
-      anchor.x + tuning.shoreOffset,
+    const sideBias = tuning.sideBias * (1 - this.#tubeBlend * 0.85)
+    this.#chasePosition.set(
+      anchor.x - forwardX * tuning.distance + sideBias,
       Math.max(anchor.y, surfaceFloor) + tuning.height,
-      anchor.z - this.#lineBlend * tuning.distance
+      anchor.z - forwardZ * tuning.distance
     )
-    this.#sideTarget.set(
-      anchor.x,
+    this.#chaseTarget.set(
+      anchor.x + forwardX * tuning.lookAhead,
       Math.max(anchor.y, surfaceFloor) + tuning.targetHeight,
-      anchor.z + this.#lineBlend * tuning.lookAhead
+      anchor.z + forwardZ * tuning.lookAhead
     )
 
-    const sideWater =
-      this.#waterFloor(this.#sidePosition.x, this.#sidePosition.z, player.time) +
+    const chaseWater =
+      this.#waterFloor(this.#chasePosition.x, this.#chasePosition.z, player.time) +
       tuning.waterClearance
-    if (this.#sidePosition.y < sideWater) this.#sidePosition.y = sideWater
+    if (this.#chasePosition.y < chaseWater) this.#chasePosition.y = chaseWater
 
-    // A tube is not another fixed offset from the player. The crest bends down
-    // the beach, so both the eye and aperture are rebuilt from the locked live
-    // crest at their own Z positions. That keeps the camera inside a peeling
-    // barrel instead of drifting through its wall on long rides.
+    // Barrel eye stays crest-relative so a peeling tube does not drag the cam
+    // through the wall on long rides.
     const crest = nearestOceanBeachCrest(anchor.x, anchor.z, player.time)
     const riderFaceDistance = Number.isFinite(telemetry.crestDistance)
       ? THREE.MathUtils.clamp(telemetry.crestDistance, 0, OCEAN_BEACH_SURF.tubeSpan)
@@ -225,9 +210,10 @@ export class SurfCameraController {
       OCEAN_BEACH_SURF.tubeLineOffset,
       tubeDepth
     )
-    const tubeEyeZ = anchor.z - this.#lineBlend * tuning.tubeDistance
+    const tubeEyeZ = anchor.z - forwardZ * tuning.tubeDistance
     const eyeCrest = sampleOceanBeachWave(anchor.x, tubeEyeZ, player.time, crest.slot)
-    const tubeEyeX = eyeCrest.crestX + cameraFaceDistance + tuning.tubeShoreOffset
+    const tubeEyeX =
+      eyeCrest.crestX + cameraFaceDistance + tuning.tubeSideBias - forwardX * tuning.tubeDistance * 0.15
     const eyeSample = sampleOceanBeachWave(tubeEyeX, tubeEyeZ, player.time, crest.slot)
     const tubeEyeFloor = this.#waterFloor(tubeEyeX, tubeEyeZ, player.time)
     const tubeEyeMin = tubeEyeFloor + tuning.tubeWaterClearance
@@ -238,9 +224,9 @@ export class SurfCameraController {
       tubeEyeZ
     )
 
-    const tubeAimZ = anchor.z + this.#lineBlend * tuning.tubeLookAhead
+    const tubeAimZ = anchor.z + forwardZ * tuning.tubeLookAhead
     const aimCrest = sampleOceanBeachWave(anchor.x, tubeAimZ, player.time, crest.slot)
-    const tubeAimX = aimCrest.crestX + OCEAN_BEACH_SURF.tubeLineOffset
+    const tubeAimX = aimCrest.crestX + OCEAN_BEACH_SURF.tubeLineOffset + forwardX * 1.2
     const aimSample = sampleOceanBeachWave(tubeAimX, tubeAimZ, player.time, crest.slot)
     const tubeAimFloor = this.#waterFloor(tubeAimX, tubeAimZ, player.time)
     const tubeAimMin = tubeAimFloor + tuning.tubeWaterClearance
@@ -251,11 +237,9 @@ export class SurfCameraController {
       tubeAimZ
     )
 
-    this.#desiredPosition.lerpVectors(this.#sidePosition, this.#tubePosition, this.#tubeBlend)
-    this.#desiredTarget.lerpVectors(this.#sideTarget, this.#tubeTarget, this.#tubeBlend)
+    this.#desiredPosition.lerpVectors(this.#chasePosition, this.#tubePosition, this.#tubeBlend)
+    this.#desiredTarget.lerpVectors(this.#chaseTarget, this.#tubeTarget, this.#tubeBlend)
 
-    // Only hard-cut on first enter or a real wave-reset pocket hop. Mid-ride
-    // line flips must never snap — that read as a player teleport.
     const teleportDistance = tuning.teleportSnapDistance
     const teleported =
       this.#initialized &&
@@ -265,15 +249,12 @@ export class SurfCameraController {
     if (snap) {
       this.#basePosition.copy(this.#desiredPosition)
       this.#target.copy(this.#desiredTarget)
-      this.#lineBlend = desiredLine
-      this.#lineDirection = desiredLine
+      this.#followYaw = facingYaw
     } else {
       this.#basePosition.lerp(this.#desiredPosition, expSmooth(smoothDt, tuning.positionResponse))
       this.#target.lerp(this.#desiredTarget, expSmooth(smoothDt, tuning.aimResponse))
     }
 
-    const minimumShoreOffset = THREE.MathUtils.lerp(MIN_SHORE_CLEARANCE, -0.75, this.#tubeBlend)
-    this.#basePosition.x = Math.max(this.#basePosition.x, anchor.x + minimumShoreOffset)
     const minimumAnchorLift = THREE.MathUtils.lerp(MIN_ABOVE_ANCHOR, 0.15, this.#tubeBlend)
     this.#basePosition.y = Math.max(
       this.#basePosition.y,
@@ -290,9 +271,6 @@ export class SurfCameraController {
       THREE.MathUtils.lerp(0.55, tuning.tubeWaterClearance, this.#tubeBlend)
     if (this.#target.y < targetFloor) this.#target.y = targetFloor
 
-    // Side view rises over an obstructing crest. Inside a tube that would erase
-    // the defining roof silhouette, so the lift fades out with the rig blend.
-    // Measure from the un-lifted base so the offset never accumulates.
     this.#riderSightTarget.set(
       anchor.x,
       Math.max(anchor.y, surfaceFloor) + 0.72,
@@ -307,9 +285,6 @@ export class SurfCameraController {
           activeWaterClearance,
           tuning.sightlineClearance
         ),
-        // The composition looks ahead down-line, but the rider is the hero.
-        // Guard their own ray too or a low close camera can see its aperture
-        // while the foreground ramp hides the board and body.
         this.#measureSightlineLift(
           this.#basePosition,
           this.#riderSightTarget,
@@ -331,9 +306,6 @@ export class SurfCameraController {
       this.#waterFloor(this.#position.x, this.#position.z, player.time) + activeWaterClearance
     if (this.#position.y < hardFloor) this.#position.y = hardFloor
 
-    // During the hand-off, ease under the analytic crown. Once gameplay says
-    // the rider is inside (or the rig is substantially behind them), enforce
-    // the envelope exactly: no camera-through-water and no camera-through-roof.
     const localWater = this.#waterFloor(this.#position.x, this.#position.z, player.time)
     const positionSample = sampleOceanBeachWave(
       this.#position.x,
@@ -393,10 +365,18 @@ export class SurfCameraController {
     const dz = this.#target.z - this.#position.z
     this.#viewYaw = Math.atan2(-dx, -dz)
     this.#viewPitch = -Math.atan2(dy, Math.hypot(dx, dz))
-    const horizontalView = Math.hypot(dx, dz)
+
+    // How well the eye sits behind the rider along board forward.
+    const fromCamX = anchor.x - this.#position.x
+    const fromCamZ = anchor.z - this.#position.z
+    const fromCamLen = Math.hypot(fromCamX, fromCamZ)
     this.#behindAlignment =
-      horizontalView > 1e-4
-        ? THREE.MathUtils.clamp((dz / horizontalView) * this.#lineDirection, -1, 1)
+      fromCamLen > 1e-4
+        ? THREE.MathUtils.clamp(
+            (fromCamX * forwardX + fromCamZ * forwardZ) / fromCamLen,
+            -1,
+            1
+          )
         : 0
 
     const speedRatio = clamp01(Math.max(0, telemetry.speed) / Math.max(1, tuning.fovSpeed))
@@ -423,15 +403,10 @@ export class SurfCameraController {
     )
   }
 
-  /** Surf never treats troughs as dry land; keep the analytic surface intact. */
   #waterFloor(x: number, z: number, time: number): number {
     return waterHeight(x, z, time)
   }
 
-  /**
-   * How far the eye must rise so samples along the view ray clear the wave.
-   * Applied as a smoothed offset by the caller — never written as a hard jump.
-   */
   #measureSightlineLift(
     position: THREE.Vector3,
     target: THREE.Vector3,
