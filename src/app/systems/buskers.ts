@@ -14,6 +14,8 @@ export type BuskersSystemDeps = {
   scene: THREE.Scene;
   map: WorldMap;
   physics: Physics;
+  /** Detached pipeline warmup for the show gate (render/warmHiddenRoot.ts). */
+  prepareRender?: (root: THREE.Object3D) => Promise<void>;
 };
 
 type BuskerFactory = (opts: BuskerTrioOptions) => BuskerTrio;
@@ -26,6 +28,7 @@ function options(deps: BuskersSystemDeps, state?: BuskerTrioState): BuskerTrioOp
     yaw: -1.72,
     groundHeight: (x, z) => deps.map.groundTop(x, z),
     physics: deps.physics,
+    prepareRender: deps.prepareRender,
     state
   };
 }

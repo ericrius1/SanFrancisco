@@ -46,6 +46,7 @@ import {
 } from "./world/japaneseTeaGarden/layout";
 import { AuthoredRegionStreamer } from "./world/authoredRegions";
 import { warmStaticRegion } from "./render/warmStaticRegion";
+import { warmHiddenRoot } from "./render/warmHiddenRoot";
 import type { CoronaHeightsPark } from "./world/coronaHeights";
 import { prepareCoronaHeightsGround } from "./world/coronaHeights/ground";
 import { CORONA_HEIGHTS_SUMMIT } from "./world/coronaHeights/meta";
@@ -1178,7 +1179,12 @@ async function boot() {
   const dogParkAudio = new DogParkAudio(nature, () => coronaHeights?.dogs ?? []);
   // First feature-level HMR boundary. The stable facade survives edits while
   // its concrete trio, GPU resources, audio and perch collider are replaced.
-  const buskers = createBuskersSystem({ scene, map, physics });
+  const buskers = createBuskersSystem({
+    scene,
+    map,
+    physics,
+    prepareRender: (root) => warmHiddenRoot(renderer, camera, scene, root)
+  });
   let ridePromptShown = false;
   let doorPromptShown = false;
   let doorScanCountdown = 0;
