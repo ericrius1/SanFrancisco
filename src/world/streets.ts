@@ -23,6 +23,11 @@ import { bumpNormal } from "./tslUtil";
  */
 export function createRoadMaterial(): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial();
+  // Baked drapes ship without a NORMAL attribute (optimize-tiles strips it —
+  // lighting comes from the terrain field via groundConformNormalBase). Flat
+  // shading supplies the derivative fallback normal the conform gate mixes
+  // against on bridge decks and other off-terrain spans.
+  mat.flatShading = true;
   const p = positionWorld;
 
   const dist = p.distance(cameraPosition);
@@ -56,6 +61,10 @@ export function createRoadMaterial(): THREE.MeshStandardNodeMaterial {
 /** Parks and green areas: soft warm grass with large-scale mow/patch variation. */
 export function createParkMaterial(): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial();
+  // Same normal-less drape contract as createRoadMaterial: pier walls/decks
+  // (baked into grn_ meshes) take this flat fallback where the conform gate
+  // releases them.
+  mat.flatShading = true;
   const vColor = attribute("color", "vec3") as unknown as ReturnType<typeof vec3>;
   const p = positionWorld;
 

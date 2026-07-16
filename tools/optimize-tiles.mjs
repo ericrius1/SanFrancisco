@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeIO } from "@gltf-transform/core";
 import { EXTMeshoptCompression, KHRMeshQuantization } from "@gltf-transform/extensions";
-import { meshopt, reorder } from "@gltf-transform/functions";
+import { meshopt, prune, reorder, weld } from "@gltf-transform/functions";
 import { MeshoptDecoder, MeshoptEncoder } from "meshoptimizer";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,6 +36,37 @@ function vertexCount(doc) {
     }
   }
   return n;
+}
+
+function triangleCount(doc) {
+  let n = 0;
+  for (const mesh of doc.getRoot().listMeshes()) {
+    for (const prim of mesh.listPrimitives()) {
+      const indices = prim.getIndices();
+      n += (indices ? indices.getCount() : (prim.getAttribute("POSITION")?.getCount() ?? 0)) / 3;
+    }
+  }
+  return n;
+}
+
+// Ground drapes (park lawns, road ribbons) are lit from the terrain normal
+// field at runtime (terrainClipmap.groundConformNormalBase; flat-shading
+// derivative normals cover the gate fallback), so their baked flat-shaded
+// normals are dead weight. Dropping NORMAL also lets weld() collapse the
+// per-face-unwelded corners the flat bake produced (~3x vertex inflation).
+const DRAPE_MESH = /^(grn_|road_)/;
+
+function stripDrapeNormals(doc) {
+  let stripped = 0;
+  for (const mesh of doc.getRoot().listMeshes()) {
+    if (!DRAPE_MESH.test(mesh.getName())) continue;
+    for (const prim of mesh.listPrimitives()) {
+      if (!prim.getAttribute("NORMAL")) continue;
+      prim.setAttribute("NORMAL", null);
+      stripped++;
+    }
+  }
+  return stripped;
 }
 
 function isCompressed(buffer) {
@@ -77,6 +108,7 @@ async function main() {
 
     const doc = await io.readBinary(input);
     const vertsBefore = vertexCount(doc);
+    const trisBefore = triangleCount(doc);
     if (SKIP_QUANTIZE.has(name)) {
       await doc.transform(reorder({ encoder: MeshoptEncoder, target: "size" }));
       doc
@@ -84,24 +116,31 @@ async function main() {
         .setRequired(true)
         .setEncoderOptions({ method: EXTMeshoptCompression.EncoderMethod.FILTER });
     } else {
+      stripDrapeNormals(doc);
+      // weld() only merges bitwise-identical vertices, which cannot change the
+      // rendered image — it exists to reclaim the drapes' unwelded flat corners.
       await doc.transform(
+        prune(),
+        weld(),
         meshopt({ encoder: MeshoptEncoder, level: "high", quantizePosition: QUANTIZE_POSITION_BITS })
       );
     }
     const output = await io.writeBinary(doc);
 
-    // prove the bytes decode before replacing the original
+    // prove the bytes decode before replacing the original. Triangles are the
+    // invariant (weld may legitimately reduce vertices).
     const check = await io.readBinary(output);
-    const vertsAfter = vertexCount(check);
-    if (vertsAfter !== vertsBefore) {
-      throw new Error(`${name}: vertex count changed ${vertsBefore} -> ${vertsAfter}, aborting`);
+    const trisAfter = triangleCount(check);
+    if (trisAfter !== trisBefore) {
+      throw new Error(`${name}: triangle count changed ${trisBefore} -> ${trisAfter}, aborting`);
     }
     await fs.writeFile(file, output);
 
     inTotal += input.length;
     outTotal += output.length;
     console.log(
-      `${name}: ${(input.length / 1e6).toFixed(2)}MB -> ${(output.length / 1e6).toFixed(2)}MB`
+      `${name}: ${(input.length / 1e6).toFixed(2)}MB -> ${(output.length / 1e6).toFixed(2)}MB` +
+        (vertsBefore === vertexCount(check) ? "" : ` (verts ${vertsBefore} -> ${vertexCount(check)})`)
     );
   }
   const mb = (n) => (n / 1e6).toFixed(1);

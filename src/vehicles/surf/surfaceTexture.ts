@@ -141,7 +141,7 @@ export function surfboardSurfacePaintKey(config: SurfboardConfig): string {
 /**
  * Compose the board into one caller-owned canvas. It always paints a complete
  * fallback immediately; callers can await prepareSurfboardSurface() and repaint
- * when the selected PNGs finish decoding.
+ * when the selected WebP images finish decoding.
  */
 export function paintSurfboardSurface(canvas: HTMLCanvasElement, raw: SurfboardConfig): boolean {
   if (canvas.width <= 0 || canvas.height <= 0) return false;
