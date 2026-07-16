@@ -489,10 +489,12 @@ export class TerrainClipmap {
    * Bilinear reconstruction is C0 with a slope kink at every source cell edge —
    * rolling hills read as 8 m facets no matter how dense the render mesh is.
    * Catmull-Rom interpolates the lattice values exactly and is C1, so hills
-   * genuinely curve. The result is clamped to the min/max of the cell's four
-   * corners: on cliffs and kerb steps unclamped CR rings (measured up to ±9 m
-   * at Twin Peaks road cuts); the clamp confines those spots to the old
-   * bilinear envelope while leaving smooth terrain untouched.
+   * genuinely curve. The result is clamped to the min/max of the FULL 4×4 tap
+   * neighbourhood — an anti-ringing guard only. Clamping to the central cell's
+   * 4 corners instead flattens every in-cell crest/dip into a per-cell plateau
+   * (hilltops terrace into visible contour bands); the 4×4 hull never binds on
+   * smooth terrain while still bounding cliff-notch ringing to real
+   * neighbourhood heights.
    * Must stay in lockstep with the CPU twin in heightmap.ts #sampleGrid.
    */
   #heightAt(worldXZ: N, sourceLod: number): N {
@@ -532,12 +534,15 @@ export class TerrainClipmap {
         .add(taps[j][3].mul(wx[3]));
       value = value.add(row.mul(wy[j]));
     }
-    const corner00 = taps[1][1];
-    const corner10 = taps[1][2];
-    const corner01 = taps[2][1];
-    const corner11 = taps[2][2];
-    const low = corner00.min(corner10).min(corner01).min(corner11);
-    const high = corner00.max(corner10).max(corner01).max(corner11);
+    let low: N = taps[0][0];
+    let high: N = taps[0][0];
+    for (let j = 0; j < 4; j++) {
+      for (let i = 0; i < 4; i++) {
+        if (i === 0 && j === 0) continue;
+        low = low.min(taps[j][i]);
+        high = high.max(taps[j][i]);
+      }
+    }
     return value.clamp(low, high);
   }
 

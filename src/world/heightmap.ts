@@ -124,8 +124,10 @@ export class WorldMap {
    * (terrainClipmap.ts #heightAt), so the walk carpet, vehicle grounding,
    * paint and cursor sit on the surface the player sees. CR interpolates the
    * lattice values exactly and is C1 (hills curve instead of kinking every
-   * 8 m); the clamp to the cell's four corners confines cliff/kerb ringing to
-   * the old bilinear envelope. Any change here must be mirrored on the GPU.
+   * 8 m); the clamp to the 4×4 tap neighbourhood's min/max is an anti-ringing
+   * guard only — clamping to the central cell's corners would terrace every
+   * in-cell crest into per-cell plateaus. Any change here must be mirrored on
+   * the GPU.
    */
   #sampleGrid(arr: Float32Array, x: number, z: number): number {
     const { cellSize, width: W, height: H, minX, minZ } = this.meta.grid;
@@ -147,24 +149,21 @@ export class WorldMap {
         p3 * (0.5 * t3 - 0.5 * t2)
       );
     };
+    let low = Infinity;
+    let high = -Infinity;
     const rowAt = (j: number) => {
       const row = clampY(iy + j) * W;
-      return cr1(
-        arr[row + clampX(ix - 1)],
-        arr[row + clampX(ix)],
-        arr[row + clampX(ix + 1)],
-        arr[row + clampX(ix + 2)],
-        tx
-      );
+      const p0 = arr[row + clampX(ix - 1)];
+      const p1 = arr[row + clampX(ix)];
+      const p2 = arr[row + clampX(ix + 1)];
+      const p3 = arr[row + clampX(ix + 2)];
+      const rowLow = Math.min(p0, p1, p2, p3);
+      const rowHigh = Math.max(p0, p1, p2, p3);
+      if (rowLow < low) low = rowLow;
+      if (rowHigh > high) high = rowHigh;
+      return cr1(p0, p1, p2, p3, tx);
     };
     const value = cr1(rowAt(-1), rowAt(0), rowAt(1), rowAt(2), ty);
-    const i = iy * W + ix;
-    const h00 = arr[i];
-    const h10 = arr[i + 1];
-    const h01 = arr[i + W];
-    const h11 = arr[i + W + 1];
-    const low = Math.min(h00, h10, h01, h11);
-    const high = Math.max(h00, h10, h01, h11);
     return value < low ? low : value > high ? high : value;
   }
 
