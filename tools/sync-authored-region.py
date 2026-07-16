@@ -103,7 +103,8 @@ def main():
         terrain_collection = ensure_child(root, "TERRAIN_OWNERSHIP")
         terrain_collection.hide_render = True
         for footprint in terrain["footprints"]:
-            values = {**footprint, "groundY": terrain["groundY"]}
+            ground_y = footprint.get("groundY", terrain["groundY"])
+            values = {**footprint, "groundY": ground_y}
             marker = seed_box(
                 terrain_collection,
                 f"TERRAIN_{footprint['id']}",
@@ -111,10 +112,16 @@ def main():
                 "terrain_ownership",
                 args.site,
             )
-            marker["sf_footprint_id"] = footprint["id"]
-            marker["sf_ground_y"] = terrain["groundY"]
-            marker["sf_feather"] = footprint.get("feather", 0.2)
-            marker["sf_terrain_mode"] = terrain["mode"]
+            # Existing Blender markers are artist authority. Seed only missing
+            # metadata so a bake cannot silently undo hand-tuned entrance cuts.
+            if "sf_footprint_id" not in marker:
+                marker["sf_footprint_id"] = footprint["id"]
+            if "sf_ground_y" not in marker:
+                marker["sf_ground_y"] = ground_y
+            if "sf_feather" not in marker:
+                marker["sf_feather"] = footprint.get("feather", 0.2)
+            if "sf_terrain_mode" not in marker:
+                marker["sf_terrain_mode"] = terrain["mode"]
 
     bpy.ops.wm.save_as_mainfile(filepath=expected_source)
     print(json.dumps({"site": args.site, "source": expected_source, "schema": 2}))
