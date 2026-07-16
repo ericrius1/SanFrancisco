@@ -376,10 +376,14 @@ export class Minimap {
     // region centre, which can fall on a road, rooftop or the bay.
     // Skip ggpark — Botanical Garden, Japanese Tea Garden, and Archery Range
     // already cover Golden Gate Park with activity-specific pins.
+    const sutroArrival = SPAWN_POINTS.sutroTower;
     const NATURE_ANCHORS: { id: string; name: string; x: number; z: number }[] = [
       { id: "presidio", name: "The Presidio", x: -1820, z: -1520 }, // cypress ridge grove
       { id: "marin", name: "Marin Headlands", x: -4450, z: -6250 }, // poppy hills + groves
-      { id: "twinpeaks", name: "Mount Sutro", x: -782, z: 3846 } // Sutro cloud-forest under the tower
+      // Reuse the cleared overlook instead of the tower's geographic centre.
+      // Landing inside the three splayed legs surrounds the camera with the
+      // 300 m structure and makes it look as though the tower follows the view.
+      { id: "twinpeaks", name: "Mount Sutro", x: sutroArrival.x, z: sutroArrival.z }
     ];
     const wildIds = new Set<string>(WILD_REGIONS.map((r) => r.id));
     for (const a of NATURE_ANCHORS) {
