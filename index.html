@@ -3373,7 +3373,10 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        background: rgba(4, 10, 16, 0.55);
+        /* Dim the live world harder so the parchment reads as the focus;
+           keep a little scene visible in the side ribbon (no backdrop-filter —
+           that flickers over WebGPU). */
+        background: rgba(4, 10, 16, 0.78);
         font-family: var(--font);
       }
       .bigmap-inner {
@@ -3728,129 +3731,6 @@
       body.reading #hud .bts-overlay {
         pointer-events: auto;
       }
-      #loading .map-folio {
-        position: absolute;
-        inset:
-          max(30px, env(safe-area-inset-top))
-          max(34px, env(safe-area-inset-right))
-          max(30px, env(safe-area-inset-bottom))
-          max(34px, env(safe-area-inset-left));
-        min-width: 0;
-        pointer-events: none;
-        color: rgba(55, 69, 59, 0.82);
-        font-weight: 650;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-      }
-      #loading .folio-kicker,
-      #loading .folio-number {
-        position: absolute;
-        top: 2px;
-        font-size: 10px;
-        line-height: 1.35;
-        text-shadow: 0 1px rgba(236, 225, 194, 0.62);
-      }
-      #loading .folio-kicker {
-        left: 0;
-      }
-      #loading .folio-number {
-        right: 0;
-      }
-      #loading .ocean-label {
-        position: absolute;
-        left: 50%;
-        top: 11%;
-        writing-mode: vertical-rl;
-        transform: rotate(180deg);
-        font-style: italic;
-        font-size: clamp(12px, 1.1vw, 16px);
-        font-weight: 500;
-        letter-spacing: 0.3em;
-        opacity: 0.5;
-      }
-      #loading .map-caption {
-        position: absolute;
-        left: 0;
-        bottom: 2px;
-        max-width: 310px;
-        font-size: 9px;
-        line-height: 1.55;
-        letter-spacing: 0.1em;
-      }
-      #loading .compass {
-        position: absolute;
-        left: 52%;
-        top: 58%;
-        width: 70px;
-        height: 70px;
-        display: grid;
-        place-items: center;
-        border: 1px solid rgba(64, 75, 62, 0.46);
-        border-radius: 50%;
-        font-size: 9px;
-        letter-spacing: 0.06em;
-        opacity: 0.66;
-      }
-      #loading .compass::before,
-      #loading .compass::after {
-        content: "";
-        position: absolute;
-        background: rgba(64, 75, 62, 0.52);
-      }
-      #loading .compass::before {
-        width: 1px;
-        height: 88px;
-      }
-      #loading .compass::after {
-        width: 88px;
-        height: 1px;
-      }
-      #loading .compass span {
-        transform: translateY(-28px);
-      }
-      /* Ink annotations on the revealed coast — the folio pointing out its
-         landmarks now that the cartouche has stepped off them. */
-      #loading .map-pin {
-        position: absolute;
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        color: rgba(66, 55, 41, 0.82);
-        font-style: italic;
-        font-size: clamp(11px, 1vw, 15px);
-        font-weight: 600;
-        letter-spacing: 0.13em;
-        text-transform: uppercase;
-        text-shadow: 0 1px rgba(240, 228, 196, 0.72);
-        white-space: nowrap;
-        animation: pin-in 0.9s var(--ease) 0.5s both;
-      }
-      #loading .map-pin::before {
-        content: "";
-        flex: none;
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        border: 1px solid rgba(122, 63, 44, 0.9);
-        background: rgba(154, 84, 52, 0.42);
-        box-shadow: 0 0 0 3px rgba(154, 84, 52, 0.12);
-      }
-      #loading .pin-gate {
-        left: 60%;
-        top: 15%;
-        color: rgba(120, 61, 43, 0.92);
-      }
-      #loading .pin-presidio {
-        left: 72%;
-        top: 44%;
-      }
-      #loading .pin-landsend {
-        left: 52.5%;
-        top: 34%;
-      }
-      @keyframes pin-in {
-        from { opacity: 0; transform: translateY(-4px); }
-      }
       #loading .start-card {
         position: relative;
         width: min(100%, 500px);
@@ -4174,20 +4054,6 @@
             linear-gradient(rgba(76, 65, 46, 0.06), rgba(76, 65, 46, 0.24)),
             repeating-linear-gradient(0deg, rgba(69, 62, 44, 0.025) 0 1px, transparent 1px 4px);
         }
-        #loading .map-folio {
-          position: absolute;
-          inset: max(22px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(22px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
-        }
-        #loading .folio-number,
-        #loading .ocean-label,
-        #loading .compass,
-        #loading .map-pin {
-          display: none;
-        }
-        #loading .map-caption {
-          max-width: 220px;
-          font-size: 7.5px;
-        }
         #loading .start-card {
           width: min(100%, 440px);
           justify-self: center;
@@ -4232,10 +4098,6 @@
             max(16px, env(safe-area-inset-bottom))
             max(28px, env(safe-area-inset-left));
           gap: 20px;
-        }
-        #loading .folio-number,
-        #loading .compass {
-          display: none;
         }
         #loading .start-card {
           width: min(100%, 430px);
@@ -4371,15 +4233,6 @@
       </button>
     </div>
     <div id="loading">
-      <div class="map-folio" aria-hidden="true">
-        <span class="folio-kicker">United States Coast Survey<br />San Francisco Peninsula</span>
-        <span class="folio-number">Plate I · 37° 46′ N</span>
-        <span class="ocean-label">Pacific Ocean</span>
-        <span class="map-pin pin-gate">Golden Gate</span>
-        <span class="map-pin pin-presidio">The Presidio</span>
-        <span class="map-pin pin-landsend">Lands End</span>
-        <span class="map-caption">Drawn from field notes, local stories, weather, light, and the wandering of every visitor.</span>
-      </div>
       <main class="start-card">
         <div class="plate-number">City edition · 1776</div>
         <div class="title-eyebrow">A living atlas of</div>

@@ -1010,9 +1010,29 @@ export class Minimap {
     return g.width * g.cellSize;
   }
 
+  /**
+   * CSS size of the expanded map frame. Fills most of the viewport so wide
+   * screens stay immersive; a thin ribbon of the dimmed world remains visible.
+   * Layer pills sit above the frame, so their chrome is reserved from height.
+   */
+  #bigCssSize() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const layerChrome = 52;
+    const narrow = vw < 640;
+    const sideFrac = narrow ? 0.028 : vw < 1100 ? 0.04 : 0.05;
+    const padX = Math.max(narrow ? 10 : 28, Math.round(vw * sideFrac)) * 2;
+    const padY = Math.max(vh < 700 ? 18 : 32, Math.round(vh * 0.035)) * 2;
+    return {
+      w: Math.max(240, Math.round(vw - padX)),
+      h: Math.max(240, Math.round(vh - padY - layerChrome))
+    };
+  }
+
+  /** Viewport aspect of the expanded map (not the world grid). */
   #bigAspect() {
-    const g = this.#map.meta.grid;
-    return g.width / g.height;
+    const { w, h } = this.#bigCssSize();
+    return w / Math.max(1, h);
   }
 
   #clampBigSpan(span: number) {
@@ -2093,12 +2113,9 @@ export class Minimap {
   #drawBig() {
     const canvas = this.#big!;
     this.#tickBigRecenterAnim();
-    const { width: W, height: H } = this.#map.meta.grid;
     const dpr = this.#dpr;
-    // fit the viewport, keep the world aspect
-    const fit = Math.min((window.innerWidth - 90) / W, (window.innerHeight - 130) / H);
-    const cw = Math.round(W * fit);
-    const ch = Math.round(H * fit);
+    // Fill the available viewport; geography stays undistorted via #bigAspect().
+    const { w: cw, h: ch } = this.#bigCssSize();
     const pixelW = Math.round(cw * dpr);
     const pixelH = Math.round(ch * dpr);
     if (canvas.width !== pixelW || canvas.height !== pixelH) {

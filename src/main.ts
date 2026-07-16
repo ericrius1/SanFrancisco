@@ -1256,12 +1256,29 @@ async function boot() {
     if (orbitOn) {
       chase.suspend(player); // orbit owns the camera and should show the local avatar
       input.releaseLock();
+      // Start from a clean framing: medium distance, level with the head, facing
+      // the player. Entering from first person leaves the camera inside the head
+      // (target above camera → confusing worm's-eye view), so never reuse the raw
+      // camera position — only its horizontal bearing, when it has one.
+      const ORBIT_START_DIST = 8;
+      const headY = player.position.y + 1.5;
+      let dx = camera.position.x - player.position.x;
+      let dz = camera.position.z - player.position.z;
+      const horiz = Math.hypot(dx, dz);
+      if (horiz > 0.5) {
+        dx /= horiz;
+        dz /= horiz;
+      } else {
+        // Degenerate (first person / co-located): sit behind the player's facing.
+        dx = -Math.sin(player.heading);
+        dz = -Math.cos(player.heading);
+      }
       orbit.setLookAt(
-        camera.position.x,
-        camera.position.y,
-        camera.position.z,
+        player.position.x + dx * ORBIT_START_DIST,
+        headY,
+        player.position.z + dz * ORBIT_START_DIST,
         player.position.x,
-        player.position.y + 1.5,
+        headY,
         player.position.z,
         false
       );
