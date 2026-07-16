@@ -7,6 +7,7 @@ import {
   mix,
   modelWorldMatrix,
   normalize,
+  normalView,
   positionLocal,
   positionWorld,
   smoothstep,
@@ -657,6 +658,40 @@ export class TerrainClipmap {
     material.alphaTestNode = float(0.5);
     material.envMapIntensity = 0.68;
     return material;
+  }
+
+  /**
+   * View-space base normal that conforms a draped ground mesh (baked lawn/road
+   * ribbons, which ship flat-shaded) to the same prefiltered terrain lighting
+   * field the clipmap uses, so drape shading is seamless with the ground around
+   * it. A height-agreement gate falls back to the mesh's own interpolated
+   * normal wherever the surface leaves the heightfield — pier decks, bridge
+   * roadways, graded terraces — those are not terrain and must keep their own
+   * lighting. Fragment-stage auto-mip sampling band-limits both lookups with
+   * distance for free.
+   */
+  groundConformNormalBase(): unknown {
+    const grid = this.#grid;
+    const world = positionWorld as N;
+    const uv = world.xz
+      .sub(vec2(grid.minX, grid.minZ))
+      .div(grid.cellSize)
+      .add(0.5)
+      .div(vec2(grid.width, grid.height));
+    const packedNormal = texture(this.#normal.texture, uv) as N;
+    const xz = packedNormal.rg.mul(2).sub(1);
+    const upComponent = float(1).sub(xz.dot(xz)).max(0).sqrt();
+    const fieldWorld = normalize(vec3(xz.x, upComponent, xz.y));
+    const packedHeight = texture(this.#height.texture, uv) as N;
+    const terrainY = packedHeight.r.mul(255 * 256)
+      .add(packedHeight.g.mul(255))
+      .div(65535)
+      .mul(this.#height.range)
+      .add(this.#height.min);
+    // 1 while the drape hugs the terrain (lifts are 0.15-0.45 m), fading to 0
+    // by ~2.4 m of separation. Edges ordered low->high (reversed edges emit 0).
+    const conform = smoothstep(1.4, 2.4, world.y.sub(terrainY).abs()).oneMinus();
+    return mix(normalView as N, transformNormalToView(fieldWorld) as N, conform);
   }
 
   /**

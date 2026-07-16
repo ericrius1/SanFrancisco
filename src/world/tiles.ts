@@ -5,6 +5,7 @@ import { CONFIG } from "../config";
 import { tracer } from "../core/hitchTracer";
 import { createFacadeMaterial, BASEY_OFFSET, BASEY_SCALE, TOPH_SCALE } from "./facade";
 import { createRoadMaterial, createParkMaterial } from "./streets";
+import { bumpNormal } from "./tslUtil";
 import { createCrownMaterial } from "./salesforceCrown";
 import { applyLandmarkFixes } from "./landmarkFixes";
 import type { WorldMap } from "./heightmap";
@@ -582,6 +583,16 @@ export class TileStreamer {
     this.terrainClipmap.update(0, 0, true);
     this.terrain.set("terrain_clipmap", this.terrainClipmap.group);
     this.#scene.add(this.terrainClipmap.group);
+
+    // Baked road ribbons and park lawns are flat-shaded CDT drapes; rebase
+    // their bump on the clipmap's terrain lighting field so ground shading is
+    // seamless (the height gate inside keeps piers/bridge decks on their own
+    // normals). Must run before any residency clones or pipeline warmup.
+    const groundBase = this.terrainClipmap.groundConformNormalBase();
+    for (const mat of [roadMat, parkMat]) {
+      mat.normalNode = bumpNormal(mat.userData.bumpHeightNode, groundBase);
+      mat.needsUpdate = true;
+    }
   }
 
   keyToCenter(key: string): [number, number] {
