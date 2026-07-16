@@ -1,0 +1,6 @@
+{
+  "gallopBlend": 0.85,
+  "boundRewardW": 0.45,
+  "strideSpan": 1.15,
+  "maxTorqueScale": 1.1
+}
