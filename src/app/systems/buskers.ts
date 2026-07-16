@@ -71,6 +71,14 @@ export class BuskersSystem implements BuskerTrioApi {
     return this.current.clock;
   }
 
+  get songName() {
+    return this.current.songName;
+  }
+
+  get awaitingRequest() {
+    return this.current.awaitingRequest;
+  }
+
   flushHotSwap(): void {
     const verdict = this.#slot.flush();
     if (verdict === "replaced") console.info(`[hmr] buskers replaced (generation ${this.generation})`);
@@ -86,6 +94,10 @@ export class BuskersSystem implements BuskerTrioApi {
 
   restartSong(...args: Parameters<BuskerTrio["restartSong"]>) {
     return this.current.restartSong(...args);
+  }
+
+  requestPerformance(...args: Parameters<BuskerTrio["requestPerformance"]>) {
+    return this.current.requestPerformance(...args);
   }
 
   cueShow(...args: Parameters<BuskerTrio["cueShow"]>) {

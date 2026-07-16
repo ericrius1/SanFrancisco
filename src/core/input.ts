@@ -106,6 +106,8 @@ export function localizeInteractText(text: string, device: "kb" | "pad" = lastIn
     .replace(/\bPress E\b/g, `Press ${key}`)
     .replace(/\bE ·/g, `${key} ·`)
     .replace(/\bE —/g, `${key} —`)
+    // Keyboard "Enter" (dialogue select) maps to the same pad face button.
+    .replace(/\bEnter\b/g, key)
     .replace(/\bE \/ B\b/g, `E / ${key}`)
     .replace(/\bpad B\b/gi, `pad ${key}`);
 }

@@ -182,6 +182,7 @@ import { BootScreen } from "./app/bootScreen";
 import { createRenderCore } from "./app/renderCore";
 import { initTextures } from "./render/textures";
 import { createBuskersSystem } from "./app/systems/buskers";
+import { createBuskerConversation } from "./gameplay/buskers/conversation";
 import { createSessionPersistence } from "./app/sessionPersistence";
 import { startFrameDriver } from "./app/frameDriver";
 import { isInGameScreenshotBusy, takeInGameScreenshot } from "./app/inGameScreenshot";
@@ -1251,6 +1252,9 @@ async function boot() {
     physics,
     prepareRender: (root) => warmHiddenRoot(renderer, camera, scene, root)
   });
+  // Summit dialogue: the trio chills until you walk up, press E and ask for a
+  // song (shared NPC conversation system — gameplay/agents/conversation.ts).
+  const buskerTalk = createBuskerConversation(buskers);
   let ridePromptShown = false;
   let doorPromptShown = false;
   let doorScanCountdown = 0;
@@ -2062,7 +2066,9 @@ async function boot() {
   // (browser) and closes the overlay when the keydown was swallowed.
   const dismissEscapeOverlay = (e: KeyboardEvent): boolean => {
     const reader = getBehindTheScenes();
-    if (missionDolores?.bookOpen) {
+    if (buskerTalk.close()) {
+      // A conversation owns the screen: Esc leaves it before any other overlay.
+    } else if (missionDolores?.bookOpen) {
       missionDolores.closeBook();
     } else if (reader?.isOpen) {
       reader.setOpen(false);
@@ -4404,10 +4410,23 @@ async function boot() {
         (input.pressed("ArrowUp") ? 1 : 0) +
         (input.pressed("PadNavDown") ? 1 : 0) -
         (input.pressed("PadNavUp") ? 1 : 0);
-      if (dx || dy) toolbar.navigate(dx, dy);
+      // An open dialogue choice list owns the nav keys; the toolbar resumes
+      // the moment the decision is made.
+      if (buskerTalk.choosing) {
+        if (dy) buskerTalk.navigate(dy);
+      } else if (dx || dy) {
+        toolbar.navigate(dx, dy);
+      }
     }
     if (!playingPickleball && input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
     if (!playingPickleball && input.altPressed("ArrowRight")) applyPlaceHistory(1);
+
+    // Enter is the primary "select" gesture inside an open conversation (E and
+    // pad Y confirm too, via the interact chain below). Gated on an active
+    // conversation so Enter keeps its other jobs (chat/minimap) everywhere else.
+    if (buskerTalk.active && (input.pressed("Enter") || input.pressed("NumpadEnter"))) {
+      buskerTalk.confirm();
+    }
 
     // E / pad Y: nearby conversations get first refusal. When the prompt was
     // reached on a vehicle or creature, the same press dismounts and is handed
@@ -4427,6 +4446,7 @@ async function boot() {
       !teaGardenEConsumed &&
       interactPressed &&
       !exitedToWalk &&
+      !buskerTalk.tryInteract(player.renderPosition, player.mode) &&
       !golf?.tryStartAtTee(player, hud) &&
       !archery?.tryInteract(player, hud, chase) &&
       !palaceReverie?.tryInteract(player, hud) &&
@@ -4959,6 +4979,7 @@ async function boot() {
     }
     oceanBeachKite?.update(frameDt, elapsed, player.renderPosition, windGustValue());
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
+    buskerTalk.update(player.renderPosition);
     if (!worldArrival.active) {
       if (optionalSitePerfAllowed("sutro-baths")) {
         sutroBaths?.update(frameDt, elapsed, player.renderPosition, camera, windGustValue());
@@ -5142,6 +5163,7 @@ async function boot() {
     // committed this frame's final camera pose; projecting during simulation
     // left Hiro's card one camera frame behind and visibly jittering.
     japaneseTeaGarden?.project(camera);
+    buskerTalk.project(camera);
     sky.update(elapsed, camera.position, player.renderPosition);
     // Surf contact/camera use Player's fixed-step simulation clock. Feed that
     // exact clock to the displaced ocean and lazy face/roof too; using render
@@ -5452,7 +5474,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

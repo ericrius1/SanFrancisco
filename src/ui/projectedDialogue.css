@@ -343,6 +343,116 @@
   line-height: 0;
 }
 
+.projected-dialogue__choices {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 6px;
+  margin: 0 2px 12px;
+}
+
+.projected-dialogue__choice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 12px 7px 10px;
+  border: 1px solid rgba(23, 43, 69, 0.2);
+  border-radius: 3px 9px 3px 9px;
+  background: rgba(255, 255, 255, 0.34);
+  color: var(--projected-dialogue-indigo-soft);
+  font: 650 13px/1.35 var(--font, "Newsreader", Georgia, serif);
+  letter-spacing: 0.015em;
+  transition:
+    border-color 110ms ease-out,
+    background-color 110ms ease-out,
+    color 110ms ease-out,
+    box-shadow 110ms ease-out;
+}
+
+.projected-dialogue__choice-marker {
+  flex: 0 0 auto;
+  color: var(--projected-dialogue-vermilion);
+  font-size: 14px;
+  font-weight: 800;
+  opacity: 0;
+  transform: translateX(-3px);
+  transition: opacity 110ms ease-out, transform 110ms ease-out;
+}
+
+.projected-dialogue__choice-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.projected-dialogue__choice.is-selected {
+  border-color: color-mix(in srgb, var(--projected-dialogue-vermilion) 62%, transparent);
+  background: color-mix(in srgb, var(--projected-dialogue-vermilion) 11%, rgba(255, 255, 255, 0.5));
+  box-shadow:
+    inset 3px 0 0 var(--projected-dialogue-vermilion),
+    0 2px 7px rgba(5, 13, 23, 0.1);
+  color: var(--projected-dialogue-ink);
+}
+
+.projected-dialogue__choice.is-selected .projected-dialogue__choice-marker {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* ---- Corona Heights buskers: dusk-and-ember twist on the shared card ----
+   Same paper, structure and typography; the palette shifts to summit-twilight
+   violet with a firefly-amber accent, and the topic dot becomes a note. */
+.projected-dialogue--corona-buskers {
+  --projected-dialogue-indigo: #33254a;
+  --projected-dialogue-indigo-soft: #55476b;
+  --projected-dialogue-vermilion: #c1701f;
+  --projected-dialogue-ivory: #f7eedb;
+  --projected-dialogue-ink: #2b2135;
+}
+
+.projected-dialogue--corona-buskers .projected-dialogue__prompt {
+  border-color: rgba(247, 238, 219, 0.7);
+  background:
+    linear-gradient(105deg, rgba(255, 214, 140, 0.12), transparent 46%),
+    #251a3b;
+}
+
+.projected-dialogue--corona-buskers .projected-dialogue__prompt::after {
+  border-right-color: rgba(247, 238, 219, 0.62);
+  border-bottom-color: rgba(247, 238, 219, 0.62);
+  background: #2b2044;
+}
+
+.projected-dialogue--corona-buskers .projected-dialogue__pin.is-below .projected-dialogue__prompt::after {
+  border-top-color: rgba(247, 238, 219, 0.62);
+  border-left-color: rgba(247, 238, 219, 0.62);
+}
+
+.projected-dialogue--corona-buskers .projected-dialogue__card {
+  border-color: rgba(51, 37, 74, 0.6);
+  background:
+    repeating-linear-gradient(
+      4deg,
+      rgba(74, 56, 42, 0.02) 0,
+      rgba(74, 56, 42, 0.02) 1px,
+      transparent 1px,
+      transparent 5px
+    ),
+    linear-gradient(135deg, rgba(255, 252, 244, 0.9), rgba(240, 224, 198, 0.94)),
+    var(--projected-dialogue-ivory);
+}
+
+.projected-dialogue--corona-buskers .projected-dialogue__topic::before {
+  width: auto;
+  height: auto;
+  margin-right: 6px;
+  border-radius: 0;
+  background: none;
+  color: var(--projected-dialogue-vermilion);
+  content: "♪";
+  font-size: 11px;
+  line-height: 1;
+}
+
 @keyframes projected-dialogue-arrive {
   from {
     opacity: 0;
