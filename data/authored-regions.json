@@ -13,16 +13,16 @@
       "bounds": {
         "centerX": -6125,
         "centerZ": 1117,
-        "halfX": 44.8,
+        "halfX": 55.5,
         "halfZ": 81.1,
         "yaw": -0.077
       },
       "arrival": {
         "spawnKey": "sutroBaths",
-        "x": -6092.582031,
-        "y": 25.38,
-        "z": 1182.788696,
-        "heading": 1.493796
+        "x": -6084.38916,
+        "y": 31.26,
+        "z": 1183.420776,
+        "heading": 1.942
       },
       "arrivalDistance": 260,
       "loadDistance": 1100,
@@ -35,6 +35,15 @@
         "groundY": 2.07,
         "footprints": [
           {
+            "id": "beach-entry",
+            "centerX": -6175.418457,
+            "centerZ": 1146.499023,
+            "halfX": 9.5,
+            "halfZ": 3.45,
+            "yaw": -0.077,
+            "feather": 0.35
+          },
+          {
             "id": "hall",
             "centerX": -6125,
             "centerZ": 1117,
@@ -42,15 +51,6 @@
             "halfZ": 76.45,
             "yaw": -0.077,
             "feather": 0.22
-          },
-          {
-            "id": "entry-stairwell",
-            "centerX": -6088.57657,
-            "centerZ": 1183.097683,
-            "halfX": 3.05,
-            "halfZ": 4.6,
-            "yaw": -0.077,
-            "feather": 0.18
           }
         ]
       }
