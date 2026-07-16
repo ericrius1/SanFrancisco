@@ -59,8 +59,8 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Mouse"], label: "aim" },
     { c: ["W", "S"], label: "along the view" },
     { c: ["A", "D"], label: "strafe" },
-    { c: ["E", "Q"], label: "up · down" },
-    { c: ["Space"], label: "hover" },
+    { c: ["U", "Q"], label: "up · down" },
+    { c: ["Space"], label: "fly up" },
     { c: ["Shift"], label: "boost" },
     { c: ["Click"], label: "shoot" }
   ],
@@ -74,11 +74,13 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Click"], label: "shoot" }
   ],
   surf: [
-    { c: ["Locked"], label: "camera behind you" },
-    { c: ["W", "S"], label: "pump · stall" },
-    { c: ["A", "D"], label: "carve left / right" },
-    { c: ["Space"], label: "lip pop · flow when ready" },
-    { c: ["Auto"], label: "high-line launch" },
+    { c: ["Locked"], label: "camera frames the shore" },
+    { c: ["A", "D"], label: "carve — wave side climbs, beach side speeds" },
+    { c: ["A", "A"], label: "double-tap = cutback" },
+    { c: ["Space"], label: "jump · big off the lip" },
+    { c: ["W", "S"], label: "flip in the air" },
+    { c: ["Shift"], label: "grab — style + control" },
+    { c: ["X"], label: "flow when ready" },
     { c: ["E"], label: "exit to beach" }
   ],
   bird: [
@@ -151,7 +153,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LS"], label: "move" },
     { c: ["RT", "LB"], label: "up · down" },
     { c: ["L3", "LT"], label: "boost" },
-    { c: ["A"], label: "hover" },
+    { c: ["A"], label: "fly up" },
     { c: ["Y"], label: "land" },
     { c: ["X"], label: "shoot" }
   ],
@@ -165,11 +167,13 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["X"], label: "shoot" }
   ],
   surf: [
-    { c: ["Locked"], label: "camera behind you" },
-    { c: ["RT", "LT"], label: "pump · stall" },
-    { c: ["LS"], label: "carve left / right" },
-    { c: ["A"], label: "lip pop · flow when ready" },
-    { c: ["Auto"], label: "high-line launch" },
+    { c: ["Locked"], label: "camera frames the shore" },
+    { c: ["LS"], label: "carve — wave side climbs, beach side speeds" },
+    { c: ["LS"], label: "double-flick = cutback" },
+    { c: ["A"], label: "jump · big off the lip" },
+    { c: ["RT", "LT"], label: "flip in the air" },
+    { c: ["B"], label: "grab — style + control" },
+    { c: ["X"], label: "flow when ready" },
     { c: ["Y"], label: "exit to beach" }
   ],
   bird: [
@@ -188,7 +192,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   drive: "LB boost · RB power-slide with steer · release for a snap boost · Space handbrake",
   scooter: "LB power-slide with steer · ramps launch cleanly · rear seat fits a friend",
   board: "White glow = nose · pull right stick back in the air to flip",
-  surf: "A/D carve either way · Space pops the lip · camera eases in behind you",
+  surf: "Carve toward the beach for speed, then up the wave and off the lip · double-tap A/D to cut back · hold the pocket for the barrel",
   bird: "Look down + Shift to stoop — skim the bay for spray"
 }
 
@@ -234,6 +238,8 @@ export class HUD {
   #root = document.getElementById("hud")!
   #help = document.querySelector<HTMLElement>('[data-hud="help"]')!
   #helpBody = document.createElement("div")
+  /** Wraps helpBody so the fold-out panel can float above the pinned handle. */
+  #helpBodyWrap = document.createElement("div")
   #helpToggle = document.createElement("button")
   #center = document.querySelector<HTMLElement>('[data-hud="center"]')!
   #history = document.createElement("div")
@@ -251,6 +257,8 @@ export class HUD {
 
   constructor() {
     this.#helpBody.className = "help-body"
+    this.#helpBodyWrap.className = "help-body-wrap"
+    this.#helpBodyWrap.appendChild(this.#helpBody)
     this.#helpToggle.type = "button"
     this.#helpToggle.className = "help-toggle"
     this.#helpToggle.addEventListener("click", (e) => {
@@ -259,7 +267,10 @@ export class HUD {
       this.#helpCollapsed = !this.#helpCollapsed
       this.#syncHelpCollapse()
     })
-    this.#help.replaceChildren(this.#helpToggle, this.#helpBody)
+    // Body-wrap first, handle last: in the bottom-anchored, right-aligned
+    // br-stack the handle stays pinned to the bottom-right while the panel
+    // folds out ABOVE it — so clicking the handle never makes it jump.
+    this.#help.replaceChildren(this.#helpBodyWrap, this.#helpToggle)
     this.#syncHelpCollapse()
     // Defaults match boot (walk / kb / ball), so setMode/setDevice/setToolVerb
     // all early-return — paint the rows once here or the panel stays empty.
@@ -284,7 +295,7 @@ export class HUD {
     this.#helpToggle.setAttribute("aria-label", this.#helpToggle.title)
     this.#helpToggle.innerHTML =
       `<span class="help-toggle-label">Controls</span>` +
-      `<span class="help-toggle-chevron" aria-hidden="true">${this.#helpCollapsed ? "▸" : "▾"}</span>`
+      `<span class="help-toggle-chevron" aria-hidden="true">${this.#helpCollapsed ? "▴" : "▾"}</span>`
   }
 
   /** The Click/X row tracks the active toolbar tool. */

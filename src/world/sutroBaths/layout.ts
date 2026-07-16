@@ -147,13 +147,23 @@ const MAIN_ENTRY_FLIGHTS: readonly SutroStairSurface[] = [
 ] as const;
 
 const BEACH_ENTRY_STAIR: SutroStairSurface = {
-  minAcross: 30.24,
-  maxAcross: 36.34,
-  startAlong: -57,
+  minAcross: 29.19,
+  maxAcross: 37.39,
+  startAlong: -62,
   endAlong: -39,
-  startY: 2.33,
+  startY: 1.75,
   endY: 5.83,
-  steps: 23
+  steps: 29
+};
+
+const ROAD_APPROACH_STAIR: SutroStairSurface = {
+  minAcross: 58.4,
+  maxAcross: 67.8,
+  startAlong: 55.05,
+  endAlong: 59.05,
+  startY: 31.44,
+  endY: 32.48,
+  steps: 5
 };
 
 function insideRect(x: number, z: number, minX: number, maxX: number, minZ: number, maxZ: number): boolean {
@@ -177,9 +187,11 @@ function stairSurfaceY(across: number, along: number, stair: SutroStairSurface):
 export function sutroEntryWalkSurfaceY(x: number, z: number): number | null {
   const local = sutroWorldToLocal(x, z);
 
-  // Natural road grade reaches this open two-bay promenade.
-  if (insideRect(local.x, local.z, 39, 49.5, 54.6, 71.6)) return 31.08;
-  if (insideRect(local.x, local.z, 32, 39, 68.6, 71.8)) return 31.08;
+  // The road terrain is explicitly handed to a coherent pavilion floor.
+  if (insideRect(local.x, local.z, 38.7, 54.6, 56.9, 69.3)) return 31.18;
+  if (insideRect(local.x, local.z, 32, 39, 67.2, 71.8)) return 31.18;
+  const roadY = stairSurfaceY(local.z, local.x, ROAD_APPROACH_STAIR);
+  if (roadY !== null) return roadY;
 
   for (const flight of MAIN_ENTRY_FLIGHTS) {
     const y = stairSurfaceY(local.x, local.z, flight);
@@ -193,7 +205,8 @@ export function sutroEntryWalkSurfaceY(x: number, z: number): number | null {
   // The beach stair runs along local x, so swap the axes for the shared helper.
   const beachY = stairSurfaceY(local.z, local.x, BEACH_ENTRY_STAIR);
   if (beachY !== null) return beachY;
-  if (insideRect(local.x, local.z, -38.5, -34, 29.79, 36.79)) return 5.66;
+  if (insideRect(local.x, local.z, -64.5, -62, 28.79, 37.79)) return 1.75;
+  if (insideRect(local.x, local.z, -38.6, -33.9, 28.79, 37.79)) return 5.66;
   return null;
 }
 

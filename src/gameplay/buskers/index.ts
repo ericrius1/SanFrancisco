@@ -15,9 +15,12 @@ import { enableShadowLayer, SHADOW_LAYERS } from "../../world/shadows/shadowLaye
 
 /**
  * The busker trio: three musicians perched on a flat-topped chert boulder
- * (perchRock.ts) playing through a small songbook together (song.ts) — the
- * songbook advances automatically after every performance, with an unhurried,
- * randomized rest in the wind between songs. Deliberately placeless —
+ * (perchRock.ts) playing through a small songbook together (song.ts). They
+ * rest in the wind — chatting posture, glances, no instruments up — until a
+ * performance is requested (requestPerformance(), wired to the summit
+ * conversation, or a film cue via cueShow()), play one song, and settle back
+ * to waiting. The songbook advances after every performance so each request
+ * hears the next tune. Deliberately placeless —
  * createBuskerTrio() drops it at any world position and setPlacement() moves
  * it later (it re-grounds itself), so it can live on the Corona Heights
  * summit today and be nudged when that hill's detail pass lands.
@@ -37,6 +40,9 @@ const ANIM_RADIUS = 200; // beyond this, skip musician animation updates
 // keep running while hidden — the show goes on unheard, exactly as before.
 const SHOW_RADIUS = 240;
 const HIDE_RADIUS = 270;
+// Kick the detached pipeline warmup well outside the show gate so even a fast
+// flyover crosses SHOW_RADIUS with every pipeline already cached.
+const PRIME_RADIUS = 520;
 // Parts smaller than this never shadow-cast: a gem/string/fret cast is
 // invisible at CSM resolution, but each casting mesh re-encodes into every
 // shadow cascade every shadow frame.
@@ -64,12 +70,19 @@ export type BuskerTrioOptions = {
   /** terrain sampler (map.groundHeight) — used on every (re)placement */
   groundHeight: (x: number, z: number) => number;
   physics?: Physics | null;
+  /**
+   * Detached pipeline warmup (see render/warmHiddenRoot.ts). When provided,
+   * the trio stays hidden until this resolves — kicked once at PRIME_RADIUS —
+   * so the first visible flip never compiles pipelines mid-frame. Omitted in
+   * tests/headless contexts: the flip then behaves exactly as before.
+   */
+  prepareRender?: (root: THREE.Object3D) => Promise<void>;
   /** Plain-data transport state restored by the development HMR boundary. */
   state?: BuskerTrioState;
 };
 
 export type BuskerTrioState = {
-  version: 2;
+  version: 3;
   placement: { x: number; z: number; yaw: number };
   visible: boolean;
   songIndex: number;
@@ -78,6 +91,7 @@ export type BuskerTrioState = {
   silenceRemaining: number;
   restSeconds: number;
   elapsed: number;
+  awaiting: boolean;
 };
 
 export class BuskerTrio {
@@ -90,8 +104,11 @@ export class BuskerTrio {
   #seatLocal = new Map<BuskerId, THREE.Vector3>();
   #groundHeight: (x: number, z: number) => number;
 
-  #phase: TrioPhase = "countin";
+  #phase: TrioPhase = "rest";
   #phaseTime = 0;
+  /** Chilling between shows: the transport holds in "rest" (chat posture,
+   * wind sway) until requestPerformance()/cueShow() starts the next song. */
+  #awaiting = true;
   #elapsed = 0;
   #anchor = 0; // AudioContext time that maps to song beat 0
   /** Wall-clock silence before the next downbeat (film cue / forced gap). */
@@ -105,9 +122,16 @@ export class BuskerTrio {
   #clock: TrioClock = { phase: "countin", phaseTime: 0, songTime: 0, beat: 0, wind: 0.3 };
   #tmp = new THREE.Vector3();
   #disposed = false;
+  #prepareRender: ((root: THREE.Object3D) => Promise<void>) | null;
+  #renderWarm: "cold" | "warming" | "ready";
 
   constructor(opts: BuskerTrioOptions) {
     this.#groundHeight = opts.groundHeight;
+    this.#prepareRender = opts.prepareRender ?? null;
+    this.#renderWarm = this.#prepareRender ? "cold" : "ready";
+    // Never let an uncompiled trio into a live frame (boot renders can land
+    // before the first update() hides a distant act).
+    if (this.#prepareRender) this.group.visible = false;
     this.#perch = buildPerchRock(opts.physics ?? null);
     this.group.add(this.#perch.group);
     this.group.add(this.#fireflies.group);
@@ -149,7 +173,24 @@ export class BuskerTrio {
 
   /** Debug helper: jump straight to the top of the song. */
   restartSong() {
+    this.#awaiting = false;
     this.#enterPhase("playing");
+  }
+
+  /** True while the trio is chilling and open to a song request. */
+  get awaitingRequest(): boolean {
+    return this.#awaiting;
+  }
+
+  /**
+   * Ask the trio to play (the conversation's "yes"): count-in, one song, then
+   * back to waiting. No-op (false) while a performance is already underway.
+   */
+  requestPerformance(): boolean {
+    if (!this.#awaiting) return false;
+    this.#awaiting = false;
+    this.#enterPhase("countin");
+    return true;
   }
 
   /** Name of the song the transport is currently cycling. */
@@ -163,6 +204,7 @@ export class BuskerTrio {
    * gap is actually silent (not just a muted count-in with ringing voices).
    */
   cueShow(leadInSeconds = 2) {
+    this.#awaiting = false;
     this.#audio.holdSilent(true);
     for (const musician of this.#musicians.values()) musician.cutAudio();
     const gap = Math.max(0, leadInSeconds);
@@ -178,6 +220,7 @@ export class BuskerTrio {
 
   /** Debug/probe helper: jump the transport to an arbitrary song beat. */
   seek(beat: number) {
+    this.#awaiting = false;
     this.#enterPhase("playing");
     this.#phaseTime = THREE.MathUtils.clamp(beat, 0, this.#song.beats) * SEC_PER_BEAT;
     const ctx = this.#audio.ctx;
@@ -217,7 +260,7 @@ export class BuskerTrio {
 
   snapshotState(): BuskerTrioState {
     return {
-      version: 2,
+      version: 3,
       placement: { x: this.group.position.x, z: this.group.position.z, yaw: this.group.rotation.y },
       visible: this.group.visible,
       songIndex: this.#songIdx,
@@ -225,7 +268,8 @@ export class BuskerTrio {
       phaseTime: this.#phaseTime,
       silenceRemaining: this.#silenceRemaining,
       restSeconds: this.#restSeconds,
-      elapsed: this.#elapsed
+      elapsed: this.#elapsed,
+      awaiting: this.#awaiting
     };
   }
 
@@ -254,12 +298,14 @@ export class BuskerTrio {
         this.#enterPhase("playing");
       }
     } else if (this.#phase === "playing" && this.#phaseTime >= this.#songSeconds) {
-      // Sample once at the end of each performance. Subtract the silent
-      // count-in so the complete gap stays inside the public 10–22s range.
+      // One song per request: settle back to waiting and ready the next tune
+      // in the songbook so the following ask hears something new. restSeconds
+      // still shapes the wind-down before a non-awaiting (legacy/cued) resume.
       this.#restSeconds = sampleSilenceSeconds() - COUNTIN_SECONDS;
+      this.#awaiting = true;
       this.#enterPhase("rest");
-    } else if (this.#phase === "rest" && this.#phaseTime >= this.#restSeconds) {
       this.#selectSong((this.#songIdx + 1) % SONGS.length);
+    } else if (this.#phase === "rest" && !this.#awaiting && this.#phaseTime >= this.#restSeconds) {
       this.#enterPhase("countin");
     } else if (this.#phase === "countin" && this.#phaseTime >= COUNTIN_SECONDS) {
       this.#enterPhase("playing");
@@ -292,9 +338,10 @@ export class BuskerTrio {
     }
 
     // ---- render gate + animation ----
+    if (this.#renderWarm === "cold" && dist < PRIME_RADIUS) this.#kickRenderWarm();
     if (this.group.visible) {
       if (dist > HIDE_RADIUS) this.group.visible = false;
-    } else if (dist < SHOW_RADIUS) {
+    } else if (dist < SHOW_RADIUS && this.#renderWarm === "ready") {
       this.group.visible = true;
     }
     if (this.group.visible && dist < ANIM_RADIUS) {
@@ -313,6 +360,20 @@ export class BuskerTrio {
     this.#audio.dispose();
     this.group.parent?.remove(this.group);
     this.group.clear();
+  }
+
+  /** One-shot detached compile so the SHOW_RADIUS flip never pays a
+   * synchronous WebGPU pipeline build. A failed warmup logs and unblocks the
+   * gate — the old flip-and-compile behavior is the safe fallback. */
+  #kickRenderWarm() {
+    const prepare = this.#prepareRender;
+    if (!prepare || this.#renderWarm !== "cold") return;
+    this.#renderWarm = "warming";
+    void prepare(this.group)
+      .catch((error) => console.warn("[buskers] render warmup failed:", error))
+      .finally(() => {
+        this.#renderWarm = "ready";
+      });
   }
 
   /** The root sits outside the scene's auto matrix pass (matrixWorldAutoUpdate
@@ -356,6 +417,7 @@ export class BuskerTrio {
       ? Math.max(0, state.restSeconds)
       : sampleSilenceSeconds() - COUNTIN_SECONDS;
     this.#elapsed = Math.max(0, state.elapsed);
+    this.#awaiting = state.awaiting ?? true;
     this.#schedIdx = { ukulele: 0, handpan: 0, flute: 0 };
     this.#audio.holdSilent(this.#silenceRemaining > 0);
     const ctx = this.#audio.ctx;
@@ -367,8 +429,11 @@ export type BuskerTrioApi = Pick<
   BuskerTrio,
   | "group"
   | "clock"
+  | "songName"
+  | "awaitingRequest"
   | "setPlacement"
   | "restartSong"
+  | "requestPerformance"
   | "cueShow"
   | "seek"
   | "captureStream"

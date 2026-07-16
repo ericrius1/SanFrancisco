@@ -28,6 +28,8 @@ export class SurfExperience {
   #flowDuration = 1;
   #launchSerial = 0;
   #tubeSerial = 0;
+  #cutbackSerial = 0;
+  #spitSerial = 0;
   #active = false;
   #audio: VehicleAudio;
 
@@ -44,9 +46,9 @@ export class SurfExperience {
       <div class="surf-score"><span data-surf-score>0</span><small>POINTS</small></div>
       <div class="surf-combo" data-surf-combo>x1</div>
       <div class="surf-status" data-surf-status>DROP IN</div>
-      <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>SPACE / A</b></div>
+      <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>X</b></div>
       <div class="surf-meter surf-launch-meter"><span>LIP</span><i data-surf-launch></i><b>AUTO</b></div>
-      <div class="surf-controls">A/D CARVE · W PUMP · S STALL / TUBE · SPACE POP · E EXIT</div>`;
+      <div class="surf-controls">A/D CARVE — WAVE SIDE CLIMBS · BEACH SIDE SPEEDS · 2-TAP = CUTBACK · SPACE JUMP · E EXIT</div>`;
     this.#scoreEl = this.root.querySelector("[data-surf-score]")!;
     this.#comboEl = this.root.querySelector("[data-surf-combo]")!;
     this.#statusEl = this.root.querySelector("[data-surf-status]")!;
@@ -72,9 +74,11 @@ export class SurfExperience {
       this.root.classList.toggle("on", active);
       if (active) {
         // Surf runtime/HUD creation may happen after the controller has already
-        // entered a barrel. Seed the serial on activation so joining or resetting
-        // never pays a stale tube reward.
+        // entered a barrel. Seed the serials on activation so joining or
+        // resetting never pays a stale reward.
         this.#tubeSerial = surf.tubeSerial;
+        this.#cutbackSerial = surf.cutbackSerial;
+        this.#spitSerial = surf.spitSerial;
         this.#status("ALREADY RIDING", "good");
         this.root.classList.add("pulse");
       } else {
@@ -109,9 +113,46 @@ export class SurfExperience {
     if (surf.landingSerial !== this.#landingSerial) {
       this.#landingSerial = surf.landingSerial;
       if (surf.landedAirTime > 0.24) {
-        const points = Math.round(180 + surf.landedAirTime * 420);
-        this.#award(points, surf.landedAirTime > 0.85 ? "BIG AIR" : "CLEAN LANDING", "landing");
+        // Named trick from the landed rotation: spins in 180s, W/S flips, grab.
+        const spinDeg = Math.round(Math.abs(surf.landedSpin) / Math.PI) * 180;
+        const flips = Math.round(Math.abs(surf.landedFlip) / (Math.PI * 2));
+        const grabbed = surf.landedGrab > 0.35;
+        const parts: string[] = [];
+        if (flips > 0) {
+          parts.push(
+            `${flips > 1 ? `${flips}x ` : ""}${surf.landedFlip < 0 ? "FRONTFLIP" : "BACKFLIP"}`
+          );
+        }
+        if (spinDeg >= 180) parts.push(`${spinDeg}`);
+        if (grabbed) parts.push("GRAB");
+        const label = parts.length
+          ? parts.join(" + ")
+          : surf.landedAirTime > 0.85
+            ? "BIG AIR"
+            : "CLEAN LANDING";
+        const points = Math.round(
+          (180 +
+            surf.landedAirTime * 420 +
+            spinDeg * 1.3 +
+            flips * 420 +
+            (grabbed ? 160 : 0)) *
+            (0.55 + surf.landingQuality * 0.45)
+        );
+        this.#award(points, label, "landing");
       }
+    }
+    if (surf.cutbackSerial !== this.#cutbackSerial) {
+      this.#cutbackSerial = surf.cutbackSerial;
+      this.#award(Math.round(140 + surf.speed * 6), "ROUNDHOUSE", "carve");
+    }
+    if (surf.spitSerial !== this.#spitSerial) {
+      this.#spitSerial = surf.spitSerial;
+      this.#award(Math.round(260 + surf.speed * 8), "SPIT OUT", "landing", "tube");
+    }
+    // Barrel depth is a live ticker, not just a one-shot bonus: the deeper you
+    // sit, the faster it pays.
+    if (surf.tubeState === "inside") {
+      this.#score += dt * (40 + surf.tubeDepth * 160) * this.#combo;
     }
     if (surf.flowSerial !== this.#flowSerial) {
       this.#flowSerial = surf.flowSerial;
@@ -156,23 +197,25 @@ export class SurfExperience {
     } else if (surf.tubeState === "inside") {
       this.#status(`BARREL  ${surf.tubeDwell.toFixed(1)}s`, "tube");
     } else if (surf.tubeState === "entering") {
-      this.#status("S — HOLD THE TUBE LINE", "tube");
+      this.#status("HOLD THE POCKET", "tube");
     } else if (surf.tubeState === "exiting") {
       this.#status("DRIVE THROUGH THE EXIT", "tube");
     } else if (surf.tubeCoverage > 0.18 && surf.tubeClearance > 0 && surf.tubeDepth < 0.5) {
-      this.#status("CARVE HIGH FOR THE TUBE", "tube");
+      this.#status("CARVE UP INTO THE TUBE", "tube");
     } else if (surf.tubeCoverage > 0.18 && surf.tubeClearance > 0) {
-      this.#status("S — STALL INTO THE TUBE", "tube");
+      this.#status("RIDE THE POCKET — BARREL", "tube");
+    } else if (surf.barrelAhead > 0.4) {
+      this.#status("BARREL AHEAD — HOLD THE POCKET", "tube");
     } else if (surf.flowActive) {
       this.#status(`FLOW  ${surf.riderMotionRate.toFixed(2)}×`, "flow");
     } else if (surf.airborne) {
       this.#status(`AIR ${surf.airTime.toFixed(1)}s`, "air");
     } else if (surf.flowReady) {
-      this.#status("SPACE / A — FLOW", "flow");
+      this.#status("X — FLOW READY", "flow");
     } else if (surf.autoLaunchCharge > 0.08) {
       this.#status(`LIP ENERGY ${Math.round(surf.autoLaunchCharge * 100)}%`, "air");
     } else if (surf.stalling) {
-      this.#status("STALLING — PUMP W", "");
+      this.#status("CARVE TOWARD THE BEACH FOR SPEED", "");
     } else if (surf.lip > 0.56) {
       this.#status("ON THE LIP", "air");
     } else if (surf.face > 0.34) {

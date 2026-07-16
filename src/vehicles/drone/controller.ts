@@ -16,10 +16,10 @@ const V = {
  * Camera drone: built for video shots — hover, swoop, flyby. The mouse owns
  * the chase camera (standard path, unlike fly); the drone eases its yaw in
  * behind the camera and moves along the camera's 3D aim, so "look down + W"
- * dives and "Space" kills velocity for a dead hover. Velocity chases a target
- * with a soft response, which gives the glidey ease-in/ease-out that makes
- * flybys read cinematic. Attitude (tilt into motion, quad-style) is code-owned;
- * the solver owns translation so collisions still land.
+ * dives and holding Space climbs straight up. Velocity chases a target with a
+ * soft response, which gives the glidey ease-in/ease-out that makes flybys
+ * read cinematic. Attitude (tilt into motion, quad-style) is code-owned; the
+ * solver owns translation so collisions still land.
  */
 export class DroneController implements ModeController {
   readonly spawnLift = 0.5;
@@ -69,18 +69,19 @@ export class DroneController implements ModeController {
     const strafeIn = input.axis("KeyA", "KeyD");
     const vertIn = input.axis("KeyQ", "KeyU"); // E is exit-to-walk (main.ts)
     const boost = input.down("ShiftLeft");
-    const brake = input.down("Space");
+    const climb = input.down("Space");
 
     // movement frame: full 3D camera aim forward, horizontal camera right
     const right = V.right.set(Math.cos(camYaw), 0, -Math.sin(camYaw));
     const target = V.tmp.copy(aim).multiplyScalar(fwdIn).addScaledVector(right, strafeIn * td.strafeFactor);
     if (target.lengthSq() > 1) target.normalize();
     target.multiplyScalar(boost ? td.boostMaxSpeed : td.maxSpeed);
-    target.y += vertIn * (boost ? td.boostVertSpeed : td.vertSpeed);
-    if (brake) target.set(0, 0, 0);
+    const climbSpeed = boost ? td.boostVertSpeed : td.vertSpeed;
+    const vert = THREE.MathUtils.clamp(vertIn + (climb ? 1 : 0), -1, 1);
+    target.y += vert * climbSpeed;
 
-    // ease velocity toward the target — low response = floaty glide, brake stops hard
-    const k = 1 - Math.exp(-dt * (brake ? td.brakeResponse : td.response));
+    // ease velocity toward the target — low response = floaty glide
+    const k = 1 - Math.exp(-dt * td.response);
     V.tmp2.copy(ctx.velocity).lerp(target, k);
     w.setBodyVelocity(ctx.body, [V.tmp2.x, V.tmp2.y, V.tmp2.z], [0, 0, 0]);
 
@@ -90,7 +91,7 @@ export class DroneController implements ModeController {
     this.#yaw += dYaw * Math.min(1, dt * td.yawFollow);
 
     // quad-style tilt into the local velocity (nose down when surging forward,
-    // bank into a strafe); Space levels out as the velocity dies
+    // bank into a strafe)
     const yaw = this.#yaw;
     const localFwd = -V.tmp2.x * Math.sin(yaw) - V.tmp2.z * Math.cos(yaw); // speed along facing
     const localLat = V.tmp2.x * Math.cos(yaw) - V.tmp2.z * Math.sin(yaw); // speed to the right

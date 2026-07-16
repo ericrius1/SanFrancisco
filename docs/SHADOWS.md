@@ -94,3 +94,19 @@ Three's NodeFrame when driving the renderer outside RAF.
 separate `material.receivedShadowNode` without auditing Three's child ShadowNode
 behavior can apply that material factor once per projection; treat such a change
 as an architecture change and re-run the temporal and visual probes.
+
+## TSL branch rule (load-bearing)
+
+WGSL materializes each TSL node once, inside the *first* branch that references
+it. A node referenced from a second `If`/`ElseIf`/`Else` arm reads that arm's
+zero-initialized private var instead of re-evaluating. This silently zeroed the
+far factor beyond the local feather (a player-centric dark ring with a sharp
+inner edge at the feather radius, fading out toward the far projection edge)
+while every input — maps, matrices, bindings — measured healthy. Rules inside
+`ClipmapShadowNode.setup` (and any node shared across materials):
+
+- A domain sample or shared atlas sample may be referenced by at most one
+  branch arm. To keep a sampling skip, gate the sample into a pre-declared
+  neutral `toVar()` in its own single-purpose `If`, then compose branch-free.
+- Never re-reference a sampled node from a second arm "because the weights
+  differ" — express weight differences as arithmetic over the hoisted var.

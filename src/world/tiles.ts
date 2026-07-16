@@ -943,7 +943,7 @@ export class TileStreamer {
   /**
    * Hand a small oriented footprint from the GPU clipmap to authored
    * geometry. IDs make ownership explicit and let the feature undo its claim on
-   * disposal or failed creation. A hard two-slot cap bounds terrain shader cost.
+   * disposal or failed creation. A hard three-slot cap bounds terrain shader cost.
    */
   setTerrainCutout(id: string, cutout: TerrainCutoutSpec): void {
     if (!id) throw new Error("terrain cutout id must be non-empty");

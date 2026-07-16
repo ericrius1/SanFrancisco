@@ -11,7 +11,9 @@
 // facade boundary; box3d's internal {v,s} form stays inside), the 1/60 fixed
 // step and the ragdoll bone layout are all kept identical to the old wrapper.
 
-import { tracer } from "./hitchTracer";
+// .ts extension so the Node RL trainer (node --experimental-strip-types rl/train.ts)
+// can import this wrapper too — train-time physics == run-time physics.
+import { tracer } from "./hitchTracer.ts";
 import type {
   Box3DModule,
   b3BodyId,

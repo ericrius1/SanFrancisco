@@ -1,12 +1,15 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
+import { registerAmbientLightAnchor, type LightAnchorSpec } from "../../player/lightPool";
 import { BUSKER_FIREFLY_TUNING } from "./tuning";
 
 /**
  * A small firefly swarm for the trio. Visible insects drift in a gentle 3D
- * volume around the instruments; one shadowless local light provides the
- * face/instrument fill. Keeping the light count fixed is important in
- * WebGPU: changing it at runtime invalidates every lit pipeline.
+ * volume around the instruments; the face/instrument fill comes from the
+ * shared scene light pool via an ambient anchor — the swarm must never own a
+ * PointLight of its own. This subtree flips visible with proximity, and a
+ * light entering/leaving the visible set invalidates every lit pipeline
+ * (measured: a 7-second full stop flying over the summit at night).
  */
 
 export { BUSKER_FIREFLY_TUNING } from "./tuning";
@@ -78,7 +81,9 @@ export class BuskerFireflies {
   #texture = makeGlowTexture();
   #sprites: THREE.Sprite[] = [];
   #materials: THREE.SpriteMaterial[] = [];
-  #light: THREE.PointLight;
+  #fillSpec: LightAnchorSpec = { color: 0xe8f06a, intensity: 0, distance: LIGHT_DISTANCE };
+  #fillAnchor = new THREE.Object3D();
+  #unregisterFill: () => void;
   #elapsed = 0;
 
   constructor() {
@@ -106,12 +111,14 @@ export class BuskerFireflies {
     }
 
     // One warm, shadowless fill — follows the swarm with a fixed key offset
-    // so it stays in front of the faces rather than inside the insects.
-    this.#light = new THREE.PointLight(0xe8f06a, 0, LIGHT_DISTANCE, 2);
-    this.#light.name = "busker-firefly-fill";
-    this.#light.castShadow = false;
-    this.#light.position.set(LIGHT_OFFSET.x, 1.9 + LIGHT_OFFSET.y, -1.55 + LIGHT_OFFSET.z);
-    this.group.add(this.#light);
+    // so it stays in front of the faces rather than inside the insects. The
+    // actual PointLight lives in the fixed scene pool; this anchor only tells
+    // it where to sit and how bright to burn (0 = no pool slot consumed).
+    this.#fillAnchor.name = "busker-firefly-fill";
+    this.#fillAnchor.userData.lightSpec = this.#fillSpec;
+    this.#fillAnchor.position.set(LIGHT_OFFSET.x, 1.9 + LIGHT_OFFSET.y, -1.55 + LIGHT_OFFSET.z);
+    this.group.add(this.#fillAnchor);
+    this.#unregisterFill = registerAmbientLightAnchor(this.#fillAnchor);
   }
 
   update(dt: number, cameraDistance: number, sunElevation: number) {
@@ -126,8 +133,8 @@ export class BuskerFireflies {
 
     this.group.visible = twilight > 0.001;
     if (!this.group.visible) {
-      // daylight / out of range: nothing renders, skip the swarm math
-      if (this.#light.intensity !== 0) this.#light.intensity = 0;
+      // daylight / out of range: nothing renders, release the pool light
+      this.#fillSpec.intensity = 0;
       return;
     }
 
@@ -163,7 +170,7 @@ export class BuskerFireflies {
 
     const n = LAYOUT.length;
     const lightGain = twilight * BUSKER_FIREFLY_TUNING.values.brightness;
-    this.#light.position.set(
+    this.#fillAnchor.position.set(
       cx / n + LIGHT_OFFSET.x,
       cy / n + LIGHT_OFFSET.y,
       cz / n + LIGHT_OFFSET.z
@@ -173,10 +180,12 @@ export class BuskerFireflies {
       1 +
       Math.sin(this.#elapsed * 1.7) * pulseDepth * 1.35 +
       Math.sin(this.#elapsed * 3.9 + 0.8) * pulseDepth * 0.55;
-    this.#light.intensity = LIGHT_INTENSITY * lightGain * lightFlicker;
+    this.#fillSpec.intensity = Math.max(0, LIGHT_INTENSITY * lightGain * lightFlicker);
   }
 
   dispose() {
+    this.#unregisterFill();
+    this.#fillSpec.intensity = 0;
     this.group.parent?.remove(this.group);
     for (const material of this.#materials) material.dispose();
     this.#materials.length = 0;

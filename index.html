@@ -209,56 +209,90 @@
         gap: 8px;
         max-width: 420px;
       }
+      /* .help is just a positioning context anchored (via .br-stack) to the
+         bottom-right. It shrinks to the handle: the fold-out panel is absolutely
+         positioned so it never enlarges the handle's footprint. */
       #hud .help {
+        position: relative;
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-end;
         max-width: 420px;
         font-size: 12px;
+        pointer-events: none;
+      }
+      /* The always-visible handle pill. Pinned bottom-right; never moves when the
+         panel opens/closes — the panel folds out above it. */
+      #hud .help .help-toggle {
+        pointer-events: auto;
+        cursor: pointer;
+        position: relative;
+        z-index: 1;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 14px;
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-md);
+        background: var(--surface);
+        box-shadow: var(--shadow-sm), var(--edge-hi);
+        color: var(--text);
+        font: 700 11px var(--font);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
         opacity: 0.92;
+        transition:
+          opacity 0.15s ease,
+          color 0.15s ease,
+          border-color 0.15s ease;
+      }
+      #hud .help .help-toggle:hover {
+        opacity: 1;
+        color: var(--accent-strong);
+        border-color: rgba(111, 215, 196, 0.5);
+      }
+      #hud .help .help-toggle-chevron {
+        font-size: 10px;
+        opacity: 0.75;
+        transition: transform 0.2s ease;
+      }
+      /* Fold-out panel, floating just above the handle and right-aligned to it.
+         Opens/closes with a ~600ms fold: grid-rows 1fr<->0fr animates to the
+         content's natural height (no magic numbers), plus opacity + a small
+         upward slide out of the handle. */
+      #hud .help .help-body-wrap {
+        pointer-events: auto;
+        position: absolute;
+        right: 0;
+        bottom: calc(100% + 8px);
+        display: grid;
+        grid-template-rows: 1fr;
+        /* size to content, not to the handle-width containing block (.help) */
+        width: max-content;
+        max-width: min(420px, calc(100vw - 40px));
+        opacity: 1;
+        transform-origin: bottom right;
+        transition:
+          grid-template-rows 600ms cubic-bezier(0.22, 1, 0.36, 1),
+          opacity 360ms ease,
+          transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      #hud .help .help-body-wrap > .help-body {
+        /* the grid child must clip + allow 0 height for the fold to work */
+        overflow: hidden;
+        min-height: 0;
+        max-width: 420px;
         padding: 10px 12px 12px;
         border-radius: var(--r-md);
         background: var(--surface);
         border: 1px solid var(--hairline);
         box-shadow: var(--shadow-sm), var(--edge-hi);
-        /* bottom-anchored panel grows upward — cap it so short viewports scroll
-           inside the panel instead of pushing rows off the top of the screen */
-        max-height: calc(100dvh - 58px);
-        overflow-y: auto;
-        overscroll-behavior: contain;
-        pointer-events: auto;
       }
-      #hud .help .help-toggle {
-        pointer-events: auto;
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        margin: 0 0 8px;
-        padding: 0;
-        border: 0;
-        background: transparent;
-        color: var(--text);
-        font: 700 11px var(--font);
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        opacity: 0.78;
-      }
-      #hud .help .help-toggle:hover {
-        opacity: 1;
-        color: var(--accent-strong);
-      }
-      #hud .help .help-toggle-chevron {
-        font-size: 10px;
-        opacity: 0.75;
-      }
-      #hud .help.collapsed {
-        padding: 8px 12px;
-        max-height: none;
-        overflow: visible;
-      }
-      #hud .help.collapsed .help-toggle {
-        margin-bottom: 0;
-      }
-      #hud .help.collapsed .help-body {
-        display: none;
+      #hud .help.collapsed .help-body-wrap {
+        grid-template-rows: 0fr;
+        opacity: 0;
+        transform: translateY(8px) scale(0.985);
+        pointer-events: none;
       }
       /* movement grid + global shortcuts, side by side */
       #hud .help .cols {
@@ -389,7 +423,7 @@
       #hud .panel-hidden {
         display: none !important;
       }
-      #hud .help.swap {
+      #hud .help.swap .help-body-wrap {
         animation: hudswap 0.28s ease;
       }
       @keyframes hudswap {
@@ -3119,6 +3153,10 @@
         font-size: 15px;
         line-height: 1;
       }
+      #hud .audio .mic-btn .ic {
+        position: relative;
+        display: inline-block;
+      }
       #hud .audio .mixer-btn .chev {
         color: rgba(188, 217, 230, 0.56);
         font-size: 9px;
@@ -3133,6 +3171,30 @@
       #hud .audio .mic-btn.on {
         border-color: var(--accent);
         color: var(--accent-strong);
+      }
+      /* Mic-off: dim chrome + slash over the icon so it never reads as live. */
+      #hud .audio .mic-btn.off {
+        border-color: rgba(190, 225, 240, 0.18);
+        color: rgba(188, 217, 230, 0.55);
+        opacity: 0.78;
+      }
+      #hud .audio .mic-btn.off:hover {
+        border-color: rgba(190, 225, 240, 0.4);
+        color: rgba(188, 217, 230, 0.78);
+        opacity: 1;
+      }
+      #hud .audio .mic-btn.off .ic::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: -2px;
+        width: 2px;
+        height: calc(100% + 4px);
+        background: #e8a0a8;
+        border-radius: 1px;
+        transform: translateX(-50%) rotate(-42deg);
+        box-shadow: 0 0 0 1px rgba(18, 40, 56, 0.85);
+        pointer-events: none;
       }
       #hud .audio input[type="range"] {
         -webkit-appearance: none;
@@ -3373,7 +3435,10 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        background: rgba(4, 10, 16, 0.55);
+        /* Dim the live world harder so the parchment reads as the focus;
+           keep a little scene visible in the side ribbon (no backdrop-filter —
+           that flickers over WebGPU). */
+        background: rgba(4, 10, 16, 0.78);
         font-family: var(--font);
       }
       .bigmap-inner {
@@ -3728,129 +3793,6 @@
       body.reading #hud .bts-overlay {
         pointer-events: auto;
       }
-      #loading .map-folio {
-        position: absolute;
-        inset:
-          max(30px, env(safe-area-inset-top))
-          max(34px, env(safe-area-inset-right))
-          max(30px, env(safe-area-inset-bottom))
-          max(34px, env(safe-area-inset-left));
-        min-width: 0;
-        pointer-events: none;
-        color: rgba(55, 69, 59, 0.82);
-        font-weight: 650;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-      }
-      #loading .folio-kicker,
-      #loading .folio-number {
-        position: absolute;
-        top: 2px;
-        font-size: 10px;
-        line-height: 1.35;
-        text-shadow: 0 1px rgba(236, 225, 194, 0.62);
-      }
-      #loading .folio-kicker {
-        left: 0;
-      }
-      #loading .folio-number {
-        right: 0;
-      }
-      #loading .ocean-label {
-        position: absolute;
-        left: 50%;
-        top: 11%;
-        writing-mode: vertical-rl;
-        transform: rotate(180deg);
-        font-style: italic;
-        font-size: clamp(12px, 1.1vw, 16px);
-        font-weight: 500;
-        letter-spacing: 0.3em;
-        opacity: 0.5;
-      }
-      #loading .map-caption {
-        position: absolute;
-        left: 0;
-        bottom: 2px;
-        max-width: 310px;
-        font-size: 9px;
-        line-height: 1.55;
-        letter-spacing: 0.1em;
-      }
-      #loading .compass {
-        position: absolute;
-        left: 52%;
-        top: 58%;
-        width: 70px;
-        height: 70px;
-        display: grid;
-        place-items: center;
-        border: 1px solid rgba(64, 75, 62, 0.46);
-        border-radius: 50%;
-        font-size: 9px;
-        letter-spacing: 0.06em;
-        opacity: 0.66;
-      }
-      #loading .compass::before,
-      #loading .compass::after {
-        content: "";
-        position: absolute;
-        background: rgba(64, 75, 62, 0.52);
-      }
-      #loading .compass::before {
-        width: 1px;
-        height: 88px;
-      }
-      #loading .compass::after {
-        width: 88px;
-        height: 1px;
-      }
-      #loading .compass span {
-        transform: translateY(-28px);
-      }
-      /* Ink annotations on the revealed coast — the folio pointing out its
-         landmarks now that the cartouche has stepped off them. */
-      #loading .map-pin {
-        position: absolute;
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        color: rgba(66, 55, 41, 0.82);
-        font-style: italic;
-        font-size: clamp(11px, 1vw, 15px);
-        font-weight: 600;
-        letter-spacing: 0.13em;
-        text-transform: uppercase;
-        text-shadow: 0 1px rgba(240, 228, 196, 0.72);
-        white-space: nowrap;
-        animation: pin-in 0.9s var(--ease) 0.5s both;
-      }
-      #loading .map-pin::before {
-        content: "";
-        flex: none;
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        border: 1px solid rgba(122, 63, 44, 0.9);
-        background: rgba(154, 84, 52, 0.42);
-        box-shadow: 0 0 0 3px rgba(154, 84, 52, 0.12);
-      }
-      #loading .pin-gate {
-        left: 60%;
-        top: 15%;
-        color: rgba(120, 61, 43, 0.92);
-      }
-      #loading .pin-presidio {
-        left: 72%;
-        top: 44%;
-      }
-      #loading .pin-landsend {
-        left: 52.5%;
-        top: 34%;
-      }
-      @keyframes pin-in {
-        from { opacity: 0; transform: translateY(-4px); }
-      }
       #loading .start-card {
         position: relative;
         width: min(100%, 500px);
@@ -4174,20 +4116,6 @@
             linear-gradient(rgba(76, 65, 46, 0.06), rgba(76, 65, 46, 0.24)),
             repeating-linear-gradient(0deg, rgba(69, 62, 44, 0.025) 0 1px, transparent 1px 4px);
         }
-        #loading .map-folio {
-          position: absolute;
-          inset: max(22px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(22px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
-        }
-        #loading .folio-number,
-        #loading .ocean-label,
-        #loading .compass,
-        #loading .map-pin {
-          display: none;
-        }
-        #loading .map-caption {
-          max-width: 220px;
-          font-size: 7.5px;
-        }
         #loading .start-card {
           width: min(100%, 440px);
           justify-self: center;
@@ -4232,10 +4160,6 @@
             max(16px, env(safe-area-inset-bottom))
             max(28px, env(safe-area-inset-left));
           gap: 20px;
-        }
-        #loading .folio-number,
-        #loading .compass {
-          display: none;
         }
         #loading .start-card {
           width: min(100%, 430px);
@@ -4371,15 +4295,6 @@
       </button>
     </div>
     <div id="loading">
-      <div class="map-folio" aria-hidden="true">
-        <span class="folio-kicker">United States Coast Survey<br />San Francisco Peninsula</span>
-        <span class="folio-number">Plate I · 37° 46′ N</span>
-        <span class="ocean-label">Pacific Ocean</span>
-        <span class="map-pin pin-gate">Golden Gate</span>
-        <span class="map-pin pin-presidio">The Presidio</span>
-        <span class="map-pin pin-landsend">Lands End</span>
-        <span class="map-caption">Drawn from field notes, local stories, weather, light, and the wandering of every visitor.</span>
-      </div>
       <main class="start-card">
         <div class="plate-number">City edition · 1776</div>
         <div class="title-eyebrow">A living atlas of</div>

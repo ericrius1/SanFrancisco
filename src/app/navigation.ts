@@ -5,6 +5,7 @@ import type { HUD } from "../ui/hud";
 import type { TileStreamer } from "../world/tiles";
 import type { WorldMap } from "../world/heightmap";
 import { findOpenSpawn } from "../world/spawn";
+import { isOceanBeachSurfApproach } from "../vehicles/surf/entry";
 import type { EmbodimentController } from "./player/embodimentController";
 import type { WorldArrivalCoordinator } from "./worldArrival";
 
@@ -114,8 +115,18 @@ export class NavigationController {
   switchMode(mode: PlayerMode): void {
     if (mode === this.#player.mode || this.#arrival.active) return;
     const relocation = this.#embodiments.modeSwitchRelocation(mode);
+    // Surf from its own beach is a local hop onto an activity-owned analytic
+    // surface: the break is visible from the shack, the controller never
+    // consults collider tiles, and entering shrinks the streamed radius —
+    // which can strand the covered arrival's collision epoch and leave the
+    // rider pinned forever (the "surf freezes the game" bug). Switch directly;
+    // the surf camera and placeOnWave handle the cut.
+    const localSurfHop =
+      mode === "surf" &&
+      isOceanBeachSurfApproach(this.#player.position.x, this.#player.position.z);
     if (
       relocation &&
+      !localSurfHop &&
       Math.hypot(relocation.x - this.#player.position.x, relocation.z - this.#player.position.z) >=
         COVERED_MODE_RELOCATION_DISTANCE
     ) {

@@ -1,17 +1,9 @@
-"""Rebuild Sutro Baths circulation as player-first authored Blender geometry.
+"""Author the final player-first Sutro Baths entrances in Blender.
 
-The original restoration had one 43-degree stair, closed decorative doors, and
-an exterior terrain-ownership footprint that cut the road hillside down to sea
-level beneath a 31 m portal. This pass keeps the hall, pools, and roof intact,
-but gives the landmark three legible approaches:
-
-* two open road-facing bays feeding a four-flight grand switchback;
-* a broad ocean-window gate and shallow beach stair;
-* the existing deck circulation between both entries and the seven pools.
-
-Every stair collider is a solid column down to the authored ground plane. A
-fast capsule therefore meets a riser/solid volume instead of tunnelling through
-a thin floating tread. The script is idempotent and saves the .blend in place.
+The road pavilion, descent, ocean gate, terrain handoffs, and their colliders
+are one authored system. Each approach owns enough terrain to prevent the live
+clipmap from swallowing its walking surface, while retaining a local collision
+height directly beneath the authored floor. The script is idempotent.
 """
 
 from __future__ import annotations
@@ -160,21 +152,31 @@ def add_collider(collection, name, x, z, top, size_x, size_z, bottom):
     return obj
 
 
-def add_terrain_ownership(collection, name, footprint_id, x, z, half_x, half_z, feather):
+def add_terrain_ownership(collection, name, footprint_id, x, z, half_x, half_z, feather, ground_y=GROUND_Y):
     obj = bpy.data.objects.new(name, None)
     collection.objects.link(obj)
     obj.empty_display_type = "CUBE"
     obj.empty_display_size = 1.0
-    obj.location = local_to_blender(x, z, GROUND_Y)
+    obj.location = local_to_blender(x, z, ground_y)
     obj.rotation_euler[2] = YAW
     obj.scale = (half_x, half_z, 0.12)
     obj["sf_region"] = SITE
     obj["sf_role"] = "terrain_ownership"
     obj["sf_footprint_id"] = footprint_id
-    obj["sf_ground_y"] = GROUND_Y
+    obj["sf_ground_y"] = ground_y
     obj["sf_feather"] = feather
     obj["sf_terrain_mode"] = "flat-ownership"
     return obj
+
+
+def add_arch(collection, parent, name, center_x, z, spring_y, radius_x, rise, thickness, material):
+    """Segmented arch in an x/y plane, used for readable structural support."""
+    points = []
+    for index in range(13):
+        angle = math.pi * index / 12
+        points.append((center_x + math.cos(angle) * radius_x, z, spring_y + math.sin(angle) * rise))
+    for index in range(len(points) - 1):
+        add_beam(collection, parent, f"{name}_{index:02d}", points[index], points[index + 1], thickness, material)
 
 
 def add_landing(collection, colliders, parent, name, x, z, top, sx, sz, material, bottom=GROUND_Y):
@@ -268,7 +270,7 @@ def main():
 
     materials = {name: bpy.data.materials.get(name) for name in (
         "sutro_terracotta", "sutro_iron_dark", "sutro_iron", "sutro_brass",
-        "sutro_lamp", "sutro_plaster", "sutro_plaster_shade",
+        "sutro_lamp", "sutro_plaster", "sutro_plaster_shade", "sutro_window_glass",
     )}
     missing = [name for name, value in materials.items() if value is None]
     if missing:
@@ -280,6 +282,7 @@ def main():
         "sutro_baths_entry_stair_handrails",
         "sutro_baths_classical_portal_doors",
         "sutro_baths_player_entrances_v2",
+        "sutro_baths_player_entrances_v3",
     ):
         delete_hierarchy(bpy.data.objects.get(root_name))
     # This was a solid wall directly behind the decorative portal columns.
@@ -301,11 +304,12 @@ def main():
         if tail[:3].isdigit() and (int(tail[:3]) >= 36 or int(tail[:3]) == 19):
             bpy.data.objects.remove(obj, do_unlink=True)
 
-    # The exterior footprint was the cause of the floating portal: it forced
-    # the natural road hill down to 2.07 m beneath a 31 m entrance.
+    # Each approach gets a terrain aperture and its own local ground authority.
     delete_named("TERRAIN_entry-stairwell")
     delete_named("TERRAIN_beach-entry")
-    add_terrain_ownership(terrain, "TERRAIN_beach-entry", "beach-entry", -48.0, 33.29, 9.5, 3.45, 0.35)
+    delete_named("TERRAIN_road-entry")
+    add_terrain_ownership(terrain, "TERRAIN_beach-entry", "beach-entry", -50.2, 33.29, 13.8, 5.7, 0.16, 0.35)
+    add_terrain_ownership(terrain, "TERRAIN_road-entry", "road-entry", 48.8, 63.1, 11.0, 6.4, 0.16, 30.0)
     bounds = authoring.objects.get("REGION_BOUNDS")
     if bounds is not None:
         bounds.scale.x = 55.5
@@ -315,8 +319,8 @@ def main():
         arrival.location = local_to_blender(45.6, 63.1, 31.26)
         arrival.rotation_euler[2] = 1.942
 
-    root = visual_empty(visual, "sutro_baths_player_entrances_v2")
-    root["sf_design"] = "open-road-switchback-and-beach-gate"
+    root = visual_empty(visual, "sutro_baths_player_entrances_v3")
+    root["sf_design"] = "terrain-clear-road-pavilion-switchback-and-ocean-gate"
 
     terracotta = materials["sutro_terracotta"]
     iron_dark = materials["sutro_iron_dark"]
@@ -325,13 +329,35 @@ def main():
     lamp = materials["sutro_lamp"]
     plaster = materials["sutro_plaster"]
     plaster_shade = materials["sutro_plaster_shade"]
+    window_glass = materials["sutro_window_glass"]
 
     # ROAD PAVILION ---------------------------------------------------------
-    road = visual_empty(visual, "sutro_baths_road_pavilion_v2", root)
-    # A promenade on natural terrain joins both open road bays to the high
-    # switchback landing. The boxes meet at edges rather than coplanar overlap.
-    add_landing(visual, colliders, road, "road_promenade", 44.25, 63.1, 31.08, 10.5, 17.0, plaster_shade, 4.8)
-    add_landing(visual, colliders, road, "road_turnaround", 35.5, 70.2, 31.08, 7.0, 3.2, terracotta, GROUND_Y)
+    road = visual_empty(visual, "sutro_baths_road_pavilion_v3", root)
+    # One crisp plaza passes through the historic columns and physically meets
+    # the roof hall. The prior natural-terrain overlap was the grey wedge that
+    # hid the player and made the facade appear detached.
+    add_landing(visual, colliders, road, "road_promenade", 46.65, 63.1, 31.18, 15.9, 12.4, plaster, 30.0)
+    add_landing(visual, colliders, road, "road_turnaround", 35.5, 69.5, 31.18, 7.0, 4.6, terracotta, GROUND_Y)
+
+    # Shallow ceremonial steps meet the surveyed road grade at the outer edge.
+    approach_tops = (31.44, 31.70, 31.96, 32.22, 32.48)
+    for index, top in enumerate(approach_tops):
+        x = 55.05 + index
+        add_box(visual, road, f"road_approach_step_{index}", x, 63.1, top, 1.04, 9.4, max(0.32, top - 30.0), terracotta)
+        add_collider(colliders, f"sutro_collider_120_road_approach_{index}", x, 63.1, top, 1.04, 9.4, 30.0)
+
+    # A finished arcade and balustrade make the platform a deliberate cliff
+    # pavilion rather than a thin slab floating above the bath hall.
+    for side_index, z in enumerate((56.9, 69.3)):
+        add_box(visual, road, f"road_arcade_sill_{side_index}", 46.65, z, 25.4, 15.9, 0.5, 1.0, plaster_shade)
+        for bay_index, center_x in enumerate((41.2, 46.65, 52.1)):
+            add_box(visual, road, f"road_arcade_pier_{side_index}_{bay_index}", center_x - 2.25, z, 30.86, 0.62, 0.62, 6.5, plaster)
+            add_arch(visual, road, f"road_arcade_{side_index}_{bay_index}", center_x, z, 28.0, 2.25, 2.15, 0.30, plaster)
+        add_box(visual, road, f"road_arcade_end_{side_index}", 54.35, z, 30.86, 0.62, 0.62, 6.5, plaster)
+        add_beam(visual, road, f"road_balustrade_top_{side_index}", (38.9, z, 32.35), (54.6, z, 32.35), 0.16, iron_dark)
+        for post_index in range(12):
+            x = 39.1 + post_index * 1.38
+            add_beam(visual, road, f"road_balustrade_post_{side_index}_{post_index}", (x, z, 31.18), (x, z, 32.36), 0.10, iron_dark)
 
     # The retained 1890s pavilion has three bays. Two wrought-iron leaves are
     # visibly held open against the outside walls; there is no hidden blocker.
@@ -349,8 +375,17 @@ def main():
     for z in (56.6, 69.6):
         add_lantern(visual, road, f"road_lantern_{int(z)}", 47.85, z, 32.0, iron_dark, lamp)
 
+    # Glazed vestibule ties the classical portal into the barrel roof. Its iron
+    # frames align with the retained hall ribs so both masses read as one.
+    add_box(visual, road, "road_vestibule_roof_glass", 42.15, 63.1, 38.92, 7.4, 12.0, 0.16, window_glass)
+    for z in (57.1, 60.1, 63.1, 66.1, 69.1):
+        add_beam(visual, road, f"road_vestibule_roof_rib_{int(z * 10)}", (38.45, z, 38.98), (45.85, z, 38.98), 0.18, iron)
+    for z in (57.1, 69.1):
+        for x in (38.65, 42.15, 45.65):
+            add_beam(visual, road, f"road_vestibule_post_{int(z * 10)}_{int(x * 10)}", (x, z, 31.18), (x, z, 38.98), 0.18, iron)
+
     # GRAND SWITCHBACK -----------------------------------------------------
-    switchback = visual_empty(visual, "sutro_baths_grand_switchback_v2", root)
+    switchback = visual_empty(visual, "sutro_baths_grand_switchback_v3", root)
     for index, (x, high_z, low_z) in enumerate(MAIN_FLIGHTS):
         add_stair_flight(
             visual, colliders, switchback, f"main_flight_{index + 1}",
@@ -375,7 +410,7 @@ def main():
         add_lantern(visual, switchback, f"landing_lantern_{index}", x, z, y + 0.25, iron_dark, lamp)
 
     # BEACH / OCEAN WINDOW GATE -------------------------------------------
-    beach = visual_empty(visual, "sutro_baths_beach_gate_v2", root)
+    beach = visual_empty(visual, "sutro_baths_beach_gate_v3", root)
     # Rebuild the removed low mullion as two non-overlapping segments.
     add_beam(visual, beach, "ocean_low_mullion_north", (-38.35, -76.1, 6.82), (-38.35, 28.54, 6.82), 0.24, iron)
     add_beam(visual, beach, "ocean_low_mullion_south", (-38.35, 38.05, 6.82), (-38.35, 76.1, 6.82), 0.24, iron)
@@ -391,7 +426,7 @@ def main():
         arch_points.append((-38.28, 33.29 + math.cos(angle) * 4.57, spring_y + math.sin(angle) * 3.35))
     for index in range(len(arch_points) - 1):
         add_beam(visual, beach, f"beach_portal_arch_{index:02d}", arch_points[index], arch_points[index + 1], 0.34, iron_dark)
-    add_box(visual, beach, "beach_gate_plaque", -38.48, 33.29, 13.55, 0.28, 5.8, 0.9, terracotta)
+    add_box(visual, beach, "beach_gate_plaque", -38.48, 33.29, 13.55, 0.28, 6.8, 1.0, terracotta)
     for z in (29.0, 37.58):
         add_lantern(visual, beach, f"beach_lantern_{int(z * 10)}", -38.65, z, 9.5, iron_dark, lamp)
 
@@ -402,14 +437,15 @@ def main():
     # Follow the surveyed beach grade instead of burying a straight stair under
     # the live hillside. The outer tread is a comfortable step above the sand;
     # the inner tread clears the cross-slope before a short step onto the deck.
-    beach_low_x = -57.0
+    beach_low_x = -62.0
     beach_high_x = -39.0
     beach_z = 33.29
-    # Maintain at least ~20 cm of visible masonry above the highest live terrain
-    # sample across the full 6.1 m stair width, not only its centerline.
-    beach_low_y = 2.33
+    # The widened aperture and solid cheek walls keep the complete stair visible
+    # from both head-on and oblique beach approaches.
+    beach_low_y = 1.75
     beach_high_y = 5.83
-    beach_steps = 23
+    beach_steps = 29
+    beach_width = 8.2
     for index in range(beach_steps):
         t = index / (beach_steps - 1)
         x = beach_low_x + (beach_high_x - beach_low_x) * t
@@ -417,7 +453,7 @@ def main():
         tread = abs(beach_high_x - beach_low_x) / (beach_steps - 1)
         add_box(
             visual, beach, f"beach_stair_tread_{index:02d}",
-            x, beach_z, top, tread, 6.1, max(0.12, top - GROUND_Y), terracotta,
+            x, beach_z, top, tread, beach_width, max(0.12, top - 0.35), terracotta,
         )
         # Stepped cheek walls make the beach cut feel deliberately excavated
         # and conceal the feathered terrain edge from a low player camera.
@@ -425,13 +461,14 @@ def main():
             wall_top = top + 0.68
             add_box(
                 visual, beach, f"beach_cheek_{side_index}_{index:02d}",
-                x, beach_z + side * 3.04, wall_top,
-                tread, 0.34, max(0.7, wall_top - GROUND_Y), plaster_shade,
+                x, beach_z + side * (beach_width * 0.5), wall_top,
+                tread, 0.42, max(0.7, wall_top - 0.35), plaster_shade,
             )
-        add_collider(colliders, f"sutro_collider_200_beach_step_{index:02d}", x, beach_z, top, tread + 0.04, 6.1, 0.35)
-    add_landing(visual, colliders, beach, "beach_deck_landing", -36.25, beach_z, 5.66, 4.7, 7.0, terracotta, 0.35)
+        add_collider(colliders, f"sutro_collider_200_beach_step_{index:02d}", x, beach_z, top, tread + 0.04, beach_width, 0.35)
+    add_landing(visual, colliders, beach, "beach_forecourt", -63.25, beach_z, beach_low_y, 2.5, 9.0, terracotta, 0.35)
+    add_landing(visual, colliders, beach, "beach_deck_landing", -36.25, beach_z, 5.66, 4.7, 9.0, terracotta, 0.35)
     for side_index, side in enumerate((-1, 1)):
-        z = beach_z + side * 3.18
+        z = beach_z + side * (beach_width * 0.5 + 0.12)
         add_beam(visual, beach, f"beach_stair_rail_{side_index}", (beach_low_x, z, beach_low_y + 1.0), (beach_high_x, z, beach_high_y + 1.0), 0.13, iron_dark)
         for post_index in range(0, beach_steps, 4):
             t = post_index / (beach_steps - 1)
@@ -439,12 +476,20 @@ def main():
             top = beach_low_y + (beach_high_y - beach_low_y) * t
             add_beam(visual, beach, f"beach_post_{side_index}_{post_index:02d}", (x, z, top + 0.05), (x, z, top + 1.03), 0.1, iron_dark)
 
+    # A light canopy projects through the ocean wall and makes the entrance
+    # unmistakable from oblique beach views without blocking the roof rhythm.
+    add_box(visual, beach, "beach_entry_canopy_glass", -36.75, beach_z, 14.35, 3.0, 10.2, 0.14, window_glass)
+    for z in (28.5, 33.29, 38.08):
+        add_beam(visual, beach, f"beach_canopy_rib_{int(z * 10)}", (-38.25, z, 14.38), (-35.25, z, 14.38), 0.16, iron_dark)
+    for z in (28.5, 38.08):
+        add_beam(visual, beach, f"beach_canopy_brace_{int(z * 10)}", (-38.2, z, 9.4), (-35.4, z, 14.3), 0.16, iron_dark)
+
     # Split the original ocean wall collider around the 9 m portal.
     add_collider(colliders, "sutro_collider_019a_ocean_wall_north", -38.4, -23.78, 25.5, 0.7, 104.64, 5.62)
     add_collider(colliders, "sutro_collider_019b_ocean_wall_south", -38.4, 57.075, 25.5, 0.7, 38.05, 5.62)
 
-    bpy.context.scene["sf_sutro_entrance_revision"] = 2
-    bpy.context.scene["sf_sutro_entry_routes"] = "two-road-bays,grand-switchback,beach-gate"
+    bpy.context.scene["sf_sutro_entrance_revision"] = 3
+    bpy.context.scene["sf_sutro_entry_routes"] = "terrain-clear-road-pavilion,grand-switchback,ocean-gate"
     bpy.context.view_layer.update()
     bpy.ops.wm.save_as_mainfile(filepath=expected)
 

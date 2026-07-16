@@ -109,11 +109,15 @@ export class Water {
         // that far from the player)
         const rim = smoothstep(276, 200, positionLocal.xz.length());
         // Ocean Beach swell matches CPU waterHeight() so board rails, wake, and
-        // the near patch share one surface. The lazy high-res face mesh adds the
-        // crisp emerald wall on top without punching a hole in this sheet.
+        // the near patch share one surface. While the surf overlay is live its
+        // mid-swell sheet continues the sets past this patch at full height, so
+        // the swell must NOT rim-fade (a half-height crossfade ring read as a
+        // flat grey strip through every set); the fragment opacity feather
+        // (210→276 m) hands off to that sheet instead.
+        const surfRim = mix(rim, float(1), this.#uSurfing);
         const swell = swellBase(lx, lz, t)
           .add(swellChop(lx, lz, t).mul(chopZoneMask(lx, lz).mul(rim)))
-          .add(oceanBeachSwell(lx, lz, t).mul(rim));
+          .add(oceanBeachSwell(lx, lz, t).mul(surfRim));
         mat.positionNode = positionLocal.add(vec3(0, swell.mul(displace), 0));
       }
 
@@ -242,8 +246,19 @@ export class Water {
       const spark = smoothstep(0.78, 0.97, sparkNoise).mul(detail.mul(detail)).mul(foamTotal.oneMinus());
       const emeraldVein = smoothstep(0.82, 0.97, sparkNoise.mul(0.5).add(0.5))
         .mul(surfFaceTint.mul(surfFaceTint).mul(surfFaceTint));
+      // While the surf overlay is live, standing swell on this sheet must stay
+      // luminous water on its sun-shadowed side too — an unlit PBR backside
+      // rendered near-black against the bright bay ("dark hole behind the
+      // wave"). Build-time gated to the displaced sheet; scaled by uSurfing.
+      const surfWallGlow = displace > 0
+        ? vec3(0.02, 0.3, 0.18)
+            .mul(smoothstep(1.2, 6.0, surfField.height))
+            .mul(this.#uSurfing)
+            .mul(0.5 * LIGHT_SCALE)
+        : vec3(0);
       mat.emissiveNode = vec3(1.0, 0.95, 0.82).mul(spark.mul(0.035 * LIGHT_SCALE))
-        .add(vec3(0.03, 0.42, 0.2).mul(emeraldVein.mul(0.13 * LIGHT_SCALE)));
+        .add(vec3(0.03, 0.42, 0.2).mul(emeraldVein.mul(0.13 * LIGHT_SCALE)))
+        .add(surfWallGlow);
 
       // Ocean Beach gets an absorptive blue-green body. Brightness belongs to
       // the thin emerald wall and cool lip in the first-use surf overlay; a
@@ -261,17 +276,12 @@ export class Water {
       // (waterVisibility) and the land cutout (dry) — so no seams, no z-fight.
       const alpha = clamp(mix(0.82, 1.0, d2).add(foamTotal.mul(0.25)), 0, 1);
       const surfPresence = max(max(surfField.face, surfField.lip), surfField.white);
-      // The lazy high-resolution face follows the player in a 420 m down-line
-      // window with a 60 m feather. Match its central replacement mask here:
-      // the base near sheet disappears only under strong semantic surf water,
-      // while both layers overlap softly at the perimeter.
-      const surfFaceWindow = displace > 0
-        ? smoothstep(150, 210, positionLocal.z.abs()).oneMinus()
-        : float(0);
+      // The lazy high-resolution face follows the player in a 1080 m down-line
+      // window — wider than this whole 560 m near patch — so whenever the surf
+      // overlay is live the base near sheet yields everywhere its semantic surf
+      // water is strong, preventing two transparent copies of the same wall.
       const surfReplacement = displace > 0
-        ? smoothstep(0.12, 0.38, surfPresence)
-            .mul(surfFaceWindow)
-            .mul(this.#uSurfing)
+        ? smoothstep(0.12, 0.38, surfPresence).mul(this.#uSurfing)
         : float(0);
       mat.opacityNode = alpha
         .mul(waterVisibility)

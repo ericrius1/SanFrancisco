@@ -1,0 +1,7 @@
+{
+  "freqBase": 0.9,
+  "freqSpan": 0.6,
+  "maxTorqueScale": 1.2,
+  "strideBase": 0.62,
+  "strideSpan": 0.9
+}

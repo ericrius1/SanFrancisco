@@ -37,6 +37,8 @@
     "test:golf": "node --experimental-strip-types tools/golf-logic-probe.mjs",
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
     "test:tea-garden": "node --experimental-strip-types tools/tea-garden-probe.mjs",
+    "test:multiplayer-rake": "node tools/multiplayer-rake-probe.mjs",
+    "test:multiplayer-rake:browser": "node tools/multiplayer-rake-browser-probe.mjs",
     "test:ocean-beach-kite": "node tools/ocean-beach-kite-probe.mjs",
     "test:sutro-baths": "node tools/sutro-baths-probe.mjs",
     "test:drum-bridge": "node tools/drum-bridge-probe.mjs",

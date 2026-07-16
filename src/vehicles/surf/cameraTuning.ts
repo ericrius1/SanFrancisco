@@ -5,18 +5,26 @@ import { tunables } from "../../core/persist"
  * first-use fallback, the dynamically loaded surf rig, and Tweakpane.
  */
 export const SURF_CAMERA_TUNING = tunables("camera.surf", {
-  // Chase boom: eye sits behind the board facing, looking the same way.
-  distance: { v: 8.5, min: 4, max: 18, step: 0.25, label: "chase distance" },
-  height: { v: 3.4, min: 1.5, max: 10, step: 0.1, label: "camera height" },
-  // Light shoreward bias keeps the face readable without becoming a side cam.
-  sideBias: { v: 1.6, min: 0, max: 8, step: 0.1, label: "shore side bias" },
-  lookAhead: { v: 4.5, min: 1, max: 20, step: 0.25, label: "look-ahead" },
-  targetHeight: { v: 1.15, min: 0.4, max: 4, step: 0.05, label: "aim height" },
+  // KSPS chase: the eye rides LOW on the flat (shore) side of the rider,
+  // trailing the travel direction and looking back AT the surfer, so the wave
+  // wall is the backdrop and the camera never crests behind the wave.
+  distance: { v: 5.6, min: 3, max: 18, step: 0.25, label: "chase distance" },
+  height: { v: 1.7, min: 0.6, max: 10, step: 0.1, label: "camera height" },
+  // 0 = pure down-line chase, 1 = square-on at the wave face.
+  waveLook: { v: 0.34, min: 0.05, max: 0.95, step: 0.01, label: "face-on look blend" },
+  // How quickly the frame follows a genuine travel reversal (double-tap
+  // cutback). The swing pivots through the face-on view, never the wall.
+  directionResponse: { v: 1.6, min: 0.4, max: 6, step: 0.05, label: "travel follow" },
+  lookAhead: { v: 2.8, min: 0.5, max: 20, step: 0.25, label: "look-ahead" },
+  targetHeight: { v: 1.05, min: 0.4, max: 4, step: 0.05, label: "aim height" },
+  // How much of the rider's altitude the eye follows during airs (KSPS stays
+  // low and looks up at the trick).
+  airFollow: { v: 0.25, min: 0, max: 1, step: 0.05, label: "air height follow" },
+  // How much of the rider's altitude the AIM follows during airs — under 1 the
+  // camera looks up at the trick while keeping the waterline in frame (KSPS).
+  airAim: { v: 0.55, min: 0.1, max: 1, step: 0.05, label: "air aim follow" },
   positionResponse: { v: 6.5, min: 1.5, max: 18, step: 0.25, label: "position response" },
   aimResponse: { v: 7.5, min: 1.5, max: 20, step: 0.25, label: "aim response" },
-  // How quickly the chase boom yaws to match board heading through a cutback.
-  // ~3–5 feels arcade: readable turn, never a whip.
-  followYawResponse: { v: 3.6, min: 0.8, max: 12, step: 0.1, label: "follow yaw slerp" },
   orientationResponse: { v: 5.5, min: 1.5, max: 16, step: 0.25, label: "orientation slerp" },
   fovSpeed: { v: 24, min: 8, max: 40, step: 0.5, label: "FOV full speed" },
   fovBoost: { v: 3.5, min: 0, max: 6, step: 0.1, label: "FOV boost" },

@@ -1,0 +1,19 @@
+{
+  "walk": {
+    "ok": true,
+    "gen": 28,
+    "at": "2026-07-16T14:14:01.101Z",
+    "detail": "fell=false meanSpeed=0.54m/s"
+  },
+  "gallop": {
+    "ok": false,
+    "detail": "fell=false meanSpeed=0.71m/s need>=1.16"
+  },
+  "jump": {
+    "ok": false,
+    "detail": "approachFell=false airborne=false fell=false endTall=0.62"
+  },
+  "gen": 28,
+  "scale": 1.077,
+  "at": "2026-07-16T14:14:01.102Z"
+}

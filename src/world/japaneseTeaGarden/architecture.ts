@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { BodyType, type Physics } from "../../core/physics";
+import { lightAnchor, registerAmbientLightAnchor } from "../../player/lightPool";
 import { loadTexture } from "../../render/textures";
 import {
   TEA_GARDEN_BUILDINGS,
@@ -503,11 +504,14 @@ function makeTeaHouse(
     lantern.position.set(...world(x, 2.85, 0.2));
     group.add(lantern);
     // Modern physically-correct light units make single-digit point-light
-    // intensities nearly decorative. These remain the same two lights/draw
-    // budget, but now softly reveal the timber, tatami, irori and artwork.
-    const light = new THREE.PointLight(0xffc47d, 38, 8, 2);
-    light.position.copy(lantern.position);
-    group.add(light);
+    // intensities nearly decorative. The warm fill that reveals the timber,
+    // tatami, irori and artwork now rides the shared scene light pool — the
+    // garden streaming in must never add a light to the visible set (that
+    // invalidates every lit pipeline; measured as a multi-second flyover
+    // freeze). `range` releases the pool slot whenever no one is close enough
+    // to see inside the pavilion.
+    const fillPos = world(x, 2.85, 0.2);
+    group.add(lightAnchor({ color: 0xffc47d, intensity: 38, distance: 8, range: 60 }, ...fillPos));
   }
 
   // Walkable slab plus three enclosing walls. The whole south façade and its
@@ -1608,7 +1612,9 @@ export function createTeaGardenArchitecture(
   };
 
   let meshCount = 0;
+  const lightUnregisters: (() => void)[] = [];
   group.traverse((object) => {
+    if (object.userData.lightSpec) lightUnregisters.push(registerAmbientLightAnchor(object));
     const mesh = object as THREE.Mesh;
     if (!mesh.isMesh) return;
     meshCount++;
@@ -1624,6 +1630,8 @@ export function createTeaGardenArchitecture(
     ready: mats.ready,
     update,
     dispose() {
+      for (const unregister of lightUnregisters) unregister();
+      lightUnregisters.length = 0;
       const geometries = new Set<THREE.BufferGeometry>();
       const materials = new Set<THREE.Material>();
       const textures = new Set<THREE.Texture>();

@@ -32,6 +32,8 @@ import {
   type ScooterConfig
 } from "../vehicles/scooter";
 import type { Cockpit, PlayerMode } from "../player/types";
+import type { GardenRakeMotion, GardenRakeTool } from "../player/gardenRake";
+import { GardenRakePoseController } from "../player/gardenRakePose";
 import type { NetSample, RemoteInfo } from "./net";
 import { setEmbodimentVisible } from "../player/embodimentVisibility";
 import { CANVAS_FONT_FAMILY } from "../core/typography";
@@ -133,6 +135,8 @@ type Avatar = {
   carKey: string;
   surfboard: SurfboardConfig;
   surfboardKey: string;
+  rakePose: GardenRakePoseController | null;
+  rakeMotion: GardenRakeMotion | null;
 };
 
 const TMP = {
@@ -162,6 +166,43 @@ function surfboardForInfo(info: RemoteInfo): SurfboardConfig {
   return info.surfboard ? normalizeSurfboardConfig(info.surfboard) : surfboardFromSeed(info.id);
 }
 
+function interpolatedRakeMotion(
+  target: GardenRakeMotion,
+  from: Readonly<GardenRakeMotion> | undefined,
+  to: Readonly<GardenRakeMotion>,
+  alpha: number
+): GardenRakeMotion {
+  const source = from ?? to;
+  target.engaged = to.engaged;
+  target.dragging = to.dragging;
+  target.contactX = THREE.MathUtils.lerp(source.contactX, to.contactX, alpha);
+  target.contactY = THREE.MathUtils.lerp(source.contactY, to.contactY, alpha);
+  target.contactZ = THREE.MathUtils.lerp(source.contactZ, to.contactZ, alpha);
+  target.pullX = THREE.MathUtils.lerp(source.pullX, to.pullX, alpha);
+  target.pullZ = THREE.MathUtils.lerp(source.pullZ, to.pullZ, alpha);
+  target.normalX = THREE.MathUtils.lerp(source.normalX, to.normalX, alpha);
+  target.normalY = THREE.MathUtils.lerp(source.normalY, to.normalY, alpha);
+  target.normalZ = THREE.MathUtils.lerp(source.normalZ, to.normalZ, alpha);
+  target.shaftElevation = to.shaftElevation;
+  target.bodyLean = to.bodyLean;
+  return target;
+}
+
+function emptyRakeMotion(): GardenRakeMotion {
+  return {
+    engaged: false,
+    dragging: false,
+    contactX: 0,
+    contactY: 0,
+    contactZ: 0,
+    pullX: 0,
+    pullZ: -1,
+    normalX: 0,
+    normalY: 1,
+    normalZ: 0
+  };
+}
+
 export class RemotePlayers {
   readonly avatars = new Map<number, Avatar>();
 
@@ -179,6 +220,7 @@ export class RemotePlayers {
   #surfAssetsEnabled = false;
   #scooterAssetsEnabled = false;
   #carAssetsEnabled = false;
+  #gardenRakeFactory: (() => GardenRakeTool) | null = null;
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -334,6 +376,13 @@ export class RemotePlayers {
     this.#carAssetsEnabled = enabled;
   }
 
+  /** Installed only after the local Tea Garden chunk activates. Presence can
+   *  cache remote rake motion at boot, but no optional garden geometry is
+   *  constructed for distant players before this first-use gate opens. */
+  setGardenRakeFactory(factory: (() => GardenRakeTool) | null) {
+    this.#gardenRakeFactory = factory;
+  }
+
   add(info: RemoteInfo) {
     if (this.avatars.has(info.id)) return;
     const root = new THREE.Group();
@@ -370,7 +419,9 @@ export class RemotePlayers {
       car,
       carKey: carKey(car),
       surfboard: surf,
-      surfboardKey: surfboardVisualKey(surf)
+      surfboardKey: surfboardVisualKey(surf),
+      rakePose: null,
+      rakeMotion: null
     });
   }
 
@@ -500,6 +551,7 @@ export class RemotePlayers {
     (a.bodies.board?.userData.dispose as (() => void) | undefined)?.();
     (a.bodies.scooter?.userData.dispose as (() => void) | undefined)?.();
     (a.bodies.surf?.userData.dispose as (() => void) | undefined)?.();
+    a.rakePose?.dispose();
   }
 
   sample(id: number, s: NetSample) {
@@ -650,6 +702,22 @@ export class RemotePlayers {
       }
       a.root.visible = true;
 
+      const rake = b.mode === "walk" ? b.rake : undefined;
+      if (rake) {
+        if (!a.rakePose && this.#gardenRakeFactory) {
+          a.rakePose = new GardenRakePoseController(this.#gardenRakeFactory(), a.root);
+        }
+        a.rakeMotion = interpolatedRakeMotion(
+          a.rakeMotion ?? emptyRakeMotion(),
+          from.rake,
+          rake,
+          alpha
+        );
+      } else {
+        a.rakeMotion = null;
+        a.rakePose?.hide(a.rig);
+      }
+
       if (a.mode === "surf" && this.#surfAssetsEnabled) {
         const local = this.localPlayerPosition();
         const body = a.bodies.surf;
@@ -728,6 +796,9 @@ export class RemotePlayers {
         poseWalk(rig, a.strideT, THREE.MathUtils.clamp((h - 5.2) / 6.3, 0, 1));
       } else {
         poseIdle(rig, a.animT);
+      }
+      if (a.rakePose && a.rakeMotion) {
+        a.rakePose.pose(rig, a.root.position, a.root.quaternion, a.rakeMotion, a.strideT);
       }
     } else if (a.mode === "board") {
       const crouch = Math.min(1, a.speed / 34);
