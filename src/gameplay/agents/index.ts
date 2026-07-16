@@ -1,6 +1,11 @@
 export {
+  DialogueGraphProvider,
   NoopVoiceOutput,
   ScriptedDialogueProvider,
+  type DialogueChoice,
+  type DialogueGraphChoice,
+  type DialogueGraphNode,
+  type DialogueGraphOptions,
   type DialogueProgress,
   type DialogueProvider,
   type DialogueRequest,
@@ -10,3 +15,8 @@ export {
   type ScriptedDialogueProviderOptions,
   type VoiceOutput
 } from "./dialogue"
+export {
+  NpcConversation,
+  type NpcConversationOptions,
+  type NpcConversationPhase
+} from "./conversation"

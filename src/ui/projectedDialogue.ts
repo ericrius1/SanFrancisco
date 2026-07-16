@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu"
 import type {
+  DialogueChoice,
   DialogueProgress,
   DialogueSpeaker,
   DialogueTurn
@@ -39,6 +40,8 @@ export interface DialogueTurnViewOptions {
   readonly topic?: string | null
   readonly progress?: DialogueProgress | null
   readonly nextHint?: string | null
+  /** Highlighted row when the turn carries `choices`. Defaults to 0. */
+  readonly choiceIndex?: number
 }
 
 type ViewMode = "hidden" | "prompt" | "turn"
@@ -46,6 +49,13 @@ type ViewMode = "hidden" | "prompt" | "turn"
 const DEFAULT_OFFSET: DialogueVector3Like = { x: 0, y: 0, z: 0 }
 const MIN_SAFE_INSET = 14
 let projectedDialogueId = 0
+
+/** Footer hint while a choice list is open. Keyboard leads with Enter (select)
+ * and Esc (leave); a pad has neither, so it shows the interact face button and
+ * relies on walking away to cancel. */
+function choiceHintText(): string {
+  return interactKeyLabel() === "Y" ? "↑↓ · Y" : "↑↓ · Enter · Esc"
+}
 
 function readPixel(value: string, fallback: number): number {
   const parsed = Number.parseFloat(value)
@@ -79,6 +89,7 @@ export class ProjectedDialogueUI {
   readonly #speakerTitle: HTMLSpanElement
   readonly #progress: HTMLSpanElement
   readonly #body: HTMLParagraphElement
+  readonly #choices: HTMLDivElement
   readonly #topic: HTMLSpanElement
   readonly #nextHint: HTMLSpanElement
   readonly #worldOffset = new THREE.Vector3()
@@ -92,6 +103,8 @@ export class ProjectedDialogueUI {
   #mode: ViewMode = "hidden"
   #projectedOnce = false
   #disposed = false
+  #choiceRows: HTMLElement[] = []
+  #choicesKey = ""
 
   constructor(anchor: DialogueWorldAnchor, options: ProjectedDialogueOptions = {}) {
     this.#anchor = anchor
@@ -99,7 +112,9 @@ export class ProjectedDialogueUI {
     const offset = options.worldOffset ?? DEFAULT_OFFSET
     this.#worldOffset.set(offset.x, offset.y, offset.z)
     this.#defaultTopic = options.defaultTopic ?? "Conversation"
-    this.#defaultNextHint = options.defaultNextHint ?? `${interactKeyLabel("kb")} · Continue`
+    // Authored as "Enter"; localizeInteractText swaps it for the pad face
+    // button when a gamepad is active.
+    this.#defaultNextHint = options.defaultNextHint ?? "Enter · Continue"
 
     projectedDialogueId += 1
     const speakerId = `projected-dialogue-speaker-${projectedDialogueId}`
@@ -154,6 +169,12 @@ export class ProjectedDialogueUI {
     this.#body = document.createElement("p")
     this.#body.className = "projected-dialogue__body"
 
+    this.#choices = document.createElement("div")
+    this.#choices.className = "projected-dialogue__choices"
+    this.#choices.setAttribute("role", "listbox")
+    this.#choices.setAttribute("aria-label", "Replies")
+    this.#choices.hidden = true
+
     const footer = document.createElement("footer")
     footer.className = "projected-dialogue__footer"
     this.#topic = document.createElement("span")
@@ -162,7 +183,7 @@ export class ProjectedDialogueUI {
     this.#nextHint.className = "projected-dialogue__next"
     footer.append(this.#topic, this.#nextHint)
 
-    this.#card.append(header, this.#body, footer)
+    this.#card.append(header, this.#body, this.#choices, footer)
     this.#pin.append(this.#prompt, this.#card)
     this.#root.appendChild(this.#pin)
     this.#parent.appendChild(this.#root)
@@ -207,9 +228,10 @@ export class ProjectedDialogueUI {
     const progress = options.progress === undefined
       ? turn.metadata?.progress
       : options.progress ?? undefined
+    const choices = turn.choices ?? []
     const rawHint = visibleText(
       options.nextHint === undefined
-        ? turn.metadata?.nextHint ?? this.#defaultNextHint
+        ? turn.metadata?.nextHint ?? (choices.length > 0 ? choiceHintText() : this.#defaultNextHint)
         : options.nextHint
     )
     const nextHint = rawHint ? localizeInteractText(rawHint) : null
@@ -222,6 +244,7 @@ export class ProjectedDialogueUI {
     this.#card.setAttribute("aria-label", `Dialogue from ${speakerName}`)
 
     this.#setProgress(progress)
+    this.#syncChoices(choices, options.choiceIndex ?? 0)
     this.#topic.textContent = topic ?? ""
     this.#topic.hidden = topic === null
     this.#nextHint.textContent = nextHint ?? ""
@@ -317,6 +340,38 @@ export class ProjectedDialogueUI {
     if (!this.#projectedOnce) this.#root.classList.add("is-unpositioned")
     this.#root.classList.remove("is-projection-hidden")
     this.#root.setAttribute("aria-hidden", "false")
+  }
+
+  /** Rebuild the reply list only when the set changes (showTurn is re-called
+   * every frame for glyph refreshes); selection highlight updates every call. */
+  #syncChoices(choices: readonly DialogueChoice[], selected: number): void {
+    const key = choices.map((choice) => `${choice.id} ${choice.label}`).join("")
+    if (key !== this.#choicesKey) {
+      this.#choicesKey = key
+      this.#choiceRows = []
+      this.#choices.replaceChildren()
+      for (const choice of choices) {
+        const row = document.createElement("div")
+        row.className = "projected-dialogue__choice"
+        row.setAttribute("role", "option")
+        const marker = document.createElement("span")
+        marker.className = "projected-dialogue__choice-marker"
+        marker.setAttribute("aria-hidden", "true")
+        marker.textContent = "›"
+        const label = document.createElement("span")
+        label.className = "projected-dialogue__choice-label"
+        label.textContent = choice.label
+        row.append(marker, label)
+        this.#choices.appendChild(row)
+        this.#choiceRows.push(row)
+      }
+      this.#choices.hidden = choices.length === 0
+    }
+    for (let i = 0; i < this.#choiceRows.length; i++) {
+      const isSelected = i === selected
+      this.#choiceRows[i].classList.toggle("is-selected", isSelected)
+      this.#choiceRows[i].setAttribute("aria-selected", isSelected ? "true" : "false")
+    }
   }
 
   #setProgress(progress: DialogueProgress | undefined): void {
