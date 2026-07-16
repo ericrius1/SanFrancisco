@@ -181,17 +181,59 @@ export const WILD_TREE_DESIGNS: readonly NativeTreeDesignSpec[] = [
     seed: 944,
     controls: { height: 15, crownDensity: 0.8, crownWidth: 0.88, foliageColor: 0x5c6e40 },
     sink: 0.28
+  },
+  // 4 broad, wind-sculpted cypress — sparse trunk with long horizontal shelves.
+  // This is intentionally separate from the compact windrow cypress above so
+  // one prototype is not stretched between two contradictory silhouettes.
+  {
+    species: "windswept-monterey-cypress",
+    seed: 955,
+    controls: { height: 14, crownDensity: 0.86, crownWidth: 1.04, foliageColor: 0x345238 },
+    sink: 0.3
+  },
+  // 5 Monterey pine — tall clear bole and separated upper tufts for the park's
+  // darker interior stands. It shares the existing pine texture material set.
+  {
+    species: "monterey-pine",
+    seed: 966,
+    controls: { height: 17, crownDensity: 0.76, crownWidth: 0.94, foliageColor: 0x3d5738 },
+    sink: 0.3
   }
 ] as const;
 
-export const WILD_SPECIES = { redwood: 0, cypress: 1, oak: 2, eucalyptus: 3 } as const;
+// Buena Vista owns a compact, independently loaded forest and can spend a
+// little more prototype density than the citywide Wildlands. Reuse the same
+// species/texture sets, but keep its crowns opaque enough to match the park's
+// enclosed interior and tree-filled skyline without inflating every Presidio,
+// Marin, and Golden Gate Park instance.
+const BUENA_VISTA_CROWN_DENSITY = [0.92, 1.02, 0.95, 0.95, 1.18, 1.05] as const;
+export const BUENA_VISTA_TREE_DESIGNS: readonly NativeTreeDesignSpec[] = WILD_TREE_DESIGNS.map(
+  (design, index) => ({
+    ...design,
+    controls: {
+      ...design.controls,
+      crownDensity: BUENA_VISTA_CROWN_DENSITY[index]
+    }
+  })
+);
+
+export const WILD_SPECIES = {
+  redwood: 0,
+  cypress: 1,
+  oak: 2,
+  eucalyptus: 3,
+  windsweptCypress: 4,
+  montereyPine: 5
+} as const;
 
 // Per-species instance scale range, applied to the native whole-tree prototype.
 const SPECIES_SCALE: readonly [number, number][] = [
   [0.95, 1.5],
   [0.85, 1.25],
   [0.85, 1.25],
-  [0.9, 1.35]
+  [0.9, 1.35],
+  [0.86, 1.22],
+  [0.88, 1.28]
 ];
 
 type GoldmanTreePlacement = {
@@ -310,12 +352,13 @@ const GROVES: readonly Grove[] = [
   { name: "mount_davidson", species: 3, cx: -320, cz: 4330, r: 170, density: 0.18 },
 
   // Buena Vista — interlocking oak/eucalyptus/cypress pockets build one dark
-  // canopy silhouette while retaining enough species variation to catch bands
-  // of sunset and mist differently during the orbit.
-  { name: "buena_vista_eucalyptus_north", species: 3, cx: 175, cz: 2265, r: 150, density: 0.28 },
-  { name: "buena_vista_oak_west", species: 2, cx: 105, cz: 2425, r: 135, density: 0.25 },
-  { name: "buena_vista_cypress_east", species: 1, cx: 355, cz: 2410, r: 145, density: 0.25 },
-  { name: "buena_vista_eucalyptus_south", species: 3, cx: 285, cz: 2560, r: 130, density: 0.26 }
+  // canopy silhouette. The exposed north/east shoulders use broad windswept
+  // cypress shelves; tall pines form a more vertical, permeable interior stand.
+  { name: "buena_vista_eucalyptus_north", species: WILD_SPECIES.eucalyptus, cx: 175, cz: 2265, r: 150, density: 0.27 },
+  { name: "buena_vista_oak_west", species: WILD_SPECIES.oak, cx: 105, cz: 2425, r: 135, density: 0.24 },
+  { name: "buena_vista_windswept_cypress_east", species: WILD_SPECIES.windsweptCypress, cx: 355, cz: 2410, r: 145, density: 0.25 },
+  { name: "buena_vista_monterey_pine_interior", species: WILD_SPECIES.montereyPine, cx: 235, cz: 2365, r: 125, density: 0.2 },
+  { name: "buena_vista_eucalyptus_south", species: WILD_SPECIES.eucalyptus, cx: 285, cz: 2560, r: 130, density: 0.25 }
 ] as const;
 
 const WINDROWS: readonly Windrow[] = [
@@ -485,9 +528,17 @@ const MATRIX: Partial<Record<WildRegionId, MatrixSpec>> = {
     // Compact, continuously wooded urban hill. The groves establish its mass;
     // this matrix stitches them together into a canopy instead of isolated
     // specimen dots. Oaks stay common around the summit opening.
-    density: 0.68,
+    density: 0.66,
     standThresh: 0.26,
-    species: (zone) => (zone < 0.43 ? 3 : zone < 0.72 ? 2 : 1) // eucalyptus / oak / cypress
+    species: (zone) => zone < 0.32
+      ? WILD_SPECIES.eucalyptus
+      : zone < 0.54
+        ? WILD_SPECIES.oak
+        : zone < 0.73
+          ? WILD_SPECIES.cypress
+          : zone < 0.9
+            ? WILD_SPECIES.windsweptCypress
+            : WILD_SPECIES.montereyPine
   }
 };
 const MATRIX_CELL = 11;
@@ -548,6 +599,61 @@ export function grassyGround(map: GardenTerrain, x: number, z: number): boolean 
   const dx = Math.abs(map.groundHeight(x + 5, z) - map.groundHeight(x - 5, z));
   const dz = Math.abs(map.groundHeight(x, z + 5) - map.groundHeight(x, z - 5));
   return dx <= 6 && dz <= 6;
+}
+
+// --- Buena Vista understory ---------------------------------------------------------
+
+export type WildShrub = {
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  scale: number;
+  palette: number;
+  tint: number;
+};
+
+const BUENA_VISTA_SHRUB_CELL = 9;
+
+/**
+ * Deterministic woody understory for Buena Vista. It follows the real park
+ * polygon and surface raster, gathers in broad shade pockets, and preserves the
+ * summit clearing. The renderer is deliberately owned by a second-stage lazy
+ * module so a distant skyline view never constructs these close-only plants.
+ */
+export function collectBuenaVistaShrubs(
+  map: GardenTerrain,
+  excluded?: WildTreeExclusion
+): WildShrub[] {
+  const shrubs: WildShrub[] = [];
+  const region = WILD_REGIONS.find((candidate) => candidate.id === "buenavista");
+  if (!region) return shrubs;
+  const salt = 8_903;
+  let gx = 0;
+  for (let x = region.minX; x <= region.maxX; x += BUENA_VISTA_SHRUB_CELL, gx++) {
+    let gz = 0;
+    for (let z = region.minZ; z <= region.maxZ; z += BUENA_VISTA_SHRUB_CELL, gz++) {
+      const px = x + (hash2(gx, gz, salt) - 0.5) * BUENA_VISTA_SHRUB_CELL * 1.25;
+      const pz = z + (hash2(gx, gz, salt + 1) - 0.5) * BUENA_VISTA_SHRUB_CELL * 1.25;
+      if (excluded?.(px, pz) || !plantable(map, region, px, pz) || inMeadow(px, pz)) continue;
+      if (!slopeOk(map, px, pz, 9.5)) continue;
+
+      const shadePocket = smoothstep(0.34, 0.76, valueNoise(px, pz, 52, salt + 2));
+      const keep = 0.1 + shadePocket * 0.34;
+      if (hash2(gx, gz, salt + 3) > keep) continue;
+      const palettePick = hash2(gx, gz, salt + 4);
+      shrubs.push({
+        x: px,
+        y: map.groundHeight(px, pz),
+        z: pz,
+        yaw: hash2(gx, gz, salt + 5) * Math.PI * 2,
+        scale: 0.76 + hash2(gx, gz, salt + 6) * 0.72,
+        palette: palettePick > 0.76 ? 1 : 0,
+        tint: hash2(gx, gz, salt + 7)
+      });
+    }
+  }
+  return shrubs;
 }
 
 // --- collectors ----------------------------------------------------------------------

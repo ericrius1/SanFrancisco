@@ -23,7 +23,6 @@ export class LandsEndRegion {
   #labyrinth: Labyrinth;
   #keeper: LanternKeeper;
   #motes: SeaMotes;
-  #wasNear = true;
 
   constructor(map: WorldMap) {
     this.group.name = "landsEnd";
@@ -66,7 +65,6 @@ export class LandsEndRegion {
     // Always assign visibility so a debug perf-suppress that hid the group while
     // near can restore cleanly on the next enabled frame.
     this.group.visible = near;
-    this.#wasNear = near;
     if (!near) return;
     this.#labyrinth.update(dt, playerPos.x, playerPos.z);
     this.#keeper.update(dt, elapsed);
