@@ -59,7 +59,10 @@ const TINE_COUNT = 7;
 const FIXED_STEP = 1 / 60;
 const MAX_SETTLE_TICKS_PER_FRAME = 2;
 const MAX_STAMPS_PER_FRAME = 6;
-const MAX_QUEUED_STAMPS = 18;
+// Matches the relay's bounded session history. Late garden activation can
+// replay recent shared strokes over several frames without silently dropping
+// everything beyond the old three-frame local burst allowance.
+const MAX_QUEUED_STAMPS = 256;
 const EDGE_INSET = 0.16;
 const MAX_RENDER_RELIEF = 0.16;
 const MAX_HEIGHT_SCALE = 2.25;

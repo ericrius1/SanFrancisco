@@ -35,6 +35,8 @@ const PICKLEBALL_SLOTS = 2;
 const PICKLEBALL_STATE_MAX = 96;
 const PICKLEBALL_INPUT_MAX = 16;
 const PICKLEBALL_VALUE_LIMIT = 1_000_000;
+const RAKE_BATCH_MAX = 16;
+const RAKE_HISTORY_MAX = 256;
 const MSG_MAX_BYTES = 16384; // fits a WebRTC SDP offer (voice signaling); poses are ~100 B
 const MSG_BUDGET_PER_SEC = 80; // state at 12 Hz + several simultaneous RTC negotiations; flooders get cut
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // no state for 5 min → drop
@@ -493,6 +495,12 @@ const players = new Map();
  * always stamps `id` and `authority`; `state` is cached for late joiners.
  */
 const pickleball = { slots: Array(PICKLEBALL_SLOTS).fill(0), state: null };
+// Sand strokes are an ordered, bounded in-memory session log. The server
+// echoes each accepted batch to its sender too, so concurrent GPU fields apply
+// exactly the same stroke order; late joiners replay the recent visible work.
+const rakeSession = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const rakeHistory = [];
+let rakeSequence = 0;
 
 const ADJ = [
   "Foggy",
@@ -972,6 +980,19 @@ const pickleballNumbers = (d, maxLength) =>
     ? d.slice()
     : null;
 
+const rakeRow = (row) => {
+  if (!Array.isArray(row) || row.length !== 9) return null;
+  if (!row.slice(0, 4).every((n) => finite(n, 20000))) return null;
+  if (!row.slice(4, 8).every((n) => finite(n, 2))) return null;
+  if (!finite(row[8], 2) || row[8] < 0) return null;
+  return row.slice();
+};
+
+const rakeWelcome = () => ({
+  session: rakeSession,
+  stamps: rakeHistory.map((row) => row.slice())
+});
+
 const refreshPickleballAuthority = () => {
   const authority = pickleballAuthority();
   if (pickleball.state && pickleball.state.id !== authority) pickleball.state = null;
@@ -1098,7 +1119,8 @@ wss.on("connection", (ws) => {
             car: o.car,
             golf: o.golf
           })),
-        pickle: pickleballWelcome()
+        pickle: pickleballWelcome(),
+        sand: rakeWelcome()
       });
       broadcast(
         {
@@ -1115,8 +1137,9 @@ wss.on("connection", (ws) => {
         id
       );
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
-    } else if (msg.t === "s" && Array.isArray(msg.d) && (msg.d.length === 9 || msg.d.length === 10)) {
-      // [modeIndex, x, y, z, qx, qy, qz, qw, speed, ride?] — validate finite numbers
+    } else if (msg.t === "s" && Array.isArray(msg.d) && (msg.d.length === 9 || msg.d.length === 10 || msg.d.length === 20)) {
+      // Base pose is [mode,x,y,z,qx,qy,qz,qw,speed,ride?]. A held-rake
+      // presence appends [engaged,dragging,contact xyz,pull xz,normal xyz].
       if (msg.d.every((n) => typeof n === "number" && Number.isFinite(n))) {
         p.state = msg.d;
         p.lastState = Date.now();
@@ -1160,6 +1183,18 @@ wss.on("connection", (ws) => {
       // pure relay, every client replays the launches locally
       if (msg.d.every((r) => Array.isArray(r) && r.length === 9 && r.every((n) => typeof n === "number" && Number.isFinite(n)))) {
         broadcast({ t: "fw", id, d: msg.d }, id);
+      }
+    } else if (msg.t === "rake" && Array.isArray(msg.d) && msg.d.length >= 1 && msg.d.length <= RAKE_BATCH_MAX) {
+      const rows = msg.d.map(rakeRow);
+      if (rows.every(Boolean)) {
+        const stamped = rows.map((row) => [++rakeSequence, ...row]);
+        rakeHistory.push(...stamped);
+        if (rakeHistory.length > RAKE_HISTORY_MAX) {
+          rakeHistory.splice(0, rakeHistory.length - RAKE_HISTORY_MAX);
+        }
+        // No exceptId: the sender consumes the same authoritative echo as its
+        // friends instead of applying an optimistic client-local order.
+        broadcast({ t: "rake", id, session: rakeSession, d: stamped });
       }
     } else if (msg.t === "pickle" && typeof msg.k === "string") {
       // Ownership is the one competitive invariant the relay enforces. The

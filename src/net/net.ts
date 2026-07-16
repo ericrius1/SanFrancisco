@@ -1,4 +1,5 @@
 import type * as THREE from "three/webgpu";
+import type { GardenRakeMotion } from "../player/gardenRake";
 import type { PlayerMode } from "../player/types";
 import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTraits } from "../player/avatar";
 import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig } from "../vehicles/board/config";
@@ -34,6 +35,8 @@ import {
  *   ← {t:"fw", id, d}                   relayed to everyone else
  *   → {t:"chat", text}                  ephemeral text chat (no persistence)
  *   ← {t:"chat", id, name, text}        relayed to everyone else
+ *   → {t:"rake", d:[[px,pz,cx,cz,ax,az,dx,dz,strength],...]} batched sand strokes
+ *   ← {t:"rake", id, session, d:[[sequence,...stroke],...]} ordered echo to everyone
  *   → {t:"golf", k, d?|h?|p?|s?|r?}     golf events + cached state for late joins
  *   ← {t:"golf", id, ...}               relayed to everyone else (owner-simulated ball)
  *   → {t:"pickle", k:"claim"|"release", slot:0|1}  court-side ownership request
@@ -55,6 +58,14 @@ export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone
 export type RemoteGolfState = { d: number[]; h: number; p: number; s: number; r: number };
 export type PickleballSlot = 0 | 1;
 export type RemotePickleballState = { id: number; d: number[] };
+export type SharedRakeStamp = {
+  previous: { x: number; z: number };
+  current: { x: number; z: number };
+  across: { x: number; z: number };
+  pull: { x: number; z: number };
+  strength?: number;
+};
+type SequencedRakeStamp = SharedRakeStamp & { sequence: number };
 export type RemoteInfo = {
   id: number;
   name: string;
@@ -83,6 +94,8 @@ export type NetSample = {
    * glue the avatar to THEIR interpolation of the driver's car, so the
    * passenger never trails outside the cabin. */
   ride?: number;
+  /** Present only while this remote is carrying a spawned garden rake. */
+  rake?: GardenRakeMotion;
 };
 
 export type NetStatus = "connecting" | "online" | "offline" | "full";
@@ -95,6 +108,10 @@ const CHAT_MAX = 200;
 const PICKLEBALL_STATE_MAX = 96;
 const PICKLEBALL_INPUT_MAX = 16;
 const PICKLEBALL_VALUE_LIMIT = 1_000_000;
+const RAKE_BATCH_MAX = 16;
+const RAKE_HISTORY_MAX = 256;
+const RAKE_COORD_LIMIT = 20_000;
+const RAKE_BATCH_DELAY_MS = 50;
 const PLAYER_NAME_KEY = "sf.playerName";
 const PLAYER_NAME_KIND_KEY = "sf.playerNameKind";
 const LAST_GENERATED_NAME_KEY = "sf.lastGeneratedPlayerName";
@@ -150,6 +167,55 @@ function pickleballNumbers(value: unknown, maxLength: number): number[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > maxLength) return null;
   if (!value.every((n) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= PICKLEBALL_VALUE_LIMIT)) return null;
   return value.slice();
+}
+
+function finiteRakeNumber(value: unknown, limit: number): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= limit;
+}
+
+function rakeWireRow(value: unknown, sequenced: boolean): number[] | null {
+  if (!Array.isArray(value) || value.length !== (sequenced ? 10 : 9)) return null;
+  const offset = sequenced ? 1 : 0;
+  if (sequenced && (!Number.isInteger(value[0]) || value[0] <= 0)) return null;
+  if (!value.slice(offset, offset + 4).every((n) => finiteRakeNumber(n, RAKE_COORD_LIMIT))) return null;
+  if (!value.slice(offset + 4, offset + 8).every((n) => finiteRakeNumber(n, 2))) return null;
+  if (!finiteRakeNumber(value[offset + 8], 2) || value[offset + 8] < 0) return null;
+  return value.slice() as number[];
+}
+
+function rakeStampFromRow(row: readonly number[], sequenced: boolean): SequencedRakeStamp {
+  const offset = sequenced ? 1 : 0;
+  return {
+    sequence: sequenced ? row[0] : 0,
+    previous: { x: row[offset], z: row[offset + 1] },
+    current: { x: row[offset + 2], z: row[offset + 3] },
+    across: { x: row[offset + 4], z: row[offset + 5] },
+    pull: { x: row[offset + 6], z: row[offset + 7] },
+    strength: row[offset + 8]
+  };
+}
+
+function rakeRowFromStamp(stamp: Readonly<SharedRakeStamp>): number[] | null {
+  const values = [
+    stamp.previous.x,
+    stamp.previous.z,
+    stamp.current.x,
+    stamp.current.z,
+    stamp.across.x,
+    stamp.across.z,
+    stamp.pull.x,
+    stamp.pull.z,
+    stamp.strength ?? 1
+  ];
+  if (!rakeWireRow(values, false)) return null;
+  return values.map((value, index) => {
+    const precision = index < 4 ? 1000 : 10_000;
+    return Math.round(value * precision) / precision;
+  });
+}
+
+function finiteRakeMotion(value: unknown, limit = RAKE_COORD_LIMIT): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= limit;
 }
 
 function cleanName(raw: string): string {
@@ -285,6 +351,11 @@ export class Net {
   onFireworks: (id: number, rockets: number[][]) => void = () => {};
   /** Someone else sent a chat line (name is server-stamped from their roster). */
   onChat: (id: number, name: string, text: string) => void = () => {};
+  /** Canonical server-ordered rake segment. Return true once a live sand
+   *  simulation consumed it; false keeps it cached for lazy replay. */
+  onRakeStamp: (stamp: SharedRakeStamp) => boolean = () => false;
+  /** The relay restarted its in-memory sand session; reset the local field. */
+  onRakeReset: () => void = () => {};
   /** relayed golf event from another player (k discriminates; see gameplay/golf) */
   onGolf: (id: number, msg: Record<string, unknown>) => void = () => {};
   /** Any accepted ownership change or welcome hydration. The tuple is a copy. */
@@ -310,6 +381,11 @@ export class Net {
   #scooter: ScooterConfig | null;
   #surfboard: SurfboardConfig | null;
   #car: CarConfig | null;
+  #rakeSession = "";
+  #rakeHistory: SequencedRakeStamp[] = [];
+  #lastAppliedRakeSequence = 0;
+  #pendingRakeRows: number[][] = [];
+  #rakeFlushTimer: number | null = null;
   // serverTs → local-clock mapping (EWMA of arrival offset; interp buffer
   // absorbs the residual jitter)
   #clockOffset: number | null = null;
@@ -332,6 +408,69 @@ export class Net {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.#url = envUrl || `${proto}://${location.host}/ws`;
     this.#connect();
+  }
+
+  #adoptRakeSession(raw: unknown): boolean {
+    const session = typeof raw === "string" ? raw.slice(0, 80) : "";
+    if (!session) return false;
+    if (!this.#rakeSession) {
+      this.#rakeSession = session;
+      // A delayed first connection can follow offline local raking. Reset if
+      // the lazy simulation already exists so the server session remains the
+      // one shared source of truth; before construction this is a no-op.
+      this.onRakeReset();
+      return true;
+    }
+    if (session === this.#rakeSession) return true;
+    this.#rakeSession = session;
+    this.#rakeHistory.length = 0;
+    this.#lastAppliedRakeSequence = 0;
+    this.onRakeReset();
+    return true;
+  }
+
+  #rememberRake(stamp: SequencedRakeStamp) {
+    const last = this.#rakeHistory[this.#rakeHistory.length - 1];
+    if (last && stamp.sequence <= last.sequence) return;
+    this.#rakeHistory.push(stamp);
+    if (this.#rakeHistory.length > RAKE_HISTORY_MAX) this.#rakeHistory.shift();
+  }
+
+  #hydrateRakes(raw: unknown) {
+    if (!raw || typeof raw !== "object") return;
+    const data = raw as { session?: unknown; stamps?: unknown };
+    if (!this.#adoptRakeSession(data.session) || !Array.isArray(data.stamps)) return;
+    for (const value of data.stamps) {
+      const row = rakeWireRow(value, true);
+      if (row) this.#rememberRake(rakeStampFromRow(row, true));
+    }
+    this.replayRakeStamps();
+  }
+
+  #flushRakeRows() {
+    if (this.#rakeFlushTimer !== null) {
+      window.clearTimeout(this.#rakeFlushTimer);
+      this.#rakeFlushTimer = null;
+    }
+    const ws = this.#ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !this.selfId) return;
+    const rows = this.#pendingRakeRows.splice(0, RAKE_BATCH_MAX);
+    if (rows.length) ws.send(JSON.stringify({ t: "rake", d: rows }));
+    if (this.#pendingRakeRows.length) this.#scheduleRakeFlush(0);
+  }
+
+  #scheduleRakeFlush(delay = RAKE_BATCH_DELAY_MS) {
+    if (this.#rakeFlushTimer !== null) return;
+    this.#rakeFlushTimer = window.setTimeout(() => this.#flushRakeRows(), delay);
+  }
+
+  #applyPendingRakesLocally() {
+    if (this.#rakeFlushTimer !== null) {
+      window.clearTimeout(this.#rakeFlushTimer);
+      this.#rakeFlushTimer = null;
+    }
+    const rows = this.#pendingRakeRows.splice(0);
+    for (const row of rows) this.onRakeStamp(rakeStampFromRow(row, false));
   }
 
   #emitPickleballSlots() {
@@ -429,6 +568,9 @@ export class Net {
     ws.onmessage = (ev) => this.#handle(String(ev.data));
     ws.onclose = () => {
       this.#ws = null;
+      // Segments accepted just before disconnect have not been applied locally
+      // yet because online play waits for the server's canonical echo.
+      this.#applyPendingRakesLocally();
       // Clear identity before synthetic slot-release notifications so the app
       // can keep an already-controlled side alive as an offline AI match and
       // reclaim it after reconnect, instead of treating disconnect as a leave.
@@ -484,6 +626,7 @@ export class Net {
           if (p.golf) this.golfStates.set(p.id, p.golf);
         }
         this.#hydratePickleball(msg.pickle);
+        this.#hydrateRakes(msg.sand);
         this.#setStatus("online");
         this.onRoster();
         this.onWelcome();
@@ -570,7 +713,42 @@ export class Net {
         for (const row of msg.ps as number[][]) {
           const [id, m, x, y, z, qx, qy, qz, qw, speed] = row;
           if (id === this.selfId || !this.roster.has(id)) continue;
-          this.onSample(id, { t: tLocal, mode: NET_MODES[m] ?? "walk", x, y, z, qx, qy, qz, qw, speed, ride: row[10] || undefined });
+          let rake: GardenRakeMotion | undefined;
+          if (
+            row.length === 21 &&
+            (row[11] === 0 || row[11] === 1) &&
+            (row[12] === 0 || row[12] === 1) &&
+            row.slice(13, 16).every((n) => finiteRakeMotion(n)) &&
+            row.slice(16, 18).every((n) => finiteRakeMotion(n, 2)) &&
+            row.slice(18, 21).every((n) => finiteRakeMotion(n, 2))
+          ) {
+            rake = {
+              engaged: row[11] === 1,
+              dragging: row[12] === 1,
+              contactX: row[13],
+              contactY: row[14],
+              contactZ: row[15],
+              pullX: row[16],
+              pullZ: row[17],
+              normalX: row[18],
+              normalY: row[19],
+              normalZ: row[20]
+            };
+          }
+          this.onSample(id, {
+            t: tLocal,
+            mode: NET_MODES[m] ?? "walk",
+            x,
+            y,
+            z,
+            qx,
+            qy,
+            qz,
+            qw,
+            speed,
+            ride: row[10] || undefined,
+            rake
+          });
         }
         break;
       }
@@ -604,6 +782,18 @@ export class Net {
         const name = String(msg.name ?? "");
         const text = String(msg.text ?? "");
         if (id !== this.selfId && this.roster.has(id) && name && text) this.onChat(id, name, text);
+        break;
+      }
+      case "rake": {
+        if (!this.#adoptRakeSession(msg.session) || !Array.isArray(msg.d)) break;
+        for (const value of msg.d.slice(0, RAKE_BATCH_MAX)) {
+          const row = rakeWireRow(value, true);
+          if (!row) continue;
+          const stamp = rakeStampFromRow(row, true);
+          this.#rememberRake(stamp);
+          if (stamp.sequence <= this.#lastAppliedRakeSequence) continue;
+          if (this.onRakeStamp(stamp)) this.#lastAppliedRakeSequence = stamp.sequence;
+        }
         break;
       }
       case "golf": {
@@ -749,6 +939,28 @@ export class Net {
     this.onPickleballState(state.id, state.d.slice());
   }
 
+  /** Queue one local sand segment for a small ordered relay batch. The sender
+   * also waits for the echo, so every participant applies concurrent strokes
+   * in the same server-defined order. */
+  sendRakeStamp(stamp: Readonly<SharedRakeStamp>): boolean {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return false;
+    const row = rakeRowFromStamp(stamp);
+    if (!row) return false;
+    this.#pendingRakeRows.push(row);
+    if (this.#pendingRakeRows.length >= RAKE_BATCH_MAX) this.#flushRakeRows();
+    else this.#scheduleRakeFlush();
+    return true;
+  }
+
+  /** Replay relay-cached strokes after the lazy Tea Garden simulation exists. */
+  replayRakeStamps() {
+    for (const stamp of this.#rakeHistory) {
+      if (stamp.sequence <= this.#lastAppliedRakeSequence) continue;
+      if (!this.onRakeStamp(stamp)) break;
+      this.#lastAppliedRakeSequence = stamp.sequence;
+    }
+  }
+
   /** Broadcast one chat line (server sanitizes + stamps name; no persistence). */
   sendChat(text: string) {
     if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
@@ -807,7 +1019,14 @@ export class Net {
    * (a keepalive copy still goes out every KEEPALIVE_MS so the server's idle
    * timer sees a live player). Call once per rendered frame.
    */
-  sendState(mode: PlayerMode, pos: THREE.Vector3, quat: THREE.Quaternion, speed: number, ride = 0) {
+  sendState(
+    mode: PlayerMode,
+    pos: THREE.Vector3,
+    quat: THREE.Quaternion,
+    speed: number,
+    ride = 0,
+    rake?: Readonly<GardenRakeMotion> | null
+  ) {
     const ws = this.#ws;
     if (!ws || ws.readyState !== WebSocket.OPEN || !this.selfId) return;
     const now = performance.now();
@@ -824,7 +1043,24 @@ export class Net {
       Math.round(quat.w * 1000) / 1000,
       Math.round(speed * 10) / 10
     ];
-    if (ride) d.push(ride);
+    if (rake && mode === "walk") {
+      // Presence rows keep the old compact 9/10-value shape until a rake is
+      // actually held. A held row has an explicit ride slot followed by the
+      // exact contact frame used by the sand brush.
+      d.push(
+        ride,
+        rake.engaged ? 1 : 0,
+        rake.dragging ? 1 : 0,
+        Math.round(rake.contactX * 1000) / 1000,
+        Math.round(rake.contactY * 1000) / 1000,
+        Math.round(rake.contactZ * 1000) / 1000,
+        Math.round(rake.pullX * 10_000) / 10_000,
+        Math.round(rake.pullZ * 10_000) / 10_000,
+        Math.round(rake.normalX * 10_000) / 10_000,
+        Math.round(rake.normalY * 10_000) / 10_000,
+        Math.round(rake.normalZ * 10_000) / 10_000
+      );
+    } else if (ride) d.push(ride);
     const key = d.join(",");
     if (key === this.#lastSent && now - this.#lastSentAt < KEEPALIVE_MS) return;
     this.#lastSent = key;
@@ -834,6 +1070,7 @@ export class Net {
 
   dispose() {
     this.#closed = true;
+    this.#applyPendingRakesLocally();
     this.#ws?.close();
   }
 }

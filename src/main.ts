@@ -64,6 +64,7 @@ import {
 import { WILD_REGIONS } from "./world/wildlands/regions";
 import { BUENA_VISTA_REGION } from "./world/buenaVista";
 import { Player } from "./player/player";
+import type { GardenRakeMotion } from "./player/gardenRake";
 import type { PlayerMode } from "./player/types";
 import { ChaseCamera } from "./core/camera";
 import { FX } from "./fx/fx";
@@ -1048,6 +1049,7 @@ async function boot() {
   } | null = null;
   let goldenGateTennis: GoldenGateTennisSite | null = null;
   let japaneseTeaGarden: import("./world/japaneseTeaGarden").JapaneseTeaGarden | null = null;
+  let localGardenRakeMotion: Readonly<GardenRakeMotion> | null = null;
   let wakeDeferredGarden: (() => void) | null = null;
   let wakeDeferredTeaGarden: (() => void) | null = null;
   let wakeDeferredBuenaVistaTrees: (() => void) | null = null;
@@ -1425,6 +1427,8 @@ async function boot() {
   );
   const remotes = new RemotePlayers(scene);
   remotes.localPlayerPosition = () => player.renderPosition;
+  net.onRakeStamp = (stamp) => japaneseTeaGarden?.queueRakeStamp(stamp) ?? false;
+  net.onRakeReset = () => japaneseTeaGarden?.resetSand();
   setRemoteSurfboardAssetsActive = (active) => remotes.setSurfboardAssetsEnabled(active);
   setRemoteScooterAssetsActive = (active) => remotes.setScooterAssetsEnabled(active);
   setRemoteCarAssetsActive = (active) => remotes.setCarAssetsEnabled(active);
@@ -2795,12 +2799,20 @@ async function boot() {
               visitFreeBalls: (visitor) => fetchBall?.visitFreeBalls(visitor)
             },
             onBallWaterImpact: (x, y, z, speed) => ballImpactAudio.water(x, y, z, speed),
-            onCarryRake: (rake) => player.setGardenRakeTool(rake),
-            onRakeMotion: (motion) => player.setGardenRakeMotion(motion),
+            onCarryRake: (rake) => {
+              if (!rake) localGardenRakeMotion = null;
+              player.setGardenRakeTool(rake);
+            },
+            onRakeMotion: (motion) => {
+              localGardenRakeMotion = motion;
+              player.setGardenRakeMotion(motion);
+            },
+            onRakeStamp: (stamp) => net.sendRakeStamp(stamp),
             notify: (message, seconds) => hud.message(message, seconds)
           });
           site.deferOptionalFoliage();
           japaneseTeaGarden = site;
+          net.replayRakeStamps();
           teaGardenPaintWater = (impact) => site?.paintWater(impact) ?? false;
           teaGardenPaintWaterSegment = (segment) => site?.paintWaterSegment(segment) ?? false;
           debugPanel.registerFeatureTuning(site.tuningDescriptor());
@@ -2825,6 +2837,10 @@ async function boot() {
           }
 
           scene.add(site.group);
+          // The rack's visible templates have now warmed the rake material
+          // pipelines. Only at this local first-use boundary may remote rake
+          // presence instantiate matching geometry in the live scene.
+          remotes.setGardenRakeFactory(teaGardenMod.createGardenRakeTool);
           site.update(0, performance.now() / 1000, player.renderPosition, camera, player.mode);
           if (site.group.visible) claimTeaGardenBuildings();
           if (autoStartHiroTour) site.interact(player.renderPosition, player.mode);
@@ -4018,7 +4034,8 @@ async function boot() {
       player.meshes[player.mode].position,
       player.meshes[player.mode].quaternion,
       speed,
-      embodiments.passengerOf ?? 0
+      embodiments.passengerOf ?? 0,
+      localGardenRakeMotion
     );
   };
   const sendPickleballNetwork = () => pickleballController?.sendNetwork();
