@@ -73,8 +73,8 @@ assert(!terrainPatchCovers(cliff, 0, 0, 5), "cliff footprint must retain box fal
 assert(terrainPatchCovers(cliff, -10, 0, 2), "flat terrain beside cliff should stay mesh-covered");
 
 const productionPatch = buildTerrainCollisionPatch(smoothSurface, 0, 0);
-assert(productionPatch.vertices.length / 3 === 41 * 41, "production patch lattice changed unexpectedly");
-assert(productionPatch.indices.length / 3 === 40 * 40 * 2, "production patch triangle count changed unexpectedly");
+assert(productionPatch.vertices.length / 3 === 61 * 61, "production patch lattice changed unexpectedly");
+assert(productionPatch.indices.length / 3 === 60 * 60 * 2, "production patch triangle count changed unexpectedly");
 
 const box3d = await createBox3D();
 // Measure the synchronous runtime work at production dimensions. This is

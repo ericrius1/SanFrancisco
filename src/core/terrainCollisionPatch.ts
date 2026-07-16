@@ -38,18 +38,24 @@ export interface TerrainCollisionPatchOptions {
   maxEdgeRise?: number;
 }
 
-// A 320 m square remains wider than the old 21×21 @ 8 m carpet even when the
-// player is at the edge of a 96 m anchor cell: 48 + 80 + 4.96 = 132.96 m from
-// patch centre, leaving ~27 m of safety margin before the mesh boundary.
-export const TERRAIN_PATCH_HALF_SIZE = 160;
-// Match the canonical/rendered DEM lattice. Shared triangles remove the old
-// box-carpet seams without inventing collision detail the visible mesh lacks.
-export const TERRAIN_PATCH_STEP = 8;
+// 240 m square: the player stays within 48 m of the anchor centre, leaving
+// ≥72 m of mesh beyond them before the boundary; past that the pooled box
+// carpet takes over (it samples the same live CR queries). Kept this small
+// because the box3d mesh cook is synchronous — at 4 m sampling this size costs
+// ~4 ms per 96 m recenter; doubling the width would quadruple that spike.
+export const TERRAIN_PATCH_HALF_SIZE = 120;
+// The rendered ground is a Catmull-Rom reconstruction of the 8 m DEM lattice
+// (terrainClipmap/WorldMap #sampleGrid), which curves BETWEEN lattice nodes.
+// Sampling the patch at the lattice spacing would linearly bridge those curves
+// (i.e. reproduce the retired bilinear surface, meters off in steep gullies) —
+// half-lattice sampling keeps the collision surface within centimetres of the
+// visible one on ordinary terrain.
+export const TERRAIN_PATCH_STEP = 4;
 export const TERRAIN_PATCH_SNAP = 96;
-// A >45° rise at 8 m spacing is a cliff, seawall, bridge transition, or authored
-// step rather than ordinary driveable terrain. Keep the established small-slab
-// fallback there instead of manufacturing a long triangle ramp across it.
-export const TERRAIN_PATCH_MAX_EDGE_RISE = 8;
+// A >45° rise at patch spacing is a cliff, seawall, bridge transition, or
+// authored step rather than ordinary driveable terrain. Keep the established
+// small-slab fallback there instead of manufacturing a triangle ramp across it.
+export const TERRAIN_PATCH_MAX_EDGE_RISE = TERRAIN_PATCH_STEP;
 
 export function terrainPatchAnchor(value: number, snap = TERRAIN_PATCH_SNAP): number {
   return Math.round(value / snap) * snap;

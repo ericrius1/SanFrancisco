@@ -465,19 +465,80 @@ export class TerrainClipmap {
     this.#buildMs = performance.now() - buildStarted;
   }
 
+  #decodeHeight(packed: N): N {
+    return packed.r.mul(255 * 256)
+      .add(packed.g.mul(255))
+      .div(65535)
+      .mul(this.#height.range)
+      .add(this.#height.min);
+  }
+
+  /** Mip dims are exact halvings for the lods in use (verified 1888×1736 / 4 levels). */
+  #mipDims(sourceLod: number): { width: number; height: number } {
+    return { width: this.#grid.width >> sourceLod, height: this.#grid.height >> sourceLod };
+  }
+
+  #heightTap(cellX: N, cellY: N, sourceLod: number): N {
+    const dims = this.#mipDims(sourceLod);
+    const uv = vec2(cellX.add(0.5).div(dims.width), cellY.add(0.5).div(dims.height));
+    return this.#decodeHeight((texture(this.#height.texture, uv) as N).level(float(sourceLod)));
+  }
+
+  /**
+   * Clamped Catmull-Rom bicubic reconstruction of the 8 m source lattice.
+   * Bilinear reconstruction is C0 with a slope kink at every source cell edge —
+   * rolling hills read as 8 m facets no matter how dense the render mesh is.
+   * Catmull-Rom interpolates the lattice values exactly and is C1, so hills
+   * genuinely curve. The result is clamped to the min/max of the cell's four
+   * corners: on cliffs and kerb steps unclamped CR rings (measured up to ±9 m
+   * at Twin Peaks road cuts); the clamp confines those spots to the old
+   * bilinear envelope while leaving smooth terrain untouched.
+   * Must stay in lockstep with the CPU twin in heightmap.ts #sampleGrid.
+   */
   #heightAt(worldXZ: N, sourceLod: number): N {
     const grid = this.#grid;
-    const texel = worldXZ
-      .sub(vec2(grid.minX, grid.minZ))
-      .div(grid.cellSize)
-      .add(0.5);
-    const uv = texel.div(vec2(grid.width, grid.height));
-    const packed = (texture(this.#height.texture, uv) as N).level(float(sourceLod));
-    const normalizedHeight = packed.r.mul(255 * 256)
-      .add(packed.g.mul(255))
-      .div(65535);
-    return normalizedHeight.mul(this.#height.range)
-      .add(this.#height.min);
+    // Base texel index; mip L texel index = (f0 + 0.5) / 2^L - 0.5 (exact for
+    // the power-of-two-halving dims above).
+    const baseTexel = worldXZ.sub(vec2(grid.minX, grid.minZ)).div(grid.cellSize);
+    const scale = 1 / (1 << sourceLod);
+    const texel = baseTexel.add(0.5).mul(scale).sub(0.5);
+    const cell = texel.floor();
+    const t = texel.fract();
+    const weights1D = (f: N): [N, N, N, N] => {
+      const f2 = f.mul(f);
+      const f3 = f2.mul(f);
+      return [
+        f3.mul(-0.5).add(f2).sub(f.mul(0.5)),
+        f3.mul(1.5).sub(f2.mul(2.5)).add(1),
+        f3.mul(-1.5).add(f2.mul(2)).add(f.mul(0.5)),
+        f3.mul(0.5).sub(f2.mul(0.5))
+      ];
+    };
+    const wx = weights1D(t.x);
+    const wy = weights1D(t.y);
+    const taps: N[][] = [];
+    for (let j = -1; j <= 2; j++) {
+      const row: N[] = [];
+      for (let i = -1; i <= 2; i++) {
+        row.push(this.#heightTap(cell.x.add(i), cell.y.add(j), sourceLod));
+      }
+      taps.push(row);
+    }
+    let value: N = float(0);
+    for (let j = 0; j < 4; j++) {
+      const row = taps[j][0].mul(wx[0])
+        .add(taps[j][1].mul(wx[1]))
+        .add(taps[j][2].mul(wx[2]))
+        .add(taps[j][3].mul(wx[3]));
+      value = value.add(row.mul(wy[j]));
+    }
+    const corner00 = taps[1][1];
+    const corner10 = taps[1][2];
+    const corner01 = taps[2][1];
+    const corner11 = taps[2][2];
+    const low = corner00.min(corner10).min(corner01).min(corner11);
+    const high = corner00.max(corner10).max(corner01).max(corner11);
+    return value.clamp(low, high);
   }
 
   #coarseHeightAt(worldXZ: N, spacing: number, sourceLod: number): N {
@@ -492,15 +553,49 @@ export class TerrainClipmap {
     return mix(mix(h00, h10, blend.x), mix(h01, h11, blend.x), blend.y);
   }
 
+  #normalTapRG(cellX: N, cellY: N, sourceLod: number): N {
+    const dims = this.#mipDims(sourceLod);
+    const uv = vec2(cellX.add(0.5).div(dims.width), cellY.add(0.5).div(dims.height));
+    return (texture(this.#normal.texture, uv) as N).level(float(sourceLod)).rg;
+  }
+
+  /**
+   * Bicubic B-spline sample of the prefiltered normal pyramid. Bilinear
+   * filtering of an 8 m normal lattice is C0 — the derivative jumps at every
+   * texel edge read as Mach-band quilting on smooth lawns and hills. The
+   * B-spline kernel is C2 (pure smoothing, no overshoot) and the encoded RG
+   * channels are linear in the normal's XZ, so weighting before decode is
+   * exact. Y is reconstructed after filtering, as before.
+   */
   #normalAt(worldXZ: N, sourceLod: number): N {
     const grid = this.#grid;
-    const texel = worldXZ
-      .sub(vec2(grid.minX, grid.minZ))
-      .div(grid.cellSize)
-      .add(0.5);
-    const uv = texel.div(vec2(grid.width, grid.height));
-    const packed = (texture(this.#normal.texture, uv) as N).level(float(sourceLod));
-    const xz = packed.rg.mul(2).sub(1);
+    const baseTexel = worldXZ.sub(vec2(grid.minX, grid.minZ)).div(grid.cellSize);
+    const scale = 1 / (1 << sourceLod);
+    const texel = baseTexel.add(0.5).mul(scale).sub(0.5);
+    const cell = texel.floor();
+    const t = texel.fract();
+    const weights1D = (f: N): [N, N, N, N] => {
+      const oneMinus = float(1).sub(f);
+      const f2 = f.mul(f);
+      const f3 = f2.mul(f);
+      return [
+        oneMinus.mul(oneMinus).mul(oneMinus).div(6),
+        f3.mul(3).sub(f2.mul(6)).add(4).div(6),
+        f3.mul(-3).add(f2.mul(3)).add(f.mul(3)).add(1).div(6),
+        f3.div(6)
+      ];
+    };
+    const wx = weights1D(t.x);
+    const wy = weights1D(t.y);
+    let filtered: N = vec2(0, 0);
+    for (let j = 0; j < 4; j++) {
+      let row: N = vec2(0, 0);
+      for (let i = 0; i < 4; i++) {
+        row = row.add(this.#normalTapRG(cell.x.add(i - 1), cell.y.add(j - 1), sourceLod).mul(wx[i]));
+      }
+      filtered = filtered.add(row.mul(wy[j]));
+    }
+    const xz = filtered.mul(2).sub(1);
     const y = float(1).sub(xz.dot(xz)).max(0).sqrt();
     return normalize(vec3(xz.x, y, xz.y));
   }
