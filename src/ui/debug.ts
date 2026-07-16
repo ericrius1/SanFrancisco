@@ -579,6 +579,12 @@ export class DebugPanel {
       }
     });
 
+    // MASTER fog switch — detail knobs live in the top-level fog folder.
+    WORLD_TUNING.bind(meta, {
+      keys: ["fogEnabled"],
+      onChange: () => this.#sky.applyFogParams()
+    });
+
     // proxy so tweakpane's slider step never quantizes the live cycle clock
     const lightingView = {
       timeOfDay: this.#sky.timeOfDay,
@@ -738,39 +744,10 @@ export class DebugPanel {
     const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: false });
     CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
 
-    // Stylized post effects: toggles select retained shader variants; sliders
-    // are live uniforms — see render/postfx.ts. Boot only warms the active look;
-    // expanding this folder finishes the other graphs so comparisons stay smooth.
-    const postfx = pane.addFolder({ title: "post fx", expanded: false });
-    postfx.on("fold", ({ expanded }) => {
-      if (expanded) this.#warmPostFxGraphs();
-    });
-    POSTFX_TUNING.bind(postfx, {
-      onChange: (key, _value, last) => {
-        if (this.#syncingPane) return;
-        if ((POSTFX_TOGGLES as readonly string[]).includes(key)) this.#postfx?.applyPostFx();
-        else if ((POSTFX_RADIAL_LIGHT_KEYS as readonly string[]).includes(key)) {
-          if (key !== "museumRaysResolution" || last) this.#postfx?.applyRadialLightFx();
-        } else applyPostFxParams();
-      }
-    });
-    await checkpoint();
-
-    // Render knobs. Fog nests here.
-    const rendering = pane.addFolder({ title: "rendering", expanded: false });
-    RENDER_TUNING.bind(rendering, {
-      keys: ["pixelRatio"],
-      onChange: (_key, value) => {
-        this.#renderer.setPixelRatio(value as number);
-        this.#renderer.setSize(window.innerWidth, window.innerHeight);
-      }
-    });
-    const waterEchoes = rendering.addFolder({ title: "water echoes", expanded: false });
-    WATER_ECHO_TUNING.bind(waterEchoes, { onChange: () => {} });
-    const fog = rendering.addFolder({ title: "fog", expanded: false });
+    // Fog — top-level (master on/off lives in metta above).
+    const fog = pane.addFolder({ title: "fog", expanded: false });
     WORLD_TUNING.bind(fog, {
       keys: [
-        "fogEnabled",
         "fogMaster",
         "fogWeather",
         "fogLiveInfluence",
@@ -805,6 +782,36 @@ export class DebugPanel {
       );
     }
     this.#refreshFogWeatherMonitor();
+    await checkpoint();
+
+    // Stylized post effects: toggles select retained shader variants; sliders
+    // are live uniforms — see render/postfx.ts. Boot only warms the active look;
+    // expanding this folder finishes the other graphs so comparisons stay smooth.
+    const postfx = pane.addFolder({ title: "post fx", expanded: false });
+    postfx.on("fold", ({ expanded }) => {
+      if (expanded) this.#warmPostFxGraphs();
+    });
+    POSTFX_TUNING.bind(postfx, {
+      onChange: (key, _value, last) => {
+        if (this.#syncingPane) return;
+        if ((POSTFX_TOGGLES as readonly string[]).includes(key)) this.#postfx?.applyPostFx();
+        else if ((POSTFX_RADIAL_LIGHT_KEYS as readonly string[]).includes(key)) {
+          if (key !== "museumRaysResolution" || last) this.#postfx?.applyRadialLightFx();
+        } else applyPostFxParams();
+      }
+    });
+    await checkpoint();
+
+    const rendering = pane.addFolder({ title: "rendering", expanded: false });
+    RENDER_TUNING.bind(rendering, {
+      keys: ["pixelRatio"],
+      onChange: (_key, value) => {
+        this.#renderer.setPixelRatio(value as number);
+        this.#renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+    });
+    const waterEchoes = rendering.addFolder({ title: "water echoes", expanded: false });
+    WATER_ECHO_TUNING.bind(waterEchoes, { onChange: () => {} });
     await checkpoint();
 
     const terrain = pane.addFolder({ title: "terrain", expanded: false });

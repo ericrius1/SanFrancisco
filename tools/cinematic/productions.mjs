@@ -104,6 +104,19 @@ const DEFINITIONS = Object.freeze({
       description: "Pacific rush, lip takeoff, one airy rotation, and a clean rail landing."
     })
   }),
+  "phoenix-palace-flyby": Object.freeze({
+    id: "phoenix-palace-flyby",
+    demo: "phoenix-palace-flyby",
+    title: "Phoenix over the Palace",
+    duration: 5,
+    seed: 0x50_48_58_46,
+    posterAt: 2.75,
+    stillTimes: Object.freeze([0.2, 0.95, 1.75, 2.45, 2.85, 3.25, 4.15, 4.8]),
+    audio: Object.freeze({
+      profile: "phoenix-palace-flyby",
+      description: "Sunset air, powerful wingbeats, an axial roll whoosh, and a warm Palace resolve."
+    })
+  }),
   ...Object.fromEntries([
     [1, "Ocean Beach Sunrise Surf"],
     [2, "Golden Gate Scooter Ribbon"],

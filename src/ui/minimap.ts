@@ -376,10 +376,14 @@ export class Minimap {
     // region centre, which can fall on a road, rooftop or the bay.
     // Skip ggpark — Botanical Garden, Japanese Tea Garden, and Archery Range
     // already cover Golden Gate Park with activity-specific pins.
+    const sutroArrival = SPAWN_POINTS.sutroTower;
     const NATURE_ANCHORS: { id: string; name: string; x: number; z: number }[] = [
       { id: "presidio", name: "The Presidio", x: -1820, z: -1520 }, // cypress ridge grove
       { id: "marin", name: "Marin Headlands", x: -4450, z: -6250 }, // poppy hills + groves
-      { id: "twinpeaks", name: "Mount Sutro", x: -782, z: 3846 } // Sutro cloud-forest under the tower
+      // Reuse the cleared overlook instead of the tower's geographic centre.
+      // Landing inside the three splayed legs surrounds the camera with the
+      // 300 m structure and makes it look as though the tower follows the view.
+      { id: "twinpeaks", name: "Mount Sutro", x: sutroArrival.x, z: sutroArrival.z }
     ];
     const wildIds = new Set<string>(WILD_REGIONS.map((r) => r.id));
     for (const a of NATURE_ANCHORS) {
@@ -1006,9 +1010,29 @@ export class Minimap {
     return g.width * g.cellSize;
   }
 
+  /**
+   * CSS size of the expanded map frame. Fills most of the viewport so wide
+   * screens stay immersive; a thin ribbon of the dimmed world remains visible.
+   * Layer pills sit above the frame, so their chrome is reserved from height.
+   */
+  #bigCssSize() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const layerChrome = 52;
+    const narrow = vw < 640;
+    const sideFrac = narrow ? 0.028 : vw < 1100 ? 0.04 : 0.05;
+    const padX = Math.max(narrow ? 10 : 28, Math.round(vw * sideFrac)) * 2;
+    const padY = Math.max(vh < 700 ? 18 : 32, Math.round(vh * 0.035)) * 2;
+    return {
+      w: Math.max(240, Math.round(vw - padX)),
+      h: Math.max(240, Math.round(vh - padY - layerChrome))
+    };
+  }
+
+  /** Viewport aspect of the expanded map (not the world grid). */
   #bigAspect() {
-    const g = this.#map.meta.grid;
-    return g.width / g.height;
+    const { w, h } = this.#bigCssSize();
+    return w / Math.max(1, h);
   }
 
   #clampBigSpan(span: number) {
@@ -2089,12 +2113,9 @@ export class Minimap {
   #drawBig() {
     const canvas = this.#big!;
     this.#tickBigRecenterAnim();
-    const { width: W, height: H } = this.#map.meta.grid;
     const dpr = this.#dpr;
-    // fit the viewport, keep the world aspect
-    const fit = Math.min((window.innerWidth - 90) / W, (window.innerHeight - 130) / H);
-    const cw = Math.round(W * fit);
-    const ch = Math.round(H * fit);
+    // Fill the available viewport; geography stays undistorted via #bigAspect().
+    const { w: cw, h: ch } = this.#bigCssSize();
     const pixelW = Math.round(cw * dpr);
     const pixelH = Math.round(ch * dpr);
     if (canvas.width !== pixelW || canvas.height !== pixelH) {

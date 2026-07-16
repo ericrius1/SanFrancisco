@@ -78,6 +78,7 @@ try {
           name: material.name,
           hasPositionNode: !!material.positionNode,
           hasEmissiveNode: !!material.emissiveNode,
+          hasThicknessNode: !!material.thicknessColorNode,
           hasBaseColor: !!material.map,
           hasNormal: !!material.normalMap,
           hasOrm: !!material.roughnessMap && !!material.metalnessMap
@@ -106,10 +107,10 @@ try {
   assert.equal(runtime.meshes, 1, `expected one phoenix draw mesh, got ${runtime.meshes}`);
   assert.equal(runtime.skinnedMeshes, 1, `expected one skinned phoenix mesh, got ${runtime.skinnedMeshes}`);
   assert.equal(runtime.triangles, 58_000);
-  assert(runtime.materials.every((material) => material.type === "MeshStandardNodeMaterial"));
-  assert(runtime.materials.every((material) => material.hasPositionNode && material.hasEmissiveNode));
+  assert(runtime.materials.every((material) => material.type === "MeshSSSNodeMaterial"));
+  assert(runtime.materials.every((material) => material.hasPositionNode && material.hasEmissiveNode && material.hasThicknessNode));
   assert(runtime.materials.every((material) => material.hasBaseColor && material.hasNormal && material.hasOrm));
-  assert(runtime.attributes.every((names) => names.includes("phxFlutter") && names.includes("phxHeat")));
+  assert(runtime.attributes.every((names) => ["phxDynamics", "phxStyle"].every((name) => names.includes(name))));
   assert.deepEqual(runtime.trails, ["PHX_Gen_Trail_L", "PHX_Gen_Trail_R"]);
   assert.deepEqual(runtime.wingTips, ["PHX_Gen_Wingtip_L", "PHX_Gen_Wingtip_R"]);
   assert(!requests.some((url) => /\/models\/phoenix\.glb(?:\?|$)/.test(url)), "legacy phoenix was requested");

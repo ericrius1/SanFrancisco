@@ -1,6 +1,9 @@
 node_modules/
 /dist/
 .data/
+# RL training artifacts: logs, frame recordings, checkpoints-in-progress.
+# Deployed policies live in public/models/ and ARE committed.
+rl/runs/
 data/raw/
 !data/raw/
 data/raw/*

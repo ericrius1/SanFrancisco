@@ -238,6 +238,8 @@ export class HUD {
   #root = document.getElementById("hud")!
   #help = document.querySelector<HTMLElement>('[data-hud="help"]')!
   #helpBody = document.createElement("div")
+  /** Wraps helpBody so the fold-out panel can float above the pinned handle. */
+  #helpBodyWrap = document.createElement("div")
   #helpToggle = document.createElement("button")
   #center = document.querySelector<HTMLElement>('[data-hud="center"]')!
   #history = document.createElement("div")
@@ -255,6 +257,8 @@ export class HUD {
 
   constructor() {
     this.#helpBody.className = "help-body"
+    this.#helpBodyWrap.className = "help-body-wrap"
+    this.#helpBodyWrap.appendChild(this.#helpBody)
     this.#helpToggle.type = "button"
     this.#helpToggle.className = "help-toggle"
     this.#helpToggle.addEventListener("click", (e) => {
@@ -263,7 +267,10 @@ export class HUD {
       this.#helpCollapsed = !this.#helpCollapsed
       this.#syncHelpCollapse()
     })
-    this.#help.replaceChildren(this.#helpToggle, this.#helpBody)
+    // Body-wrap first, handle last: in the bottom-anchored, right-aligned
+    // br-stack the handle stays pinned to the bottom-right while the panel
+    // folds out ABOVE it — so clicking the handle never makes it jump.
+    this.#help.replaceChildren(this.#helpBodyWrap, this.#helpToggle)
     this.#syncHelpCollapse()
     // Defaults match boot (walk / kb / ball), so setMode/setDevice/setToolVerb
     // all early-return — paint the rows once here or the panel stays empty.
@@ -288,7 +295,7 @@ export class HUD {
     this.#helpToggle.setAttribute("aria-label", this.#helpToggle.title)
     this.#helpToggle.innerHTML =
       `<span class="help-toggle-label">Controls</span>` +
-      `<span class="help-toggle-chevron" aria-hidden="true">${this.#helpCollapsed ? "▸" : "▾"}</span>`
+      `<span class="help-toggle-chevron" aria-hidden="true">${this.#helpCollapsed ? "▴" : "▾"}</span>`
   }
 
   /** The Click/X row tracks the active toolbar tool. */

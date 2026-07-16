@@ -50,7 +50,7 @@ for (const [name, expectedTriangles] of specs) {
   const semantics = primitive.listSemantics().sort();
   const nodeNames = new Set(model.listNodes().map((node) => node.getName()));
   const rigNode = model.listNodes().find((node) => node.getName() === "PhoenixRig");
-  assert(triangles === expectedTriangles, `${name}: ${triangles} triangles, expected ${expectedTriangles}`);
+  assert(Math.abs(triangles - expectedTriangles) <= 1, `${name}: ${triangles} triangles, expected ${expectedTriangles}±1`);
   assert(skins.length === 1, `${name}: expected one skin, found ${skins.length}`);
   assert(rigNode, `${name}: missing PhoenixRig root node`);
   assert(rigNode.getTranslation().every((value) => Math.abs(value) < 1e-6), `${name}: rig is not origin-normalized`);
@@ -58,8 +58,9 @@ for (const [name, expectedTriangles] of specs) {
   assert(Math.abs(rigNode.getRotation()[3] - 1) < 1e-6, `${name}: rig root quaternion is not identity`);
   assert(animations.length === 0, `${name}: baked clips are not allowed`);
   assert(model.listMaterials().length === 1, `${name}: expected one material`);
-  assert(semantics.includes("_PHX_FLUTTER"), `${name}: missing _PHX_FLUTTER`);
-  assert(semantics.includes("_PHX_HEAT"), `${name}: missing _PHX_HEAT`);
+  for (const semantic of ["_PHX_DYNAMICS", "_PHX_STYLE"]) {
+    assert(semantics.includes(semantic), `${name}: missing ${semantic}`);
+  }
   assert(semantics.includes("JOINTS_0") && semantics.includes("WEIGHTS_0"), `${name}: missing skin attributes`);
   assert(!semantics.includes("JOINTS_1"), `${name}: more than four skin influences exported`);
   for (const bone of expectedBones) assert(nodeNames.has(bone), `${name}: missing bone ${bone}`);

@@ -46,6 +46,7 @@ import {
 } from "./world/japaneseTeaGarden/layout";
 import { AuthoredRegionStreamer } from "./world/authoredRegions";
 import { warmStaticRegion } from "./render/warmStaticRegion";
+import { warmHiddenRoot } from "./render/warmHiddenRoot";
 import type { CoronaHeightsPark } from "./world/coronaHeights";
 import { prepareCoronaHeightsGround } from "./world/coronaHeights/ground";
 import { CORONA_HEIGHTS_SUMMIT } from "./world/coronaHeights/meta";
@@ -114,6 +115,10 @@ import { FetchBall } from "./gameplay/fetchBall";
 import { createSiteGate } from "./gameplay/siteGate";
 import type { ArcheryGame } from "./gameplay/archery";
 import { ARCHERY_CENTER } from "./gameplay/archery/meta";
+import type { PupPen } from "./gameplay/pup";
+import { PUP_CENTER } from "./gameplay/pup/meta";
+import type { Ranch } from "./gameplay/ranch";
+import { RANCH_CENTER, HORSE_PADDOCK } from "./gameplay/ranch/meta";
 import type { PalaceReverieGame } from "./gameplay/palaceReverie";
 import { REVERIE_CENTER } from "./gameplay/palaceReverie/meta";
 import type { LandsEndRegion } from "./world/landsEnd";
@@ -1153,6 +1158,8 @@ async function boot() {
   let golf: import("./gameplay/golf").GolfGame | null = null;
   // Golden Gate Park archery range — NW corner of the park; site-gated like golf.
   let archery: ArcheryGame | null = null;
+  let pup: PupPen | null = null;
+  let ranch: Ranch | null = null;
   // Palace of Fine Arts blue-hour art quest (site-gated around the lagoon).
   let palaceReverie: PalaceReverieGame | null = null;
   // Lands End — the NW headland: a cliff-top Labyrinth you light by walking,
@@ -1236,7 +1243,12 @@ async function boot() {
   const dogParkAudio = new DogParkAudio(nature, () => coronaHeights?.dogs ?? []);
   // First feature-level HMR boundary. The stable facade survives edits while
   // its concrete trio, GPU resources, audio and perch collider are replaced.
-  const buskers = createBuskersSystem({ scene, map, physics });
+  const buskers = createBuskersSystem({
+    scene,
+    map,
+    physics,
+    prepareRender: (root) => warmHiddenRoot(renderer, camera, scene, root)
+  });
   let ridePromptShown = false;
   let doorPromptShown = false;
   let doorScanCountdown = 0;
@@ -1314,12 +1326,29 @@ async function boot() {
     if (orbitOn) {
       chase.suspend(player); // orbit owns the camera and should show the local avatar
       input.releaseLock();
+      // Start from a clean framing: medium distance, level with the head, facing
+      // the player. Entering from first person leaves the camera inside the head
+      // (target above camera → confusing worm's-eye view), so never reuse the raw
+      // camera position — only its horizontal bearing, when it has one.
+      const ORBIT_START_DIST = 8;
+      const headY = player.position.y + 1.5;
+      let dx = camera.position.x - player.position.x;
+      let dz = camera.position.z - player.position.z;
+      const horiz = Math.hypot(dx, dz);
+      if (horiz > 0.5) {
+        dx /= horiz;
+        dz /= horiz;
+      } else {
+        // Degenerate (first person / co-located): sit behind the player's facing.
+        dx = -Math.sin(player.heading);
+        dz = -Math.cos(player.heading);
+      }
       orbit.setLookAt(
-        camera.position.x,
-        camera.position.y,
-        camera.position.z,
+        player.position.x + dx * ORBIT_START_DIST,
+        headY,
+        player.position.z + dz * ORBIT_START_DIST,
         player.position.x,
-        player.position.y + 1.5,
+        headY,
         player.position.z,
         false
       );
@@ -1808,6 +1837,8 @@ async function boot() {
   // site builds hidden behind its gate), so the pin is safe to drop even when
   // the range is asleep. Marks the field + gives a teleport like golf/tennis.
   minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
+  minimap.addLandmark(PUP_CENTER.x, PUP_CENTER.z, "Puppy Nursery");
+  minimap.addLandmark(HORSE_PADDOCK.x, HORSE_PADDOCK.z, "Horse Paddock");
   minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
   // Ocean Beach surf shack. Teleporting arrives on foot at the apron;
   // one E press on a racked board enters the live face already standing and moving.
@@ -2861,7 +2892,9 @@ async function boot() {
     | "afterlight"
     | "corona"
     | "lands-end"
-    | "sutro-baths";
+    | "sutro-baths"
+    | "pup"
+    | "ranch";
   type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
   type OptionalWorldSite = {
     id: OptionalSiteId;
@@ -2890,6 +2923,8 @@ async function boot() {
       pickleballAudio: pickleballController?.audio ?? null,
       pickleballUI: pickleballController?.ui ?? null,
       archery,
+      pup,
+      ranch,
       palaceReverie,
       afterlight,
       coronaHeights,
@@ -3007,6 +3042,26 @@ async function boot() {
     await prepareOptionalRoot("archery", game.root);
     archery = game;
     siteGate.register(game.siteHooks());
+    refreshOptionalSiteDebug();
+  };
+
+  const loadPup = async (): Promise<void> => {
+    const { createPupPen } = await import("./gameplay/pup");
+    await waitForOptionalSiteStage();
+    const pen = createPupPen(map, physics, scene);
+    await prepareOptionalRoot("pup", pen.root);
+    pup = pen;
+    siteGate.register(pen.siteHooks());
+    refreshOptionalSiteDebug();
+  };
+
+  const loadRanch = async (): Promise<void> => {
+    const { createRanch } = await import("./gameplay/ranch");
+    await waitForOptionalSiteStage();
+    const r = createRanch(map, physics, scene);
+    await prepareOptionalRoot("ranch", r.root);
+    ranch = r;
+    siteGate.register(r.siteHooks());
     refreshOptionalSiteDebug();
   };
 
@@ -3154,6 +3209,8 @@ async function boot() {
       load: loadGoldman
     },
     { id: "archery", label: "Archery Range", ...ARCHERY_CENTER, state: "dormant", forced: false, promise: null, load: loadArchery },
+    { id: "pup", label: "Puppy Nursery", ...PUP_CENTER, state: "dormant", forced: false, promise: null, load: loadPup },
+    { id: "ranch", label: "Creature Ranch", ...RANCH_CENTER, state: "dormant", forced: false, promise: null, load: loadRanch },
     { id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, state: "dormant", forced: false, promise: null, load: loadPalace },
     {
       id: "afterlight",
@@ -3196,14 +3253,18 @@ async function boot() {
     afterlight: true,
     corona: true,
     "lands-end": true,
-    "sutro-baths": true
+    "sutro-baths": true,
+    pup: true,
+    ranch: true
   };
   let optionalSitePerfGating = false;
   const OPTIONAL_SITE_GATE_ID: Partial<Record<OptionalSiteId, string>> = {
     goldman: "pickleball",
     archery: "archery",
     palace: "palace-reverie",
-    afterlight: "afterlight"
+    afterlight: "afterlight",
+    pup: "pup",
+    ranch: "ranch"
   };
   const optionalSitePerfAllowed = (id: OptionalSiteId): boolean =>
     !optionalSitePerfGating || optionalSitePerfEnabled[id];
@@ -3219,6 +3280,12 @@ async function boot() {
         break;
       case "archery":
         if (!on && archery) archery.root.visible = false;
+        break;
+      case "pup":
+        if (!on && pup) pup.root.visible = false;
+        break;
+      case "ranch":
+        if (!on && ranch) ranch.root.visible = false;
         break;
       case "palace":
         if (!on && palaceReverie) palaceReverie.root.visible = false;
@@ -3260,6 +3327,16 @@ async function boot() {
         return {
           runtime: siteGate.awake("archery") ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(archery?.root)
+        };
+      case "pup":
+        return {
+          runtime: siteGate.awake("pup") ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(pup?.root)
+        };
+      case "ranch":
+        return {
+          runtime: siteGate.awake("ranch") ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(ranch?.root)
         };
       case "palace":
         return {
@@ -4932,6 +5009,14 @@ async function boot() {
     if (!worldArrival.active && optionalSitePerfAllowed("archery")) {
       archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
     }
+    // Biscuit the RL pup: site-gated, one boolean early-return when asleep
+    if (!worldArrival.active && optionalSitePerfAllowed("pup")) {
+      pup?.update(frameDt, camera);
+    }
+    // Creature ranch (RL horses + goats): site-gated the same way
+    if (!worldArrival.active && optionalSitePerfAllowed("ranch")) {
+      ranch?.update(frameDt, camera);
+    }
     // Afterlight: proximity collectibles, return flights, quest clock and the
     // completed sky performance; site-gated to a single asleep early return.
     if (!worldArrival.active && optionalSitePerfAllowed("afterlight")) {
@@ -5418,7 +5503,7 @@ async function boot() {
     const ensureDemoSite = async (name: string): Promise<void> => {
       const site: OptionalSiteId | null =
         name === "afterlight" ? "afterlight" :
-        name === "palace" || name === "palace-reverie" ? "palace" :
+        name === "palace" || name === "palace-reverie" || name === "phoenix-palace-flyby" ? "palace" :
         name === "landsend" ? "lands-end" :
         null;
       if (site) await ensureOptionalWorldSite(site);

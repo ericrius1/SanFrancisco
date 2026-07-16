@@ -758,7 +758,7 @@ export class Player {
     mesh.quaternion.copy(quat); // full car tilt, not the yaw-only walk slerp
     this.#animT += dt;
     poseDrive(this.#walkRig, 0, this.#animT, false); // seated, hands in lap
-    this.#lightPool.update();
+    this.#lightPool.update(this.renderPosition.x, this.renderPosition.z);
   }
 
   /** Hop out: back on our own feet where we are (caller offsets clear of the car). */
@@ -1649,7 +1649,7 @@ export class Player {
       mesh.quaternion.copy(this.renderQuaternion);
     }
     this.#animate(dt);
-    this.#lightPool.update();
+    this.#lightPool.update(this.renderPosition.x, this.renderPosition.z);
   }
 
   /** Per-frame character animation: pose whichever rig is embodied right now. */

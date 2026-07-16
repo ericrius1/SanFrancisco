@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Creature RL — training viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: #0b0d12; color: #d7dbe6; }
+  #wrap { display: grid; grid-template-columns: 1fr 320px; grid-template-rows: 1fr auto; height: 100vh; }
+  #stage { position: relative; background: radial-gradient(120% 100% at 50% 0%, #1a2233 0%, #0b0d12 70%); }
+  canvas { display: block; }
+  #side { border-left: 1px solid #222a38; padding: 14px; overflow-y: auto; }
+  #bar { grid-column: 1 / -1; border-top: 1px solid #222a38; padding: 10px 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; background: #0e1119; }
+  h1 { font-size: 13px; margin: 0 0 10px; letter-spacing: .04em; color: #9fb2d8; text-transform: uppercase; }
+  .k { color: #6b7688; }
+  .v { color: #eaf0ff; }
+  button, select { font: inherit; background: #1a2130; color: #d7dbe6; border: 1px solid #2b3446; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button:hover { background: #24304a; }
+  input[type=range] { accent-color: #5aa2ff; }
+  #hud { position: absolute; top: 12px; left: 14px; font-size: 12px; line-height: 1.7; text-shadow: 0 1px 2px #000; pointer-events: none; }
+  #hud b { color: #ffd27a; }
+  .row { display: flex; justify-content: space-between; margin: 3px 0; }
+  #rewardCanvas, #actCanvas { width: 100%; border: 1px solid #222a38; border-radius: 6px; background: #0a0c11; margin-top: 6px; }
+  .lbl { font-size: 11px; color: #7f8ba3; margin-top: 14px; text-transform: uppercase; letter-spacing: .05em; }
+  .hint { color: #5a6376; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <div id="hud"></div>
+  </div>
+  <div id="side">
+    <h1>Creature RL viewer</h1>
+    <div class="row"><span class="k">creature</span><span class="v" id="mCreature">—</span></div>
+    <div class="row"><span class="k">generation</span><span class="v" id="mGen">—</span></div>
+    <div class="row"><span class="k">episode reward</span><span class="v" id="mReward">—</span></div>
+    <div class="row"><span class="k">distance</span><span class="v" id="mDist">—</span></div>
+    <div class="lbl">reward vs generation</div>
+    <canvas id="rewardCanvas" height="110"></canvas>
+    <div class="lbl">policy activations (the "brain")</div>
+    <canvas id="actCanvas" height="90"></canvas>
+    <div class="hint" style="margin-top:12px">drag the scene to orbit · scroll to zoom</div>
+  </div>
+  <div id="bar">
+    <button id="play">⏸ pause</button>
+    <label class="k">gen <select id="genSel"></select></label>
+    <input id="scrub" type="range" min="0" max="100" value="0" style="flex:1; min-width:160px" />
+    <label class="k">speed <input id="speed" type="range" min="0.25" max="3" step="0.25" value="1" /></label>
+    <button id="prevGen">◀ gen</button><button id="nextGen">gen ▶</button>
+    <span class="hint" id="status"></span>
+  </div>
+</div>
+<script>
+const BASE = "../runs/";            // frames + log live here
+const CREATURE = new URLSearchParams(location.search).get("creature") || "horse";
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const state = { data: null, i: 0, playing: true, speed: 1, az: 0.7, el: 0.35, dist: 4.2, gens: [], log: [] };
+
+// ---- tiny 3D ----
+function qRot(q, v) { const [x,y,z,w]=q; const tx=2*(y*v[2]-z*v[1]),ty=2*(z*v[0]-x*v[2]),tz=2*(x*v[1]-y*v[0]);
+  return [v[0]+w*tx+(y*tz-z*ty), v[1]+w*ty+(z*tx-x*tz), v[2]+w*tz+(x*ty-y*tx)]; }
+function project(p, cam) {
+  // world -> camera space (orbit camera looking at target)
+  const dx=p[0]-cam.t[0], dy=p[1]-cam.t[1], dz=p[2]-cam.t[2];
+  const ca=Math.cos(cam.az), sa=Math.sin(cam.az), ce=Math.cos(cam.el), se=Math.sin(cam.el);
+  let x = ca*dx - sa*dz;
+  let z = sa*dx + ca*dz;
+  let y = ce*dy - se*z;
+  z = se*dy + ce*z;
+  const camZ = z + cam.dist;                     // distance from eye
+  const f = cam.f / Math.max(0.05, camZ);
+  return { x: cv.width/2 + x*f, y: cv.height/2 - y*f, depth: camZ, on: camZ>0.05 };
+}
+function resize() { cv.width = cv.parentElement.clientWidth; cv.height = cv.parentElement.clientHeight; }
+window.addEventListener("resize", resize);
+
+// ---- data ----
+async function loadLog() {
+  try {
+    const t = await (await fetch(BASE + CREATURE + "_log.jsonl", {cache:"no-store"})).text();
+    state.log = t.trim().split("\n").filter(Boolean).map(JSON.parse);
+  } catch { state.log = []; }
+}
+async function discoverGens() {
+  // Probe recorded gen files. The dev server answers missing paths with the SPA
+  // fallback (200 + text/html), so a real frames file is only the one whose
+  // content-type is JSON — that check is what keeps phantom gens out.
+  const found = [];
+  const candidates = new Set();
+  for (let g = 0; g <= 600; g += 15) candidates.add(g);
+  if (state.log.length) candidates.add(state.log[state.log.length - 1].gen);
+  for (const g of [...candidates].sort((a, b) => a - b)) {
+    try {
+      const r = await fetch(BASE + `${CREATURE}_gen${g}.frames.json`, {method:"HEAD", cache:"no-store"});
+      if (r.ok && (r.headers.get("content-type")||"").includes("json")) found.push(g);
+    } catch {}
+  }
+  state.gens = found;
+  const sel = document.getElementById("genSel"); sel.innerHTML = "";
+  for (const g of found) { const o=document.createElement("option"); o.value=g; o.textContent="gen "+g; sel.appendChild(o); }
+  if (state.data) sel.value = state.data.gen; // keep the loaded gen selected across live refreshes
+}
+async function loadGen(g) {
+  const resp = await fetch(BASE + `${CREATURE}_gen${g}.frames.json`, {cache:"no-store"});
+  if (!(resp.headers.get("content-type")||"").includes("json")) return; // fallback HTML, not ready
+  const d = await resp.json();
+  if (!d || !d.frames) return;
+  state.data = d; state.i = 0;
+  document.getElementById("mCreature").textContent = d.creature || CREATURE;
+  document.getElementById("mGen").textContent = d.gen;
+  document.getElementById("mReward").textContent = d.reward;
+  const f0=d.frames[0].links[0].pos, f1=d.frames[d.frames.length-1].links[0].pos;
+  document.getElementById("mDist").textContent = Math.hypot(f1[0]-f0[0], f1[2]-f0[2]).toFixed(2)+" m";
+  document.getElementById("genSel").value = g;
+  document.getElementById("scrub").max = d.frames.length-1;
+  drawReward();
+}
+
+// ---- draw creature ----
+function drawScene() {
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if (!state.data) return;
+  const d = state.data, fr = d.frames[state.i|0]; if (!fr) return;
+  const torsoPos = fr.links[0].pos;
+  const cam = { t: torsoPos, az: state.az, el: state.el, dist: state.dist, f: cv.height*0.9 };
+
+  // ground grid centered under the creature
+  ctx.lineWidth = 1;
+  const gx = Math.round(torsoPos[0]), gz = Math.round(torsoPos[2]);
+  const prims = [];
+  for (let i=-6;i<=6;i++){
+    prims.push({z: 0, kind:"line", a:[gx+i,0,gz-6], b:[gx+i,0,gz+6], col:"#1b2536"});
+    prims.push({z: 0, kind:"line", a:[gx-6,0,gz+i], b:[gx+6,0,gz+i], col:"#1b2536"});
+  }
+  // goal direction arrow
+  if (fr.goal){ const g=fr.goal; prims.push({kind:"line", a:[torsoPos[0],0.02,torsoPos[2]], b:[torsoPos[0]+g[0]*1.5,0.02,torsoPos[2]+g[1]*1.5], col:"#3a6b4a", w:3}); }
+
+  // torso box
+  const b = d.body || { torso:[0.22,0.13,0.52], legs:[] };
+  const th = b.torso;
+  const corners = [];
+  for (const sx of [-1,1]) for (const sy of [-1,1]) for (const sz of [-1,1]) {
+    const local=[sx*th[0], sy*th[1], sz*th[2]]; const w=qRot(fr.links[0].quat, local);
+    corners.push([torsoPos[0]+w[0], torsoPos[1]+w[1], torsoPos[2]+w[2]]);
+  }
+  const edges = [[0,1],[1,3],[3,2],[2,0],[4,5],[5,7],[7,6],[6,4],[0,4],[1,5],[2,6],[3,7]];
+  for (const [i,j] of edges) prims.push({kind:"line", a:corners[i], b:corners[j], col:"#c98a4b", w:2});
+
+  // legs: thigh + shank capsules
+  const nLeg = b.legs.length || (fr.links.length-1)/2;
+  for (let li=0; li<nLeg; li++){
+    const seg = b.legs[li] || {thigh:[0.13,0.08], shank:[0.13,0.07]};
+    for (let s=0;s<2;s++){
+      const link = fr.links[1 + li*2 + s]; if(!link) continue;
+      const hh = (s===0?seg.thigh:seg.shank)[0], r=(s===0?seg.thigh:seg.shank)[1];
+      const top = qRot(link.quat,[0, hh,0]), bot = qRot(link.quat,[0,-hh,0]);
+      const A=[link.pos[0]+top[0],link.pos[1]+top[1],link.pos[2]+top[2]];
+      const B=[link.pos[0]+bot[0],link.pos[1]+bot[1],link.pos[2]+bot[2]];
+      prims.push({kind:"cap", a:A, b:B, r:r, col: s===0?"#d8b98a":"#b98a5e"});
+    }
+  }
+
+  // painter's sort by depth, then draw
+  for (const p of prims){ const pa=project(p.a,cam), pb=project(p.b,cam); p._a=pa; p._b=pb; p._d=(pa.depth+pb.depth)/2; }
+  prims.sort((x,y)=>y._d-x._d);
+  for (const p of prims){
+    if (!p._a.on || !p._b.on) continue;
+    ctx.strokeStyle = p.col; ctx.fillStyle = p.col;
+    if (p.kind==="cap"){
+      const w = Math.max(2, p.r * (cv.height*0.9)/p._d * 2);
+      ctx.lineWidth=w; ctx.lineCap="round";
+      ctx.beginPath(); ctx.moveTo(p._a.x,p._a.y); ctx.lineTo(p._b.x,p._b.y); ctx.stroke();
+    } else {
+      ctx.lineWidth=p.w||1; ctx.beginPath(); ctx.moveTo(p._a.x,p._a.y); ctx.lineTo(p._b.x,p._b.y); ctx.stroke();
+    }
+  }
+  drawAct(fr.hidden);
+  const t=(state.i*(d.dt||1/60)).toFixed(2);
+  document.getElementById("hud").innerHTML = `<b>gen ${d.gen}</b> · t=${t}s<br>reward ${d.reward}`;
+}
+
+// ---- reward chart ----
+function drawReward(){
+  const rc=document.getElementById("rewardCanvas"); rc.width=rc.clientWidth; const g=rc.getContext("2d");
+  g.clearRect(0,0,rc.width,rc.height); if(!state.log.length) return;
+  const ys=state.log.map(l=>l.center); const mn=Math.min(...ys,0), mx=Math.max(...ys,1);
+  const X=i=>8+(rc.width-16)*i/Math.max(1,state.log.length-1);
+  const Y=v=>rc.height-8-(rc.height-16)*(v-mn)/Math.max(1e-6,mx-mn);
+  g.strokeStyle="#5aa2ff"; g.lineWidth=1.5; g.beginPath();
+  state.log.forEach((l,i)=>{ const x=X(i),y=Y(l.center); i?g.lineTo(x,y):g.moveTo(x,y); }); g.stroke();
+  if(state.data){ const gi=state.log.findIndex(l=>l.gen===state.data.gen); if(gi>=0){ g.fillStyle="#ffd27a"; g.beginPath(); g.arc(X(gi),Y(state.log[gi].center),3,0,7); g.fill(); } }
+  g.fillStyle="#6b7688"; g.font="10px monospace"; g.fillText(mx.toFixed(0),4,12); g.fillText(mn.toFixed(0),4,rc.height-4);
+}
+
+// ---- activation panel ----
+function drawAct(hidden){
+  const ac=document.getElementById("actCanvas"); if(ac.width!==ac.clientWidth) ac.width=ac.clientWidth;
+  const g=ac.getContext("2d"); g.clearRect(0,0,ac.width,ac.height);
+  if(!hidden||!hidden.length) return;
+  const n=hidden.length, cols=Math.ceil(Math.sqrt(n*ac.width/ac.height)), rows=Math.ceil(n/cols);
+  const cw=ac.width/cols, ch=ac.height/rows;
+  for(let k=0;k<n;k++){ const v=hidden[k]; const r=k/cols|0, c=k%cols;
+    const t=(v+1)/2; // tanh in [-1,1] -> [0,1]
+    g.fillStyle = `rgb(${Math.round(40+t*60)},${Math.round(60+t*150)},${Math.round(90+t*160)})`;
+    g.fillRect(c*cw+1, r*ch+1, cw-2, ch-2);
+  }
+}
+
+// ---- loop + input ----
+function tick(){
+  if(state.data && state.playing){ state.i += state.speed; if(state.i>=state.data.frames.length) state.i=0; document.getElementById("scrub").value=state.i|0; }
+  drawScene(); requestAnimationFrame(tick);
+}
+document.getElementById("play").onclick=e=>{ state.playing=!state.playing; e.target.textContent=state.playing?"⏸ pause":"▶ play"; };
+document.getElementById("scrub").oninput=e=>{ state.i=+e.target.value; state.playing=false; document.getElementById("play").textContent="▶ play"; };
+document.getElementById("speed").oninput=e=>state.speed=+e.target.value;
+document.getElementById("genSel").onchange=e=>loadGen(+e.target.value);
+document.getElementById("prevGen").onclick=()=>{ const i=state.gens.indexOf(state.data.gen); if(i>0) loadGen(state.gens[i-1]); };
+document.getElementById("nextGen").onclick=()=>{ const i=state.gens.indexOf(state.data.gen); if(i<state.gens.length-1) loadGen(state.gens[i+1]); };
+let drag=null;
+cv.addEventListener("mousedown",e=>drag={x:e.clientX,y:e.clientY,az:state.az,el:state.el});
+window.addEventListener("mouseup",()=>drag=null);
+window.addEventListener("mousemove",e=>{ if(!drag)return; state.az=drag.az-(e.clientX-drag.x)*0.008; state.el=Math.max(-0.2,Math.min(1.2,drag.el+(e.clientY-drag.y)*0.006)); });
+cv.addEventListener("wheel",e=>{ e.preventDefault(); state.dist=Math.max(1.5,Math.min(12,state.dist+e.deltaY*0.003)); },{passive:false});
+
+(async function(){
+  resize(); await loadLog(); await discoverGens();
+  if(state.gens.length){ await loadGen(state.gens[state.gens.length-1]); }
+  else document.getElementById("status").textContent = "no gen frames yet — training may still be warming up";
+  tick();
+  setInterval(async()=>{ await loadLog(); const before=state.gens.length; await discoverGens();
+    if(!state.data && state.gens.length){ await loadGen(state.gens[state.gens.length-1]); document.getElementById("status").textContent=""; }
+    else if(state.gens.length>before) drawReward(); }, 6000); // live refresh during training
+})();
+</script>
+</body>
+</html>
