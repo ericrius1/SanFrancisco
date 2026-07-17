@@ -1,4 +1,4 @@
-# Creature RL — teaching a horse to walk, in the browser's own physics engine
+# Creature RL — teaching a puppy to walk, in the browser's own physics engine
 
 A little reinforcement-learning lab that trains four-legged creatures to walk and
 roam, then drops them straight into the San Francisco world. Inspired by the
@@ -8,7 +8,7 @@ whole thing cheaper, faster, and tighter than the usual JAX/MuJoCo/RunPod stack.
 **The twist: we train against `box3d-wasm` — the exact same physics engine the
 game already runs — headless in Node.** No GPU, no Python, no cloud. And because
 train-time and run-time physics are byte-for-byte identical, a trained policy
-drops into the browser with **zero sim-to-real gap**: the horse flies through the
+drops into the browser with **zero sim-to-real gap**: the pup flies through the
 same solver it learned in, lands on real world colliders, and its neural net runs
 *live* over its head as a glowing "brain" bubble.
 
@@ -30,7 +30,7 @@ src/creatures/
 ## How a creature is built
 
 A creature is an **active ragdoll**: real rigid bodies wired together with joints,
-driven by "muscle" torques. For the horse:
+driven by "muscle" torques. For the pup:
 
 - a **box torso** (unambiguous body axes) and four **two-segment legs** — a thigh
   and a shank capsule each, so the foot can *lift* during swing and *bear load*
@@ -113,9 +113,9 @@ run them to watch a zero-policy creature just try to stand.
 node --experimental-strip-types rl/train.ts --gens 120 --pairs 96 --steps 500
 
 # writes:
-#   public/models/horse_policy.json      best policy (the browser loads this)
-#   rl/runs/horse_log.jsonl              reward per generation
-#   rl/runs/horse_gen<N>.frames.json     recorded rollouts (for the viewer/video)
+#   public/models/pup_policy.json        best policy (the browser loads this)
+#   rl/runs/pup_log.jsonl                reward per generation
+#   rl/runs/pup_gen<N>.frames.json       recorded rollouts (for the viewer/video)
 ```
 
 ## Watch it train
@@ -123,7 +123,7 @@ node --experimental-strip-types rl/train.ts --gens 120 --pairs 96 --steps 500
 Open `rl/viz/index.html` through the dev server (e.g. `/rl/viz/`). It plays back
 the recorded rollouts in 3D, draws the **reward-vs-generation** curve, and renders
 the policy's hidden activations as a live grid — the same "brain" that becomes the
-bubble over the horse's head in-world. Flip through generations to watch it go
+bubble over the pup's head in-world. Flip through generations to watch it go
 from flailing to walking. That gallery of generations *is* the training video;
 scrub it, or screen-capture the flip-through.
 
@@ -139,7 +139,7 @@ one spec.
 ## Into the world
 
 `src/creatures/policy.ts` and `quadruped.ts` are deliberately dependency-free and
-imported by the game too. In San Francisco the horse is a live box3d ragdoll
+imported by the game too. In San Francisco the pup is a live box3d ragdoll
 running the trained policy every frame: it roams Golden Gate Park on its own,
 wears its neural activations as a bubble, and you can walk up and ride it. Same
 brain, same body, same physics — just a nicer backdrop than a checkerboard floor.
