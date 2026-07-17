@@ -16,6 +16,14 @@ type AuthoredArrivalPose = {
   heading: number;
 };
 
+type RelocationPose = {
+  x: number;
+  y: number;
+  z: number;
+  facing: number;
+  mode: PlayerMode;
+};
+
 type PlaceHistoryEntry = {
   x: number;
   y: number;
@@ -267,9 +275,18 @@ export class NavigationController {
 
   /** Route authored/tutorial relocation through the same atomic arrival path. */
   teleportToPose(
-    target: { x: number; y: number; z: number; facing: number; mode: PlayerMode },
+    target: RelocationPose,
     label = "Tutorial place"
   ): void {
+    this.#relocateToPose(target, label, false);
+  }
+
+  /** Shared relocation path for the HUD exit; lands on foot at the saved start. */
+  returnToMinigameStart(target: RelocationPose, minigameLabel: string): void {
+    this.#relocateToPose(target, `${minigameLabel} start`, true);
+  }
+
+  #relocateToPose(target: RelocationPose, label: string, forceWalkLanding: boolean): void {
     const origin = this.#capture("Previous place");
     void this.#arrival.arrive({
       label,
@@ -284,12 +301,24 @@ export class NavigationController {
             this.#releaseGameplay();
             this.#embodiments.leaveRide();
             this.#embodiments.dropCurrentDriveMount();
-            this.#player.teleportTo(target);
+            if (forceWalkLanding) {
+              this.#embodiments.exitToWalk();
+              this.#player.restoreState({
+                x: target.x,
+                y: target.y,
+                z: target.z,
+                heading: target.facing + Math.PI,
+                mode: "walk"
+              });
+            } else {
+              this.#player.teleportTo(target);
+            }
           }
         };
       },
       onCommitted: () => {
         this.#commitNewPlace(origin, label);
+        if (forceWalkLanding) this.#hud.message(`Returned to ${label}`, 2.4);
         this.onTeleported();
       },
       onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),

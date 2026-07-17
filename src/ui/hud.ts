@@ -231,6 +231,7 @@ const PANELS: Record<string, string> = {
   links: ".links-ui",
   locator: ".player-locator",
   pause: ".pause-ui",
+  minigameExit: ".minigame-exit",
   restore: ".ui-restore",
 }
 
@@ -243,6 +244,7 @@ export class HUD {
   #helpToggle = document.createElement("button")
   #center = document.querySelector<HTMLElement>('[data-hud="center"]')!
   #history = document.createElement("div")
+  #minigameExit = document.createElement("button")
   #msgTimer = 0
   #current: PlayerMode = "walk"
   #device: "kb" | "pad" = "kb"
@@ -254,6 +256,7 @@ export class HUD {
 
   onHistoryBack: () => void = () => {}
   onHistoryForward: () => void = () => {}
+  onMinigameExit: () => void = () => {}
 
   constructor() {
     this.#helpBody.className = "help-body"
@@ -286,6 +289,16 @@ export class HUD {
       }
     })
     this.#renderHistory()
+
+    this.#minigameExit.type = "button"
+    this.#minigameExit.className = "minigame-exit"
+    this.#minigameExit.hidden = true
+    this.#minigameExit.addEventListener("click", (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      this.onMinigameExit()
+    })
+    this.#root.querySelector<HTMLElement>(".br-stack")?.appendChild(this.#minigameExit)
   }
 
   #syncHelpCollapse() {
@@ -316,6 +329,16 @@ export class HUD {
     this.#historyCanBack = canBack
     this.#historyCanForward = canForward
     this.#renderHistory()
+  }
+
+  setMinigameExit(label: string | null) {
+    this.#minigameExit.hidden = !label
+    if (!label) return
+    this.#minigameExit.title = `Exit ${label} and return to where you started`
+    this.#minigameExit.setAttribute("aria-label", this.#minigameExit.title)
+    this.#minigameExit.innerHTML =
+      `<span class="minigame-exit-icon" aria-hidden="true">↩</span>` +
+      `<span class="minigame-exit-copy"><b>Exit ${label}</b><small>Return to start</small></span>`
   }
 
   /** Swap the help labels to whichever device was touched last. */

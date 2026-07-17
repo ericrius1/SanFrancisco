@@ -1067,6 +1067,21 @@ export class Player {
     }
   }
 
+  /**
+   * Final player-owned safety net for minigame teardown. Activity controllers
+   * release their world/UI state first; this clears presentation and movement
+   * state that must never cross a teleport or explicit minigame exit.
+   */
+  resetMinigameState() {
+    this.setGolfPose(false);
+    this.setGolfAddress(null);
+    this.setArcherPose(false);
+    this.setBowCarried(false);
+    this.setGardenRakeMotion(null);
+    this.setGardenRakeTool(null);
+    this.setExternalEmbodimentHidden(false);
+  }
+
   /** Synthesize the old callback's missing contact/normal until main is rewired. */
   #updateLegacyGardenRakeMotion() {
     const motion = this.#gardenRakeMotion;
