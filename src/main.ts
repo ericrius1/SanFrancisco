@@ -4127,9 +4127,14 @@ async function boot() {
   const timer = new THREE.Timer();
   let accumulator = 0;
   let elapsed = 0;
+  // Past this range the horizon proxy is a sub-15px smudge behind marine fog;
+  // keeping it out of the draw list entirely is what prevents it from ever
+  // flashing mid-sky on a corrupted frame.
+  const GHOST_SHIP_PROXY_VIEW_DISTANCE = 3200;
   const updateGhostShip = (dt: number) => {
     const pose = ghostShipBeacon.update(Date.now());
     const distance = ghostShipBeacon.horizontalDistanceTo(player.renderPosition);
+    ghostShipBeacon.farHidden = distance > GHOST_SHIP_PROXY_VIEW_DISTANCE;
     if (
       !worldArrival.active &&
       !ghostShip &&

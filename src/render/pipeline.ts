@@ -545,6 +545,37 @@ export function createRenderPipeline(
   // briefly renders with the compile setup.
   let exclusiveCompileDepth = 0;
 
+  // The same hazard applies to every SCENE warmup (warmHiddenRoot, tile/site/
+  // vehicle prepares call renderer.compileAsync directly): r185's compileAsync
+  // updates shared node/binding bookkeeping across its awaits, and a live frame
+  // drawn inside that window renders with the compile's fog/tone state. The
+  // visible symptom is distant fog-hidden geometry — bay sailboats, the
+  // ghost-ship horizon proxy — flashing unfaded for a single frame ("flickering
+  // objects in the sky"). Route the renderer's own compileAsync through the
+  // exclusive gate so a compile in flight holds the previous frame instead of
+  // drawing a corrupted one, and serialize compiles so windows never overlap.
+  {
+    const original = renderer.compileAsync.bind(renderer);
+    let chain: Promise<unknown> = Promise.resolve();
+    renderer.compileAsync = ((
+      compileScene: THREE.Object3D,
+      compileCamera: THREE.Camera,
+      targetScene: THREE.Scene | null = null
+    ) => {
+      const run = async () => {
+        exclusiveCompileDepth++;
+        try {
+          return await original(compileScene, compileCamera, targetScene);
+        } finally {
+          exclusiveCompileDepth--;
+        }
+      };
+      const gated = chain.then(run, run);
+      chain = gated.catch(() => {});
+      return gated;
+    }) as typeof renderer.compileAsync;
+  }
+
   /**
    * PassNode.compileAsync does not restore its render state if compilation
    * rejects, so put a defensive boundary around the Three r185 API.
