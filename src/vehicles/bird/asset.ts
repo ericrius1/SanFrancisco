@@ -4,12 +4,35 @@ import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.j
 import { applyVehicleShadowPolicy } from "../shadows";
 import type { BirdRig, BoneCtl } from "./mesh";
 import { applyPhoenixPlumage } from "./plumage";
+import { installPhoenixSaddle } from "./saddle";
 
 const PHOENIX_SCALE = 1.26;
 const PHOENIX_URL = "/models/phoenix-hero.glb";
 const LEFT = new THREE.Vector3(0, 0, -1);
 const UP = new THREE.Vector3(0, 1, 0);
 const FORWARD = new THREE.Vector3(1, 0, 0);
+
+function disposeUnclaimedScene(scene: THREE.Object3D): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
+  scene.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    if (mesh.geometry) geometries.add(mesh.geometry);
+    const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const material of list) {
+      if (!material) continue;
+      materials.add(material);
+      for (const value of Object.values(material)) {
+        if ((value as THREE.Texture | undefined)?.isTexture) textures.add(value as THREE.Texture);
+      }
+    }
+  });
+  for (const geometry of geometries) geometry.dispose();
+  for (const material of materials) material.dispose();
+  for (const texture of textures) texture.dispose();
+}
 
 export function loadBirdAssets(root: THREE.Group): Promise<void> {
   const loader = new GLTFLoader();
@@ -21,6 +44,11 @@ export function loadBirdAssets(root: THREE.Group): Promise<void> {
       (gltf) => {
         try {
           const scene = gltf.scene;
+          if (root.userData.disposed) {
+            disposeUnclaimedScene(scene);
+            resolve();
+            return;
+          }
           scene.updateMatrixWorld(true);
 
           const bones: Record<string, THREE.Bone> = {};
@@ -89,6 +117,7 @@ export function loadBirdAssets(root: THREE.Group): Promise<void> {
           scene.rotation.y = Math.PI * 0.5;
           scene.scale.setScalar(PHOENIX_SCALE);
           root.add(scene);
+          installPhoenixSaddle(root);
           root.userData.rig = rig;
           resolve();
         } catch (error) {

@@ -1115,9 +1115,14 @@ wss.on("connection", (ws) => {
         id
       );
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
-    } else if (msg.t === "s" && Array.isArray(msg.d) && (msg.d.length === 9 || msg.d.length === 10)) {
-      // [modeIndex, x, y, z, qx, qy, qz, qw, speed, ride?] — validate finite numbers
-      if (msg.d.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    } else if (msg.t === "s" && Array.isArray(msg.d) && (msg.d.length === 9 || msg.d.length === 10 || msg.d.length === 11)) {
+      // [modeIndex, x, y, z, qx, qy, qz, qw, speed, ride?, rideSeat?]
+      // Player vehicles cap at two passengers. Reserved negative ride ids are
+      // deterministic public world rides and may expose up to twelve anchors.
+      const rideId = msg.d.length >= 10 ? msg.d[9] : 0;
+      const seatCapacity = rideId < 0 ? 12 : 2;
+      const seatValid = msg.d.length < 11 || (Number.isInteger(msg.d[10]) && msg.d[10] >= 1 && msg.d[10] <= seatCapacity);
+      if (seatValid && msg.d.every((n) => typeof n === "number" && Number.isFinite(n))) {
         p.state = msg.d;
         p.lastState = Date.now();
       }

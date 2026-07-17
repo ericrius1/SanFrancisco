@@ -78,8 +78,15 @@ stays continuous through a full axial roll.
 A dedicated compute dispatch is intentionally not used for this one 38,949
 vertex hero. Direct vertex-stage TSL performs the deformation only for visible
 draws and avoids a writable storage buffer, extra dispatch, synchronization,
-and position-stream readback. The mount therefore remains one skinned mesh and
-one material/draw call.
+and position-stream readback. The Phoenix hero therefore remains one skinned
+mesh and one material/draw call. Its texture-free procedural saddle is a small
+static overlay installed from the same first-use chunk.
+
+The saddle exposes one driver anchor and two passenger anchors. Selecting the
+Phoenix while grounded parks the player's stable Phoenix root beside them; E
+claims that exact body pose without running the cruise-altitude entry hook.
+Passenger snapshots carry a one-based seat index so two friends remain glued
+to distinct rear anchors while the driver flies.
 
 ## LOD and loading policy
 

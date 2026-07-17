@@ -24,7 +24,9 @@ import {
  *   → {t:"hi", name, avatar, board, scooter, surfboard, car} on open
  *   ← {t:"welcome", id, hue, name, players:[{id,name,hue,avatar,board,scooter,surfboard,car}]}
  *   ← {t:"join"|{t:"leave"}|{t:"name"}|{t:"avatar"}|{t:"board"}|{t:"scooter"}|{t:"surfboard"}|{t:"car"} roster changes
- *   → {t:"s", d:[mode,x,y,z,qx,qy,qz,qw,speed,ride?]}   ~12 Hz while moving
+ *   → {t:"s", d:[mode,x,y,z,qx,qy,qz,qw,speed,ride?,rideSeat?]}   ~12 Hz while moving
+ *      Positive ride ids are player vehicles; reserved negative ids are shared
+ *      deterministic world rides such as the wandering ghost ship.
  *   ← {t:"snap", ts, ps:[[id,...d]]}    batched world snapshot, ~12 Hz
  *   → {t:"rtc", to, payload}            voice signaling to one peer
  *   ← {t:"rtc", from, payload}          relayed with sender id stamped
@@ -83,12 +85,16 @@ export type NetSample = {
    * glue the avatar to THEIR interpolation of the driver's car, so the
    * passenger never trails outside the cabin. */
   ride?: number;
+  /** One-based passenger anchor. Phoenix uses 1..2; legacy vehicles use 1. */
+  rideSeat?: number;
 };
 
 export type NetStatus = "connecting" | "online" | "offline" | "full";
 
 const SEND_HZ = 12;
 const KEEPALIVE_MS = 2000; // resend an unchanged pose this often (server idle-timer food)
+const MAX_PLAYER_RIDE_SEAT = 2;
+const MAX_WORLD_RIDE_SEAT = 12;
 const NAME_MAX = 20;
 const CHAT_MAX = 200;
 /** Mirrors the relay caps: compact numeric snapshots, never arbitrary JSON. */
@@ -570,7 +576,20 @@ export class Net {
         for (const row of msg.ps as number[][]) {
           const [id, m, x, y, z, qx, qy, qz, qw, speed] = row;
           if (id === this.selfId || !this.roster.has(id)) continue;
-          this.onSample(id, { t: tLocal, mode: NET_MODES[m] ?? "walk", x, y, z, qx, qy, qz, qw, speed, ride: row[10] || undefined });
+          this.onSample(id, {
+            t: tLocal,
+            mode: NET_MODES[m] ?? "walk",
+            x,
+            y,
+            z,
+            qx,
+            qy,
+            qz,
+            qw,
+            speed,
+            ride: row[10] || undefined,
+            rideSeat: row[11] || undefined
+          });
         }
         break;
       }
@@ -807,7 +826,14 @@ export class Net {
    * (a keepalive copy still goes out every KEEPALIVE_MS so the server's idle
    * timer sees a live player). Call once per rendered frame.
    */
-  sendState(mode: PlayerMode, pos: THREE.Vector3, quat: THREE.Quaternion, speed: number, ride = 0) {
+  sendState(
+    mode: PlayerMode,
+    pos: THREE.Vector3,
+    quat: THREE.Quaternion,
+    speed: number,
+    ride = 0,
+    rideSeat = 0
+  ) {
     const ws = this.#ws;
     if (!ws || ws.readyState !== WebSocket.OPEN || !this.selfId) return;
     const now = performance.now();
@@ -824,7 +850,10 @@ export class Net {
       Math.round(quat.w * 1000) / 1000,
       Math.round(speed * 10) / 10
     ];
-    if (ride) d.push(ride);
+    if (ride) {
+      const capacity = ride < 0 ? MAX_WORLD_RIDE_SEAT : MAX_PLAYER_RIDE_SEAT;
+      d.push(ride, Math.max(1, Math.min(capacity, Math.round(rideSeat || 1))));
+    }
     const key = d.join(",");
     if (key === this.#lastSent && now - this.#lastSentAt < KEEPALIVE_MS) return;
     this.#lastSent = key;
