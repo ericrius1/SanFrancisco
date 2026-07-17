@@ -13,6 +13,7 @@
 
 import { tunables } from "../core/persist";
 import { effectsAudioLevel } from "../core/audioSettings";
+import { audioEngine } from "../audio/engine";
 
 const SPEED_OF_SOUND = 343; // m/s
 const MAX_BOOMS_PER_SEC = 18;
@@ -35,43 +36,31 @@ export class FireworksAudio {
   #crackle!: AudioBuffer;
   #recent: number[] = [];
 
-  constructor() {
-    // autoplay policy: context can only start after a user gesture, so unlock
-    // on the first interaction (F to fire is itself a gesture)
-    const unlock = () => {
-      const ctx = this.#ensure();
-      if (ctx && ctx.state === "suspended") void ctx.resume();
-      if (ctx && ctx.state === "running") {
-        window.removeEventListener("pointerdown", unlock);
-        window.removeEventListener("keydown", unlock);
-      }
-    };
-    window.addEventListener("pointerdown", unlock);
-    window.addEventListener("keydown", unlock);
-  }
-
-  /** Build the context, echo bus and synth buffers off the first-gesture path
-   *  (boot idle) — ~250k samples of noise/crackle synthesis that otherwise lands
-   *  in the first-keydown frame. The context stays suspended until a real
-   *  gesture resumes it (the unlock listeners above), so autoplay policy holds. */
+  /** Prewarm the shared audio device early (its startup was fireworks' job), then
+   *  build the echo bus and ~250k samples of noise/crackle synthesis on the shared
+   *  ctx. Uses the engine's prewarm bus so the full graph + buffers build under the
+   *  loading cover pre-gesture (the group gain sits at 0 / ctx suspended, so nothing
+   *  can sound); the engine ctx creation itself (the device startup) happens too. */
   prewarm(): void {
+    audioEngine.prewarm();
     this.#ensure();
   }
 
   #ensure(): AudioContext | null {
     if (this.#ctx) return this.#ctx;
-    if (typeof AudioContext === "undefined") return null;
-    const ctx = new AudioContext();
+    const bus = audioEngine.prewarmBus("effects");
+    if (!bus) return null; // no AudioContext (Node) — retry on next boom()
+    const { ctx, input } = bus;
     this.#ctx = ctx;
 
-    // master: gain -> soft limiter -> out
+    // master: gain -> soft limiter -> engine effects input
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -12;
     limiter.knee.value = 18;
     limiter.ratio.value = 8;
     limiter.attack.value = 0.002;
     limiter.release.value = 0.25;
-    limiter.connect(ctx.destination);
+    limiter.connect(input);
     this.#master = ctx.createGain();
     this.#master.connect(limiter);
 
@@ -135,10 +124,9 @@ export class FireworksAudio {
    */
   boom(x: number, y: number, z: number, lx: number, ly: number, lz: number, yaw: number, power = 1) {
     if (this.params.muted || this.params.volume <= 0) return;
-    const master = effectsAudioLevel(); // HUD effects volume slider
-    if (master <= 0) return;
+    if (effectsAudioLevel() <= 0) return; // cheap early-out gate only, not a gain
     const ctx = this.#ensure();
-    if (!ctx || ctx.state !== "running") return;
+    if (!ctx) return;
 
     const dx = x - lx;
     const dy = y - ly;
@@ -146,6 +134,9 @@ export class FireworksAudio {
     const dist = Math.hypot(dx, dy, dz);
     const now = ctx.currentTime;
     const t0 = now + dist / SPEED_OF_SOUND;
+    // Booms schedule into the future (flight time) with a long echo tail; keep the
+    // shared ctx alive across both so idle-suspend can't clip the report.
+    audioEngine.touch(dist / SPEED_OF_SOUND + 3.5);
 
     // thin dense volleys: at most MAX_BOOMS_PER_SEC audible per second of
     // arrival time (checked against scheduled arrivals, not emit time)
@@ -154,7 +145,7 @@ export class FireworksAudio {
     this.#recent.push(t0);
 
     const att = Math.min(1, 130 / (dist + 40)); // rolloff with a near-field cap
-    const g = att * power * this.params.volume * this.params.volume * master;
+    const g = att * power * this.params.volume * this.params.volume;
     if (g < 0.003) return;
     const bass = g * this.params.bass; // scales the three low layers only
 

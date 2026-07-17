@@ -25,3 +25,5 @@ data/city
 # Xcode user state (SF Companion)
 ios/**/xcuserdata/
 ios/**/*.xcworkspace/xcshareddata/swiftpm/
+
+ios/SFCompanion/build/
