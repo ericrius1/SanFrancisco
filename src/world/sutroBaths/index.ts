@@ -12,14 +12,8 @@ import {
 import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
 import { createSutroBathsVegetation } from "./vegetation";
 import { createSutroBathers } from "./bathers";
-import {
-  createSutroWaterInteractions,
-  type SutroBallSource,
-  type SutroRemoteState,
-  type SutroWaterInteractions
-} from "./waterInteractions";
 import type { SutroBathsSteam } from "./steam";
-import type { SutroBathsWaterSimulation } from "./waterSimulation";
+import type { SutroBathsStaticWater } from "./staticWater";
 import { createSutroStaticAmbience } from "./staticAmbience";
 
 const WAKE_DISTANCE = 760;
@@ -48,9 +42,8 @@ export type SutroBathsDebugState = {
   nearEffectsLoading: boolean;
   nearEffectsLoaded: boolean;
   nearEffectsFailed: boolean;
-  water: ReturnType<SutroBathsWaterSimulation["debugState"]> | null;
+  water: ReturnType<SutroBathsStaticWater["debugState"]> | null;
   steam: SutroBathsSteam["stats"] | null;
-  interactions: SutroWaterInteractions["stats"] | null;
 };
 
 export type SutroBaths = {
@@ -85,21 +78,14 @@ export type SutroBathsOptions = {
   scene: THREE.Scene;
   physics?: Physics;
   authoredRegions?: AuthoredRegionStreamer;
-  /** Thrown/rolling balls that should splash the pools (main wires fetchBall). */
-  ballSource?: SutroBallSource;
-  /** Remote bathers whose motion should ripple the pools. */
-  getRemotes?: () => Iterable<SutroRemoteState>;
 };
 
 type MonitorState = {
   nearEffectsLoaded: boolean;
   backend: string;
-  grid: string;
-  activeCells: number;
   triangles: number;
-  dispatches: number;
-  ticks: number;
-  running: boolean;
+  computeDispatches: number;
+  simulated: boolean;
   playerDistance: number;
   steamVisible: number;
 };
@@ -107,7 +93,7 @@ type MonitorState = {
 /**
  * Dynamic controller for the Blender-authored restored site. The authored
  * region owns architecture while the local physics tile owns colliders; this lazy module owns only foliage,
- * bathers, lighting controls, water, steam, and interactions.
+ * bathers, lighting controls, lightweight visual water, and steam.
  */
 export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   const group = new THREE.Group();
@@ -120,12 +106,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   group.add(ambience.group, vegetation.group, bathers.group);
 
   const stats: SutroBathsStats = {
-    architectureMeshes: 58,
-    architectureInstances: 2090,
+    architectureMeshes: 57,
+    architectureInstances: 2004,
     roofRibs: 306,
     glassPanels: 304,
     lamps: 28,
-    physicsBodies: 180,
+    physicsBodies: 179,
     trees: vegetation.stats.trees,
     shrubs: vegetation.stats.shrubs,
     planters: vegetation.stats.planters
@@ -134,19 +120,15 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   const monitors: MonitorState = {
     nearEffectsLoaded: false,
     backend: "sleeping · not allocated",
-    grid: "—",
-    activeCells: 0,
     triangles: 0,
-    dispatches: 0,
-    ticks: 0,
-    running: false,
+    computeDispatches: 0,
+    simulated: false,
     playerDistance: Number.POSITIVE_INFINITY,
     steamVisible: 0
   };
 
-  let water: SutroBathsWaterSimulation | null = null;
+  let water: SutroBathsStaticWater | null = null;
   let steam: SutroBathsSteam | null = null;
-  let waterInteractions: SutroWaterInteractions | null = null;
   let nearEffectsLoading: Promise<void> | null = null;
   let nearEffectsFailed = false;
   let awake = false;
@@ -160,13 +142,9 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   // to the lower basin so visitors can enter the water normally.
   const hasFloorRecovery = options.physics != null;
 
-  // index.ts only receives a player POSITION each frame; derive velocity from
-  // the frame-to-frame delta for directional wader wakes, and keep a dummy
-  // Object3D so the bathers can glance toward the player.
-  const prevPlayerPos = new THREE.Vector3();
-  const playerVel = new THREE.Vector3();
+  // Bathers still move and animate independently; the visual water intentionally
+  // has no gameplay wake contract.
   const batherPlayer = new THREE.Object3D();
-  let havePrevPlayer = false;
 
   const syncTuning = () => {
     ambience.applyTuning(SUTRO_BATHS_TUNING.values);
@@ -175,21 +153,16 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
 
   const loadNearEffects = (camera: THREE.Camera): void => {
     if (water || nearEffectsLoading || nearEffectsFailed || disposed) return;
-    nearEffectsLoading = Promise.all([import("./waterSimulation"), import("./steam")])
+    nearEffectsLoading = Promise.all([import("./staticWater"), import("./steam")])
       .then(async ([waterModule, steamModule]) => {
         try {
-          let nextWater: SutroBathsWaterSimulation | null =
-            waterModule.createSutroBathsWaterSimulation({ renderer: options.renderer });
+          let nextWater: SutroBathsStaticWater | null =
+            waterModule.createSutroBathsStaticWater({ renderer: options.renderer });
           let nextSteam: SutroBathsSteam | null = null;
           try {
             nextSteam = steamModule.createSutroBathsSteam();
             if (disposed) return;
             syncTuning();
-            try {
-              await nextWater.warmup();
-            } catch (error) {
-              console.warn("[sutro-baths] close water compute warmup failed:", error);
-            }
             try {
               // WebGPURenderer compilation can encode render passes while it
               // builds async pipelines. Keep those passes serialized, and
@@ -210,12 +183,6 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
             group.add(water.group, steam.group);
             water.setEnabled(awake);
             steam.setEnabled(awake);
-            waterInteractions = createSutroWaterInteractions({
-              water,
-              ballSource: options.ballSource,
-              getRemotes: options.getRemotes,
-              visitAmbientSwimmers: bathers.visitSwimmers
-            });
             monitors.nearEffectsLoaded = true;
           } finally {
             nextWater?.dispose();
@@ -230,7 +197,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         }
       })
       .catch((error) => {
-        console.warn("[sutro-baths] close water/steam unavailable:", error);
+        console.warn("[sutro-baths] static water/steam unavailable:", error);
       })
       .finally(() => {
         nearEffectsLoading = null;
@@ -280,40 +247,16 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       if (foliageVisible) vegetation.update(player);
 
       const py = player.y ?? SUTRO_BATHS.waterY;
-      if (havePrevPlayer && dt > 1e-4) {
-        playerVel.set(
-          (player.x - prevPlayerPos.x) / dt,
-          (py - prevPlayerPos.y) / dt,
-          (player.z - prevPlayerPos.z) / dt
-        );
-      } else {
-        playerVel.set(0, 0, 0);
-      }
-      prevPlayerPos.set(player.x, py, player.z);
-      havePrevPlayer = true;
-
-      // Advance authored swimmers first, then inject all wakes before the sim
-      // drains its queue so the visible bodies and ripples stay in lockstep.
       batherPlayer.position.set(player.x, py, player.z);
       bathers.update(dt, time, batherPlayer);
-      waterInteractions?.update({
-        dt,
-        player: {
-          position: { x: player.x, y: py, z: player.z },
-          velocity: { x: playerVel.x, y: playerVel.y, z: playerVel.z }
-        }
-      });
       water?.update(dt, time, player);
       steam?.update(dt, time, player, camera, gust);
 
       if (water) {
         monitors.backend = water.stats.backend;
-        monitors.grid = water.stats.grid;
-        monitors.activeCells = water.stats.activeCells;
         monitors.triangles = water.stats.triangles;
-        monitors.dispatches = water.stats.dispatches;
-        monitors.ticks = water.stats.ticks;
-        monitors.running = water.stats.running;
+        monitors.computeDispatches = water.stats.computeDispatches;
+        monitors.simulated = water.stats.simulated;
         monitors.playerDistance = water.stats.playerDistance;
       } else {
         monitors.playerDistance = waterDistance;
@@ -344,18 +287,14 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
               onChange: () => syncTuning()
             });
           }
-          folder.addButton({ title: "reset close water", label: "water" }).on("click", () => water?.reset());
-          const debug = folder.addFolder({ title: "WebGPU water · debug" });
+          const debug = folder.addFolder({ title: "WebGPU visual water · debug" });
           return {
             monitors: [
               debug.addBinding(monitors, "nearEffectsLoaded", { readonly: true, label: "near effects loaded" }),
               debug.addBinding(monitors, "backend", { readonly: true, label: "backend" }),
-              debug.addBinding(monitors, "grid", { readonly: true, label: "spatial grid" }),
-              debug.addBinding(monitors, "activeCells", { readonly: true, label: "active cells" }),
               debug.addBinding(monitors, "triangles", { readonly: true, label: "water triangles" }),
-              debug.addBinding(monitors, "dispatches", { readonly: true, label: "dispatches/frame" }),
-              debug.addBinding(monitors, "ticks", { readonly: true, label: "fixed ticks/frame" }),
-              debug.addBinding(monitors, "running", { readonly: true, label: "running" }),
+              debug.addBinding(monitors, "computeDispatches", { readonly: true, label: "compute dispatches" }),
+              debug.addBinding(monitors, "simulated", { readonly: true, label: "fluid simulated" }),
               debug.addBinding(monitors, "steamVisible", { readonly: true, label: "steam puffs" }),
               debug.addBinding(monitors, "playerDistance", {
                 readonly: true,
@@ -379,14 +318,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         nearEffectsLoaded: water !== null,
         nearEffectsFailed,
         water: water?.debugState() ?? null,
-        steam: steam?.stats ?? null,
-        interactions: waterInteractions?.stats ?? null
+        steam: steam?.stats ?? null
       };
     },
     dispose() {
       if (disposed) return;
       disposed = true;
-      waterInteractions = null;
       water?.dispose();
       steam?.dispose();
       bathers.dispose();

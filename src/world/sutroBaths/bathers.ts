@@ -201,7 +201,6 @@ function applyShadowDiet(root: THREE.Object3D) {
 export type SutroBathers = {
   group: THREE.Group;
   update(dt: number, time: number, player?: THREE.Object3D): void;
-  visitSwimmers(visitor: (x: number, z: number, vx: number, vz: number) => void): void;
   dispose(): void;
 };
 
@@ -322,16 +321,7 @@ export function createSutroBathers(_opts: Record<string, never> = {}): SutroBath
     group.removeFromParent();
   }
 
-  function visitSwimmers(visitor: (x: number, z: number, vx: number, vz: number) => void) {
-    const s = Math.sin(SUTRO_BATHS.yaw);
-    const c = Math.cos(SUTRO_BATHS.yaw);
-    for (const b of bathers) {
-      if (b.spec.pose !== "swim" || !b.pool || !b.drift) continue;
-      visitor(b.group.position.x, b.group.position.z, s * b.drift, c * b.drift);
-    }
-  }
-
-  return { group, update, visitSwimmers, dispose };
+  return { group, update, dispose };
 }
 
 /** Small stable hash for deriving a phase offset from a seed string. */

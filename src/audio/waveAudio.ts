@@ -80,6 +80,15 @@ export class WaveAudio {
     this.#nature = nature;
   }
 
+  get debugState() {
+    return {
+      ready: this.#ready,
+      level: this.#level,
+      breaking: this.#breaking,
+      washGain: this.#washGain?.gain.value ?? 0
+    };
+  }
+
   #init() {
     if (this.#ready) return this.#ctx;
     const vb = this.#nature.voiceBus();
@@ -135,8 +144,9 @@ export class WaveAudio {
     this.#breaking += (energy.breaking - this.#breaking) * Math.min(1, dt * 2);
     const now = ctx.currentTime;
 
-    // wash gets louder + brighter with energy
-    this.#washGain.gain.setTargetAtTime(0.05 + this.#level * 0.22, now, 0.1);
+    // No fixed noise floor: as wave energy fades, the wash reaches actual
+    // silence instead of leaving a permanent filtered hiss in enclosed sites.
+    this.#washGain.gain.setTargetAtTime(this.#level * (0.05 + this.#level * 0.22), now, 0.1);
     if (this.#washFilter) this.#washFilter.frequency.setTargetAtTime(650 + this.#level * 1500, now, 0.1);
 
     // schedule breaking crashes — cadence tightens with energy, weighted by the
