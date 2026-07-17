@@ -4,12 +4,13 @@
 // can never turn a valid room graph back into an obstacle course.
 import type { ColliderBox } from "../core/types";
 import { PanelBuilder, type Vec3 } from "../core/facade";
-import type { Rng } from "../core/rng";
+import { rng as seededRng, type Rng } from "../core/rng";
 import {
   EYE, addBox, containsRect, expand, inset, overlaps, rectAround,
   type Rect, rectW, rectD, rectCX, rectCZ,
 } from "./common";
 import type { InteriorStyle } from "./style";
+import { emitProceduralLamp, PROCEDURAL_LAMP_TUNING } from "./lamp";
 
 export type Role = "parlor" | "dining" | "kitchen" | "hall" | "bedroom" | "bath" | "retail" | "office" | "loft" | "stair";
 
@@ -337,6 +338,26 @@ export function furnish(
     // This keeps fixtures attached across the archetypes' 3.2–4.2 m storeys.
     const yTop = floorY + roomHeight - 0.14;
     const lightX = focus?.x ?? cx, lightZ = focus?.z ?? cz;
+    // Residential parlors, dining rooms, and halls can carry the layered-ribbon
+    // fixture. Draw its coverage roll + seed from the room stream exactly once,
+    // then generate through an isolated stream. Lamp tuning can therefore change
+    // topology without perturbing any furniture, art, or collider that follows.
+    const proceduralEligible = style.chandelier
+      && ["parlor", "dining", "hall"].includes(role)
+      && Math.min(w, d) > 3.05;
+    const lampRoll = proceduralEligible ? r() : 1;
+    const lampSeed = proceduralEligible ? Math.floor(r() * 0x100000000) : 0;
+    const procedural = proceduralEligible
+      && PROCEDURAL_LAMP_TUNING.values.enabled
+      && lampRoll < PROCEDURAL_LAMP_TUNING.values.coverage;
+    if (procedural && emitProceduralLamp(out, {
+      x: lightX,
+      z: lightZ,
+      ceilingY: yTop,
+      roomWidth: w,
+      roomDepth: d,
+      rng: seededRng(lampSeed, 0x1a4d),
+    })) return;
     const chandelier = style.chandelier && ["parlor", "dining", "hall", "retail"].includes(role) && Math.min(w, d) > 3.4;
     visual("int.brass", lightX, yTop, lightZ, 0.13, 0.035, 0.13); // canopy
     if (chandelier) {

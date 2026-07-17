@@ -186,6 +186,16 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "int.rug": standard(0x7a3b34, 0.9, { emissive: 0.38 }),     // area rug
     "int.metal": standard(0x8a8f96, 0.5, { metalness: 0.6, emissive: 0.3 }), // loft/industrial
     "int.brass": standard(0xc79b45, 0.34, { metalness: 0.68, emissive: 0.35 }),
+    // Layered residential ribbon lamps. Dedicated ids make the lazy fixture
+    // geometry observable in QA and keep finish/tone choices independent from
+    // furniture brass; all are procedural and request no media.
+    "int.lamp.brass": standard(0xd2a34a, 0.28, { metalness: 0.82, emissive: 0.42 }),
+    "int.lamp.brass.aged": standard(0x85652f, 0.42, { metalness: 0.76, emissive: 0.3 }),
+    "int.lamp.brass.champagne": standard(0xd7bd83, 0.24, { metalness: 0.8, emissive: 0.4 }),
+    "int.lamp.cable": standard(0x3f3528, 0.4, { metalness: 0.72, emissive: 0.16 }),
+    "int.lamp.glow": standard(0xffd89a, 0.72, { emissive: 3.15 }),
+    "int.lamp.glow.amber": standard(0xffa846, 0.74, { emissive: 3.35 }),
+    "int.lamp.glow.pearl": standard(0xfff1d4, 0.68, { emissive: 2.9 }),
     "int.plant": standard(0x47734b, 0.9, { emissive: 0.3 }),
     "int.book": standard(0x7a3e36, 0.82, { emissive: 0.3 }),
     "int.ceramic": standard(0xd5c9b6, 0.55, { emissive: 0.48 }),

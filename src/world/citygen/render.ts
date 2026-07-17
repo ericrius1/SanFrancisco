@@ -424,6 +424,7 @@ export function buildInterior(
       ownedMaterials.set(source, material);
     }
     const mesh = new THREE.Mesh(g, material);
+    mesh.name = `citygen.interior.${md.materialId}`;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     group.add(mesh);

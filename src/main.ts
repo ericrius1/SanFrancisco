@@ -117,6 +117,7 @@ import {
 } from "./world/vegetation/runtime";
 import { BOTANICAL_GARDEN_BOUNDS } from "./world/garden/layout";
 import type { CityGenRing } from "./world/citygen";
+import { PROCEDURAL_LAMP_TUNING } from "./world/citygen/interior/lampTuning";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
@@ -2315,7 +2316,8 @@ async function boot() {
     setFoliageVisible,
     () => wildlands?.flowers.refresh(),
     () => wildlands?.grass.refresh(),
-    () => diagnostics.toggleInspector()
+    () => diagnostics.toggleInspector(),
+    () => { citygenRing.current?.refreshInteriors(); }
   );
 
   ensureGhostShipDetail = () => {
@@ -4886,6 +4888,7 @@ async function boot() {
       sky.applyFogParams();
       sky.refreshFogWeatherSource();
       debugPanel.syncNow();
+      citygenRing.current?.refreshInteriors();
       hud.message("Tweaks back to source defaults", 3);
     }
     if (!worldArrival.active && input.pressed("KeyC")) {
@@ -5801,7 +5804,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"
