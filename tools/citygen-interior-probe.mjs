@@ -51,16 +51,27 @@ async function main() {
     await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=s.map.groundHeight(900,2400)+2; p.position.set(900,y,2400); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[900,y,2400],[0,0,0,1]); return 1;})()`);
     for (let i = 0; i < 100; i++) await tick(c);
     await waitEval(c, "window.__sf.citygenRing.current && window.__sf.citygenRing.current.stats().buildings > 2", 30000);
+    await waitEval(c, "window.__sf.citygenRing.current.debugBuildings().length > 0", 60000);
 
     // pick a resident building, teleport INSIDE it → interior should build
     const b = await evaluate(c, `(()=>{const bs=window.__sf.citygenRing.current.debugBuildings(); if(!bs.length) return null;
       const b=bs[0]; const s=window.__sf,p=s.player; const y=b.base+1.2;
       p.position.set(b.cx,y,b.cz); p.renderPosition.copy(p.position);
       s.physics.world.setBodyTransform(p.body,[b.cx,y,b.cz],[0,0,0,1]); return b;})()`);
+    if (!b) throw new Error("no detailed CityGen building available for interior capture");
     console.log("[probe] entered building:", JSON.stringify(b));
     for (let i = 0; i < 20; i++) await tick(c);
     const st = await evaluate(c, "window.__sf.citygenRing.current.stats()");
     console.log("[probe] ring stats:", JSON.stringify(st));
+
+    // The same method Tweakpane calls on a committed slider edit must rebuild
+    // the currently active home and change topology without rematerializing the
+    // exterior or moving the player.
+    const liveRebuild = await evaluate(c, `(()=>{const s=window.__sf,t=s.PROCEDURAL_LAMP_TUNING.values;const find=()=>{let m=null;s.scene.traverse(o=>{if(!m&&o.name.startsWith('citygen.interior.int.lamp.brass'))m=o;});return m;};const before=find()?.geometry.index?.count??0;t.rings=8;const rebuilt=s.citygenRing.current.refreshInteriors();const after=find()?.geometry.index?.count??0;t.rings=5;s.citygenRing.current.refreshInteriors();return{rebuilt,beforeTriangles:before/3,afterTriangles:after/3};})()`);
+    console.log("[probe] live lamp rebuild:", JSON.stringify(liveRebuild));
+    if (liveRebuild.rebuilt < 1 || liveRebuild.afterTriangles <= liveRebuild.beforeTriangles) {
+      throw new Error(`procedural lamp live rebuild failed: ${JSON.stringify(liveRebuild)}`);
+    }
 
     // camera inside the room. Floor sits at terrain GRADE (not the low baked base),
     // so anchor the camera to the actual ground under the building.
@@ -92,6 +103,24 @@ async function main() {
     await setCam(bbx.minx + 1.4, eye, bbx.minz + 1.4, bbx.maxx - 1.5, eye - 0.15, bbx.maxz - 1.5);
     await sleep(300);
     await shot(c, "citygen_interior3.jpg");
+
+    // 4: frame the first procedural ribbon lamp directly. Lamp panels merge by
+    // material across the home, but the first 24-segment band is contiguous in
+    // the position buffer (24 × 4 faces × 4 vertices = 384 vertices), so its
+    // centroid is a stable fixture target even when the home has several lamps.
+    const lamp = await evaluate(c, `(()=>{const s=window.__sf;let mesh=null;s.scene.traverse(o=>{if(!mesh&&o.name.startsWith('citygen.interior.int.lamp.brass'))mesh=o;});if(!mesh)return null;const a=mesh.geometry.getAttribute('position'),n=Math.min(384,a.count);let x=0,y=0,z=0;for(let i=0;i<n;i++){x+=a.getX(i);y+=a.getY(i);z+=a.getZ(i);}return{center:[x/n,y/n,z/n],vertices:a.count,triangles:(mesh.geometry.index?.count??0)/3,name:mesh.name};})()`);
+    console.log("[probe] procedural lamp:", JSON.stringify(lamp));
+    if (lamp) {
+      const [lx, ly, lz] = lamp.center;
+      // Isolate fixture buckets for the QA close-up so an arbitrary generated
+      // partition wall cannot occlude the camera chosen from the lamp centroid.
+      await evaluate(c, `(()=>{window.__sf.scene.traverse(o=>{if(o.isMesh&&!o.name.startsWith('citygen.interior.int.lamp.'))o.visible=false;});return true;})()`);
+      await setCam(lx + 1.9, ly - 0.04, lz + 1.9, lx, ly - 0.04, lz);
+      for (let i = 0; i < 5; i++) await tick(c);
+      await setCam(lx + 1.9, ly - 0.04, lz + 1.9, lx, ly - 0.04, lz);
+      await sleep(300);
+      await shot(c, "citygen_lamp_closeup.jpg");
+    }
 
     // step OUT → interior should dispose
     await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=s.map.groundHeight(${b.cx + 30},${b.cz})+2; p.position.set(${b.cx + 30},y,${b.cz}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${b.cx + 30},y,${b.cz}],[0,0,0,1]); return 1;})()`);

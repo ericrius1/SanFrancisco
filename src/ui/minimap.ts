@@ -424,6 +424,18 @@ export class Minimap {
     this.update();
   }
 
+  /** Move a named landmark without forcing an immediate redraw (next update picks it up). */
+  moveLandmark(name: string, x: number, z: number) {
+    if (!Number.isFinite(x) || !Number.isFinite(z) || !name) return;
+    const existing = this.#landmarks.find((l) => l.name === name);
+    if (!existing) {
+      this.addLandmark(x, z, name);
+      return;
+    }
+    existing.x = x;
+    existing.z = z;
+  }
+
   /* ------------------------------------------------ terrain backdrop */
 
   #paintWorldOffThread() {
@@ -1655,11 +1667,15 @@ export class Minimap {
     this.#clearSelection();
   }
 
-  /** Resolve the current selection to a live world position (players move). */
+  /** Resolve the current selection to a live world position (players + moving landmarks). */
   #resolveSelected(): { x: number; z: number; name: string; toName?: string; playerId?: number } | null {
     const s = this.#selected;
     if (!s) return null;
-    if (s.kind === "fixed") return { x: s.x, z: s.z, name: s.name, toName: s.toName };
+    if (s.kind === "fixed") {
+      const live = this.#landmarks.find((l) => l.name === s.name || l.name === s.toName);
+      if (live) return { x: live.x, z: live.z, name: live.name, toName: live.name };
+      return { x: s.x, z: s.z, name: s.name, toName: s.toName };
+    }
     const r = this.#getRemotes().find((r) => r.id === s.id);
     return r ? { x: r.x, z: r.z, name: s.name, toName: s.name, playerId: s.id } : null;
   }

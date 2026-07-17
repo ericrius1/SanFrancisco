@@ -53,6 +53,10 @@ export type SutroWaterInteractionsOptions = {
   ballSource?: SutroBallSource;
   /** Live remote bathers; omit to skip remote wakes. Should be cheap to call. */
   getRemotes?: () => Iterable<SutroRemoteState>;
+  /** Authored local swimmers, visited allocation-free after their pose update. */
+  visitAmbientSwimmers?: (
+    visitor: (x: number, z: number, vx: number, vz: number) => void
+  ) => void;
 };
 
 export type SutroWaterInteractionsUpdateContext = {
@@ -73,6 +77,7 @@ export type SutroWaterInteractionsStats = {
   playerWakes: number;
   ballWakes: number;
   remoteWakes: number;
+  ambientWakes: number;
   trackedBalls: number;
 };
 
@@ -90,6 +95,8 @@ const REMOTE_WADE_BAND_BELOW = 1.3;
 const REMOTE_MIN_SPEED = 0.4;
 const REMOTE_EMIT_INTERVAL = 0.12;
 const MAX_REMOTE_WAKES = 12;
+const AMBIENT_EMIT_INTERVAL = 0.18;
+const MAX_AMBIENT_WAKES = 4;
 
 type BallWaterTrack = {
   x: number;
@@ -115,6 +122,7 @@ export function createSutroWaterInteractions(
     playerWakes: 0,
     ballWakes: 0,
     remoteWakes: 0,
+    ambientWakes: 0,
     trackedBalls: 0
   };
 
@@ -132,6 +140,7 @@ export function createSutroWaterInteractions(
 
   // Remote throttle so a crowd of moving bathers cannot flood the impulse queue.
   let remoteEmitTimer = 0;
+  let ambientEmitTimer = 0;
 
   const updatePlayer = (ctx: SutroWaterInteractionsUpdateContext) => {
     const { position, velocity } = ctx.player;
@@ -370,10 +379,40 @@ export function createSutroWaterInteractions(
     }
   };
 
+  const updateAmbientSwimmers = (dt: number) => {
+    const visit = options.visitAmbientSwimmers;
+    if (!visit) return;
+    ambientEmitTimer -= dt;
+    if (ambientEmitTimer > 0) return;
+    ambientEmitTimer = AMBIENT_EMIT_INTERVAL;
+
+    let emitted = 0;
+    visit((x, z, vx, vz) => {
+      if (emitted >= MAX_AMBIENT_WAKES) return;
+      const speed = Math.hypot(vx, vz);
+      if (speed < 0.2 || !isInsideSutroPool(x, z)) return;
+      if (
+        water.queueImpulse({
+          x,
+          z,
+          radius: 0.52,
+          strength: -0.016,
+          velocityX: vx * 0.34,
+          velocityZ: vz * 0.34,
+          foam: 0.045
+        })
+      ) {
+        stats.ambientWakes++;
+        emitted++;
+      }
+    });
+  };
+
   const update = (ctx: SutroWaterInteractionsUpdateContext) => {
     const dt = Number.isFinite(ctx.dt) ? Math.max(0, ctx.dt) : 0;
     updatePlayer(ctx);
     updateBalls();
+    updateAmbientSwimmers(dt);
     updateRemotes(dt);
   };
 

@@ -46,16 +46,16 @@ type BatherSpec = {
 // coordinates read against SUTRO_POOLS rects in layout.ts.
 const BATHERS: readonly BatherSpec[] = [
   // ---- great salt-water plunge (id great-plunge, x[-31,-10] z[-55,29]) ----
-  { seed: "sutro-swim-1", pool: "great-plunge", lx: -22, lz: -30, face: 0.15, pose: "swim", drift: 0.5 },
-  { seed: "sutro-swim-2", pool: "great-plunge", lx: -18, lz: 6, face: Math.PI + 0.2, pose: "swim", drift: -0.42 },
-  { seed: "sutro-swim-3", pool: "great-plunge", lx: -25, lz: -8, face: 0.6, pose: "swim", drift: 0.36 },
+  { seed: "sutro-swim-1", pool: "great-plunge", lx: -22, lz: -30, face: Math.PI, pose: "swim", drift: 0.9 },
+  { seed: "sutro-swim-2", pool: "great-plunge", lx: -18, lz: 6, face: 0, pose: "swim", drift: -0.82 },
+  { seed: "sutro-swim-3", pool: "great-plunge", lx: -25, lz: -8, face: Math.PI, pose: "swim", drift: 0.76 },
   { seed: "sutro-sit-1", pool: "great-plunge", lx: -32.2, lz: -20, face: -1.55, pose: "sit" }, // west coping, feet to water
   { seed: "sutro-dive-1", pool: "great-plunge", lx: -32.6, lz: 14, face: -1.4, pose: "dive" }, // west edge, poised
   { seed: "sutro-wade-1", pool: "great-plunge", lx: -12.5, lz: 22, face: 2.9, pose: "wade" }, // east shallow step
 
   // ---- warm graduated baths (east row, x[-4,19]) --------------------------
   { seed: "sutro-sit-2", pool: "bath-two", lx: 7.5, lz: -38.6, face: 0.05, pose: "sit" }, // north coping of bath II
-  { seed: "sutro-swim-4", pool: "bath-three", lx: 8, lz: -14.5, face: 1.4, pose: "swim", drift: 0.3 },
+  { seed: "sutro-swim-4", pool: "bath-three", lx: 8, lz: -14.5, face: Math.PI, pose: "swim", drift: 0.72 },
   { seed: "sutro-wade-2", pool: "bath-four", lx: -2.4, lz: 3.5, face: 1.5, pose: "wade" }, // west edge of hot bath IV
   { seed: "sutro-sit-3", pool: "bath-five", lx: 12, lz: 27.4, face: Math.PI, pose: "sit" }, // south coping of hot bath V
 
@@ -79,7 +79,7 @@ function surfaceForPose(pose: BatherPose): number {
     case "sit":
       return SUTRO_BATHS.deckY - RIG_STAND_Y + 0.14; // hips ~ deck level
     case "wade":
-      return SUTRO_BATHS.deckY - 0.42; // knee-deep on a shallow step
+      return SUTRO_BATHS.waterY - 0.48; // feet below the surface on a shallow ledge
     case "idle":
     case "dive":
     default:
@@ -96,6 +96,7 @@ type Bather = {
   phase: number; // per-bather pose-time offset (desync)
   baseY: number; // resting group Y (bob rides on top)
   local: { x: number; z: number }; // live pool-local position (swimmers drift)
+  drift: number; // live signed swim speed; flips at pool ends
 };
 
 // ---- manual poses the rig has no helper for ---------------------------------
@@ -160,7 +161,9 @@ function poseDive(r: Rig, t: number) {
 function applyPose(b: Bather, poseT: number) {
   switch (b.spec.pose) {
     case "swim":
-      poseSwim(b.rig, poseT);
+      // A little over two pose cycles per authored second reads as an active
+      // crawl at game-camera distance instead of a nearly frozen float.
+      poseSwim(b.rig, poseT * 2.15);
       break;
     case "sit":
       poseSit(b.rig, poseT);
@@ -198,6 +201,7 @@ function applyShadowDiet(root: THREE.Object3D) {
 export type SutroBathers = {
   group: THREE.Group;
   update(dt: number, time: number, player?: THREE.Object3D): void;
+  visitSwimmers(visitor: (x: number, z: number, vx: number, vz: number) => void): void;
   dispose(): void;
 };
 
@@ -227,7 +231,8 @@ export function createSutroBathers(_opts: Record<string, never> = {}): SutroBath
       group: rig.group,
       phase,
       baseY,
-      local: { x: spec.lx, z: spec.lz }
+      local: { x: spec.lx, z: spec.lz },
+      drift: spec.drift ?? 0
     };
     applyPose(b, phase);
 
@@ -251,18 +256,19 @@ export function createSutroBathers(_opts: Record<string, never> = {}): SutroBath
 
       // swimmers drift along the pool's local +z and gently bob with the water
       if (b.spec.pose === "swim" && b.pool) {
-        if (b.spec.drift) {
-          let z = b.local.z + b.spec.drift * dt;
+        if (b.drift) {
+          let z = b.local.z + b.drift * dt;
           const margin = 3.5;
           // bounce off the pool ends so they never leave the rect
           if (z > b.pool.maxZ - margin || z < b.pool.minZ + margin) {
-            (b.spec as { drift?: number }).drift = -(b.spec.drift ?? 0);
+            b.drift = -b.drift;
             z = Math.max(b.pool.minZ + margin, Math.min(b.pool.maxZ - margin, z));
           }
           b.local.z = z;
           const w = sutroLocalToWorld(b.local.x, b.local.z);
           b.group.position.x = w.x;
           b.group.position.z = w.z;
+          b.group.rotation.y = SUTRO_BATHS.yaw + (b.drift >= 0 ? Math.PI : 0);
         }
         b.group.position.y = b.baseY + Math.sin(poseT * 0.8) * 0.05;
       }
@@ -316,7 +322,16 @@ export function createSutroBathers(_opts: Record<string, never> = {}): SutroBath
     group.removeFromParent();
   }
 
-  return { group, update, dispose };
+  function visitSwimmers(visitor: (x: number, z: number, vx: number, vz: number) => void) {
+    const s = Math.sin(SUTRO_BATHS.yaw);
+    const c = Math.cos(SUTRO_BATHS.yaw);
+    for (const b of bathers) {
+      if (b.spec.pose !== "swim" || !b.pool || !b.drift) continue;
+      visitor(b.group.position.x, b.group.position.z, s * b.drift, c * b.drift);
+    }
+  }
+
+  return { group, update, visitSwimmers, dispose };
 }
 
 /** Small stable hash for deriving a phase offset from a seed string. */

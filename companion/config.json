@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "world": "San Francisco",
+  "baseUrl": "https://sanfrancisco.up.railway.app",
+  "events": { "kind": "sse", "path": "/companion/events" },
+  "register": { "path": "/companion/register" },
+  "note": "Fetched at launch by the iOS companion app from GitHub raw (main branch). Backend moves? Edit baseUrl here and push — no app update needed."
+}

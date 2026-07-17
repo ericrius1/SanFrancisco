@@ -63,6 +63,7 @@ def make_materials():
         "concrete": material("pier concrete", (0.34, 0.34, 0.32), 0.96),
         "pilings": material("dark wet pier pilings", (0.105, 0.09, 0.07), 0.98),
         "metal": material("aged galvanized metal", (0.33, 0.35, 0.34), 0.62, 0.32),
+        "site_pad": material("Fort Mason terrace lawn", (0.24, 0.30, 0.22), 1.0),
     })
 
 
@@ -114,6 +115,24 @@ def add_box(name, cx, cz, yaw, lx, lz, bottom, width, depth, height, mat):
     VISUAL.objects.link(obj)
     obj.location = (x, -z, bottom + height / 2)
     obj.rotation_euler[2] = yaw
+    obj.scale = (width / 2, depth / 2, height / 2)
+    return mark_visual(obj)
+
+
+def add_oriented_box(name, cx, cz, yaw, lx, lz, local_yaw,
+                     bottom, width, depth, height, mat):
+    """Place a box in the site's local frame with an additional local yaw."""
+    x, z = local_to_world(cx, cz, yaw, lx, lz)
+    mesh = CUBE_MESHES.get(mat.name)
+    if mesh is None:
+        mesh = UNIT_CUBE.copy()
+        mesh.name = f"fort_mason_box_{mat.name}"
+        mesh.materials.append(mat)
+        CUBE_MESHES[mat.name] = mesh
+    obj = bpy.data.objects.new(name, mesh)
+    VISUAL.objects.link(obj)
+    obj.location = (x, -z, bottom + height / 2)
+    obj.rotation_euler[2] = yaw + local_yaw
     obj.scale = (width / 2, depth / 2, height / 2)
     return mark_visual(obj)
 
@@ -231,25 +250,65 @@ def add_long_window(prefix, cx, cz, yaw, lx, wall_lz, bottom, width=2.55, height
 
 
 def add_hostel():
-    cx, cz, base, yaw = 1362.0, -1895.2, 29.4, 0.24
-    length, depth, wall, rise = 64.0, 21.5, 5.9, 3.15
+    cx, cz, base, yaw = 1362.0, -1895.2, 32.48, 0.24
+    length, depth, wall, rise = 64.0, 21.5, 6.2, 3.15
+    grade, floor_y = 32.55, 32.72
+    entrance_x, door_width, door_height = 4.0, 4.8, 3.35
+    door_left = entrance_x - door_width / 2
+    door_right = entrance_x + door_width / 2
+    opening_top = floor_y + door_height
+    front_lz = depth / 2
+    wall_thickness = 0.42
 
-    add_box("hostel_main_clapboard", cx, cz, yaw, 0, 0, base, length, depth, wall, MATS["hostel_wall"])
-    add_box("hostel_foundation", cx, cz, yaw, 0, 0, base - 0.35, length + 0.2, depth + 0.2,
-            0.55, MATS["stucco_trim"])
+    # The hillside rises more than three metres across this footprint. A real
+    # authored terrace, paired with runtime terrain ownership, keeps Building
+    # 240 seated at its entrance grade instead of letting the hill swallow it.
+    add_box("hostel_terrace_pad", cx, cz, yaw, 0, 1.5, grade - 0.30,
+            72.0, 30.0, 0.30, MATS["site_pad"])
+    add_box("hostel_foundation", cx, cz, yaw, 0, 0, base - 0.85,
+            length + 0.2, depth + 0.2, 1.02, MATS["stucco_trim"])
+    add_box("hostel_interior_floor", cx, cz, yaw, 0, 0, floor_y - 0.20,
+            length - 0.7, depth - 0.7, 0.20, MATS["porch"])
+
+    # Build actual walls around a real doorway. The old solid body left only
+    # decorative glass on its face and made the entrance impossible to cross.
+    add_box("hostel_back_wall", cx, cz, yaw, 0, -front_lz, base,
+            length, wall_thickness, wall, MATS["hostel_wall"])
+    for side in (-1, 1):
+        add_box("hostel_end_wall", cx, cz, yaw, side * (length / 2 - wall_thickness / 2), 0,
+                base, wall_thickness, depth, wall, MATS["hostel_wall"])
+    left_width = door_left + length / 2
+    right_width = length / 2 - door_right
+    add_box("hostel_front_wall_left", cx, cz, yaw,
+            -length / 2 + left_width / 2, front_lz, base,
+            left_width, wall_thickness, wall, MATS["hostel_wall"])
+    add_box("hostel_front_wall_right", cx, cz, yaw,
+            door_right + right_width / 2, front_lz, base,
+            right_width, wall_thickness, wall, MATS["hostel_wall"])
+    add_box("hostel_front_door_header", cx, cz, yaw, entrance_x, front_lz,
+            opening_top, door_width, wall_thickness, base + wall - opening_top,
+            MATS["hostel_wall"])
     add_gable("hostel_green_gable_roof", cx, cz, yaw, base + wall,
               length + 2.2, depth + 3.0, rise, MATS["hostel_roof"])
     add_box("hostel_ridge_cap", cx, cz, yaw, 0, 0, base + wall + rise - 0.13,
             length + 2.4, 0.34, 0.28, MATS["metal"])
 
     # Horizontal clapboard reveals keep the facade readable without a texture.
-    for row in range(1, 13):
+    for row in range(1, 14):
         y = base + row * 0.44
-        for side in (-1, 1):
-            add_box(f"hostel_siding_{side}_{row}", cx, cz, yaw, 0,
-                    side * (depth / 2 + 0.035), y, length, 0.07, 0.045, MATS["hostel_trim"])
+        add_box(f"hostel_siding_back_{row}", cx, cz, yaw, 0,
+                -(depth / 2 + 0.035), y, length, 0.07, 0.045, MATS["hostel_trim"])
+        if y < opening_top:
+            add_box(f"hostel_siding_front_left_{row}", cx, cz, yaw,
+                    -length / 2 + left_width / 2, depth / 2 + 0.035,
+                    y, left_width, 0.07, 0.045, MATS["hostel_trim"])
+            add_box(f"hostel_siding_front_right_{row}", cx, cz, yaw,
+                    door_right + right_width / 2, depth / 2 + 0.035,
+                    y, right_width, 0.07, 0.045, MATS["hostel_trim"])
+        else:
+            add_box(f"hostel_siding_front_{row}", cx, cz, yaw, 0,
+                    depth / 2 + 0.035, y, length, 0.07, 0.045, MATS["hostel_trim"])
 
-    entrance_x = 4.0
     window_xs = [-27, -20, -13, -6, 13, 20, 27]
     for i, wx in enumerate(window_xs):
         add_long_window(f"hostel_front_window_{i}", cx, cz, yaw, wx, depth / 2,
@@ -258,29 +317,48 @@ def add_hostel():
         add_long_window(f"hostel_back_window_{i}", cx, cz, yaw, wx, -depth / 2,
                         base + 1.2, 2.7, 3.35, back=True)
 
-    # Dark glazed entrance with its real flat porch canopy and address sign.
-    for dx in (-1.05, 1.05):
-        add_box("hostel_entry_glass", cx, cz, yaw, entrance_x + dx, depth / 2 + 0.08,
-                base + 0.85, 1.9, 0.18, 3.55, MATS["glass"])
-        for fx in (-1.82, 0, 1.82):
-            add_box("hostel_entry_frame", cx, cz, yaw, entrance_x + dx + fx / 2,
-                    depth / 2 + 0.19, base + 0.8, 0.10, 0.10, 3.7, MATS["hostel_frame"])
-    add_box("hostel_entry_canopy", cx, cz, yaw, entrance_x, depth / 2 + 2.15,
-            base + 4.55, 17.0, 4.9, 0.42, MATS["hostel_trim"])
-    add_box("hostel_entry_canopy_red_edge", cx, cz, yaw, entrance_x, depth / 2 + 4.62,
-            base + 4.58, 17.25, 0.18, 0.56, MATS["hostel_frame"])
+    # Walk-through double doors are held open into the lobby. Deep red jambs,
+    # glazed leaves and a transom make the entrance unmistakable from the road.
+    for jamb_x in (door_left, door_right):
+        add_box("hostel_entry_jamb", cx, cz, yaw, jamb_x, front_lz + 0.08,
+                floor_y - 0.03, 0.18, 0.28, door_height + 0.16, MATS["hostel_frame"])
+    add_box("hostel_entry_header_trim", cx, cz, yaw, entrance_x, front_lz + 0.09,
+            opening_top - 0.13, door_width + 0.18, 0.28, 0.18, MATS["hostel_frame"])
+    add_box("hostel_entry_transom", cx, cz, yaw, entrance_x, front_lz + 0.13,
+            opening_top - 0.67, door_width - 0.32, 0.16, 0.48, MATS["glass"])
+    leaf_width = 2.05
+    for i, hinge_x in enumerate((door_left + 0.12, door_right - 0.12)):
+        leaf_lz = front_lz - leaf_width / 2
+        add_oriented_box(f"hostel_open_door_frame_{i}", cx, cz, yaw,
+                         hinge_x, leaf_lz, math.pi / 2, floor_y + 0.03,
+                         leaf_width, 0.18, 3.02, MATS["hostel_frame"])
+        add_oriented_box(f"hostel_open_door_glass_{i}", cx, cz, yaw,
+                         hinge_x, leaf_lz, math.pi / 2, floor_y + 0.28,
+                         leaf_width - 0.26, 0.20, 2.42, MATS["glass"])
+
+    canopy_bottom = floor_y + 3.55
+    canopy_height = 0.42
+    add_box("hostel_entry_canopy", cx, cz, yaw, entrance_x, depth / 2 + 1.25,
+            canopy_bottom, 17.0, 2.7, canopy_height, MATS["hostel_trim"])
+    add_box("hostel_entry_canopy_red_edge", cx, cz, yaw, entrance_x, depth / 2 + 2.62,
+            canopy_bottom + 0.03, 17.25, 0.18, 0.56, MATS["hostel_frame"])
     for px in (-7.0, 7.0):
-        add_box("hostel_canopy_post", cx, cz, yaw, entrance_x + px, depth / 2 + 4.1,
-                base + 0.75, 0.19, 0.19, 3.8, MATS["hostel_trim"])
+        add_box("hostel_canopy_post", cx, cz, yaw, entrance_x + px, depth / 2 + 2.3,
+                floor_y, 0.19, 0.19, canopy_bottom - floor_y, MATS["hostel_trim"])
+    sign_lz = depth / 2 + 2.76
+    add_box("hostel_canopy_signboard", cx, cz, yaw, entrance_x, sign_lz,
+            canopy_bottom + canopy_height, 17.0, 0.16, 1.45, MATS["hostel_trim"])
     add_text("hostel_sign_title", "HOSTELLING INTERNATIONAL", cx, cz, yaw,
-             entrance_x, depth / 2 + 0.16, base + 5.52, 0.66, MATS["sign"])
+             entrance_x, sign_lz + 0.10, canopy_bottom + canopy_height + 1.02,
+             0.66, MATS["sign"])
     add_text("hostel_sign_address", "240 FORT MASON", cx, cz, yaw,
-             entrance_x, depth / 2 + 0.17, base + 5.00, 0.58, MATS["sign"])
+             entrance_x, sign_lz + 0.11, canopy_bottom + canopy_height + 0.43,
+             0.58, MATS["sign"])
 
     # Painted accessible porch and unmistakable X-braced railing.
-    deck_z, deck_y = depth / 2 + 2.65, base + 0.72
-    add_box("hostel_front_porch", cx, cz, yaw, 0, deck_z, base + 0.50,
-            59.5, 5.6, 0.32, MATS["porch"])
+    deck_z, deck_y = depth / 2 + 2.65, floor_y
+    add_box("hostel_front_porch", cx, cz, yaw, 0, deck_z, floor_y - 0.20,
+            59.5, 5.6, 0.20, MATS["porch"])
     rail_z = depth / 2 + 5.38
     sections = [-29.0, -21.5, -14.0, -6.5, 11.0, 18.5, 26.0, 29.0]
     for x in sections:
@@ -299,8 +377,8 @@ def add_hostel():
 
     # Long low access ramp and red curb seen in the real entrance view.
     add_box("hostel_access_ramp", cx, cz, yaw, -20.5, depth / 2 + 5.4, base + 0.13,
-            15.5, 2.5, 0.25, MATS["porch"])
-    add_box("hostel_red_curb", cx, cz, yaw, 0, depth / 2 + 8.0, base - 0.08,
+            15.5, 2.5, floor_y - grade, MATS["porch"])
+    add_box("hostel_red_curb", cx, cz, yaw, 0, depth / 2 + 8.0, grade - 0.12,
             70.0, 0.45, 0.35, MATS["curb"])
 
     # Roof vents, gutters, downspouts, and clipped hedges finish the silhouette.
@@ -317,12 +395,26 @@ def add_hostel():
                 base + 0.15, 0.19, 0.18, wall - 0.1, MATS["hostel_trim"])
     for hx in (15, 20, 25, 29):
         add_box("hostel_trimmed_hedge", cx, cz, yaw, hx, depth / 2 + 6.2,
-                base + 0.05, 4.0, 2.0, 1.45, MATS["shrub"])
+                grade, 4.0, 2.0, 1.45, MATS["shrub"])
 
-    add_collider("hostel_body", cx, cz, yaw, 0, 0, base - 0.2,
-                 length, depth, wall + rise + 0.3)
-    add_collider("hostel_porch", cx, cz, yaw, 0, deck_z, base + 0.45,
-                 59.5, 5.6, 0.42)
+    # Split wall colliders preserve the doorway; floor/porch slabs provide
+    # stable walkable surfaces inside and outside the threshold.
+    add_collider("hostel_back_wall", cx, cz, yaw, 0, -front_lz, base,
+                 length, wall_thickness, wall)
+    for side in (-1, 1):
+        add_collider(f"hostel_end_wall_{side}", cx, cz, yaw,
+                     side * (length / 2 - wall_thickness / 2), 0, base,
+                     wall_thickness, depth, wall)
+    add_collider("hostel_front_wall_left", cx, cz, yaw,
+                 -length / 2 + left_width / 2, front_lz, base,
+                 left_width, wall_thickness, wall)
+    add_collider("hostel_front_wall_right", cx, cz, yaw,
+                 door_right + right_width / 2, front_lz, base,
+                 right_width, wall_thickness, wall)
+    add_collider("hostel_floor", cx, cz, yaw, 0, 0, floor_y - 0.20,
+                 length - 0.7, depth - 0.7, 0.20)
+    add_collider("hostel_porch", cx, cz, yaw, 0, deck_z, floor_y - 0.20,
+                 59.5, 5.6, 0.20)
 
 
 def add_industrial_window(prefix, cx, cz, yaw, lx, wall_lz, bottom, width, height, side):

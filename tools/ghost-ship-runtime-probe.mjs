@@ -60,9 +60,13 @@ try {
   const landingTerrain = await page.evaluate(() => {
     const map = window.__sf.map;
     return [
-      ["Presidio parade ground", -1680, -1050],
+      ["Marina Green", -700, -2350],
       ["Golden Gate Park polo field", -5000, 2500],
-      ["Botanical Garden Great Meadow", -2260, 2450]
+      ["Botanical Garden Great Meadow", -2260, 2450],
+      ["Corona Heights meadow", 350, 2700],
+      ["Mission Dolores Park", 1480, 3120],
+      ["Presidio parade ground", -1680, -1050],
+      ["Fort Mason lawn", 1180, -1750]
     ].map(([name, x, z]) => ({
       name,
       x,
