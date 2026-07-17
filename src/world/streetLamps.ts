@@ -54,6 +54,7 @@ const ROAD_CLEARANCE = 0.35; // pole-base clearance beyond every paved edge (m)
 const CAP = 1024; // per-mesh instance capacity; nearest lamps win the slots
 const REFRESH_MOVE = 30; // re-scan residency only after the player moves this far
 const RESIDENT_R = 500; // residency scan radius around the player
+const LAMP_FADE_IN = 1.1; // seconds a newly resident pool takes to reach full glow
 const HERO_FULL_R = 55; // depth-projected lighting is fully weighted nearby
 const HERO_END_R = 85; // cheap disc has fully taken over by here
 // Include one residency-refresh movement of headroom so the same selected lamp
@@ -110,9 +111,21 @@ export class StreetLamps {
   #bulbs: THREE.InstancedMesh;
   #discs: THREE.InstancedMesh;
   #discProjected: THREE.InstancedBufferAttribute;
+  #lampFadeAttr: THREE.InstancedBufferAttribute;
   #projectionReady = uniform(0);
   #poolStrength = uniform(STREET_LIGHT_TUNING.values.strength);
   #falloffPower = uniform(STREET_LIGHT_TUNING.values.falloffPower);
+  // residency-edge fade: pools dim to nothing before the resident-set boundary,
+  // so refresh pops land where the disc is already invisible
+  #now = uniform(0);
+  #fadeCenter = uniform(new THREE.Vector2());
+  #fadeStart = uniform(RESIDENT_R * 0.66);
+  #fadeEnd = uniform(RESIDENT_R * 0.92);
+  #nextEdge = RESIDENT_R;
+  // lamp idx → first-resident timestamp (s); survives refreshes while the lamp
+  // stays resident so a mid-fade lamp never restarts its fade
+  #birth = new Map<number, number>();
+  #nextBirth = new Map<number, number>();
   // flat lamp store, stride 4: x, z, towardRoadX, towardRoadZ (all placed lamps)
   #lamps: Float32Array;
   #count: number;
@@ -148,6 +161,8 @@ export class StreetLamps {
     { length: MAX_PROJECTED_SURFACE_LIGHTS },
     () => new THREE.Vector4(0, 1, 0, 0)
   );
+  #heroBirth = new Float32Array(MAX_PROJECTED_SURFACE_LIGHTS);
+  #nextHeroBirth = new Float32Array(MAX_PROJECTED_SURFACE_LIGHTS);
   #nextHeroPositions = Array.from(
     { length: MAX_PROJECTED_SURFACE_LIGHTS },
     () => new THREE.Vector4()
@@ -317,6 +332,11 @@ export class StreetLamps {
       1
     );
     discGeo.setAttribute("surfaceProjected", this.#discProjected);
+    this.#lampFadeAttr = new THREE.InstancedBufferAttribute(
+      new Float32Array(CAP * 2),
+      2
+    );
+    discGeo.setAttribute("lampFade", this.#lampFadeAttr);
     const discMat = new THREE.MeshBasicNodeMaterial();
     const d = uv().sub(0.5).length().mul(2); // 0 at centre → 1 at rim
     // A cubic Hermite ramp is C1-continuous at the rim. Compared with the old
@@ -336,11 +356,39 @@ export class StreetLamps {
     const discWeight = float(1).sub(
       projected.mul(closeWeight).mul(this.#projectionReady as N)
     );
-    discMat.colorNode = color(0xffb866)
+    // x = first-resident timestamp (s), y = per-lamp brightness jitter
+    const lampFade = attribute("lampFade", "vec2") as N;
+    // Residency-edge fade, measured from the live player (the residency centre),
+    // NOT the camera: from a plane every disc is hundreds of metres from the
+    // camera, but only lamps near the resident-set boundary should dim.
+    const fadeDist = vertexStage(
+      (positionWorld as N).xz.sub(this.#fadeCenter as N).length()
+    ) as N;
+    const edgeFade = smoothstep(
+      this.#fadeStart as N,
+      this.#fadeEnd as N,
+      fadeDist
+    ).oneMinus();
+    const bornFade = smoothstep(
+      lampFade.x,
+      lampFade.x.add(LAMP_FADE_IN),
+      this.#now as N
+    );
+    // Per-channel Reinhard knee BEFORE any crossfade weight: the raw peak
+    // (~4.8 linear) used to clip flat on the tone-map shoulder, reading as a
+    // solid decal from altitude. The knee keeps a hot slightly-whitened core
+    // with a visible gradient. The projected pass applies the identical knee
+    // per light, weights outside, so the 55–85 m crossfade stays matched.
+    const litRaw = color(0xffb866)
       .mul(falloff)
-      .mul(discWeight)
+      .mul(lampFade.y)
       .mul(this.#poolStrength)
       .mul(STREET_LAMPS_INTENSITY) as N;
+    discMat.colorNode = litRaw
+      .div(litRaw.add(1))
+      .mul(discWeight)
+      .mul(edgeFade)
+      .mul(bornFade) as N;
     discMat.transparent = true;
     discMat.blending = THREE.AdditiveBlending;
     discMat.depthWrite = false;
@@ -389,6 +437,10 @@ export class StreetLamps {
     // allocation-free and avoids rebuilding either node material.
     this.#poolStrength.value = STREET_LIGHT_TUNING.values.strength;
     this.#falloffPower.value = STREET_LIGHT_TUNING.values.falloffPower;
+    this.#now.value = performance.now() * 0.001;
+    // live position (not the 30 m-quantized scan centre): trailing pools dim
+    // smoothly as you leave and the leading band brightens as you approach
+    this.#fadeCenter.value.set(playerPos.x, playerPos.z);
     // no additive draw by day — the intensity uniform is the on/off switch
     this.#discs.visible = STREET_LAMPS_INTENSITY.value > 0.01;
     if (this.#count === 0) return;
@@ -434,6 +486,11 @@ export class StreetLamps {
     // arm the amortized fill: placements (2 ground + 1 normal sample each) drain
     // over the next frames; the visible set holds the previous lamps meanwhile
     this.#fillN = Math.min(CAP, candI.length);
+    // actual resident edge: the scan radius, unless CAP truncated the set first
+    // (dense downtown) — then the farthest kept lamp defines where pops happen
+    this.#nextEdge =
+      candI.length > CAP ? Math.sqrt(candD2[order[CAP - 1]]) : RESIDENT_R;
+    this.#nextBirth.clear();
     this.#nextHeroCount = 0;
     const heroSelectR2 = HERO_SELECT_R * HERO_SELECT_R;
     while (
@@ -451,6 +508,7 @@ export class StreetLamps {
   #drainFill(): void {
     if (this.#fillCursor < 0) return;
     const map = this.#map;
+    const nowS = performance.now() * 0.001;
     const end = Math.min(this.#fillN, this.#fillCursor + FILL_PER_FRAME);
     for (let k = this.#fillCursor; k < end; k++) {
       const idx = this.#candI[this.#order[k]];
@@ -471,18 +529,33 @@ export class StreetLamps {
       this.#bulbs.setMatrixAt(k, this.#mat);
       this.#scl.set(1, 1, 1); // restore scale scratch after basis abuse
 
-      // ground pool: centred under the arm tip, laid flat to the terrain normal
+      // ground pool: centred under the arm tip, laid flat to the terrain normal.
+      // Hash-jittered radius (and a brightness jitter in the fade attribute)
+      // breaks the uniform stamped-decal look; the jittered radius rides the
+      // hero position's w so the projected pass and lamp-field audio agree.
       const gx = x + tx * ARM_LEN;
       const gz = z + tz * ARM_LEN;
       const gy = map.effectiveGround(gx, gz) + 0.03;
+      const radiusJitter = 0.88 + 0.28 * hash2(idx, 57);
       map.normal(gx, gz, this.#nrm);
       this.#quat.setFromUnitVectors(this.#up, this.#nrm);
-      this.#mat.compose(this.#pos.set(gx, gy, gz), this.#quat, this.#scl);
+      this.#mat.compose(
+        this.#pos.set(gx, gy, gz),
+        this.#quat,
+        this.#scl.set(radiusJitter, radiusJitter, 1)
+      );
+      this.#scl.set(1, 1, 1);
       this.#discs.setMatrixAt(k, this.#mat);
+      // fade-in starts at first residency; a retained lamp keeps its birth so a
+      // refresh can never restart (or skip) a fade mid-ramp
+      const birth = this.#birth.get(idx) ?? nowS;
+      this.#nextBirth.set(idx, birth);
+      this.#lampFadeAttr.setXY(k, birth, 0.85 + 0.3 * hash2(idx, 101));
       const isHero = k < this.#nextHeroCount;
       this.#discProjected.setX(k, isHero ? 1 : 0);
       if (isHero) {
-        this.#nextHeroPositions[k].set(gx, gy, gz, POOL_R);
+        this.#nextHeroPositions[k].set(gx, gy, gz, POOL_R * radiusJitter);
+        this.#nextHeroBirth[k] = birth;
         this.#nextHeroNormals[k].set(
           this.#nrm.x,
           this.#nrm.y,
@@ -506,11 +579,24 @@ export class StreetLamps {
       this.#nextHeroNormals,
       this.#heroNormals
     ];
+    [this.#heroBirth, this.#nextHeroBirth] = [
+      this.#nextHeroBirth,
+      this.#heroBirth
+    ];
+    // dropping the old map forgets departed lamps: if one re-enters later it
+    // fades in again instead of popping at its stale full-brightness birth
+    [this.#birth, this.#nextBirth] = [this.#nextBirth, this.#birth];
     this.#heroCount = this.#nextHeroCount;
+    // fade band published atomically with the swapped set: fully transparent
+    // one refresh-move inside the edge, so pop-in lands at ~zero alpha
+    const fadeEnd = Math.max(90, this.#nextEdge * 0.95 - REFRESH_MOVE);
+    this.#fadeEnd.value = fadeEnd;
+    this.#fadeStart.value = fadeEnd * 0.72;
     this.#posts.instanceMatrix.needsUpdate = true;
     this.#bulbs.instanceMatrix.needsUpdate = true;
     this.#discs.instanceMatrix.needsUpdate = true;
     this.#discProjected.needsUpdate = true;
+    this.#lampFadeAttr.needsUpdate = true;
   }
 
   #projectedLightingActive(): boolean {
@@ -541,6 +627,13 @@ export class StreetLamps {
       1
     );
     const smooth = t * t * (3 - 2 * t);
-    normalAndWeight.w = 1 - smooth;
+    // same first-residency fade-in the disc applies, so a boot/teleport at
+    // night ramps the projected pools in step with their fallbacks
+    const b = THREE.MathUtils.clamp(
+      (performance.now() * 0.001 - this.#heroBirth[index]) / LAMP_FADE_IN,
+      0,
+      1
+    );
+    normalAndWeight.w = (1 - smooth) * b * b * (3 - 2 * b);
   }
 }

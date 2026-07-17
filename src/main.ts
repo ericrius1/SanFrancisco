@@ -4300,8 +4300,11 @@ async function boot() {
     // the fixed-quality local tile streamer remains active throughout.
     noteWorldBackgroundMotion();
 
-    // gamepad first so its synthetic key codes exist for every consumer below
+    // gamepad first so its synthetic key codes exist for every consumer below,
+    // then the scripted driver (third device on the same rails — cinematics,
+    // QA probes, autopilots) so its writes land before any consumer reads
     input.pollPad(frameDt);
+    input.pollDriver(frameDt);
     minigameSession.beginFrame(captureMinigameOrigin());
 
     // Behind-the-scenes overlay open: freeze the world completely — no sim, no
