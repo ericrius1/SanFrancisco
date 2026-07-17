@@ -50,6 +50,7 @@ export type SutroBathsDebugState = {
   nearEffectsFailed: boolean;
   water: ReturnType<SutroBathsWaterSimulation["debugState"]> | null;
   steam: SutroBathsSteam["stats"] | null;
+  interactions: SutroWaterInteractions["stats"] | null;
 };
 
 export type SutroBaths = {
@@ -119,12 +120,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   group.add(ambience.group, vegetation.group, bathers.group);
 
   const stats: SutroBathsStats = {
-    architectureMeshes: 53,
-    architectureInstances: 1619,
+    architectureMeshes: 58,
+    architectureInstances: 2090,
     roofRibs: 306,
     glassPanels: 304,
     lamps: 28,
-    physicsBodies: 68,
+    physicsBodies: 180,
     trees: vegetation.stats.trees,
     shrubs: vegetation.stats.shrubs,
     planters: vegetation.stats.planters
@@ -212,7 +213,8 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
             waterInteractions = createSutroWaterInteractions({
               water,
               ballSource: options.ballSource,
-              getRemotes: options.getRemotes
+              getRemotes: options.getRemotes,
+              visitAmbientSwimmers: bathers.visitSwimmers
             });
             monitors.nearEffectsLoaded = true;
           } finally {
@@ -290,8 +292,10 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       prevPlayerPos.set(player.x, py, player.z);
       havePrevPlayer = true;
 
-      // Inject wader/ball/remote wakes before the sim drains its queue so they
-      // propagate this frame.
+      // Advance authored swimmers first, then inject all wakes before the sim
+      // drains its queue so the visible bodies and ripples stay in lockstep.
+      batherPlayer.position.set(player.x, py, player.z);
+      bathers.update(dt, time, batherPlayer);
       waterInteractions?.update({
         dt,
         player: {
@@ -301,9 +305,6 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       });
       water?.update(dt, time, player);
       steam?.update(dt, time, player, camera, gust);
-
-      batherPlayer.position.set(player.x, py, player.z);
-      bathers.update(dt, time, batherPlayer);
 
       if (water) {
         monitors.backend = water.stats.backend;
@@ -378,7 +379,8 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         nearEffectsLoaded: water !== null,
         nearEffectsFailed,
         water: water?.debugState() ?? null,
-        steam: steam?.stats ?? null
+        steam: steam?.stats ?? null,
+        interactions: waterInteractions?.stats ?? null
       };
     },
     dispose() {

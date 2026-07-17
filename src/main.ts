@@ -18,7 +18,11 @@ import {
 } from "./gameplay/surfing/shack";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { GhostShipBeacon } from "./world/ghostShip/beacon";
-import { GHOST_SHIP_DETAIL_WAKE_DISTANCE, GHOST_SHIP_RIDE_ID } from "./world/ghostShip/route";
+import {
+  GHOST_SHIP_DETAIL_WAKE_DISTANCE,
+  GHOST_SHIP_LANDMARK_NAME,
+  GHOST_SHIP_RIDE_ID
+} from "./world/ghostShip/route";
 import type { GhostShip } from "./world/ghostShip";
 import { Water } from "./world/water";
 import { emitEmbodimentWaterEcho } from "./world/waterEchoes";
@@ -113,6 +117,7 @@ import {
 } from "./world/vegetation/runtime";
 import { BOTANICAL_GARDEN_BOUNDS } from "./world/garden/layout";
 import type { CityGenRing } from "./world/citygen";
+import { PROCEDURAL_LAMP_TUNING } from "./world/citygen/interior/lampTuning";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
@@ -1461,13 +1466,23 @@ async function boot() {
   // particles and the WebGPU hot-tub solver cross a separate proximity gate.
   const ghostShipBeacon = new GhostShipBeacon(scene, map);
   let ghostShip: GhostShip | null = null;
-  let ghostShipLoading: Promise<void> | null = null;
+  let ghostShipLoading: Promise<GhostShip | null> | null = null;
   let ghostShipLoadFailed = false;
   let unregisterGhostShipTuning: (() => void) | null = null;
-  let ensureGhostShipDetail: () => void = () => {};
-  remotes.worldRidePose = (rideId, seat, outPosition, outQuaternion) =>
-    rideId === GHOST_SHIP_RIDE_ID &&
-    (ghostShip?.seatPose(seat, outPosition, outQuaternion) ?? false);
+  let ensureGhostShipDetail: () => Promise<GhostShip | null> = async () => null;
+  const ghostShipSeatQuat = new THREE.Quaternion();
+  const ghostShipSeatEuler = new THREE.Euler(0, 0, 0, "YXZ");
+  remotes.worldRidePose = (rideId, seat, outPosition, outQuaternion) => {
+    if (rideId !== GHOST_SHIP_RIDE_ID) return false;
+    if (ghostShip?.seatPose(seat, outPosition, outQuaternion)) return true;
+    // Keep map-teleport riders glued while the detailed chunk warms up.
+    const pose = ghostShipBeacon.pose;
+    outPosition.set(pose.x, pose.y + 2.2, pose.z);
+    ghostShipSeatEuler.set(pose.pitch, pose.yaw, pose.roll);
+    ghostShipSeatQuat.setFromEuler(ghostShipSeatEuler);
+    outQuaternion.copy(ghostShipSeatQuat);
+    return true;
+  };
   setRemoteSurfboardAssetsActive = (active) => remotes.setSurfboardAssetsEnabled(active);
   setRemoteScooterAssetsActive = (active) => remotes.setScooterAssetsEnabled(active);
   setRemoteCarAssetsActive = (active) => remotes.setCarAssetsEnabled(active);
@@ -1851,6 +1866,8 @@ async function boot() {
     }
   );
   net.onChat = (_id, name, text) => chat.addMessage(name, text);
+  // presence toast above the chat panel when someone new enters the world
+  net.onJoin = (_id, name) => chat.showJoin(name);
   // golf: friends' swings/balls/scores replay here (owner-simulated snapshots)
   net.onGolf = (id, m) => golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {
@@ -1946,7 +1963,7 @@ async function boot() {
   minimap.addLandmark(PUP_CENTER.x, PUP_CENTER.z, "Puppy Nursery");
   minimap.addLandmark(FORT_MASON_ENSEMBLE_CENTER.x, FORT_MASON_ENSEMBLE_CENTER.z, "Fort Mason Jam");
   minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
-  minimap.addLandmark(-1680, -1050, "Ghost Ship · nightly landing");
+  minimap.addLandmark(ghostShipBeacon.pose.x, ghostShipBeacon.pose.z, GHOST_SHIP_LANDMARK_NAME);
   // Ocean Beach surf shack. Teleporting arrives on foot at the apron;
   // one E press on a racked board enters the live face already standing and moving.
   {
@@ -2124,8 +2141,59 @@ async function boot() {
     navigation.switchMode(mode);
   };
   switchModeFromExit = switchMode;
-  const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) =>
+  const teleportAboardGhostShip = () => {
+    if (embodiments.passengerOf === GHOST_SHIP_RIDE_ID) {
+      hud.message("Already aboard the wandering ghost ship", 2.2);
+      return;
+    }
+    navigation.teleportCustom({
+      label: GHOST_SHIP_LANDMARK_NAME,
+      successMessage: null,
+      resolve: async (signal) => {
+        const ship = await ensureGhostShipDetail();
+        if (signal.aborted) throw new DOMException("Navigation superseded", "AbortError");
+        if (!ship) throw new Error("The ghost ship could not be loaded");
+        const seat = ship.claimDeckSeat(remotes.occupiedRideSeats(GHOST_SHIP_RIDE_ID));
+        if (seat <= 0) throw new Error("The ghost ship's deck stations are full");
+        const pose = ghostShipBeacon.pose;
+        ship.update(0, elapsed, pose, player.renderPosition, true);
+        if (!ship.seatPose(seat, ridePos, rideQuat)) {
+          throw new Error("The ghost ship could not seat you");
+        }
+        return {
+          x: ridePos.x,
+          y: ridePos.y,
+          z: ridePos.z,
+          cameraYaw: pose.yaw,
+          commit: () => {
+            releaseGameplayForNavigation();
+            embodiments.leaveRide();
+            embodiments.exitToWalk();
+            ghostShipRideZoom ??= chase.zoom;
+            chase.zoom = Math.max(chase.zoom, 3.2);
+            chase.yaw = pose.yaw;
+            ghostShipRideYaw = pose.yaw;
+            player.teleportTo({
+              x: ridePos.x,
+              y: ridePos.y,
+              z: ridePos.z,
+              facing: pose.yaw,
+              mode: "walk"
+            });
+            embodiments.startPassengerRide(GHOST_SHIP_RIDE_ID, seat);
+            hud.message(`Aboard the wandering ghost ship · deck station ${seat} · E to step off`, 3.2);
+          }
+        };
+      }
+    });
+  };
+  const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) => {
+    if (toName === GHOST_SHIP_LANDMARK_NAME) {
+      teleportAboardGhostShip();
+      return;
+    }
     navigation.teleportToTarget(x, z, toName, playerId);
+  };
   switchModeFromToolbar = switchMode;
   hud.onHistoryBack = () => applyPlaceHistory(-1);
   hud.onHistoryForward = () => applyPlaceHistory(1);
@@ -2268,33 +2336,40 @@ async function boot() {
     setFoliageVisible,
     () => wildlands?.flowers.refresh(),
     () => wildlands?.grass.refresh(),
-    () => diagnostics.toggleInspector()
+    () => diagnostics.toggleInspector(),
+    () => { citygenRing.current?.refreshInteriors(); }
   );
 
   ensureGhostShipDetail = () => {
-    if (ghostShip || ghostShipLoading || ghostShipLoadFailed) return;
-    ghostShipLoading = import("./world/ghostShip")
-      .then(async ({ createGhostShip }) => {
-        const candidate = createGhostShip({ scene, renderer });
-        try {
-          await candidate.warmup();
-        } catch (error) {
-          candidate.dispose();
-          throw error;
-        }
-        ghostShip = candidate;
-        ghostShipBeacon.detailedVisible = true;
-        unregisterGhostShipTuning = debugPanel.registerFeatureTuning(candidate.tuningDescriptor());
-        const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-        if (hooks) hooks.ghostShip = candidate;
-      })
-      .catch((error) => {
-        ghostShipLoadFailed = true;
-        console.warn("[ghost-ship] detailed runtime unavailable", error);
-      })
-      .finally(() => {
-        ghostShipLoading = null;
-      });
+    if (ghostShip) return Promise.resolve(ghostShip);
+    if (ghostShipLoadFailed) return Promise.resolve(null);
+    if (!ghostShipLoading) {
+      ghostShipLoading = import("./world/ghostShip")
+        .then(async ({ createGhostShip }) => {
+          const candidate = createGhostShip({ scene, renderer });
+          try {
+            await candidate.warmup();
+          } catch (error) {
+            candidate.dispose();
+            throw error;
+          }
+          ghostShip = candidate;
+          ghostShipBeacon.detailedVisible = true;
+          unregisterGhostShipTuning = debugPanel.registerFeatureTuning(candidate.tuningDescriptor());
+          const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+          if (hooks) hooks.ghostShip = candidate;
+          return candidate;
+        })
+        .catch((error) => {
+          ghostShipLoadFailed = true;
+          console.warn("[ghost-ship] detailed runtime unavailable", error);
+          return null;
+        })
+        .finally(() => {
+          ghostShipLoading = null;
+        });
+    }
+    return ghostShipLoading;
   };
 
   import.meta.hot?.dispose(() => {
@@ -3292,6 +3367,10 @@ async function boot() {
     // The eye-walker's GLB + rider arm later (near the labyrinth); warm their
     // pipelines off-frame when that happens.
     region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root);
+    region.prepareFoliage = async (group) => {
+      await waitForOptionalSiteStage();
+      await prepareOptionalRoot("lands-end foliage", group);
+    };
     await prepareOptionalRoot("lands-end", region.group);
     region.setFoliageVisible(foliageOn);
     landsEnd = region;
@@ -4131,6 +4210,7 @@ async function boot() {
   let elapsed = 0;
   const updateGhostShip = (dt: number) => {
     const pose = ghostShipBeacon.update(Date.now());
+    minimap.moveLandmark(GHOST_SHIP_LANDMARK_NAME, pose.x, pose.z);
     const distance = ghostShipBeacon.horizontalDistanceTo(player.renderPosition);
     if (
       !worldArrival.active &&
@@ -4139,7 +4219,7 @@ async function boot() {
       !ghostShipLoadFailed &&
       (distance <= GHOST_SHIP_DETAIL_WAKE_DISTANCE || embodiments.passengerOf === GHOST_SHIP_RIDE_ID)
     ) {
-      ensureGhostShipDetail();
+      void ensureGhostShipDetail();
     }
     ghostShip?.update(
       dt,
@@ -4828,6 +4908,7 @@ async function boot() {
       sky.applyFogParams();
       sky.refreshFogWeatherSource();
       debugPanel.syncNow();
+      citygenRing.current?.refreshInteriors();
       hud.message("Tweaks back to source defaults", 3);
     }
     if (!worldArrival.active && input.pressed("KeyC")) {
@@ -5743,7 +5824,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

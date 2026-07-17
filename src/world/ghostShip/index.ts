@@ -4,11 +4,17 @@ import { createGhostShipSteam, RainbowStarShower } from "./effects";
 import { createGhostShipHotTubWater } from "./hotTubWater";
 import {
   GHOST_SHIP_SEAT_COUNT,
+  ghostShipClaimSeat,
   type GhostShipPose
 } from "./route";
 import { GHOST_SHIP_TUNING } from "./tuning";
 
-export { GHOST_SHIP_RIDE_ID, GHOST_SHIP_SEAT_COUNT } from "./route";
+export {
+  GHOST_SHIP_LANDMARK_NAME,
+  GHOST_SHIP_RIDE_ID,
+  GHOST_SHIP_SEAT_COUNT,
+  ghostShipClaimSeat
+} from "./route";
 
 const BOARDING_LOCAL = new THREE.Vector3(9, -3.7, 13);
 const BOARDING_RADIUS = 8;
@@ -53,6 +59,8 @@ export type GhostShip = {
   warmup(): Promise<void>;
   nearbyBoarding(playerPosition: THREE.Vector3): boolean;
   board(playerPosition: THREE.Vector3, occupiedSeats: readonly number[]): number;
+  /** Map/teleport boarding — ignores gangplank proximity and landed state. */
+  claimDeckSeat(occupiedSeats: readonly number[]): number;
   seatPose(seat: number, outPosition: THREE.Vector3, outQuaternion: THREE.Quaternion): boolean;
   tuningDescriptor(): DebugFeatureTuningRegistration;
   readonly stats: {
@@ -494,11 +502,10 @@ export function createGhostShip(options: {
     nearbyBoarding,
     board(playerPosition, occupiedSeats) {
       if (!nearbyBoarding(playerPosition)) return 0;
-      const occupied = new Set(occupiedSeats);
-      for (let seat = 1; seat <= GHOST_SHIP_SEAT_COUNT; seat++) {
-        if (!occupied.has(seat)) return seat;
-      }
-      return 0;
+      return ghostShipClaimSeat(occupiedSeats);
+    },
+    claimDeckSeat(occupiedSeats) {
+      return ghostShipClaimSeat(occupiedSeats);
     },
     seatPose(seat, outPosition, outQuaternion) {
       const index = Math.round(seat) - 1;

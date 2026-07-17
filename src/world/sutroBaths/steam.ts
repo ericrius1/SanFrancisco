@@ -108,7 +108,7 @@ export function createSutroBathsSteam(): SutroBathsSteam {
       const extra = tuning as unknown as Record<string, number | undefined>;
       const rawSteps = extra.steamSteps;
       u.steps.value = THREE.MathUtils.clamp(
-        Math.round(typeof rawSteps === "number" && Number.isFinite(rawSteps) ? rawSteps : 28),
+        Math.round(typeof rawSteps === "number" && Number.isFinite(rawSteps) ? rawSteps : 20),
         12,
         MAX_STEPS_CLAMP
       );

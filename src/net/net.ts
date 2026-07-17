@@ -360,6 +360,7 @@ export class Net {
   pickleballState: RemotePickleballState | null = null;
 
   onRoster: () => void = () => {}; // any join/leave/rename (rebuild lists)
+  onJoin: (id: number, name: string) => void = () => {}; // a new player entered (announce/toast)
   onWelcome: () => void = () => {}; // assigned id + roster hydrated — push saved avatar
   onSample: (id: number, s: NetSample) => void = () => {};
   onLeave: (id: number) => void = () => {};
@@ -713,6 +714,7 @@ export class Net {
           car: rosterCar(msg.id as number, msg.car)
         });
         this.onRoster();
+        this.onJoin(msg.id as number, String(msg.name));
         break;
       }
       case "leave": {

@@ -72,10 +72,10 @@ export function createSteamUniforms(): SteamUniforms {
   return {
     time: uniform(0),
     gust: uniform(0.4),
-    amount: uniform(0.68),
+    amount: uniform(0.48),
     opacity: uniform(0.22),
-    height: uniform(5.8),
-    steps: uniform(28),
+    height: uniform(4.8),
+    steps: uniform(20),
     sunDir: uniform(new THREE.Vector3(-0.52, 0.42, -0.28).normalize()),
     sunGain: uniform(0.9),
     curl: uniform(0.6)

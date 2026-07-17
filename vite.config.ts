@@ -260,7 +260,8 @@ export default defineConfig({
     proxy: {
       "/ws": { target: RELAY_WS, ws: true },
       "/api/weather": { target: `http://localhost:${RELAY_PORT}` },
-      "/api/starlink": { target: `http://localhost:${RELAY_PORT}` }
+      "/api/starlink": { target: `http://localhost:${RELAY_PORT}` },
+      "/companion": { target: `http://localhost:${RELAY_PORT}` }
     },
     fs: {
       allow: [
