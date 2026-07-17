@@ -40,6 +40,7 @@ import type { ContactShadowComplement } from "../render/contactShadows";
 import { OVERLAY_TUNING } from "./overlays/tuning";
 import type { OverlayContextFlags } from "./overlays/manager";
 import { createFrameBudgetCheckpoint, yieldToFrame } from "../core/cooperativeWork";
+import { PROCEDURAL_LAMP_TUNING } from "../world/citygen/interior/lampTuning";
 
 type DebugRenderPipeline = {
   applyPostFx: () => void;
@@ -155,6 +156,7 @@ export class DebugPanel {
   #setFoliageVisible: (visible: boolean) => void;
   #refreshFlowers: () => void;
   #refreshGrass: () => void;
+  #refreshCitygenInteriors: () => void;
   #toggleProfiler: () => boolean;
   #lastRefresh = 0;
   /** Tracks the last applied wireframe flag so refresh() can catch external flips. */
@@ -182,7 +184,8 @@ export class DebugPanel {
     setFoliageVisible: (visible: boolean) => void = () => {},
     refreshFlowers: () => void = () => {},
     refreshGrass: () => void = () => {},
-    toggleProfiler: () => boolean = () => false
+    toggleProfiler: () => boolean = () => false,
+    refreshCitygenInteriors: () => void = () => {}
   ) {
     this.#renderer = renderer;
     this.#sky = sky;
@@ -194,6 +197,7 @@ export class DebugPanel {
     this.#refreshFlowers = refreshFlowers;
     this.#refreshGrass = refreshGrass;
     this.#toggleProfiler = toggleProfiler;
+    this.#refreshCitygenInteriors = refreshCitygenInteriors;
     window.addEventListener(TUNABLES_UPDATED_EVENT, () => this.#refreshAllBindings());
     this.#applyShadowTuning();
     // Honor a persisted wireframe flag immediately (no wait for first refresh).
@@ -749,6 +753,28 @@ export class DebugPanel {
     // drag + watch the fps counter and the near-detail band move.
     const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: false });
     CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
+    const homeLamps = citygenF.addFolder({ title: "procedural home lamps", expanded: false });
+    const lampDistribution = homeLamps.addFolder({ title: "distribution + finish", expanded: true });
+    PROCEDURAL_LAMP_TUNING.bind(lampDistribution, {
+      keys: ["enabled", "coverage", "finish", "lightTone"],
+      onChange: (_key, _value, last) => {
+        if (last) this.#refreshCitygenInteriors();
+      }
+    });
+    const lampForm = homeLamps.addFolder({ title: "ribbon form", expanded: true });
+    PROCEDURAL_LAMP_TUNING.bind(lampForm, {
+      keys: ["rings", "radius", "depth", "ceilingDrop", "maxTilt", "variation"],
+      onChange: (_key, _value, last) => {
+        if (last) this.#refreshCitygenInteriors();
+      }
+    });
+    const lampDetails = homeLamps.addFolder({ title: "construction", expanded: false });
+    PROCEDURAL_LAMP_TUNING.bind(lampDetails, {
+      keys: ["ribbonWidth", "ribbonThickness", "ribs", "cables", "glowSize"],
+      onChange: (_key, _value, last) => {
+        if (last) this.#refreshCitygenInteriors();
+      }
+    });
 
     // Fog — top-level (master on/off lives in metta above).
     const fog = pane.addFolder({ title: "fog", expanded: false });
