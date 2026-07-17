@@ -36,8 +36,9 @@
   - Shrubs: `createAuthoredShrubPatch`; flowers: `createAuthoredFlowerPatch` (`src/world/vegetation/`).
   - Grass/groundcover: `src/world/groundcover/` (bladeGrass + shared wind/trample).
 - Regions own botanical intent only — positions, archetype ids, yaw, scale. The shared runtime owns compilation, instancing/batching, wind shading, LOD grades, chunk culling, and shadow proxies. Do not duplicate any of those per region.
-- Region vegetation is lazy: put placements in a separate `vegetation.ts` module, dynamic-import it on first approach, call `patch.update(focus)` each frame while visible, `await patch.ready`, warm the detached group off-frame (`prepareFoliage` hook → `prepareOptionalRoot`), then attach. Reference implementations: `src/world/coronaHeights/vegetation.ts`, `src/world/landsEnd/vegetation.ts`, `src/world/sutroBaths/vegetation.ts`.
-- Respect the master foliage toggle: expose `setFoliageVisible` and gate per-frame updates on it.
+- Exhibit-site vegetation streams through the shared `SiteFoliageStreamer` (`src/world/vegetation/siteFoliage.ts`): keep placements in a separate `vegetation.ts` module and register a boot-safe `{center, radii, build()}` entry in main.ts whose `build()` dynamic-imports that module. The streamer owns lazy import gating, background admission, off-frame warmup, per-frame focus updates, distance unload, and the master foliage toggle — sites own zero foliage lifecycle code, and vegetation residency is deliberately independent of the exhibit's gameplay radii (trees are landscape; they load from farther out and survive the gameplay site unloading). Reference registrations: lands-end cypress and the two Corona layers in main.ts; `src/world/sutroBaths/vegetation.ts` remains the site-internal exception.
+- Inside a patch, contract order is `patch.update(focus)` → `await patch.ready` → `patch.update(focus)`: an update names the focus whose chunks compile, so `ready` never resolves for a patch that was never focused.
+- Respect the master foliage toggle: site-internal foliage exposes `setFoliageVisible` and gates per-frame updates on it; streamer-registered vegetation inherits the toggle automatically.
 
 # Massive-app loading policy
 

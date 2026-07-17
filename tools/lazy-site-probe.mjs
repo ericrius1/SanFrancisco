@@ -53,6 +53,9 @@ async function ev(c, expr) {
 const SITES = `(__sf?.optionalWorldSites ?? []).map(s => ({ id: s.id, state: s.state, priority: s.priority }))`;
 const siteState = async (c, id) =>
   (await ev(c, SITES)).find((s) => s.id === id)?.state ?? "missing";
+const FOLIAGE = `(__sf?.siteFoliage?.debugSnapshot() ?? [])`;
+const foliageState = async (c, id) =>
+  (await ev(c, FOLIAGE)).find((e) => e.id === id)?.status ?? "missing";
 
 async function waitFor(c, label, predicate, timeoutMs, pollMs = 200) {
   const t0 = Date.now();
@@ -112,7 +115,7 @@ async function main() {
     c.onEvent = (m) => {
       if (m.method === "Runtime.consoleAPICalled") {
         const txt = m.params.args.map((a) => a.value ?? a.description ?? "").join(" ");
-        if (/\[lazy-site\]|\[authored-region\]|\[spawn\]/.test(txt)) {
+        if (/\[lazy-site\]|\[site-foliage\]|\[authored-region\]|\[spawn\]/.test(txt)) {
           lazyLog.push(txt.slice(0, 160));
           console.log(`  page> ${txt.slice(0, 160)}`);
         }
@@ -146,6 +149,10 @@ async function main() {
       const s = farStates.find((x) => x.id === id)?.state;
       assert(`${id} untouched at Lands End boot`, s === "dormant", `state=${s}`);
     }
+    const cypressMs = await waitFor(c, "cypress planted at boot", async () =>
+      (await foliageState(c, "lands-end-cypress")) === "ready", 90000);
+    assert("lands-end cypress plants while walking", true, `${(cypressMs / 1000).toFixed(1)}s`);
+
     // meta.ts files are boot-eligible coordinate registries; everything else
     // under a feature directory must stay unrequested at a Lands End boot.
     const goldmanReqs = await ev(c, `performance.getEntriesByType('resource')
@@ -182,6 +189,14 @@ async function main() {
       (await siteState(c, "lands-end")) === "ready", 90000);
     assert("lands-end reloads cleanly after unload", true);
 
+    // ---- Scenario 2b: vegetation outlives the gameplay site ---------------
+    console.log("[probe] stepping 1.15km east — site unloads, trees stay");
+    await ev(c, `__sf.teleportToTarget(-4770, 760, 'Lands End Overlook')`);
+    await waitFor(c, "lands-end site unloaded at 1.15km", async () =>
+      (await siteState(c, "lands-end")) === "dormant", 60000);
+    const cypressFar = await foliageState(c, "lands-end-cypress");
+    assert("cypress survives gameplay-site unload", cypressFar === "ready", `status=${cypressFar}`);
+
     // ---- Scenario 3: full load near Goldman, then distance unload ---------
     console.log("[probe] teleporting to Goldman and letting it finish");
     await ev(c, `__sf.teleportToTarget(-1350, 2150, 'Goldman Courts')`);
@@ -194,6 +209,9 @@ async function main() {
     assert("lands-end instance disposed", (await ev(c, `__sf.landsEnd == null`)) === true);
     await waitFor(c, "sutro-baths unloaded after leaving", async () =>
       (await siteState(c, "sutro-baths")) === "dormant", 30000);
+    await waitFor(c, "cypress unplanted beyond 2km", async () =>
+      (await foliageState(c, "lands-end-cypress")) === "dormant", 60000);
+    assert("cypress unplants beyond its own ring", true);
     assert("sutro-baths distance-unloads beyond 1km", true);
     assert("sutro-baths instance disposed", (await ev(c, `__sf.sutroBaths == null`)) === true);
     console.log("[probe] teleporting 2.3km away (Corona Heights)");
@@ -206,6 +224,11 @@ async function main() {
     const coronaMs = await waitFor(c, "corona ready at destination", async () =>
       (await siteState(c, "corona")) === "ready", 60000);
     assert("corona loads at destination", true, `${(coronaMs / 1000).toFixed(1)}s`);
+    await waitFor(c, "corona trees planted", async () =>
+      (await foliageState(c, "corona-trees")) === "ready", 90000);
+    await waitFor(c, "corona groundcover planted", async () =>
+      (await foliageState(c, "corona-groundcover")) === "ready", 90000);
+    assert("corona foliage layers plant at destination", true);
 
     // ---- Scenario 4: corona teardown (physics colliders) + final return ---
     console.log("[probe] returning to Lands End");
@@ -217,6 +240,9 @@ async function main() {
     await waitFor(c, "lands-end ready on second return", async () =>
       (await siteState(c, "lands-end")) === "ready", 90000);
     assert("lands-end reloads again cleanly", true);
+    await waitFor(c, "cypress replanted on return", async () =>
+      (await foliageState(c, "lands-end-cypress")) === "ready", 90000);
+    assert("cypress replants cleanly on return", true);
 
     assert("zero page exceptions across load/abort/unload cycles", exceptions.length === 0,
       exceptions.slice(0, 3).join(" | ") || "none");

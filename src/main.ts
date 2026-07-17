@@ -134,6 +134,13 @@ import type { PalaceReverieGame } from "./gameplay/palaceReverie";
 import { REVERIE_CENTER } from "./gameplay/palaceReverie/meta";
 import type { LandsEndRegion } from "./world/landsEnd";
 import { LANDS_END_CENTER } from "./world/landsEnd/meta";
+import { SiteFoliageStreamer } from "./world/vegetation/siteFoliage";
+import { CORONA_DOG_PARK } from "./world/coronaHeights/meta";
+import {
+  distanceToTrails as coronaDistanceToTrails,
+  hash2 as coronaHash2,
+  pointInPolygon as coronaPointInPolygon
+} from "./world/coronaHeights/rules";
 import type { WaveOrgan } from "./world/waveOrgan";
 import { WAVE_ORGAN_CENTER } from "./world/waveOrgan/meta";
 import type { AfterlightExperience } from "./gameplay/afterlight";
@@ -1145,6 +1152,9 @@ async function boot() {
   // vegetation group is hidden AND its per-frame update is skipped in the loop
   // below — see the `foliageOn` gate around garden/wildlands update.
   let foliageOn = Boolean(FOLIAGE_TUNING.values.visible);
+  // Exhibit-site vegetation streamer — constructed after the optional-site
+  // stage machinery exists; registrations are boot-safe data.
+  let siteFoliage: SiteFoliageStreamer | null = null;
   const setFoliageVisible = (visible: boolean) => {
     foliageOn = visible;
     garden?.setVisible(visible, player.position);
@@ -1153,8 +1163,7 @@ async function boot() {
     goldenGateTennis?.setFoliageVisible(visible);
     japaneseTeaGarden?.setFoliageVisible(visible);
     sutroBaths?.setFoliageVisible(visible);
-    coronaHeights?.setFoliageVisible(visible);
-    landsEnd?.setFoliageVisible(visible);
+    siteFoliage?.setVisible(visible);
     islands.setFoliageVisible(visible);
     sky.invalidateStaticShadows();
   };
@@ -3489,12 +3498,7 @@ async function boot() {
     const { CoronaHeightsPark: LoadedCoronaHeightsPark } = await import("./world/coronaHeights");
     await stage();
     const park = new LoadedCoronaHeightsPark(map, physics);
-    park.prepareFoliage = async (group) => {
-      await waitStage();
-      await prepareOptionalRoot("corona-heights foliage", group, waitStage);
-    };
     await prepareOptionalRoot("corona-heights", park.group, waitStage);
-    park.setFoliageVisible(foliageOn);
     park.onDogAudioCue = (dog, cue) => dogParkAudio.cue(dog, cue);
     coronaHeights = park;
     scene.add(park.group);
@@ -3509,12 +3513,7 @@ async function boot() {
     // The eye-walker's GLB + rider arm later (near the labyrinth); warm their
     // pipelines off-frame when that happens.
     region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root, waitStage);
-    region.prepareFoliage = async (group) => {
-      await waitStage();
-      await prepareOptionalRoot("lands-end foliage", group, waitStage);
-    };
     await prepareOptionalRoot("lands-end", region.group, waitStage);
-    region.setFoliageVisible(foliageOn);
     landsEnd = region;
     scene.add(region.group);
     sky.invalidateStaticShadows();
@@ -3649,6 +3648,66 @@ async function boot() {
       load: loadSutroBaths
     })
   ];
+
+  // Exhibit vegetation streams on its own landscape radii, decoupled from the
+  // gameplay sites above: trees read from far offshore and survive their
+  // exhibit unloading behind the player. Each build() dynamic-imports the
+  // site's placement module and plants through the shared vegetation runtime.
+  siteFoliage = new SiteFoliageStreamer({
+    scene,
+    admit: (eligibleSince) =>
+      waitForWorldBackgroundWindow(
+        700,
+        eligibleSince > 0 ? eligibleSince + OPTIONAL_SITE_STARVATION_CAP_MS : Infinity
+      ),
+    // The compile admission needs the same starvation cap as build admission:
+    // an uncapped quiet window never opens for a player who keeps moving.
+    prepare: (label, root) =>
+      prepareOptionalRoot(label, root, () =>
+        waitForWorldBackgroundWindow(700, performance.now() + OPTIONAL_SITE_STARVATION_CAP_MS)
+      ),
+    onResidencyChanged: () => sky.invalidateStaticShadows()
+  });
+  siteFoliage.setVisible(foliageOn);
+  siteFoliage.register({
+    id: "lands-end-cypress",
+    x: LANDS_END_CENTER.x,
+    z: LANDS_END_CENTER.z,
+    loadDistance: 1500,
+    unloadDistance: 2000,
+    build: async () => (await import("./world/landsEnd/vegetation")).createLandsEndFoliage(map)
+  });
+  const coronaFoliageRules = {
+    hash: coronaHash2,
+    inDogPark: (x: number, z: number) => coronaPointInPolygon(x, z, CORONA_DOG_PARK),
+    distanceToTrails: coronaDistanceToTrails
+  };
+  siteFoliage.register({
+    id: "corona-trees",
+    x: CORONA_HEIGHTS_SUMMIT.x,
+    z: CORONA_HEIGHTS_SUMMIT.z,
+    loadDistance: 1500,
+    unloadDistance: 2000,
+    build: async () =>
+      (await import("./world/coronaHeights/vegetation")).createCoronaHeightsFoliage(
+        map,
+        coronaFoliageRules,
+        ["trees"]
+      )
+  });
+  siteFoliage.register({
+    id: "corona-groundcover",
+    x: CORONA_HEIGHTS_SUMMIT.x,
+    z: CORONA_HEIGHTS_SUMMIT.z,
+    loadDistance: 650,
+    unloadDistance: 950,
+    build: async () =>
+      (await import("./world/coronaHeights/vegetation")).createCoronaHeightsFoliage(
+        map,
+        coronaFoliageRules,
+        ["groundcover"]
+      )
+  });
 
   // One compact truth panel for the authored-site streaming contract. "ready"
   // means a chunk/resource set is resident after first approach; runtime and
@@ -5603,6 +5662,9 @@ async function boot() {
       } else if (waveOrgan) {
         waveOrgan.group.visible = false;
       }
+      // Landscape vegetation rings (internally gated on the master foliage
+      // toggle; a few hypot tests per frame when idle).
+      siteFoliage?.update(player.position.x, player.position.z);
     }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
@@ -6139,7 +6201,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite, siteFoliage,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

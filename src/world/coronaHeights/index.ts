@@ -19,6 +19,7 @@ import {
   type CoronaTrail,
   type CoronaXZ
 } from "./layout";
+import { distanceToTrails, hash2, pointInPolygon } from "./rules";
 import {
   CORONA_HILL_RADIUS_X as HILL_RX,
   CORONA_HILL_RADIUS_Z as HILL_RZ,
@@ -29,7 +30,6 @@ import {
   enableShadowLayer,
   SHADOW_LAYERS
 } from "../shadows/shadowLayers";
-import type { CoronaHeightsFoliage } from "./vegetation";
 import { CANVAS_FONT_FAMILY } from "../../core/typography";
 
 export { prepareCoronaHeightsGround } from "./ground";
@@ -40,7 +40,6 @@ const ACTIVITY_RANGE = 420;
 // valley (fog only covers ~1200), but furniture and ground tufts are sub-pixel
 // long before these cutoffs — no reason to encode them city-wide.
 const PROPS_RANGE = 800;
-const FOLIAGE_RANGE = 900;
 // Parts smaller than this never shadow-cast — invisible at CSM resolution,
 // but every casting mesh re-encodes into each shadow cascade.
 const CASTER_MIN_VOLUME = 1.5e-3; // m³
@@ -148,10 +147,6 @@ function fract(v: number) {
   return v - Math.floor(v);
 }
 
-function hash2(x: number, z: number, salt = 0) {
-  return fract(Math.sin(x * 12.9898 + z * 78.233 + salt * 37.719) * 43758.5453123);
-}
-
 function valueNoise(x: number, z: number, cell: number, salt: number) {
   const fx = x / cell;
   const fz = z / cell;
@@ -162,34 +157,6 @@ function valueNoise(x: number, z: number, cell: number, salt: number) {
   const a = lerp(hash2(ix, iz, salt), hash2(ix + 1, iz, salt), ax);
   const b = lerp(hash2(ix, iz + 1, salt), hash2(ix + 1, iz + 1, salt), ax);
   return lerp(a, b, az);
-}
-
-function pointInPolygon(x: number, z: number, polygon: readonly CoronaXZ[]) {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const [xi, zi] = polygon[i];
-    const [xj, zj] = polygon[j];
-    if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
-  }
-  return inside;
-}
-
-function pointSegmentDistance(x: number, z: number, a: CoronaXZ, b: CoronaXZ) {
-  const dx = b[0] - a[0];
-  const dz = b[1] - a[1];
-  const ll = dx * dx + dz * dz;
-  const t = ll > 1e-6 ? clamp01(((x - a[0]) * dx + (z - a[1]) * dz) / ll) : 0;
-  return Math.hypot(x - (a[0] + dx * t), z - (a[1] + dz * t));
-}
-
-function distanceToTrails(x: number, z: number) {
-  let best = Infinity;
-  for (const trail of CORONA_TRAILS) {
-    for (let i = 0; i < trail.points.length - 1; i++) {
-      best = Math.min(best, pointSegmentDistance(x, z, trail.points[i], trail.points[i + 1]));
-    }
-  }
-  return best;
 }
 
 function sampleTrail(points: readonly CoronaXZ[], spacing = 2.4): TrailSample[] {
@@ -1242,21 +1209,11 @@ function tunePropRendering(root: THREE.Object3D, dynamicRoot: THREE.Object3D) {
 export class CoronaHeightsPark {
   readonly group = new THREE.Group();
   readonly activity = new THREE.Group();
-  readonly foliage = new THREE.Group();
   readonly props = new THREE.Group();
-  #foliageOn = true;
-  #foliageRuntime: CoronaHeightsFoliage | null = null;
-  #foliageLoading: Promise<void> | null = null;
-  #foliageFocus: { x: number; z: number } = {
-    x: CORONA_HEIGHTS_SUMMIT.x,
-    z: CORONA_HEIGHTS_SUMMIT.z
-  };
   readonly dogs: ParkDog[];
   readonly owners: ParkOwner[];
   readonly stats: CoronaHeightsStats;
   readonly summit = CORONA_HEIGHTS_SUMMIT;
-  /** Main-owned detached shader preparation before lazy foliage attaches. */
-  prepareFoliage: ((group: THREE.Group) => Promise<void>) | null = null;
   onDogAudioCue: ((dog: ParkDog, cue: DogFetchAudioCue) => void) | null = null;
 
   /** Elapsed-time stamp of the latest ball/frisbee release (audio hook). */
@@ -1315,7 +1272,6 @@ export class CoronaHeightsPark {
     this.#physics = physics;
     this.group.name = "corona_heights_park";
     this.activity.name = "corona_heights_dog_activity";
-    this.foliage.name = "corona_heights_foliage";
     this.props.name = "corona_heights_props";
 
     this.group.add(makeHillSkin(map));
@@ -1323,7 +1279,6 @@ export class CoronaHeightsPark {
     this.group.add(makeTrails(map));
     this.group.add(makeRockField(map, physics, this.#bodies));
     this.group.add(makeSummitCrags(map, physics, this.#bodies));
-    this.group.add(this.foliage);
     this.props.add(makeDogPark(map, physics, this.#bodies));
     this.props.add(makeBench(map, 430, 2751, Math.PI * 0.44));
     this.group.add(this.props);
@@ -1395,15 +1350,13 @@ export class CoronaHeightsPark {
     }
   }
 
-  /** Full teardown for a distance unload: colliders, lazy foliage, dog/owner
-   * activity and every locally built mesh. Owner rigs come from player/rig's
-   * shared geometry cache, so their subtrees are detached, never disposed. */
+  /** Full teardown for a distance unload: colliders, dog/owner activity and
+   * every locally built mesh. Owner rigs come from player/rig's shared
+   * geometry cache, so their subtrees are detached, never disposed. Vegetation
+   * is owned by the site-foliage streamer, not the park. */
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#foliageRuntime?.dispose();
-    this.#foliageRuntime = null;
-    this.#foliageLoading = null;
     for (const owner of this.owners) owner.rig.group.removeFromParent();
     for (const body of this.#bodies) {
       this.#physics.removeQuerySolid(body);
@@ -1430,63 +1383,14 @@ export class CoronaHeightsPark {
     this.group.clear();
   }
 
-  #ensureFoliage() {
-    if (this.#foliageRuntime || this.#foliageLoading) return;
-    // Keep the optional tree/flower code and template assets out of clean boot.
-    // The park's gameplay is always available; its live planting wakes only on
-    // first approach while the master foliage toggle is enabled.
-    this.#foliageLoading = import("./vegetation")
-      .then(async ({ createCoronaHeightsFoliage }) => {
-        const patch = createCoronaHeightsFoliage(this.#map, {
-          hash: hash2,
-          inDogPark: (x, z) => pointInPolygon(x, z, CORONA_DOG_PARK),
-          distanceToTrails
-        });
-        patch.update(this.#foliageFocus);
-        await patch.ready;
-        patch.update(this.#foliageFocus);
-        // The patch remains detached and visible while the app compiles it;
-        // Three skips hidden roots, and attaching first would hitch a live frame.
-        await this.prepareFoliage?.(patch.group);
-        if (this.#disposed) {
-          patch.dispose();
-          return;
-        }
-        this.#foliageRuntime = patch;
-        this.foliage.add(patch.group);
-        // `foliage` was frozen with the other static Corona subtrees before
-        // this lazy child existed, so explicitly establish its first world matrix.
-        this.foliage.updateMatrixWorld(true);
-      })
-      .catch((error) => {
-        this.#foliageLoading = null;
-        console.warn("[corona heights] unified foliage unavailable:", error);
-      });
-  }
-
-  setFoliageVisible(visible: boolean) {
-    this.#foliageOn = visible;
-    this.foliage.visible = visible && this.foliage.visible;
-  }
-
   update(dt: number, elapsed: number, viewPos: { x: number; z: number }) {
     const distance = Math.hypot(viewPos.x - CORONA_HEIGHTS_SUMMIT.x, viewPos.z - CORONA_HEIGHTS_SUMMIT.z);
     this.group.visible = distance < DETAIL_RANGE;
     if (!this.group.visible) {
-      // Keep child state truthful as well as effectively hidden by the parent;
-      // master-toggle OFF/ON then restores symmetrically while far from Corona.
-      this.foliage.visible = false;
       applyBallGlow(this.#ballMaterial, 0);
       return;
     }
     this.props.visible = distance < PROPS_RANGE;
-    this.foliage.visible = this.#foliageOn && distance < FOLIAGE_RANGE;
-    if (this.foliage.visible) {
-      this.#foliageFocus.x = viewPos.x;
-      this.#foliageFocus.z = viewPos.z;
-      this.#ensureFoliage();
-      this.#foliageRuntime?.update(this.#foliageFocus);
-    }
     this.activity.visible = distance < ACTIVITY_RANGE;
     if (!this.activity.visible) {
       applyBallGlow(this.#ballMaterial, 0);

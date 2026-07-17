@@ -101,7 +101,9 @@ export function createLandsEndFoliage(map: WorldMap): LandsEndFoliage {
   const trees = createAuthoredTreePatch(TREE_ARCHETYPES, placements, {
     name: "lands_end_cypress",
     chunkSize: 48,
-    visibleDistance: 720,
+    // Landscape range: the grove reads from the far shore and survives the
+    // gameplay site unloading behind the player (site-foliage streamer radii).
+    visibleDistance: 1300,
     nearRadius: 96,
     nearExitRadius: 120,
     nearMax: 8
