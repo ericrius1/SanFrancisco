@@ -5,6 +5,7 @@ import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTrai
 import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig } from "../vehicles/board/config";
 import { carFromSeed, isDefaultCar, normalizeCarConfig, type CarConfig } from "../vehicles/car";
 import { isDefaultScooter, normalizeScooterConfig, scooterFromSeed, type ScooterConfig } from "../vehicles/scooter";
+import { MAX_PASSENGER_SEATS } from "../vehicles/rideable";
 import {
   isDefaultSurfboard,
   normalizeSurfboardConfig,
@@ -115,7 +116,7 @@ export type NetStatus = "connecting" | "online" | "offline" | "full";
 
 const SEND_HZ = 12;
 const KEEPALIVE_MS = 2000; // resend an unchanged pose this often (server idle-timer food)
-const MAX_PLAYER_RIDE_SEAT = 2;
+const MAX_PLAYER_RIDE_SEAT = MAX_PASSENGER_SEATS; // relay rejects rows past this
 const MAX_WORLD_RIDE_SEAT = 12;
 const NAME_MAX = 20;
 const CHAT_MAX = 200;

@@ -180,6 +180,7 @@ import {
   type CarConfig
 } from "./vehicles/car";
 import { loadSavedScooter, randomScooterConfig, saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "./vehicles/scooter";
+import { passengerCapacity } from "./vehicles/rideable";
 import {
   loadSavedSurfboard,
   randomSurfboardConfig,
@@ -1877,12 +1878,10 @@ async function boot() {
       hud.message("Click the scene to capture · Esc releases · L toggles free cursor", 2.8);
     }
   };
-  // Passenger support: cars/scooters publish one anchor; the Phoenix publishes
-  // two, so a driver plus two friends can share its saddle.
+  // Passenger support: every mode in PASSENGER_CAPACITY publishes seat
+  // anchors in its mesh userData (single anchor or a passengerSeats list).
   remotes.localDriveMesh = () =>
-    (player.mode === "drive" || player.mode === "scooter" || player.mode === "bird") && !player.riding
-      ? player.meshes[player.mode]
-      : null;
+    passengerCapacity(player.mode) > 0 && !player.riding ? player.meshes[player.mode] : null;
 
   // Passenger pose scratch; attachment ownership lives in EmbodimentController.
   const ridePos = new THREE.Vector3();
@@ -4343,7 +4342,9 @@ async function boot() {
       speed,
       embodiments.passengerOf ?? 0,
       embodiments.passengerSeat,
-      localGardenRakeMotion
+      // a held-rake wire row has no rideSeat slot, so while riding shotgun the
+      // plain ride row wins — viewers would otherwise collapse us onto seat 1
+      embodiments.passengerOf === null ? localGardenRakeMotion : null
     );
   };
   const sendPickleballNetwork = () => pickleballController?.sendNetwork();
@@ -4506,6 +4507,7 @@ async function boot() {
       ) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
+      remotes.glueRidersToLocalVehicle();
       voice.update();
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
@@ -4568,6 +4570,7 @@ async function boot() {
       ) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
+      remotes.glueRidersToLocalVehicle();
       voice.update(); // keep talking while paused — it's a social feature
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
@@ -4624,6 +4627,7 @@ async function boot() {
         player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
         player.syncMesh(frameDt);
       }
+      remotes.glueRidersToLocalVehicle();
       applyPickleballPlayerPose();
       consumeCarLandingFeedback();
       const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
@@ -5201,6 +5205,9 @@ async function boot() {
       player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
       player.syncMesh(frameDt);
     }
+    // riders of MY vehicle re-glue against the mesh transform that was just
+    // settled — without this they'd sit one frame behind the cabin at speed
+    remotes.glueRidersToLocalVehicle();
     applyPickleballPlayerPose();
     consumeCarLandingFeedback();
     const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);

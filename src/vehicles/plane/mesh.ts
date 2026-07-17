@@ -151,6 +151,8 @@ export function buildPlaneMesh(): THREE.Group {
     spoke.rotation.z = -a;
   }
   g.userData.cockpit = { seat: [0, 0.62, 0.3], wheel: [0, 0.73, -0.24] } satisfies Cockpit;
+  // Rumble seat: a friend straddles the cabin barrel aft of the coaming.
+  g.userData.passengerSeat = [0, 0.56, 1.3] as [number, number, number];
 
   // canard foreplane at the nose — the dragonfly silhouette
   shadowCasters.push(box(ivory, 2.5, 0.07, 0.5, 0, 0.16, -2.5));
