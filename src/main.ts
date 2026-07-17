@@ -3282,6 +3282,9 @@ async function boot() {
     const { LandsEndRegion: LoadedLandsEndRegion } = await import("./world/landsEnd");
     await waitForOptionalSiteStage();
     const region = new LoadedLandsEndRegion(map);
+    // The eye-walker's GLB + rider arm later (near the labyrinth); warm their
+    // pipelines off-frame when that happens.
+    region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root);
     await prepareOptionalRoot("lands-end", region.group);
     region.setFoliageVisible(foliageOn);
     landsEnd = region;
@@ -5189,7 +5192,7 @@ async function boot() {
         coronaHeights.group.visible = false;
       }
       if (optionalSitePerfAllowed("lands-end")) {
-        landsEnd?.update(frameDt, elapsed, player.position);
+        landsEnd?.update(frameDt, elapsed, player.position, camera, windGustValue());
         if (landsEnd && player.mode === "walk") {
           landsEnd.keeper.updatePrompt(player.position.x, player.position.z, hud);
         }

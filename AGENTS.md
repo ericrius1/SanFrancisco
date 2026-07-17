@@ -5,6 +5,11 @@
 - When testing a preview or production build, open it with `?autostart=1` (preserving any existing query parameters).
 - Use `?startscreen=1` only when the start/loading experience itself is under test.
 
+# Asset-generation API keys
+
+- `TRIPO_API_KEY` (Tripo text/image-to-3D, rigging, retargeting — used by the `threejs-3d-generator` skill and `tools/tripo_multiview_asset.py`) lives in the repo-root `.env` (gitignored; also mirrored at the main checkout root for worktrees). `SSL_CERT_FILE` sits beside it because the framework Python 3.11 install can't find system certs.
+- Load it before running generation tooling: `set -a; . ./.env; set +a` (or `. ../../..../.env` from a worktree if the local copy is missing).
+
 # Rendering platform
 
 - This project is WebGPU-only. Do not add, preserve, test, or recommend WebGL/WebGL2 fallback renderers, compatibility branches, transform-feedback/PBO paths, or duplicate shader implementations.
