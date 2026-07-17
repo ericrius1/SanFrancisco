@@ -2,53 +2,39 @@ import AVFoundation
 import Foundation
 import UserNotifications
 
-/// Speaks "{user} entered the world" and posts a local notification banner
-/// when the app isn't frontmost. Also owns the optional silent-audio loop that
-/// keeps the SSE connection alive while the app is backgrounded ("Background
-/// listening" — uses the `audio` background mode).
+/// Posts a normal iOS notification banner when someone enters the world.
+/// No speech. The banner shows whether the app is foreground or background
+/// (foreground presentation is enabled via the notification-center delegate in
+/// PushRegistrar.swift). Also owns the optional silent-audio loop that keeps
+/// the SSE connection — and therefore these local notifications — alive while
+/// the app is backgrounded ("Background listening", uses the `audio` mode).
 final class Announcer {
     var appIsActive = true
 
-    private let synth = AVSpeechSynthesizer()
     private var keepAlivePlayer: AVAudioPlayer?
-
-    private var speakJoins: Bool { UserDefaults.standard.object(forKey: "speakJoins") as? Bool ?? true }
-    private var speakLeaves: Bool { UserDefaults.standard.object(forKey: "speakLeaves") as? Bool ?? false }
+    private var notifyLeaves: Bool { UserDefaults.standard.bool(forKey: "notifyLeaves") }
 
     func requestNotificationPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     func announceJoin(_ name: String) {
-        print("[announce] \(name) entered the world (speak: \(speakJoins))")
         banner(body: "\(name) entered the world")
-        if speakJoins { speak("\(name) entered the world") }
     }
 
     func announceLeave(_ name: String) {
-        if speakLeaves {
-            banner(body: "\(name) left the world")
-            speak("\(name) left the world")
-        }
+        guard notifyLeaves else { return }
+        banner(body: "\(name) left the world")
     }
 
-    func speak(_ text: String) {
-        activateAudioSession()
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        utterance.rate = 0.5
-        synth.speak(utterance)
-    }
-
-    /// Local notification so a banner + sound shows while the app is
-    /// backgrounded-but-alive. When the app is killed, only APNs push (server
-    /// side, optional) can reach the user.
+    /// A standard local notification — banner + sound, listed in Notification
+    /// Center. Fires immediately (nil trigger).
     private func banner(body: String) {
-        guard !appIsActive else { return }
         let content = UNMutableNotificationContent()
         content.title = "San Francisco"
         content.body = body
         content.sound = .default
+        content.interruptionLevel = .timeSensitive
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
@@ -71,7 +57,7 @@ final class Announcer {
 
     private func activateAudioSession() {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, options: [.mixWithOthers, .duckOthers])
+        try? session.setCategory(.playback, options: [.mixWithOthers])
         try? session.setActive(true)
     }
 

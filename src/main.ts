@@ -1833,6 +1833,8 @@ async function boot() {
     }
   );
   net.onChat = (_id, name, text) => chat.addMessage(name, text);
+  // presence toast above the chat panel when someone new enters the world
+  net.onJoin = (_id, name) => chat.showJoin(name);
   // golf: friends' swings/balls/scores replay here (owner-simulated snapshots)
   net.onGolf = (id, m) => golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {

@@ -162,8 +162,7 @@ struct ContentView: View {
 struct SettingsSheet: View {
     @EnvironmentObject private var monitor: WorldMonitor
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("speakJoins") private var speakJoins = true
-    @AppStorage("speakLeaves") private var speakLeaves = false
+    @AppStorage("notifyLeaves") private var notifyLeaves = false
     @AppStorage("backgroundListening") private var backgroundListening = false
     @AppStorage(ConfigService.overrideKey) private var serverOverride = ""
     @State private var draftOverride = ""
@@ -171,12 +170,15 @@ struct SettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Announcements") {
-                    Toggle("Speak arrivals", isOn: $speakJoins)
-                    Toggle("Speak departures", isOn: $speakLeaves)
-                    Button("Test voice") {
-                        monitor.announcer.speak("Claude entered the world")
+                Section {
+                    Toggle("Also notify departures", isOn: $notifyLeaves)
+                    Button("Test notification") {
+                        monitor.announcer.announceJoin("Claude")
                     }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("Arrivals always post a banner. Turn this on to also get one when someone leaves.")
                 }
                 Section {
                     Toggle("Background listening", isOn: $backgroundListening)

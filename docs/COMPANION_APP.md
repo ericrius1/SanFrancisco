@@ -1,8 +1,13 @@
 # SF Companion — iOS notifications app
 
 A small SwiftUI iPhone app that announces world arrivals: when someone enters
-the San Francisco world it shows a banner and *speaks* "{user} entered the
-world." It also shows who's in the world right now and a recent activity feed.
+the San Francisco world it posts a normal iOS notification banner — "{user}
+entered the world" — foreground or background, no speech. It also shows who's
+in the world right now and a recent activity feed.
+
+In the game itself, a matching toast pops up just above the chat panel ("The
+Wire") when someone enters — see [`src/ui/chat.ts`](../src/ui/chat.ts)
+`showJoin`, fed by `net.onJoin`.
 
 - App sources: `ios/SFCompanion/` (xcodegen project)
 - Server module: `server/companion.mjs` (mounted by `server/server.mjs`)
@@ -58,10 +63,12 @@ declare a different kind and ship a sibling client without touching the rest.
 
 | App state | What happens |
 |---|---|
-| Foreground | Spoken announcement ("Eric entered the world") + feed update |
-| Background, "Background listening" ON | SSE stays alive via silent audio session → spoken announcement + banner notification |
+| Foreground | Notification banner (via `willPresent` delegate) + feed update |
+| Background, "Background listening" ON | SSE stays alive via silent audio session → local notification banner |
 | Background, toggle OFF | iOS suspends the socket; catches up when reopened |
 | Killed / force-quit | Only APNs push can reach the device (see below) |
+
+No text-to-speech — arrivals are noted as standard iOS notifications only.
 
 ## Optional: real push (APNs) for when the app is closed
 
