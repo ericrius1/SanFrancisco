@@ -1,6 +1,8 @@
 import * as THREE from "three/webgpu";
 import {
   Fn,
+  attribute,
+  cameraPosition,
   cameraViewMatrix,
   clamp,
   cos,
@@ -14,6 +16,8 @@ import {
   positionLocal,
   positionWorld,
   saturate,
+  screenCoordinate,
+  screenUV,
   select,
   sin,
   smoothstep,
@@ -24,10 +28,21 @@ import {
   vec3,
   vec4,
   vertexIndex,
-  vertexStage
+  vertexStage,
+  viewportSharedTexture
 } from "three/tsl";
 import type { FolderApi } from "tweakpane";
 import { releaseRendererAttribute } from "../../app/rendererRegistry";
+import { SUN_DIR } from "../sky";
+import {
+  beerLambertWater,
+  causticWeb,
+  ditheredCoverage,
+  interleavedGradientNoise,
+  safeRefractionUV,
+  sunSparkle,
+  tintTowardBed
+} from "../waterShadingTSL";
 import { tunables } from "../../core/persist";
 import {
   SOUTH_POND_OUTLINE,
@@ -96,15 +111,21 @@ const WATER_TUNING = tunables("teaGarden.waterSimulation", {
   ripple: { v: 0.0015, min: 0, max: 0.025, step: 0.0005, label: "micro ripple" },
   streak: { v: 0.07, min: 0, max: 1.5, step: 0.01, label: "ink-flow streaks" },
   foam: { v: 0.56, min: 0, max: 2, step: 0.01, label: "foam / eddies" },
-  opacity: { v: 0.92, min: 0.45, max: 1, step: 0.01, label: "water opacity" },
+  clarity: { v: 1.7, min: 0.4, max: 6, step: 0.05, label: "clarity depth (m)" },
+  refraction: { v: 0.55, min: 0, max: 1.6, step: 0.01, label: "refraction bend" },
+  bedTint: { v: 0.55, min: 0, max: 1, step: 0.01, label: "sandy bed tint" },
+  caustics: { v: 0.7, min: 0, max: 2, step: 0.01, label: "bed caustics" },
+  sparkle: { v: 0.85, min: 0, max: 2, step: 0.01, label: "sun sparkles" },
+  shoreFoam: { v: 0.6, min: 0, max: 1.5, step: 0.01, label: "shore foam rings" },
   dyeSpread: { v: 0.075, min: 0, max: 0.4, step: 0.005, label: "paint diffusion" },
   dyePersistence: { v: 20, min: 4, max: 60, step: 1, label: "paint persistence (s)" },
   dyeSwirl: { v: 0.72, min: 0, max: 1.5, step: 0.01, label: "fey paint swirl" },
   dyeOpacity: { v: 0.86, min: 0, max: 1.5, step: 0.01, label: "paint saturation" },
   dyeGlow: { v: 0.62, min: 0, max: 2, step: 0.01, label: "paint edge glow" },
   palette: {
-    v: "celadon-dusk",
+    v: "sunlit-turquoise",
     options: {
+      "Sunlit turquoise": "sunlit-turquoise",
       "Celadon dusk": "celadon-dusk",
       "Jade ink": "jade-ink",
       "Moonlit teal": "moonlit-teal"
@@ -130,8 +151,12 @@ const WATER_TUNING_FOLDERS: readonly {
     keys: ["interactionScale", "interactionRadius", "wakeResponse", "interactionFoam"]
   },
   {
-    title: "celadon surface",
-    keys: ["relief", "normal", "waveContrast", "ripple", "streak", "foam", "opacity", "palette"]
+    title: "water surface",
+    keys: ["relief", "normal", "waveContrast", "ripple", "streak", "foam", "palette"]
+  },
+  {
+    title: "sunlit clarity",
+    keys: ["clarity", "refraction", "bedTint", "caustics", "sparkle", "shoreFoam"]
   },
   {
     title: "fey paint dye",
@@ -140,9 +165,10 @@ const WATER_TUNING_FOLDERS: readonly {
 ];
 
 const WATER_PALETTES = {
-  "celadon-dusk": { deep: 0x1a514b, shallow: 0x6ca989, streak: 0xb8d9b5, foam: 0xe4edcf },
-  "jade-ink": { deep: 0x102f2c, shallow: 0x3f8068, streak: 0x8ec49a, foam: 0xdde9c4 },
-  "moonlit-teal": { deep: 0x173b44, shallow: 0x689d99, streak: 0xa8cec1, foam: 0xe9eed8 }
+  "sunlit-turquoise": { deep: 0x1b6e63, shallow: 0x45ab99, streak: 0xa8dcc3, foam: 0xf6f0da, bed: 0xc9b489 },
+  "celadon-dusk": { deep: 0x1a514b, shallow: 0x6ca989, streak: 0xb8d9b5, foam: 0xe4edcf, bed: 0x8a9a6b },
+  "jade-ink": { deep: 0x102f2c, shallow: 0x3f8068, streak: 0x8ec49a, foam: 0xdde9c4, bed: 0x6f7f58 },
+  "moonlit-teal": { deep: 0x173b44, shallow: 0x689d99, streak: 0xa8cec1, foam: 0xe9eed8, bed: 0x7d8d7a }
 } as const;
 
 const FLOW_PATH: readonly TeaGardenXZ[] = [
@@ -693,6 +719,7 @@ export function createTeaGardenWaterSimulation(
   };
 
   const positions = new Float32Array(CELL_COUNT * 3);
+  const bedDepthData = new Float32Array(CELL_COUNT);
   const initialStateData = new Float32Array(CELL_COUNT * 4);
   const metadataData = new Float32Array(CELL_COUNT * 4);
   const guideData = new Float32Array(CELL_COUNT * 4);
@@ -714,6 +741,13 @@ export function createTeaGardenWaterSimulation(
       positions[index * 3] = worldX - centerX;
       positions[index * 3 + 1] = surfaceY(worldX, worldZ);
       positions[index * 3 + 2] = worldZ - centerZ;
+      // Exact vertical water column: the surface lift pass above guarantees the
+      // committed terrain bed sits at least WATER_LIFT below every water cell,
+      // so this is a true depth, not a heuristic.
+      bedDepthData[index] = Math.max(
+        0.05,
+        positions[index * 3 + 1] - map.groundTop(worldX, worldZ)
+      );
 
       metadataData[stateOffset] = isActive ? 1 : 0;
       metadataData[stateOffset + 1] = flow.pond;
@@ -753,6 +787,7 @@ export function createTeaGardenWaterSimulation(
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("bedDepth", new THREE.BufferAttribute(bedDepthData, 1));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();
@@ -826,17 +861,24 @@ export function createTeaGardenWaterSimulation(
   const rippleU = uniform(0.0015);
   const streakU = uniform(0.07);
   const foamU = uniform(0.56);
-  const opacityU = uniform(0.92);
+  const clarityU = uniform(1.7);
+  const refractionU = uniform(0.55);
+  const bedTintU = uniform(0.55);
+  const causticU = uniform(0.7);
+  const sparkleU = uniform(0.85);
+  const shoreFoamU = uniform(0.6);
+  const sunDirU = uniform(new THREE.Vector3(-0.52, 0.42, -0.28));
   const dyeStepDtU = uniform(FIXED_STEP / DYE_ADVECTION_STEPS);
   const dyeSpreadU = uniform(0.075);
   const dyePersistenceU = uniform(20);
   const dyeSwirlU = uniform(0.72);
   const dyeOpacityU = uniform(0.86);
   const dyeGlowU = uniform(0.62);
-  const deepColorU = uniform(new THREE.Color(WATER_PALETTES["celadon-dusk"].deep));
-  const shallowColorU = uniform(new THREE.Color(WATER_PALETTES["celadon-dusk"].shallow));
-  const streakColorU = uniform(new THREE.Color(WATER_PALETTES["celadon-dusk"].streak));
-  const foamColorU = uniform(new THREE.Color(WATER_PALETTES["celadon-dusk"].foam));
+  const deepColorU = uniform(new THREE.Color(WATER_PALETTES["sunlit-turquoise"].deep));
+  const shallowColorU = uniform(new THREE.Color(WATER_PALETTES["sunlit-turquoise"].shallow));
+  const streakColorU = uniform(new THREE.Color(WATER_PALETTES["sunlit-turquoise"].streak));
+  const foamColorU = uniform(new THREE.Color(WATER_PALETTES["sunlit-turquoise"].foam));
+  const bedColorU = uniform(new THREE.Color(WATER_PALETTES["sunlit-turquoise"].bed));
 
   const resetCompute = Fn(() => {
     const seed = initialState.element(instanceIndex);
@@ -1387,11 +1429,6 @@ export function createTeaGardenWaterSimulation(
     .mul(streakU)
     .mul(mix(float(1), float(0.25), renderedMeta.y))
     .mul(saturate(renderedSpeed.mul(1.1).add(0.18)));
-  const broadLight = sin(positionWorld.x.mul(0.15).add(positionWorld.z.mul(0.11))).mul(0.5).add(0.5);
-  const shallow = saturate(
-    renderedHeight.mul(1.8)
-      .add(broadLight.mul(0.035)).add(renderedMeta.y.mul(0.12)).add(0.28)
-  );
   const simulatedSlope = renderedDerivatives.xy.length();
   const crest = smoothstep(0.0025, 0.04, renderedHeight);
   const trough = smoothstep(0.0025, 0.04, renderedHeight.negate());
@@ -1409,8 +1446,66 @@ export function createTeaGardenWaterSimulation(
     smoothstep(0.012, 0.58, renderedState.w).mul(foamU)
       .add(renderedMeta.z.mul(0.05).mul(foamU))
   );
-  const waterColor = mix(deepColorU, shallowColorU, shallow);
-  const sculptedColor = mix(waterColor, deepColorU.mul(0.72), troughInk);
+
+  // The committed terrain beneath the pond is not a carved basin, so the mesh
+  // uses a clearance envelope. Shade it as one water body rather than inheriting
+  // every little terrain triangle's normal. The simulated height gradient is
+  // the primary normal; the sine terms are only sub-millimetre micro texture.
+  const normalWaveX = sin(positionWorld.x.mul(0.72).add(timeU.mul(0.47)))
+    .mul(rippleU).mul(normalU).mul(5.5);
+  const normalWaveZ = sin(positionWorld.z.mul(0.61).sub(timeU.mul(0.39)))
+    .mul(rippleU).mul(normalU).mul(5.5);
+  const worldNormal = normalize(vec3(
+    normalWaveX.sub(clamp(renderedDerivatives.x.mul(reliefU).mul(normalU), -1.2, 1.2)),
+    1,
+    normalWaveZ.sub(clamp(renderedDerivatives.y.mul(reliefU).mul(normalU), -1.2, 1.2))
+  ));
+
+  // Clear-water compose: the real scene behind the surface (bed, rocks, koi
+  // wakes, dropped dye) refracts through the rippled normal, then a
+  // Beer-Lambert tint over the true baked water column turns shallow rims
+  // transparent and deep water saturated turquoise.
+  const viewVector = positionWorld.sub(cameraPosition);
+  const viewDistance = viewVector.length();
+  const viewToFragment = viewVector.div(viewDistance.max(1e-4));
+  const slant = viewToFragment.y.abs().max(0.18);
+  const bedDepth = (attribute("bedDepth", "float") as any).add(renderedHeight).max(0.04);
+  const pathLength = bedDepth.div(slant);
+  // Refraction bend eases off with distance so far water never smears, and
+  // near the bank so protruding banks/rocks don't wobble into the surface.
+  const distortion = worldNormal.xz
+    .mul(refractionU)
+    .mul(float(0.045))
+    .div(viewDistance.mul(0.09).add(1))
+    .mul(smoothstep(0.0, 0.6, renderedMeta.w));
+  const refractionUV = safeRefractionUV(screenUV.add(distortion));
+  const sceneBehind = viewportSharedTexture(refractionUV).rgb;
+  const bedScene = tintTowardBed(
+    sceneBehind,
+    bedColorU,
+    bedTintU.mul(smoothstep(0.08, 0.42, bedDepth))
+  );
+  const daylight = saturate(sunDirU.y.mul(4));
+  const causticPattern = causticWeb(
+    positionWorld.xz.mul(2.2).add(worldNormal.xz.mul(1.6)),
+    timeU.mul(0.7)
+  );
+  const shallowFocus = exp(bedDepth.negate().mul(1.1));
+  const litBed = bedScene.add(
+    causticPattern
+      .mul(causticU)
+      .mul(shallowFocus)
+      .mul(daylight)
+      .mul(bedScene.add(0.12))
+  );
+  const water = beerLambertWater({
+    pathLength,
+    deepColor: deepColorU,
+    shallowColor: shallowColorU,
+    clarityDepth: clarityU
+  });
+
+  const sculptedColor = mix(water.scatter, deepColorU.mul(0.72), troughInk);
   const streakedColor = mix(
     sculptedColor,
     streakColorU,
@@ -1443,35 +1538,53 @@ export function createTeaGardenWaterSimulation(
     saturate(dyeEdge.mul(0.2))
   );
 
+  // Ordered-dither foam: a smooth coverage field (simulated foam + shoreline
+  // contour rings) dissolves through per-pixel interleaved gradient noise so
+  // edges break into chunky stipple instead of a translucent smear.
+  const dither = interleavedGradientNoise(screenCoordinate.xy);
+  const shoreProximity = smoothstep(1.6, 0.12, renderedMeta.w);
+  const contourWobble = sin(positionWorld.x.mul(1.7).add(sin(positionWorld.z.mul(1.3)).mul(1.8)));
+  const contourBands = sin(renderedMeta.w.mul(5.2).sub(timeU.mul(1.35)).add(contourWobble.mul(0.9)));
+  const contourFoam = smoothstep(0.62, 0.94, contourBands).mul(shoreProximity).mul(shoreFoamU);
+  const foamCoverage = saturate(foamHighlight.add(contourFoam));
+  const foamMask = ditheredCoverage(foamCoverage, dither);
+
+  const sparkle = sunSparkle({
+    worldPosition: positionWorld,
+    worldNormal,
+    viewToFragment,
+    sunDirection: sunDirU,
+    time: timeU
+  }).mul(sparkleU);
+
+  // Dye pigment and foam both block the see-through path.
+  const transmittance = water.transmittance
+    .mul(float(1).sub(saturate(dyeCoverage.mul(0.85))))
+    .mul(float(1).sub(foamMask));
+
   const material = new THREE.MeshStandardNodeMaterial({
-    roughness: 0.52,
+    roughness: 0.34,
     metalness: 0,
     transparent: true,
     depthWrite: false
   });
   material.positionNode = positionLocal.add(vec3(0, renderedHeight, 0));
-  material.colorNode = mix(enchantedDyeSurface, foamColorU, foamHighlight);
-  material.emissiveNode = streakColorU.mul(waveHighlight.mul(0.12))
-    .add(foamColorU.mul(foamHighlight.mul(0.08)))
-    .add(feyDyeColor.mul(dyeEdge.mul(0.28)));
-  material.opacityNode = opacityU
-    .mul(mix(float(0.9), float(1), foamHighlight))
-    .mul(shorelineMask);
-  // The committed terrain beneath the pond is not a carved basin, so the mesh
-  // uses a clearance envelope. Shade it as one water body rather than inheriting
-  // every little terrain triangle's normal. The simulated height gradient is
-  // the primary normal; the sine terms are only sub-millimetre micro texture.
-  const normalWaveX = sin(positionWorld.x.mul(0.72).add(timeU.mul(0.47)))
-    .mul(rippleU).mul(normalU).mul(5.5);
-  const normalWaveZ = sin(positionWorld.z.mul(0.61).sub(timeU.mul(0.39)))
-    .mul(rippleU).mul(normalU).mul(5.5);
-  const worldNormal = normalize(vec3(
-    normalWaveX.sub(clamp(renderedDerivatives.x.mul(reliefU).mul(normalU), -1.2, 1.2)),
-    1,
-    normalWaveZ.sub(clamp(renderedDerivatives.y.mul(reliefU).mul(normalU), -1.2, 1.2))
-  ));
+  // The transmitted scene sample is already lit, so it rides the emissive
+  // channel untouched by lighting; only the water's own scatter/foam surface
+  // takes scene lighting as albedo. Their per-channel weights sum to one.
+  material.colorNode = mix(
+    enchantedDyeSurface.mul(vec3(1).sub(transmittance)),
+    foamColorU,
+    foamMask
+  );
+  material.emissiveNode = litBed.mul(transmittance)
+    .add(streakColorU.mul(waveHighlight.mul(0.12)))
+    .add(foamColorU.mul(foamMask.mul(0.1)))
+    .add(feyDyeColor.mul(dyeEdge.mul(0.28)))
+    .add(vec3(1.0, 0.97, 0.88).mul(sparkle));
+  material.opacityNode = shorelineMask;
   material.normalNode = normalize(cameraViewMatrix.mul(vec4(worldNormal, 0)).xyz);
-  material.envMapIntensity = 0.37;
+  material.envMapIntensity = 0.5;
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "tea_garden_unified_webgpu_shallow_water_surface";
@@ -1572,18 +1685,24 @@ export function createTeaGardenWaterSimulation(
     rippleU.value = tuning.ripple;
     streakU.value = tuning.streak;
     foamU.value = tuning.foam;
-    opacityU.value = tuning.opacity;
+    clarityU.value = tuning.clarity;
+    refractionU.value = tuning.refraction;
+    bedTintU.value = tuning.bedTint;
+    causticU.value = tuning.caustics;
+    sparkleU.value = tuning.sparkle;
+    shoreFoamU.value = tuning.shoreFoam;
     dyeStepDtU.value = FIXED_STEP / DYE_ADVECTION_STEPS;
     dyeSpreadU.value = tuning.dyeSpread;
     dyePersistenceU.value = tuning.dyePersistence;
     dyeSwirlU.value = tuning.dyeSwirl;
     dyeOpacityU.value = tuning.dyeOpacity;
     dyeGlowU.value = tuning.dyeGlow;
-    const palette = WATER_PALETTES[tuning.palette as keyof typeof WATER_PALETTES] ?? WATER_PALETTES["celadon-dusk"];
+    const palette = WATER_PALETTES[tuning.palette as keyof typeof WATER_PALETTES] ?? WATER_PALETTES["sunlit-turquoise"];
     deepColorU.value.setHex(palette.deep);
     shallowColorU.value.setHex(palette.shallow);
     streakColorU.value.setHex(palette.streak);
     foamColorU.value.setHex(palette.foam);
+    bedColorU.value.setHex(palette.bed);
     stats.substeps = substeps;
     stats.cfl =
       ((maxSpeedU.value + Math.sqrt(tuning.pressure * tuning.depth)) * stepDtU.value) /
@@ -1721,6 +1840,7 @@ export function createTeaGardenWaterSimulation(
     stats.dyeDispatches = 0;
     stats.playerDistance = distanceToWater(player.x, player.z);
     timeU.value = Number.isFinite(time) ? time : 0;
+    (sunDirU.value as THREE.Vector3).copy(SUN_DIR);
     syncTuning();
     if (!WATER_TUNING.values.enabled) {
       accumulator = 0;
