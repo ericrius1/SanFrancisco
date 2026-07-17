@@ -30,9 +30,12 @@ import { WALKER_REST_MAX, WALKER_REST_MIN, WALKER_SONGS } from "./walkerSongs";
 
 const MODEL_URL = "/models/eye-walker.glb";
 const TARGET_HEIGHT = 3.4; // m — a giant, but not a kaiju
-/** Extra yaw on the loaded scene so its visual front matches local +Z
- * (the wander brain's forward). The Tripo/Blender export faces -Z. */
-const MODEL_YAW = Math.PI;
+/** Extra yaw on the loaded scene so the creature's face and its baked march
+ * direction both point along local +Z (the wander brain's forward).
+ * MEASURED, not guessed: the auto-rig's L/R_Upperarm bones separate along the
+ * model's Z axis (L +0.82, R -0.68 with no yaw), so the doll's left-right axis
+ * is Z and it faces -X in raw model space — a quarter turn, not a half. */
+const MODEL_YAW = -Math.PI / 2;
 const LOAD_RADIUS = 320; // player→labyrinth distance that arms the asset fetch
 const ANIM_RADIUS = 200; // beyond this the mixer/rider skip their per-frame work
 const WALK_SPEED = 1.05; // m/s — processional
@@ -104,6 +107,8 @@ export class EyeWalker {
   #anchor = 0;
   #clock: TrioClock = { phase: "rest", phaseTime: 0, songTime: 0, beat: 0, wind: 0.3 };
   #elapsed = 0;
+  #notesScheduled = 0;
+  #audioError: string | null = null;
 
   // ---- wander brain ----
   #pos = new THREE.Vector3();
@@ -331,7 +336,10 @@ export class EyeWalker {
         (batch ??= []).push(events[i++]);
       }
       this.#schedIdx = i;
-      if (batch) this.#rider.schedule(batch, atTime);
+      if (batch) {
+        this.#notesScheduled += batch.length;
+        this.#rider.schedule(batch, atTime);
+      }
     }
   }
 
@@ -359,7 +367,13 @@ export class EyeWalker {
       target: [this.#target.x, this.#target.y] as [number, number],
       yaw: this.#yaw,
       headBone: this.#headBone?.name ?? null,
-      walkTimeScale: this.#walkAction?.timeScale ?? 0
+      walkTimeScale: this.#walkAction?.timeScale ?? 0,
+      audio: {
+        ctx: this.#audio?.ctx?.state ?? "none",
+        running: this.#audio?.running ?? false,
+        notes: this.#notesScheduled,
+        error: this.#audioError
+      }
     };
   }
 
@@ -381,10 +395,18 @@ export class EyeWalker {
     this.#updateTransport(dt);
     this.#clock.wind = THREE.MathUtils.clamp(0.18 + 0.12 * Math.sin(this.#elapsed * 0.31) + 0.85 * gust, 0, 1);
 
-    // audio follows the rider; listener follows the camera
+    // audio follows the rider; listener follows the camera. The context is
+    // created lazily in here (first approach after a user gesture) — the app
+    // runs close to the browser's AudioContext budget, so a construction
+    // failure must degrade to a silent performance, never break the frame.
     if (camera && this.#audio) {
       const camDist = camera.getWorldPosition(_v0).distanceTo(this.#pos);
-      this.#audio.update(camera, camDist, this.#elapsed);
+      try {
+        this.#audio.update(camera, camDist, this.#elapsed);
+      } catch (error) {
+        this.#audioError = String(error).slice(0, 120);
+        this.#audio = null;
+      }
     }
 
     const playerDist = Math.hypot(playerPos.x - this.#pos.x, playerPos.z - this.#pos.z);
