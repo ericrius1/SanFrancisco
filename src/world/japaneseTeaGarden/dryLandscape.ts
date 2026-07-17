@@ -53,6 +53,9 @@ export type DryLandscape = {
   group: THREE.Group;
   update(dt: number, time: number, player: { x: number; y: number; z: number }, mode: string): void;
   interact(player: { x: number; y: number; z: number }, mode: string): boolean;
+  isPlayerActive(): boolean;
+  /** Quiet teardown used by teleport and the shared minigame exit button. */
+  releaseForNavigation(): boolean;
   /** Apply a server-ordered local or remote stroke to this client's GPU field. */
   queueRakeStamp(stamp: SandRakeStamp): void;
   resetSand(): void;
@@ -526,6 +529,14 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
       }
       if (mode !== "walk" || Math.hypot(player.x - RAKE_RACK.x, player.z - RAKE_RACK.z) > PICKUP_RANGE) return false;
       setHeld(true, "Rake in both hands — walk through the sand to sculpt seven real furrows. E returns it.");
+      return true;
+    },
+    isPlayerActive() {
+      return held;
+    },
+    releaseForNavigation() {
+      if (!held) return false;
+      setHeld(false);
       return true;
     },
     queueRakeStamp(stamp) {

@@ -113,6 +113,7 @@ import type { CityGenRing } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
+import { MinigameSessionController, type MinigameOrigin } from "./gameplay/minigameSession";
 import { createSiteGate } from "./gameplay/siteGate";
 import type { ArcheryGame } from "./gameplay/archery";
 import { ARCHERY_CENTER } from "./gameplay/archery/meta";
@@ -1444,11 +1445,44 @@ async function boot() {
   // so even constructing an empty facade would pull the activity into boot.
   // It is installed together with the Goldman site on first approach.
   let pickleballController: PickleballController | null = null;
+  const captureMinigameOrigin = (): MinigameOrigin => ({
+    x: player.position.x,
+    y: player.position.y,
+    z: player.position.z,
+    facing: player.heading - Math.PI,
+    mode: player.mode
+  });
+  const minigameSession = new MinigameSessionController({
+    resetPlayerState: () => player.resetMinigameState(),
+    onChange: (session) => hud.setMinigameExit(session?.label ?? null)
+  });
+  minigameSession.register({
+    id: "sand-raking",
+    label: "sand raking",
+    isActive: () => japaneseTeaGarden?.isRaking() ?? false,
+    release: () => { japaneseTeaGarden?.releaseForNavigation(); }
+  });
+  minigameSession.register({
+    id: "pickleball",
+    label: "pickleball",
+    isActive: () => pickleballController?.playing ?? false,
+    release: () => { pickleballController?.releaseForNavigation(); }
+  });
+  minigameSession.register({
+    id: "golf",
+    label: "golf",
+    isActive: () => golf?.active ?? false,
+    release: () => { golf?.abandonForNavigation(hud); }
+  });
+  minigameSession.register({
+    id: "archery",
+    label: "archery",
+    isActive: () => archery?.firstPersonActive ?? false,
+    release: () => { archery?.releaseForNavigation(player); }
+  });
   const releaseGameplayForNavigation = () => {
     if (inOrbit()) setViewMode("third");
-    pickleballController?.releaseForNavigation();
-    golf?.abandonForNavigation(hud);
-    archery?.releaseForNavigation(player);
+    return minigameSession.releaseForNavigation(captureMinigameOrigin());
   };
   const avatarSelector = new AvatarSelector(
     avatarTraits,
@@ -2026,6 +2060,15 @@ async function boot() {
   switchModeFromToolbar = switchMode;
   hud.onHistoryBack = () => applyPlaceHistory(-1);
   hud.onHistoryForward = () => applyPlaceHistory(1);
+  hud.onMinigameExit = () => {
+    if (worldArrival.active) {
+      hud.message("Finishing the arrival…", 1.2);
+      return;
+    }
+    const session = releaseGameplayForNavigation();
+    if (!session) return;
+    navigation.returnToMinigameStart(session.origin, session.label);
+  };
   minimap.onTeleport = teleportToTarget;
   minimap.onPlaceClick = (place) => {
     const layer = place.layer[0].toUpperCase() + place.layer.slice(1);
@@ -4084,6 +4127,7 @@ async function boot() {
 
     // gamepad first so its synthetic key codes exist for every consumer below
     input.pollPad(frameDt);
+    minigameSession.beginFrame(captureMinigameOrigin());
 
     // Behind-the-scenes overlay open: freeze the world completely — no sim, no
     // render. The canvas keeps its last frame (dimmed via CSS) so nothing
@@ -5418,6 +5462,7 @@ async function boot() {
     settleTick();
     tracer.end("sched");
 
+    minigameSession.endFrame(captureMinigameOrigin());
     input.endFrame();
     tracer.begin("render");
     renderFrame();

@@ -152,6 +152,9 @@ export type JapaneseTeaGarden = {
   ): void;
   project(camera: THREE.Camera): void;
   interact(player: TeaGardenPlayerPosition, mode: string): boolean;
+  isRaking(): boolean;
+  /** Quiet teardown used by teleport and the shared minigame exit button. */
+  releaseForNavigation(): boolean;
   /** Apply one canonical multiplayer stroke to the shared local GPU field. */
   queueRakeStamp(stamp: SandRakeStamp): boolean;
   /** Return to the authored pattern when the relay starts a fresh sand session. */
@@ -669,6 +672,12 @@ export function createJapaneseTeaGarden(
       if (disposed || !awake) return false;
       if (dryLandscape.interact(player, mode)) return true;
       return guide.interact(player, mode);
+    },
+    isRaking(): boolean {
+      return dryLandscape.isPlayerActive();
+    },
+    releaseForNavigation(): boolean {
+      return dryLandscape.releaseForNavigation();
     },
     queueRakeStamp(stamp: SandRakeStamp): boolean {
       if (disposed) return false;
