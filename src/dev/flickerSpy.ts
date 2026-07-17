@@ -67,9 +67,10 @@ export function installFlickerSpy(opts: {
     a.click();
   };
 
-  const dump = (reason: string, meta: Record<string, unknown>) => {
+  const dump = (reason: string, meta: Record<string, unknown>, manual = false) => {
     const now = performance.now();
-    if (now - lastCaptureAt < 2000 || captures >= 12) return;
+    // Auto-detections are throttled/capped; a manual key press always dumps.
+    if (!manual && (now - lastCaptureAt < 2000 || captures >= 30)) return;
     lastCaptureAt = now;
     captures++;
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -98,9 +99,18 @@ export function installFlickerSpy(opts: {
     console.warn(`[flickerspy] captured (${reason})`, meta);
   };
 
-  window.addEventListener("keydown", (event) => {
-    if (event.code === "F9") dump("manual F9", {});
-  });
+  // Capture-phase on both window and document so nothing swallows it first.
+  // `G` (grab) is a free key — F9 is intercepted by the OS/browser.
+  const onKey = (event: KeyboardEvent) => {
+    if (event.code === "KeyG") {
+      event.preventDefault();
+      event.stopPropagation();
+      console.warn("[flickerspy] G pressed — dumping frame");
+      dump("manual G", {}, true);
+    }
+  };
+  window.addEventListener("keydown", onKey, { capture: true });
+  document.addEventListener("keydown", onKey, { capture: true });
 
   const scan = () => {
     frame++;
@@ -115,28 +125,8 @@ export function installFlickerSpy(opts: {
       }
       ring.push({ frame, time: performance.now(), draws: currentDraws, pixels, shot });
       if (ring.length > 40) ring.shift();
-
-      const prev = ring[ring.length - 2];
-      if (prev?.pixels) {
-        const a = pixels.data;
-        const b = prev.pixels.data;
-        let hits = 0;
-        let cx = 0;
-        let cy = 0;
-        for (let p = 0; p < a.length; p += 4) {
-          const d = Math.abs(a[p] - b[p]) + Math.abs(a[p + 1] - b[p + 1]) + Math.abs(a[p + 2] - b[p + 2]);
-          if (d > 110) {
-            hits++;
-            cx += (p / 4) % W;
-            cy += Math.floor(p / 4 / W);
-          }
-        }
-        // compact transient: a handful of sky pixels changed hard, but not the
-        // whole band (camera pans change everything a little, not a lot).
-        if (hits >= 3 && hits <= 500) {
-          dump("sky transient", { hits, px: Math.round((cx / hits / W) * 100) / 100, py: Math.round((cy / hits / SKY_ROWS) * 100) / 100 });
-        }
-      }
+      // Auto-detection intentionally does NOT download — capture is manual (G)
+      // only, so the tester controls exactly which frame is dumped.
     } catch {
       /* keep scanning */
     }
@@ -144,5 +134,5 @@ export function installFlickerSpy(opts: {
     requestAnimationFrame(scan);
   };
   requestAnimationFrame(scan);
-  console.warn("[flickerspy] armed — F9 dumps the current+previous frame and draw lists");
+  console.warn("[flickerspy] armed — press G to dump the current+previous frame and draw lists");
 }
