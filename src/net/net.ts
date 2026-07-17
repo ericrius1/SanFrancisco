@@ -43,6 +43,10 @@ import {
  *   → {t:"pickle", k:"input", slot, d:number[]}      owned-side controls
  *   ← {t:"pickle", k:"input", slot, id, authority, d} targeted relay to authority
  *   ← welcome.pickle={slots:[id,id],authority,state:{id,d}|null} late-join cache
+ *   → {t:"ensemble", k:"claim"|"release", slot:0|1|2} Fort Mason station ownership
+ *   → {t:"ensemble", k:"note", slot, step:0..7, velocity:0..1} linked-scale note
+ *   ← {t:"ensemble", k, slot, id, ...} server-stamped ownership / note relay
+ *   ← welcome.ensemble={slots:[id,id,id]} late-join station ownership
  *
  * Movement and minigame physics are client-authoritative by design. For
  * pickleball only, the relay reserves two sides and selects one full-match
@@ -54,6 +58,7 @@ export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone
 
 export type RemoteGolfState = { d: number[]; h: number; p: number; s: number; r: number };
 export type PickleballSlot = 0 | 1;
+export type EnsembleSlot = 0 | 1 | 2;
 export type RemotePickleballState = { id: number; d: number[] };
 export type RemoteInfo = {
   id: number;
@@ -140,6 +145,10 @@ const FUN_NAME_FALLBACK = /^[\p{N}\s._\-']+$/u;
 
 function isPickleballSlot(value: unknown): value is PickleballSlot {
   return value === 0 || value === 1;
+}
+
+function isEnsembleSlot(value: unknown): value is EnsembleSlot {
+  return value === 0 || value === 1 || value === 2;
 }
 
 function pickleballOwner(value: unknown): number {
@@ -267,6 +276,8 @@ export class Net {
   readonly golfStates = new Map<number, RemoteGolfState>();
   /** Server-arbitrated owner id for each pickleball side (0 means available). */
   readonly pickleballSlots: [number, number] = [0, 0];
+  /** Server-arbitrated owners for piano, steel drum and pan pipes. */
+  readonly ensembleSlots: [number, number, number] = [0, 0, 0];
   /** Deterministic full-match authority: side 0's owner, otherwise side 1's. */
   pickleballAuthority = 0;
   /** Latest validated full-match snapshot, cached for lazy/late initialization. */
@@ -297,6 +308,10 @@ export class Net {
   onPickleballState: (ownerId: number, state: number[]) => void = () => {};
   /** Bounded controls from a side owner, delivered only to the match authority. */
   onPickleballInput: (slot: PickleballSlot, ownerId: number, input: number[]) => void = () => {};
+  onEnsembleSlots: (slots: readonly [number, number, number]) => void = () => {};
+  onEnsembleClaim: (slot: EnsembleSlot, ownerId: number, ok: boolean) => void = () => {};
+  onEnsembleRelease: (slot: EnsembleSlot, ownerId: number, ok: boolean) => void = () => {};
+  onEnsembleNote: (slot: EnsembleSlot, ownerId: number, step: number, velocity: number) => void = () => {};
 
   #ws: WebSocket | null = null;
   #url: string;
@@ -336,6 +351,44 @@ export class Net {
 
   #emitPickleballSlots() {
     this.onPickleballSlots([this.pickleballSlots[0], this.pickleballSlots[1]], this.pickleballAuthority);
+  }
+
+  #emitEnsembleSlots() {
+    this.onEnsembleSlots([
+      this.ensembleSlots[0],
+      this.ensembleSlots[1],
+      this.ensembleSlots[2]
+    ]);
+  }
+
+  #resetEnsemble(notify = true) {
+    this.ensembleSlots[0] = 0;
+    this.ensembleSlots[1] = 0;
+    this.ensembleSlots[2] = 0;
+    if (notify) this.#emitEnsembleSlots();
+  }
+
+  #hydrateEnsemble(raw: unknown) {
+    this.#resetEnsemble(false);
+    if (raw && typeof raw === "object") {
+      const slots = Array.isArray((raw as { slots?: unknown }).slots)
+        ? (raw as { slots: unknown[] }).slots
+        : [];
+      for (const slot of [0, 1, 2] as const) {
+        const ownerId = pickleballOwner(slots[slot]);
+        this.ensembleSlots[slot] = ownerId === this.selfId || this.roster.has(ownerId) ? ownerId : 0;
+      }
+    }
+    this.#emitEnsembleSlots();
+  }
+
+  #dropEnsembleOwner(ownerId: number) {
+    for (const slot of [0, 1, 2] as const) {
+      if (this.ensembleSlots[slot] !== ownerId) continue;
+      this.ensembleSlots[slot] = 0;
+      this.onEnsembleRelease(slot, ownerId, true);
+      this.#emitEnsembleSlots();
+    }
   }
 
   #refreshPickleballAuthority(advertised?: unknown) {
@@ -434,6 +487,7 @@ export class Net {
       // reclaim it after reconnect, instead of treating disconnect as a leave.
       this.selfId = 0;
       this.#resetPickleball();
+      this.#resetEnsemble();
       if (this.roster.size) {
         for (const id of [...this.roster.keys()]) {
           this.roster.delete(id);
@@ -484,6 +538,7 @@ export class Net {
           if (p.golf) this.golfStates.set(p.id, p.golf);
         }
         this.#hydratePickleball(msg.pickle);
+        this.#hydrateEnsemble(msg.ensemble);
         this.#setStatus("online");
         this.onRoster();
         this.onWelcome();
@@ -507,6 +562,7 @@ export class Net {
         const id = msg.id as number;
         this.golfStates.delete(id);
         this.#dropPickleballOwner(id);
+        this.#dropEnsembleOwner(id);
         this.roster.delete(id);
         this.onLeave(id);
         this.onRoster();
@@ -665,6 +721,39 @@ export class Net {
         }
         break;
       }
+      case "ensemble": {
+        if (typeof msg.k !== "string" || !isEnsembleSlot(msg.slot)) break;
+        const slot = msg.slot;
+        const ownerId = pickleballOwner(msg.id);
+        if (msg.k === "claim") {
+          const ok = msg.ok === true;
+          if (ok && ownerId > 0 && (ownerId === this.selfId || this.roster.has(ownerId))) {
+            this.ensembleSlots[slot] = ownerId;
+            this.#emitEnsembleSlots();
+          }
+          this.onEnsembleClaim(slot, ownerId, ok);
+        } else if (msg.k === "release") {
+          const ok = msg.ok === true;
+          if (ok && this.ensembleSlots[slot] === ownerId) {
+            this.ensembleSlots[slot] = 0;
+            this.#emitEnsembleSlots();
+          }
+          this.onEnsembleRelease(slot, ownerId, ok);
+        } else if (
+          msg.k === "note" &&
+          ownerId !== this.selfId &&
+          this.roster.has(ownerId) &&
+          this.ensembleSlots[slot] === ownerId &&
+          Number.isInteger(msg.step) &&
+          (msg.step as number) >= 0 &&
+          (msg.step as number) <= 7 &&
+          typeof msg.velocity === "number" &&
+          Number.isFinite(msg.velocity)
+        ) {
+          this.onEnsembleNote(slot, ownerId, msg.step as number, Math.min(1, Math.max(0, msg.velocity)));
+        }
+        break;
+      }
     }
   }
 
@@ -747,6 +836,38 @@ export class Net {
     const state = this.pickleballState;
     if (!state || state.id !== this.pickleballAuthority) return;
     this.onPickleballState(state.id, state.d.slice());
+  }
+
+  /** Reserve one Fort Mason instrument. A player may own at most one station. */
+  claimEnsemble(slot: EnsembleSlot) {
+    if (!isEnsembleSlot(slot) || this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    this.#ws.send(JSON.stringify({ t: "ensemble", k: "claim", slot }));
+  }
+
+  releaseEnsemble(slot: EnsembleSlot) {
+    if (!isEnsembleSlot(slot) || this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    this.#ws.send(JSON.stringify({ t: "ensemble", k: "release", slot }));
+  }
+
+  /** The relay accepts only the shared eight-step scale, never raw pitch data. */
+  sendEnsembleNote(slot: EnsembleSlot, step: number, velocity: number) {
+    if (
+      !isEnsembleSlot(slot) ||
+      this.#ws?.readyState !== WebSocket.OPEN ||
+      !this.selfId ||
+      this.ensembleSlots[slot] !== this.selfId ||
+      !Number.isInteger(step) ||
+      step < 0 ||
+      step > 7 ||
+      !Number.isFinite(velocity)
+    ) return;
+    this.#ws.send(JSON.stringify({
+      t: "ensemble",
+      k: "note",
+      slot,
+      step,
+      velocity: Math.round(Math.min(1, Math.max(0, velocity)) * 100) / 100
+    }));
   }
 
   /** Broadcast one chat line (server sanitizes + stamps name; no persistence). */

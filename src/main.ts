@@ -117,6 +117,8 @@ import type { ArcheryGame } from "./gameplay/archery";
 import { ARCHERY_CENTER } from "./gameplay/archery/meta";
 import type { PupPen } from "./gameplay/pup";
 import { PUP_CENTER } from "./gameplay/pup/meta";
+import type { FortMasonEnsemble } from "./gameplay/fortMasonEnsemble";
+import { FORT_MASON_ENSEMBLE_CENTER } from "./gameplay/fortMasonEnsemble/meta";
 import type { Ranch } from "./gameplay/ranch";
 import { RANCH_CENTER, HORSE_PADDOCK } from "./gameplay/ranch/meta";
 import type { PalaceReverieGame } from "./gameplay/palaceReverie";
@@ -1436,9 +1438,11 @@ async function boot() {
   // so even constructing an empty facade would pull the activity into boot.
   // It is installed together with the Goldman site on first approach.
   let pickleballController: PickleballController | null = null;
+  let fortMasonEnsemble: FortMasonEnsemble | null = null;
   const releaseGameplayForNavigation = () => {
     if (inOrbit()) setViewMode("third");
     pickleballController?.releaseForNavigation();
+    fortMasonEnsemble?.releaseForNavigation();
     golf?.abandonForNavigation(hud);
     archery?.releaseForNavigation(player);
   };
@@ -1692,6 +1696,7 @@ async function boot() {
     golf?.syncNetState();
     net.replayGolf();
     pickleballController?.onWelcome();
+    fortMasonEnsemble?.onWelcome();
   };
   const syncRoster = () => {
     for (const info of net.roster.values()) {
@@ -1794,6 +1799,7 @@ async function boot() {
     else if (status === "full") hud.message(detail ?? "Server is full", 4);
     else if (status === "offline") {
       pickleballController?.onOffline();
+      fortMasonEnsemble?.onOffline();
       // Offline stays silent: the local AI match keeps working and Net retries.
     }
   };
@@ -1838,6 +1844,7 @@ async function boot() {
   // the range is asleep. Marks the field + gives a teleport like golf/tennis.
   minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
   minimap.addLandmark(PUP_CENTER.x, PUP_CENTER.z, "Puppy Nursery");
+  minimap.addLandmark(FORT_MASON_ENSEMBLE_CENTER.x, FORT_MASON_ENSEMBLE_CENTER.z, "Fort Mason Jam");
   minimap.addLandmark(HORSE_PADDOCK.x, HORSE_PADDOCK.z, "Horse Paddock");
   minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
   // Ocean Beach surf shack. Teleporting arrives on foot at the apron;
@@ -2894,6 +2901,7 @@ async function boot() {
     | "lands-end"
     | "sutro-baths"
     | "pup"
+    | "fort-mason-ensemble"
     | "ranch";
   type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
   type OptionalWorldSite = {
@@ -2924,6 +2932,7 @@ async function boot() {
       pickleballUI: pickleballController?.ui ?? null,
       archery,
       pup,
+      fortMasonEnsemble,
       ranch,
       palaceReverie,
       afterlight,
@@ -3062,6 +3071,17 @@ async function boot() {
     await prepareOptionalRoot("ranch", r.root);
     ranch = r;
     siteGate.register(r.siteHooks());
+    refreshOptionalSiteDebug();
+  };
+
+  const loadFortMasonEnsemble = async (): Promise<void> => {
+    const { createFortMasonEnsemble } = await import("./gameplay/fortMasonEnsemble");
+    await waitForOptionalSiteStage();
+    const ensemble = createFortMasonEnsemble({ map, net, player, input, hud, chase });
+    await prepareOptionalRoot("fort-mason ensemble", ensemble.root);
+    fortMasonEnsemble = ensemble;
+    scene.add(ensemble.root);
+    sky.invalidateStaticShadows();
     refreshOptionalSiteDebug();
   };
 
@@ -3210,6 +3230,15 @@ async function boot() {
     },
     { id: "archery", label: "Archery Range", ...ARCHERY_CENTER, state: "dormant", forced: false, promise: null, load: loadArchery },
     { id: "pup", label: "Puppy Nursery", ...PUP_CENTER, state: "dormant", forced: false, promise: null, load: loadPup },
+    {
+      id: "fort-mason-ensemble",
+      label: "Fort Mason Jam",
+      ...FORT_MASON_ENSEMBLE_CENTER,
+      state: "dormant",
+      forced: false,
+      promise: null,
+      load: loadFortMasonEnsemble
+    },
     { id: "ranch", label: "Creature Ranch", ...RANCH_CENTER, state: "dormant", forced: false, promise: null, load: loadRanch },
     { id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, state: "dormant", forced: false, promise: null, load: loadPalace },
     {
@@ -3255,6 +3284,7 @@ async function boot() {
     "lands-end": true,
     "sutro-baths": true,
     pup: true,
+    "fort-mason-ensemble": true,
     ranch: true
   };
   let optionalSitePerfGating = false;
@@ -3283,6 +3313,9 @@ async function boot() {
         break;
       case "pup":
         if (!on && pup) pup.root.visible = false;
+        break;
+      case "fort-mason-ensemble":
+        if (!on && fortMasonEnsemble) fortMasonEnsemble.root.visible = false;
         break;
       case "ranch":
         if (!on && ranch) ranch.root.visible = false;
@@ -3332,6 +3365,11 @@ async function boot() {
         return {
           runtime: siteGate.awake("pup") ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(pup?.root)
+        };
+      case "fort-mason-ensemble":
+        return {
+          runtime: fortMasonEnsemble?.root.visible ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(fortMasonEnsemble?.root)
         };
       case "ranch":
         return {
@@ -4006,7 +4044,10 @@ async function boot() {
   let cineHook: ((dt: number) => void) | null = null;
 
   const updatePickleballGameplay = (dt: number) => pickleballController?.update(dt) ?? false;
-  const applyPickleballPlayerPose = () => pickleballController?.applyPlayerPose();
+  const applyPickleballPlayerPose = () => {
+    pickleballController?.applyPlayerPose();
+    fortMasonEnsemble?.applyPlayerPose();
+  };
   const hidePickleballRemoteAvatars = () => pickleballController?.hideClaimedRemoteAvatars();
   const sendLocalPresence = (speed = player.speed) => {
     if (pickleballController) {
@@ -4192,6 +4233,10 @@ async function boot() {
         ? false
         : updatePickleballGameplay(frameDt);
     const playingPickleball = pickleballController?.playing ?? false;
+    const playingFortMasonEnsemble =
+      !worldArrival.active && optionalSitePerfAllowed("fort-mason-ensemble")
+        ? fortMasonEnsemble?.update(frameDt, elapsed, player.renderPosition, camera) ?? false
+        : false;
     applyPickleballPlayerPose();
 
     // Full freeze: a pause with "freeze player" armed. Everything holds — sim,
@@ -4239,14 +4284,14 @@ async function boot() {
     if (paused) {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
-      if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
+      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
         player.requestSurfJump();
       }
-      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
+      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
         player.requestSurfFlow();
       }
-      if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
+      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
       chase.lookDir(aim);
       physics.maintainStreaming(player.position);
       let steps = 0;
@@ -4350,7 +4395,7 @@ async function boot() {
     const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
     for (let i = 1; i <= 9; i++) {
       if (!numberPressed(i)) continue;
-      if (playingPickleball) break;
+      if (playingPickleball || playingFortMasonEnsemble) break;
       if (golf?.capturesDigits) break; // golf swing UI owns the number row (club picks)
       if (ctrlNumberPress(i)) {
         const nextTool = TOOL_ORDER[i - 1];
@@ -4376,7 +4421,7 @@ async function boot() {
     }
     // Keyboard arrows and d-pad share the toolbar: ↑/↓ change row focus,
     // ←/→ cycle the focused row (vehicles / tools / paint swatches).
-    if (!playingPickleball) {
+    if (!playingPickleball && !playingFortMasonEnsemble) {
       const dx =
         (input.pressed("ArrowRight") && !input.altPressed("ArrowRight") ? 1 : 0) -
         (input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft") ? 1 : 0) +
@@ -4412,6 +4457,7 @@ async function boot() {
       !exitedToWalk &&
       !golf?.tryStartAtTee(player, hud) &&
       !archery?.tryInteract(player, hud, chase) &&
+      !fortMasonEnsemble?.tryInteract(player.renderPosition, player.mode) &&
       !palaceReverie?.tryInteract(player, hud) &&
       !landsEnd?.keeper.tryInteract(player, hud) &&
       !missionDolores?.tryInteract(player.position, player.mode, hud) &&
@@ -4763,15 +4809,16 @@ async function boot() {
     // Latch hoverboard ollies at render-frame rate. On high-refresh displays a
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
-    if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
+    if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+    if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
       player.requestSurfJump();
     }
-    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
+    if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
       player.requestSurfFlow();
     }
     if (
       !playingPickleball &&
+      !playingFortMasonEnsemble &&
       !afterlightControlsCaptured &&
       !input.suspended &&
       player.mode === "walk" &&
