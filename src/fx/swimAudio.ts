@@ -2,10 +2,11 @@
  * Procedural swimming audio — no sample files. While the player is in the
  * water: a soft filtered-noise bed (surface lap / submerged hush) plus short
  * stroke splash bursts timed to the front-crawl cadence. Entry fires a one-shot
- * plunge. Everything lives on one AudioContext and respects effectsAudioLevel().
+ * plunge. Rides the shared engine's effects bus, which applies the HUD level.
  */
 
 import { effectsAudioLevel } from "../core/audioSettings";
+import { audioEngine } from "../audio/engine";
 
 export type SwimSignals = {
   swimming: boolean;
@@ -32,51 +33,31 @@ export class SwimAudio {
   #ambFilter!: BiquadFilterNode;
   #strokeBus!: GainNode;
   #noise!: AudioBuffer;
-  #masterLevel = 0;
   #presence = 0;
   #ambLevel = 0;
   #strokePhase = 0;
   #wasSwimming = false;
   #entryCooldown = 0;
 
-  constructor() {
-    const unlock = () => {
-      const ctx = this.#ensure();
-      if (ctx && ctx.state === "suspended") void ctx.resume();
-      if (ctx && ctx.state === "running") {
-        window.removeEventListener("pointerdown", unlock);
-        window.removeEventListener("keydown", unlock);
-      }
-    };
-    window.addEventListener("pointerdown", unlock);
-    window.addEventListener("keydown", unlock);
-  }
-
   /** Per frame. Pass null (paused / frozen) to fade everything out. */
   update(dt: number, sig: SwimSignals | null) {
-    const ctx = this.#ctx;
-    if (!ctx) return;
+    const ctx = this.#ctx ?? this.#ensure();
+    if (!ctx) return; // engine bus null until the first gesture
 
     const swimming = !!sig?.swimming;
-    const targetMaster = effectsAudioLevel();
-    if (targetMaster <= 0.0001 && this.#masterLevel <= 0.001 && this.#presence <= 0.001) {
-      if (ctx.state === "running") {
-        this.#master.gain.value = 0;
-        this.#masterLevel = 0;
-        this.#ambGain.gain.value = 0;
-        void ctx.suspend();
-      }
+    // Cheap early-out: muted and already silent — synthesize nothing and let the
+    // engine idle-suspend the shared ctx (no per-feature suspend anymore).
+    if (effectsAudioLevel() <= 0.0001 && this.#presence <= 0.001) {
+      this.#ambGain.gain.value = 0;
+      this.#ambLevel = 0;
       this.#wasSwimming = swimming;
       return;
     }
-    if (ctx.state === "suspended") void ctx.resume();
-    if (ctx.state !== "running") return;
-
-    this.#masterLevel = approach(this.#masterLevel, targetMaster, dt, 6);
-    this.#master.gain.value = this.#masterLevel;
 
     const want = swimming ? 1 : 0;
     this.#presence = approach(this.#presence, want, dt, swimming ? 3.5 : 5);
+    // Continuous voice: keep the shared ctx alive while anything is audible.
+    if (this.#presence > 0.001) audioEngine.touch();
     this.#entryCooldown = Math.max(0, this.#entryCooldown - dt);
 
     // plunge on the rising edge of swimming
@@ -116,8 +97,9 @@ export class SwimAudio {
 
   #ensure(): AudioContext | null {
     if (this.#ctx) return this.#ctx;
-    if (typeof AudioContext === "undefined") return null;
-    const ctx = new AudioContext();
+    const bus = audioEngine.bus("effects");
+    if (!bus) return null; // null until first gesture — retry next update
+    const { ctx, input } = bus;
     this.#ctx = ctx;
 
     const limiter = ctx.createDynamicsCompressor();
@@ -126,10 +108,10 @@ export class SwimAudio {
     limiter.ratio.value = 5;
     limiter.attack.value = 0.006;
     limiter.release.value = 0.28;
-    limiter.connect(ctx.destination);
+    limiter.connect(input);
 
     this.#master = ctx.createGain();
-    this.#master.gain.value = 0;
+    this.#master.gain.value = 1; // constant trim; the engine group applies effectsAudioLevel()
     this.#master.connect(limiter);
 
     // 2s white noise, shared by ambience + one-shots

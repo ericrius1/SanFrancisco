@@ -12,6 +12,7 @@
 
 import type { PlayerMode } from "../player/types";
 import { effectsAudioLevel } from "../core/audioSettings";
+import { audioEngine } from "../audio/engine";
 import { BOARD_PITCHES, type BoardHum } from "../vehicles/board/config";
 import { CAR_SKID_TUNING } from "../vehicles/car/tuning";
 
@@ -172,7 +173,6 @@ export class VehicleAudio {
   #master!: GainNode;
   #noise!: AudioBuffer;
   #voices: Voice[] = [];
-  #masterLevel = 0;
   #boardStyle: BoardVoiceStyle = {
     hum: "hum",
     pitch: 0,
@@ -199,26 +199,11 @@ export class VehicleAudio {
   #lampSmooth = 0; // JS-smoothed lamp field, so passes swell + release
   #lampLevel = 0;
 
-  constructor() {
-    // autoplay policy: same unlock dance as the fireworks — build + resume on
-    // the first gesture (the click into pointer lock counts)
-    const unlock = () => {
-      const ctx = this.#ensure();
-      if (ctx && ctx.state === "suspended") void ctx.resume();
-      if (ctx && ctx.state === "running") {
-        window.removeEventListener("pointerdown", unlock);
-        window.removeEventListener("keydown", unlock);
-      }
-    };
-    window.addEventListener("pointerdown", unlock);
-    window.addEventListener("keydown", unlock);
-  }
-
   /** Headless-verify/tuning peek: context state + smoothed levels. */
   get debugState() {
     return {
       ctx: this.#ctx?.state ?? "none",
-      master: this.#masterLevel,
+      master: this.#ctx ? 1 : 0, // constant trim; engine group applies effectsAudioLevel()
       boardStyle: { ...this.#boardStyle },
       boardRuntime: { ...this.#boardRuntime },
       carLandingEvents: this.#carLandingEvents,
@@ -259,9 +244,9 @@ export class VehicleAudio {
    * signal, so a sound edit still has an obvious audible response.
    */
   previewBoard() {
-    const ctx = this.#ensure(); // UI click is a gesture, so this can unlock
+    const ctx = this.#ensure(); // UI click is a gesture, so the bus is unlocked
     if (!ctx) return;
-    if (ctx.state === "suspended") void ctx.resume();
+    audioEngine.touch(BOARD_PREVIEW_DUR + 0.5);
     this.#previewT = 0;
   }
 
@@ -269,7 +254,7 @@ export class VehicleAudio {
   surfEvent(kind: "carve" | "landing" | "wipeout" | "flow", strength = 1) {
     const ctx = this.#ensure();
     if (!ctx) return;
-    if (ctx.state === "suspended") void ctx.resume();
+    audioEngine.touch(1.4); // covers the longest ("flow") tail into idle suspend
     const now = ctx.currentTime;
     const amount = clamp01(strength);
     const out = ctx.createGain();
@@ -336,7 +321,7 @@ export class VehicleAudio {
   carLanding(strength: number, level = 1) {
     const ctx = this.#ensure();
     if (!ctx) return;
-    if (ctx.state === "suspended") void ctx.resume();
+    audioEngine.touch(0.8); // covers the touchdown tail into idle suspend
     const amount = clamp01(strength);
     const trim = Math.max(0, Math.min(3, level));
     if (amount <= 0 || trim <= 0) return;
@@ -395,6 +380,7 @@ export class VehicleAudio {
   /** Per rendered frame. `sig` null (paused) fades every voice out. */
   update(dt: number, sig: VehicleSignals | null) {
     let boardPreviewEnv = 0;
+    const previewing = this.#previewT !== null;
     // customizer audition: impersonate a board run swelling 0→fast→0
     if (this.#previewT !== null) {
       this.#previewT += dt;
@@ -411,23 +397,15 @@ export class VehicleAudio {
         }
       }
     }
-    const ctx = this.#ctx;
-    if (!ctx) return; // not unlocked yet
-    const targetMaster = effectsAudioLevel();
-    // muted and already faded: park the whole graph, it costs nothing
-    if (targetMaster <= 0.0001 && this.#masterLevel <= 0.001) {
-      if (ctx.state === "running") {
-        this.#master.gain.value = 0;
-        this.#masterLevel = 0;
-        void ctx.suspend();
-      }
-      return;
-    }
-    if (ctx.state === "suspended") void ctx.resume();
-    if (ctx.state !== "running") return;
+    const ctx = this.#ctx ?? this.#ensure();
+    if (!ctx) return; // engine bus null until the first gesture
 
-    this.#masterLevel = approach(this.#masterLevel, targetMaster, dt, 6);
-    this.#master.gain.value = this.#masterLevel;
+    // Continuous voice: while a vehicle is being voiced (or auditioned) and the
+    // mix isn't muted, keep the shared ctx alive; the engine idle-suspends once
+    // nothing holds it. Voices still smooth toward 0 below so they fade cleanly.
+    const hasVoice = !!sig && this.#voices.some((v) => sig.mode === v.mode);
+    if ((hasVoice || previewing) && effectsAudioLevel() > 0.0001) audioEngine.touch(0.3);
+
     for (const v of this.#voices) {
       const active = !!(sig && sig.mode === v.mode && (!v.when || v.when(sig)));
       let target = active ? v.drive(sig!, dt) : 0;
@@ -491,20 +469,21 @@ export class VehicleAudio {
 
   #ensure(): AudioContext | null {
     if (this.#ctx) return this.#ctx;
-    if (typeof AudioContext === "undefined") return null;
-    const ctx = new AudioContext();
+    const bus = audioEngine.bus("effects");
+    if (!bus) return null; // null until first gesture — retry next update
+    const { ctx, input } = bus;
     this.#ctx = ctx;
 
-    // master: gain -> soft limiter -> out (keeps stacked partials polite)
+    // master: gain -> soft limiter -> engine effects input (keeps stacked partials polite)
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -16;
     limiter.knee.value = 20;
     limiter.ratio.value = 6;
     limiter.attack.value = 0.004;
     limiter.release.value = 0.3;
-    limiter.connect(ctx.destination);
+    limiter.connect(input);
     this.#master = ctx.createGain();
-    this.#master.gain.value = 0;
+    this.#master.gain.value = 1; // constant trim; the engine group applies effectsAudioLevel()
     this.#master.connect(limiter);
 
     // 2s of white noise, looped by every noise layer at random offsets

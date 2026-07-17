@@ -1,6 +1,7 @@
 import type * as THREE from "three/webgpu";
 import { tunables } from "../core/persist";
 import { voiceAudioLevel } from "../core/audioSettings";
+import { audioEngine } from "../audio/engine";
 import type { Net } from "./net";
 
 /**
@@ -26,12 +27,14 @@ import type { Net } from "./net";
  * Playback: per peer, remote MediaStream → hidden muted <audio> element
  * (Chrome quirk: a MediaStreamAudioSourceNode is silent unless the stream is
  * also attached to a playing media element) → compressor (levels quiet mics
- * up toward a consistent loudness) → GainNode → destination. Deliberately
- * non-spatial: intelligibility beats immersion for chat.
+ * up toward a consistent loudness) → GainNode → the shared AudioEngine's
+ * "voice" group input (the group applies the HUD voice volume/mute).
+ * Deliberately non-spatial: intelligibility beats immersion for chat.
  *
- * A listen-only player never passes through setMic(true), so their
- * AudioContext starts suspended by autoplay policy — #armResume kicks it on
- * the next input gesture, otherwise they'd stand there hearing nothing.
+ * The engine owns the ctx and its gesture unlock — a listen-only player's
+ * first input opens it, no local resume plumbing needed. A background engine
+ * hold (acquired while the mic is on or any peer is wired) keeps the ctx
+ * running even while the tab is hidden — voice chat is a social feature.
  *
  * Privacy: mic off = track stopped and stream released (browser mic indicator
  * turns off), not just muted.
@@ -89,8 +92,8 @@ export class Voice {
   #posOf: (id: number) => THREE.Vector3 | null;
   #selfPos: () => THREE.Vector3;
   #peers = new Map<number, Peer>();
-  #ctx: AudioContext | null = null;
-  #resumeArmed = false;
+  // One background engine hold, live while the mic is on OR ≥1 peer is wired.
+  #hold: (() => void) | null = null;
   #micStream: MediaStream | null = null;
   #micTrack: MediaStreamTrack | null = null;
   #scanAt = 0;
@@ -109,6 +112,9 @@ export class Voice {
   async setMic(on: boolean): Promise<boolean> {
     if (on === this.micOn) return true;
     if (on) {
+      // Toggling the mic IS a user gesture: open the engine gate even if this is
+      // somehow the first interaction. getUserMedia below is itself gesture-gated.
+      void audioEngine.unlock();
       try {
         this.#micStream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -118,16 +124,30 @@ export class Voice {
       }
       this.#micTrack = this.#micStream.getAudioTracks()[0] ?? null;
       this.micOn = true;
-      void this.#ensureCtx()?.resume(); // toggling is a user gesture — resume while we have it
     } else {
       this.#micTrack?.stop(); // releases the device (browser mic indicator off)
       this.#micTrack = null;
       this.#micStream = null;
       this.micOn = false;
     }
+    this.#refreshHold();
     for (const p of this.#peers.values()) this.#attachMic(p);
     this.onMicChange(this.micOn);
     return true;
+  }
+
+  /**
+   * Hold the shared context alive (background: true → survives tab-hidden) while
+   * the mic is on or any peer is wired; release when both are gone. Edge-
+   * triggered from setMic and from peer add/drop — never per frame.
+   */
+  #refreshHold() {
+    const want = this.micOn || this.#peers.size > 0;
+    if (want && !this.#hold) this.#hold = audioEngine.acquireHold({ background: true });
+    else if (!want && this.#hold) {
+      this.#hold();
+      this.#hold = null;
+    }
   }
 
   /** Put the current mic track (or silence) on a peer's one audio m-line. */
@@ -139,37 +159,6 @@ export class Voice {
   }
 
   /* ------------------------------------------------------------- peers */
-
-  #ensureCtx(): AudioContext | null {
-    if (this.#ctx) return this.#ctx;
-    if (typeof AudioContext === "undefined") return null;
-    this.#ctx = new AudioContext();
-    if (this.#ctx.state === "suspended") this.#armResume();
-    return this.#ctx;
-  }
-
-  /** Autoplay policy: a listen-only player's ctx needs a gesture to start. */
-  #armResume() {
-    if (this.#resumeArmed) return;
-    this.#resumeArmed = true;
-    const kick = () => {
-      const ctx = this.#ctx;
-      if (!ctx || ctx.state === "running") {
-        off();
-        return;
-      }
-      void ctx.resume().then(() => {
-        if (this.#ctx?.state === "running") off();
-      });
-    };
-    const off = () => {
-      this.#resumeArmed = false;
-      window.removeEventListener("pointerdown", kick, true);
-      window.removeEventListener("keydown", kick, true);
-    };
-    window.addEventListener("pointerdown", kick, true);
-    window.addEventListener("keydown", kick, true);
-  }
 
   #createPeer(id: number, withTransceiver: boolean): Peer {
     const pc = new RTCPeerConnection({ iceServers: iceServers() });
@@ -186,6 +175,7 @@ export class Voice {
       speakingUntil: 0
     };
     this.#peers.set(id, p);
+    this.#refreshHold(); // first peer wires the shared ctx (resumes once unlocked)
 
     pc.onicecandidate = (e) => this.#net.sendRtc(id, { candidate: e.candidate?.toJSON() ?? null });
     pc.onnegotiationneeded = async () => {
@@ -213,10 +203,15 @@ export class Voice {
     return p;
   }
 
-  /** Remote stream → hidden <audio> (Chrome quirk) → compressor → gain → out. */
+  /** Remote stream → hidden <audio> (Chrome quirk) → compressor → gain → voice group. */
   #wireAudio(p: Peer, stream: MediaStream) {
-    const ctx = this.#ensureCtx();
-    if (!ctx) return;
+    // prewarmBus (not bus()) so the receive graph builds even when a remote
+    // track arrives before any local gesture — audibility stays gated by the
+    // engine's voice group gain and the suspended ctx; the background hold
+    // resumes it once unlocked.
+    const bus = audioEngine.prewarmBus("voice");
+    if (!bus) return;
+    const ctx = bus.ctx;
     if (!p.audioEl) {
       p.audioEl = new Audio();
       p.audioEl.muted = true; // WebAudio does the audible playback
@@ -237,11 +232,12 @@ export class Voice {
       release: 0.2
     });
     p.gain = ctx.createGain();
-    p.gain.gain.value = VOICE_TUNING.values.volume * voiceAudioLevel() * VOICE_BOOST;
+    // No voiceAudioLevel() here — the engine's voice group gain applies it.
+    p.gain.gain.value = VOICE_TUNING.values.volume * VOICE_BOOST;
     p.analyser = ctx.createAnalyser();
     p.analyser.fftSize = 256;
     p.analyserBuf = new Float32Array(p.analyser.fftSize);
-    src.connect(p.compressor).connect(p.gain).connect(ctx.destination);
+    src.connect(p.compressor).connect(p.gain).connect(bus.input);
     src.connect(p.analyser); // parallel tap, pre-gain, for the speaking indicator
   }
 
@@ -270,6 +266,7 @@ export class Voice {
     const p = this.#peers.get(id);
     if (!p) return;
     this.#peers.delete(id);
+    this.#refreshHold(); // last peer + mic off releases the ctx hold
     if (p.speakingUntil > performance.now()) this.onSpeaking(id, false);
     p.pc.onicecandidate = p.pc.onnegotiationneeded = p.pc.onconnectionstatechange = p.pc.ontrack = null;
     p.pc.close();
@@ -291,14 +288,16 @@ export class Voice {
       this.#scanAt = now + SCAN_MS;
       this.#scan(now);
     }
-    const ctx = this.#ctx;
-    if (!ctx || this.#peers.size === 0) return;
+    if (this.#peers.size === 0) return;
 
-    const level = VOICE_TUNING.values.volume * voiceAudioLevel() * VOICE_BOOST;
+    // Per-peer gain drops voiceAudioLevel() — the engine's voice group applies
+    // it. voiceAudioLevel() survives only as a cheap gate on the speaking meter.
+    const level = VOICE_TUNING.values.volume * VOICE_BOOST;
+    const audible = voiceAudioLevel() > 0;
     for (const p of this.#peers.values()) {
       if (p.gain) p.gain.gain.value = level;
       // speaking indicator: RMS over a short window, with hold
-      if (p.analyser && p.analyserBuf && level > 0) {
+      if (p.analyser && p.analyserBuf && audible) {
         p.analyser.getFloatTimeDomainData(p.analyserBuf);
         let sum = 0;
         for (let i = 0; i < p.analyserBuf.length; i++) sum += p.analyserBuf[i] * p.analyserBuf[i];
@@ -378,7 +377,7 @@ export class Voice {
   debugState() {
     return {
       mic: this.micOn,
-      ctx: this.#ctx?.state ?? "none",
+      ctx: audioEngine.debugState.ctx,
       audibleCount: Math.max(1, Math.round(VOICE_TUNING.values.audibleCount)),
       peers: [...this.#peers.values()].map((p) => ({
         id: p.id,
@@ -393,7 +392,8 @@ export class Voice {
   dispose() {
     void this.setMic(false);
     for (const id of [...this.#peers.keys()]) this.drop(id);
-    void this.#ctx?.close();
-    this.#ctx = null;
+    // Release our hold but never close the shared engine ctx.
+    this.#hold?.();
+    this.#hold = null;
   }
 }

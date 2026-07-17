@@ -4,9 +4,12 @@
  * Footsteps and interaction sounds are fundamental, local sounds, but each one
  * owning an AudioContext would quickly exhaust the browser's context budget.
  * This small bus gives every procedural voice one limiter, one generated room,
- * one reusable noise bed, and the HUD effects-volume/mute contract.
+ * and one reusable noise bed on the shared engine effects group. The engine now
+ * owns the context, the gesture unlock, the effects volume/mute contract, and
+ * the visibility/idle-suspend policy; this bus keeps only its own sonic glue.
  */
 
+import { audioEngine } from "./engine";
 import { effectsAudioLevel } from "../core/audioSettings";
 
 export type GameplaySfxVoiceBus = {
@@ -19,120 +22,91 @@ export type GameplaySfxVoiceBus = {
   noise: AudioBuffer;
 };
 
-const approach = (current: number, target: number, dt: number, rate: number) =>
-  current + (target - current) * Math.min(1, dt * rate);
-
 export class GameplaySfxBus {
   #ctx: AudioContext | null = null;
   #master!: GainNode;
   #dry!: GainNode;
   #room!: GainNode;
   #noise!: AudioBuffer;
-  #unlocked = false;
-  #hold = 0;
-  #level = 0;
-
-  constructor() {
-    const unlock = () => {
-      this.#unlocked = true;
-      const ctx = this.#ensure();
-      if (ctx?.state === "suspended") void ctx.resume();
-      window.removeEventListener("pointerdown", unlock);
-      window.removeEventListener("keydown", unlock);
-      window.removeEventListener("touchstart", unlock);
-    };
-    window.addEventListener("pointerdown", unlock, { passive: true });
-    window.addEventListener("keydown", unlock);
-    window.addEventListener("touchstart", unlock, { passive: true });
-  }
 
   get debugState() {
+    // Level/hold/unlock live on the engine now; mirror them so tuning peeks and
+    // headless probes keep the same shape.
     return {
       ctx: this.#ctx?.state ?? "none",
-      unlocked: this.#unlocked,
-      level: +this.#level.toFixed(3),
-      hold: +this.#hold.toFixed(3)
+      unlocked: audioEngine.unlocked,
+      level: +audioEngine.debugState.levels.effects.toFixed(3),
+      hold: audioEngine.debugState.hold
     };
   }
 
-  /** Build the modest no-network graph under the loading cover. */
+  /** Build the modest no-network graph under the loading cover, pre-gesture. */
   prewarm(): void {
     this.#ensure();
   }
 
   /** Force the normal browser gate open for headless audio probes. */
   async unlock(): Promise<void> {
-    const ctx = this.#ensure();
-    if (!ctx) return;
-    await ctx.resume().catch(() => {});
-    this.#unlocked = true;
+    await audioEngine.unlock();
+    this.#ensure();
   }
 
   /** Keep the shared graph alive long enough for a newly scheduled tail. */
   touch(seconds = 0.8): void {
-    this.#hold = Math.max(this.#hold, seconds);
+    audioEngine.touch(seconds);
   }
 
   voiceBus(holdSeconds = 0.8): GameplaySfxVoiceBus | null {
-    if (!this.#unlocked) return null;
+    // bus() applies the unlocked gate, extends the idle hold, and resumes the
+    // ctx — exactly the gate/touch/resume this used to do by hand. We build the
+    // graph ourselves and only need its non-null (unlocked) signal.
+    if (!audioEngine.bus("effects", holdSeconds)) return null;
     const ctx = this.#ensure();
     if (!ctx) return null;
-    this.touch(holdSeconds);
-    const target = document.visibilityState === "visible" ? effectsAudioLevel() : 0;
-    this.#level = target;
-    this.#master.gain.cancelScheduledValues(ctx.currentTime);
-    this.#master.gain.setValueAtTime(target, ctx.currentTime);
-    if (ctx.state === "suspended") void ctx.resume();
     return { ctx, dry: this.#dry, room: this.#room, noise: this.#noise };
   }
 
   /**
-   * Advance the shared master once per frame. `continuous` keeps rustles or
-   * other sustained voices alive; one-shots call touch() when scheduled.
+   * Advance the shared voices once per frame. `continuous` keeps rustles or
+   * other sustained voices alive; one-shots call touch() when scheduled. The
+   * engine owns the master gain and idle-suspend, so this only extends the hold.
    */
-  update(dt: number, continuous = false): void {
-    const ctx = this.#ctx;
-    if (!ctx) return;
-    this.#hold = continuous ? Math.max(this.#hold, 0.15) : Math.max(0, this.#hold - dt);
-    const visible = document.visibilityState === "visible";
-    const target = visible && this.#hold > 0 ? effectsAudioLevel() : 0;
-    this.#level = approach(this.#level, target, dt, target > 0 ? 8 : 14);
-
-    if (ctx.state === "running") {
-      this.#master.gain.setTargetAtTime(this.#level, ctx.currentTime, 0.025);
-      if (this.#hold <= 0 && this.#level <= 0.001) void ctx.suspend();
-    } else if (this.#unlocked && this.#hold > 0 && target > 0.0001 && visible) {
-      void ctx.resume();
-    }
+  update(_dt: number, continuous = false): void {
+    // Gate, not gain: continuous foley shouldn't hold the shared ctx awake
+    // while the FX group is muted.
+    if (continuous && effectsAudioLevel() > 0.0001) audioEngine.touch(0.15);
   }
 
   dispose(): void {
-    const ctx = this.#ctx;
-    if (ctx && ctx.state !== "closed") void ctx.close();
+    // Never close the shared engine ctx — just drop our own graph.
+    this.#master?.disconnect();
     this.#ctx = null;
   }
 
   #ensure(): AudioContext | null {
     if (this.#ctx) return this.#ctx;
-    if (typeof AudioContext === "undefined") return null;
-    const ctx = new AudioContext();
+    const bus = audioEngine.prewarmBus("effects");
+    if (!bus) return null; // no AudioContext (Node probes)
+    const { ctx, input } = bus;
     this.#ctx = ctx;
 
+    // limiter (feature glue) -> constant trim -> engine effects input. The
+    // engine effects group applies the HUD volume/mute; the trim holds unity.
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -15;
     limiter.knee.value = 20;
     limiter.ratio.value = 5;
     limiter.attack.value = 0.003;
     limiter.release.value = 0.22;
-    limiter.connect(ctx.destination);
 
     this.#master = ctx.createGain();
-    this.#master.gain.value = 0;
-    this.#master.connect(limiter);
+    this.#master.gain.value = 1;
+    this.#master.connect(input);
+    limiter.connect(this.#master);
 
     this.#dry = ctx.createGain();
     this.#dry.gain.value = 1;
-    this.#dry.connect(this.#master);
+    this.#dry.connect(limiter);
 
     // A compact, dark stereo room glues dry procedural layers together without
     // turning close footsteps into a cavern. Voices opt into it with send gains.
@@ -152,7 +126,7 @@ export class GameplaySfxBus {
     convolver.buffer = impulse;
     const roomReturn = ctx.createGain();
     roomReturn.gain.value = 0.65;
-    convolver.connect(roomReturn).connect(this.#master);
+    convolver.connect(roomReturn).connect(limiter);
     this.#room = ctx.createGain();
     this.#room.gain.value = 1;
     this.#room.connect(convolver);

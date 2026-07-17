@@ -12,9 +12,11 @@
  *
  * This module owns the tab's inner HTML plus a controller that maps scroll
  * position → diagram stage, runs one gentle rAF while the tab is open, and wires
- * the clickable toys to a lazily-created AudioContext (closed when you leave the
- * tab, so it never sits on one of the browser's scarce audio slots).
+ * the clickable toys to the app's shared audio engine (its effects group, so the
+ * toys obey the global mute and FX slider like everything else).
  */
+
+import { audioEngine } from "../audio/engine";
 
 const clamp = (x: number, a = 0, b = 1) => Math.min(b, Math.max(a, x));
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -167,26 +169,24 @@ function wavePath(samples: Float32Array, x0: number, x1: number, mid: number, am
 }
 
 /* ------------------------------------------------------------ audio output */
-// One lazily-created context, resumed on the first click (autoplay policy),
-// closed when the tab is left so it doesn't hold a scarce browser audio slot.
+// The toys ride the shared engine's effects group — a toy click is a real
+// gesture, so the bus is unlocked and null only before the very first one.
+// Routing here (rather than an own context) means these clips now obey the
+// global mute and FX slider like the rest of the app.
 
-let actx: AudioContext | null = null;
-function audioCtx(): AudioContext {
-  if (!actx || actx.state === "closed") {
-    actx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-  }
-  if (actx.state === "suspended") void actx.resume();
-  return actx;
-}
 function playChannels(chs: Float32Array[]): void {
-  const ctx = audioCtx();
+  const bus = audioEngine.bus("effects");
+  if (!bus) return; // pre-gesture: silently no-op
+  const { ctx, input } = bus;
   const buf = ctx.createBuffer(chs.length, chs[0].length, SR);
   for (let c = 0; c < chs.length; c++) buf.copyToChannel(chs[c] as Float32Array<ArrayBuffer>, c);
+  // Keep the ctx awake long enough for the whole clip to play through.
+  audioEngine.touch(chs[0].length / SR + 0.1);
   const src = ctx.createBufferSource();
   src.buffer = buf;
   const g = ctx.createGain();
-  g.gain.value = 0.85;
-  src.connect(g).connect(ctx.destination);
+  g.gain.value = 0.85; // per-sound trim
+  src.connect(g).connect(input);
   src.start();
 }
 
@@ -460,22 +460,24 @@ export const SOUNDSCAPE_TAB_HTML = `
       <div class="scrolly-step"><p><strong>It all pours into one small graph.</strong> Beds, wind and
       calls meet at a master bus, through a gentle limiter, out to your speakers — with a reverb send for
       the open-canyon echo of Marin. Walk back into the city and every region reports zero, the master
-      fades, and the whole audio context <em>suspends itself</em>: silent, and free.</p></div>
+      fades, and the engine lets the shared audio context <em>fall asleep</em>: silent, and free.</p></div>
     </div>
   </div>
 
   <section>
     <h3><span class="bts-ic">🎛️</span> One context, kept honest</h3>
     <p>There's a quiet engineering reason the whole thing lives in a single audio graph. A browser only
-    hands out a handful of audio contexts before it starts refusing, and this game already spends several
-    of them — the vehicle hum, the fireworks, the park dogs, proximity voice chat. So the nature engine
-    deliberately does <em>not</em> spin up its own listener rig; it borrows one <code>AudioContext</code>,
-    routes everything through one master bus and one soft limiter, and — crucially — parks the entire
-    context the moment you leave every nature region. Out on Market Street it costs nothing at all. Step
-    back onto a park lawn and it wakes, ramps its presence up over a second or two, and the birds return.
-    Efficiency here isn't a nice-to-have; it's the thing that lets the soundscape exist at all without
-    stealing frames from the renderer. (The little toys in this chapter play by the same rule — they open
-    their own context on your first click, and close it again the moment you leave this tab.)</p>
+    hands out a handful of audio contexts before it starts refusing — so this game runs exactly
+    <em>one</em>, shared by everything that makes noise: the vehicle hum, the fireworks, the park dogs,
+    the buskers, proximity voice chat, and every bird in this chapter. A small audio engine owns that
+    <code>AudioContext</code> and splits it into four mixing groups (music, effects, world, voice — the
+    HUD sliders map onto them one to one); each feature plugs its own little synth graph into a group and
+    never touches the context itself. Crucially, the engine parks the whole context the moment nothing
+    holds it awake. Out on Market Street the soundscape costs nothing at all. Step back onto a park lawn
+    and it wakes, ramps its presence up over a second or two, and the birds return. Efficiency here isn't
+    a nice-to-have; it's the thing that lets the soundscape exist at all without stealing frames from the
+    renderer. (The little toys in this chapter play by the same rule — their chirps ride the shared
+    context's effects group, same as a footstep.)</p>
   </section>
 
   <section>
@@ -769,9 +771,8 @@ export function mountSoundscape(pane: HTMLElement, scrollEl: HTMLElement) {
       running = false;
       scrollEl.removeEventListener("scroll", onScroll);
       cancelAnimationFrame(raf);
-      // release the audio slot — the toys re-open a context on the next click
-      if (actx && actx.state !== "closed") void actx.close();
-      actx = null;
+      // The shared engine owns the context; nothing to tear down here. Its idle
+      // policy suspends the ctx once the last toy tail has played out.
     }
   };
 }

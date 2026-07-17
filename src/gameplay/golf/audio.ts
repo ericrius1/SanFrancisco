@@ -1,10 +1,11 @@
 import { effectsAudioLevel } from "../../core/audioSettings";
+import { audioEngine } from "../../audio/engine";
 
 /**
  * Golf one-shots, all synthesized (no assets): the downswing whoosh, the
  * strike "thwack", a soft turf thud on landing and the cup rattle when a putt
- * drops. A lazy AudioContext opened on first use — the swing itself is a user
- * gesture, so resume() always succeeds.
+ * drops. Rides the shared engine's effects bus — the swing itself is a user
+ * gesture, so the bus is unlocked by the time these fire.
  */
 export class GolfAudio {
   #ctx: AudioContext | null = null;
@@ -13,27 +14,30 @@ export class GolfAudio {
 
   #ensure(): AudioContext | null {
     if (this.#ctx) return this.#ctx;
-    if (typeof AudioContext === "undefined") return null;
-    this.#ctx = new AudioContext();
-    const limiter = this.#ctx.createDynamicsCompressor();
+    const bus = audioEngine.bus("effects");
+    if (!bus) return null; // null until first gesture — retry next call
+    const { ctx, input } = bus;
+    this.#ctx = ctx;
+    const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -12;
     limiter.ratio.value = 5;
-    limiter.connect(this.#ctx.destination);
-    this.#master = this.#ctx.createGain();
-    this.#master.gain.value = 0.9;
+    limiter.connect(input);
+    this.#master = ctx.createGain();
+    this.#master.gain.value = 0.9; // feature trim; the engine group applies effectsAudioLevel()
     this.#master.connect(limiter);
-    const sr = this.#ctx.sampleRate;
-    this.#noise = this.#ctx.createBuffer(1, sr, sr);
+    const sr = ctx.sampleRate;
+    this.#noise = ctx.createBuffer(1, sr, sr);
     const d = this.#noise.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     return this.#ctx;
   }
 
   #ready(): AudioContext | null {
-    if (effectsAudioLevel() <= 0) return null;
+    if (effectsAudioLevel() <= 0) return null; // cheap early-out gate only, not a gain
     const ctx = this.#ensure();
     if (!ctx || !this.#master || !this.#noise) return null;
-    if (ctx.state === "suspended") void ctx.resume();
+    // One-shots schedule at currentTime; keep the shared ctx alive for the tail.
+    audioEngine.touch(1.5);
     return ctx;
   }
 
@@ -43,7 +47,6 @@ export class GolfAudio {
     const ctx = this.#ready();
     if (!ctx) return;
     const t = ctx.currentTime;
-    const master = effectsAudioLevel();
     const dur = Math.max(0.28, peakIn + 0.16);
 
     const src = ctx.createBufferSource();
@@ -58,7 +61,7 @@ export class GolfAudio {
     bp.frequency.exponentialRampToValueAtTime(500, t + dur);
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime((0.16 + power * 0.3) * master, t + Math.max(0.05, peakIn));
+    g.gain.exponentialRampToValueAtTime(0.16 + power * 0.3, t + Math.max(0.05, peakIn));
     g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
     src.connect(bp).connect(g).connect(this.#master!);
     src.start(t);
@@ -75,9 +78,8 @@ export class GolfAudio {
     const ctx = this.#ready();
     if (!ctx) return;
     const t = ctx.currentTime;
-    const master = effectsAudioLevel();
     const out = ctx.createGain();
-    out.gain.value = master;
+    out.gain.value = 1;
     out.connect(this.#master!);
 
     if (putter) {
@@ -114,9 +116,8 @@ export class GolfAudio {
     if (!ctx) return;
     const k = Math.min(1, speed / 30);
     if (k < 0.12) return;
-    const master = effectsAudioLevel();
     const out = ctx.createGain();
-    out.gain.value = master * 0.5 * k;
+    out.gain.value = 0.5 * k;
     out.connect(this.#master!);
     this.#knock(ctx, out, 220, 0.08, 1);
     this.#tick(ctx, out, 900, 0.03, 0.4);
@@ -126,9 +127,8 @@ export class GolfAudio {
   holed() {
     const ctx = this.#ready();
     if (!ctx) return;
-    const master = effectsAudioLevel();
     const out = ctx.createGain();
-    out.gain.value = master * 0.7;
+    out.gain.value = 0.7;
     out.connect(this.#master!);
     this.#knock(ctx, out, 1350, 0.04, 0.5, 0);
     this.#knock(ctx, out, 1100, 0.05, 0.65, 0.07);
