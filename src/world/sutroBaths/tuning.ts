@@ -5,14 +5,7 @@ import { tunables } from "../../core/persist";
  * so changing the source automatically invalidates incompatible stored values.
  */
 export const SUTRO_BATHS_TUNING = tunables("sutroBaths", {
-  waterEnabled: { v: true, label: "close fluid simulation" },
-  waterRadius: { v: 62, min: 28, max: 180, step: 1, label: "fluid wake radius" },
-  waterPressure: { v: 2.3, min: 0.2, max: 8, step: 0.05, label: "surface pressure" },
-  waterViscosity: { v: 2.75, min: 0, max: 8, step: 0.05, label: "viscosity" },
-  waterDamping: { v: 1.35, min: 0.05, max: 4, step: 0.01, label: "damping" },
-  waterSubsteps: { v: 1, min: 1, max: 4, step: 1, label: "solver substeps" },
-  waterRelief: { v: 0.72, min: 0, max: 2.5, step: 0.02, label: "surface relief" },
-  waterNormal: { v: 1.05, min: 0, max: 5, step: 0.05, label: "surface normal" },
+  waterEnabled: { v: true, label: "visual pool water" },
   waterRipple: { v: 0.018, min: 0, max: 0.08, step: 0.001, label: "fine ripple" },
   waterClarity: { v: 1.5, min: 0.4, max: 6, step: 0.05, label: "clarity depth (m)" },
   waterRefraction: { v: 0.5, min: 0, max: 1.6, step: 0.01, label: "refraction bend" },
@@ -34,17 +27,10 @@ export const SUTRO_BATHS_TUNING = tunables("sutroBaths", {
 
 export const SUTRO_TUNING_FOLDERS = [
   {
-    title: "close-range water",
+    title: "lightweight visual water",
     expanded: true,
     keys: [
       "waterEnabled",
-      "waterRadius",
-      "waterPressure",
-      "waterViscosity",
-      "waterDamping",
-      "waterSubsteps",
-      "waterRelief",
-      "waterNormal",
       "waterRipple"
     ]
   },

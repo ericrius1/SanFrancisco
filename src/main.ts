@@ -3518,29 +3518,6 @@ async function boot() {
     refreshOptionalSiteDebug();
   };
 
-  // Remote bathers rippling the Sutro pools: locatorTargets() gives world x/y/z
-  // but no velocity, so difference positions frame-to-frame into a reused
-  // scratch array (only touched while the player is near the baths water).
-  const sutroRemotePrev = new Map<number, { x: number; z: number; t: number }>();
-  const sutroRemoteScratch: { x: number; y: number; z: number; vx: number; vz: number }[] = [];
-  const getSutroRemotes = () => {
-    sutroRemoteScratch.length = 0;
-    const now = performance.now();
-    for (const r of remotes.locatorTargets()) {
-      const prev = sutroRemotePrev.get(r.id);
-      let vx = 0;
-      let vz = 0;
-      if (prev) {
-        const dtS = Math.max((now - prev.t) / 1000, 1e-3);
-        vx = (r.x - prev.x) / dtS;
-        vz = (r.z - prev.z) / dtS;
-      }
-      sutroRemotePrev.set(r.id, { x: r.x, z: r.z, t: now });
-      sutroRemoteScratch.push({ x: r.x, y: r.y, z: r.z, vx, vz });
-    }
-    return sutroRemoteScratch;
-  };
-
   const loadWaveOrgan = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { WaveOrgan: LoadedWaveOrgan } = await import("./world/waveOrgan");
     await stage();
@@ -3561,9 +3538,7 @@ async function boot() {
         renderer,
         scene,
         physics,
-        authoredRegions,
-        ballSource: { visitFreeBalls: (visitor) => fetchBall?.visitFreeBalls(visitor) },
-        getRemotes: getSutroRemotes
+        authoredRegions
       });
       // The geographic tile already owns and displays the period hall. Warm only
       // its optional living layer (foliage, bathers and nearby effects) here.
@@ -5943,15 +5918,15 @@ async function boot() {
     }
     updateSurfPresentation(frameDt);
     const waveEnergy = oceanWaveEnergyAt(map, player.position.x, player.position.z, elapsed);
-    // The restored glasshouse sits just inland of the sampled shoreline, but
-    // period accounts describe the Pacific as audible throughout the hall.
-    // Preserve the generic coast model and add a local surf floor that fades
-    // naturally across the Point Lobos approach.
-    const sutroSurf = THREE.MathUtils.clamp(1 - distanceToSutroBaths(player.position.x, player.position.z) / 170, 0, 1);
-    if (sutroSurf > 0) {
-      waveEnergy.level = Math.max(waveEnergy.level, sutroSurf * 0.5);
-      waveEnergy.breaking = Math.max(waveEnergy.breaking, sutroSurf * 0.68);
-    }
+    // Keep the hall's wind/steam ambience, but remove its artificial
+    // noise-heavy surf bed. Generic shoreline wash returns outside the site.
+    const sutroWaveMix = THREE.MathUtils.smoothstep(
+      distanceToSutroBaths(player.position.x, player.position.z),
+      80,
+      190
+    );
+    waveEnergy.level *= sutroWaveMix;
+    waveEnergy.breaking *= sutroWaveMix;
     waveAudio.update(frameDt, waveEnergy);
     // Explicit E/B is the normal exit. This far-away guard only repairs external
     // teleports that bypass NavigationController; the ride itself never beaches.
@@ -6198,7 +6173,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite, siteFoliage,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite, siteFoliage,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

@@ -194,10 +194,8 @@ export function sutroEntryWalkSurfaceY(x: number, z: number): number | null {
 
   // The road terrain is explicitly handed to a coherent pavilion floor.
   if (insideRect(local.x, local.z, 38.25, 55.05, 56.45, 69.75)) return 31.18;
-  if (insideRect(local.x, local.z, 31.55, 39.45, 66.75, 72.25)) return 31.18;
-  // Explicit threshold across the historic east wall opening. This connects
-  // the promenade to the first switchback without a sub-frame collision seam.
-  if (insideRect(local.x, local.z, 37.5, 39.6, 66.8, 69.6)) return 31.18;
+  // Wide foyer spans the full empty portal and overlaps the first stair tread.
+  if (insideRect(local.x, local.z, 32.05, 39.65, 58.45, 69.65)) return 31.18;
   const roadY = stairSurfaceY(local.z, local.x, ROAD_APPROACH_STAIR);
   if (roadY !== null) return roadY;
 

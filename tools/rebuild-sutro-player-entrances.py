@@ -295,11 +295,18 @@ def main():
         "sutro_baths_classical_portal_doors",
         "sutro_baths_player_entrances_v2",
         "sutro_baths_player_entrances_v3",
+        "sutro_baths_player_entrances_v4",
     ):
         delete_hierarchy(bpy.data.objects.get(root_name))
     # This was a solid wall directly behind the decorative portal columns.
     delete_named("Mesh_49")
     delete_named("Mesh_49.001")
+    # Four retained pavilion columns stood directly across the arrival runner
+    # at local x=46.5. They made the nominal portal look closed and forced a
+    # slalom immediately after spawning, so the player-first entrance removes
+    # the complete obstructing row.
+    for name in ("Mesh_51", "Mesh_51.001", "Mesh_51.002", "Mesh_51.003"):
+        delete_named(name)
     # The original east hall wall closed across the road-to-switchback
     # threshold. Rebuild only its southern remainder after the entrance opens.
     delete_named("Mesh_37.001")
@@ -334,8 +341,8 @@ def main():
         arrival.location = local_to_blender(45.6, 63.1, 31.26)
         arrival.rotation_euler[2] = 1.942
 
-    root = visual_empty(visual, "sutro_baths_player_entrances_v3")
-    root["sf_design"] = "terrain-clear-road-pavilion-switchback-and-ocean-gate"
+    root = visual_empty(visual, "sutro_baths_player_entrances_v4")
+    root["sf_design"] = "open-grounded-road-pavilion-switchback-and-ocean-gate"
 
     terracotta = materials["sutro_terracotta"]
     iron_dark = materials["sutro_iron_dark"]
@@ -347,17 +354,17 @@ def main():
     window_glass = materials["sutro_window_glass"]
 
     # ROAD PAVILION ---------------------------------------------------------
-    road = visual_empty(visual, "sutro_baths_road_pavilion_v3", root)
+    road = visual_empty(visual, "sutro_baths_road_pavilion_v4", root)
     # One crisp plaza passes through the historic columns and physically meets
     # the roof hall. The prior natural-terrain overlap was the grey wedge that
     # hid the player and made the facade appear detached.
     add_landing(visual, colliders, road, "road_promenade", 46.65, 63.1, 31.18, 15.9, 12.4, plaster, 30.0)
-    add_landing(visual, colliders, road, "road_turnaround", 35.5, 69.5, 31.18, 7.0, 4.6, terracotta, GROUND_Y)
-    # A broad overlapping threshold removes the exact-edge seam between the
-    # road slab and first landing. The red runner makes the descent legible as
-    # soon as the player enters the pavilion.
-    add_landing(visual, colliders, road, "road_entry_threshold", 39.05, 68.2, 31.18, 1.7, 2.6, terracotta, 30.0)
-    add_box(visual, road, "road_entry_runner", 42.45, 68.2, 31.24, 7.2, 1.15, 0.08, terracotta)
+    # One broad, rectangular foyer crosses the east wall and overlaps the top
+    # switchback tread. It replaces the narrow edge threshold that looked shut
+    # and could drop a capsule through its seams.
+    add_landing(visual, colliders, road, "road_entry_foyer", 35.85, 64.15, 31.18, 6.7, 10.5, terracotta, GROUND_Y)
+    add_box(visual, road, "road_entry_runner_outer", 46.15, 63.1, 31.24, 16.2, 1.6, 0.08, terracotta)
+    add_box(visual, road, "road_entry_runner_inner", 36.1, 63.1, 31.25, 5.4, 1.8, 0.09, terracotta)
     # Preserve the load-bearing wall south of the widened opening. It now ends
     # exactly at the platform edge instead of cutting through the walking line.
     add_box(visual, road, "road_hall_wall_south", 38.4, 72.7, 25.5, 0.7, 6.8, 19.88, plaster_shade)
@@ -370,23 +377,28 @@ def main():
         add_box(visual, road, f"road_approach_step_{index}", x, 63.1, top, 1.04, 9.4, max(0.32, top - 30.0), terracotta)
         add_collider(colliders, f"sutro_collider_120_road_approach_{index}", x, 63.1, top, 1.04, 9.4, 30.0)
 
-    # A finished arcade and balustrade make the platform a deliberate cliff
-    # pavilion rather than a thin slab floating above the bath hall.
+    # Ground the promenade with plain fascia and piers. The former segmented
+    # black-and-white arches floated below this slab and visually overwhelmed
+    # the actual doorway; no decorative arch geometry remains on this approach.
     for side_index, z in enumerate((56.9, 69.3)):
-        add_box(visual, road, f"road_arcade_sill_{side_index}", 46.65, z, 25.4, 15.9, 0.5, 1.0, plaster_shade)
-        for bay_index, center_x in enumerate((41.2, 46.65, 52.1)):
-            add_box(visual, road, f"road_arcade_pier_{side_index}_{bay_index}", center_x - 2.25, z, 30.86, 0.62, 0.62, 6.5, plaster)
-            add_arch(visual, road, f"road_arcade_{side_index}_{bay_index}", center_x, z, 28.0, 2.25, 2.15, 0.30, plaster)
-        add_box(visual, road, f"road_arcade_end_{side_index}", 54.35, z, 30.86, 0.62, 0.62, 6.5, plaster)
+        add_box(visual, road, f"road_platform_fascia_{side_index}", 46.65, z, 30.86, 15.9, 0.72, 5.36, plaster_shade)
+        for pier_index, x in enumerate((39.25, 46.65, 54.05)):
+            add_box(visual, road, f"road_grounded_pier_{side_index}_{pier_index}", x, z, 25.5, 0.9, 0.9, 25.5 - GROUND_Y, plaster)
+            add_box(visual, road, f"road_grounded_pier_cap_{side_index}_{pier_index}", x, z, 26.0, 1.2, 1.2, 0.38, brass)
         add_beam(visual, road, f"road_balustrade_top_{side_index}", (38.9, z, 32.35), (54.6, z, 32.35), 0.16, iron_dark)
         for post_index in range(12):
             x = 39.1 + post_index * 1.38
             add_beam(visual, road, f"road_balustrade_post_{side_index}_{post_index}", (x, z, 31.18), (x, z, 32.36), 0.10, iron_dark)
 
-    # The retained 1890s pavilion has three bays. Two wrought-iron leaves are
-    # visibly held open against the outside walls; there is no hidden blocker.
-    add_open_gate(visual, road, "road_gate_north", 48.35, 58.72, 31.2, 36.9, 3.0, iron_dark)
-    add_open_gate(visual, road, "road_gate_south", 48.35, 67.48, 31.2, 36.9, 3.0, iron_dark)
+    # A single oversized rectangular portal frames a genuinely empty opening.
+    # There are deliberately no gate leaves or rail segments in its clear span.
+    portal_center_z = 63.1
+    portal_half_width = 4.55
+    portal_top = 37.72
+    for side_index, z in enumerate((portal_center_z - portal_half_width, portal_center_z + portal_half_width)):
+        add_box(visual, road, f"road_main_portal_jamb_{side_index}", 38.28, z, portal_top, 0.9, 0.92, portal_top - 31.18, plaster)
+    add_box(visual, road, "road_main_portal_lintel", 38.28, portal_center_z, portal_top, 0.9, portal_half_width * 2 + 0.92, 0.82, terracotta)
+    add_box(visual, road, "road_main_entrance_plaque", 38.05, portal_center_z, 38.55, 0.3, 6.9, 0.74, brass)
     add_box(visual, road, "road_portal_sign", 48.58, 63.1, 38.35, 0.24, 7.1, 1.15, terracotta)
     # Brass sunrise reads as a welcoming landmark from a moving car.
     for index in range(9):
@@ -409,7 +421,7 @@ def main():
             add_beam(visual, road, f"road_vestibule_post_{int(z * 10)}_{int(x * 10)}", (x, z, 31.18), (x, z, 38.98), 0.18, iron)
 
     # GRAND SWITCHBACK -----------------------------------------------------
-    switchback = visual_empty(visual, "sutro_baths_grand_switchback_v3", root)
+    switchback = visual_empty(visual, "sutro_baths_grand_switchback_v4", root)
     for index, (x, high_z, low_z) in enumerate(MAIN_FLIGHTS):
         add_stair_flight(
             visual, colliders, switchback, f"main_flight_{index + 1}",
@@ -442,7 +454,7 @@ def main():
         add_lantern(visual, switchback, f"landing_lantern_{index}", x, z, y + 0.25, iron_dark, lamp)
 
     # BEACH / OCEAN WINDOW GATE -------------------------------------------
-    beach = visual_empty(visual, "sutro_baths_beach_gate_v3", root)
+    beach = visual_empty(visual, "sutro_baths_beach_gate_v4", root)
     # Rebuild the removed low mullion as two non-overlapping segments.
     add_beam(visual, beach, "ocean_low_mullion_north", (-38.35, -76.1, 6.82), (-38.35, 28.54, 6.82), 0.24, iron)
     add_beam(visual, beach, "ocean_low_mullion_south", (-38.35, 38.05, 6.82), (-38.35, 76.1, 6.82), 0.24, iron)
@@ -520,8 +532,8 @@ def main():
     add_collider(colliders, "sutro_collider_019a_ocean_wall_north", -38.4, -23.78, 25.5, 0.7, 104.64, 5.62)
     add_collider(colliders, "sutro_collider_019b_ocean_wall_south", -38.4, 57.075, 25.5, 0.7, 38.05, 5.62)
 
-    bpy.context.scene["sf_sutro_entrance_revision"] = 4
-    bpy.context.scene["sf_sutro_entry_routes"] = "terrain-clear-road-pavilion,grand-switchback,ocean-gate"
+    bpy.context.scene["sf_sutro_entrance_revision"] = 6
+    bpy.context.scene["sf_sutro_entry_routes"] = "open-grounded-road-pavilion,grand-switchback,ocean-gate"
     bpy.context.view_layer.update()
     bpy.ops.wm.save_as_mainfile(filepath=expected)
 
