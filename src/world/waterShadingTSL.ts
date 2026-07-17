@@ -18,8 +18,7 @@ import {
   smoothstep,
   vec2,
   vec3,
-  viewportDepthTexture,
-  viewportLinearDepth
+  viewportDepthTexture
 } from "three/tsl";
 
 /**
@@ -129,14 +128,21 @@ export function beerLambertWater(options: {
 // (depth32float) and makes every copy fail with a WebGPU validation error. One
 // shared float-typed destination keeps the copy format-identical.
 let sharedFloatDepth: DepthTexture | null = null;
+let sharedFloatDepthNode: N = null;
 
 function floatViewportDepthTexture(uv: N): N {
   if (!sharedFloatDepth) {
-    sharedFloatDepth = new DepthTexture(1, 1);
-    sharedFloatDepth.type = FloatType;
+    sharedFloatDepth = new DepthTexture(1, 1, FloatType);
+    // Build one viewport-copy owner and sample that same copied texture at all
+    // UVs. Separate viewportDepthTexture() nodes can otherwise allocate a
+    // second, default depth24plus destination during material composition.
+    sharedFloatDepthNode = (viewportDepthTexture as unknown as (...args: unknown[]) => N)(
+      screenUV,
+      null,
+      sharedFloatDepth
+    );
   }
-  // The runtime accepts a third depth-texture argument; the published TS types lag it.
-  return (viewportDepthTexture as unknown as (...args: unknown[]) => N)(uv, null, sharedFloatDepth);
+  return sharedFloatDepthNode.sample(uv);
 }
 
 /**
@@ -147,7 +153,7 @@ function floatViewportDepthTexture(uv: N): N {
  */
 export function safeRefractionUV(distortedUV: N): N {
   const sampledIsBehind = linearDepth(floatViewportDepthTexture(distortedUV))
-    .greaterThanEqual(viewportLinearDepth);
+    .greaterThanEqual(linearDepth(floatViewportDepthTexture(screenUV)));
   return sampledIsBehind.select(distortedUV, screenUV);
 }
 

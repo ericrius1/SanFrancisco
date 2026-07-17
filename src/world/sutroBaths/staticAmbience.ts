@@ -21,6 +21,7 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
   const lights: THREE.PointLight[] = [];
   const glass = new Set<THREE.MeshStandardMaterial>();
   let requestedLampIntensity = 4.6;
+  let requestedGlassOpacity = 0.162;
 
   const lampY = SUTRO_BATHS.deckY + 9.95;
   let index = 0;
@@ -48,8 +49,13 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
         if (!(candidate instanceof THREE.MeshStandardMaterial)) continue;
         if (candidate.name === "sutro_roof_glass" || candidate.name === "sutro_window_glass") {
           glass.add(candidate);
+          // Keep the huge roof airy and visually continuous. The shared,
+          // correctly typed viewport-depth path in waterShadingTSL now removes
+          // the actual refraction corruption without stippling every pane.
           candidate.transparent = true;
           candidate.depthWrite = false;
+          candidate.alphaHash = false;
+          candidate.opacity = requestedGlassOpacity;
           candidate.needsUpdate = true;
         }
       }
@@ -60,6 +66,8 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
   const applyTuning = (values: SutroStaticAmbienceTuning) => {
     requestedLampIntensity = Math.max(0, values.lampIntensity);
     const opacity = THREE.MathUtils.clamp(values.glassOpacity * 1.35, 0.05, 0.64);
+    if (Math.abs(opacity - requestedGlassOpacity) < 1e-4) return;
+    requestedGlassOpacity = opacity;
     for (const material of glass) {
       material.opacity = opacity;
     }

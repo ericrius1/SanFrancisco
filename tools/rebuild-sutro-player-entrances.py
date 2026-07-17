@@ -215,6 +215,18 @@ def add_stair_flight(
             x, z, top, width, tread + 0.04, bottom,
         )
 
+    # Continuous masonry stringers visually carry every tread into its landing.
+    # They sit just below the walking slabs and are visual-only, avoiding extra
+    # snag points while removing the former "floating staircase" silhouette.
+    for stringer_index, side in enumerate((-1, 1)):
+        stringer_x = x + side * width * 0.31
+        add_beam(
+            collection, parent, f"{name}_stringer_{stringer_index}",
+            (stringer_x, high_z, high_y - 0.45),
+            (stringer_x, low_z, low_y - 0.45),
+            0.34, material,
+        )
+
     # Two uninterrupted handrails and low-frequency posts make the route read
     # from the road without creating dozens of collision snag points.
     for side_index, side in enumerate((-1, 1)):
@@ -288,20 +300,23 @@ def main():
     # This was a solid wall directly behind the decorative portal columns.
     delete_named("Mesh_49")
     delete_named("Mesh_49.001")
+    # The original east hall wall closed across the road-to-switchback
+    # threshold. Rebuild only its southern remainder after the entrance opens.
+    delete_named("Mesh_37.001")
 
     # Open the z=33.29 ocean-window bay: remove its glass and bench, then split
     # the low horizontal mullion around the clear 9 m doorway.
     for name in ("Mesh_21.011", "Mesh_24.020", "Mesh_24.021", "Mesh_24.022", "Mesh_24.023", "Mesh_22.017"):
         delete_named(name)
 
-    # Old entry treads owned 036..067. The original ocean wall collider 019 is
-    # replaced by two segments around the new beach gate.
+    # Old entry treads owned 036..067. Original wall colliders 019 and 022 are
+    # replaced by split segments around the ocean and road entrances.
     for obj in list(colliders.objects):
         if obj.name.startswith("sutro_collider_100_") or obj.name.startswith("sutro_collider_110_") or obj.name.startswith("sutro_collider_200_"):
             bpy.data.objects.remove(obj, do_unlink=True)
             continue
         tail = obj.name.removeprefix("sutro_collider_")
-        if tail[:3].isdigit() and (int(tail[:3]) >= 36 or int(tail[:3]) == 19):
+        if tail[:3].isdigit() and (int(tail[:3]) >= 36 or int(tail[:3]) in (19, 22)):
             bpy.data.objects.remove(obj, do_unlink=True)
 
     # Each approach gets a terrain aperture and its own local ground authority.
@@ -338,6 +353,15 @@ def main():
     # hid the player and made the facade appear detached.
     add_landing(visual, colliders, road, "road_promenade", 46.65, 63.1, 31.18, 15.9, 12.4, plaster, 30.0)
     add_landing(visual, colliders, road, "road_turnaround", 35.5, 69.5, 31.18, 7.0, 4.6, terracotta, GROUND_Y)
+    # A broad overlapping threshold removes the exact-edge seam between the
+    # road slab and first landing. The red runner makes the descent legible as
+    # soon as the player enters the pavilion.
+    add_landing(visual, colliders, road, "road_entry_threshold", 39.05, 68.2, 31.18, 1.7, 2.6, terracotta, 30.0)
+    add_box(visual, road, "road_entry_runner", 42.45, 68.2, 31.24, 7.2, 1.15, 0.08, terracotta)
+    # Preserve the load-bearing wall south of the widened opening. It now ends
+    # exactly at the platform edge instead of cutting through the walking line.
+    add_box(visual, road, "road_hall_wall_south", 38.4, 72.7, 25.5, 0.7, 6.8, 19.88, plaster_shade)
+    add_collider(colliders, "sutro_collider_022_road_hall_wall_south", 38.4, 72.7, 25.5, 0.7, 6.8, DECK_Y)
 
     # Shallow ceremonial steps meet the surveyed road grade at the outer edge.
     approach_tops = (31.44, 31.70, 31.96, 32.22, 32.48)
@@ -397,6 +421,14 @@ def main():
     add_landing(visual, colliders, switchback, "main_landing_2", 26.75, 70.7, MAIN_LEVELS[2], 9.1, 4.2, terracotta)
     add_landing(visual, colliders, switchback, "main_landing_3", 21.25, 47.7, MAIN_LEVELS[3], 9.1, 4.2, terracotta)
     add_landing(visual, colliders, switchback, "main_deck_arrival", 22.3, 71.0, 5.66, 11.2, 4.8, terracotta)
+
+    for name, x, z, top, sx, sz in (
+        ("main_landing_1", 32.25, 47.7, MAIN_LEVELS[1], 9.1, 4.2),
+        ("main_landing_2", 26.75, 70.7, MAIN_LEVELS[2], 9.1, 4.2),
+        ("main_landing_3", 21.25, 47.7, MAIN_LEVELS[3], 9.1, 4.2),
+        ("main_deck_arrival", 22.3, 71.0, 5.66, 11.2, 4.8),
+    ):
+        add_box(visual, switchback, f"{name}_fascia", x, z, top - 0.28, sx, sz, 0.72, plaster_shade)
 
     # Tall plaster/iron supports turn the stair into an intentional piece of
     # bathhouse architecture instead of floating treads.
@@ -488,7 +520,7 @@ def main():
     add_collider(colliders, "sutro_collider_019a_ocean_wall_north", -38.4, -23.78, 25.5, 0.7, 104.64, 5.62)
     add_collider(colliders, "sutro_collider_019b_ocean_wall_south", -38.4, 57.075, 25.5, 0.7, 38.05, 5.62)
 
-    bpy.context.scene["sf_sutro_entrance_revision"] = 3
+    bpy.context.scene["sf_sutro_entrance_revision"] = 4
     bpy.context.scene["sf_sutro_entry_routes"] = "terrain-clear-road-pavilion,grand-switchback,ocean-gate"
     bpy.context.view_layer.update()
     bpy.ops.wm.save_as_mainfile(filepath=expected)

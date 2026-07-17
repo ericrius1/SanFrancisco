@@ -460,6 +460,11 @@ async function main() {
       activationState.debug.steam
     );
     expect(
+      "activation-authored-swimmers-drive-water",
+      activationState.debug.interactions?.ambientWakes > 0,
+      activationState.debug.interactions
+    );
+    expect(
       "activation-canvas-has-display-and-buffer",
       activationState.canvas.cssWidth > 0 &&
         activationState.canvas.cssHeight > 0 &&
@@ -491,12 +496,14 @@ async function main() {
       }));
     };
     const roadRecovery = await forceBelowFloor(localPoint(44.25, 29.58, 63.1));
+    const thresholdRecovery = await forceBelowFloor(localPoint(38.8, 29.58, 68.2));
     const switchbackRecovery = await forceBelowFloor(localPoint(29.5, 19.995, 59.2));
     const beachRecovery = await forceBelowFloor(localPoint(-48, 2.58, 33.29));
     const deckRecovery = await forceBelowFloor(localPoint(-7, 4.12, 0));
     const basinRecovery = await forceBelowFloor(localPoint(-20, 1.12, 8));
     const collisionRecovery = {
       road: roadRecovery,
+      threshold: thresholdRecovery,
       switchback: switchbackRecovery,
       beach: beachRecovery,
       deck: deckRecovery,
@@ -505,6 +512,11 @@ async function main() {
     expect(
       "activation-road-entrance-fallthrough-recovers",
       Math.abs(roadRecovery.y - (31.18 + 0.92)) < 0.12,
+      collisionRecovery
+    );
+    expect(
+      "activation-road-threshold-fallthrough-recovers",
+      Math.abs(thresholdRecovery.y - (31.18 + 0.92)) < 0.12,
       collisionRecovery
     );
     expect(
@@ -658,6 +670,36 @@ async function main() {
       animation
     );
 
+    const frameTiming = await page.evaluate(() => new Promise((resolve) => {
+      const samples = [];
+      let last = performance.now();
+      const frame = (now) => {
+        const delta = now - last;
+        last = now;
+        if (delta < 250) samples.push(delta);
+        if (samples.length < 180) {
+          requestAnimationFrame(frame);
+          return;
+        }
+        const sorted = [...samples].sort((a, b) => a - b);
+        const meanMs = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+        resolve({
+          samples: samples.length,
+          meanMs,
+          p50Ms: sorted[Math.floor(sorted.length * 0.5)],
+          p95Ms: sorted[Math.floor(sorted.length * 0.95)],
+          p99Ms: sorted[Math.floor(sorted.length * 0.99)],
+          fps: 1000 / meanMs
+        });
+      };
+      requestAnimationFrame(frame);
+    }));
+    expect(
+      "runtime-interior-frame-pacing-bounded",
+      frameTiming.samples === 180 && frameTiming.p95Ms < 80,
+      frameTiming
+    );
+
     const gpuPattern = /WebGPU|GPUValidation|WGSL|storage buffer|compute pipeline|bind group/i;
     const gpuErrors = [
       ...pageErrors.filter((error) => gpuPattern.test(error.message)),
@@ -726,6 +768,7 @@ async function main() {
         }
       },
       animation,
+      frameTiming,
       renderer: activationState.renderer,
       screenshots: screenshotEvidence,
       pageErrors,
