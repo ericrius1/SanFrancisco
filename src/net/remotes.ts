@@ -706,7 +706,7 @@ export class RemotePlayers {
     }
     const proto = this.#protos[mode]!;
     const g = proto.clone(true);
-    if (mode === "plane" || mode === "speedboat") {
+    if (mode === "plane" || mode === "boat" || mode === "speedboat") {
       const c = proto.userData.cockpit as Cockpit | undefined;
       if (c && !c.hide) {
         const rig = buildRig(a.avatar);
@@ -890,7 +890,7 @@ export class RemotePlayers {
       if (body) animateScooter(body, dt, a.speed, 0, a.speed > 34);
     } else if (a.mode === "drive") {
       poseDrive(rig, 0, a.animT, false);
-    } else if (a.mode === "plane") {
+    } else if (a.mode === "plane" || a.mode === "boat" || a.mode === "speedboat") {
       poseDrive(rig, 0, a.animT, true);
     } else if (a.mode === "bird") {
       const body = a.bodies.bird;

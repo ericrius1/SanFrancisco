@@ -432,8 +432,9 @@ export class Player {
     this.#helmRig = buildRig(this.#avatar);
     this.#helmWheel = buildSteeringWheel();
     const boatDeck = (this.meshes.boat.userData.sail as BoatSailRig).heel;
-    this.#helmRig.group.position.set(0, 0.5, 2.26);
-    this.#helmWheel.group.position.set(0, 0.61, 1.72);
+    const boatCockpit = this.meshes.boat.userData.cockpit as Cockpit;
+    this.#helmRig.group.position.set(...boatCockpit.seat);
+    this.#helmWheel.group.position.set(...boatCockpit.wheel!);
     boatDeck.add(this.#helmRig.group, this.#helmWheel.group);
     // speedboat helmsman at the open console (cockpit anchors on the mesh)
     this.#speedRig = buildRig(this.#avatar);
