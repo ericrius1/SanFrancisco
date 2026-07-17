@@ -490,7 +490,11 @@ export class Player {
   /** Hide only the local walk embodiment once the camera reaches the FPS eye. */
   setFirstPersonView(active: boolean) {
     this.#firstPersonView = active;
-    this.meshes.walk.visible = !active && !this.#externalEmbodimentHidden;
+    // Chase refreshes this flag every frame in every travel mode. Never let
+    // that camera-only update resurrect the parked walk rig after a vehicle
+    // switch; embodiment ownership still belongs to the active player mode.
+    this.meshes.walk.visible =
+      this.mode === "walk" && !active && !this.#externalEmbodimentHidden;
   }
 
   /** Let an in-world activity rig embody the local player without moving the camera target. */
