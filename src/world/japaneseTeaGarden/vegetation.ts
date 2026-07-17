@@ -271,14 +271,6 @@ export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVeget
   const landmarks = new THREE.Group();
   landmarks.name = "japanese_tea_garden_persistent_landmarks";
   const planting = collectTeaGardenPlanting(map);
-  const trees = createAuthoredTreePatch(TREE_ARCHETYPES, planting.trees, {
-    name: "japanese_tea_garden_trees",
-    chunkSize: 64,
-    visibleDistance: 920,
-    nearRadius: 58,
-    nearExitRadius: 68,
-    nearMax: 24
-  });
   const shrubPlacements: AuthoredShrubPlacement[] = planting.shrubs.map((shrub, index) => ({
     x: shrub.x,
     y: shrub.y,
@@ -286,8 +278,11 @@ export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVeget
     yaw: shrub.yaw,
     scale: shrub.scale,
     palette: SHRUB_PALETTE_INDEX[shrub.palette],
-    profile: shrub.profile === "clipped" ? "hedge" : "azalea",
-    tint: hash(Math.round(shrub.x * 10), Math.round(shrub.z * 10), 1301 + index)
+    profile: shrub.profile === "clipped" ? "tea-hedge" : "tea-azalea",
+    tint: hash(Math.round(shrub.x * 10), Math.round(shrub.z * 10), 1301 + index),
+    scaleX: shrub.profile === "clipped" ? 1.08 + hash(index, 17, 1319) * 0.18 : 0.88 + hash(index, 19, 1321) * 0.28,
+    scaleY: shrub.profile === "clipped" ? 0.76 + hash(index, 23, 1327) * 0.12 : 0.84 + hash(index, 29, 1329) * 0.22,
+    scaleZ: 0.86 + hash(index, 31, 1331) * 0.3
   }));
   const shrubs = createAuthoredShrubPatch(shrubPlacements, {
     name: "japanese_tea_garden_shrubs",
@@ -295,39 +290,61 @@ export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVeget
   });
   const grass = createGrass(map);
   const rocks = createRocks(map);
-  plants.add(trees.group, shrubs.group, grass.group);
+  plants.add(shrubs.group, grass.group);
   landmarks.add(rocks.group, createBuddha(map));
   group.add(plants, landmarks);
   let foliageVisible = true;
   let treesDeferred = false;
   let treesPrepared = false;
   let treePreparation: Promise<void> | null = null;
+  let trees: ReturnType<typeof createAuthoredTreePatch> | null = null;
+  let disposed = false;
+
+  const ensureTrees = () => {
+    if (trees) return trees;
+    trees = createAuthoredTreePatch(TREE_ARCHETYPES, planting.trees, {
+      name: "japanese_tea_garden_trees",
+      chunkSize: 64,
+      visibleDistance: 920,
+      nearRadius: 58,
+      nearExitRadius: 68,
+      nearMax: 24,
+      // Tea Garden-only opt-in: retain the shared opaque proxy path, but use a
+      // clustered crown silhouette instead of the conspicuous single poly mass.
+      shadowProxyShape: "organic-lobes"
+    });
+    return trees;
+  };
 
   const syncTreeVisibility = () => {
-    trees.group.visible = foliageVisible && (!treesDeferred || treesPrepared);
+    if (trees) trees.group.visible = foliageVisible && (!treesDeferred || treesPrepared);
   };
 
   return {
     group,
     grassGroup: grass.group,
-    ready: trees.ready,
+    // Shrubs, grass and landmarks are synchronous. Native trees own their
+    // explicit optional ready gate in prepareTrees(), so this essential-ready
+    // promise never starts their workers or media requests.
+    ready: Promise.resolve(),
     deferTrees() {
       if (treesPrepared) return;
       treesDeferred = true;
       syncTreeVisibility();
     },
     prepareTrees(prepare) {
+      if (disposed) return Promise.resolve();
       if (treesPrepared) return Promise.resolve();
       if (treePreparation) return treePreparation;
       treePreparation = (async () => {
-        await trees.ready;
-        const parent = trees.group.parent;
-        trees.group.removeFromParent();
-        trees.group.visible = true;
+        const treePatch = ensureTrees();
+        await treePatch.ready;
+        if (disposed) return;
+        treePatch.group.visible = true;
         try {
-          await prepare(trees.group);
+          await prepare(treePatch.group);
         } finally {
-          parent?.add(trees.group);
+          if (!disposed) plants.add(treePatch.group);
           treesPrepared = true;
           syncTreeVisibility();
         }
@@ -340,10 +357,12 @@ export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVeget
       syncTreeVisibility();
     },
     update(focus) {
-      trees.update(focus);
+      trees?.update(focus);
     },
     dispose() {
-      trees.dispose();
+      if (disposed) return;
+      disposed = true;
+      trees?.dispose();
       shrubs.dispose();
       const geometries = new Set<THREE.BufferGeometry>();
       const materials = new Set<THREE.Material>();

@@ -7,7 +7,7 @@ import type { WorldMap } from "../world/heightmap";
 import { findOpenSpawn } from "../world/spawn";
 import { isOceanBeachSurfApproach } from "../vehicles/surf/entry";
 import type { EmbodimentController } from "./player/embodimentController";
-import type { WorldArrivalCoordinator } from "./worldArrival";
+import type { ResolvedWorldArrival, WorldArrivalCoordinator } from "./worldArrival";
 
 type AuthoredArrivalPose = {
   x: number;
@@ -114,7 +114,7 @@ export class NavigationController {
         this.#hud.message(spot.label, 2.2);
         this.onTeleported();
       },
-      onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+      onVisualBlocked: () => this.#hud.message("This place is still loading", 6),
       onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
       onError: () => this.#hud.message("That place could not be restored", 2.2)
     });
@@ -158,7 +158,7 @@ export class NavigationController {
           };
         },
         onCommitted: () => this.onTeleported(),
-        onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+        onVisualBlocked: () => this.#hud.message("This place is still loading", 6),
         onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
         onError: () => this.#hud.message("That mode could not find a safe starting place", 2.2)
       });
@@ -262,10 +262,42 @@ export class NavigationController {
         this.#hud.message(toName ? `Teleported to ${toName}` : "Teleported", 2.4);
         this.onTeleported();
       },
-      onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+      onVisualBlocked: () => this.#hud.message("This place is still loading", 6),
       onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
       onError: (error) => {
         const message = error instanceof Error && error.message.includes("no longer available")
+          ? error.message
+          : "That destination could not be loaded";
+        this.#hud.message(message, 2.2);
+      }
+    });
+  }
+
+  /**
+   * Map teleport whose resolve/commit own the destination (e.g. boarding a
+   * moving world ride). Shares arrival cover, place history, and error UX.
+   */
+  teleportCustom(options: {
+    label: string;
+    resolve: (signal: AbortSignal) => Promise<ResolvedWorldArrival>;
+    /** Pass null when commit already showed the arrival toast. */
+    successMessage?: string | null;
+  }): void {
+    const origin = this.#capture("Previous place");
+    void this.#arrival.arrive({
+      label: options.label,
+      resolve: options.resolve,
+      onCommitted: () => {
+        this.#commitNewPlace(origin, options.label);
+        if (options.successMessage !== null) {
+          this.#hud.message(options.successMessage ?? `Teleported to ${options.label}`, 2.4);
+        }
+        this.onTeleported();
+      },
+      onVisualBlocked: () => this.#hud.message("This place is still loading", 6),
+      onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
+      onError: (error) => {
+        const message = error instanceof Error && error.message
           ? error.message
           : "That destination could not be loaded";
         this.#hud.message(message, 2.2);
@@ -321,7 +353,7 @@ export class NavigationController {
         if (forceWalkLanding) this.#hud.message(`Returned to ${label}`, 2.4);
         this.onTeleported();
       },
-      onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+      onVisualBlocked: () => this.#hud.message("This place is still loading", 6),
       onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
       onError: () => this.#hud.message("That destination could not be loaded", 2.2)
     });

@@ -136,7 +136,7 @@ function fenceFrame(map: WorldMap, piece: FencePiece): FenceFrame {
   };
 }
 
-function registerFenceCollider(physics: Physics, frame: FenceFrame) {
+function registerFenceCollider(physics: Physics, frame: FenceFrame, bodies: number[]) {
   const { x, z, length, quat } = frame;
   const y = frame.y + 0.72;
   const body = physics.world.createBox({
@@ -147,6 +147,7 @@ function registerFenceCollider(physics: Physics, frame: FenceFrame) {
   });
   physics.world.setBodyTransform(body, [x, y, z], quat);
   physics.addQuerySolid(body, { x, y, z, hx: length / 2, hy: 0.72, hz: 0.09, quat });
+  bodies.push(body);
 }
 
 /**
@@ -210,7 +211,7 @@ function makeGateLeaf(length: number, material: THREE.MeshStandardMaterial) {
  * Builds the wood fence visuals AND registers every physics collider (panels
  * plus the closed gate) so the returned group is purely decorative to callers.
  */
-export function makeDogParkFence(map: WorldMap, physics: Physics): THREE.Group {
+export function makeDogParkFence(map: WorldMap, physics: Physics, bodies: number[]): THREE.Group {
   const group = new THREE.Group();
   group.name = "corona_dog_park_fence";
   const pieces = fencePieces();
@@ -275,7 +276,7 @@ export function makeDogParkFence(map: WorldMap, physics: Physics): THREE.Group {
       planks.setColorAt(plankIndex, color);
       plankIndex++;
     }
-    registerFenceCollider(physics, frame);
+    registerFenceCollider(physics, frame, bodies);
   }
 
   for (const mesh of [posts, caps, planks]) {
@@ -294,6 +295,6 @@ export function makeDogParkFence(map: WorldMap, physics: Physics): THREE.Group {
   gate.position.set(gateFrame.x, gateFrame.y, gateFrame.z);
   gate.quaternion.set(gateFrame.quat[0], gateFrame.quat[1], gateFrame.quat[2], gateFrame.quat[3]);
   group.add(posts, caps, planks, gate);
-  registerFenceCollider(physics, gateFrame);
+  registerFenceCollider(physics, gateFrame, bodies);
   return group;
 }

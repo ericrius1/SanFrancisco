@@ -31,6 +31,7 @@ import {
   scooterKey,
   type ScooterConfig
 } from "../vehicles/scooter";
+import { passengerCapacity } from "../vehicles/rideable";
 import type { Cockpit, PlayerMode } from "../player/types";
 import type { GardenRakeMotion, GardenRakeTool } from "../player/gardenRake";
 import { GardenRakePoseController } from "../player/gardenRakePose";
@@ -320,7 +321,8 @@ export class RemotePlayers {
   }
 
   #availablePassengerSeat(driverId: number, mode: PlayerMode): number {
-    const capacity = mode === "bird" ? 2 : 1;
+    const capacity = passengerCapacity(mode);
+    if (!capacity) return 0;
     const used = new Set<number>();
     for (const avatar of this.avatars.values()) {
       if (avatar.ride === driverId && avatar.root.visible) used.add(avatar.rideSeat || 1);
@@ -335,11 +337,11 @@ export class RemotePlayers {
   nearestDriver(
     pos: THREE.Vector3,
     maxDist: number
-  ): { id: number; name: string; mode: "drive" | "scooter" | "bird"; seat: number } | null {
-    let best: { id: number; name: string; mode: "drive" | "scooter" | "bird"; seat: number } | null = null;
+  ): { id: number; name: string; mode: PlayerMode; seat: number } | null {
+    let best: { id: number; name: string; mode: PlayerMode; seat: number } | null = null;
     let bestD = maxDist;
     for (const a of this.avatars.values()) {
-      if ((a.mode !== "drive" && a.mode !== "scooter" && a.mode !== "bird") || !a.root.visible) continue;
+      if (!a.mode || !passengerCapacity(a.mode) || !a.root.visible) continue;
       const seat = this.#availablePassengerSeat(a.info.id, a.mode);
       if (!seat) continue;
       const d = a.root.position.distanceTo(pos);
@@ -380,7 +382,7 @@ export class RemotePlayers {
       return true;
     }
     const a = this.avatars.get(driverId);
-    if (!a || (a.mode !== "drive" && a.mode !== "scooter" && a.mode !== "bird") || !a.root.visible) return false;
+    if (!a || !a.mode || !passengerCapacity(a.mode) || !a.root.visible) return false;
     const body = a.bodies[a.mode];
     const passengers = body?.userData.passengerSeats as [number, number, number][] | undefined;
     const passenger = body?.userData.passengerSeat as [number, number, number] | undefined;
@@ -721,9 +723,34 @@ export class RemotePlayers {
     return g;
   }
 
+  /** Riders needing seat glue this frame — rebuilt by every update() pass. */
+  #riders: Avatar[] = [];
+
+  /** Glue one rider to their seat via this viewer's live view of the ride. */
+  #glueRider(a: Avatar) {
+    if (this.ridePose(a.ride, a.rideSeat, TMP.pa, TMP.qa)) {
+      a.root.position.copy(TMP.pa);
+      a.root.quaternion.copy(TMP.qa);
+    }
+  }
+
+  /**
+   * Re-glue riders of MY vehicle. main.ts calls this after the local player's
+   * mesh settles for the frame — update() runs before that, so without this
+   * pass a passenger in my car would sit one frame behind the cabin (visibly
+   * outside it at speed, metres off during a frame hitch).
+   */
+  glueRidersToLocalVehicle() {
+    if (!this.selfId) return;
+    for (const a of this.#riders) {
+      if (a.ride === this.selfId) this.#glueRider(a);
+    }
+  }
+
   /** Advance interpolation + rig animation. Call once per rendered frame. */
   update(dt: number) {
     const renderT = performance.now() - INTERP_DELAY_MS;
+    this.#riders.length = 0;
     for (const a of this.avatars.values()) {
       const buf = a.buffer;
       if (buf.length === 0) continue;
@@ -753,16 +780,12 @@ export class RemotePlayers {
       TMP.qa.set(from.qx, from.qy, from.qz, from.qw);
       TMP.qb.set(b.qx, b.qy, b.qz, b.qw);
       a.root.quaternion.slerpQuaternions(TMP.qa, TMP.qb, alpha);
-      // riding shotgun: snap to this viewer's live view of the driver's car
-      // (the transmitted pose stays as the fallback when the driver isn't
-      // visible here). Drivers processed later in the map use last frame's
-      // root — one render frame of lag, invisible at 12 Hz sampling.
+      // riding shotgun: the transmitted pose above stays as the fallback when
+      // the driver isn't visible here; the seat snap happens in the ride-glue
+      // phase below, after EVERY driver's root has interpolated this frame.
       a.ride = b.ride ?? 0;
       a.rideSeat = b.rideSeat ?? (a.ride ? 1 : 0);
-      if (a.ride && this.ridePose(a.ride, a.rideSeat, TMP.pa, TMP.qa)) {
-        a.root.position.copy(TMP.pa);
-        a.root.quaternion.copy(TMP.qa);
-      }
+      if (a.ride) this.#riders.push(a);
       a.root.visible = true;
 
       const rake = b.mode === "walk" ? b.rake : undefined;
@@ -839,6 +862,11 @@ export class RemotePlayers {
       a.vy = prev !== b && b.t > prev.t ? ((b.y - prev.y) / (b.t - prev.t)) * 1000 : 0;
       this.#animate(a, dt);
     }
+    // ride-glue phase: every driver's root is final for this frame, so a rider
+    // processed before their driver in the map no longer trails a frame behind.
+    // Riders of MY vehicle glue again in glueRidersToLocalVehicle() once the
+    // local mesh has settled.
+    for (const a of this.#riders) this.#glueRider(a);
   }
 
   #animate(a: Avatar, dt: number) {

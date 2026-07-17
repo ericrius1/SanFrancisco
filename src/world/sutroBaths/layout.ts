@@ -166,6 +166,11 @@ const ROAD_APPROACH_STAIR: SutroStairSurface = {
   steps: 5
 };
 
+// A capsule can move farther than a tread edge in one busy frame. Keep the
+// recovery contract slightly wider than the visible slabs so it catches that
+// edge crossing before the player falls to a lower hall surface.
+const ENTRY_RECOVERY_PAD = 0.45;
+
 function insideRect(x: number, z: number, minX: number, maxX: number, minZ: number, maxZ: number): boolean {
   return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
 }
@@ -173,8 +178,8 @@ function insideRect(x: number, z: number, minX: number, maxX: number, minZ: numb
 function stairSurfaceY(across: number, along: number, stair: SutroStairSurface): number | null {
   const treadHalfRun = Math.abs(stair.endAlong - stair.startAlong) / (stair.steps - 1) * 0.5 + 0.03;
   if (
-    across < stair.minAcross ||
-    across > stair.maxAcross ||
+    across < stair.minAcross - ENTRY_RECOVERY_PAD ||
+    across > stair.maxAcross + ENTRY_RECOVERY_PAD ||
     along < Math.min(stair.startAlong, stair.endAlong) - treadHalfRun ||
     along > Math.max(stair.startAlong, stair.endAlong) + treadHalfRun
   ) return null;
@@ -188,8 +193,9 @@ export function sutroEntryWalkSurfaceY(x: number, z: number): number | null {
   const local = sutroWorldToLocal(x, z);
 
   // The road terrain is explicitly handed to a coherent pavilion floor.
-  if (insideRect(local.x, local.z, 38.7, 54.6, 56.9, 69.3)) return 31.18;
-  if (insideRect(local.x, local.z, 32, 39, 67.2, 71.8)) return 31.18;
+  if (insideRect(local.x, local.z, 38.25, 55.05, 56.45, 69.75)) return 31.18;
+  // Wide foyer spans the full empty portal and overlaps the first stair tread.
+  if (insideRect(local.x, local.z, 32.05, 39.65, 58.45, 69.65)) return 31.18;
   const roadY = stairSurfaceY(local.z, local.x, ROAD_APPROACH_STAIR);
   if (roadY !== null) return roadY;
 
@@ -197,10 +203,10 @@ export function sutroEntryWalkSurfaceY(x: number, z: number): number | null {
     const y = stairSurfaceY(local.x, local.z, flight);
     if (y !== null) return y;
   }
-  if (insideRect(local.x, local.z, 27.7, 36.8, 45.6, 49.8)) return 24.67;
-  if (insideRect(local.x, local.z, 22.2, 31.3, 68.6, 72.8)) return 18.32;
-  if (insideRect(local.x, local.z, 16.7, 25.8, 45.6, 49.8)) return 11.97;
-  if (insideRect(local.x, local.z, 16.7, 27.9, 68.6, 73.4)) return 5.66;
+  if (insideRect(local.x, local.z, 27.25, 37.25, 45.15, 50.25)) return 24.67;
+  if (insideRect(local.x, local.z, 21.75, 31.75, 68.15, 73.25)) return 18.32;
+  if (insideRect(local.x, local.z, 16.25, 26.25, 45.15, 50.25)) return 11.97;
+  if (insideRect(local.x, local.z, 16.25, 28.35, 68.15, 73.85)) return 5.66;
 
   // The beach stair runs along local x, so swap the axes for the shared helper.
   const beachY = stairSurfaceY(local.z, local.x, BEACH_ENTRY_STAIR);

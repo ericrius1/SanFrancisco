@@ -256,6 +256,11 @@ export function buildBoatMesh(): THREE.Group {
     seat: [0, 0.5, 2.26],
     wheel: [0, 0.61, 1.72]
   } satisfies Cockpit;
+  // Friends ride the cockpit side benches (one per side, forward of the helm).
+  g.userData.passengerSeats = [
+    [0.86, 0.5, 0.6],
+    [-0.86, 0.5, 0.6]
+  ] satisfies [number, number, number][];
   // Three casters cover the physical read: one hull slab plus the two large
   // animated sails. Spars, stays, deck fittings, and lamps are below the useful
   // CSM silhouette scale, but opaque surfaces still receive self/player shade.

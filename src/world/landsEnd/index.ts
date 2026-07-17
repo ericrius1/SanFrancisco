@@ -8,7 +8,6 @@ import type { WorldMap } from "../heightmap";
 import { Labyrinth } from "./labyrinth";
 import { LanternKeeper } from "./lanternKeeper";
 import { SeaMotes } from "./motes";
-import { buildCypressGrove } from "./cypress";
 import { EyeWalker } from "./eyeWalker";
 import { LABYRINTH, LANDS_END_CENTER } from "./layout";
 
@@ -21,7 +20,6 @@ const DETAIL_RANGE = 760; // m from the headland centre — draw nothing beyond
 
 export class LandsEndRegion {
   readonly group = new THREE.Group();
-  readonly foliage = new THREE.Group();
   #labyrinth: Labyrinth;
   #keeper: LanternKeeper;
   #motes: SeaMotes;
@@ -29,17 +27,14 @@ export class LandsEndRegion {
 
   constructor(map: WorldMap) {
     this.group.name = "landsEnd";
-    this.foliage.name = "landsEnd.foliage";
 
     this.#labyrinth = new Labyrinth(map);
     this.#keeper = new LanternKeeper(map);
     this.#motes = new SeaMotes(map.groundTop(LABYRINTH.x, LABYRINTH.z));
     this.#walker = new EyeWalker(map);
-    this.foliage.add(buildCypressGrove(map));
 
     // static subtrees (frozen after one flush)
     this.group.add(this.#labyrinth.group);
-    this.group.add(this.foliage);
     // live subtrees (kept unfrozen so their per-frame transforms take effect)
     const live = new Set<THREE.Object3D>([
       this.#labyrinth.activity,
@@ -68,8 +63,26 @@ export class LandsEndRegion {
     return this.#walker;
   }
 
-  setFoliageVisible(visible: boolean) {
-    this.foliage.visible = visible;
+  /** Full teardown for a distance unload. Vegetation is owned by the
+   * site-foliage streamer, not the region. The lantern-keeper's rig boxes come
+   * from player/rig's shared geometry cache, so that subtree is detached
+   * rather than disposed; everything else here is locally built. */
+  dispose() {
+    this.#walker.dispose();
+    this.#keeper.group.removeFromParent();
+    this.group.removeFromParent();
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    this.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) && !(object instanceof THREE.Points)) return;
+      geometries.add((object as THREE.Mesh).geometry);
+      const material = (object as THREE.Mesh).material;
+      const list = Array.isArray(material) ? material : [material];
+      for (const m of list) materials.add(m);
+    });
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
+    this.group.clear();
   }
 
   update(

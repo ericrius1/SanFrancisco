@@ -4,10 +4,10 @@
 // unambiguous:
 //   1. clean boot at the normal saved/default spawn: the cheap layout contract
 //      may be in main, but no optional Sutro module/chunk may be requested;
-//   2. a cold `spawn=sutroBaths` visit: the hall, close WebGPU water, and steam
+//   2. a cold `spawn=sutroBaths` visit: the hall, static WebGPU water, and steam
 //      boundaries must all cross, then produce a nonblank rendered scene;
 //   3. movement into the great plunge: the existing GPU field must continue to
-//      tick/dispatch without another Sutro request.
+//      animate without compute work or another Sutro request.
 //
 // Run against an existing dev or production server:
 //   SF_PROBE_URL=http://127.0.0.1:5240 node tools/sutro-baths-probe.mjs
@@ -76,13 +76,20 @@ function localPoint(x, y, z) {
  */
 async function discoverBuiltChunks() {
   const directory = path.join(ROOT, "dist", "assets");
-  const result = { site: new Set(), water: new Set(), steam: new Set() };
+  const result = { site: new Set(), water: new Set(), steam: new Set(), legacyFluid: new Set() };
   if (!(await exists(directory))) return result;
   for (const name of await readdir(directory)) {
     if (!name.endsWith(".js")) continue;
     const source = await readFile(path.join(directory, name), "utf8");
     if (source.includes("sutro_baths_restored_1896")) result.site.add(name);
-    if (source.includes("sutro_baths_seven_pool_webgpu_water")) result.water.add(name);
+    if (source.includes("sutro_baths_static_water_surface")) result.water.add(name);
+    if (
+      source.includes("sutro_baths_seven_pool_webgpu_water") ||
+      source.includes("sutro_baths_shared_water_field") ||
+      source.includes("Sutro Baths water simulation requires")
+    ) {
+      result.legacyFluid.add(name);
+    }
     if (source.includes("sutro_baths_thermal_steam")) result.steam.add(name);
   }
   return result;
@@ -97,7 +104,8 @@ function createClassifier(built) {
     const base = pathname.split("/").at(-1) ?? "";
     const sourceRoot = pathname.includes("/src/world/sutroBaths/");
     const eagerLayout = sourceRoot && /\/layout\.ts$/.test(pathname);
-    const sourceWater = sourceRoot && /\/waterSimulation\.ts$/.test(pathname);
+    const sourceWater = sourceRoot && /\/staticWater\.ts$/.test(pathname);
+    const sourceLegacyFluid = sourceRoot && /\/waterSimulation\.ts$/.test(pathname);
     const sourceSteam = sourceRoot && /\/steam\.ts$/.test(pathname);
     const sourceSite = sourceRoot && !eagerLayout && !sourceWater && !sourceSteam;
     const authoredRegion = pathname.endsWith("/regions/sutro-baths.glb");
@@ -114,8 +122,9 @@ function createClassifier(built) {
     if (colliderTile) kinds.push("collider-tile");
     if (sourceSite || built.site.has(base)) kinds.push("site-runtime");
     if (sourceWater || built.water.has(base)) kinds.push("water-runtime");
+    if (sourceLegacyFluid || built.legacyFluid.has(base)) kinds.push("legacy-fluid-runtime");
     if (sourceSteam || built.steam.has(base)) kinds.push("steam-runtime");
-    if (["region-visual", "site-runtime", "water-runtime", "steam-runtime"].some((kind) => kinds.includes(kind))) {
+    if (["region-visual", "site-runtime", "water-runtime", "steam-runtime", "legacy-fluid-runtime"].some((kind) => kinds.includes(kind))) {
       kinds.push("optional-sutro");
     }
     return { pathname, kinds: [...new Set(kinds)] };
@@ -327,7 +336,8 @@ async function main() {
       () => Boolean(
         window.__sf?.renderer?.backend?.device &&
         window.__sf?.sutroBaths?.debugState?.().nearEffectsLoaded &&
-        window.__sf.sutroBaths.debugState().water?.stats?.totalDispatches > 0 &&
+        window.__sf.sutroBaths.debugState().water?.staticSurface === true &&
+        window.__sf.sutroBaths.debugState().water?.stats?.revision > 0 &&
         document.body.classList.contains("started")
       ),
       null,
@@ -349,12 +359,12 @@ async function main() {
       const names = [
         "sutro_baths_restored_1896",
         "sutro_baths_restored_architecture",
-        "sutro_baths_player_entrances_v3",
-        "sutro_baths_beach_gate_v3",
+        "sutro_baths_player_entrances_v4",
+        "sutro_baths_beach_gate_v4",
         "sutro_baths_glass_barrel_roof",
         "sutro_baths_ocean_window_seating_gallery",
         "sutro_baths_unified_foliage",
-        "sutro_baths_seven_pool_webgpu_water",
+        "sutro_baths_static_water_surface",
         "sutro_baths_thermal_steam"
       ];
       return {
@@ -366,6 +376,7 @@ async function main() {
           z: Number(sf.player.position.z.toFixed(2))
         },
         debug,
+        waveAudio: sf.waveAudio.debugState,
         authoredRegion: sf.authoredRegions.debugSnapshot(),
         backgroundStreaming: sf.tiles.backgroundStreamingDebug,
         stats: site.stats,
@@ -417,6 +428,11 @@ async function main() {
     expect("activation-site-runtime-requested", activationRows.some((row) => hasKind(row, "site-runtime")), activationRows.map(publicRecord));
     expect("activation-water-runtime-requested", activationRows.some((row) => hasKind(row, "water-runtime")), activationRows.map(publicRecord));
     expect("activation-steam-runtime-requested", activationRows.some((row) => hasKind(row, "steam-runtime")), activationRows.map(publicRecord));
+    expect(
+      "activation-no-fluid-simulation-runtime",
+      !activationRows.some((row) => hasKind(row, "legacy-fluid-runtime")) && builtChunks.legacyFluid.size === 0,
+      { requests: activationRows.map(publicRecord), built: [...builtChunks.legacyFluid] }
+    );
     expect("activation-sutro-requests-succeeded", activationFailures.length === 0, activationFailures.map(publicRecord));
     expect("activation-direct-webgpu", activationState.webgpu, activationState.backend);
     expect(
@@ -441,15 +457,15 @@ async function main() {
       activationState.stats
     );
     expect(
-      "activation-water-field-running",
+      "activation-static-water-no-compute",
       activationState.debug.water?.webgpu === true &&
-        activationState.debug.water?.proximityActive === true &&
-        activationState.debug.water?.stats?.backend === "WebGPU storage buffers" &&
-        activationState.debug.water?.stats?.gridWidth === 88 &&
-        activationState.debug.water?.stats?.gridHeight === 184 &&
-        activationState.debug.water?.stats?.activeCells > 1000 &&
+        activationState.debug.water?.staticSurface === true &&
+        activationState.debug.water?.stats?.backend === "WebGPU analytical surface" &&
+        activationState.debug.water?.stats?.simulated === false &&
+        activationState.debug.water?.stats?.computeDispatches === 0 &&
+        activationState.debug.water?.stats?.vertices > 1000 &&
         activationState.debug.water?.stats?.triangles > 1000 &&
-        activationState.debug.water?.stats?.totalDispatches > 0,
+        activationState.debug.water?.stats?.animated === true,
       activationState.debug.water
     );
     expect(
@@ -458,6 +474,11 @@ async function main() {
         activationState.debug.steam?.awake === true &&
         activationState.debug.steam?.visible > 0,
       activationState.debug.steam
+    );
+    expect(
+      "activation-sutro-wave-bed-silent",
+      activationState.waveAudio.level <= 0.002 && activationState.waveAudio.washGain <= 0.002,
+      activationState.waveAudio
     );
     expect(
       "activation-canvas-has-display-and-buffer",
@@ -491,12 +512,14 @@ async function main() {
       }));
     };
     const roadRecovery = await forceBelowFloor(localPoint(44.25, 29.58, 63.1));
+    const foyerRecovery = await forceBelowFloor(localPoint(36.0, 29.58, 63.1));
     const switchbackRecovery = await forceBelowFloor(localPoint(29.5, 19.995, 59.2));
     const beachRecovery = await forceBelowFloor(localPoint(-48, 2.58, 33.29));
     const deckRecovery = await forceBelowFloor(localPoint(-7, 4.12, 0));
     const basinRecovery = await forceBelowFloor(localPoint(-20, 1.12, 8));
     const collisionRecovery = {
       road: roadRecovery,
+      foyer: foyerRecovery,
       switchback: switchbackRecovery,
       beach: beachRecovery,
       deck: deckRecovery,
@@ -505,6 +528,11 @@ async function main() {
     expect(
       "activation-road-entrance-fallthrough-recovers",
       Math.abs(roadRecovery.y - (31.18 + 0.92)) < 0.12,
+      collisionRecovery
+    );
+    expect(
+      "activation-road-foyer-fallthrough-recovers",
+      Math.abs(foyerRecovery.y - (31.18 + 0.92)) < 0.12,
       collisionRecovery
     );
     expect(
@@ -546,9 +574,14 @@ async function main() {
     );
     const shots = [
       {
-        name: "road-entrance-switchback.png",
-        eye: localPoint(38.5, 33.5, 72.5),
-        target: localPoint(24, 14.5, 59)
+        name: "road-main-entrance.png",
+        eye: localPoint(60.5, 34.4, 63.1),
+        target: localPoint(35.5, 33.6, 63.1)
+      },
+      {
+        name: "road-foyer-switchback.png",
+        eye: localPoint(42.5, 35.0, 63.1),
+        target: localPoint(29.5, 22.5, 59)
       },
       {
         name: "beach-gate-approach.png",
@@ -585,14 +618,12 @@ async function main() {
       );
     }
 
-    // Phase three: move into the great plunge. This is close enough to supply a
-    // localized wake, but must reuse both already-allocated storage buffers and
-    // the existing procedural steam graph.
+    // Phase three: move into the great plunge. The analytical water and steam
+    // must keep animating without a simulation dispatch or a feature refetch.
     const beforeAction = await page.evaluate(() => {
       const debug = window.__sf.sutroBaths.debugState();
       return {
-        ticks: debug.water.stats.totalTicks,
-        dispatches: debug.water.stats.totalDispatches,
+        computeDispatches: debug.water.stats.computeDispatches,
         revision: debug.water.stats.revision,
         steamVisible: debug.steam.visible
       };
@@ -612,11 +643,10 @@ async function main() {
       const debug = window.__sf.sutroBaths.debugState();
       return {
         distanceToBaths: debug.distanceToBaths,
-        proximityActive: debug.water.proximityActive,
+        staticSurface: debug.water.staticSurface,
         playerDistance: debug.water.stats.playerDistance,
-        running: debug.water.stats.running,
-        ticks: debug.water.stats.totalTicks,
-        dispatches: debug.water.stats.totalDispatches,
+        simulated: debug.water.stats.simulated,
+        computeDispatches: debug.water.stats.computeDispatches,
         revision: debug.water.stats.revision,
         steamVisible: debug.steam.visible
       };
@@ -624,18 +654,19 @@ async function main() {
     const subsequentRows = phaseRows("subsequent").filter((row) => hasKind(row, "optional-sutro"));
     expect("subsequent-zero-sutro-refetch", subsequentRows.length === 0, subsequentRows.map(publicRecord));
     expect(
-      "subsequent-water-continues-compute",
-      afterAction.proximityActive &&
+      "subsequent-water-animates-without-compute",
+      afterAction.staticSurface &&
         afterAction.playerDistance < 1 &&
-        afterAction.ticks > beforeAction.ticks &&
-        afterAction.dispatches > beforeAction.dispatches &&
+        afterAction.simulated === false &&
+        beforeAction.computeDispatches === 0 &&
+        afterAction.computeDispatches === 0 &&
         afterAction.revision > beforeAction.revision,
       { before: beforeAction, after: afterAction }
     );
 
-    // Capture a second close frame after the movement action. Compute counters
-    // are the authoritative fluid assertion; this bounded pixel delta is useful
-    // visual evidence that the close surface/steam is not a frozen card.
+    // Capture a second close frame after movement. The static-water revision and
+    // zero-dispatch telemetry above are authoritative; pixel delta confirms the
+    // analytical ripple and retained steam are not a frozen card.
     const closeFirst = path.join(OUT, "thermal-pools-close.png");
     const closeLater = path.join(OUT, "thermal-pools-close-later.png");
     const closeShot = shots.find((shot) => shot.name === "thermal-pools-close.png");
@@ -656,6 +687,36 @@ async function main() {
         animation.changedPixelRatio > 0.001 &&
         animation.meanChannelDelta < 0.2,
       animation
+    );
+
+    const frameTiming = await page.evaluate(() => new Promise((resolve) => {
+      const samples = [];
+      let last = performance.now();
+      const frame = (now) => {
+        const delta = now - last;
+        last = now;
+        if (delta < 250) samples.push(delta);
+        if (samples.length < 180) {
+          requestAnimationFrame(frame);
+          return;
+        }
+        const sorted = [...samples].sort((a, b) => a - b);
+        const meanMs = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+        resolve({
+          samples: samples.length,
+          meanMs,
+          p50Ms: sorted[Math.floor(sorted.length * 0.5)],
+          p95Ms: sorted[Math.floor(sorted.length * 0.95)],
+          p99Ms: sorted[Math.floor(sorted.length * 0.99)],
+          fps: 1000 / meanMs
+        });
+      };
+      requestAnimationFrame(frame);
+    }));
+    expect(
+      "runtime-interior-frame-pacing-bounded",
+      frameTiming.samples === 180 && frameTiming.p95Ms < 80,
+      frameTiming
     );
 
     const gpuPattern = /WebGPU|GPUValidation|WGSL|storage buffer|compute pipeline|bind group/i;
@@ -726,6 +787,7 @@ async function main() {
         }
       },
       animation,
+      frameTiming,
       renderer: activationState.renderer,
       screenshots: screenshotEvidence,
       pageErrors,

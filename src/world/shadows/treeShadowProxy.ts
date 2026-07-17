@@ -5,6 +5,8 @@ const DEFAULT_CELL_SIZE = 96
 const TRUNK_SIDES = 6
 const CROWN_SIDES = 8
 
+export type TreeShadowShape = "massed" | "organic-lobes"
+
 export type TreeShadowProfile = Readonly<{
   /** Template-local base offset. Slots already include their authored sink. */
   baseY: number
@@ -26,11 +28,13 @@ export type TreeShadowProxyOptions = Readonly<{
   instances: readonly TreeShadowInstance[]
   /** World-space microcell width. */
   cellSize?: number
+  /** Solid depth-only silhouette. Defaults to the established massed proxy. */
+  shape?: TreeShadowShape
 }>
 
 type BuildCell = { x: number; z: number; instances: TreeShadowInstance[] }
 
-let sharedGeometry: THREE.BufferGeometry | null = null
+const sharedGeometries = new Map<TreeShadowShape, THREE.BufferGeometry>()
 let sharedMaterial: THREE.MeshBasicMaterial | null = null
 let sharedUsers = 0
 
@@ -92,23 +96,81 @@ function createUnitTreeGeometry(): THREE.BufferGeometry {
   return geometry
 }
 
-function acquireSharedResources(): readonly [THREE.BufferGeometry, THREE.MeshBasicMaterial] {
-  if (!sharedGeometry) sharedGeometry = createUnitTreeGeometry()
+/**
+ * A similarly cheap, fully opaque proxy built from overlapping low-poly crown
+ * lobes. It keeps the stable depth-only path (no alpha cards or animated
+ * foliage in the shadow cameras) while breaking up the unmistakable single
+ * polygon/cone artifact of the massed proxy.
+ */
+function createOrganicTreeGeometry(): THREE.BufferGeometry {
+  const positions: number[] = []
+  const indices: number[] = []
+
+  const addRing = (cx: number, y: number, cz: number, rx: number, rz: number, sides: number): number => {
+    const start = positions.length / 3
+    for (let i = 0; i < sides; i++) {
+      const angle = (i / sides) * Math.PI * 2
+      positions.push(cx + Math.cos(angle) * rx, y, cz + Math.sin(angle) * rz)
+    }
+    return start
+  }
+
+  const trunkBottom = addRing(0, 0, 0, 0.06, 0.06, TRUNK_SIDES)
+  const trunkTop = addRing(0, 0.68, 0, 0.038, 0.038, TRUNK_SIDES)
+  for (let i = 0; i < TRUNK_SIDES; i++) {
+    const next = (i + 1) % TRUNK_SIDES
+    indices.push(trunkBottom + i, trunkBottom + next, trunkTop + next, trunkBottom + i, trunkTop + next, trunkTop + i)
+  }
+
+  const lobes = [
+    { x: -0.2, y: 0.59, z: 0.08, rx: 0.3, ry: 0.23, rz: 0.28 },
+    { x: 0.2, y: 0.63, z: -0.1, rx: 0.3, ry: 0.24, rz: 0.29 },
+    { x: -0.02, y: 0.75, z: -0.02, rx: 0.34, ry: 0.28, rz: 0.31 },
+    { x: 0.07, y: 0.88, z: 0.11, rx: 0.23, ry: 0.19, rz: 0.25 }
+  ] as const
+  for (const lobe of lobes) {
+    const sides = 8
+    const ring = addRing(lobe.x, lobe.y, lobe.z, lobe.rx, lobe.rz, sides)
+    const bottom = positions.length / 3
+    positions.push(lobe.x, lobe.y - lobe.ry, lobe.z)
+    const top = positions.length / 3
+    positions.push(lobe.x, Math.min(1, lobe.y + lobe.ry), lobe.z)
+    for (let i = 0; i < sides; i++) {
+      const next = (i + 1) % sides
+      indices.push(bottom, ring + i, ring + next)
+      indices.push(ring + i, top, ring + next)
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setIndex(indices)
+  geometry.computeBoundingBox()
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+function acquireSharedResources(shape: TreeShadowShape): readonly [THREE.BufferGeometry, THREE.MeshBasicMaterial] {
+  let geometry = sharedGeometries.get(shape)
+  if (!geometry) {
+    geometry = shape === "organic-lobes" ? createOrganicTreeGeometry() : createUnitTreeGeometry()
+    sharedGeometries.set(shape, geometry)
+  }
   if (!sharedMaterial) {
     sharedMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff })
     sharedMaterial.name = "treeShadowProxy.depth"
     sharedMaterial.toneMapped = false
   }
   sharedUsers++
-  return [sharedGeometry, sharedMaterial]
+  return [geometry, sharedMaterial]
 }
 
 function releaseSharedResources(): void {
   sharedUsers--
   if (sharedUsers > 0) return
-  sharedGeometry?.dispose()
+  for (const geometry of sharedGeometries.values()) geometry.dispose()
   sharedMaterial?.dispose()
-  sharedGeometry = null
+  sharedGeometries.clear()
   sharedMaterial = null
   sharedUsers = 0
 }
@@ -187,7 +249,7 @@ export class TreeShadowProxy {
     const meshes: THREE.InstancedMesh[] = []
     let treeCount = 0
     if (cells.size > 0) {
-      const [geometry, materialTemplate] = acquireSharedResources()
+      const [geometry, materialTemplate] = acquireSharedResources(options.shape ?? "massed")
       this.#ownsSharedResources = true
       // All cells in one streamed proxy share a disposable clone. The template
       // and unit geometry remain process-shared, while material.dispose gives

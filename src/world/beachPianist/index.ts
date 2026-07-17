@@ -7,14 +7,13 @@
 // Loading policy (docs/LAZY_LOADING.md): construction is procedural and
 // network-free — a group of voxel boxes. The recording and its note timeline
 // are fetched only on first approach (AUDIO_FETCH_RADIUS); the audio graph rides
-// NatureSoundscape's shared context and joins whenever it is unlocked and near.
+// the shared AudioEngine music group and joins whenever it is unlocked and near.
 // The transport is authoritative wall-clock, so the performance keeps running
 // (visually) even before audio unlock or while out of earshot — audio resyncs to
 // the body language whenever the player wanders back (busker idiom).
 
 import * as THREE from "three/webgpu";
 import type { WorldMap } from "../heightmap";
-import type { NatureSoundscape } from "../../audio/natureSoundscape";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { BeachPianistAudio } from "./audio";
 import { buildGrandPiano, KEY_CONTACT } from "./piano";
@@ -47,7 +46,6 @@ export class BeachPianist {
   readonly group = new THREE.Group();
 
   #map: WorldMap;
-  #nature: NatureSoundscape;
   #prepareRender: ((root: THREE.Object3D) => Promise<void>) | null;
   #renderWarm: "cold" | "warming" | "ready";
 
@@ -94,11 +92,9 @@ export class BeachPianist {
 
   constructor(opts: {
     map: WorldMap;
-    nature: NatureSoundscape;
     prepareRender?: (root: THREE.Object3D) => Promise<void>;
   }) {
     this.#map = opts.map;
-    this.#nature = opts.nature;
     this.#prepareRender = opts.prepareRender ?? null;
     this.#renderWarm = this.#prepareRender ? "cold" : "ready";
     this.group.name = "beachPianist";
@@ -119,7 +115,7 @@ export class BeachPianist {
     this.group.updateMatrixWorld(true);
 
     // Spatial voice at the soundboard.
-    this.#audio = new BeachPianistAudio(this.#nature, SONGS[0].audio);
+    this.#audio = new BeachPianistAudio(SONGS[0].audio);
     this.#stage.localToWorld(this.#tmp.copy(VOICE_LOCAL));
     this.#audio.setVoicePosition(this.#tmp.x, this.#tmp.y, this.#tmp.z);
 

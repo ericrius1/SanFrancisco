@@ -1,11 +1,13 @@
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
+import { LIGHT_SCALE } from "../../config";
 import { TrioAudio } from "../../gameplay/buskers/audio";
 import { buildUkulelist } from "../../gameplay/buskers/ukulelist";
 import { COUNTIN_BEATS, SEC_PER_BEAT } from "../../gameplay/buskers/song";
 import type { Musician, NoteEvent, TrioClock, TrioPhase } from "../../gameplay/buskers/types";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
+import { WINDOW_GLOW_W } from "../facade";
 import type { WorldMap } from "../heightmap";
 import { KEEPER, LABYRINTH } from "./layout";
 import { WALKER_REST_MAX, WALKER_REST_MIN, WALKER_SONGS } from "./walkerSongs";
@@ -51,6 +53,9 @@ const PLATEAU_Y_TOLERANCE = 6; // reject waypoints that fall off the terrace she
 const ARRIVE_DIST = 2.4;
 const LOOKAHEAD_SECONDS = 0.4;
 const COUNTIN_SECONDS = COUNTIN_BEATS * SEC_PER_BEAT;
+// Reuse the creature's albedo as emission so its folk-art colours remain
+// intact. The sky's shared twilight ramp keeps this completely dark by day.
+const NIGHT_GLOW_PEAK = 0.78 * LIGHT_SCALE;
 // Rider saddle: musician group origin (his hips) relative to the creature's
 // head-bone world position. The creature is a giant ball-head doll — "on his
 // shoulders" means seated on the ruffled collar right behind the head, legs
@@ -92,6 +97,8 @@ export class EyeWalker {
   #idleAction: THREE.AnimationAction | null = null;
   #headBone: THREE.Object3D | null = null;
   #creatureRoot: THREE.Group | null = null;
+  #glowMaterials: THREE.MeshStandardMaterial[] = [];
+  #glowAmount = 0;
 
   // ---- rider + music ----
   #audio: TrioAudio | null = null;
@@ -167,6 +174,21 @@ export class EyeWalker {
       mesh.receiveShadow = false;
       mesh.frustumCulled = false; // skinned bounds lag the pose
       enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+
+      // The Tripo asset currently shares one textured standard material, but
+      // keep this correct if a later export splits it into several primitives.
+      // Reusing `map` as `emissiveMap` makes the painted eyes and chevrons glow
+      // in their authored colours instead of flattening the creature to white.
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of materials) {
+        const standard = material as THREE.MeshStandardMaterial;
+        if (!standard.isMeshStandardMaterial || this.#glowMaterials.includes(standard)) continue;
+        standard.emissive.set(0xffffff);
+        standard.emissiveMap = standard.map;
+        standard.emissiveIntensity = 0;
+        standard.needsUpdate = true;
+        this.#glowMaterials.push(standard);
+      }
     });
     this.#headBone = findHeadBone(scene);
 
@@ -368,6 +390,10 @@ export class EyeWalker {
       yaw: this.#yaw,
       headBone: this.#headBone?.name ?? null,
       walkTimeScale: this.#walkAction?.timeScale ?? 0,
+      glow: {
+        amount: this.#glowAmount,
+        materials: this.#glowMaterials.length
+      },
       audio: {
         ctx: this.#audio?.ctx?.state ?? "none",
         running: this.#audio?.running ?? false,
@@ -394,6 +420,12 @@ export class EyeWalker {
     this.#updateWander(dt);
     this.#updateTransport(dt);
     this.#clock.wind = THREE.MathUtils.clamp(0.18 + 0.12 * Math.sin(this.#elapsed * 0.31) + 0.85 * gust, 0, 1);
+
+    // A slow breath keeps the emission organic while WINDOW_GLOW_W performs
+    // the actual day/night gate (0 in daylight, 1 once twilight has finished).
+    const breathe = 0.92 + 0.08 * Math.sin(elapsed * 1.15);
+    this.#glowAmount = WINDOW_GLOW_W.value * NIGHT_GLOW_PEAK * breathe;
+    for (const material of this.#glowMaterials) material.emissiveIntensity = this.#glowAmount;
 
     // audio follows the rider; listener follows the camera. The context is
     // created lazily in here (first approach after a user gesture) — the app

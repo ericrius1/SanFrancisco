@@ -242,6 +242,7 @@ export class PupPen {
   #scale = NEWBORN_SCALE;
   #pollTimer: ReturnType<typeof setInterval> | null = null;
   #fetching = false;
+  #disposed = false;
   // wander state
   #wanderYaw = Math.random() * Math.PI * 2;
   #wanderTimer = 2;
@@ -311,6 +312,34 @@ export class PupPen {
       deactivatePad: PUP_SITE_PADS.deactivate,
       setAwake: (on) => this.#setAwake(on)
     };
+  }
+
+  /** Full teardown for a distance unload: the private box3d ragdoll world,
+   * the checkpoint poll timer, and every locally built pen mesh go together. */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    if (this.#pollTimer) {
+      clearInterval(this.#pollTimer);
+      this.#pollTimer = null;
+    }
+    this.#rag?.dispose();
+    this.#rag = null;
+    this.#brain = null;
+    this.#signTex.dispose();
+    this.root.removeFromParent();
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    this.root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      geometries.add(object.geometry);
+      const list = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of list) materials.add(material);
+    });
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
+    this.root.clear();
+    this.#parts.length = 0;
   }
 
   #setAwake(on: boolean): void {
@@ -427,12 +456,13 @@ export class PupPen {
   }
 
   async #loadPolicy(allowNewborn: boolean): Promise<void> {
-    if (this.#fetching) return;
+    if (this.#fetching || this.#disposed) return;
     this.#fetching = true;
     try {
       const res = await fetch(`/models/pup_policy.json?t=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const def = (await res.json()) as PupPolicyFile;
+      if (this.#disposed) return;
       const gen = def.meta?.gen ?? 0;
       if (this.#policy && gen === this.#gen) return; // unchanged checkpoint
       this.#policy = def;

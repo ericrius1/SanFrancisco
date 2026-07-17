@@ -7,6 +7,7 @@ import type { HUD } from "../../ui/hud";
 import { waterHeight } from "../../world/heightmap";
 import { oceanBeachSurfShackPose } from "../../gameplay/surfing/shack";
 import { findLand, findWater } from "../../vehicles/shared";
+import { MAX_PASSENGER_SEATS } from "../../vehicles/rideable";
 import { oceanBeachSurfEntryPose } from "../../vehicles/surf/entry";
 
 export type ReleaseMotion = {
@@ -49,7 +50,7 @@ export class EmbodimentController {
 
   startPassengerRide(remoteId: number, seat = 1): void {
     this.passengerOf = remoteId;
-    const capacity = remoteId < 0 ? 12 : 2;
+    const capacity = remoteId < 0 ? 12 : MAX_PASSENGER_SEATS;
     this.passengerSeat = Math.max(1, Math.min(capacity, Math.round(seat)));
     this.#player.startRide();
   }
@@ -98,6 +99,16 @@ export class EmbodimentController {
       this.passengerSeat = 0;
       player.position.x += Math.cos(player.heading) * 2.4;
       player.position.z -= Math.sin(player.heading) * 2.4;
+      // stepping off a shared boat lands in the bay, not on a phantom floor —
+      // bridge decks still count as solid ground, and a mid-air bail just falls
+      const overWater =
+        player.map.isWater(player.position.x, player.position.z) &&
+        player.map.bridgeDeck(player.position.x, player.position.z) === -Infinity;
+      const sea = overWater ? waterHeight(player.position.x, player.position.z, player.time) : 0;
+      if (overWater && player.position.y < sea + 3) {
+        player.position.y = sea + 0.45;
+        player.swimEnter = true;
+      }
       player.endRide();
       this.#hud.message("Hopped out", 1.8);
       return true;

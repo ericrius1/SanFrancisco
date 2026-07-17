@@ -68,6 +68,12 @@ type AbandonedMount = {
 
 const MAX_MOUNTS = 12;
 const DESPAWN_DISTANCE = 520;
+// Scattered persistent bay vessels are never despawned, but past this range
+// they are sub-pixel silhouettes buried in marine fog. A drawn-yet-fogged mesh
+// can still flash mid-sky on a corrupted frame (the "flickering objects"
+// reports), so skip their draw entirely until the player could genuinely see
+// them. Simulation continues; only mesh visibility is gated.
+const SCATTER_VESSEL_VIEW_DISTANCE = 2400;
 // birds are their own creatures now — they get to roam much farther before we
 // stop tracking them than a parked car does
 const BIRD_DESPAWN_DISTANCE = 1400;
@@ -689,6 +695,9 @@ export class AbandonedMounts {
       this.#animate(item, dt);
 
       const dist = Math.hypot(t.position[0] - playerPos.x, t.position[2] - playerPos.z);
+      if (item.persistent && (item.mode === "boat" || item.mode === "speedboat")) {
+        item.mesh.visible = dist <= SCATTER_VESSEL_VIEW_DISTANCE;
+      }
       const maxDist = item.mode === "bird" ? BIRD_DESPAWN_DISTANCE : DESPAWN_DISTANCE;
       if (t.position[1] < -100 || (!item.persistent && dist > maxDist)) this.#remove(i);
     }

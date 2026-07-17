@@ -18,13 +18,16 @@ import {
 } from "./gameplay/surfing/shack";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { GhostShipBeacon } from "./world/ghostShip/beacon";
-import { GHOST_SHIP_DETAIL_WAKE_DISTANCE, GHOST_SHIP_RIDE_ID } from "./world/ghostShip/route";
+import {
+  GHOST_SHIP_DETAIL_WAKE_DISTANCE,
+  GHOST_SHIP_LANDMARK_NAME,
+  GHOST_SHIP_RIDE_ID
+} from "./world/ghostShip/route";
 import type { GhostShip } from "./world/ghostShip";
 import { Water } from "./world/water";
 import { emitEmbodimentWaterEcho } from "./world/waterEchoes";
 import { UnderwaterOverlay } from "./fx/underwater";
 import { syncBallGlowNight } from "./fx/ballGlow";
-import { SeaPillars } from "./world/seaPillars";
 import { TileStreamer } from "./world/tiles";
 import { FarOcclusionField } from "./world/shadows/farOcclusionField";
 import { createRoadMarkings } from "./world/roadMarkings";
@@ -97,6 +100,7 @@ import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
 import { SwimAudio } from "./fx/swimAudio";
 import { GameplaySfxBus } from "./audio/gameplaySfxBus";
+import { audioEngine } from "./audio/engine";
 import { PlayerFoleyAudio } from "./fx/playerFoleyAudio";
 import { ModeTransitionAudio } from "./fx/modeTransitionAudio";
 import { JumpLandingAudio } from "./fx/jumpLandingAudio";
@@ -113,6 +117,7 @@ import {
 } from "./world/vegetation/runtime";
 import { BOTANICAL_GARDEN_BOUNDS } from "./world/garden/layout";
 import type { CityGenRing } from "./world/citygen";
+import { PROCEDURAL_LAMP_TUNING } from "./world/citygen/interior/lampTuning";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
@@ -128,6 +133,13 @@ import type { PalaceReverieGame } from "./gameplay/palaceReverie";
 import { REVERIE_CENTER } from "./gameplay/palaceReverie/meta";
 import type { LandsEndRegion } from "./world/landsEnd";
 import { LANDS_END_CENTER } from "./world/landsEnd/meta";
+import { SiteFoliageStreamer } from "./world/vegetation/siteFoliage";
+import { CORONA_DOG_PARK } from "./world/coronaHeights/meta";
+import {
+  distanceToTrails as coronaDistanceToTrails,
+  hash2 as coronaHash2,
+  pointInPolygon as coronaPointInPolygon
+} from "./world/coronaHeights/rules";
 import type { WaveOrgan } from "./world/waveOrgan";
 import { WAVE_ORGAN_CENTER } from "./world/waveOrgan/meta";
 import type { BeachPianist } from "./world/beachPianist";
@@ -176,6 +188,7 @@ import {
   type CarConfig
 } from "./vehicles/car";
 import { loadSavedScooter, randomScooterConfig, saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "./vehicles/scooter";
+import { passengerCapacity } from "./vehicles/rideable";
 import {
   loadSavedSurfboard,
   randomSurfboardConfig,
@@ -271,7 +284,6 @@ async function boot() {
   // the heavy visual mesh/HUD chunk is requested only when surfing starts.
   let oceanBeachWaves: import("./gameplay/surfing/waves").OceanBeachWaves | null = null;
   const underwater = new UnderwaterOverlay(app, map);
-  const seaPillars = new SeaPillars(scene, map);
 
   progress(40, "streaming the city");
   const tiles = new TileStreamer(scene);
@@ -524,6 +536,7 @@ async function boot() {
   // Prewarming here avoids synthesizing its noise/room buffers on the first W.
   const gameplaySfxBus = new GameplaySfxBus();
   gameplaySfxBus.prewarm();
+  audioEngine.prewarm();
 
   // Space / pad-X toys — ↑/↓ pick the toolbar row, ←/→ cycle within it
   const graffiti = new Graffiti(scene);
@@ -1139,6 +1152,9 @@ async function boot() {
   // vegetation group is hidden AND its per-frame update is skipped in the loop
   // below — see the `foliageOn` gate around garden/wildlands update.
   let foliageOn = Boolean(FOLIAGE_TUNING.values.visible);
+  // Exhibit-site vegetation streamer — constructed after the optional-site
+  // stage machinery exists; registrations are boot-safe data.
+  let siteFoliage: SiteFoliageStreamer | null = null;
   const setFoliageVisible = (visible: boolean) => {
     foliageOn = visible;
     garden?.setVisible(visible, player.position);
@@ -1147,8 +1163,7 @@ async function boot() {
     goldenGateTennis?.setFoliageVisible(visible);
     japaneseTeaGarden?.setFoliageVisible(visible);
     sutroBaths?.setFoliageVisible(visible);
-    coronaHeights?.setFoliageVisible(visible);
-    landsEnd?.setFoliageVisible(visible);
+    siteFoliage?.setVisible(visible);
     islands.setFoliageVisible(visible);
     sky.invalidateStaticShadows();
   };
@@ -1259,6 +1274,8 @@ async function boot() {
       handWorldPos: (out) => player.handWorldPos(out)
     },
     hud: { message: (t, s) => hud.message(t, s) },
+    onThrow: (throwId, x, y, z, vx, vy, vz) => net.sendBall(throwId, x, y, z, vx, vy, vz),
+    onPickupRequest: (sourceId, throwId) => net.requestBallPickup(sourceId ?? net.selfId, throwId),
     // A bounce on the tea-garden pond bottom is submerged — its plonk is voiced
     // by the water feature, so skip the dry thud there.
     onGroundImpact: (x, y, z, speed) => {
@@ -1465,13 +1482,23 @@ async function boot() {
   // particles and the WebGPU hot-tub solver cross a separate proximity gate.
   const ghostShipBeacon = new GhostShipBeacon(scene, map);
   let ghostShip: GhostShip | null = null;
-  let ghostShipLoading: Promise<void> | null = null;
+  let ghostShipLoading: Promise<GhostShip | null> | null = null;
   let ghostShipLoadFailed = false;
   let unregisterGhostShipTuning: (() => void) | null = null;
-  let ensureGhostShipDetail: () => void = () => {};
-  remotes.worldRidePose = (rideId, seat, outPosition, outQuaternion) =>
-    rideId === GHOST_SHIP_RIDE_ID &&
-    (ghostShip?.seatPose(seat, outPosition, outQuaternion) ?? false);
+  let ensureGhostShipDetail: () => Promise<GhostShip | null> = async () => null;
+  const ghostShipSeatQuat = new THREE.Quaternion();
+  const ghostShipSeatEuler = new THREE.Euler(0, 0, 0, "YXZ");
+  remotes.worldRidePose = (rideId, seat, outPosition, outQuaternion) => {
+    if (rideId !== GHOST_SHIP_RIDE_ID) return false;
+    if (ghostShip?.seatPose(seat, outPosition, outQuaternion)) return true;
+    // Keep map-teleport riders glued while the detailed chunk warms up.
+    const pose = ghostShipBeacon.pose;
+    outPosition.set(pose.x, pose.y + 2.2, pose.z);
+    ghostShipSeatEuler.set(pose.pitch, pose.yaw, pose.roll);
+    ghostShipSeatQuat.setFromEuler(ghostShipSeatEuler);
+    outQuaternion.copy(ghostShipSeatQuat);
+    return true;
+  };
   setRemoteSurfboardAssetsActive = (active) => remotes.setSurfboardAssetsEnabled(active);
   setRemoteScooterAssetsActive = (active) => remotes.setScooterAssetsEnabled(active);
   setRemoteCarAssetsActive = (active) => remotes.setCarAssetsEnabled(active);
@@ -1803,10 +1830,26 @@ async function boot() {
     remotes.remove(id);
     voice.drop(id);
     golf?.removeRemote(id);
+    fetchBall?.removeRemoteBalls(id);
   };
   net.onSample = (id, s) => remotes.sample(id, s);
   // someone else's paintball: same ballistic sim, their color, splats locally
   net.onPaint = (id, x, y, z, vx, vy, vz, rgb) => paintballs.spawn(x, y, z, vx, vy, vz, remotePaint.set(rgb), id);
+  // Friends' tennis balls use the exact local bounce/roll sim. They stay out of
+  // local dog-fetch ownership, but settled balls transfer through E pickup.
+  net.onBall = (id, throwId, x, y, z, vx, vy, vz) => fetchBall?.spawnRemote(id, throwId, x, y, z, vx, vy, vz);
+  net.onBallPickup = (pickerId, ownerId, throwId, accepted) => {
+    const received = fetchBall?.resolvePickup(
+      pickerId === net.selfId,
+      ownerId === net.selfId ? null : ownerId,
+      throwId,
+      accepted
+    ) ?? false;
+    if (received && ownerId !== net.selfId) {
+      const ownerName = net.roster.get(ownerId)?.name;
+      hud.message(`Picked up ${ownerName ? `${ownerName}'s` : "your friend's"} ball!`, 2.4);
+    }
+  };
   const remotePaint = new THREE.Color();
   // shared skies: my rocket launches go out, friends' volleys replay here
   fireworks.onVolley = (rockets) => net.sendFireworks(rockets);
@@ -1839,6 +1882,8 @@ async function boot() {
     }
   );
   net.onChat = (_id, name, text) => chat.addMessage(name, text);
+  // presence toast above the chat panel when someone new enters the world
+  net.onJoin = (_id, name) => chat.showJoin(name);
   // golf: friends' swings/balls/scores replay here (owner-simulated snapshots)
   net.onGolf = (id, m) => golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {
@@ -1846,18 +1891,16 @@ async function boot() {
       hud.message("Click the scene to capture · Esc releases · L toggles free cursor", 2.8);
     }
   };
-  // Passenger support: cars/scooters publish one anchor; the Phoenix publishes
-  // two, so a driver plus two friends can share its saddle.
+  // Passenger support: every mode in PASSENGER_CAPACITY publishes seat
+  // anchors in its mesh userData (single anchor or a passengerSeats list).
   remotes.localDriveMesh = () =>
-    (player.mode === "drive" || player.mode === "scooter" || player.mode === "bird") && !player.riding
-      ? player.meshes[player.mode]
-      : null;
+    passengerCapacity(player.mode) > 0 && !player.riding ? player.meshes[player.mode] : null;
 
   // Passenger pose scratch; attachment ownership lives in EmbodimentController.
   const ridePos = new THREE.Vector3();
   const rideQuat = new THREE.Quaternion();
 
-  // proximity voice chat: P2P audio spatialised onto the remote avatars,
+  // voice chat: P2P audio to the closest players at any distance,
   // signaled through the relay (src/net/voice.ts). Mic is opt-in — V key or
   // the HUD mic button — and fully released when off.
   const voice = new Voice(
@@ -1868,7 +1911,7 @@ async function boot() {
   voice.onSpeaking = (id, on) => remotes.setSpeaking(id, on);
   voice.onMicChange = (on) => {
     audioControls.setMic(on);
-    hud.message(on ? "Mic live — nearby players can hear you" : "Mic off", 2.6);
+    hud.message(on ? "Mic live — the closest players can hear you" : "Mic off", 2.6);
   };
   const toggleMic = () => {
     void voice.setMic(!voice.micOn).then((ok) => {
@@ -1934,7 +1977,7 @@ async function boot() {
   minimap.addLandmark(PUP_CENTER.x, PUP_CENTER.z, "Puppy Nursery");
   minimap.addLandmark(FORT_MASON_ENSEMBLE_CENTER.x, FORT_MASON_ENSEMBLE_CENTER.z, "Fort Mason Jam");
   minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
-  minimap.addLandmark(-1680, -1050, "Ghost Ship · nightly landing");
+  minimap.addLandmark(ghostShipBeacon.pose.x, ghostShipBeacon.pose.z, GHOST_SHIP_LANDMARK_NAME);
   // Ocean Beach surf shack. Teleporting arrives on foot at the apron;
   // one E press on a racked board enters the live face already standing and moving.
   {
@@ -2030,9 +2073,15 @@ async function boot() {
       player.releaseWorldArrivalHold("boot-arrival");
     }
   };
-  const waitForWorldBackgroundWindow = async (extraQuietMs = 0): Promise<void> => {
+  /** `deadline` (ms, performance.now clock) caps how long quiet is awaited:
+   * past it the caller admits on the next idle+frame even while the player
+   * keeps moving. An active arrival always blocks regardless of deadline. */
+  const waitForWorldBackgroundWindow = async (extraQuietMs = 0, deadline = Infinity): Promise<void> => {
     while (true) {
-      const target = Math.max(worldBackgroundNotBefore + extraQuietMs, worldBackgroundAdmissionAt);
+      const target = Math.min(
+        Math.max(worldBackgroundNotBefore + extraQuietMs, worldBackgroundAdmissionAt),
+        deadline
+      );
       if (!worldArrival.active && performance.now() >= target) {
         await new Promise<void>((resolve) => {
           if ("requestIdleCallback" in window) {
@@ -2043,8 +2092,9 @@ async function boot() {
         });
         if (
           !worldArrival.active &&
-          performance.now() >= worldBackgroundNotBefore + extraQuietMs &&
-          performance.now() >= worldBackgroundAdmissionAt
+          (performance.now() >= deadline ||
+            (performance.now() >= worldBackgroundNotBefore + extraQuietMs &&
+              performance.now() >= worldBackgroundAdmissionAt))
         ) {
           // Concurrent optional systems used to all wake from the same idle
           // callback and begin expensive constructors together. Admit one stage
@@ -2113,8 +2163,59 @@ async function boot() {
     navigation.switchMode(mode);
   };
   switchModeFromExit = switchMode;
-  const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) =>
+  const teleportAboardGhostShip = () => {
+    if (embodiments.passengerOf === GHOST_SHIP_RIDE_ID) {
+      hud.message("Already aboard the wandering ghost ship", 2.2);
+      return;
+    }
+    navigation.teleportCustom({
+      label: GHOST_SHIP_LANDMARK_NAME,
+      successMessage: null,
+      resolve: async (signal) => {
+        const ship = await ensureGhostShipDetail();
+        if (signal.aborted) throw new DOMException("Navigation superseded", "AbortError");
+        if (!ship) throw new Error("The ghost ship could not be loaded");
+        const seat = ship.claimDeckSeat(remotes.occupiedRideSeats(GHOST_SHIP_RIDE_ID));
+        if (seat <= 0) throw new Error("The ghost ship's deck stations are full");
+        const pose = ghostShipBeacon.pose;
+        ship.update(0, elapsed, pose, player.renderPosition, true);
+        if (!ship.seatPose(seat, ridePos, rideQuat)) {
+          throw new Error("The ghost ship could not seat you");
+        }
+        return {
+          x: ridePos.x,
+          y: ridePos.y,
+          z: ridePos.z,
+          cameraYaw: pose.yaw,
+          commit: () => {
+            releaseGameplayForNavigation();
+            embodiments.leaveRide();
+            embodiments.exitToWalk();
+            ghostShipRideZoom ??= chase.zoom;
+            chase.zoom = Math.max(chase.zoom, 3.2);
+            chase.yaw = pose.yaw;
+            ghostShipRideYaw = pose.yaw;
+            player.teleportTo({
+              x: ridePos.x,
+              y: ridePos.y,
+              z: ridePos.z,
+              facing: pose.yaw,
+              mode: "walk"
+            });
+            embodiments.startPassengerRide(GHOST_SHIP_RIDE_ID, seat);
+            hud.message(`Aboard the wandering ghost ship · deck station ${seat} · E to step off`, 3.2);
+          }
+        };
+      }
+    });
+  };
+  const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) => {
+    if (toName === GHOST_SHIP_LANDMARK_NAME) {
+      teleportAboardGhostShip();
+      return;
+    }
     navigation.teleportToTarget(x, z, toName, playerId);
+  };
   switchModeFromToolbar = switchMode;
   hud.onHistoryBack = () => applyPlaceHistory(-1);
   hud.onHistoryForward = () => applyPlaceHistory(1);
@@ -2257,33 +2358,40 @@ async function boot() {
     setFoliageVisible,
     () => wildlands?.flowers.refresh(),
     () => wildlands?.grass.refresh(),
-    () => diagnostics.toggleInspector()
+    () => diagnostics.toggleInspector(),
+    () => { citygenRing.current?.refreshInteriors(); }
   );
 
   ensureGhostShipDetail = () => {
-    if (ghostShip || ghostShipLoading || ghostShipLoadFailed) return;
-    ghostShipLoading = import("./world/ghostShip")
-      .then(async ({ createGhostShip }) => {
-        const candidate = createGhostShip({ scene, renderer });
-        try {
-          await candidate.warmup();
-        } catch (error) {
-          candidate.dispose();
-          throw error;
-        }
-        ghostShip = candidate;
-        ghostShipBeacon.detailedVisible = true;
-        unregisterGhostShipTuning = debugPanel.registerFeatureTuning(candidate.tuningDescriptor());
-        const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-        if (hooks) hooks.ghostShip = candidate;
-      })
-      .catch((error) => {
-        ghostShipLoadFailed = true;
-        console.warn("[ghost-ship] detailed runtime unavailable", error);
-      })
-      .finally(() => {
-        ghostShipLoading = null;
-      });
+    if (ghostShip) return Promise.resolve(ghostShip);
+    if (ghostShipLoadFailed) return Promise.resolve(null);
+    if (!ghostShipLoading) {
+      ghostShipLoading = import("./world/ghostShip")
+        .then(async ({ createGhostShip }) => {
+          const candidate = createGhostShip({ scene, renderer });
+          try {
+            await candidate.warmup();
+          } catch (error) {
+            candidate.dispose();
+            throw error;
+          }
+          ghostShip = candidate;
+          ghostShipBeacon.detailedVisible = true;
+          unregisterGhostShipTuning = debugPanel.registerFeatureTuning(candidate.tuningDescriptor());
+          const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+          if (hooks) hooks.ghostShip = candidate;
+          return candidate;
+        })
+        .catch((error) => {
+          ghostShipLoadFailed = true;
+          console.warn("[ghost-ship] detailed runtime unavailable", error);
+          return null;
+        })
+        .finally(() => {
+          ghostShipLoading = null;
+        });
+    }
+    return ghostShipLoading;
   };
 
   import.meta.hot?.dispose(() => {
@@ -2900,16 +3008,25 @@ async function boot() {
   ) => {
     if (teaGardenOptionalPromise) return;
     teaGardenOptionalPromise = (async () => {
+      markLazyRegion("tea-garden", "optional-details-wait");
+      await waitForWorldBackgroundWindow();
       markLazyRegion("tea-garden", "optional-trees-wait");
-      await site.prepareOptionalFoliage(async (treeGroup) => {
-        // Trees are optional enrichment. They alone retain the movement/arrival
-        // quiet policy; architecture, Hiro, shrubs and grass are already live.
-        await waitForWorldBackgroundWindow();
-        markLazyRegion("tea-garden", "optional-tree-compile-start");
-        treeGroup.updateMatrixWorld(true);
-        await renderer.compileAsync(treeGroup, camera, scene);
-        markLazyRegion("tea-garden", "optional-tree-compile-end");
-      });
+      await Promise.all([
+        site.prepareOptionalDetails(async (detailsGroup) => {
+          markLazyRegion("tea-garden", "optional-detail-compile-start");
+          detailsGroup.updateMatrixWorld(true);
+          await renderer.compileAsync(detailsGroup, camera, scene);
+          markLazyRegion("tea-garden", "optional-detail-compile-end");
+        }),
+        site.prepareOptionalFoliage(async (treeGroup) => {
+          // Optional enrichment retains the movement/arrival quiet policy;
+          // architecture, Hiro, shrubs, grass and water are already live.
+          markLazyRegion("tea-garden", "optional-tree-compile-start");
+          treeGroup.updateMatrixWorld(true);
+          await renderer.compileAsync(treeGroup, camera, scene);
+          markLazyRegion("tea-garden", "optional-tree-compile-end");
+        })
+      ]);
       await site.ready;
       markLazyRegion("tea-garden", "optional-ready");
       if (foliageOn) sky.invalidateStaticShadows("all");
@@ -2950,6 +3067,7 @@ async function boot() {
             notify: (message, seconds) => hud.message(message, seconds)
           });
           site.deferOptionalFoliage();
+          site.deferOptionalDetails();
           japaneseTeaGarden = site;
           net.replayRakeStamps();
           teaGardenPaintWater = (impact) => site?.paintWater(impact) ?? false;
@@ -2965,7 +3083,7 @@ async function boot() {
           site.group.updateMatrixWorld(true);
           try {
             markLazyRegion("tea-garden", "essential-compile-start");
-            await renderer.compileAsync(site.group, camera, scene);
+            await site.prepareEssential((root) => renderer.compileAsync(root, camera, scene));
             markLazyRegion("tea-garden", "essential-compile-end");
           } catch (error) {
             // Compilation is a presentation optimization; the live renderer can
@@ -3016,6 +3134,10 @@ async function boot() {
   };
 
   prepareDestinationEssentials = async (destination, signal) => {
+    // Optional exhibit at the destination: retire irrelevant in-flight sites
+    // and put the destination's own site on the arrival priority lane. Fire
+    // and forget — the travel cover must never wait on optional content.
+    reprioritizeOptionalSitesForArrival(destination);
     const teaDistance = Math.hypot(
       destination.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
       destination.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
@@ -3053,6 +3175,17 @@ async function boot() {
     | "fort-mason-ensemble"
     | "beach-pianist";
   type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
+  type OptionalSiteStage = () => Promise<void>;
+  type OptionalSiteLoadContext = {
+    /** Abortable stage boundary: waits for admission, then throws if the load
+     * was aborted or the player left residency. Use between stages whose
+     * partial work the load function can dispose. */
+    stage: OptionalSiteStage;
+    /** Admission wait without abort semantics, for stages after a
+     * construction step the site cannot roll back. */
+    waitStage: OptionalSiteStage;
+    signal: AbortSignal;
+  };
   type OptionalWorldSite = {
     id: OptionalSiteId;
     label: string;
@@ -3060,14 +3193,75 @@ async function boot() {
     z: number;
     state: OptionalSiteState;
     forced: boolean;
+    /** Arrival lane: this site is the teleport/boot destination's exhibit.
+     * Skips background quiet windows; only the travel cover outranks it. */
+    priority: boolean;
+    /** First time the player was inside the approach radius while dormant.
+     * Caps quiet-window deferral so a moving player still gets the exhibit. */
+    eligibleSince: number;
+    controller: AbortController | null;
     promise: Promise<void> | null;
-    load: () => Promise<void>;
+    load: (context: OptionalSiteLoadContext) => Promise<void>;
     /** A false value prevents automatic import; explicit debug loads still work. */
     available?: () => boolean;
   };
-  const OPTIONAL_SITE_APPROACH_RADIUS = 1100;
+  const OPTIONAL_SITE_APPROACH_RADIUS = 500;
   const OPTIONAL_SITE_RECHECK_RADIUS = OPTIONAL_SITE_APPROACH_RADIUS * 1.25;
+  const OPTIONAL_SITE_UNLOAD_RADIUS = 1000;
+  const OPTIONAL_SITE_STARVATION_CAP_MS = 2500;
   const waitForOptionalSiteStage = () => waitForWorldBackgroundWindow(700);
+  const optionalSiteAbortError = () =>
+    new DOMException("Optional site load aborted", "AbortError");
+  const isAbortError = (error: unknown): boolean =>
+    error instanceof DOMException && error.name === "AbortError";
+  const optionalSiteDistance = (site: OptionalWorldSite): number =>
+    Math.hypot(player.position.x - site.x, player.position.z - site.z);
+  // rAF raced against a timeout: a hidden tab has no presentation frames, and
+  // an rAF-only wait would deadlock the load exactly like the tea-garden
+  // backgrounded-tab build once did.
+  const presentationFrameOrTimeout = () => new Promise<void>((resolve) => {
+    let settled = false;
+    const settle = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+    requestAnimationFrame(settle);
+    setTimeout(settle, 250);
+  });
+  const optionalSiteAdmission = async (site: OptionalWorldSite): Promise<void> => {
+    if (site.priority) {
+      // Destination content. The travel cover keeps the main thread for the
+      // arrival's own cells; the first frames after it lifts belong to us.
+      while (worldArrival.active) await presentationFrameOrTimeout();
+      await presentationFrameOrTimeout();
+      return;
+    }
+    const deadline = site.eligibleSince > 0
+      ? site.eligibleSince + OPTIONAL_SITE_STARVATION_CAP_MS
+      : Infinity;
+    await waitForWorldBackgroundWindow(700, deadline);
+  };
+  const optionalSiteStagesFor = (
+    site: OptionalWorldSite,
+    signal: AbortSignal
+  ): Pick<OptionalSiteLoadContext, "stage" | "waitStage"> => ({
+    waitStage: () => optionalSiteAdmission(site),
+    stage: async () => {
+      if (signal.aborted) throw signal.reason ?? optionalSiteAbortError();
+      await optionalSiteAdmission(site);
+      if (signal.aborted) throw signal.reason ?? optionalSiteAbortError();
+      if (
+        !site.forced && !site.priority &&
+        (site.state === "queued" || site.state === "loading") &&
+        optionalSiteDistance(site) > OPTIONAL_SITE_RECHECK_RADIUS
+      ) {
+        site.controller?.abort(optionalSiteAbortError());
+        throw optionalSiteAbortError();
+      }
+    }
+  });
 
   const refreshOptionalSiteDebug = () => {
     const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
@@ -3092,7 +3286,11 @@ async function boot() {
     });
   };
 
-  const prepareOptionalRoot = async (label: string, root: THREE.Object3D): Promise<void> => {
+  const prepareOptionalRoot = async (
+    label: string,
+    root: THREE.Object3D,
+    stage: OptionalSiteStage = waitForOptionalSiteStage
+  ): Promise<void> => {
     const parent = root.parent;
     const renderState: Array<{ object: THREE.Object3D; visible: boolean; frustumCulled: boolean }> = [];
     root.removeFromParent();
@@ -3106,11 +3304,13 @@ async function boot() {
       // Construction can outlast the idle decision that admitted it. Keep the
       // subtree detached and re-check movement/arrival quiet immediately before
       // asking the WebGPU driver for pipelines.
-      await waitForOptionalSiteStage();
+      await stage();
       await renderer.compileAsync(root, camera, scene);
     } catch (error) {
       // Compilation is a presentation optimization, never a reason to discard
-      // a successfully constructed site. The normal first render remains valid.
+      // a successfully constructed site. An abortable stage may still retire
+      // the whole load here — the caller owns that cleanup.
+      if (isAbortError(error)) throw error;
       console.warn(`[${label}] deferred compile failed:`, error);
     } finally {
       for (const state of renderState) {
@@ -3121,9 +3321,32 @@ async function boot() {
     }
   };
 
-  const loadGoldman = async (): Promise<void> => {
+  // Gate registrations are kept so a distance unload can retire its site's
+  // wake/sleep pads with the rest of the feature.
+  const optionalSiteGateRegistrations: Partial<
+    Record<OptionalSiteId, ReturnType<typeof siteGate.register>>
+  > = {};
+
+  // Shared teardown for distance unload and mid-load aborts: the court, its
+  // physics and overlay, the clubhouse swap, and the pickleball layer all
+  // return to their pre-approach state so a later approach rebuilds cleanly.
+  const teardownGoldman = (): void => {
+    pickleballController?.dispose();
+    pickleballController = null;
+    if (goldenGateTennis) {
+      goldenGateTennis.dispose();
+      goldenGateTennis = null;
+      for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
+        tiles.unsuppressBuildingMesh(building.key, building.index);
+      }
+      sky.invalidateStaticShadows();
+    }
+    refreshOptionalSiteDebug();
+  };
+
+  const loadGoldman = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
     const { createGoldenGateTennisSite } = await import("./world/goldenGateTennis");
-    await waitForOptionalSiteStage();
+    await stage();
     let site: GoldenGateTennisSite | null = null;
     let suppressed = false;
     try {
@@ -3131,7 +3354,7 @@ async function boot() {
         physics,
         daylight: () => sky.sunElevation > 0
       });
-      await prepareOptionalRoot("goldman", site.group);
+      await prepareOptionalRoot("goldman", site.group, stage);
       // Swap the generic clubhouse only when its authored replacement is ready
       // to attach. Any failure restores the baked fallback immediately.
       for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
@@ -3157,9 +3380,9 @@ async function boot() {
     // second idle boundary so its athletes, UI and audio never pile onto the
     // authored-site construction task.
     try {
-      await waitForOptionalSiteStage();
+      await stage();
       const { PickleballController: LoadedPickleballController } = await import("./app/systems/pickleball");
-      await waitForOptionalSiteStage();
+      await stage();
       const controller = new LoadedPickleballController({
         goldman: site,
         scene,
@@ -3178,97 +3401,121 @@ async function boot() {
       });
       pickleballController = controller;
       try {
-        await waitForOptionalSiteStage();
+        await stage();
         await controller.prepareRender(renderer, camera, scene);
       } catch (error) {
+        if (isAbortError(error)) throw error;
         console.warn("[pickleball] deferred compile failed:", error);
       }
       if (net.status === "online") controller.onWelcome();
       else controller.syncSlots();
       refreshOptionalSiteDebug();
     } catch (error) {
+      if (isAbortError(error)) {
+        // A superseded destination mid-build: leave nothing half-attached. The
+        // whole site returns to dormant so the next approach rebuilds it.
+        teardownGoldman();
+        throw error;
+      }
       console.warn("[pickleball] first-approach construction failed:", error);
     }
   };
 
-  const loadArchery = async (): Promise<void> => {
+  const loadArchery = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { createArchery } = await import("./gameplay/archery");
-    await waitForOptionalSiteStage();
+    await stage();
+    // Construction registers physics and gate state the site cannot yet roll
+    // back, so no abort boundaries after this point — only admission waits.
     const game = createArchery(map, physics, worldQueries, scene, {
       nature,
       daylight: () => sky.sunElevation > 0.05
     });
-    await prepareOptionalRoot("archery", game.root);
+    await prepareOptionalRoot("archery", game.root, waitStage);
     archery = game;
-    siteGate.register(game.siteHooks());
+    optionalSiteGateRegistrations.archery = siteGate.register(game.siteHooks());
     refreshOptionalSiteDebug();
   };
 
-  const loadPup = async (): Promise<void> => {
+  const loadPup = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { createPupPen } = await import("./gameplay/pup");
-    await waitForOptionalSiteStage();
+    await stage();
     const pen = createPupPen(map, physics, scene);
-    await prepareOptionalRoot("pup", pen.root);
+    await prepareOptionalRoot("pup", pen.root, waitStage);
     pup = pen;
-    siteGate.register(pen.siteHooks());
+    optionalSiteGateRegistrations.pup = siteGate.register(pen.siteHooks());
     refreshOptionalSiteDebug();
   };
 
-  const loadFortMasonEnsemble = async (): Promise<void> => {
+  const loadFortMasonEnsemble = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
     const { createFortMasonEnsemble } = await import("./gameplay/fortMasonEnsemble");
-    await waitForOptionalSiteStage();
+    await stage();
     const ensemble = createFortMasonEnsemble({ map, net, player, input, hud, chase });
-    await prepareOptionalRoot("fort-mason ensemble", ensemble.root);
-    fortMasonEnsemble = ensemble;
-    scene.add(ensemble.root);
-    sky.invalidateStaticShadows();
-    refreshOptionalSiteDebug();
-  };
-
-  const loadPalace = async (): Promise<void> => {
-    const { createPalaceReverie } = await import("./gameplay/palaceReverie");
-    await waitForOptionalSiteStage();
-    const game = createPalaceReverie(map, scene);
-    await prepareOptionalRoot("palace-reverie", game.root);
-    palaceReverie = game;
-    siteGate.register(game.siteHooks());
-    refreshOptionalSiteDebug();
-  };
-
-  const loadAfterlight = async (): Promise<void> => {
-    const { createAfterlight } = await import("./gameplay/afterlight");
-    await waitForOptionalSiteStage();
-    const experience = createAfterlight(map, scene, nature);
-    await experience.ready;
-    // prepareWarmup exposes every authored state; detach immediately so none of
-    // those temporary states can flash into a live frame while WebGPU compiles.
-    const restore = experience.prepareWarmup();
-    experience.root.removeFromParent();
-    experience.root.updateMatrixWorld(true);
     try {
-      await waitForOptionalSiteStage();
-      await renderer.compileAsync(experience.root, camera, scene);
+      await prepareOptionalRoot("fort-mason ensemble", ensemble.root, stage);
+      fortMasonEnsemble = ensemble;
+      scene.add(ensemble.root);
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
     } catch (error) {
-      console.warn("[afterlight] deferred compile failed:", error);
-    } finally {
-      restore();
+      if (fortMasonEnsemble === ensemble) fortMasonEnsemble = null;
+      ensemble.dispose();
+      throw error;
     }
-    afterlight = experience;
-    experience.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
-    siteGate.register(experience.siteHooks());
-    refreshOptionalSiteDebug();
   };
 
-  const loadCorona = async (): Promise<void> => {
+  const loadPalace = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+    const { createPalaceReverie } = await import("./gameplay/palaceReverie");
+    await stage();
+    const game = createPalaceReverie(map, scene);
+    try {
+      await prepareOptionalRoot("palace-reverie", game.root, stage);
+      palaceReverie = game;
+      optionalSiteGateRegistrations.palace = siteGate.register(game.siteHooks());
+      refreshOptionalSiteDebug();
+    } catch (error) {
+      if (palaceReverie === game) palaceReverie = null;
+      game.dispose();
+      throw error;
+    }
+  };
+
+  const loadAfterlight = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+    const { createAfterlight } = await import("./gameplay/afterlight");
+    await stage();
+    const experience = createAfterlight(map, scene, nature);
+    try {
+      await experience.ready;
+      // prepareWarmup exposes every authored state; detach immediately so none of
+      // those temporary states can flash into a live frame while WebGPU compiles.
+      const restore = experience.prepareWarmup();
+      experience.root.removeFromParent();
+      experience.root.updateMatrixWorld(true);
+      try {
+        await stage();
+        await renderer.compileAsync(experience.root, camera, scene);
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        console.warn("[afterlight] deferred compile failed:", error);
+      } finally {
+        restore();
+      }
+      afterlight = experience;
+      experience.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
+      optionalSiteGateRegistrations.afterlight = siteGate.register(experience.siteHooks());
+      refreshOptionalSiteDebug();
+    } catch (error) {
+      if (afterlight === experience) afterlight = null;
+      experience.root.removeFromParent();
+      experience.dispose();
+      throw error;
+    }
+  };
+
+  const loadCorona = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { CoronaHeightsPark: LoadedCoronaHeightsPark } = await import("./world/coronaHeights");
-    await waitForOptionalSiteStage();
+    await stage();
     const park = new LoadedCoronaHeightsPark(map, physics);
-    park.prepareFoliage = async (group) => {
-      await waitForOptionalSiteStage();
-      await prepareOptionalRoot("corona-heights foliage", group);
-    };
-    await prepareOptionalRoot("corona-heights", park.group);
-    park.setFoliageVisible(foliageOn);
+    await prepareOptionalRoot("corona-heights", park.group, waitStage);
     park.onDogAudioCue = (dog, cue) => dogParkAudio.cue(dog, cue);
     coronaHeights = park;
     scene.add(park.group);
@@ -3276,64 +3523,39 @@ async function boot() {
     refreshOptionalSiteDebug();
   };
 
-  const loadLandsEnd = async (): Promise<void> => {
+  const loadLandsEnd = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { LandsEndRegion: LoadedLandsEndRegion } = await import("./world/landsEnd");
-    await waitForOptionalSiteStage();
+    await stage();
     const region = new LoadedLandsEndRegion(map);
     // The eye-walker's GLB + rider arm later (near the labyrinth); warm their
     // pipelines off-frame when that happens.
-    region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root);
-    await prepareOptionalRoot("lands-end", region.group);
-    region.setFoliageVisible(foliageOn);
+    region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root, waitStage);
+    await prepareOptionalRoot("lands-end", region.group, waitStage);
     landsEnd = region;
     scene.add(region.group);
     sky.invalidateStaticShadows();
     refreshOptionalSiteDebug();
   };
 
-  // Remote bathers rippling the Sutro pools: locatorTargets() gives world x/y/z
-  // but no velocity, so difference positions frame-to-frame into a reused
-  // scratch array (only touched while the player is near the baths water).
-  const sutroRemotePrev = new Map<number, { x: number; z: number; t: number }>();
-  const sutroRemoteScratch: { x: number; y: number; z: number; vx: number; vz: number }[] = [];
-  const getSutroRemotes = () => {
-    sutroRemoteScratch.length = 0;
-    const now = performance.now();
-    for (const r of remotes.locatorTargets()) {
-      const prev = sutroRemotePrev.get(r.id);
-      let vx = 0;
-      let vz = 0;
-      if (prev) {
-        const dtS = Math.max((now - prev.t) / 1000, 1e-3);
-        vx = (r.x - prev.x) / dtS;
-        vz = (r.z - prev.z) / dtS;
-      }
-      sutroRemotePrev.set(r.id, { x: r.x, z: r.z, t: now });
-      sutroRemoteScratch.push({ x: r.x, y: r.y, z: r.z, vx, vz });
-    }
-    return sutroRemoteScratch;
-  };
-
-  const loadWaveOrgan = async (): Promise<void> => {
+  const loadWaveOrgan = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { WaveOrgan: LoadedWaveOrgan } = await import("./world/waveOrgan");
-    await waitForOptionalSiteStage();
+    await stage();
     const organ = new LoadedWaveOrgan(map, nature);
-    await prepareOptionalRoot("wave-organ", organ.group);
+    await prepareOptionalRoot("wave-organ", organ.group, waitStage);
     waveOrgan = organ;
     scene.add(organ.group);
     sky.invalidateStaticShadows();
     refreshOptionalSiteDebug();
   };
 
-  const loadBeachPianist = async (): Promise<void> => {
+  const loadBeachPianist = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { BeachPianist: LoadedBeachPianist } = await import("./world/beachPianist");
-    await waitForOptionalSiteStage();
+    await stage();
     // The whole site is procedural; its pipelines warm off-frame at PRIME range
     // (prepareRender), so the first visible flip never compiles mid-frame.
     const site = new LoadedBeachPianist({
       map,
-      nature,
-      prepareRender: (root) => prepareOptionalRoot("beach-pianist", root)
+      prepareRender: (root) => prepareOptionalRoot("beach-pianist", root, waitStage)
     });
     scene.add(site.group);
     beachPianist = site;
@@ -3341,24 +3563,22 @@ async function boot() {
     refreshOptionalSiteDebug();
   };
 
-  const loadSutroBaths = async (): Promise<void> => {
+  const loadSutroBaths = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
     const { createSutroBaths } = await import("./world/sutroBaths");
-    await waitForOptionalSiteStage();
+    await stage();
     let candidate: import("./world/sutroBaths").SutroBaths | null = null;
     try {
       candidate = createSutroBaths({
         renderer,
         scene,
         physics,
-        authoredRegions,
-        ballSource: { visitFreeBalls: (visitor) => fetchBall?.visitFreeBalls(visitor) },
-        getRemotes: getSutroRemotes
+        authoredRegions
       });
       // The geographic tile already owns and displays the period hall. Warm only
       // its optional living layer (foliage, bathers and nearby effects) here.
       candidate.setFoliageVisible(true);
       await candidate.ready;
-      await prepareOptionalRoot("sutro-baths", candidate.group);
+      await prepareOptionalRoot("sutro-baths", candidate.group, stage);
 
       candidate.setFoliageVisible(foliageOn);
       scene.add(candidate.group);
@@ -3387,54 +3607,140 @@ async function boot() {
     }
   };
 
+  const optionalWorldSite = (
+    base: Pick<OptionalWorldSite, "id" | "label" | "x" | "z" | "load"> &
+      Partial<Pick<OptionalWorldSite, "available">>
+  ): OptionalWorldSite => ({
+    ...base,
+    state: "dormant",
+    forced: false,
+    priority: false,
+    eligibleSince: 0,
+    controller: null,
+    promise: null
+  });
+
   const optionalWorldSites: OptionalWorldSite[] = [
-    {
+    optionalWorldSite({
       id: "goldman",
       label: "Goldman Tennis Center",
       x: GOLDMAN_SITE_CENTER.x,
       z: GOLDMAN_SITE_CENTER.z,
-      state: "dormant",
-      forced: false,
-      promise: null,
       load: loadGoldman
-    },
-    { id: "archery", label: "Archery Range", ...ARCHERY_CENTER, state: "dormant", forced: false, promise: null, load: loadArchery },
-    { id: "pup", label: "Puppy Nursery", ...PUP_CENTER, state: "dormant", forced: false, promise: null, load: loadPup },
-    {
+    }),
+    optionalWorldSite({ id: "archery", label: "Archery Range", ...ARCHERY_CENTER, load: loadArchery }),
+    optionalWorldSite({ id: "pup", label: "Puppy Nursery", ...PUP_CENTER, load: loadPup }),
+    optionalWorldSite({
       id: "fort-mason-ensemble",
       label: "Fort Mason Jam",
       ...FORT_MASON_ENSEMBLE_CENTER,
-      state: "dormant",
-      forced: false,
-      promise: null,
       load: loadFortMasonEnsemble
-    },
-    { id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, state: "dormant", forced: false, promise: null, load: loadPalace },
-    {
+    }),
+    optionalWorldSite({ id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, load: loadPalace }),
+    optionalWorldSite({
       id: "afterlight",
       label: "Afterlight · 21:00–05:00",
       ...AFTERLIGHT_ARRIVAL,
-      state: "dormant",
-      forced: false,
-      promise: null,
       load: loadAfterlight,
       available: () => isAfterlightOpenAtHour(sky.timeOfDay)
-    },
-    { id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, state: "dormant", forced: false, promise: null, load: loadCorona },
-    { id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, state: "dormant", forced: false, promise: null, load: loadLandsEnd },
-    { id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, state: "dormant", forced: false, promise: null, load: loadWaveOrgan },
-    { id: "beach-pianist", label: "Beach Pianist", ...BEACH_PIANIST_CENTER, state: "dormant", forced: false, promise: null, load: loadBeachPianist },
-    {
+    }),
+    optionalWorldSite({ id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, load: loadCorona }),
+    optionalWorldSite({ id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, load: loadLandsEnd }),
+    optionalWorldSite({ id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, load: loadWaveOrgan }),
+    optionalWorldSite({ id: "beach-pianist", label: "Beach Pianist", ...BEACH_PIANIST_CENTER, load: loadBeachPianist }),
+    optionalWorldSite({
       id: "sutro-baths",
       label: "Sutro Baths · 1896",
       x: SUTRO_BATHS_ARRIVAL.x,
       z: SUTRO_BATHS_ARRIVAL.z,
-      state: "dormant",
-      forced: false,
-      promise: null,
       load: loadSutroBaths
-    }
+    })
   ];
+
+  // Exhibit vegetation streams on its own landscape radii, decoupled from the
+  // gameplay sites above: trees read from far offshore and survive their
+  // exhibit unloading behind the player. Each build() dynamic-imports the
+  // site's placement module and plants through the shared vegetation runtime.
+  // The destination exhibit always outranks scenery: a cypress compile racing
+  // the labyrinth's own pipeline work at boot can starve the thing the player
+  // actually teleported to. Foliage admissions wait until no optional site is
+  // mid-construction (bounded — exhibit builds complete or abort).
+  const optionalSiteConstructionIdle = async (): Promise<void> => {
+    while (
+      optionalWorldSites.some((site) => site.state === "queued" || site.state === "loading")
+    ) {
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const settle = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        requestAnimationFrame(settle);
+        setTimeout(settle, 250);
+      });
+    }
+  };
+  siteFoliage = new SiteFoliageStreamer({
+    scene,
+    admit: async (eligibleSince) => {
+      await optionalSiteConstructionIdle();
+      await waitForWorldBackgroundWindow(
+        700,
+        eligibleSince > 0 ? eligibleSince + OPTIONAL_SITE_STARVATION_CAP_MS : Infinity
+      );
+    },
+    // The compile admission needs the same treatment as build admission: an
+    // uncapped quiet window never opens for a player who keeps moving, and an
+    // exhibit that started constructing meanwhile takes the GPU first.
+    prepare: (label, root) =>
+      prepareOptionalRoot(label, root, async () => {
+        await optionalSiteConstructionIdle();
+        await waitForWorldBackgroundWindow(700, performance.now() + OPTIONAL_SITE_STARVATION_CAP_MS);
+      }),
+    onResidencyChanged: () => sky.invalidateStaticShadows()
+  });
+  siteFoliage.setVisible(foliageOn);
+  siteFoliage.register({
+    id: "lands-end-cypress",
+    x: LANDS_END_CENTER.x,
+    z: LANDS_END_CENTER.z,
+    loadDistance: 1500,
+    unloadDistance: 2000,
+    build: async () => (await import("./world/landsEnd/vegetation")).createLandsEndFoliage(map)
+  });
+  const coronaFoliageRules = {
+    hash: coronaHash2,
+    inDogPark: (x: number, z: number) => coronaPointInPolygon(x, z, CORONA_DOG_PARK),
+    distanceToTrails: coronaDistanceToTrails
+  };
+  siteFoliage.register({
+    id: "corona-trees",
+    x: CORONA_HEIGHTS_SUMMIT.x,
+    z: CORONA_HEIGHTS_SUMMIT.z,
+    loadDistance: 1500,
+    unloadDistance: 2000,
+    build: async () =>
+      (await import("./world/coronaHeights/vegetation")).createCoronaHeightsFoliage(
+        map,
+        coronaFoliageRules,
+        ["trees"]
+      )
+  });
+  siteFoliage.register({
+    id: "corona-groundcover",
+    x: CORONA_HEIGHTS_SUMMIT.x,
+    z: CORONA_HEIGHTS_SUMMIT.z,
+    loadDistance: 650,
+    unloadDistance: 950,
+    build: async () =>
+      (await import("./world/coronaHeights/vegetation")).createCoronaHeightsFoliage(
+        map,
+        coronaFoliageRules,
+        ["groundcover"]
+      )
+  });
 
   // One compact truth panel for the authored-site streaming contract. "ready"
   // means a chunk/resource set is resident after first approach; runtime and
@@ -3661,26 +3967,41 @@ async function boot() {
     if (site.state === "ready" || site.state === "failed") return site.promise ?? Promise.resolve();
     if (site.promise) return site.promise;
     site.state = "queued";
+    const controller = new AbortController();
+    site.controller = controller;
+    const { stage, waitStage } = optionalSiteStagesFor(site, controller.signal);
     const run = optionalSiteQueue.then(async () => {
       await revealedPromise;
-      await waitForOptionalSiteStage();
-      const distance = Math.hypot(player.position.x - site.x, player.position.z - site.z);
-      if (!site.forced && (distance > OPTIONAL_SITE_RECHECK_RADIUS || site.available?.() === false)) {
-        site.state = "dormant";
-        site.forced = false;
-        return;
+      if (controller.signal.aborted) throw controller.signal.reason ?? optionalSiteAbortError();
+      // Destination-lane sites start at once so their chunk fetch can overlap
+      // the travel cover; background sites wait for the quiet window and
+      // re-check residency here.
+      if (!site.priority) await stage();
+      if (!site.forced && !site.priority && site.available?.() === false) {
+        throw optionalSiteAbortError();
       }
       site.state = "loading";
-      await site.load();
+      console.info(`[lazy-site] ${site.label} loading…`);
+      await site.load({ stage, waitStage, signal: controller.signal });
       site.state = "ready";
       console.info(`[lazy-site] ${site.label} ready`);
       applyOptionalSitePerfGate(site);
     }).catch((error) => {
-      site.state = "failed";
-      console.warn(`[lazy-site] ${site.label} unavailable:`, error);
+      if (isAbortError(error) || controller.signal.aborted) {
+        site.state = "dormant";
+      } else {
+        site.state = "failed";
+        console.warn(`[lazy-site] ${site.label} unavailable:`, error);
+      }
     });
     site.promise = run.finally(() => {
-      if (site.state === "dormant") site.promise = null;
+      if (site.controller === controller) site.controller = null;
+      site.priority = false;
+      if (site.state !== "ready") site.forced = false;
+      if (site.state === "dormant") {
+        site.promise = null;
+        site.eligibleSince = 0;
+      }
     });
     optionalSiteQueue = site.promise;
     return site.promise;
@@ -3691,8 +4012,151 @@ async function boot() {
     return site ? requestOptionalWorldSite(site, true) : Promise.resolve();
   };
 
+  // Distance unload: every optional site owns a complete teardown, so leaving
+  // an exhibit's 1 km residency ring returns the world to its pre-approach
+  // state. A site the streaming panel force-loaded is pinned until its toggle
+  // releases it.
+  const OPTIONAL_SITE_UNLOADERS: Record<OptionalSiteId, () => void> = {
+    goldman: teardownGoldman,
+    "fort-mason-ensemble": () => {
+      fortMasonEnsemble?.dispose();
+      fortMasonEnsemble = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    palace: () => {
+      optionalSiteGateRegistrations.palace?.dispose();
+      delete optionalSiteGateRegistrations.palace;
+      palaceReverie?.dispose();
+      palaceReverie = null;
+      refreshOptionalSiteDebug();
+    },
+    afterlight: () => {
+      optionalSiteGateRegistrations.afterlight?.dispose();
+      delete optionalSiteGateRegistrations.afterlight;
+      if (afterlight) {
+        afterlight.root.removeFromParent();
+        afterlight.dispose();
+        afterlight = null;
+      }
+      refreshOptionalSiteDebug();
+    },
+    archery: () => {
+      optionalSiteGateRegistrations.archery?.dispose();
+      delete optionalSiteGateRegistrations.archery;
+      archery?.dispose();
+      archery = null;
+      refreshOptionalSiteDebug();
+    },
+    pup: () => {
+      optionalSiteGateRegistrations.pup?.dispose();
+      delete optionalSiteGateRegistrations.pup;
+      pup?.dispose();
+      pup = null;
+      refreshOptionalSiteDebug();
+    },
+    corona: () => {
+      coronaHeights?.dispose();
+      coronaHeights = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    "lands-end": () => {
+      landsEnd?.dispose();
+      landsEnd = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    "wave-organ": () => {
+      waveOrgan?.dispose();
+      waveOrgan = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    "beach-pianist": () => {
+      beachPianist?.dispose();
+      beachPianist = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    "sutro-baths": () => {
+      sutroBaths?.dispose();
+      sutroBaths = null;
+      refreshOptionalSiteDebug();
+    }
+  };
+
+  const unloadOptionalWorldSite = (site: OptionalWorldSite): void => {
+    const unloader = OPTIONAL_SITE_UNLOADERS[site.id];
+    if (!unloader || site.state !== "ready") return;
+    unloader();
+    site.state = "dormant";
+    site.promise = null;
+    site.priority = false;
+    site.eligibleSince = 0;
+    console.info(`[lazy-site] ${site.label} unloaded (left residency)`);
+  };
+
+  /** Arrival participant (fire-and-forget): retire in-flight sites the new
+   * destination makes irrelevant and put the destination's own exhibit on the
+   * priority lane. Never awaited — the travel cover must not wait on it. */
+  const reprioritizeOptionalSitesForArrival = (
+    destination: Readonly<{ x: number; z: number }>
+  ): void => {
+    for (const site of optionalWorldSites) {
+      const destDistance = Math.hypot(destination.x - site.x, destination.z - site.z);
+      const inFlight = site.state === "queued" || site.state === "loading";
+      if (inFlight && !site.forced && destDistance > OPTIONAL_SITE_RECHECK_RADIUS) {
+        site.controller?.abort(optionalSiteAbortError());
+      }
+    }
+    let nearest: OptionalWorldSite | null = null;
+    let nearestDistance = OPTIONAL_SITE_APPROACH_RADIUS;
+    for (const site of optionalWorldSites) {
+      if (site.state === "ready" || site.state === "failed") continue;
+      if (!optionalSitePerfAllowed(site.id)) continue;
+      if (site.available?.() === false) continue;
+      const destDistance = Math.hypot(destination.x - site.x, destination.z - site.z);
+      if (destDistance <= nearestDistance) {
+        nearest = site;
+        nearestDistance = destDistance;
+      }
+    }
+    if (nearest) {
+      nearest.priority = true;
+      void requestOptionalWorldSite(nearest);
+    }
+  };
+
   const updateOptionalWorldSites = (): void => {
     if (!revealed || worldArrival.active) return;
+    const now = performance.now();
+    for (const site of optionalWorldSites) {
+      const distance = optionalSiteDistance(site);
+      // Ordinary travel out of residency: retire a ready site with a teardown
+      // (hysteresis: load ≤ 500 m, unload ≥ 1 km) and abort an in-flight build
+      // the player has clearly walked away from.
+      if (site.state === "ready" && !site.forced && distance >= OPTIONAL_SITE_UNLOAD_RADIUS) {
+        const runtime = optionalSiteRuntimeState(site).runtime;
+        const busy = runtime === "ACTIVE" || runtime === "DETAIL" ||
+          (site.id === "goldman" && (pickleballController?.playing ?? false));
+        if (!busy) unloadOptionalWorldSite(site);
+      } else if (
+        (site.state === "queued" || site.state === "loading") &&
+        !site.forced && !site.priority &&
+        distance > OPTIONAL_SITE_RECHECK_RADIUS
+      ) {
+        site.controller?.abort(optionalSiteAbortError());
+      } else if (site.state === "dormant") {
+        // Starvation cap anchor: first moment the player is inside the
+        // approach radius. Cleared when they wander back out.
+        if (distance <= OPTIONAL_SITE_APPROACH_RADIUS) {
+          if (site.eligibleSince === 0) site.eligibleSince = now;
+        } else {
+          site.eligibleSince = 0;
+        }
+      }
+    }
     // Sutro owns an internal, closer GPU gate whose promise is intentionally
     // private. Treat its observable warmup as render-busy before admitting the
     // neighboring Lands End site to this serialized scheduler.
@@ -3714,6 +4178,13 @@ async function boot() {
     }
     if (nearest) void requestOptionalWorldSite(nearest);
   };
+
+  // Boot arrivals bypass the WorldArrivalCoordinator (they own the
+  // "boot-arrival" hold), so give the spawn landmark's exhibit the same
+  // priority lane the moment the world reveals.
+  void revealedPromise.then(() => {
+    reprioritizeOptionalSitesForArrival({ x: player.position.x, z: player.position.z });
+  });
 
   const touchesBounds = (
     x: number,
@@ -3795,7 +4266,7 @@ async function boot() {
       citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
     }
 
-    // Forest + Creatures: ambient wildlife and rideable animals
+    // Forest + Creatures: the bay serpent and rideable animals
     await waitForWorldBackgroundWindow(1800);
     const [forestMod, creaturesMod] = await Promise.all([
       import("./gameplay/forest"),
@@ -3803,7 +4274,7 @@ async function boot() {
     ]);
     await waitForWorldBackgroundWindow(1800);
     ANIMALS = forestMod.ANIMALS as NonNullable<typeof ANIMALS>;
-    creatures = new creaturesMod.Creatures(map, scene);
+    creatures = new creaturesMod.Creatures(scene);
     forest = new forestMod.Forest(map, scene);
 
     // Each optional region keeps its code, textures and tree growth behind its
@@ -4024,6 +4495,13 @@ async function boot() {
   let settlePct = 88;
   let settleLabel = "";
   const bootQuery = new URLSearchParams(location.search);
+  // `?flickerspy=1`: in-session diagnostic for the sky-flicker reports — see
+  // dev/flickerSpy.ts. Lazy import; costs nothing without the flag.
+  if (bootQuery.has("flickerspy")) {
+    void import("./dev/flickerSpy").then(({ installFlickerSpy }) =>
+      installFlickerSpy({ renderer, scene, camera })
+    );
+  }
   // Local development is primarily exercised by browser agents, so enter the
   // world as soon as it is ready instead of leaving them stranded at a purely
   // human identity gate. `?startscreen=1` keeps the real onboarding path easy
@@ -4146,9 +4624,15 @@ async function boot() {
   const timer = new THREE.Timer();
   let accumulator = 0;
   let elapsed = 0;
+  // Past this range the horizon proxy is a sub-15px smudge behind marine fog;
+  // keeping it out of the draw list entirely is what prevents it from ever
+  // flashing mid-sky on a corrupted frame.
+  const GHOST_SHIP_PROXY_VIEW_DISTANCE = 3200;
   const updateGhostShip = (dt: number) => {
     const pose = ghostShipBeacon.update(Date.now());
+    minimap.moveLandmark(GHOST_SHIP_LANDMARK_NAME, pose.x, pose.z);
     const distance = ghostShipBeacon.horizontalDistanceTo(player.renderPosition);
+    ghostShipBeacon.farHidden = distance > GHOST_SHIP_PROXY_VIEW_DISTANCE;
     if (
       !worldArrival.active &&
       !ghostShip &&
@@ -4156,7 +4640,7 @@ async function boot() {
       !ghostShipLoadFailed &&
       (distance <= GHOST_SHIP_DETAIL_WAKE_DISTANCE || embodiments.passengerOf === GHOST_SHIP_RIDE_ID)
     ) {
-      ensureGhostShipDetail();
+      void ensureGhostShipDetail();
     }
     ghostShip?.update(
       dt,
@@ -4278,7 +4762,9 @@ async function boot() {
       speed,
       embodiments.passengerOf ?? 0,
       embodiments.passengerSeat,
-      localGardenRakeMotion
+      // a held-rake wire row has no rideSeat slot, so while riding shotgun the
+      // plain ride row wins — viewers would otherwise collapse us onto seat 1
+      embodiments.passengerOf === null ? localGardenRakeMotion : null
     );
   };
   const sendPickleballNetwork = () => pickleballController?.sendNetwork();
@@ -4314,6 +4800,11 @@ async function boot() {
     buskers.flushHotSwap();
     timer.update();
     const frameDt = forcedDt ?? Math.min(timer.getDelta(), 0.09);
+    // The one audio-engine tick — placed before every branch's early return so
+    // group gains, idle suspend, and the listener advance in all of them
+    // (active, map-open, paused, and the reading-overlay freeze; voice keeps
+    // running while paused).
+    audioEngine.update(frameDt, camera);
     // Optional regions and shader warmups require a genuinely quiet user
     // window. Continuous first-play movement keeps pushing those stages back;
     // the fixed-quality local tile streamer remains active throughout.
@@ -4436,7 +4927,8 @@ async function boot() {
       ) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
-      voice.update(camera);
+      remotes.glueRidersToLocalVehicle();
+      voice.update();
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       updateSurfPresentation(frameDt);
@@ -4498,7 +4990,8 @@ async function boot() {
       ) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
-      voice.update(camera); // keep talking while paused — it's a social feature
+      remotes.glueRidersToLocalVehicle();
+      voice.update(); // keep talking while paused — it's a social feature
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       updateSurfPresentation(frameDt);
@@ -4554,6 +5047,7 @@ async function boot() {
         player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
         player.syncMesh(frameDt);
       }
+      remotes.glueRidersToLocalVehicle();
       applyPickleballPlayerPose();
       consumeCarLandingFeedback();
       const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
@@ -4605,7 +5099,7 @@ async function boot() {
       });
       sendLocalPresence();
       sendPickleballNetwork();
-      voice.update(camera);
+      voice.update();
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       hud.update(frameDt);
@@ -4845,6 +5339,7 @@ async function boot() {
       sky.applyFogParams();
       sky.refreshFogWeatherSource();
       debugPanel.syncNow();
+      citygenRing.current?.refreshInteriors();
       hud.message("Tweaks back to source defaults", 3);
     }
     if (!worldArrival.active && input.pressed("KeyC")) {
@@ -5130,6 +5625,9 @@ async function boot() {
       player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
       player.syncMesh(frameDt);
     }
+    // riders of MY vehicle re-glue against the mesh transform that was just
+    // settled — without this they'd sit one frame behind the cabin at speed
+    remotes.glueRidersToLocalVehicle();
     applyPickleballPlayerPose();
     consumeCarLandingFeedback();
     const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
@@ -5197,7 +5695,7 @@ async function boot() {
     refreshCarHeadlightUniforms();
     abandonedMounts.update(frameDt, player.position);
     if (!worldArrival.active) {
-      creatures?.update(elapsed, camera.position); // gulls live at altitude — never distance-gated
+      creatures?.update(elapsed, camera.position);
       forest?.update(frameDt, camera.position);
     }
     // Night ball glow amount from the current sun elevation (park / fetch / held /
@@ -5229,6 +5727,9 @@ async function boot() {
       } else if (beachPianist) {
         beachPianist.group.visible = false;
       }
+      // Landscape vegetation rings (internally gated on the master foliage
+      // toggle; a few hypot tests per frame when idle).
+      siteFoliage?.update(player.position.x, player.position.z);
     }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
@@ -5485,7 +5986,6 @@ async function boot() {
       releaseSurfVisual();
     }
     underwater.update(camera, elapsed);
-    seaPillars.update(player.renderPosition, elapsed);
     fx.update(frameDt);
     bubbles.update(frameDt, elapsed);
     wake.update(frameDt, surfaceTime, player);
@@ -5510,15 +6010,15 @@ async function boot() {
     }
     updateSurfPresentation(frameDt);
     const waveEnergy = oceanWaveEnergyAt(map, player.position.x, player.position.z, elapsed);
-    // The restored glasshouse sits just inland of the sampled shoreline, but
-    // period accounts describe the Pacific as audible throughout the hall.
-    // Preserve the generic coast model and add a local surf floor that fades
-    // naturally across the Point Lobos approach.
-    const sutroSurf = THREE.MathUtils.clamp(1 - distanceToSutroBaths(player.position.x, player.position.z) / 170, 0, 1);
-    if (sutroSurf > 0) {
-      waveEnergy.level = Math.max(waveEnergy.level, sutroSurf * 0.5);
-      waveEnergy.breaking = Math.max(waveEnergy.breaking, sutroSurf * 0.68);
-    }
+    // Keep the hall's wind/steam ambience, but remove its artificial
+    // noise-heavy surf bed. Generic shoreline wash returns outside the site.
+    const sutroWaveMix = THREE.MathUtils.smoothstep(
+      distanceToSutroBaths(player.position.x, player.position.z),
+      80,
+      190
+    );
+    waveEnergy.level *= sutroWaveMix;
+    waveEnergy.breaking *= sutroWaveMix;
     waveAudio.update(frameDt, waveEnergy);
     // Explicit E/B is the normal exit. This far-away guard only repairs external
     // teleports that bypass NavigationController; the ride itself never beaches.
@@ -5569,7 +6069,7 @@ async function boot() {
     // remotes.update already ran before the passenger glue above.
     sendLocalPresence();
     sendPickleballNetwork();
-    voice.update(camera); // listener follows the camera, voices follow the avatars
+    voice.update(); // gains, speaking indicator, roster scan
     minimap.update();
     playerLocator.update(camera, player.position, remotes.locatorTargets());
 
@@ -5765,7 +6265,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, beachPianist, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, beachPianist, afterlight, optionalWorldSites, ensureOptionalWorldSite, siteFoliage,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

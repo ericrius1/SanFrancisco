@@ -8,6 +8,7 @@ import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import { createTeaGardenArchitecture } from "./architecture";
 import {
   createDryLandscape,
+  DRY_LANDSCAPE_CENTER,
   type DryLandscapeDebugState
 } from "./dryLandscape";
 import type { SandRakeStamp } from "./sandSimulation";
@@ -137,10 +138,16 @@ export type TeaGardenBallSource = {
 export type JapaneseTeaGarden = {
   group: THREE.Group;
   ready: Promise<void>;
+  /** Compile independent Tea-owned entrance roots concurrently. */
+  prepareEssential(prepare: (group: THREE.Group) => Promise<void>): Promise<void>;
   /** Exclude native trees from the first destination-essential WebGPU compile. */
   deferOptionalFoliage(): void;
   /** Prepare deferred native trees without holding back architecture, Hiro, or grass. */
   prepareOptionalFoliage(prepare: (group: THREE.Group) => Promise<void>): Promise<void>;
+  /** Keep the distant raked-sand activity out of the destination-critical compile. */
+  deferOptionalDetails(): void;
+  /** Warm and reveal the Tea-owned dry landscape after essential scenery. */
+  prepareOptionalDetails(prepare: (group: THREE.Group) => Promise<void>): Promise<void>;
   setFoliageVisible(visible: boolean): void;
   update(
     dt: number,
@@ -203,6 +210,8 @@ const PLAYER_FOOT_SPREAD = 0.17;
 const PLAYER_MAX_INTERACTION_SPEED = 9;
 const KOI_SURFACE_DEPTH = 0.17;
 const KOI_WAKE_MIN_INTERVAL = 0.1;
+const WATER_ACTIVE_DISTANCE = 210;
+const DRY_LANDSCAPE_REVEAL_DISTANCE = 48;
 
 type BallWaterTrack = {
   x: number;
@@ -268,6 +277,9 @@ export function createJapaneseTeaGarden(
   let playerFootSide = 1;
   let koiUpdateTime = 0;
   let nextKoiWakeTime = 0;
+  let optionalDetailsDeferred = false;
+  let optionalDetailsPrepared = false;
+  let optionalDetailsPreparation: Promise<void> | null = null;
   const ballWaterTracks = new Map<number, BallWaterTrack>();
   const koiWaterTracks = new Map<number, KoiWaterTrack>();
   const waterInteractions: JapaneseTeaGardenWaterInteractions = {
@@ -624,14 +636,59 @@ export function createJapaneseTeaGarden(
     koiWaterTracks.clear();
   };
 
+  const syncOptionalDetailVisibility = (player?: TeaGardenPlayerPosition) => {
+    const approaching = player
+      ? Math.hypot(player.x - DRY_LANDSCAPE_CENTER.x, player.z - DRY_LANDSCAPE_CENTER.z) <= DRY_LANDSCAPE_REVEAL_DISTANCE
+      : false;
+    dryLandscape.group.visible = !optionalDetailsDeferred || optionalDetailsPrepared || approaching;
+  };
+
   return {
     group,
     ready: Promise.all([architecture.ready, vegetation.ready]).then(() => undefined),
+    async prepareEssential(prepare) {
+      // WebGPU creates render pipelines asynchronously. Supplying independent
+      // owners lets the driver compile architecture, water, foliage and Hiro
+      // in parallel instead of serializing one monolithic scene traversal.
+      await Promise.all([
+        architecture.group,
+        water.group,
+        vegetation.group,
+        guide.group
+      ].filter((root) => root.visible).map(async (root) => {
+        root.updateMatrixWorld(true);
+        await prepare(root);
+      }));
+    },
     deferOptionalFoliage() {
       vegetation.deferTrees();
     },
     prepareOptionalFoliage(prepare) {
       return vegetation.prepareTrees(prepare);
+    },
+    deferOptionalDetails() {
+      if (optionalDetailsPrepared) return;
+      optionalDetailsDeferred = true;
+      architecture.deferDistantDetails();
+      syncOptionalDetailVisibility();
+    },
+    prepareOptionalDetails(prepare) {
+      if (optionalDetailsPrepared) return Promise.resolve();
+      if (optionalDetailsPreparation) return optionalDetailsPreparation;
+      optionalDetailsPreparation = (async () => {
+        await architecture.prepareDistantDetails(prepare);
+        const parent = dryLandscape.group.parent;
+        dryLandscape.group.removeFromParent();
+        dryLandscape.group.visible = true;
+        try {
+          await prepare(dryLandscape.group);
+        } finally {
+          if (!disposed) parent?.add(dryLandscape.group);
+          optionalDetailsPrepared = true;
+          if (!disposed) syncOptionalDetailVisibility();
+        }
+      })();
+      return optionalDetailsPreparation;
     },
     setFoliageVisible(visible: boolean) {
       foliageVisible = visible;
@@ -654,14 +711,19 @@ export function createJapaneseTeaGarden(
       else if (awake && distanceToGarden >= SLEEP_DISTANCE) setAwake(false);
       streamAudio.update(dt, { playerPos: player });
       if (!awake) return;
+      syncOptionalDetailVisibility(player);
       if (foliageVisible) vegetation.update(player);
+      architecture.updateArt(player);
+      architecture.updateDistantDetails(player);
       updatePlayerWaterInteraction(player, mode, velocity);
       updateBallWaterInteractions();
       waterInteractions.surfaceKoi = 0;
       koiUpdateTime = time;
-      architecture.update(time, visitKoi);
-      water.update(dt, time, player);
-      dryLandscape.update(dt, time, player, mode);
+      if (distanceToGarden <= WATER_ACTIVE_DISTANCE) {
+        architecture.update(time, visitKoi);
+        water.update(dt, time, player);
+      }
+      if (dryLandscape.group.visible) dryLandscape.update(dt, time, player, mode);
       guide.update(dt, time, player, camera);
     },
     project(camera: THREE.Camera) {

@@ -315,6 +315,10 @@ export interface CityGenRing {
   };
   /** true while the player is inside a generated building (drives the indoor camera). */
   isPlayerInside(): boolean;
+  /** Rebuild every currently materialized interior from live procedural tuning.
+   *  Usually this is one home; open-door reveal hysteresis can briefly retain a
+   *  second. Returns the number successfully rebuilt. */
+  refreshInteriors(): number;
   debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[];
   /** DEBUG: live walk-in wall + interior collider OBBs for the "/" x-ray overlay. */
   debugColliders(walls: ColliderBox[], interiors: ColliderBox[], roofs?: ColliderMesh[]): void;
@@ -2161,6 +2165,20 @@ export async function createCityGenRing(
       };
     },
     isPlayerInside() { return insideBuilding !== null; },
+    refreshInteriors() {
+      if (disposed) return 0;
+      const active: Entry[] = [];
+      for (const cell of loaded.values()) for (const e of cell.entries) {
+        if (e.interior) active.push(e);
+      }
+      let rebuilt = 0;
+      for (const e of active) {
+        disposeInterior(e);
+        ensureInterior(e);
+        if (e.interior) rebuilt++;
+      }
+      return rebuilt;
+    },
     debugBuildings() {
       const out: { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[] = [];
       for (const cell of loaded.values()) for (const e of cell.entries) if (e.detail) out.push({ cx: e.cx, cz: e.cz, base: e.base, top: e.top, interior: !!e.interior, bb: { ...e.bb } });

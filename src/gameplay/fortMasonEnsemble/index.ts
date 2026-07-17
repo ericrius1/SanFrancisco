@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { musicAudioLevel } from "../../core/audioSettings";
+import { audioEngine } from "../../audio/engine";
 import { interactKeyLabel, type Input } from "../../core/input";
 import type { ChaseCamera } from "../../core/camera";
 import type { Net, EnsembleSlot } from "../../net/net";
@@ -31,6 +31,7 @@ const INTERACT_RADIUS = 3.15;
 const SHOW_RADIUS = 260;
 const HIDE_RADIUS = 320;
 const AUDIO_RADIUS = 100;
+const AUDIO_TAIL = 3; // seconds of engine hold slack when leaving earshot (note/reverb tails)
 const BEAT_SECONDS = 60 / 96;
 const NPC_PATTERNS: readonly (readonly number[])[] = [
   [0, 2, 4, 2, 1, 3, 5, 3],
@@ -70,50 +71,30 @@ const midiHz = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
 class EnsembleAudio {
   #ctx: AudioContext | null = null;
   #master: GainNode | null = null;
+  #comp: DynamicsCompressorNode | null = null;
   #channels: Array<GainNode | null> = [null, null, null];
   #panners: Array<PannerNode | null> = [null, null, null];
-  #suspended = false;
+  #holdRelease: (() => void) | null = null; // engine hold while within earshot
 
-  update(camera: THREE.Camera, distance: number, positions: readonly THREE.Vector3[]) {
+  update(_camera: THREE.Camera, distance: number, positions: readonly THREE.Vector3[]) {
     if (distance < AUDIO_RADIUS && !this.#ctx) this.#ensure();
     const ctx = this.#ctx;
-    const master = this.#master;
-    if (!ctx || !master) return;
+    if (!ctx) return;
 
-    if (distance > AUDIO_RADIUS + 12) {
-      if (ctx.state === "running" && !this.#suspended) {
-        this.#suspended = true;
-        void ctx.suspend().catch(() => {});
-      }
-      return;
+    // Edge-triggered engine hold while inside earshot (radius 100 / +12
+    // hysteresis, matching the play() gate in FortMasonEnsemble). The engine
+    // owns the ctx.listener camera track, the HUD music volume/mute and idle
+    // suspend, so this only manages the hold and the spatial panners.
+    const inside = distance < AUDIO_RADIUS + 12;
+    if (inside && !this.#holdRelease) {
+      this.#holdRelease = audioEngine.acquireHold();
+    } else if (!inside && this.#holdRelease) {
+      audioEngine.touch(AUDIO_TAIL); // cover note/reverb tails past the release
+      this.#holdRelease();
+      this.#holdRelease = null;
     }
-    if (this.#suspended || ctx.state === "suspended") {
-      this.#suspended = false;
-      void ctx.resume().catch(() => {});
-    }
-    master.gain.setTargetAtTime(musicAudioLevel(), ctx.currentTime, 0.08);
+    if (!inside) return;
 
-    const position = new THREE.Vector3();
-    const forward = new THREE.Vector3();
-    const up = new THREE.Vector3();
-    camera.getWorldPosition(position);
-    camera.getWorldDirection(forward);
-    up.set(0, 1, 0).applyQuaternion(camera.getWorldQuaternion(new THREE.Quaternion()));
-    const listener = ctx.listener;
-    if (listener.positionX) {
-      listener.positionX.value = position.x;
-      listener.positionY.value = position.y;
-      listener.positionZ.value = position.z;
-      listener.forwardX.value = forward.x;
-      listener.forwardY.value = forward.y;
-      listener.forwardZ.value = forward.z;
-      listener.upX.value = up.x;
-      listener.upY.value = up.y;
-      listener.upZ.value = up.z;
-    } else {
-      listener.setPosition(position.x, position.y, position.z);
-      listener.setOrientation(forward.x, forward.y, forward.z, up.x, up.y, up.z);
-    }
     for (let i = 0; i < 3; i++) this.#setPanner(i as EnsembleSlot, positions[i]);
   }
 
@@ -122,7 +103,8 @@ class EnsembleAudio {
     const ctx = this.#ctx;
     const channel = this.#channels[slot];
     if (!ctx || !channel) return;
-    if (ctx.state !== "running") void ctx.resume().catch(() => {});
+    // Keep the shared engine ctx alive past this note's scheduled tail.
+    audioEngine.touch(duration * 3 + 0.5);
     const midi = SCALE_MIDI[step] + (slot === 0 ? -12 : 0);
     const frequency = midiHz(midi);
     const now = ctx.currentTime + 0.01;
@@ -132,23 +114,35 @@ class EnsembleAudio {
   }
 
   dispose() {
-    void this.#ctx?.close().catch(() => {});
+    // Disconnect our own nodes only; never close the shared engine context.
+    this.#holdRelease?.();
+    this.#holdRelease = null;
+    for (const gain of this.#channels) gain?.disconnect();
+    for (const panner of this.#panners) panner?.disconnect();
+    this.#master?.disconnect();
+    this.#comp?.disconnect();
     this.#ctx = null;
     this.#master = null;
+    this.#comp = null;
     this.#channels = [null, null, null];
     this.#panners = [null, null, null];
   }
 
   #ensure() {
-    if (this.#ctx || typeof AudioContext === "undefined") return;
-    if (typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive !== true) return;
-    const ctx = new AudioContext();
+    if (this.#ctx) return;
+    // The engine owns the context and the gesture gate: bus() is null until the
+    // first user gesture unlocks it (callers tolerate that and retry). Master is
+    // a constant unity trim — the engine music group applies musicAudioLevel(),
+    // mute and visibility (no double attenuation).
+    const bus = audioEngine.bus("music");
+    if (!bus) return;
+    const ctx = bus.ctx;
     const master = ctx.createGain();
-    master.gain.value = musicAudioLevel();
+    master.gain.value = 1;
     const compressor = ctx.createDynamicsCompressor();
     compressor.threshold.value = -20;
     compressor.ratio.value = 4;
-    master.connect(compressor).connect(ctx.destination);
+    master.connect(compressor).connect(bus.input);
     for (let i = 0; i < 3; i++) {
       const gain = ctx.createGain();
       const panner = ctx.createPanner();
@@ -163,6 +157,7 @@ class EnsembleAudio {
     }
     this.#ctx = ctx;
     this.#master = master;
+    this.#comp = compressor;
   }
 
   #setPanner(slot: EnsembleSlot, position: THREE.Vector3) {

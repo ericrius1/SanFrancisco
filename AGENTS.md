@@ -29,6 +29,17 @@
 - Publish approved videos to `/Users/eric/videos/my creations/sf/renders/cinematics` and keep only final MP4 files there.
 - Keep frames, review MP4s, manifests, audits, contacts, posters, probes, logs, and temporary encodes under `.data/`; do not create platform-specific publish folders.
 
+# Unified vegetation system
+
+- All new trees, shrubs, flowers, and grass MUST plant through the shared vegetation runtime. Never build bespoke primitive foliage (icosahedron/sphere canopy blobs, cone pines, hand-rolled trunk+blob groups) — that is a visual-quality and performance regression, even for a "small" decorative grove.
+  - Trees: `createAuthoredTreePatch` (`src/world/vegetation/authoredTrees.ts`) over the shared `NativeTreeForest`. Pick a species from `src/world/vegetation/nativeTreeRecipes.ts` (redwood, cypress, windswept cypress, pine, oak, eucalyptus, maple, cherry, ginkgo, magnolia, palm…); extend the recipe file if a genuinely new species is needed.
+  - Shrubs: `createAuthoredShrubPatch`; flowers: `createAuthoredFlowerPatch` (`src/world/vegetation/`).
+  - Grass/groundcover: `src/world/groundcover/` (bladeGrass + shared wind/trample).
+- Regions own botanical intent only — positions, archetype ids, yaw, scale. The shared runtime owns compilation, instancing/batching, wind shading, LOD grades, chunk culling, and shadow proxies. Do not duplicate any of those per region.
+- Exhibit-site vegetation streams through the shared `SiteFoliageStreamer` (`src/world/vegetation/siteFoliage.ts`): keep placements in a separate `vegetation.ts` module and register a boot-safe `{center, radii, build()}` entry in main.ts whose `build()` dynamic-imports that module. The streamer owns lazy import gating, background admission, off-frame warmup, per-frame focus updates, distance unload, and the master foliage toggle — sites own zero foliage lifecycle code, and vegetation residency is deliberately independent of the exhibit's gameplay radii (trees are landscape; they load from farther out and survive the gameplay site unloading). Reference registrations: lands-end cypress and the two Corona layers in main.ts; `src/world/sutroBaths/vegetation.ts` remains the site-internal exception.
+- Inside a patch, contract order is `patch.update(focus)` → `await patch.ready` → `patch.update(focus)`: an update names the focus whose chunks compile, so `ready` never resolves for a patch that was never focused.
+- Respect the master foliage toggle: site-internal foliage exposes `setFoliageVisible` and gates per-frame updates on it; streamer-registered vegetation inherits the toggle automatically.
+
 # Massive-app loading policy
 
 - Treat this as a massive open-world app. Boot may load only the fundamentals needed for the player's immediate starting space; optional regions, activities, vehicles, editors, cinematics, and their media must lazy-load by default.

@@ -1,23 +1,21 @@
 // The Beach Pianist's voice: the real recording played back positionally in 3D.
-// Rides NatureSoundscape's shared context and world bus (wave-organ / dog-park
-// idiom) so the HUD volume/mute control, gesture unlock and limiter stay the
-// single source of truth — no private AudioContext.
+// Rides the shared AudioEngine music group (buskers idiom) so the HUD *Music*
+// volume/mute, gesture unlock, listener and limiter stay the single source of
+// truth — no private AudioContext. Routing through the music group is what ties
+// the performance to the Music slider rather than the World/soundscape one.
 //
 // Lazy: nothing is fetched at construction. arm() (called on first approach)
 // downloads the AAC bytes; the AudioBuffer is decoded once the shared context
 // exists. The transport is authoritative — the source is (re)started at the
 // transport's song offset, and resynced if it drifts past RESYNC_DRIFT.
 
-import type { NatureSoundscape } from "../../audio/natureSoundscape";
-
-type NatureVoiceIO = NonNullable<ReturnType<NatureSoundscape["voiceBus"]>>;
+import { audioEngine } from "../../audio/engine";
 
 const AUDIO = {
   refDistance: 6,
   rolloffFactor: 0.95,
   maxDistance: 130,
   master: 0.95,
-  wet: 0.12, // subtle beach-air reverb send
   // keep the shared context awake a little past the audible edge (hysteresis)
   awakeOn: 140,
   awakeOff: 165,
@@ -37,9 +35,8 @@ export type TransportAudioState = {
 };
 
 export class BeachPianistAudio {
-  #nature: NatureSoundscape;
   #audioUrl: string;
-  #io: NatureVoiceIO | null = null;
+  #ctx: AudioContext | null = null;
 
   // lazy asset state
   #armed = false;
@@ -52,19 +49,18 @@ export class BeachPianistAudio {
   // graph
   #master: GainNode | null = null;
   #panner: PannerNode | null = null;
-  #send: GainNode | null = null;
 
   // playback
   #source: AudioBufferSourceNode | null = null;
   #srcStartCtx = 0; // ctx time that maps to song offset 0
   #playing = false;
   #awake = false;
+  #holdRelease: (() => void) | null = null; // engine hold while audibly near
   #vx = 0;
   #vy = 0;
   #vz = 0;
 
-  constructor(nature: NatureSoundscape, audioUrl: string) {
-    this.#nature = nature;
+  constructor(audioUrl: string) {
     this.#audioUrl = audioUrl;
   }
 
@@ -77,7 +73,7 @@ export class BeachPianistAudio {
   }
 
   get contextState(): string {
-    return this.#io?.ctx.state ?? "none";
+    return this.#ctx?.state ?? "none";
   }
 
   get error(): string | null {
@@ -86,8 +82,8 @@ export class BeachPianistAudio {
 
   /** Seconds of the recording currently sounding, or null when silent. */
   audioSongTime(): number | null {
-    if (!this.#playing || !this.#io) return null;
-    return this.#io.ctx.currentTime - this.#srcStartCtx;
+    if (!this.#playing || !this.#ctx) return null;
+    return this.#ctx.currentTime - this.#srcStartCtx;
   }
 
   debugState() {
@@ -133,22 +129,29 @@ export class BeachPianistAudio {
   update(dist: number, transport: TransportAudioState): void {
     if (this.#disposed) return;
 
-    // keep the shared context alive while audibly near (hysteresis)
+    // Hold the shared engine context alive while audibly near (hysteresis), so
+    // the idle-suspend policy can't park it mid-performance or during the rest
+    // gap. Released past awakeOff so it costs nothing away from the beach.
     if (dist < AUDIO.awakeOn) {
       if (!this.#awake) {
         this.#awake = true;
-        this.#nature.setExternalAwake(true);
+        this.#holdRelease = audioEngine.acquireHold();
       }
     } else if (dist > AUDIO.awakeOff && this.#awake) {
       this.#awake = false;
-      this.#nature.setExternalAwake(false);
+      this.#holdRelease?.();
+      this.#holdRelease = null;
     }
 
-    const io = (this.#io ??= this.#nature.voiceBus());
-    if (!io) return;
-    const ctx = io.ctx;
+    // The engine owns the context + gesture gate: bus() is null until unlocked,
+    // and touches/resumes the ctx each call. The music group applies the HUD
+    // Music volume/mute; our master is just the feature's own fade trim.
+    const bus = audioEngine.bus("music");
+    if (!bus) return;
+    const ctx = bus.ctx;
+    this.#ctx = ctx;
 
-    this.#ensureGraph(io);
+    this.#ensureGraph(ctx, bus.input);
     if (this.#encoded && !this.#buffer && !this.#decoding) this.#decode(ctx);
     if (this.#panner) movePanner(this.#panner, ctx, this.#vx, this.#vy, this.#vz);
 
@@ -176,9 +179,8 @@ export class BeachPianistAudio {
     }
   }
 
-  #ensureGraph(io: NatureVoiceIO): void {
+  #ensureGraph(ctx: AudioContext, busInput: GainNode): void {
     if (this.#master) return;
-    const ctx = io.ctx;
     const master = ctx.createGain();
     master.gain.value = 0;
     const panner = ctx.createPanner();
@@ -189,13 +191,9 @@ export class BeachPianistAudio {
     panner.maxDistance = AUDIO.maxDistance;
     movePanner(panner, ctx, this.#vx, this.#vy, this.#vz, 0);
     master.connect(panner);
-    panner.connect(io.musicBus);
-    const send = ctx.createGain();
-    send.gain.value = AUDIO.wet;
-    panner.connect(send).connect(io.musicReverbSend);
+    panner.connect(busInput); // engine music group input
     this.#master = master;
     this.#panner = panner;
-    this.#send = send;
   }
 
   #decode(ctx: AudioContext): void {
@@ -270,7 +268,8 @@ export class BeachPianistAudio {
     this.#disposed = true;
     if (this.#awake) {
       this.#awake = false;
-      this.#nature.setExternalAwake(false);
+      this.#holdRelease?.();
+      this.#holdRelease = null;
     }
     if (this.#source) {
       this.#source.onended = null;
@@ -282,12 +281,10 @@ export class BeachPianistAudio {
       this.#source.disconnect();
       this.#source = null;
     }
-    this.#send?.disconnect();
     this.#panner?.disconnect();
     this.#master?.disconnect();
     this.#master = null;
     this.#panner = null;
-    this.#send = null;
     this.#buffer = null;
     this.#encoded = null;
     this.#playing = false;

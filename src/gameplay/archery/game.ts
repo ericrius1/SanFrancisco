@@ -309,6 +309,29 @@ export class ArcheryGame {
     };
   }
 
+  /** Full teardown for a distance unload. Rig boxes and held-item materials
+   * are shared caches (player/rig geoCache, player/held MAT) — those subtrees
+   * are detached, never traverse-disposed. Everything the range built locally
+   * (site, targets, arrow instancing) is disposed for real. */
+  dispose() {
+    this.#audio.dispose();
+    this.#ui.dispose();
+    this.#npcs.dispose();
+    this.#viewModel.removeFromParent();
+    this.root.removeFromParent();
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    this.root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      geometries.add(object.geometry);
+      const list = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of list) materials.add(material);
+    });
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
+    this.root.clear();
+  }
+
   /** main.ts: the click-tools stand down while the bow owns the mouse. */
   get capturesFire(): boolean {
     return this.#holding && (this.#drawing || this.#nearLine);

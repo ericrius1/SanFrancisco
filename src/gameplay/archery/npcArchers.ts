@@ -102,6 +102,14 @@ export class NpcArchers {
   }
 
   /** Daylight gate: hide + halt the ambient act at night. */
+  /** Detach only: rig boxes come from player/rig's shared geometry cache and
+   * held bows from player/held's shared materials — never disposed here. */
+  dispose() {
+    this.group.removeFromParent();
+    this.group.clear();
+    this.#npcs.length = 0;
+  }
+
   setShown(on: boolean) {
     if (this.#shown === on) return;
     this.#shown = on;

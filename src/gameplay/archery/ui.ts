@@ -294,6 +294,16 @@ export class ArcheryUI {
     hud.appendChild(this.#reticle);
   }
 
+  /** Full DOM teardown for a distance unload; the injected style is shared
+   * across rebuilds and intentionally stays. */
+  dispose() {
+    this.#card.remove();
+    this.#draw.remove();
+    this.#toast.remove();
+    this.#prompt.remove();
+    this.#reticle.remove();
+  }
+
   /** Scorecard chip (holding a bow). */
   setVisible(on: boolean) {
     this.#card.classList.toggle("show", on);
