@@ -1851,7 +1851,7 @@ async function boot() {
   const ridePos = new THREE.Vector3();
   const rideQuat = new THREE.Quaternion();
 
-  // proximity voice chat: P2P audio spatialised onto the remote avatars,
+  // voice chat: P2P audio to the closest players at any distance,
   // signaled through the relay (src/net/voice.ts). Mic is opt-in — V key or
   // the HUD mic button — and fully released when off.
   const voice = new Voice(
@@ -1862,7 +1862,7 @@ async function boot() {
   voice.onSpeaking = (id, on) => remotes.setSpeaking(id, on);
   voice.onMicChange = (on) => {
     audioControls.setMic(on);
-    hud.message(on ? "Mic live — nearby players can hear you" : "Mic off", 2.6);
+    hud.message(on ? "Mic live — the closest players can hear you" : "Mic off", 2.6);
   };
   const toggleMic = () => {
     void voice.setMic(!voice.micOn).then((ok) => {
@@ -4401,7 +4401,7 @@ async function boot() {
       ) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
-      voice.update(camera);
+      voice.update();
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       updateSurfPresentation(frameDt);
@@ -4463,7 +4463,7 @@ async function boot() {
       ) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
-      voice.update(camera); // keep talking while paused — it's a social feature
+      voice.update(); // keep talking while paused — it's a social feature
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       updateSurfPresentation(frameDt);
@@ -4570,7 +4570,7 @@ async function boot() {
       });
       sendLocalPresence();
       sendPickleballNetwork();
-      voice.update(camera);
+      voice.update();
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       hud.update(frameDt);
@@ -5529,7 +5529,7 @@ async function boot() {
     // remotes.update already ran before the passenger glue above.
     sendLocalPresence();
     sendPickleballNetwork();
-    voice.update(camera); // listener follows the camera, voices follow the avatars
+    voice.update(); // gains, speaking indicator, roster scan
     minimap.update();
     playerLocator.update(camera, player.position, remotes.locatorTargets());
 
