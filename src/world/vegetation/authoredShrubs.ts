@@ -13,7 +13,14 @@ import { groundSway, WIND_DIR } from "../groundcover/sway";
 
 type N = any;
 
-export type AuthoredShrubProfile = "natural" | "azalea" | "hedge" | "fern" | "coastal-scrub";
+export type AuthoredShrubProfile =
+  | "natural"
+  | "azalea"
+  | "hedge"
+  | "fern"
+  | "coastal-scrub"
+  | "tea-azalea"
+  | "tea-hedge";
 
 export type AuthoredShrubPalette = {
   foliageA: number;
@@ -29,6 +36,10 @@ export type AuthoredShrubPlacement = {
   z: number;
   yaw: number;
   scale: number;
+  /** Optional botanical proportions; uniform scale remains the default. */
+  scaleX?: number;
+  scaleY?: number;
+  scaleZ?: number;
   palette: number;
   profile?: AuthoredShrubProfile;
   /** Stable 0..1 tint/bloom selector. */
@@ -53,6 +64,8 @@ const PROFILES: Record<AuthoredShrubProfile, {
   bloomEvery: number;
   wind: number;
   woodyStems?: number;
+  filledVolume?: boolean;
+  petalBlooms?: boolean;
 }> = {
   natural: { count: 42, radiusX: 0.9, radiusZ: 0.78, height: 1.08, leafLength: 0.34, leafWidth: 0.15, bloomEvery: 8, wind: 0.72 },
   azalea: { count: 48, radiusX: 0.96, radiusZ: 0.86, height: 0.86, leafLength: 0.31, leafWidth: 0.16, bloomEvery: 5, wind: 0.58 },
@@ -68,6 +81,36 @@ const PROFILES: Record<AuthoredShrubProfile, {
     bloomEvery: 999,
     wind: 0.58,
     woodyStems: 6
+  },
+  // Tea Garden-only silhouettes. These keep the same shared instancing/wind
+  // runtime, but distribute sprays through the crown instead of arranging
+  // every leaf on one hollow radial shell. Flowers are small petal clusters,
+  // never whole leaves recolored pink.
+  "tea-azalea": {
+    count: 64,
+    radiusX: 0.98,
+    radiusZ: 0.88,
+    height: 0.9,
+    leafLength: 0.25,
+    leafWidth: 0.105,
+    bloomEvery: 7,
+    wind: 0.5,
+    woodyStems: 4,
+    filledVolume: true,
+    petalBlooms: true
+  },
+  "tea-hedge": {
+    count: 72,
+    radiusX: 1.04,
+    radiusZ: 0.78,
+    height: 0.82,
+    leafLength: 0.23,
+    leafWidth: 0.1,
+    bloomEvery: 19,
+    wind: 0.3,
+    woodyStems: 5,
+    filledVolume: true,
+    petalBlooms: true
   }
 };
 
@@ -166,6 +209,40 @@ function pushWoodyStem(
   }
 }
 
+function pushPetalBloom(
+  positions: number[],
+  colors: number[],
+  flex: number[],
+  blooms: number[],
+  bark: number[],
+  indices: number[],
+  center: THREE.Vector3,
+  outward: THREE.Vector3,
+  tangent: THREE.Vector3,
+  size: number,
+  phase: number
+) {
+  const rise = new THREE.Vector3(outward.x * 0.12, 0.98, outward.z * 0.12).normalize();
+  const flowerCenter = center.clone().addScaledVector(outward, size * 0.36);
+  for (let petal = 0; petal < 5; petal++) {
+    const angle = (petal / 5) * Math.PI * 2 + phase * 0.13;
+    const axis = tangent.clone().multiplyScalar(Math.cos(angle)).addScaledVector(rise, Math.sin(angle));
+    const side = tangent.clone().multiplyScalar(-Math.sin(angle)).addScaledVector(rise, Math.cos(angle));
+    const base = positions.length / 3;
+    const left = flowerCenter.clone().addScaledVector(axis, size * 0.18).addScaledVector(side, size * 0.22);
+    const tip = flowerCenter.clone().addScaledVector(axis, size);
+    const right = flowerCenter.clone().addScaledVector(axis, size * 0.18).addScaledVector(side, -size * 0.22);
+    for (const vertex of [left, tip, right]) positions.push(vertex.x, vertex.y, vertex.z);
+    for (const shade of [0.76, 1, 0.82]) colors.push(shade, shade, shade);
+    for (const weight of [0.72, 1, 0.72]) flex.push(weight * 0.52, phase);
+    for (let i = 0; i < 3; i++) {
+      blooms.push(1);
+      bark.push(0);
+    }
+    indices.push(base, base + 1, base + 2);
+  }
+}
+
 function makeLeafSprayGeometry(profile: AuthoredShrubProfile): THREE.BufferGeometry {
   const p = PROFILES[profile];
   const positions: number[] = [];
@@ -203,13 +280,19 @@ function makeLeafSprayGeometry(profile: AuthoredShrubProfile): THREE.BufferGeome
   for (let i = 0; i < p.count; i++) {
     const level = (i + 0.65) / p.count;
     const coastal = profile === "coastal-scrub";
+    const filled = p.filledVolume === true;
     const phase = i * 2.399963 + seeded(i, 3) * (coastal ? 0.92 : 0.42);
-    const shell = profile === "fern"
+    const envelope = profile === "fern"
       ? 0.36 + level * 0.72
       : Math.pow(Math.sin(Math.PI * Math.min(0.96, level)), coastal ? 0.38 : 0.48) *
         (coastal ? 0.7 + seeded(i, 7) * 0.38 : 0.78 + seeded(i, 7) * 0.24);
+    const shell = filled
+      ? envelope * (0.2 + Math.sqrt(seeded(i, 71)) * 0.8)
+      : envelope;
     const y = profile === "fern"
       ? 0.86 + seeded(i, 11) * 0.28 + (i % 3) * 0.07
+      : filled
+        ? 0.1 + Math.pow(seeded(i, 73), 0.82) * p.height
       : 0.12 + level * p.height * (coastal ? 0.7 + seeded(i, 13) * 0.34 : 0.82 + seeded(i, 13) * 0.2);
     outward.set(Math.cos(phase), profile === "fern" ? 0.08 : 0.18 + level * 0.22, Math.sin(phase)).normalize();
     tangent.set(-Math.sin(phase), 0, Math.cos(phase)).normalize();
@@ -233,8 +316,23 @@ function makeLeafSprayGeometry(profile: AuthoredShrubProfile): THREE.BufferGeome
       p.leafWidth * (0.84 + seeded(i, 19) * 0.3),
       Math.min(1, 0.28 + level * 0.78),
       phase,
-      i % p.bloomEvery === 0 && level > 0.42 ? 1 : 0
+      !p.petalBlooms && i % p.bloomEvery === 0 && level > 0.42 ? 1 : 0
     );
+    if (p.petalBlooms && i % p.bloomEvery === 0 && y > p.height * 0.46 && shell > 0.42) {
+      pushPetalBloom(
+        positions,
+        colors,
+        flex,
+        blooms,
+        bark,
+        indices,
+        center,
+        outward,
+        tangent,
+        p.leafLength * 0.72,
+        phase
+      );
+    }
   }
 
   if (profile === "fern") {
@@ -383,7 +481,11 @@ export function createAuthoredShrubPatch(
 
       dummy.position.set(placement.x, placement.y, placement.z);
       dummy.rotation.set(0, placement.yaw, 0);
-      dummy.scale.setScalar(placement.scale);
+      dummy.scale.set(
+        placement.scale * (placement.scaleX ?? 1),
+        placement.scale * (placement.scaleY ?? 1),
+        placement.scale * (placement.scaleZ ?? 1)
+      );
       dummy.updateMatrix();
       mesh.setMatrixAt(index, dummy.matrix);
       const ai = index * 4;

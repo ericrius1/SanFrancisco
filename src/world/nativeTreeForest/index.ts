@@ -12,7 +12,8 @@ import {
   createTreeShadowProxy,
   type TreeShadowInstance,
   type TreeShadowProfile,
-  type TreeShadowProxy
+  type TreeShadowProxy,
+  type TreeShadowShape
 } from "../shadows/treeShadowProxy";
 import {
   loadNativeTreeMaterialSet,
@@ -67,6 +68,8 @@ export type NativeTreeForestOptions = {
   nearExitRadius?: number;
   /** Maximum close trees across this whole forest. */
   nearMax?: number;
+  /** Opt-in solid shadow silhouette. Existing forests keep the massed proxy. */
+  shadowProxyShape?: TreeShadowShape;
 };
 
 export type NativeTreePrepareUnit = (unit: THREE.Object3D) => Promise<void>;
@@ -935,7 +938,8 @@ export function createNativeTreeForest(
         // Beauty residency is already chunk-bounded. Matching that ownership
         // unit collapses the former ~3.3 shadow microcells/chunk into one stable
         // WebGPU render object without changing any proxy triangles.
-        cellSize: chunkSize
+        cellSize: chunkSize,
+        shape: options.shadowProxyShape
       });
       chunk.group.add(chunk.shadowProxy.group);
     }

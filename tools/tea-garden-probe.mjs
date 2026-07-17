@@ -61,7 +61,7 @@ const teaMasterSource = readFileSync(new URL("../src/world/japaneseTeaGarden/tea
 const teaGardenSources = [mainSource, tourSource, architectureSource, costumeSource, guideSource, teaMasterSource].join("\n");
 assert.match(
   mainSource,
-  /excludeBuilding:[\s\S]{0,240}isTeaGardenBuilding\(key, index\)/,
+  /excludeBuilding:\s*\(key, index\)\s*=>[\s\S]{0,500}isTeaGardenBuilding\(key, index\)/,
   "CityGen is not excluding authored Tea Garden buildings"
 );
 assert.match(
@@ -115,9 +115,11 @@ for (const stem of [
   }
 }
 assert.equal(architectureSource.includes("tea_house_core"), false, "sealed Tea House core collider returned");
-for (const art of ["misty-pines.webp", "drum-bridge-moon.webp", "koi-ginkgo.webp", "four-seasons.webp"]) {
-  const file = new URL(`../public/art/tea-house/${art}`, import.meta.url);
-  assert.ok(statSync(file).size > 100_000, `Tea House artwork is missing or unexpectedly tiny: ${art}`);
+for (const art of ["misty-pines", "drum-bridge-moon", "koi-ginkgo", "four-seasons"]) {
+  for (const extension of ["ktx2", "webp"]) {
+    const file = new URL(`../public/art/tea-house/${art}.${extension}`, import.meta.url);
+    assert.ok(statSync(file).size > 100_000, `Tea House artwork is missing or unexpectedly tiny: ${art}.${extension}`);
+  }
   assert.ok(architectureSource.includes(`/art/tea-house/${art}`), `Tea House does not mount artwork: ${art}`);
 }
 
@@ -149,6 +151,9 @@ for (const seam of [
 assert.equal(sandSimulationSource.includes("readBuffer"), false, "GPU sand introduced a hot-path readback");
 assert.equal(dryLandscapeSource.includes("dry_garden_player_rake_trails"), false, "legacy box-line rake trails returned");
 assert.match(vegetationSource, /inDryLandscape\(px, pz, 1\.2\)/, "Tea Garden grass can clip into the sand rim");
+assert.match(vegetationSource, /createAuthoredShrubPatch/, "Tea shrubs bypass the unified authored foliage runtime");
+assert.match(vegetationSource, /"tea-azalea"/, "Tea azaleas lost their filled-volume unified profile");
+assert.match(vegetationSource, /shadowProxyShape: "organic-lobes"/, "Tea trees lost their organic proxy-shadow opt-in");
 assert.equal(mainSource.includes('from "./world/japaneseTeaGarden/dryLandscape"'), false, "rake activity leaked into the boot-critical main chunk");
 
 // Connected-water contract: one direct-WebGPU shallow-water field owns both
@@ -275,7 +280,7 @@ assert.match(mainSource, /player\.mode,\s*player\.velocity/s, "Tea Garden does n
 for (const seam of [
   "voiceBus()",
   "alwaysBus",
-  "reverbSend",
+  "#wet",
   "TEA_GARDEN_STREAM_AUDIO_ANCHORS",
   "MAX_ACTIVE_EDDIES = 2",
   "targetDistanceGain",

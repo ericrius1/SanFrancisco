@@ -3001,16 +3001,25 @@ async function boot() {
   ) => {
     if (teaGardenOptionalPromise) return;
     teaGardenOptionalPromise = (async () => {
+      markLazyRegion("tea-garden", "optional-details-wait");
+      await waitForWorldBackgroundWindow();
       markLazyRegion("tea-garden", "optional-trees-wait");
-      await site.prepareOptionalFoliage(async (treeGroup) => {
-        // Trees are optional enrichment. They alone retain the movement/arrival
-        // quiet policy; architecture, Hiro, shrubs and grass are already live.
-        await waitForWorldBackgroundWindow();
-        markLazyRegion("tea-garden", "optional-tree-compile-start");
-        treeGroup.updateMatrixWorld(true);
-        await renderer.compileAsync(treeGroup, camera, scene);
-        markLazyRegion("tea-garden", "optional-tree-compile-end");
-      });
+      await Promise.all([
+        site.prepareOptionalDetails(async (detailsGroup) => {
+          markLazyRegion("tea-garden", "optional-detail-compile-start");
+          detailsGroup.updateMatrixWorld(true);
+          await renderer.compileAsync(detailsGroup, camera, scene);
+          markLazyRegion("tea-garden", "optional-detail-compile-end");
+        }),
+        site.prepareOptionalFoliage(async (treeGroup) => {
+          // Optional enrichment retains the movement/arrival quiet policy;
+          // architecture, Hiro, shrubs, grass and water are already live.
+          markLazyRegion("tea-garden", "optional-tree-compile-start");
+          treeGroup.updateMatrixWorld(true);
+          await renderer.compileAsync(treeGroup, camera, scene);
+          markLazyRegion("tea-garden", "optional-tree-compile-end");
+        })
+      ]);
       await site.ready;
       markLazyRegion("tea-garden", "optional-ready");
       if (foliageOn) sky.invalidateStaticShadows("all");
@@ -3051,6 +3060,7 @@ async function boot() {
             notify: (message, seconds) => hud.message(message, seconds)
           });
           site.deferOptionalFoliage();
+          site.deferOptionalDetails();
           japaneseTeaGarden = site;
           net.replayRakeStamps();
           teaGardenPaintWater = (impact) => site?.paintWater(impact) ?? false;
@@ -3066,7 +3076,7 @@ async function boot() {
           site.group.updateMatrixWorld(true);
           try {
             markLazyRegion("tea-garden", "essential-compile-start");
-            await renderer.compileAsync(site.group, camera, scene);
+            await site.prepareEssential((root) => renderer.compileAsync(root, camera, scene));
             markLazyRegion("tea-garden", "essential-compile-end");
           } catch (error) {
             // Compilation is a presentation optimization; the live renderer can
