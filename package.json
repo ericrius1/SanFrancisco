@@ -42,6 +42,7 @@
     "test:minigame-session": "node --experimental-strip-types tools/minigame-session-probe.mjs",
     "test:ocean-beach-kite": "node tools/ocean-beach-kite-probe.mjs",
     "test:sutro-baths": "node tools/sutro-baths-probe.mjs",
+    "test:ghost-ship": "node --experimental-strip-types tools/ghost-ship-contract-test.mjs && node tools/ghost-ship-relay-probe.mjs",
     "test:drum-bridge": "node tools/drum-bridge-probe.mjs",
     "test:mission-dolores": "node --experimental-strip-types tools/mission-dolores-contract-test.mjs",
     "test:car-jump": "node --experimental-strip-types tools/car-jump-physics-probe.mjs",

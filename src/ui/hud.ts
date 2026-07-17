@@ -89,7 +89,8 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["A", "D"], label: "strafe" },
     { c: ["Space"], label: "flap · climb" },
     { c: ["Shift"], label: "tuck dive" },
-    { c: ["Q", "E"], label: "twirl" },
+    { c: ["Q"], label: "twirl" },
+    { c: ["E"], label: "dismount" },
     { c: ["Click"], label: "shoot" }
   ]
 }
@@ -182,6 +183,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["A"], label: "flap · climb" },
     { c: ["L3", "LT"], label: "tuck dive" },
     { c: ["LB", "RB"], label: "twirl" },
+    { c: ["Y"], label: "dismount" },
     { c: ["RT"], label: "shoot" }
   ]
 }
@@ -193,7 +195,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   scooter: "LB power-slide with steer · ramps launch cleanly · rear seat fits a friend",
   board: "White glow = nose · pull right stick back in the air to flip",
   surf: "Carve toward the beach for speed, then up the wave and off the lip · double-tap A/D to cut back · hold the pocket for the barrel",
-  bird: "Look down + Shift to stoop — skim the bay for spray"
+  bird: "Three-seat saddle — two friends can press E nearby and fly with you"
 }
 
 // Xbox face buttons get their signature colors

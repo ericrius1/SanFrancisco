@@ -14,7 +14,7 @@ import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/pl
 import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, animateBoard, boardFromSeed, boardVisualKey, normalizeBoardConfig, type BoardConfig } from "../vehicles/board";
-import { buildBirdMesh } from "../vehicles/bird";
+import { activateBirdAssets, buildBirdMesh } from "../vehicles/bird";
 import { activateSurfboardAssets, animateSurfboard, buildSurfboardMesh } from "../vehicles/surf";
 import {
   normalizeSurfboardConfig,
@@ -109,7 +109,7 @@ const TAG_Y: Record<PlayerMode, number> = {
   drone: 1.6,
   board: 2.3,
   surf: 2.2,
-  bird: 2.2
+  bird: 3.15
 };
 
 type Avatar = {
@@ -125,6 +125,7 @@ type Avatar = {
   speed: number; // from the last snapshot (drives the walk cycle)
   vy: number; // vertical velocity estimate (air poses)
   ride: number; // driver id while riding shotgun (0 = not riding)
+  rideSeat: number; // one-based passenger anchor on that vehicle
   avatar: AvatarTraits;
   avatarKey: string;
   board: BoardConfig;
@@ -212,6 +213,14 @@ export class RemotePlayers {
   localDriveMesh: () => THREE.Group | null = () => null;
   /** Local render position for distance-gating optional remote cosmetics. */
   localPlayerPosition: () => THREE.Vector3 | null = () => null;
+  /** Deterministic public-world ride resolver. Negative ids never alias a
+   * server-assigned player id, so they remain safe across reconnects. */
+  worldRidePose: (
+    rideId: number,
+    seat: number,
+    outPosition: THREE.Vector3,
+    outQuaternion: THREE.Quaternion
+  ) => boolean = () => false;
 
   #scene: THREE.Scene;
   #protos: Partial<Record<PlayerMode, THREE.Group>> = {};
@@ -221,6 +230,7 @@ export class RemotePlayers {
   #scooterAssetsEnabled = false;
   #carAssetsEnabled = false;
   #gardenRakeFactory: (() => GardenRakeTool) | null = null;
+  #birdAssetsEnabled = false;
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -299,16 +309,43 @@ export class RemotePlayers {
     return false;
   }
 
-  /** Nearest player driving a vehicle with a passenger seat. */
-  nearestDriver(pos: THREE.Vector3, maxDist: number): { id: number; name: string } | null {
-    let best: { id: number; name: string } | null = null;
+  /** Visible seat claims for a player vehicle or reserved world ride. */
+  occupiedRideSeats(rideId: number): number[] {
+    const seats: number[] = [];
+    for (const avatar of this.avatars.values()) {
+      if (avatar.ride !== rideId || !avatar.root.visible || avatar.rideSeat < 1) continue;
+      seats.push(avatar.rideSeat);
+    }
+    return seats;
+  }
+
+  #availablePassengerSeat(driverId: number, mode: PlayerMode): number {
+    const capacity = mode === "bird" ? 2 : 1;
+    const used = new Set<number>();
+    for (const avatar of this.avatars.values()) {
+      if (avatar.ride === driverId && avatar.root.visible) used.add(avatar.rideSeat || 1);
+    }
+    for (let seat = 1; seat <= capacity; seat++) {
+      if (!used.has(seat)) return seat;
+    }
+    return 0;
+  }
+
+  /** Nearest player driving a vehicle with a currently free passenger seat. */
+  nearestDriver(
+    pos: THREE.Vector3,
+    maxDist: number
+  ): { id: number; name: string; mode: "drive" | "scooter" | "bird"; seat: number } | null {
+    let best: { id: number; name: string; mode: "drive" | "scooter" | "bird"; seat: number } | null = null;
     let bestD = maxDist;
     for (const a of this.avatars.values()) {
-      if ((a.mode !== "drive" && a.mode !== "scooter") || !a.root.visible) continue;
+      if ((a.mode !== "drive" && a.mode !== "scooter" && a.mode !== "bird") || !a.root.visible) continue;
+      const seat = this.#availablePassengerSeat(a.info.id, a.mode);
+      if (!seat) continue;
       const d = a.root.position.distanceTo(pos);
       if (d < bestD) {
         bestD = d;
-        best = { id: a.info.id, name: a.info.name };
+        best = { id: a.info.id, name: a.info.name, mode: a.mode, seat };
       }
     }
     return best;
@@ -320,13 +357,22 @@ export class RemotePlayers {
    * MY car), so a glued passenger never lags out of the cabin. False when the
    * driver is gone or not driving; callers treat that as "ride over".
    */
-  ridePose(driverId: number, outPos: THREE.Vector3, outQuat: THREE.Quaternion): boolean {
+  ridePose(
+    driverId: number,
+    seat: number,
+    outPos: THREE.Vector3,
+    outQuat: THREE.Quaternion
+  ): boolean {
+    if (driverId < 0) return this.worldRidePose(driverId, seat, outPos, outQuat);
+    const seatIndex = Math.max(0, Math.round(seat || 1) - 1);
     if (driverId === this.selfId && this.selfId) {
       const m = this.localDriveMesh();
       if (!m) return false;
+      const passengers = m.userData.passengerSeats as [number, number, number][] | undefined;
       const passenger = m.userData.passengerSeat as [number, number, number] | undefined;
       const c = m.userData.cockpit as Cockpit | undefined;
-      if (passenger) outPos.set(...passenger);
+      if (passengers?.[seatIndex]) outPos.set(...passengers[seatIndex]);
+      else if (passenger && seatIndex === 0) outPos.set(...passenger);
       else if (c) outPos.set(-c.seat[0], c.seat[1], c.seat[2]);
       else outPos.copy(this.#passengerSeat);
       outQuat.copy(m.quaternion);
@@ -334,10 +380,12 @@ export class RemotePlayers {
       return true;
     }
     const a = this.avatars.get(driverId);
-    if (!a || (a.mode !== "drive" && a.mode !== "scooter") || !a.root.visible) return false;
+    if (!a || (a.mode !== "drive" && a.mode !== "scooter" && a.mode !== "bird") || !a.root.visible) return false;
     const body = a.bodies[a.mode];
+    const passengers = body?.userData.passengerSeats as [number, number, number][] | undefined;
     const passenger = body?.userData.passengerSeat as [number, number, number] | undefined;
-    if (passenger) outPos.set(...passenger);
+    if (passengers?.[seatIndex]) outPos.set(...passengers[seatIndex]);
+    else if (passenger && seatIndex === 0) outPos.set(...passenger);
     else outPos.copy(this.#passengerSeat);
     outPos.applyQuaternion(a.root.quaternion).add(a.root.position);
     outQuat.copy(a.root.quaternion);
@@ -383,6 +431,11 @@ export class RemotePlayers {
     this.#gardenRakeFactory = factory;
   }
 
+  /** Remote Phoenix GLBs remain gated until local Phoenix use or proximity. */
+  setBirdAssetsEnabled(enabled: boolean) {
+    this.#birdAssetsEnabled = enabled;
+  }
+
   add(info: RemoteInfo) {
     if (this.avatars.has(info.id)) return;
     const root = new THREE.Group();
@@ -410,6 +463,7 @@ export class RemotePlayers {
       speed: 0,
       vy: 0,
       ride: 0,
+      rideSeat: 0,
       avatar: av,
       avatarKey: avatarKey(av),
       board: bd,
@@ -594,7 +648,15 @@ export class RemotePlayers {
     if (mode === "bird") {
       // GLB with its own skeleton — clone() breaks skinning, so each remote
       // loads its own copy (served from HTTP cache after the first)
-      return buildBirdMesh();
+      const g = buildBirdMesh();
+      const rig = buildRig(a.avatar);
+      rig.group.name = "phoenix_remote_rider";
+      const cockpit = g.userData.cockpit as Cockpit;
+      rig.group.position.set(...cockpit.seat);
+      rig.group.visible = false;
+      g.add(rig.group);
+      g.userData.remoteRig = rig;
+      return g;
     }
     if (mode === "board") {
       // built fresh from their config (not cloned) — clone() JSON-snapshots
@@ -696,7 +758,8 @@ export class RemotePlayers {
       // visible here). Drivers processed later in the map use last frame's
       // root — one render frame of lag, invisible at 12 Hz sampling.
       a.ride = b.ride ?? 0;
-      if (a.ride && this.ridePose(a.ride, TMP.pa, TMP.qa)) {
+      a.rideSeat = b.rideSeat ?? (a.ride ? 1 : 0);
+      if (a.ride && this.ridePose(a.ride, a.rideSeat, TMP.pa, TMP.qa)) {
         a.root.position.copy(TMP.pa);
         a.root.quaternion.copy(TMP.qa);
       }
@@ -755,6 +818,19 @@ export class RemotePlayers {
         ) {
           body.userData.carAssetsActivated = true;
           void activateCarAssets(body);
+        }
+      }
+      if (a.mode === "bird" && this.#birdAssetsEnabled) {
+        const local = this.localPlayerPosition();
+        const body = a.bodies.bird;
+        if (
+          local &&
+          body &&
+          !body.userData.birdAssetsActivated &&
+          a.root.position.distanceToSquared(local) <= 180 * 180
+        ) {
+          body.userData.birdAssetsActivated = true;
+          void activateBirdAssets(body);
         }
       }
 
@@ -816,6 +892,10 @@ export class RemotePlayers {
       poseDrive(rig, 0, a.animT, false);
     } else if (a.mode === "plane") {
       poseDrive(rig, 0, a.animT, true);
+    } else if (a.mode === "bird") {
+      const body = a.bodies.bird;
+      rig.group.visible = Boolean(body?.userData.phoenixAsset);
+      if (rig.group.visible) poseDrive(rig, 0, a.animT, false);
     }
   }
 }

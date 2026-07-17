@@ -25,7 +25,9 @@ import {
  *   → {t:"hi", name, avatar, board, scooter, surfboard, car} on open
  *   ← {t:"welcome", id, hue, name, players:[{id,name,hue,avatar,board,scooter,surfboard,car}]}
  *   ← {t:"join"|{t:"leave"}|{t:"name"}|{t:"avatar"}|{t:"board"}|{t:"scooter"}|{t:"surfboard"}|{t:"car"} roster changes
- *   → {t:"s", d:[mode,x,y,z,qx,qy,qz,qw,speed,ride?]}   ~12 Hz while moving
+ *   → {t:"s", d:[mode,x,y,z,qx,qy,qz,qw,speed,ride?,rideSeat?]}   ~12 Hz while moving
+ *      Positive ride ids are player vehicles; reserved negative ids are shared
+ *      deterministic world rides such as the wandering ghost ship.
  *   ← {t:"snap", ts, ps:[[id,...d]]}    batched world snapshot, ~12 Hz
  *   → {t:"rtc", to, payload}            voice signaling to one peer
  *   ← {t:"rtc", from, payload}          relayed with sender id stamped
@@ -96,12 +98,16 @@ export type NetSample = {
   ride?: number;
   /** Present only while this remote is carrying a spawned garden rake. */
   rake?: GardenRakeMotion;
+  /** One-based passenger anchor. Phoenix uses 1..2; legacy vehicles use 1. */
+  rideSeat?: number;
 };
 
 export type NetStatus = "connecting" | "online" | "offline" | "full";
 
 const SEND_HZ = 12;
 const KEEPALIVE_MS = 2000; // resend an unchanged pose this often (server idle-timer food)
+const MAX_PLAYER_RIDE_SEAT = 2;
+const MAX_WORLD_RIDE_SEAT = 12;
 const NAME_MAX = 20;
 const CHAT_MAX = 200;
 /** Mirrors the relay caps: compact numeric snapshots, never arbitrary JSON. */
@@ -747,6 +753,7 @@ export class Net {
             qw,
             speed,
             ride: row[10] || undefined,
+            rideSeat: row.length === 12 ? row[11] || undefined : undefined,
             rake
           });
         }
@@ -1025,6 +1032,7 @@ export class Net {
     quat: THREE.Quaternion,
     speed: number,
     ride = 0,
+    rideSeat = 0,
     rake?: Readonly<GardenRakeMotion> | null
   ) {
     const ws = this.#ws;
@@ -1060,7 +1068,10 @@ export class Net {
         Math.round(rake.normalY * 10_000) / 10_000,
         Math.round(rake.normalZ * 10_000) / 10_000
       );
-    } else if (ride) d.push(ride);
+    } else if (ride) {
+      const capacity = ride < 0 ? MAX_WORLD_RIDE_SEAT : MAX_PLAYER_RIDE_SEAT;
+      d.push(ride, Math.max(1, Math.min(capacity, Math.round(rideSeat || 1))));
+    }
     const key = d.join(",");
     if (key === this.#lastSent && now - this.#lastSentAt < KEEPALIVE_MS) return;
     this.#lastSent = key;

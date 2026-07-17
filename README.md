@@ -47,7 +47,7 @@ use whatever tool is active. That's the whole game.
 
 ### Modes
 
-Press `1`–`9` to switch how you get around. Each one has its own feel:
+Press `1`–`8` to switch how you get around. Each one has its own feel:
 
 | | Mode | Notes |
 | --- | --- | --- |
@@ -55,13 +55,13 @@ Press `1`–`9` to switch how you get around. Each one has its own feel:
 | `2` | **Drive** | A sports car. `Space` drifts. |
 | `3` | **Scooter** | Electric scooter — bring a friend. |
 | `4` | **Board** | A hoverboard. `Space` ollies. |
-| `5` | **Surf** | Ocean Beach surfboard. |
-| `6` | **Plane** | Free flight. Good for getting your bearings over the whole city. |
-| `7` | **Boat** | A sailboat on the bay. Heaves and pitches with the swell. |
-| `8` | **Drone** | Nimble hover; look straight down at the streets. `Q` descends. |
-| `9` | **Bird** | A phoenix. `Space` flaps. Dive and soar. `Q` twirls. |
+| `5` | **Plane** | Free flight. Good for getting your bearings over the whole city. |
+| `6` | **Boat** | A sailboat on the bay. Heaves and pitches with the swell. |
+| `7` | **Drone** | Nimble hover; look straight down at the streets. `Q` descends. |
+| `8` | **Bird** | Summons a phoenix beside you on the ground; press `E` to mount its three-person saddle. `Space` flaps and `Q` twirls. |
 
-A bay-only **speedboat** unlocks out on the water (not on the number-row roster).
+**Surfing** unlocks at Ocean Beach and a bay-only **speedboat** unlocks out on
+the water; neither is on the number-row roster.
 
 ### Controls
 
@@ -71,7 +71,7 @@ A bay-only **speedboat** unlocks out on the water (not on the number-row roster)
 | `Shift` | Run / boost |
 | `Space` | Jump / drift / ollie / flap / pickleball swing (depends on the mode) |
 | `E` | Mount/dismount a nearby ride, pick up a returned fetch ball, start a nearby activity, or interact with its people and props |
-| `1`–`9` | Switch travel mode (see above); while golfing, pick a club |
+| `1`–`8` | Switch travel mode (see above); while golfing, pick a club |
 | `Shift`+`1`–`9` | Teleport to the numbered player next to you |
 | `M` | **Full-city map** — drag/scroll to pan/zoom, click a landmark or spot, press Teleport |
 | Left click | Use the current tool; near your golf ball, hold to draw back and release to swing |
@@ -129,6 +129,11 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
 - **Skyline landmarks** — Golden Gate, Bay Bridge, Transamerica, Salesforce
   Tower, Coit Tower, the Ferry Building, Sutro Tower, the Palace of Fine Arts,
   Alcatraz — plus floating balloon islands if you can reach them.
+- **The wandering ghost ship** — a public fairy-lit galleon that circles the
+  skyline, carries up to twelve visitors on shared deck stations, and lands at
+  the Presidio parade ground once every night (with a date-seeded second meadow
+  stop on some nights). Its hot tub runs a close-range WebGPU fluid solver with
+  rising steam, and occasional rainbow shooting-star showers fall from its wake.
 
 ---
 
@@ -159,6 +164,9 @@ Nothing here is required — it's a list of things people tend to find fun.
   heaves and the boat trims bow-up as it climbs the swell.
 - **Chase the light.** Hold `Z` and drag to scrub the time of day. Sunset over
   the bridge, then night with tower beacons and Bay Bridge lights lit.
+- **Catch the ghost ship.** Map → **Ghost Ship · nightly landing** after dark,
+  walk to its gangplank, and press `E`. Friends can take the other deck stations
+  and remain attached to the same roaming ship.
 - **Bring a friend.** Send them your local URL (or the live link). The minimap
   shows everyone as colored dots; the nearest nine get numbered indicators —
   press that number to teleport. Dots on the minimap rim are out of range; press

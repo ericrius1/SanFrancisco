@@ -1137,10 +1137,20 @@ wss.on("connection", (ws) => {
         id
       );
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
-    } else if (msg.t === "s" && Array.isArray(msg.d) && (msg.d.length === 9 || msg.d.length === 10 || msg.d.length === 20)) {
-      // Base pose is [mode,x,y,z,qx,qy,qz,qw,speed,ride?]. A held-rake
-      // presence appends [engaged,dragging,contact xyz,pull xz,normal xyz].
-      if (msg.d.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    } else if (
+      msg.t === "s" &&
+      Array.isArray(msg.d) &&
+      (msg.d.length === 9 || msg.d.length === 10 || msg.d.length === 11 || msg.d.length === 20)
+    ) {
+      // Base pose is [mode,x,y,z,qx,qy,qz,qw,speed,ride?]. An 11-value
+      // packet adds rideSeat; a 20-value held-rake packet instead appends
+      // [engaged,dragging,contact xyz,pull xz,normal xyz].
+      const rideId = msg.d.length >= 10 ? msg.d[9] : 0;
+      const seatCapacity = rideId < 0 ? 12 : 2;
+      const seatValid =
+        msg.d.length !== 11 ||
+        (Number.isInteger(msg.d[10]) && msg.d[10] >= 1 && msg.d[10] <= seatCapacity);
+      if (seatValid && msg.d.every((n) => typeof n === "number" && Number.isFinite(n))) {
         p.state = msg.d;
         p.lastState = Date.now();
       }

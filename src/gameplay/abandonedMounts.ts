@@ -9,7 +9,7 @@ import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/pl
 import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, localBoardConfig } from "../vehicles/board";
-import { buildBirdMesh, type BirdRig } from "../vehicles/bird";
+import { activateBirdAssets, buildBirdMesh, type BirdRig } from "../vehicles/bird";
 import { buildSurfboardMesh } from "../vehicles/surf";
 import { buildScooterMesh, localScooterConfig, SCOOTER_RIDE_HEIGHT } from "../vehicles/scooter";
 import { CAR_RIDE_HEIGHT } from "../vehicles/car/mesh";
@@ -53,6 +53,11 @@ type AbandonedMount = {
   targetY?: number;
   flapPhase?: number;
   animT?: number;
+  // A ground-summoned Phoenix waits in place until E claims it. `ownedMesh`
+  // is false for the player's stable Phoenix root, which transfers straight
+  // back into Player instead of being thrown away and loaded twice.
+  parked?: boolean;
+  ownedMesh: boolean;
   // plane: flies straight for `glideTime`, then noses down; `crashed` freezes it
   glideTime?: number;
   crashed?: boolean;
@@ -244,8 +249,87 @@ export class AbandonedMounts {
   debugMounts() {
     return this.#items.map((it) => {
       const t = this.#physics.world.getBodyTransform(it.handle);
-      return { mode: it.mode, x: +t.position[0].toFixed(1), y: +t.position[1].toFixed(2), z: +t.position[2].toFixed(1), persistent: !!it.persistent };
+      return {
+        mode: it.mode,
+        x: +t.position[0].toFixed(1),
+        y: +t.position[1].toFixed(2),
+        z: +t.position[2].toFixed(1),
+        persistent: !!it.persistent,
+        parked: !!it.parked
+      };
     });
+  }
+
+  /**
+   * Call the player's stable Phoenix root down beside a grounded walker. The
+   * same mesh/loaded GLB transfers into ridden mode when E claims it, so the
+   * mount never flashes out or requests a second hero asset.
+   */
+  summonPhoenix(mesh: THREE.Group, playerPosition: THREE.Vector3, facing: number): void {
+    const rightX = Math.cos(facing);
+    const rightZ = -Math.sin(facing);
+    const forwardX = -Math.sin(facing);
+    const forwardZ = -Math.cos(facing);
+    const surfaceY = playerPosition.y - 0.9;
+    const candidates = [
+      [playerPosition.x + rightX * 4.3, playerPosition.z + rightZ * 4.3],
+      [playerPosition.x - rightX * 4.3, playerPosition.z - rightZ * 4.3],
+      [playerPosition.x - forwardX * 4.3, playerPosition.z - forwardZ * 4.3]
+    ] as const;
+    let targetX = candidates[0][0];
+    let targetZ = candidates[0][1];
+    let targetGround = this.#map.effectiveGround(targetX, targetZ);
+    let bestScore = Infinity;
+    for (const [x, z] of candidates) {
+      const ground = this.#map.effectiveGround(x, z);
+      const score = Math.abs(ground - surfaceY) + (this.#map.isWater(x, z) ? 1000 : 0);
+      if (score >= bestScore) continue;
+      bestScore = score;
+      targetX = x;
+      targetZ = z;
+      targetGround = ground;
+    }
+    // Rooftops and authored platforms may sit above the heightmap. Preserve
+    // the walker's supported surface height rather than dropping the summon to
+    // the street below; terrain candidates still lift to their own local top.
+    const targetY = Math.max(playerPosition.y, targetGround + 0.9);
+    V.quat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), facing);
+
+    const existing = this.#items.find((item) => item.mesh === mesh);
+    if (existing) {
+      existing.parked = true;
+      existing.persistent = true;
+      existing.targetY = targetY;
+      existing.wanderYaw = facing;
+      existing.age = 0;
+      this.#physics.world.setBodyTransform(existing.handle, [targetX, targetY, targetZ], [
+        V.quat.x,
+        V.quat.y,
+        V.quat.z,
+        V.quat.w
+      ]);
+      this.#physics.world.setBodyVelocity(existing.handle, [0, 0, 0], [0, 0, 0]);
+      setEmbodimentVisible(mesh, true);
+      void activateBirdAssets(mesh);
+      return;
+    }
+
+    this.spawn(
+      "bird",
+      {
+        position: new THREE.Vector3(targetX, targetY, targetZ),
+        quaternion: V.quat.clone(),
+        linear: [0, 0, 0],
+        angular: [0, 0, 0]
+      },
+      { persistent: true, parked: true, mesh }
+    );
+  }
+
+  /** Stop world ownership before the stable Phoenix root enters direct flight. */
+  releaseMesh(mesh: THREE.Group): void {
+    const index = this.#items.findIndex((item) => item.mesh === mesh);
+    if (index >= 0) this.#remove(index);
   }
 
   /**
@@ -297,9 +381,14 @@ export class AbandonedMounts {
     return { mode, x: t.position[0], y: t.position[1], z: t.position[2], heading };
   }
 
-  spawn(mode: MountMode, pose: ReleasePose, opts?: { persistent?: boolean }) {
+  spawn(
+    mode: MountMode,
+    pose: ReleasePose,
+    opts?: { persistent?: boolean; parked?: boolean; mesh?: THREE.Group }
+  ) {
     const spec = SPECS[mode];
-    const mesh = spec.build();
+    const mesh = opts?.mesh ?? spec.build();
+    mesh.userData.disposed = false;
     setEmbodimentVisible(mesh, true);
     mesh.position.copy(pose.position);
     mesh.quaternion.copy(pose.quaternion);
@@ -333,7 +422,16 @@ export class AbandonedMounts {
       pose.angular[2]
     ]);
 
-    const item: AbandonedMount = { mode, spec, handle, mesh, age: 0, persistent: opts?.persistent };
+    const item: AbandonedMount = {
+      mode,
+      spec,
+      handle,
+      mesh,
+      age: 0,
+      persistent: opts?.persistent,
+      parked: opts?.parked,
+      ownedMesh: !opts?.mesh
+    };
     if (mode === "plane") {
       item.planeAnim = collectPlaneAnim(mesh);
       // cruise straight for a few seconds, then tip into the crash dive
@@ -342,11 +440,14 @@ export class AbandonedMounts {
     }
     if (mode === "drone") item.rotors = mesh.userData.rotors as THREE.Group[] | undefined;
     if (mode === "bird") {
+      void activateBirdAssets(mesh);
       // steer off along whatever way it was facing when released
       V.fwd.set(0, 0, -1).applyQuaternion(pose.quaternion);
       item.wanderYaw = Math.atan2(-V.fwd.x, -V.fwd.z);
       item.wanderTimer = 2 + Math.random() * 3;
-      item.targetY = Math.max(pose.position.y, this.#map.effectiveGround(pose.position.x, pose.position.z) + 45);
+      item.targetY = item.parked
+        ? pose.position.y
+        : Math.max(pose.position.y, this.#map.effectiveGround(pose.position.x, pose.position.z) + 45);
       item.flapPhase = 0;
       item.animT = 0;
     }
@@ -433,6 +534,19 @@ export class AbandonedMounts {
     const x = t.position[0];
     const z = t.position[2];
     const y = t.position[1];
+
+    if (item.parked) {
+      const yaw = item.wanderYaw ?? 0;
+      const targetY = Math.max(
+        item.targetY ?? y,
+        this.#map.effectiveGround(x, z) + 0.9
+      );
+      V.euler.set(0, yaw, 0);
+      V.quat.setFromEuler(V.euler);
+      w.setBodyTransform(item.handle, [x, targetY, z], [V.quat.x, V.quat.y, V.quat.z, V.quat.w]);
+      w.setBodyVelocity(item.handle, [0, 0, 0], [0, 0, 0]);
+      return;
+    }
 
     item.wanderTimer = (item.wanderTimer ?? 0) - dt;
     if (item.wanderTimer <= 0) {
@@ -567,6 +681,7 @@ export class AbandonedMounts {
     const w = this.#physics.world;
     for (let i = this.#items.length - 1; i >= 0; i--) {
       const item = this.#items[i];
+      if (!item.ownedMesh) setEmbodimentVisible(item.mesh, true);
       item.age += dt;
       const t = w.getBodyTransform(item.handle);
       item.mesh.position.set(t.position[0], t.position[1], t.position[2]);
@@ -598,13 +713,13 @@ export class AbandonedMounts {
     const r = item.mesh.userData.rig as BirdRig | undefined;
     if (!r) return; // GLB still loading
     item.animT = (item.animT ?? 0) + dt;
-    item.flapPhase = (item.flapPhase ?? 0) + dt * Math.PI * 2 * 2.3;
+    item.flapPhase = (item.flapPhase ?? 0) + dt * Math.PI * 2 * (item.parked ? 0.42 : 2.3);
     const wingBeat = (ph: number) => {
       const wr = ph - 0.35 * Math.sin(ph);
       const s = Math.sin(wr) + 0.15 * Math.sin(2 * wr - 0.5);
       return s > 0 ? s : s * 0.4;
     };
-    const drive = 0.5;
+    const drive = item.parked ? 0.12 : 0.5;
     const seg = 1.05;
     const wave = (i: number) => wingBeat((item.flapPhase ?? 0) - i * seg);
     const beat = wave(0) * drive * 0.85;
@@ -632,7 +747,12 @@ export class AbandonedMounts {
     const item = this.#items[index];
     this.#items.splice(index, 1);
     this.#physics.world.destroyBody(item.handle);
-    item.mesh.removeFromParent();
-    disposeObject(item.mesh);
+    if (item.ownedMesh) {
+      item.mesh.userData.disposed = true;
+      item.mesh.removeFromParent();
+      disposeObject(item.mesh);
+    } else {
+      setEmbodimentVisible(item.mesh, false);
+    }
   }
 }

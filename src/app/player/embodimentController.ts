@@ -24,6 +24,8 @@ export type ReleaseMotion = {
 export class EmbodimentController {
   currentAnimal: AnimalKind | null = null;
   passengerOf: number | null = null;
+  /** One-based passenger anchor on the driver's vehicle. */
+  passengerSeat = 0;
 
   #player: Player;
   #physics: Physics;
@@ -45,14 +47,17 @@ export class EmbodimentController {
     this.#getForest = opts.getForest;
   }
 
-  startPassengerRide(remoteId: number): void {
+  startPassengerRide(remoteId: number, seat = 1): void {
     this.passengerOf = remoteId;
+    const capacity = remoteId < 0 ? 12 : 2;
+    this.passengerSeat = Math.max(1, Math.min(capacity, Math.round(seat)));
     this.#player.startRide();
   }
 
   leaveRide(): void {
     if (this.passengerOf === null) return;
     this.passengerOf = null;
+    this.passengerSeat = 0;
     this.#player.endRide();
   }
 
@@ -90,6 +95,7 @@ export class EmbodimentController {
     const player = this.#player;
     if (this.passengerOf !== null) {
       this.passengerOf = null;
+      this.passengerSeat = 0;
       player.position.x += Math.cos(player.heading) * 2.4;
       player.position.z -= Math.sin(player.heading) * 2.4;
       player.endRide();
@@ -158,10 +164,20 @@ export class EmbodimentController {
       this.exitToWalk();
       return;
     }
+    if (mode === "bird" && player.mode === "walk" && player.walkGrounded && !player.walkSwimming) {
+      this.#abandonedMounts.summonPhoenix(
+        player.meshes.bird,
+        player.position,
+        player.heading - Math.PI
+      );
+      this.#hud.message("Your Phoenix is beside you — press E to mount · saddle seats 3", 3.2);
+      return;
+    }
     this.leaveRide();
     if (this.currentAnimal && mode !== "drive" && mode !== "drone") this.dropCurrentDriveMount();
     if (mode === "drive" && !this.currentAnimal) player.setDriveStyle(null);
     if (mode === "drone") player.clearDroneStyle();
+    if (mode === "bird") this.#abandonedMounts.releaseMesh(player.meshes.bird);
     player.trySwitch(mode);
   }
 
