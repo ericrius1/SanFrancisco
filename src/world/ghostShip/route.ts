@@ -4,6 +4,8 @@ import { sanFranciscoCivilNow, type SfCivilTime } from "../solar.ts";
 export const GHOST_SHIP_RIDE_ID = -1001;
 export const GHOST_SHIP_SEAT_COUNT = 12;
 export const GHOST_SHIP_DETAIL_WAKE_DISTANCE = 1800;
+/** Stable minimap pin name; position tracks the live wall-clock route. */
+export const GHOST_SHIP_LANDMARK_NAME = "Ghost Ship";
 
 export type GhostShipPose = {
   x: number;
@@ -41,31 +43,90 @@ const AIR_ROUTE: RoutePoint[] = [
   { x: -2680, z: 2520, altitude: 410 }
 ];
 
-const PRESIDIO_LANDING: GhostShipLanding = {
-  name: "Presidio parade ground",
-  x: -1680,
-  z: -1050,
-  yaw: 0.12,
-  startHour: 21.15,
-  endHour: 22.0
-};
-
-const SECOND_LANDINGS: GhostShipLanding[] = [
+/** Guaranteed dry-ground stops spread through the SF civil day. */
+const DAILY_LANDINGS: GhostShipLanding[] = [
+  {
+    name: "Marina Green",
+    x: -700,
+    z: -2350,
+    yaw: 0.4,
+    startHour: 8.0,
+    endHour: 8.95
+  },
   {
     name: "Golden Gate Park polo field",
     x: -5000,
     z: 2500,
     yaw: -0.42,
-    startHour: 1.9,
-    endHour: 2.68
+    startHour: 10.5,
+    endHour: 11.45
   },
   {
     name: "Botanical Garden Great Meadow",
     x: -2260,
     z: 2450,
     yaw: 1.1,
-    startHour: 1.9,
-    endHour: 2.68
+    startHour: 13.0,
+    endHour: 13.95
+  },
+  {
+    name: "Corona Heights meadow",
+    x: 350,
+    z: 2700,
+    yaw: -0.8,
+    startHour: 15.5,
+    endHour: 16.45
+  },
+  {
+    name: "Mission Dolores Park",
+    x: 1480,
+    z: 3120,
+    yaw: 0.2,
+    startHour: 18.0,
+    endHour: 18.95
+  },
+  {
+    name: "Presidio parade ground",
+    x: -1680,
+    z: -1050,
+    yaw: 0.12,
+    startHour: 20.75,
+    endHour: 21.9
+  },
+  {
+    name: "Fort Mason lawn",
+    x: 1180,
+    z: -1750,
+    yaw: 1.6,
+    startHour: 23.1,
+    endHour: 23.98
+  }
+];
+
+const LATE_LANDINGS: GhostShipLanding[] = [
+  {
+    name: "Golden Gate Park polo field",
+    x: -5000,
+    z: 2500,
+    yaw: -0.42,
+    startHour: 2.0,
+    endHour: 2.9
+  },
+  {
+    name: "Botanical Garden Great Meadow",
+    x: -2260,
+    z: 2450,
+    yaw: 1.1,
+    startHour: 2.0,
+    endHour: 2.9
+  },
+  {
+    name: "Presidio parade ground",
+    x: -1680,
+    z: -1050,
+    yaw: 0.12,
+    startHour: 2.0,
+    endHour: 2.9
   }
 ];
 
@@ -84,11 +145,19 @@ function dateSeed(civil: SfCivilTime): number {
   return n >>> 0;
 }
 
-/** One landing is guaranteed; roughly two nights in three get the late stop. */
+/** Every civil day gets the full daytime roster plus one late-night stop. */
 export function ghostShipLandingsForCivilDate(civil: SfCivilTime): GhostShipLanding[] {
   const seed = dateSeed(civil);
-  if (seed % 3 === 0) return [PRESIDIO_LANDING];
-  return [PRESIDIO_LANDING, SECOND_LANDINGS[(seed >>> 3) % SECOND_LANDINGS.length]];
+  return [...DAILY_LANDINGS, LATE_LANDINGS[seed % LATE_LANDINGS.length]];
+}
+
+/** First free one-based deck station, or 0 when the public ship is full. */
+export function ghostShipClaimSeat(occupiedSeats: readonly number[]): number {
+  const occupied = new Set(occupiedSeats);
+  for (let seat = 1; seat <= GHOST_SHIP_SEAT_COUNT; seat++) {
+    if (!occupied.has(seat)) return seat;
+  }
+  return 0;
 }
 
 function catmull(a: number, b: number, c: number, d: number, t: number): number {
@@ -151,8 +220,9 @@ function applyLanding(
 ): GhostShipPose {
   const duration = landing.endHour - landing.startHour;
   const progress = clamp01((civil.hour - landing.startHour) / duration);
-  const descentEnd = 0.3;
-  const ascentStart = 0.7;
+  // Spend most of each window on the ground so the ship is catchable.
+  const descentEnd = 0.18;
+  const ascentStart = 0.82;
   const landingY = groundHeight(landing.x, landing.z) + 5.2;
 
   if (progress < descentEnd) {
