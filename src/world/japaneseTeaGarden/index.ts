@@ -197,6 +197,9 @@ export type JapaneseTeaGardenOptions = {
 
 const WAKE_DISTANCE = 720;
 const SLEEP_DISTANCE = 860;
+// Pond/sand simulations + koi only run when the player can actually see them.
+const SIM_WAKE_DISTANCE = 150;
+const SIM_SLEEP_DISTANCE = 175;
 const PLAYER_FOOT_BELOW_CENTER = 0.9;
 const PLAYER_STEP_DISTANCE = 0.42;
 const PLAYER_FOOT_SPREAD = 0.17;
@@ -258,6 +261,7 @@ export function createJapaneseTeaGarden(
   let awake = false;
   let foliageVisible = true;
   let distanceToGarden = Number.POSITIVE_INFINITY;
+  let simsNear = false;
   let disposed = false;
   let interactionFrame = 0;
   let playerTrackValid = false;
@@ -655,13 +659,23 @@ export function createJapaneseTeaGarden(
       streamAudio.update(dt, { playerPos: player });
       if (!awake) return;
       if (foliageVisible) vegetation.update(player);
+      // The 720 m awake radius keeps the garden VISIBLE from the park meadows,
+      // but the pond solver, koi school, and sand simulation are invisible
+      // sub-pixel work well before that. Run them only when the player is
+      // close enough to actually watch the water (hysteresis so the boundary
+      // never toggles per-frame).
+      simsNear = simsNear
+        ? distanceToGarden <= SIM_SLEEP_DISTANCE
+        : distanceToGarden <= SIM_WAKE_DISTANCE;
       updatePlayerWaterInteraction(player, mode, velocity);
       updateBallWaterInteractions();
       waterInteractions.surfaceKoi = 0;
       koiUpdateTime = time;
-      architecture.update(time, visitKoi);
-      water.update(dt, time, player);
-      dryLandscape.update(dt, time, player, mode);
+      architecture.update(time, simsNear ? visitKoi : undefined);
+      if (simsNear) {
+        water.update(dt, time, player);
+        dryLandscape.update(dt, time, player, mode);
+      }
       guide.update(dt, time, player, camera);
     },
     project(camera: THREE.Camera) {

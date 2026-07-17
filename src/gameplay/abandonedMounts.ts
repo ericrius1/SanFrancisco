@@ -64,6 +64,8 @@ type AbandonedMount = {
   // scattered "come find me" mounts: exempt from distance-despawn and the
   // overflow eviction, so they wait at their bay spot however far you roam
   persistent?: boolean;
+  // far persistent mounts: mesh hidden + behaviors skipped (see FAR_HIDE_DISTANCE)
+  farHidden?: boolean;
 };
 
 const MAX_MOUNTS = 12;
@@ -71,6 +73,11 @@ const DESPAWN_DISTANCE = 520;
 // birds are their own creatures now — they get to roam much farther before we
 // stop tracking them than a parked car does
 const BIRD_DESPAWN_DISTANCE = 1400;
+// Persistent scatter boats never despawn, but past this range they are a few
+// pixels at most while still costing ~35 draws each — hide the mesh and let
+// the body sleep. Hysteresis so the boundary never flickers.
+const FAR_HIDE_DISTANCE = 1250;
+const FAR_SHOW_DISTANCE = 1150;
 
 /** Short verb phrase for `formatInteractPrompt` ("E — board the car"). */
 export const ABANDONED_MOUNT_PROMPT: Record<MountMode, string> = {
@@ -488,7 +495,7 @@ export class AbandonedMounts {
 
       // scattered bay boats sail themselves around the water on their own
       if ((item.mode === "boat" || item.mode === "speedboat") && item.persistent) {
-        this.#sailBoat(item, dt);
+        if (!item.farHidden) this.#sailBoat(item, dt);
         continue;
       }
 
@@ -681,14 +688,31 @@ export class AbandonedMounts {
     const w = this.#physics.world;
     for (let i = this.#items.length - 1; i >= 0; i--) {
       const item = this.#items[i];
-      if (!item.ownedMesh) setEmbodimentVisible(item.mesh, true);
       item.age += dt;
       const t = w.getBodyTransform(item.handle);
+      const dist = Math.hypot(t.position[0] - playerPos.x, t.position[2] - playerPos.z);
+
+      // Far persistent mounts stop rendering and animating entirely; the body
+      // stays where it is, ready to resume sailing when the player returns.
+      if (item.persistent) {
+        if (item.farHidden ? dist > FAR_SHOW_DISTANCE : dist > FAR_HIDE_DISTANCE) {
+          if (!item.farHidden) {
+            item.farHidden = true;
+            item.mesh.visible = false;
+          }
+          continue;
+        }
+        if (item.farHidden) {
+          item.farHidden = false;
+          item.mesh.visible = true;
+        }
+      }
+
+      if (!item.ownedMesh) setEmbodimentVisible(item.mesh, true);
       item.mesh.position.set(t.position[0], t.position[1], t.position[2]);
       item.mesh.quaternion.set(t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]);
       this.#animate(item, dt);
 
-      const dist = Math.hypot(t.position[0] - playerPos.x, t.position[2] - playerPos.z);
       const maxDist = item.mode === "bird" ? BIRD_DESPAWN_DISTANCE : DESPAWN_DISTANCE;
       if (t.position[1] < -100 || (!item.persistent && dist > maxDist)) this.#remove(i);
     }

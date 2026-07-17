@@ -241,6 +241,25 @@ export default defineConfig({
     exclude: ["box3d-wasm"],
     include: ["camera-controls", "three/webgpu", "three/tsl", "lil-gui", "tweakpane"]
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split the entry monolith so the browser can parse/cache three.js and
+        // the debug tooling separately from app code. three.js changes only on
+        // dependency bumps, so returning players hit a warm cache for the
+        // biggest chunk; the app chunk shrinks to what actually changes.
+        manualChunks(id: string) {
+          if (id.includes("node_modules")) {
+            if (id.includes("/three/")) return "three";
+            if (id.includes("tweakpane") || id.includes("lil-gui")) return "debug-ui";
+            return "vendor";
+          }
+          if (id.includes("/addons/inspector/")) return "debug-ui";
+          return undefined;
+        }
+      }
+    }
+  },
   worker: {
     format: "es"
   },

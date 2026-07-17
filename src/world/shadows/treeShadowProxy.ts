@@ -1,15 +1,27 @@
 import * as THREE from "three/webgpu"
+import { attribute, floor, fract, instanceIndex, positionGeometry, positionLocal, positionWorld, smoothstep, vec3 } from "three/tsl"
 import { setLocalFarShadowOnly } from "./shadowLayers"
+
+type N = any
 
 const DEFAULT_CELL_SIZE = 96
 const TRUNK_SIDES = 6
 const CROWN_SIDES = 8
+/** Fallback canopy coverage when a species carries no measured density. */
+const DEFAULT_COVER = 0.66
+/** World-space size of one shadow perforation cell (m). */
+const HOLE_CELL = 0.55
 
 export type TreeShadowProfile = Readonly<{
   /** Template-local base offset. Slots already include their authored sink. */
   baseY: number
   height: number
   crownDiameter: number
+  /**
+   * Canopy coverage 0..1 — the fraction of sunlight the crown blocks. Drives
+   * the perforated shadow mask so airy species throw lighter, gappier shade.
+   */
+  cover?: number
 }>
 
 export type TreeShadowInstance = Readonly<{
@@ -31,7 +43,6 @@ export type TreeShadowProxyOptions = Readonly<{
 type BuildCell = { x: number; z: number; instances: TreeShadowInstance[] }
 
 let sharedGeometry: THREE.BufferGeometry | null = null
-let sharedMaterial: THREE.MeshBasicMaterial | null = null
 let sharedUsers = 0
 
 /**
@@ -92,24 +103,54 @@ function createUnitTreeGeometry(): THREE.BufferGeometry {
   return geometry
 }
 
-function acquireSharedResources(): readonly [THREE.BufferGeometry, THREE.MeshBasicMaterial] {
+/**
+ * Depth-only proxy material that reads as a CANOPY instead of a solid blob:
+ *   • the crown silhouette gets per-vertex/per-instance radial jitter so no
+ *     two trees share the same convex spindle outline;
+ *   • the crown depth write is perforated by a world-anchored hash mask whose
+ *     keep-fraction is the species' canopy coverage — PCF then averages the
+ *     holes into dappled light instead of a filled ellipse.
+ * World-anchored cells keep the cached local/far shadow maps stable across
+ * re-renders; the trunk (unit Y < 0.3) always stays solid.
+ */
+function createProxyMaterial(): THREE.MeshBasicMaterial {
+  const material = new THREE.MeshBasicMaterial({ color: 0xffffff })
+  material.name = "treeShadowProxy.depth"
+  material.toneMapped = false
+
+  const crownness: N = smoothstep(0.28, 0.34, (positionGeometry as N).y)
+  const seed: N = (positionGeometry as N).xyz
+    .dot(vec3(12.9898, 78.233, 37.719))
+    .add((instanceIndex as N).toFloat().mul(0.618034))
+  const lumpA: N = fract(seed.sin().mul(43758.5453)).sub(0.5)
+  const lumpB: N = fract(seed.add(19.19).sin().mul(24634.6345)).sub(0.5)
+  const xz: N = (positionGeometry as N).xz
+  const radial: N = xz.div(xz.length().max(0.06))
+  const bump: N = vec3(
+    radial.x.mul(lumpA).mul(0.2),
+    lumpB.mul(0.12),
+    radial.y.mul(lumpA).mul(0.2)
+  ).mul(crownness)
+  material.positionNode = (positionLocal as N).add(bump)
+
+  const cover: N = attribute("aShadowCover", "float")
+  const cell: N = floor((positionWorld as N).xyz.div(HOLE_CELL))
+  const hash: N = fract(cell.dot(vec3(127.1, 311.7, 74.7)).sin().mul(43758.5453))
+  ;(material as N).maskShadowNode = hash.lessThan(cover).or(crownness.lessThan(0.5))
+  return material
+}
+
+function acquireSharedGeometry(): THREE.BufferGeometry {
   if (!sharedGeometry) sharedGeometry = createUnitTreeGeometry()
-  if (!sharedMaterial) {
-    sharedMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff })
-    sharedMaterial.name = "treeShadowProxy.depth"
-    sharedMaterial.toneMapped = false
-  }
   sharedUsers++
-  return [sharedGeometry, sharedMaterial]
+  return sharedGeometry
 }
 
 function releaseSharedResources(): void {
   sharedUsers--
   if (sharedUsers > 0) return
   sharedGeometry?.dispose()
-  sharedMaterial?.dispose()
   sharedGeometry = null
-  sharedMaterial = null
   sharedUsers = 0
 }
 
@@ -187,13 +228,13 @@ export class TreeShadowProxy {
     const meshes: THREE.InstancedMesh[] = []
     let treeCount = 0
     if (cells.size > 0) {
-      const [geometry, materialTemplate] = acquireSharedResources()
+      const unitGeometry = acquireSharedGeometry()
       this.#ownsSharedResources = true
-      // All cells in one streamed proxy share a disposable clone. The template
-      // and unit geometry remain process-shared, while material.dispose gives
-      // Three's WebGPU backend the exact ownership boundary it listens for.
-      const material = materialTemplate.clone()
-      material.name = `${materialTemplate.name}:${options.name}`
+      // A fresh (not cloned) material per streamed proxy: material.dispose
+      // gives Three's WebGPU backend the exact ownership boundary it listens
+      // for, and identical node graphs dedupe into one cached pipeline.
+      const material = createProxyMaterial()
+      material.name = `${material.name}:${options.name}`
       this.#ownedMaterial = material
       const position = new THREE.Vector3()
       const rotation = new THREE.Quaternion()
@@ -202,6 +243,11 @@ export class TreeShadowProxy {
       const up = new THREE.Vector3(0, 1, 0)
       const ordered = Array.from(cells.values()).sort((a, b) => a.z - b.z || a.x - b.x)
       for (const cell of ordered) {
+        // Per-cell geometry clone (66 verts) so the per-instance canopy-cover
+        // channel can ride an instanced attribute of the cell's exact count.
+        const geometry = unitGeometry.clone()
+        const coverAttr = new THREE.InstancedBufferAttribute(new Float32Array(cell.instances.length), 1)
+        geometry.setAttribute("aShadowCover", coverAttr)
         const mesh = new THREE.InstancedMesh(geometry, material, cell.instances.length)
         mesh.name = `${options.name}:${cell.x}:${cell.z}`
         mesh.castShadow = true
@@ -221,8 +267,10 @@ export class TreeShadowProxy {
           )
           matrix.compose(position, rotation, scale)
           mesh.setMatrixAt(i, matrix)
+          coverAttr.setX(i, THREE.MathUtils.clamp(profile.cover ?? DEFAULT_COVER, 0.2, 0.95))
         }
         mesh.instanceMatrix.needsUpdate = true
+        coverAttr.needsUpdate = true
         mesh.computeBoundingBox()
         mesh.computeBoundingSphere()
         this.group.add(mesh)

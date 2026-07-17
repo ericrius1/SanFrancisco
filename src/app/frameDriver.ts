@@ -3,6 +3,8 @@ import { RENDER_TUNING } from "../config";
 
 type FrameTracer = {
   frame(frameMs: number): void;
+  /** running EMA of frame dt (ms) */
+  readonly ema: number;
 };
 
 export type FrameDriver = {
@@ -23,8 +25,10 @@ export function startFrameDriver(opts: {
   tick: (forcedDt?: number) => void;
   tracer: FrameTracer;
   isRevealed: () => boolean;
+  /** Adaptive-resolution governor; only driven by the live rAF loop (never manual probe ticks). */
+  adaptiveRes?: { update(emaMs: number): void };
 }): FrameDriver {
-  const { renderer, camera, app, tick, tracer, isRevealed } = opts;
+  const { renderer, camera, app, tick, tracer, isRevealed, adaptiveRes } = opts;
   const throttleRaf = navigator.webdriver && !new URLSearchParams(location.search).has("fullfps");
   let lastLoop = performance.now();
   let manual = false;
@@ -35,7 +39,10 @@ export function startFrameDriver(opts: {
     const frameMs = now - lastLoop;
     lastLoop = now;
     tick();
-    if (isRevealed()) tracer.frame(frameMs);
+    if (isRevealed()) {
+      tracer.frame(frameMs);
+      adaptiveRes?.update(tracer.ema);
+    }
   };
 
   const setManual = (enabled: boolean) => {

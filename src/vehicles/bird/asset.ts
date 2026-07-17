@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { applyVehicleShadowPolicy } from "../shadows";
+import { attachKtx2Loader } from "../../render/textures";
 import type { BirdRig, BoneCtl } from "./mesh";
 import { applyPhoenixPlumage } from "./plumage";
 import { installPhoenixSaddle } from "./saddle";
@@ -34,9 +35,12 @@ function disposeUnclaimedScene(scene: THREE.Object3D): void {
   for (const texture of textures) texture.dispose();
 }
 
-export function loadBirdAssets(root: THREE.Group): Promise<void> {
+export async function loadBirdAssets(root: THREE.Group): Promise<void> {
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
+  // Inert for the current JPEG phoenix; wires KTX2 (KHR_texture_basisu) so the
+  // hero GLB can be converted with tools/optimize-glb-textures.mjs later.
+  await attachKtx2Loader(loader);
 
   return new Promise<void>((resolve, reject) => {
     loader.load(

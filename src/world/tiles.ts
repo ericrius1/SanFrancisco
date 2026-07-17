@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { CONFIG } from "../config";
+import { attachKtx2Loader } from "../render/textures";
 import { tracer } from "../core/hitchTracer";
 import { createFacadeMaterial, BASEY_OFFSET, BASEY_SCALE, TOPH_SCALE } from "./facade";
 import { createRoadMaterial, createParkMaterial } from "./streets";
@@ -483,6 +484,10 @@ export class TileStreamer {
   }
 
   async init(map: WorldMap) {
+    // Main-thread loader for landmarks.glb + every tile parse. Wire KTX2 before
+    // the landmarks load below. Inert today (tile/landmark GLBs carry no basisu
+    // textures); future-proofs them for tools/optimize-glb-textures.mjs.
+    await attachKtx2Loader(this.#loader);
     this.manifest = await (await prefetched("/data/manifest.json")).json();
     this.#entries = Object.keys(this.manifest.tiles).map((key) => {
       const [cx, cz] = this.keyToCenter(key);
