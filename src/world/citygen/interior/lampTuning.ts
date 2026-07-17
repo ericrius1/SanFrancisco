@@ -11,7 +11,7 @@ import { tunables } from "../../../core/persist";
 export const PROCEDURAL_LAMP_TUNING = tunables("citygen.interiorLamp", {
   enabled: { v: true, label: "enabled" },
   coverage: {
-    v: 0.82,
+    v: 1,
     min: 0,
     max: 1,
     step: 0.01,
