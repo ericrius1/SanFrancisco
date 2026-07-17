@@ -70,6 +70,7 @@
     "test:hmr:browser": "node tools/hmr-browser-probe.mjs",
     "test:pointer-lock": "node tools/esc-pointerlock-probe.mjs",
     "test:avatar": "node tools/avatar-zfight-probe.mjs",
+    "test:transport-avatar": "node tools/transport-avatar-probe.mjs",
     "test:groundcover": "node --experimental-strip-types tools/grounding-fit-probe.mjs && node tools/groundcover-anchor-fade-probe.mjs",
     "fetch:osm": "node tools/fetch-osm.mjs",
     "fetch:terrain": "node tools/fetch-terrain.mjs",
