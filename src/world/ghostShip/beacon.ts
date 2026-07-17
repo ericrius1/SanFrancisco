@@ -111,8 +111,27 @@ export class GhostShipBeacon {
     return Math.hypot(position.x - this.pose.x, position.z - this.pose.z);
   }
 
+  #detailed = false;
+  #farHidden = false;
+
   set detailedVisible(visible: boolean) {
-    this.root.visible = !visible;
+    this.#detailed = visible;
+    this.#applyVisibility();
+  }
+
+  /**
+   * Beyond a few kilometres the proxy is a sub-15px silhouette buried in marine
+   * fog — but any mesh that is drawn-yet-fogged can still flash on a corrupted
+   * frame (the "flickering objects in the sky" reports). Skip the draw entirely
+   * until the ship is close enough to genuinely read.
+   */
+  set farHidden(hidden: boolean) {
+    this.#farHidden = hidden;
+    this.#applyVisibility();
+  }
+
+  #applyVisibility(): void {
+    this.root.visible = !this.#detailed && !this.#farHidden;
   }
 
   #applyPose(pose: GhostShipPose): void {
