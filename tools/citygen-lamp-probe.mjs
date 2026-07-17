@@ -97,6 +97,15 @@ for (const panel of firstLampPanels) {
   expect(panel.indices.every(Number.isInteger), `${panel.materialId} contains a non-integer index`);
 }
 
+// Compact coastal homes are still homes: fixture eligibility must not depend on
+// the legacy grand-chandelier style tier.
+const compactMarina = buildInterior({
+  ...specForSeed(23),
+  archetype: "marina",
+  poly: [[0, 0], [6, 0], [6, 12], [0, 12]],
+}, "residential");
+expect(lampPanels(compactMarina).length > 0, "compact tier-0 Marina home did not receive a procedural lamp");
+
 tuning.rings = 2;
 const sparse = buildInterior(specForSeed(17), "residential");
 const sparseTriangles = triangleCount(lampPanels(sparse));
@@ -139,6 +148,7 @@ const report = {
   lampBuckets: firstLampPanels.map((panel) => panel.materialId).sort(),
   triangleScaling: { rings2: sparseTriangles, rings8: denseTriangles },
   roomStableAcrossRingCounts: hashRoomWithoutLamp(sparse) === hashRoomWithoutLamp(dense),
+  compactMarinaLamp: lampPanels(compactMarina).length > 0,
   distributedHomes: `${homesWithLamp}/80`,
   failures,
 };

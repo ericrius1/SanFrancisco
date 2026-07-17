@@ -342,8 +342,7 @@ export function furnish(
     // fixture. Draw its coverage roll + seed from the room stream exactly once,
     // then generate through an isolated stream. Lamp tuning can therefore change
     // topology without perturbing any furniture, art, or collider that follows.
-    const proceduralEligible = style.chandelier
-      && ["parlor", "dining", "hall"].includes(role)
+    const proceduralEligible = ["parlor", "dining", "hall"].includes(role)
       && Math.min(w, d) > 3.05;
     const lampRoll = proceduralEligible ? r() : 1;
     const lampSeed = proceduralEligible ? Math.floor(r() * 0x100000000) : 0;
