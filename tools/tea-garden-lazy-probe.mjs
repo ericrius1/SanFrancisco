@@ -193,7 +193,7 @@ async function discoverProductionContract() {
     throw new Error(`Tea Garden projected-dialogue style is not content-hashed: ${teaStyles[0]}`);
   }
 
-  const art = [...new Set(teaSource.match(/\/art\/tea-house\/[A-Za-z0-9._-]+\.webp/g) ?? [])].sort();
+  const art = [...new Set(teaSource.match(/\/art\/tea-house\/[A-Za-z0-9._-]+/g) ?? [])].sort();
   const drumRoot = teaSource.match(/\/japanese-tea-garden\/drum-bridge/)?.[0];
   const drumStems = [...new Set(
     teaSource.match(/(?:painted|worn)-timber-(?:basecolor|normal)/g) ?? []
@@ -206,10 +206,13 @@ async function discoverProductionContract() {
     listPublicUrls("art/tea-house"),
     listPublicUrls("japanese-tea-garden")
   ]);
-  for (const url of art) {
-    if (!artCatalog.includes(url)) throw new Error(`Compiled Tea Garden art is missing from public/: ${url}`);
-  }
-  const directLogical = art.map((url) => ({ id: path.posix.basename(url), kind: "art", variants: [url] }));
+  const directLogical = art.map((stem) => {
+    const variants = ["ktx2", "webp"]
+      .map((extension) => `${stem}.${extension}`)
+      .filter((url) => artCatalog.includes(url));
+    if (variants.length === 0) throw new Error(`Compiled Tea Garden art is missing from public/: ${stem}`);
+    return { id: path.posix.basename(stem), kind: "art", variants };
+  });
   for (const stem of drumStems) {
     const variants = ["ktx2", "webp"]
       .map((extension) => `${drumRoot}/${stem}.${extension}`)
@@ -641,8 +644,9 @@ async function main() {
     const activation = phaseRecords("activation");
     const chunkRequests = activation.filter((record) => hasKind(record, "tea-feature-chunk"));
     const styleRequests = activation.filter((record) => hasKind(record, "tea-feature-style"));
-    const directAudit = selectionAudit(activation, contract.directLogical);
-    const nativeAudit = optionalNativePackAudit(activation, contract.nativeLogical);
+    const activationDirect = contract.directLogical.filter((entry) => entry.kind === "drum-texture");
+    const deferredArt = contract.directLogical.filter((entry) => entry.kind === "art");
+    const directAudit = selectionAudit(activation, activationDirect);
     expect("activation-debug-teleport-committed", activationState.entranceDistance < 250 &&
       !activationState.worldArrival?.active, activationState);
     expect("activation-tea-garden-ready-attached-awake", activationState.sitePresent &&
@@ -681,8 +685,14 @@ async function main() {
           .filter((record) => hasKind(record, "unrelated-region-chunk"))
           .map(publicRecord)
       });
-    expect("activation-loads-one-selected-direct-variant-per-slot", directAudit.every((entry) => entry.pass), directAudit);
-    expect("activation-loads-only-complete-nearby-native-packs", nativeAudit.every((entry) => entry.pass), nativeAudit);
+    expect("activation-loads-one-selected-drum-variant-per-slot", directAudit.every((entry) => entry.pass), directAudit);
+    expect("activation-defers-tea-house-interior-art", !activation.some((record) => hasKind(record, "tea-art")),
+      activation.filter((record) => hasKind(record, "tea-art")).map(publicRecord));
+    expect("activation-defers-all-optional-native-tree-media",
+      !activation.some((record) => hasKind(record, "tea-native-selected-texture") || hasKind(record, "native-manifest")),
+      activation.filter((record) =>
+        hasKind(record, "tea-native-selected-texture") || hasKind(record, "native-manifest")
+      ).map(publicRecord));
     const manifestRequests = [...boot, ...activation].filter((record) => hasKind(record, "native-manifest"));
     expect("native-manifest-remains-a-shared-singleton", manifestRequests.length <= 1,
       manifestRequests.map(publicRecord));
@@ -715,6 +725,31 @@ async function main() {
     const activationScreenshot = path.join(OUT, "activation.png");
     await page.screenshot({ path: activationScreenshot });
 
+    setPhase("optional");
+    await page.waitForFunction(
+      () => window.__sf.lazyRegionTimings?.["tea-garden"]?.events?.some(
+        (event) => event.phase === "optional-ready"
+      ),
+      null,
+      { timeout: FEATURE_TIMEOUT_MS }
+    );
+    await waitForTrackedQuiet("optional", FEATURE_IDLE_MS, FEATURE_TIMEOUT_MS);
+    const optional = phaseRecords("optional");
+    const optionalNativeAudit = optionalNativePackAudit(optional, contract.nativeLogical);
+    expect("optional-loads-only-complete-nearby-native-packs",
+      optionalNativeAudit.every((entry) => entry.pass) && optionalNativeAudit.some((entry) => entry.selectedAtApproach),
+      optionalNativeAudit);
+    expect("optional-loads-no-interior-art-or-drum-refetch",
+      !optional.some((record) => hasKind(record, "tea-art") || hasKind(record, "tea-drum-texture")),
+      optional.filter((record) => hasKind(record, "tea-art") || hasKind(record, "tea-drum-texture")).map(publicRecord));
+    expect("optional-no-unselected-tea-tree-variant",
+      !optional.some((record) => hasKind(record, "tea-native-unselected-variant")),
+      optional.filter((record) => hasKind(record, "tea-native-unselected-variant")).map(publicRecord));
+    const allManifestRequests = [...boot, ...activation, ...optional]
+      .filter((record) => hasKind(record, "native-manifest"));
+    expect("optional-native-manifest-remains-a-shared-singleton", allManifestRequests.length <= 1,
+      allManifestRequests.map(publicRecord));
+
     setPhase("subsequent");
     const actionState = await page.evaluate(async () => {
       const sf = window.__sf;
@@ -723,7 +758,16 @@ async function main() {
       site.setFoliageVisible(false);
       const hidden = site.debugState();
       site.setFoliageVisible(true);
-      site.update(1 / 60, performance.now() / 1000, sf.player.renderPosition, sf.camera, sf.player.mode);
+      const house = sf.scene.getObjectByName("japanese_tea_garden_tea_house");
+      const center = house
+        ? new sf.THREE.Box3().setFromObject(house).getCenter(new sf.THREE.Vector3())
+        : sf.player.renderPosition;
+      const artApproach = {
+        x: center.x,
+        y: sf.player.renderPosition.y,
+        z: center.z
+      };
+      site.update(1 / 60, performance.now() / 1000, artApproach, sf.camera, sf.player.mode);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       await Promise.race([
         sf.renderer.backend.device.queue.onSubmittedWorkDone(),
@@ -733,10 +777,13 @@ async function main() {
     });
     await waitForTrackedQuiet("subsequent");
     const subsequent = phaseRecords("subsequent");
+    const artAudit = selectionAudit(subsequent, deferredArt);
     expect("subsequent-safe-action-restores-foliage", actionState.hidden.foliageVisible === false &&
       actionState.after.foliageVisible === true && actionState.after.awake, actionState);
-    expect("subsequent-zero-tea-code-style-media-refetch", !subsequent.some(isTeaRecord),
-      subsequent.filter(isTeaRecord).map(publicRecord));
+    expect("subsequent-approach-loads-one-art-variant-per-panel", artAudit.every((entry) => entry.pass), artAudit);
+    expect("subsequent-art-approach-refetches-no-code-style-drum-or-tree-media",
+      !subsequent.some((record) => isTeaRecord(record) && !hasKind(record, "tea-art")),
+      subsequent.filter((record) => isTeaRecord(record) && !hasKind(record, "tea-art")).map(publicRecord));
     expect("subsequent-zero-native-manifest-refetch",
       !subsequent.some((record) => hasKind(record, "native-manifest")),
       subsequent.filter((record) => hasKind(record, "native-manifest")).map(publicRecord));
@@ -774,11 +821,20 @@ async function main() {
         activation: {
           state: activationState,
           directSelectionAudit: directAudit,
-          nativeSelectionAudit: nativeAudit,
           summary: summarize(activation),
           requests: activation.map(publicRecord)
         },
-        subsequent: { state: actionState, summary: summarize(subsequent), requests: subsequent.map(publicRecord) }
+        optional: {
+          nativeSelectionAudit: optionalNativeAudit,
+          summary: summarize(optional),
+          requests: optional.map(publicRecord)
+        },
+        subsequent: {
+          state: actionState,
+          artSelectionAudit: artAudit,
+          summary: summarize(subsequent),
+          requests: subsequent.map(publicRecord)
+        }
       },
       timings: {
         phaseStartedAtMs: Object.fromEntries(phaseStartedAt),
@@ -804,6 +860,7 @@ async function main() {
     for (const check of checks) console.log(`[${check.pass ? "PASS" : "FAIL"}] ${check.id}`);
     console.log(`[tea-garden-lazy] boot ${summarize(boot).teaRequests} Tea request(s)`);
     console.log(`[tea-garden-lazy] activation ${summarize(activation).teaRequests} Tea request(s)`);
+    console.log(`[tea-garden-lazy] optional ${summarize(optional).teaRequests} Tea request(s)`);
     console.log(`[tea-garden-lazy] subsequent ${summarize(subsequent).teaRequests} Tea request(s)`);
     console.log(`[tea-garden-lazy] activation timings ${JSON.stringify(result.timings.activation)}`);
     console.log(`[tea-garden-lazy] report ${RESULT_PATH}`);

@@ -4,6 +4,7 @@ import { BodyType, type Physics } from "../../core/physics";
 import { lightAnchor, registerAmbientLightAnchor } from "../../player/lightPool";
 import { loadTexture } from "../../render/textures";
 import {
+  JAPANESE_TEA_GARDEN_ENTRANCE,
   TEA_GARDEN_BUILDINGS,
   TEA_GARDEN_PATHS,
   TEA_GARDEN_WATER_FEATURES,
@@ -13,6 +14,7 @@ import {
   type TeaGardenTerrain,
   type TeaGardenXZ
 } from "./layout";
+import { batchTeaGardenStatics } from "./staticBatch";
 
 const COLORS = {
   vermilion: 0xb43a2e,
@@ -30,6 +32,8 @@ const COLORS = {
 } as const;
 
 const WATER_EFFECTS_RENDER_ORDER = 12;
+const DISTANT_DETAIL_THRESHOLD = 58;
+const DISTANT_DETAIL_REVEAL_DISTANCE = 38;
 
 function alphaSurface<T extends THREE.Material>(value: T): T {
   value.transparent = true;
@@ -52,6 +56,13 @@ export type TeaGardenArchitecture = {
   group: THREE.Group;
   waterGroup: THREE.Group;
   ready: Promise<void>;
+  /** Request interior art only when the player approaches the Tea House. */
+  updateArt(focus: { x: number; z: number }): void;
+  /** Exclude distant Tea-owned landmarks from the entrance-critical compile. */
+  deferDistantDetails(): void;
+  /** Warm distant landmarks as one optional Tea-owned preparation unit. */
+  prepareDistantDetails(prepare: (group: THREE.Group) => Promise<void>): Promise<void>;
+  updateDistantDetails(focus: { x: number; z: number }): void;
   update(time: number, visitKoi?: TeaGardenKoiVisitor): void;
   dispose(): void;
   stats: TeaGardenArchitectureStats;
@@ -282,18 +293,29 @@ const TEA_HOUSE_ART = [
   "/art/tea-house/four-seasons"
 ] as const;
 
+const TEA_HOUSE_ART_LOAD_RADIUS = 19;
+
+type TeaHouseGallery = {
+  group: THREE.Group;
+  update(focus: { x: number; z: number }): void;
+  dispose(): void;
+};
+
 function makeTeaHouseGallery(
   center: { x: number; z: number },
   grade: number,
   yaw: number,
   timber: THREE.Material
-): THREE.Group {
+): TeaHouseGallery {
   const group = new THREE.Group();
   group.name = "tea_house_original_fusuma_gallery";
   group.position.set(center.x, grade, center.z);
   group.rotation.y = yaw;
   const paintingGeometry = new THREE.PlaneGeometry(2.08, 1.02);
   const xPositions = [-3.42, -1.14, 1.14, 3.42] as const;
+  const paintingMaterials: THREE.MeshStandardMaterial[] = [];
+  let requested = false;
+  let disposed = false;
   TEA_HOUSE_ART.forEach((url, index) => {
     const material = new THREE.MeshStandardMaterial({
       roughness: 0.86,
@@ -301,17 +323,7 @@ function makeTeaHouseGallery(
       emissive: 0x1d130b,
       emissiveIntensity: 0.09
     });
-    // srgb + anisotropy 4 are loadTexture defaults, matching the previous
-    // TextureLoader configuration. dispose() picks the map up from the mesh.
-    loadTexture(url)
-      .then((texture) => {
-        texture.name = `tea_house_art_${index + 1}`;
-        material.map = texture;
-        material.needsUpdate = true;
-      })
-      .catch((error) => {
-        console.warn("[tea-garden] fusuma art load failed; keeping plain panel:", error);
-      });
+    paintingMaterials.push(material);
     const painting = new THREE.Mesh(paintingGeometry, material);
     painting.name = `tea_house_fusuma_art_${index + 1}`;
     painting.position.set(xPositions[index], 2.08, -4.235);
@@ -325,7 +337,38 @@ function makeTeaHouseGallery(
     group.add(makeBox("tea_house_art_frame_left", [0.055, frameHeight, 0.065], timber, [xPositions[index] - frameWidth / 2, 2.08, -4.21]));
     group.add(makeBox("tea_house_art_frame_right", [0.055, frameHeight, 0.065], timber, [xPositions[index] + frameWidth / 2, 2.08, -4.21]));
   });
-  return group;
+
+  const requestArt = () => {
+    if (requested || disposed) return;
+    requested = true;
+    TEA_HOUSE_ART.forEach((url, index) => {
+      // Interior art is selected-only media. Keep the readable plain fusuma
+      // panels at destination reveal, then fetch their maps on actual approach.
+      loadTexture(url)
+        .then((texture) => {
+          if (disposed) {
+            texture.dispose();
+            return;
+          }
+          texture.name = `tea_house_art_${index + 1}`;
+          paintingMaterials[index].map = texture;
+          paintingMaterials[index].needsUpdate = true;
+        })
+        .catch((error) => {
+          console.warn("[tea-garden] fusuma art load failed; keeping plain panel:", error);
+        });
+    });
+  };
+
+  return {
+    group,
+    update(focus) {
+      if (Math.hypot(focus.x - center.x, focus.z - center.z) <= TEA_HOUSE_ART_LOAD_RADIUS) requestArt();
+    },
+    dispose() {
+      disposed = true;
+    }
+  };
 }
 
 function makeTeaKettleGeometry(): THREE.BufferGeometry {
@@ -364,7 +407,8 @@ function makeTeaHouse(
   spec: TeaGardenBuildingSpec,
   mats: ReturnType<typeof createMaterials>,
   physics: Physics | undefined,
-  bodies: number[]
+  bodies: number[],
+  galleries: TeaHouseGallery[]
 ): THREE.Group {
   const group = new THREE.Group();
   group.name = "japanese_tea_garden_tea_house";
@@ -491,7 +535,9 @@ function makeTeaHouse(
   kettle.castShadow = true;
   group.add(kettle);
 
-  group.add(makeTeaHouseGallery(c, grade, yaw, mats.timberDark));
+  const gallery = makeTeaHouseGallery(c, grade, yaw, mats.timberDark);
+  galleries.push(gallery);
+  group.add(gallery.group);
   const lanternMaterial = new THREE.MeshStandardMaterial({
     color: 0xf5dfb1,
     emissive: 0xffbb68,
@@ -1485,6 +1531,7 @@ export function createTeaGardenArchitecture(
   const group = new THREE.Group();
   group.name = "japanese_tea_garden_architecture";
   const bodies: number[] = [];
+  const galleries: TeaHouseGallery[] = [];
 
   group.add(makePaths(map, mats.path, mats.pathEdge));
   const pondLife = createPondLife();
@@ -1493,7 +1540,7 @@ export function createTeaGardenArchitecture(
   group.add(makeDrumBridge(map, mats, physics, bodies));
 
   for (const spec of TEA_GARDEN_BUILDINGS) {
-    if (spec.kind === "tea-house") group.add(makeTeaHouse(map, spec, mats, physics, bodies));
+    if (spec.kind === "tea-house") group.add(makeTeaHouse(map, spec, mats, physics, bodies, galleries));
     else if (spec.kind === "gift-shop") group.add(makeGiftShop(map, spec, mats, physics, bodies));
     else if (spec.kind === "pagoda") group.add(makePagoda(map, spec, mats, physics, bodies));
     else if (spec.kind === "turnstile-house") group.add(makeTurnstileHouse(map, spec, mats, physics, bodies));
@@ -1516,6 +1563,46 @@ export function createTeaGardenArchitecture(
     group.add(makeStoneLantern(x, z, map, mats));
   }
   group.add(makeWaterfall(map, mats));
+
+  // The garden contains hundreds of tiny shoji mullions, rail posts and trim
+  // pieces. They are visually cheap but were each becoming a separate WebGPU
+  // render object and pipeline-compile participant. Keep landmark groups and
+  // interactive/instanced objects intact while merging inert siblings.
+  batchTeaGardenStatics(group);
+
+  // Only the entrance-facing landmark set participates in destination reveal.
+  // Distant pagoda/lantern/waterfall owners retain their own child groups and
+  // bounds inside this one optional preparation unit.
+  const distantDetails = new THREE.Group();
+  distantDetails.name = "japanese_tea_garden_distant_architecture";
+  const distantCenters: { x: number; z: number }[] = [];
+  for (const child of [...group.children]) {
+    if (child === pondLife.group || child.name === "japanese_tea_garden_paths") continue;
+    const bounds = new THREE.Box3().setFromObject(child);
+    if (bounds.isEmpty()) continue;
+    const center = bounds.getCenter(new THREE.Vector3());
+    const entranceDistance = Math.hypot(
+      center.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
+      center.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
+    );
+    if (entranceDistance <= DISTANT_DETAIL_THRESHOLD) continue;
+    child.removeFromParent();
+    distantDetails.add(child);
+    distantCenters.push({ x: center.x, z: center.z });
+  }
+  group.add(distantDetails);
+  let distantDeferred = false;
+  let distantPrepared = false;
+  let distantPreparation: Promise<void> | null = null;
+  let architectureDisposed = false;
+  const syncDistantVisibility = (focus?: { x: number; z: number }) => {
+    const approaching = focus
+      ? distantCenters.some((center) =>
+        Math.hypot(focus.x - center.x, focus.z - center.z) <= DISTANT_DETAIL_REVEAL_DISTANCE
+      )
+      : false;
+    distantDetails.visible = !distantDeferred || distantPrepared || approaching;
+  };
 
   const koiCount = pondLife.koi.reduce((sum, pond) => sum + pond.body.count, 0);
   const stats: TeaGardenArchitectureStats = {
@@ -1628,30 +1715,62 @@ export function createTeaGardenArchitecture(
     // static water group; the group now contains only pond life.
     waterGroup: pondLife.group,
     ready: mats.ready,
+    updateArt(focus) {
+      for (const gallery of galleries) gallery.update(focus);
+    },
+    deferDistantDetails() {
+      if (distantPrepared) return;
+      distantDeferred = true;
+      syncDistantVisibility();
+    },
+    prepareDistantDetails(prepare) {
+      if (distantPrepared || distantDetails.children.length === 0) return Promise.resolve();
+      if (distantPreparation) return distantPreparation;
+      distantPreparation = (async () => {
+        const parent = distantDetails.parent;
+        distantDetails.removeFromParent();
+        distantDetails.visible = true;
+        try {
+          await prepare(distantDetails);
+        } finally {
+          if (!architectureDisposed) parent?.add(distantDetails);
+          distantPrepared = true;
+          syncDistantVisibility();
+        }
+      })();
+      return distantPreparation;
+    },
+    updateDistantDetails(focus) {
+      syncDistantVisibility(focus);
+    },
     update,
     dispose() {
+      architectureDisposed = true;
+      for (const gallery of galleries) gallery.dispose();
       for (const unregister of lightUnregisters) unregister();
       lightUnregisters.length = 0;
       const geometries = new Set<THREE.BufferGeometry>();
       const materials = new Set<THREE.Material>();
       const textures = new Set<THREE.Texture>();
-      group.traverse((object) => {
-        const mesh = object as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        geometries.add(mesh.geometry);
-        const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const entry of list) {
-          materials.add(entry);
-          const textured = entry as THREE.Material & {
-            map?: THREE.Texture | null;
-            normalMap?: THREE.Texture | null;
-            roughnessMap?: THREE.Texture | null;
-          };
-          if (textured.map) textures.add(textured.map);
-          if (textured.normalMap) textures.add(textured.normalMap);
-          if (textured.roughnessMap) textures.add(textured.roughnessMap);
-        }
-      });
+      const collectOwnedResources = (root: THREE.Object3D) => root.traverse((object) => {
+          const mesh = object as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          geometries.add(mesh.geometry);
+          const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          for (const entry of list) {
+            materials.add(entry);
+            const textured = entry as THREE.Material & {
+              map?: THREE.Texture | null;
+              normalMap?: THREE.Texture | null;
+              roughnessMap?: THREE.Texture | null;
+            };
+            if (textured.map) textures.add(textured.map);
+            if (textured.normalMap) textures.add(textured.normalMap);
+            if (textured.roughnessMap) textures.add(textured.roughnessMap);
+          }
+        });
+      collectOwnedResources(group);
+      if (!distantDetails.parent) collectOwnedResources(distantDetails);
       for (const geometry of geometries) geometry.dispose();
       for (const entry of materials) entry.dispose();
       for (const texture of textures) texture.dispose();
@@ -1662,6 +1781,7 @@ export function createTeaGardenArchitecture(
         }
       }
       bodies.length = 0;
+      distantDetails.removeFromParent();
       group.removeFromParent();
     },
     stats
