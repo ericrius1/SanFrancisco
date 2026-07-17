@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import {
   Fn,
+  cameraPosition,
   cameraViewMatrix,
   clamp,
   cos,
@@ -13,6 +14,8 @@ import {
   positionLocal,
   positionWorld,
   saturate,
+  screenCoordinate,
+  screenUV,
   select,
   sin,
   smoothstep,
@@ -23,9 +26,20 @@ import {
   vec3,
   vec4,
   vertexIndex,
-  vertexStage
+  vertexStage,
+  viewportSharedTexture
 } from "three/tsl";
 import { releaseRendererAttribute } from "../../app/rendererRegistry";
+import { SUN_DIR } from "../sky";
+import {
+  beerLambertWater,
+  causticWeb,
+  ditheredCoverage,
+  interleavedGradientNoise,
+  safeRefractionUV,
+  sunSparkle,
+  tintTowardBed
+} from "../waterShadingTSL";
 import {
   SUTRO_BATHS,
   SUTRO_POOLS,
@@ -301,7 +315,14 @@ export function createSutroBathsWaterSimulation(
   const reliefU = uniform(0.72);
   const normalU = uniform(1.05);
   const rippleU = uniform(0.018);
-  const opacityU = uniform(0.9);
+  const clarityU = uniform(1.5);
+  const refractionU = uniform(0.5);
+  const bedTintU = uniform(0.5);
+  const causticU = uniform(0.85);
+  const sparkleU = uniform(0.85);
+  const shoreFoamU = uniform(0.5);
+  const poolDepthU = uniform(1.35);
+  const sunDirU = uniform(new THREE.Vector3(-0.52, 0.42, -0.28));
   const simulationBlendU = uniform(0);
   // xy = nearest wet point in site-local space; zw = local player velocity.
   const playerWakeU = uniform(new THREE.Vector4());
@@ -486,24 +507,13 @@ export function createSutroBathsWaterSimulation(
       .add(0.27)
   );
 
-  const deepColorU = uniform(new THREE.Color(0x123e46));
-  const coldColorU = uniform(new THREE.Color(0x4f9897));
-  const warmColorU = uniform(new THREE.Color(0x73aaa0));
-  const highlightColorU = uniform(new THREE.Color(0xc7ded1));
+  const deepColorU = uniform(new THREE.Color(0x125257));
+  const coldColorU = uniform(new THREE.Color(0x3fa398));
+  const warmColorU = uniform(new THREE.Color(0x63b3a0));
+  const highlightColorU = uniform(new THREE.Color(0xeef2df));
+  const bedColorU = uniform(new THREE.Color(0xb3a37e));
   const temperatureColor = mix(coldColorU, warmColorU, renderedMeta.y);
-  const baseColor = mix(deepColorU, temperatureColor, fieldLight);
-  const waterColor = mix(baseColor, highlightColorU, smoothstep(0.81, 0.99, crest).mul(0.12));
 
-  const material = new THREE.MeshStandardNodeMaterial({
-    roughness: 0.34,
-    metalness: 0,
-    transparent: true,
-    depthWrite: false,
-    side: THREE.FrontSide
-  });
-  material.positionNode = positionLocal.add(vec3(0, analyticalWave.add(dynamicHeight), 0));
-  material.colorNode = waterColor;
-  material.opacityNode = opacityU.mul(mix(float(0.9), float(1), fieldLight));
   const analyticalNormalX = cos(positionWorld.x.mul(0.46).add(positionWorld.z.mul(0.13)).add(timeU.mul(0.72)))
     .mul(rippleU)
     .mul(0.27);
@@ -515,6 +525,87 @@ export function createSutroBathsWaterSimulation(
     1,
     analyticalNormalZ.sub(renderedDerivatives.y.mul(reliefU).mul(normalU).mul(simulationBlendU))
   ));
+
+  // Clear-water compose (shared with the tea garden): refracted scene sample
+  // through the rippled normal, Beer-Lambert tint over an authored pool depth
+  // that shelves toward each edge, plus bed caustics focused in the shallows.
+  const viewVector = positionWorld.sub(cameraPosition);
+  const viewDistance = viewVector.length();
+  const viewToFragment = viewVector.div(viewDistance.max(1e-4));
+  const slant = viewToFragment.y.abs().max(0.18);
+  // meta.w is the edge-damping mask: 1 at the pool wall, 0 a couple of metres
+  // inside — reused here as a shallow shelf approaching the masonry.
+  const bedDepth = mix(poolDepthU, float(0.14), smoothstep(0.2, 1.0, renderedMeta.w))
+    .add(dynamicHeight)
+    .max(0.05);
+  const pathLength = bedDepth.div(slant);
+  const distortion = worldNormal.xz
+    .mul(refractionU)
+    .mul(0.045)
+    .div(viewDistance.mul(0.09).add(1))
+    .mul(float(1).sub(renderedMeta.w.mul(0.7)));
+  const refractionUV = safeRefractionUV(screenUV.add(distortion));
+  const sceneBehind = viewportSharedTexture(refractionUV).rgb;
+  const bedScene = tintTowardBed(sceneBehind, bedColorU, bedTintU);
+  const daylight = saturate(sunDirU.y.mul(4));
+  const causticPattern = causticWeb(
+    positionWorld.xz.mul(1.9).add(worldNormal.xz.mul(1.4)),
+    timeU.mul(0.55)
+  );
+  const shallowFocus = exp(bedDepth.negate().mul(0.9));
+  const litBed = bedScene.add(
+    causticPattern.mul(causticU).mul(shallowFocus).mul(daylight).mul(bedScene.add(0.12))
+  );
+  const water = beerLambertWater({
+    pathLength,
+    deepColor: deepColorU,
+    shallowColor: temperatureColor,
+    clarityDepth: clarityU
+  });
+
+  const baseColor = mix(water.scatter, temperatureColor, fieldLight.mul(0.35));
+  const surfaceColor = mix(baseColor, highlightColorU, smoothstep(0.81, 0.99, crest).mul(0.12));
+
+  // Ordered-dither foam: simulated churn energy plus contour rings that lap
+  // the pool masonry, dissolving through per-pixel gradient noise.
+  const dither = interleavedGradientNoise(screenCoordinate.xy);
+  const churnFoam = smoothstep(0.1, 0.75, renderedState.w.mul(simulationBlendU)).mul(0.9);
+  const edgeWobble = sin(positionWorld.x.mul(1.4).add(sin(positionWorld.z.mul(1.1)).mul(1.6)));
+  const edgeRings = sin(renderedMeta.w.mul(9.5).sub(timeU.mul(1.05)).add(edgeWobble.mul(0.7)));
+  const edgeFoam = smoothstep(0.6, 0.94, edgeRings)
+    .mul(smoothstep(0.25, 0.85, renderedMeta.w))
+    .mul(shoreFoamU);
+  const foamCoverage = saturate(churnFoam.add(edgeFoam));
+  const foamMask = ditheredCoverage(foamCoverage, dither);
+
+  const sparkle = sunSparkle({
+    worldPosition: positionWorld,
+    worldNormal,
+    viewToFragment,
+    sunDirection: sunDirU,
+    time: timeU
+  }).mul(sparkleU);
+
+  const transmittance = water.transmittance.mul(float(1).sub(foamMask));
+
+  const material = new THREE.MeshStandardNodeMaterial({
+    roughness: 0.34,
+    metalness: 0,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.FrontSide
+  });
+  material.positionNode = positionLocal.add(vec3(0, analyticalWave.add(dynamicHeight), 0));
+  // The transmitted scene sample is already lit, so it rides the emissive
+  // channel; only the water's own scatter/foam surface takes scene lighting.
+  material.colorNode = mix(
+    surfaceColor.mul(vec3(1).sub(transmittance)),
+    highlightColorU,
+    foamMask
+  );
+  material.emissiveNode = litBed.mul(transmittance)
+    .add(highlightColorU.mul(foamMask.mul(0.1)))
+    .add(vec3(1.0, 0.97, 0.88).mul(sparkle));
   material.normalNode = normalize(cameraViewMatrix.mul(vec4(worldNormal, 0)).xyz);
   material.envMapIntensity = 0.42;
 
@@ -589,7 +680,13 @@ export function createSutroBathsWaterSimulation(
     reliefU.value = tuning.waterRelief;
     normalU.value = tuning.waterNormal * 0.035;
     rippleU.value = tuning.waterRipple;
-    opacityU.value = tuning.waterOpacity;
+    clarityU.value = tuning.waterClarity;
+    refractionU.value = tuning.waterRefraction;
+    bedTintU.value = tuning.waterBedTint;
+    causticU.value = tuning.waterCaustics;
+    sparkleU.value = tuning.waterSparkle;
+    shoreFoamU.value = tuning.waterShoreFoam;
+    poolDepthU.value = tuning.waterDepth;
     stats.substeps = substeps;
   };
 
@@ -710,6 +807,7 @@ export function createSutroBathsWaterSimulation(
     stats.impulses = 0;
     stats.playerDistance = distanceToSutroWater(player.x, player.z);
     timeU.value = Number.isFinite(time) ? time : 0;
+    (sunDirU.value as THREE.Vector3).copy(SUN_DIR);
     syncTuning();
 
     const tuningEnabled = SUTRO_BATHS_TUNING.values.waterEnabled;
