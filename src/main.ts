@@ -3880,6 +3880,7 @@ async function boot() {
         throw optionalSiteAbortError();
       }
       site.state = "loading";
+      console.info(`[lazy-site] ${site.label} loading…`);
       await site.load({ stage, waitStage, signal: controller.signal });
       site.state = "ready";
       console.info(`[lazy-site] ${site.label} ready`);

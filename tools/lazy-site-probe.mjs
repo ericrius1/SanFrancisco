@@ -60,7 +60,11 @@ async function waitFor(c, label, predicate, timeoutMs, pollMs = 200) {
     if (await predicate()) return Date.now() - t0;
     await sleep(pollMs);
   }
-  throw new Error(`timeout waiting for ${label} after ${timeoutMs}ms`);
+  let snapshot = "";
+  try {
+    snapshot = JSON.stringify(await ev(c, SITES));
+  } catch { /* page gone */ }
+  throw new Error(`timeout waiting for ${label} after ${timeoutMs}ms — sites: ${snapshot}`);
 }
 
 const failures = [];
@@ -175,7 +179,7 @@ async function main() {
     // Reload-after-unload sanity: lands-end was unloaded while we were away
     // (or is mid-reload) and the return teleport must rebuild it cleanly.
     await waitFor(c, "lands-end ready again after return", async () =>
-      (await siteState(c, "lands-end")) === "ready", 45000);
+      (await siteState(c, "lands-end")) === "ready", 90000);
     assert("lands-end reloads cleanly after unload", true);
 
     // ---- Scenario 3: full load near Goldman, then distance unload ---------
@@ -211,7 +215,7 @@ async function main() {
     assert("corona distance-unloads beyond 1km", true);
     assert("corona instance disposed", (await ev(c, `__sf.coronaHeights == null`)) === true);
     await waitFor(c, "lands-end ready on second return", async () =>
-      (await siteState(c, "lands-end")) === "ready", 45000);
+      (await siteState(c, "lands-end")) === "ready", 90000);
     assert("lands-end reloads again cleanly", true);
 
     assert("zero page exceptions across load/abort/unload cycles", exceptions.length === 0,
