@@ -202,12 +202,27 @@ export class WaterEchoes {
     this.shadows = new THREE.InstancedMesh(geometry, shadowMaterial, MAX_ECHOES);
     this.lights = new THREE.InstancedMesh(geometry, lightMaterial, MAX_ECHOES);
     for (const mesh of [this.shadows, this.lights]) {
-      mesh.count = 0;
+      // Instance rows never enter or leave the draw set (same invariant the
+      // light pool keeps): the count stays at MAX_ECHOES and inactive rows are
+      // written as zero-scale degenerate matrices every frame. Growing `count`
+      // per frame let a freshly-activated row draw before its matrix upload
+      // landed — a wing-shaped echo quad flashing mid-sky for one frame (the
+      // long-standing "flickering objects in the air").
+      mesh.count = MAX_ECHOES;
       mesh.visible = false;
       mesh.frustumCulled = false;
       mesh.renderOrder = 12.2;
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     }
+    this.#dummy.scale.setScalar(0);
+    this.#dummy.updateMatrix();
+    for (let i = 0; i < MAX_ECHOES; i++) {
+      this.shadows.setMatrixAt(i, this.#dummy.matrix);
+      this.lights.setMatrixAt(i, this.#dummy.matrix);
+      this.#data.setXYZW(i, 0, 0, 0, 0);
+      this.#color.setXYZ(i, 0, 0, 0);
+    }
+    this.#dummy.scale.setScalar(1);
     this.shadows.name = "water_echo_shadows";
     this.lights.name = "water_echo_lights";
     this.lights.renderOrder = 12.3;
@@ -297,10 +312,22 @@ export class WaterEchoes {
     this.#visible.sort((a, b) => b.score - a.score);
     const count = Math.min(MAX_ECHOES, Math.round(tuning.maxSources), this.#visible.length);
     for (let i = 0; i < count; i++) this.#writeInstance(i, this.#visible[i]);
-    this.#color.needsUpdate = count > 0;
-    this.#data.needsUpdate = count > 0;
-    this.shadows.instanceMatrix.needsUpdate = count > 0;
-    this.lights.instanceMatrix.needsUpdate = count > 0;
+    // Inactive rows stay in the draw set as degenerate zero-scale quads —
+    // never grow/shrink `count` (see constructor note).
+    if (count > 0 || this.#lastCount > 0) {
+      this.#dummy.scale.setScalar(0);
+      this.#dummy.updateMatrix();
+      for (let i = count; i < MAX_ECHOES; i++) {
+        this.shadows.setMatrixAt(i, this.#dummy.matrix);
+        this.lights.setMatrixAt(i, this.#dummy.matrix);
+        this.#data.setXYZW(i, 0, 0, 0, 0);
+      }
+      this.#color.needsUpdate = true;
+      this.#data.needsUpdate = true;
+      this.shadows.instanceMatrix.needsUpdate = true;
+      this.lights.instanceMatrix.needsUpdate = true;
+    }
+    this.#lastCount = count;
     this.#setCount(count);
   }
 
@@ -331,9 +358,21 @@ export class WaterEchoes {
     this.lights.setMatrixAt(index, this.#dummy.matrix);
   }
 
+  #lastCount = 0;
+  #warmFrames = 0;
+
   #setCount(count: number): void {
-    this.shadows.count = count;
-    this.lights.count = count;
+    // count stays MAX_ECHOES for the meshes themselves; only visibility reacts.
+    // The first active frame writes the full buffers but stays hidden for one
+    // frame so the initial GPU upload provably lands before the first draw —
+    // a fresh render object drawn on its creation frame is exactly the window
+    // where uninitialized instance rows flashed as sky quads.
+    if (count > 0 && this.#warmFrames < 1) {
+      this.#warmFrames++;
+      this.shadows.visible = false;
+      this.lights.visible = false;
+      return;
+    }
     this.shadows.visible = count > 0 && WATER_ECHO_TUNING.values.shadow > 0;
     this.lights.visible = count > 0 && WATER_ECHO_TUNING.values.glow > 0;
   }

@@ -120,6 +120,85 @@ async function main() {
           return n + " hidden";
         })()`));
       }
+      if (process.env.SF_PATCH === "echochurn") {
+        // Waterline churn: oscillate the (freecam-frozen) player across the
+        // shoreline so water-echo eligibility flaps, while an in-page pixel
+        // scanner watches the sky for one-frame dark flashes.
+        console.log("[repro] patch:", await ev(cdp, `(() => {
+          const sf = window.__sf;
+          const v = new sf.THREE.Vector3();
+          const canvas = document.querySelector("canvas");
+          const off = document.createElement("canvas");
+          off.width = 200; off.height = 125;
+          const ctx = off.getContext("2d", { willReadFrequently: true });
+          window.__churnSpy = { events: [], frame: 0, echoTransitions: 0, activeFrames: 0, err: null };
+          const spy = window.__churnSpy;
+          const baseX = sf.player.position.x;
+          const baseZ = sf.player.position.z;
+          // find the waterline west of the player once
+          let shore = null;
+          for (let dx = 0; dx > -260; dx -= 2) {
+            if (sf.map.isWater(baseX + dx, baseZ)) { shore = baseX + dx; break; }
+          }
+          if (shore === null) return "no water found west";
+          // camera hovers just past the waterline looking further out to sea, so
+          // the mirror footprint between camera and player is always on water.
+          window.__sfFreeCam([shore - 10, 8, baseZ], [shore - 200, 0, baseZ]);
+          const origEmit = sf.water.echoes.emit.bind(sf.water.echoes);
+          spy.emits = 0;
+          sf.water.echoes.emit = (s) => { spy.emits++; return origEmit(s); };
+          let lastVisible = false;
+          const scan = () => {
+            spy.frame++;
+            // every 12 frames hop across the waterline: wet <-> dry
+            const wet = Math.floor(spy.frame / 12) % 2 === 0;
+            sf.player.position.x = wet ? shore - 60 : shore + 40;
+            sf.player.position.z = baseZ;
+            if (wet && !spy.guardSample && spy.frame > 30) {
+              const cam = sf.camera.position;
+              const sx = sf.player.position.x, sy = sf.player.position.y, sz = sf.player.position.z;
+              const srcWater = sf.map.isWater(sx, sz);
+              const altitude = sy; // waterHeight ~ swell around 0
+              const camAlt = cam.y;
+              const mirrorT = camAlt / Math.max(0.1, camAlt + altitude);
+              const cx = cam.x + (sx - cam.x) * mirrorT;
+              const cz = cam.z + (sz - cam.z) * mirrorT;
+              const fwd = new sf.THREE.Vector3();
+              sf.camera.getWorldDirection(fwd);
+              const toEcho = new sf.THREE.Vector3(cx - cam.x, -cam.y, cz - cam.z);
+              spy.guardSample = {
+                playerY: +sy.toFixed(2), camY: +cam.y.toFixed(2), camX: Math.round(cam.x),
+                srcWater, mirrorWater: sf.map.isWater(cx, cz), cx: Math.round(cx),
+                dot: +toEcho.dot(fwd).toFixed(2), dist: Math.round(toEcho.length())
+              };
+            }
+            const nowVisible = sf.water.echoes.shadows.visible || sf.water.echoes.lights.visible;
+            if (nowVisible !== lastVisible) spy.echoTransitions++;
+            if (nowVisible) spy.activeFrames++;
+            lastVisible = nowVisible;
+            try {
+              ctx.drawImage(canvas, 0, 0, 200, 125);
+              const img = ctx.getImageData(0, 6, 200, 52).data;
+              let dark = 0, cx = 0, cy = 0;
+              for (let p = 0; p < img.length; p += 4) {
+                const lum = 0.299 * img[p] + 0.587 * img[p + 1] + 0.114 * img[p + 2];
+                if (lum < 105) { dark++; cx += (p / 4) % 200; cy += Math.floor(p / 4 / 200); }
+              }
+              if (dark >= 2 && dark < 900) {
+                spy.events.push({ frame: spy.frame, dark, px: Math.round(cx / dark * 8), py: Math.round((cy / dark + 6) * 8) });
+                if (spy.events.length > 40) spy.events.shift();
+              }
+            } catch (err) { spy.err = String(err); }
+            requestAnimationFrame(scan);
+          };
+          requestAnimationFrame(scan);
+          return "churn spy on, shore at x=" + Math.round(shore) + " (player base x=" + Math.round(baseX) + ")";
+        })()`));
+        await sleep(Number(process.env.SF_SPY_SECONDS ?? 90) * 1000);
+        const out = await ev(cdp, `window.__churnSpy && { frames: window.__churnSpy.frame, transitions: window.__churnSpy.echoTransitions, activeFrames: window.__churnSpy.activeFrames, emits: window.__churnSpy.emits, guard: window.__churnSpy.guardSample, err: window.__churnSpy.err, events: window.__churnSpy.events }`);
+        writeFileSync(path.join(OUT, "echochurn.json"), JSON.stringify(out, null, 1));
+        console.log("[repro] echochurn:", JSON.stringify(out).slice(0, 800));
+      }
       if (process.env.SF_PATCH === "framespy") {
         if (process.env.SF_UNMITIGATE === "1") {
           console.log("[repro] unmitigate:", await ev(cdp, `(() => {
@@ -435,6 +514,85 @@ async function main() {
         if (["drawspy", "drawspy2", "hullspy"].includes(process.env.SF_PATCH || "")) shotTimes.push(await ev(cdp, `Math.round(performance.now())`));
         const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
         writeFileSync(path.join(OUT, "shots", `s${String(i).padStart(3, "0")}.png`), Buffer.from(shot.data, "base64"));
+      }
+      if (process.env.SF_PATCH === "echochurn") {
+        // Waterline churn: oscillate the (freecam-frozen) player across the
+        // shoreline so water-echo eligibility flaps, while an in-page pixel
+        // scanner watches the sky for one-frame dark flashes.
+        console.log("[repro] patch:", await ev(cdp, `(() => {
+          const sf = window.__sf;
+          const v = new sf.THREE.Vector3();
+          const canvas = document.querySelector("canvas");
+          const off = document.createElement("canvas");
+          off.width = 200; off.height = 125;
+          const ctx = off.getContext("2d", { willReadFrequently: true });
+          window.__churnSpy = { events: [], frame: 0, echoTransitions: 0, activeFrames: 0, err: null };
+          const spy = window.__churnSpy;
+          const baseX = sf.player.position.x;
+          const baseZ = sf.player.position.z;
+          // find the waterline west of the player once
+          let shore = null;
+          for (let dx = 0; dx > -260; dx -= 2) {
+            if (sf.map.isWater(baseX + dx, baseZ)) { shore = baseX + dx; break; }
+          }
+          if (shore === null) return "no water found west";
+          // camera hovers just past the waterline looking further out to sea, so
+          // the mirror footprint between camera and player is always on water.
+          window.__sfFreeCam([shore - 10, 8, baseZ], [shore - 200, 0, baseZ]);
+          const origEmit = sf.water.echoes.emit.bind(sf.water.echoes);
+          spy.emits = 0;
+          sf.water.echoes.emit = (s) => { spy.emits++; return origEmit(s); };
+          let lastVisible = false;
+          const scan = () => {
+            spy.frame++;
+            // every 12 frames hop across the waterline: wet <-> dry
+            const wet = Math.floor(spy.frame / 12) % 2 === 0;
+            sf.player.position.x = wet ? shore - 60 : shore + 40;
+            sf.player.position.z = baseZ;
+            if (wet && !spy.guardSample && spy.frame > 30) {
+              const cam = sf.camera.position;
+              const sx = sf.player.position.x, sy = sf.player.position.y, sz = sf.player.position.z;
+              const srcWater = sf.map.isWater(sx, sz);
+              const altitude = sy; // waterHeight ~ swell around 0
+              const camAlt = cam.y;
+              const mirrorT = camAlt / Math.max(0.1, camAlt + altitude);
+              const cx = cam.x + (sx - cam.x) * mirrorT;
+              const cz = cam.z + (sz - cam.z) * mirrorT;
+              const fwd = new sf.THREE.Vector3();
+              sf.camera.getWorldDirection(fwd);
+              const toEcho = new sf.THREE.Vector3(cx - cam.x, -cam.y, cz - cam.z);
+              spy.guardSample = {
+                playerY: +sy.toFixed(2), camY: +cam.y.toFixed(2), camX: Math.round(cam.x),
+                srcWater, mirrorWater: sf.map.isWater(cx, cz), cx: Math.round(cx),
+                dot: +toEcho.dot(fwd).toFixed(2), dist: Math.round(toEcho.length())
+              };
+            }
+            const nowVisible = sf.water.echoes.shadows.visible || sf.water.echoes.lights.visible;
+            if (nowVisible !== lastVisible) spy.echoTransitions++;
+            if (nowVisible) spy.activeFrames++;
+            lastVisible = nowVisible;
+            try {
+              ctx.drawImage(canvas, 0, 0, 200, 125);
+              const img = ctx.getImageData(0, 6, 200, 52).data;
+              let dark = 0, cx = 0, cy = 0;
+              for (let p = 0; p < img.length; p += 4) {
+                const lum = 0.299 * img[p] + 0.587 * img[p + 1] + 0.114 * img[p + 2];
+                if (lum < 105) { dark++; cx += (p / 4) % 200; cy += Math.floor(p / 4 / 200); }
+              }
+              if (dark >= 2 && dark < 900) {
+                spy.events.push({ frame: spy.frame, dark, px: Math.round(cx / dark * 8), py: Math.round((cy / dark + 6) * 8) });
+                if (spy.events.length > 40) spy.events.shift();
+              }
+            } catch (err) { spy.err = String(err); }
+            requestAnimationFrame(scan);
+          };
+          requestAnimationFrame(scan);
+          return "churn spy on, shore at x=" + Math.round(shore) + " (player base x=" + Math.round(baseX) + ")";
+        })()`));
+        await sleep(Number(process.env.SF_SPY_SECONDS ?? 90) * 1000);
+        const out = await ev(cdp, `window.__churnSpy && { frames: window.__churnSpy.frame, transitions: window.__churnSpy.echoTransitions, activeFrames: window.__churnSpy.activeFrames, emits: window.__churnSpy.emits, guard: window.__churnSpy.guardSample, err: window.__churnSpy.err, events: window.__churnSpy.events }`);
+        writeFileSync(path.join(OUT, "echochurn.json"), JSON.stringify(out, null, 1));
+        console.log("[repro] echochurn:", JSON.stringify(out).slice(0, 800));
       }
       if (process.env.SF_PATCH === "framespy") {
         if (process.env.SF_UNMITIGATE === "1") {
