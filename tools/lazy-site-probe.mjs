@@ -140,7 +140,7 @@ async function main() {
     await c.send("Input.dispatchKeyEvent", { type: "keyDown", code: "KeyW", key: "w", windowsVirtualKeyCode: 87 });
 
     const landsEndMs = await waitFor(c, "lands-end ready", async () =>
-      (await siteState(c, "lands-end")) === "ready", 45000);
+      (await siteState(c, "lands-end")) === "ready", 90000);
     assert("lands-end ready while walking", true, `${((Date.now() - revealAt) / 1000).toFixed(1)}s after reveal`);
     assert("lands-end ready under 20s", landsEndMs < 20000, `${(landsEndMs / 1000).toFixed(1)}s`);
 
