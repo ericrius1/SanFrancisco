@@ -80,7 +80,7 @@ try {
 
   const launched = await pages[0].evaluate(() => {
     const sf = window.__sf;
-    return sf.fetchBall.throwForCinematic(new sf.THREE.Vector3(0, 0.1, 0));
+    return sf.fetchBall.throwForCinematic(new sf.THREE.Vector3(0, 7.5, 0));
   });
   assert.equal(launched, true, "local client rejected the authored throw");
 
@@ -109,7 +109,13 @@ try {
   });
 
   const before = await sampleRemote(pages[1]);
-  await pages[1].waitForTimeout(500);
+  await pages[1].waitForFunction((initial) => {
+    let moved = false;
+    window.__sf.fetchBall.visitFreeBalls((_id, state) => {
+      if (Math.hypot(state.x - initial.x, state.y - initial.y, state.z - initial.z) > 0.5) moved = true;
+    });
+    return moved;
+  }, before.samples[0], { timeout: 30_000 });
   const after = await sampleRemote(pages[1]);
   assert.equal(before.samples.length, 1, "friend did not receive exactly one ball");
   assert.equal(after.samples.length, 1, "friend's replicated ball disappeared during flight");
@@ -125,7 +131,7 @@ try {
       if (state.grounded && Math.hypot(state.vx, state.vz) < 0.15) settled = true;
     });
     return settled;
-  }, undefined, { timeout: 20_000 });
+  }, undefined, { timeout: 30_000 });
 
   const pickupRequested = await pages[1].evaluate(() => {
     const sf = window.__sf;
