@@ -56,7 +56,7 @@
 </div>
 <script>
 const BASE = "../runs/";            // frames + log live here
-const CREATURE = new URLSearchParams(location.search).get("creature") || "horse";
+const CREATURE = new URLSearchParams(location.search).get("creature") || "pup";
 const cv = document.getElementById("c"), ctx = cv.getContext("2d");
 const state = { data: null, i: 0, playing: true, speed: 1, az: 0.7, el: 0.35, dist: 4.2, gens: [], log: [] };
 

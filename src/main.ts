@@ -124,8 +124,6 @@ import type { PupPen } from "./gameplay/pup";
 import { PUP_CENTER } from "./gameplay/pup/meta";
 import type { FortMasonEnsemble } from "./gameplay/fortMasonEnsemble";
 import { FORT_MASON_ENSEMBLE_CENTER } from "./gameplay/fortMasonEnsemble/meta";
-import type { Ranch } from "./gameplay/ranch";
-import { RANCH_CENTER, HORSE_PADDOCK } from "./gameplay/ranch/meta";
 import type { PalaceReverieGame } from "./gameplay/palaceReverie";
 import { REVERIE_CENTER } from "./gameplay/palaceReverie/meta";
 import type { LandsEndRegion } from "./world/landsEnd";
@@ -1181,7 +1179,6 @@ async function boot() {
   // Golden Gate Park archery range — NW corner of the park; site-gated like golf.
   let archery: ArcheryGame | null = null;
   let pup: PupPen | null = null;
-  let ranch: Ranch | null = null;
   // Palace of Fine Arts blue-hour art quest (site-gated around the lagoon).
   let palaceReverie: PalaceReverieGame | null = null;
   // Lands End — the NW headland: a cliff-top Labyrinth you light by walking,
@@ -1925,7 +1922,6 @@ async function boot() {
   minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
   minimap.addLandmark(PUP_CENTER.x, PUP_CENTER.z, "Puppy Nursery");
   minimap.addLandmark(FORT_MASON_ENSEMBLE_CENTER.x, FORT_MASON_ENSEMBLE_CENTER.z, "Fort Mason Jam");
-  minimap.addLandmark(HORSE_PADDOCK.x, HORSE_PADDOCK.z, "Horse Paddock");
   minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
   minimap.addLandmark(-1680, -1050, "Ghost Ship · nightly landing");
   // Ocean Beach surf shack. Teleporting arrives on foot at the apron;
@@ -3042,8 +3038,7 @@ async function boot() {
     | "wave-organ"
     | "sutro-baths"
     | "pup"
-    | "fort-mason-ensemble"
-    | "ranch";
+    | "fort-mason-ensemble";
   type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
   type OptionalWorldSite = {
     id: OptionalSiteId;
@@ -3074,7 +3069,6 @@ async function boot() {
       archery,
       pup,
       fortMasonEnsemble,
-      ranch,
       palaceReverie,
       afterlight,
       coronaHeights,
@@ -3203,16 +3197,6 @@ async function boot() {
     await prepareOptionalRoot("pup", pen.root);
     pup = pen;
     siteGate.register(pen.siteHooks());
-    refreshOptionalSiteDebug();
-  };
-
-  const loadRanch = async (): Promise<void> => {
-    const { createRanch } = await import("./gameplay/ranch");
-    await waitForOptionalSiteStage();
-    const r = createRanch(map, physics, scene);
-    await prepareOptionalRoot("ranch", r.root);
-    ranch = r;
-    siteGate.register(r.siteHooks());
     refreshOptionalSiteDebug();
   };
 
@@ -3392,7 +3376,6 @@ async function boot() {
       promise: null,
       load: loadFortMasonEnsemble
     },
-    { id: "ranch", label: "Creature Ranch", ...RANCH_CENTER, state: "dormant", forced: false, promise: null, load: loadRanch },
     { id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, state: "dormant", forced: false, promise: null, load: loadPalace },
     {
       id: "afterlight",
@@ -3439,8 +3422,7 @@ async function boot() {
     "wave-organ": true,
     "sutro-baths": true,
     pup: true,
-    "fort-mason-ensemble": true,
-    ranch: true
+    "fort-mason-ensemble": true
   };
   let optionalSitePerfGating = false;
   const OPTIONAL_SITE_GATE_ID: Partial<Record<OptionalSiteId, string>> = {
@@ -3448,8 +3430,7 @@ async function boot() {
     archery: "archery",
     palace: "palace-reverie",
     afterlight: "afterlight",
-    pup: "pup",
-    ranch: "ranch"
+    pup: "pup"
   };
   const optionalSitePerfAllowed = (id: OptionalSiteId): boolean =>
     !optionalSitePerfGating || optionalSitePerfEnabled[id];
@@ -3471,9 +3452,6 @@ async function boot() {
         break;
       case "fort-mason-ensemble":
         if (!on && fortMasonEnsemble) fortMasonEnsemble.root.visible = false;
-        break;
-      case "ranch":
-        if (!on && ranch) ranch.root.visible = false;
         break;
       case "palace":
         if (!on && palaceReverie) palaceReverie.root.visible = false;
@@ -3528,11 +3506,6 @@ async function boot() {
         return {
           runtime: fortMasonEnsemble?.root.visible ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(fortMasonEnsemble?.root)
-        };
-      case "ranch":
-        return {
-          runtime: siteGate.awake("ranch") ? "ACTIVE" : "SLEEP",
-          sceneState: optionalSiteSceneState(ranch?.root)
         };
       case "palace":
         return {
@@ -5314,10 +5287,6 @@ async function boot() {
     // Biscuit the RL pup: site-gated, one boolean early-return when asleep
     if (!worldArrival.active && optionalSitePerfAllowed("pup")) {
       pup?.update(frameDt, camera);
-    }
-    // Creature ranch (RL horses + goats): site-gated the same way
-    if (!worldArrival.active && optionalSitePerfAllowed("ranch")) {
-      ranch?.update(frameDt, camera);
     }
     // Afterlight: proximity collectibles, return flights, quest clock and the
     // completed sky performance; site-gated to a single asleep early return.
