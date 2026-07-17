@@ -1,10 +1,11 @@
 import * as THREE from "three/webgpu";
-import { positionLocal, sin, smoothstep, time, uniform, uv, vec3 } from "three/tsl";
+import { attribute, positionLocal, sin, smoothstep, time, uniform, uv, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor } from "../../player/lightPool";
 import type { Cockpit } from "../../player/types";
 import { capsulesToLocal, clothColliders, pushOutOfColliders, type Capsule, type ClothColliders } from "../../fx/cloth";
 import { applyVehicleShadowPolicy } from "../shadows";
+import { mergeVertexColoredParts } from "../shared";
 
 // animation handles Player's per-frame animate drives while the boat is embodied
 export type BoatSailRig = {
@@ -93,6 +94,21 @@ function sailMaterial(colorHex: number, flap: SailUniform, billow: SailUniform, 
 }
 
 /**
+ * Node material for the merged nav-light/lamp fixtures: one draw carries the
+ * whole set, each vertex tinted from a baked `color` (diffuse, still lit by the
+ * scene) and a baked `emissive` (colour × the old per-fixture emissiveIntensity)
+ * so the green/red/warm fixtures keep their distinct glow. `emissiveNode` is
+ * untyped on MeshLambertNodeMaterial but works on every NodeMaterial at runtime.
+ */
+function emissiveVertexMaterial(): THREE.MeshLambertNodeMaterial {
+  const mat = new THREE.MeshLambertNodeMaterial();
+  const nodeMat = mat as unknown as { colorNode: unknown; emissiveNode: unknown };
+  nodeMat.colorNode = attribute("color", "vec3");
+  nodeMat.emissiveNode = attribute("emissive", "vec3");
+  return mat;
+}
+
+/**
  * Open bay day-sailer, front is local -Z: walkaround cockpit with teak sole
  * and benches so the helmsman reads from every angle, gaff-free bermuda rig
  * with a fluttering main + jib, nav lights for the dusk sky. All visuals live
@@ -114,16 +130,23 @@ export function buildBoatMesh(): THREE.Group {
   const navRed = new THREE.MeshLambertMaterial({ color: 0xd42b2b, emissive: 0xff2418, emissiveIntensity: 4.2 * LIGHT_SCALE });
   const lampMat = new THREE.MeshLambertMaterial({ color: 0xfff4c9, emissive: 0xffedb0, emissiveIntensity: 4.0 * LIGHT_SCALE });
 
+  // Static opaque parts collapse into ONE vertex-colored draw; the emissive
+  // nav/lamp fixtures collapse into a SECOND (per-vertex emissive) draw. Rather
+  // than adding ~30 individual meshes to `heel`, `box()` bins each part by
+  // whether its material glows, and both bins are baked+merged below.
+  const staticParts: THREE.Mesh[] = [];
+  const emissiveParts: THREE.Mesh[] = [];
+  const emissiveMats = new Set<THREE.Material>([navGreen, navRed, lampMat]);
   const box = (mat: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number, ry = 0, rz = 0) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(x, y, z);
     m.rotation.set(0, ry, rz);
-    heel.add(m);
+    (emissiveMats.has(mat) ? emissiveParts : staticParts).push(m);
     return m;
   };
 
   // hull: solid below the sole, open bulwarks above — the cockpit is visible
-  const hull = box(hullMat, 2.4, 0.55, 5.9, 0, -0.2, 0.05);
+  box(hullMat, 2.4, 0.55, 5.9, 0, -0.2, 0.05);
   box(bottomMat, 2.46, 0.3, 5.95, 0, -0.42, 0.05); // antifoul waterline band
   box(bottomMat, 0.16, 0.5, 3.4, 0, -0.7, 0.3); // keel
   box(teakDark, 0.09, 0.75, 0.55, 0, -0.5, 3.0); // rudder
@@ -166,10 +189,12 @@ export function buildBoatMesh(): THREE.Group {
   box(lampMat, 0.07, 0.07, 0.07, 0, 0.52, 1.55); // helm console lamp
   box(lampMat, 0.07, 0.07, 0.07, 0, 0.78, -2.85); // bow pulpit lamp
 
-  // rig: mast, boom, standing rigging
+  // rig: mast + standing rigging are static (→ merged mesh); the boom SWINGS
+  // under sail (animation drives boom.rotation.y), so it stays its own group
+  // with the boom spar and main sail parented to it.
   const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.075, 6.9, 10), spar);
   mast.position.set(0, 4.06, -1.0);
-  heel.add(mast);
+  staticParts.push(mast);
   const boom = new THREE.Group();
   boom.position.set(0, 2.0, -0.95);
   heel.add(boom);
@@ -184,12 +209,33 @@ export function buildBoatMesh(): THREE.Group {
     const m = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, a.distanceTo(b), 5), stayMat);
     m.position.copy(a).add(b).multiplyScalar(0.5);
     m.quaternion.setFromUnitVectors(UP, b.sub(a).normalize());
-    heel.add(m);
+    staticParts.push(m);
   };
   stay(0, 0.75, -3.55, 0, 7.45, -1.0); // forestay
   stay(0, 7.45, -1.0, 0, 0.72, 2.85); // backstay
   stay(1.12, 0.7, -0.65, 0, 6.3, -1.0); // shrouds
   stay(-1.12, 0.7, -0.65, 0, 6.3, -1.0);
+
+  // Bake the two bins into merged meshes and attach to `heel`. The static mesh
+  // (hull/deck/cabin/mast/rails/trim/stays) is one MeshLambertMaterial with
+  // vertex colours; the emissive fixtures keep their glow via a node material
+  // whose diffuse + emissive both read baked per-vertex colours.
+  const staticMesh = new THREE.Mesh(
+    mergeVertexColoredParts(staticParts, (m) => ({ color: (m.material as THREE.MeshLambertMaterial).color }))!,
+    new THREE.MeshLambertMaterial({ vertexColors: true })
+  );
+  heel.add(staticMesh);
+  const lampMesh = new THREE.Mesh(
+    mergeVertexColoredParts(emissiveParts, (m) => {
+      const mm = m.material as THREE.MeshLambertMaterial;
+      return { color: mm.color, emissive: mm.emissive.clone().multiplyScalar(mm.emissiveIntensity) };
+    })!,
+    emissiveVertexMaterial()
+  );
+  heel.add(lampMesh);
+  // The per-part authoring geometries are baked into the merged meshes and never
+  // rendered on their own — release their buffers.
+  for (const m of [...staticParts, ...emissiveParts]) m.geometry.dispose();
 
   // canvas: main on the boom, jib on the forestay, pennant at the masthead.
   // Spars/stays the canvas must not clip, as capsules in `heel` space (matches
@@ -261,9 +307,10 @@ export function buildBoatMesh(): THREE.Group {
     [0.86, 0.5, 0.6],
     [-0.86, 0.5, 0.6]
   ] satisfies [number, number, number][];
-  // Three casters cover the physical read: one hull slab plus the two large
-  // animated sails. Spars, stays, deck fittings, and lamps are below the useful
-  // CSM silhouette scale, but opaque surfaces still receive self/player shade.
-  applyVehicleShadowPolicy(g, [hull, main, jib]);
+  // Three casters cover the physical read: the merged static hull/deck/rig mesh
+  // plus the two large animated sails. The emissive lamp mesh self-lights (it is
+  // skipped as a caster and receiver); opaque surfaces still receive self/player
+  // shade via the merged mesh's vertex-coloured Lambert.
+  applyVehicleShadowPolicy(g, [staticMesh, main, jib]);
   return g;
 }

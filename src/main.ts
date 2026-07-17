@@ -3,19 +3,15 @@ import { suppressesFullReload } from "./app/hmr/suppressFullReload";
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import CameraControls from "camera-controls";
-import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, INPUT_TUNING, LIGHT_SCALE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
-import { loadPlayerState, resetAllTweaks, saveTweak } from "./core/persist";
+import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, LIGHT_SCALE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
+import { resetAllTweaks, saveTweak } from "./core/persist";
 import { Input, formatInteractPrompt, localizeInteractText } from "./core/input";
 import { tracer } from "./core/hitchTracer";
 import { bootMarkStart, bootMark, bootMarkSummary, persistBootHistory } from "./core/bootMarks";
 import { createFrameScheduler } from "./core/frameBudget";
-import { WorldMap, waterHeight } from "./world/heightmap";
+import { WorldMap } from "./world/heightmap";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "./world/oceanBeachWaves";
-import {
-  createSurfShack,
-  oceanBeachSurfShackPose,
-  type SurfShack
-} from "./gameplay/surfing/shack";
+import { createSurfShack, type SurfShack } from "./gameplay/surfing/shack";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { GhostShipBeacon } from "./world/ghostShip/beacon";
 import {
@@ -41,7 +37,6 @@ import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTw
 import { createSutroBeacons, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
 import type { GoldenGateTennisSite } from "./world/goldenGateTennis";
 import {
-  GOLDMAN_GAMEPLAY_LANDMARK,
   GOLDMAN_SITE_CENTER,
   GOLDMAN_SUPPRESSED_BUILDINGS
 } from "./world/goldenGateTennis/meta";
@@ -58,13 +53,8 @@ import { prepareCoronaHeightsGround } from "./world/coronaHeights/ground";
 import { CORONA_HEIGHTS_SUMMIT } from "./world/coronaHeights/meta";
 import type { MissionDoloresMuseum } from "./world/missionDolores";
 import { MD_CENTER as MISSION_DOLORES_CENTER } from "./world/missionDolores/layout";
-import { findOpenSpawn } from "./world/spawn";
 import {
   distanceToSutroBaths,
-  pickLandmarkSpawn,
-  resolveSpawnPoint,
-  SAFE_SPAWN_FALLBACK,
-  SPAWN_POINTS,
   SUTRO_BATHS_ARRIVAL,
 } from "./world/spawnPoints";
 import { WILD_REGIONS } from "./world/wildlands/regions";
@@ -108,14 +98,14 @@ import { DoorAudio } from "./fx/doorAudio";
 import { createNatureSoundscape, DogParkAudio, BallImpactAudio, BALL_IMPACT_AUDIO_TUNING } from "./audio";
 import { WaveAudio, oceanWaveEnergyAt } from "./audio/waveAudio";
 import { AbandonedMounts, ABANDONED_MOUNT_PROMPT } from "./gameplay/abandonedMounts";
+import { spawnScatterBoats } from "./gameplay/scatterBoats";
 import type { Creatures } from "./gameplay/creatures";
-import type { Forest, AnimalKind } from "./gameplay/forest";
+import type { Forest } from "./gameplay/forest";
 import {
   updateVegetationEnvironment,
   windGustValue,
   type GroundDisplacer
 } from "./world/vegetation/runtime";
-import { BOTANICAL_GARDEN_BOUNDS } from "./world/garden/layout";
 import type { CityGenRing } from "./world/citygen";
 import { PROCEDURAL_LAMP_TUNING } from "./world/citygen/interior/lampTuning";
 import { Islands } from "./gameplay/islands";
@@ -206,11 +196,24 @@ import { createBuskersSystem } from "./app/systems/buskers";
 import { createBuskerConversation } from "./gameplay/buskers/conversation";
 import { createSessionPersistence } from "./app/sessionPersistence";
 import { startFrameDriver } from "./app/frameDriver";
+import { createAdaptiveResolution } from "./render/adaptiveResolution";
 import { isInGameScreenshotBusy, takeInGameScreenshot } from "./app/inGameScreenshot";
 import { EmbodimentController } from "./app/player/embodimentController";
+import { createCarLandingFeedback } from "./app/compose/carLanding";
+import { createTimeScrubAndTuningGestures } from "./app/compose/timeScrub";
+import {
+  GARDEN_XZ,
+  GOLF_XZ,
+  registerActivityLandmarks,
+  registerParkLandmarks
+} from "./app/compose/minimapLandmarks";
+import { wireEscapeStack } from "./app/compose/escapeStack";
+import { createOceanKiteGate } from "./app/compose/oceanKite";
+import { createBackgroundAdmission } from "./app/compose/backgroundAdmission";
+import { resolveInitialArrival } from "./app/compose/initialArrival";
 import { NavigationController } from "./app/navigation";
 import { WorldArrivalCoordinator } from "./app/worldArrival";
-import { consumeDevReloadSnapshot, writeDevReloadSnapshot } from "./app/hmr/devReloadSnapshot";
+import { writeDevReloadSnapshot } from "./app/hmr/devReloadSnapshot";
 import { RendererDiagnostics } from "./app/diagnostics";
 import type { PickleballController } from "./app/systems/pickleball";
 
@@ -220,40 +223,7 @@ const bootScreen = new BootScreen();
 const { app, loading, nameInput, suggestedName } = bootScreen;
 const progress = (percent: number, label: string) => bootScreen.progress(percent, label);
 
-type InviteIntent = {
-  x: number;
-  y: number;
-  z: number;
-  facing: number;
-  mode: PlayerMode;
-  animal: AnimalKind | null;
-  from: string | null;
-};
-
 type RegionKey = "garden" | "wildlands" | "golf";
-
-function parseInviteIntent(search: string): InviteIntent | null {
-  const query = new URLSearchParams(search);
-  const raw = query.get("j");
-  if (!raw) return null;
-  const parts = raw.split(",");
-  const x = Number(parts[0]);
-  const y = Number(parts[1]);
-  const z = Number(parts[2]);
-  const facing = Number(parts[3]);
-  const mode = ALL_MODES.find((candidate) => candidate === parts[4]);
-  if (![x, y, z, facing].every(Number.isFinite) || !mode) return null;
-  const animal = parts[5] === "bear" || parts[5] === "raccoon" ? parts[5] : null;
-  return {
-    x,
-    y,
-    z,
-    facing,
-    mode,
-    animal,
-    from: query.get("via")
-  };
-}
 
 async function boot() {
   const bootT0 = performance.now();
@@ -339,123 +309,14 @@ async function boot() {
       console.warn("[boot] required authored region unavailable", error);
     });
   };
-  const initialArrivalPromise = (async () => {
-    // Code spawns win over baked metadata; resume/invite links bypass the default
-    // district entirely so a shared link never loads one neighborhood and then
-    // performs a second cross-city relocation.
-    const arrivalQuery = new URLSearchParams(location.search);
-    const requestedSpawn = arrivalQuery.get("spawn")?.trim();
-    const autoStartHiroTour = arrivalQuery.get("tour") === "hiro";
-    const invite = parseInviteIntent(location.search);
-    const reloadCandidate = import.meta.env.DEV ? consumeDevReloadSnapshot() : null;
-    const devReload = invite || beganAsReadingVisit || arrivalQuery.has("demo")
-      ? null
-      : reloadCandidate;
-    const resumed = invite || requestedSpawn ? null : (devReload?.player ?? loadPlayerState());
-    const requestedCodeSpawn = requestedSpawn ? resolveSpawnPoint(requestedSpawn) : undefined;
-    const requestedBakedSpawn = requestedSpawn ? map.meta.spawns[requestedSpawn] : undefined;
-    const requestedAuthoredSpawn = requestedSpawn
-      ? authoredRegions.arrivalForKey(requestedSpawn)
-      : null;
-    // Default arrival — no ?spawn=, no invite, no resumable position — drops a
-    // fresh visitor at a random landmark from LANDMARK_POOL. A resumed player is
-    // placed at their saved spot instead (resumeStart wins downstream), and a
-    // start location the user has pinned (START.spawn ≠ the default) is honored.
-    const spawnKey =
-      requestedCodeSpawn || requestedBakedSpawn || requestedAuthoredSpawn
-        ? requestedSpawn!
-        : resumed || invite
-          ? START.spawn
-          : START.spawn === START_DEFAULTS.spawn
-            ? pickLandmarkSpawn()
-            : START.spawn;
-    const spawnPoint = requestedCodeSpawn ?? (
-      requestedBakedSpawn
-        ? undefined
-        : resolveSpawnPoint(spawnKey) ?? resolveSpawnPoint(START_DEFAULTS.spawn)
-    );
-    if (spawnPoint?.key === "oceanBeach") {
-      const apron = oceanBeachSurfShackPose(map);
-      spawnPoint.x = apron.x;
-      spawnPoint.z = apron.z;
-      spawnPoint.heading = apron.heading;
-    }
-    const registeredStart =
-      spawnPoint ??
-      requestedBakedSpawn ??
-      map.meta.spawns[spawnKey] ??
-      map.meta.spawns[START_DEFAULTS.spawn];
-    const authoredStart = invite || resumed
-      ? null
-      : requestedAuthoredSpawn ?? authoredRegions.arrivalForKey(spawnKey);
-    const inviteMode = invite?.animal ? "drive" : invite?.mode;
-    const inviteSide = invite
-      ? inviteMode === "boat" || inviteMode === "plane"
-        ? 7
-        : inviteMode === "drive"
-          ? 4
-          : 2.5
-      : 0;
-    const inviteStart = invite
-      ? {
-          x: invite.x + Math.cos(invite.facing) * inviteSide,
-          z: invite.z - Math.sin(invite.facing) * inviteSide,
-          heading: invite.facing
-        }
-      : null;
-    const resumeStart = resumed
-      ? { x: resumed.x, z: resumed.z, heading: resumed.heading - Math.PI }
-      : null;
-    const startAt = inviteStart ?? resumeStart ?? authoredStart ?? registeredStart;
-    const scatterA = Math.random() * Math.PI * 2;
-    const scatterR = requestedSpawn || inviteStart || resumeStart || authoredStart
-      ? 0
-      : 0.8 + Math.random() * 1.6;
-    const openSpawnOrFallback = async () => {
-      const scattered = {
-        ...startAt,
-        x: startAt.x + Math.cos(scatterA) * scatterR,
-        z: startAt.z + Math.sin(scatterA) * scatterR
-      };
-      try {
-        return await findOpenSpawn(
-          map,
-          tiles.manifest,
-          scattered,
-          requestedSpawn ? 1.5 : 12,
-          requestedSpawn ? 36 : 200
-        );
-      } catch (err) {
-        // A random landmark with no movement-safe ground nearby must not crash
-        // boot — retire to a guaranteed-open spawn instead of rejecting.
-        console.warn(`[spawn] no open ground near "${spawnKey}"; using fallback`, err);
-        const fallback = resolveSpawnPoint(SAFE_SPAWN_FALLBACK) ?? startAt;
-        return await findOpenSpawn(map, tiles.manifest, fallback, 12, 400);
-      }
-    };
-    const spawn = inviteStart ?? resumeStart ?? authoredStart ?? await openSpawnOrFallback();
-
-    // Arrival breadcrumb: which pool landmark (or resume/invite) placed the
-    // player, and where they actually landed after the open-ground search.
-    const arrivalOrigin = resumed ? "resume" : invite ? "invite" : spawnKey;
-    console.info(`[spawn] arrival "${arrivalOrigin}" → ${Math.round(spawn.x)}, ${Math.round(spawn.z)}`);
-
-    // Same materials and geometry, smaller initial residency. The normal draw
-    // ring expands after the first playable frame; this is not adaptive quality.
-    const fullTileRadius = CONFIG.tileLoadRadius;
-    const INITIAL_VISUAL_RADIUS = 1000;
-    CONFIG.tileLoadRadius = Math.min(fullTileRadius, INITIAL_VISUAL_RADIUS);
-    primeInitialVisualAt(spawn.x, spawn.z);
-    return {
-      autoStartHiroTour,
-      invite,
-      devReload,
-      resumed,
-      spawnPoint,
-      spawn,
-      fullTileRadius
-    };
-  })();
+  // Spawn/invite/resume resolution + the local visual prime kick-off —
+  // extracted per docs/MAIN_DECOMPOSITION.md.
+  const initialArrivalPromise = resolveInitialArrival({
+    map,
+    tiles,
+    authoredRegions,
+    primeInitialVisual: primeInitialVisualAt
+  });
 
   // off-boot-path loads (lane markings, the road graph's signals + lamps)
   // still don't block boot, but the settle gate holds the loading cover until
@@ -1016,43 +877,9 @@ async function boot() {
   const VIEW_CYCLE: ViewMode[] = ["third", "first", "orbit"];
   let viewMode: ViewMode = "third";
   const inOrbit = () => viewMode === "orbit";
-  // scatter boardable boats around the bay — walk/swim up + E to drive one off.
-  // persistent: they wait at their spot no matter how far you roam.
-  const scatterBoat = (mode: "boat" | "speedboat", x: number, z: number, heading: number) => {
-    abandonedMounts.spawn(
-      mode,
-      {
-        position: new THREE.Vector3(x, waterHeight(x, z, 0) + 0.4, z),
-        quaternion: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading),
-        linear: [0, 0, 0],
-        angular: [0, 0, 0]
-      },
-      { persistent: true }
-    );
-  };
-  // headings are only the starting facing now — the boats wander the bay on
-  // their own (see AbandonedMounts #sailBoat). Midpoint spots sit between two
-  // known-water spots so they stay in open bay.
-  const SAIL_SPOTS: [number, number, number][] = [
-    [2600, -2400, 1.2],
-    [-700, -2380, 0.4],
-    [1700, -3550, 2.3],
-    [4000, -2000, -1.0],
-    [-1500, -2500, 0.8],
-    [3300, -2200, 0.0],
-    [-1100, -2440, 2.0]
-  ];
-  const SPEED_SPOTS: [number, number, number][] = [
-    [3300, -2600, -0.6],
-    [900, -2950, 1.7],
-    [-2350, -2150, 0.2],
-    [4550, -1650, -1.4],
-    [250, -3750, 2.9],
-    [3925, -2125, 1.0],
-    [575, -3350, -2.0]
-  ];
-  for (const [x, z, h] of SAIL_SPOTS) scatterBoat("boat", x, z, h);
-  for (const [x, z, h] of SPEED_SPOTS) scatterBoat("speedboat", x, z, h);
+  // Scattered boardable bay boats (persistent, self-sailing, far-hidden) —
+  // extracted per docs/MAIN_DECOMPOSITION.md.
+  spawnScatterBoats(abandonedMounts);
   // Nature uses one sandbox vegetation runtime now. The old primitive Flora
   // and site-local blob/tree renderers are gone: regions own placement, while
   // shared trees, shrubs, grass and flowers own geometry/materials/wind/LOD.
@@ -1308,39 +1135,8 @@ async function boot() {
   // are subpixel — their systems pause. Hysteresis so hill flanks don't flicker it.
   let highUp = false;
 
-  // Car physics publishes one stable landing event; presentation consumes each
-  // serial exactly once. The controller stays independent from camera/audio/VFX,
-  // while every authored range remains together under movement > car > landing.
-  let consumedCarLandingSerial = player.driveLandingFeedback.serial;
-  const carLandingPosition = new THREE.Vector3();
-  const consumeCarLandingFeedback = () => {
-    const landing = player.driveLandingFeedback;
-    if (landing.serial === consumedCarLandingSerial) return;
-    consumedCarLandingSerial = landing.serial;
-    const tuning = CAR_LANDING_TUNING.values;
-    if (
-      player.mode !== "drive" ||
-      embodiments.currentAnimal ||
-      !tuning.enabled ||
-      landing.strength <= 0
-    ) return;
-
-    const amount = THREE.MathUtils.clamp(landing.strength, 0, 1);
-    const ranged = (a: number, b: number) =>
-      THREE.MathUtils.lerp(Math.min(a, b), Math.max(a, b), amount);
-    chase.shake(ranged(tuning.shakeMin, tuning.shakeMax));
-    vehicleAudio.carLanding(amount, ranged(tuning.soundMin, tuning.soundMax));
-    carLandingPosition.set(landing.x, landing.y, landing.z);
-    fx.carLandingPuff(
-      carLandingPosition,
-      landing.yaw,
-      amount,
-      Math.round(ranged(tuning.smokeMin, tuning.smokeMax)),
-      ranged(tuning.smokeScaleMin, tuning.smokeScaleMax),
-      tuning.smokeSpread,
-      tuning.smokeLife
-    );
-  };
+  // Car-landing shake/audio/dust feedback — extracted per docs/MAIN_DECOMPOSITION.md.
+  const carLanding = createCarLandingFeedback({ player, embodiments, chase, vehicleAudio, fx });
 
   // free-orbit inspection camera (C toggles); pointer lock is the game default
   const orbit = new CameraControls(camera, renderer.domElement);
@@ -1969,27 +1765,8 @@ async function boot() {
   // The coarse surface mask already makes streets visible immediately. Upgrade
   // it with the exact shared graph as soon as the traffic load finishes.
   void roadGraphPromise.then((roads) => minimap.setRoadGraph(roads)).catch(() => {});
-  minimap.addLandmark(GOLDMAN_GAMEPLAY_LANDMARK.x, GOLDMAN_GAMEPLAY_LANDMARK.z, "Goldman Tennis & Pickleball");
-  // Archery range — NW corner of Golden Gate Park. Static known coords (the
-  // site builds hidden behind its gate), so the pin is safe to drop even when
-  // the range is asleep. Marks the field + gives a teleport like golf/tennis.
-  minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
-  minimap.addLandmark(PUP_CENTER.x, PUP_CENTER.z, "Puppy Nursery");
-  minimap.addLandmark(FORT_MASON_ENSEMBLE_CENTER.x, FORT_MASON_ENSEMBLE_CENTER.z, "Fort Mason Jam");
-  minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
-  minimap.addLandmark(ghostShipBeacon.pose.x, ghostShipBeacon.pose.z, GHOST_SHIP_LANDMARK_NAME);
-  // Ocean Beach surf shack. Teleporting arrives on foot at the apron;
-  // one E press on a racked board enters the live face already standing and moving.
-  {
-    const apron = oceanBeachSurfShackPose(map);
-    minimap.addLandmark(apron.x, apron.z, "Ocean Beach · Surf");
-    ensureSurfShack();
-  }
-  minimap.addLandmark(LANDS_END_CENTER.x, LANDS_END_CENTER.z, "Lands End · Labyrinth");
-  // The Marina breakwater sculpture. The pin is just the place's name — what
-  // sleeps out there is for the walker to find.
-  minimap.addLandmark(WAVE_ORGAN_CENTER.x, WAVE_ORGAN_CENTER.z, "Wave Organ");
-  minimap.addLandmark(BEACH_PIANIST_CENTER.x, BEACH_PIANIST_CENTER.z, "Beach Pianist");
+  // Activity-site pins (static coords) — extracted per docs/MAIN_DECOMPOSITION.md.
+  registerActivityLandmarks(minimap, map, ghostShipBeacon.pose, ensureSurfShack);
   const playerLocator = new PlayerLocator();
   let prepareDestinationEssentials: (
     destination: Readonly<{ x: number; z: number }>,
@@ -2006,59 +1783,20 @@ async function boot() {
     prepareDestinationVisuals: (destination, signal) =>
       prepareDestinationEssentials(destination, signal)
   });
-  // Background expansion waits for a quiet interval after every arrival. This
-  // keeps nonessential region constructors, shader warmups and far-tile decodes
-  // from competing with the destination's one-to-four visual cells.
-  const WORLD_BACKGROUND_BOOT_QUIET_MS = 5000;
-  const WORLD_BACKGROUND_AFTER_ARRIVAL_MS = 3000;
-  const WORLD_BACKGROUND_AFTER_MOTION_MS = 1800;
-  let worldBackgroundNotBefore = performance.now() + WORLD_BACKGROUND_BOOT_QUIET_MS;
-  let worldBackgroundAdmissionAt = worldBackgroundNotBefore;
-  const WORLD_BACKGROUND_STAGE_GAP_MS = 320;
-  const WORLD_BACKGROUND_MOVEMENT_KEYS = [
-    "KeyW", "KeyA", "KeyS", "KeyD",
-    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-    "KeyQ", "KeyU", "ShiftLeft", "ShiftRight", "Space"
-  ] as const;
-  let worldBackgroundMotionX = player.position.x;
-  let worldBackgroundMotionZ = player.position.z;
-  const noteWorldBackgroundMotion = () => {
-    if (worldArrival.active) return;
-    const pad = input.mapPadAxes();
-    const hasMovementIntent =
-      WORLD_BACKGROUND_MOVEMENT_KEYS.some((code) => input.holding(code)) ||
-      Math.abs(pad.lx) > 0.08 ||
-      Math.abs(pad.ly) > 0.08 ||
-      pad.lt > 0.08 ||
-      pad.rt > 0.08;
-    if (hasMovementIntent) {
-      // A blocked wheel, a vehicle against a wall, or an airborne embodiment
-      // can have near-zero displacement while the player is still actively
-      // trying to move. Treat intent as activity too, so optional constructors
-      // and WebGPU compilation never mistake that moment for idle time.
-      worldBackgroundNotBefore = Math.max(
-        worldBackgroundNotBefore,
-        performance.now() + WORLD_BACKGROUND_AFTER_MOTION_MS
-      );
-      return;
-    }
-    if (Math.hypot(
-      player.position.x - worldBackgroundMotionX,
-      player.position.z - worldBackgroundMotionZ
-    ) < 1.5) return;
-    worldBackgroundMotionX = player.position.x;
-    worldBackgroundMotionZ = player.position.z;
-    worldBackgroundNotBefore = Math.max(
-      worldBackgroundNotBefore,
-      performance.now() + WORLD_BACKGROUND_AFTER_MOTION_MS
-    );
-  };
+  // World-background quiet-window admission (motion/arrival-aware pacing for
+  // optional constructors + warmups) — extracted per docs/MAIN_DECOMPOSITION.md.
+  const backgroundAdmission = createBackgroundAdmission({
+    input,
+    player,
+    isArrivalActive: () => worldArrival.active
+  });
+  const {
+    waitForWindow: waitForWorldBackgroundWindow,
+    nextPresentationFrame,
+    waitForCityGenRenderWindow
+  } = backgroundAdmission;
   worldArrival.onStateChange = (snapshot) => {
-    if (snapshot.active) {
-      worldBackgroundMotionX = player.position.x;
-      worldBackgroundMotionZ = player.position.z;
-      worldBackgroundNotBefore = performance.now() + WORLD_BACKGROUND_AFTER_ARRIVAL_MS;
-    }
+    if (snapshot.active) backgroundAdmission.onArrivalStart();
     // A runtime relocation owns its own named hold and supersedes the boot
     // collision epoch. Hand ownership over atomically so a forced slow boot can
     // never leave a stale boot hold pinned after the new destination is safe.
@@ -2072,61 +1810,6 @@ async function boot() {
       initialArrivalReleased = true;
       player.releaseWorldArrivalHold("boot-arrival");
     }
-  };
-  /** `deadline` (ms, performance.now clock) caps how long quiet is awaited:
-   * past it the caller admits on the next idle+frame even while the player
-   * keeps moving. An active arrival always blocks regardless of deadline. */
-  const waitForWorldBackgroundWindow = async (extraQuietMs = 0, deadline = Infinity): Promise<void> => {
-    while (true) {
-      const target = Math.min(
-        Math.max(worldBackgroundNotBefore + extraQuietMs, worldBackgroundAdmissionAt),
-        deadline
-      );
-      if (!worldArrival.active && performance.now() >= target) {
-        await new Promise<void>((resolve) => {
-          if ("requestIdleCallback" in window) {
-            window.requestIdleCallback(() => resolve(), { timeout: 1000 });
-          } else {
-            setTimeout(resolve, 80);
-          }
-        });
-        if (
-          !worldArrival.active &&
-          (performance.now() >= deadline ||
-            (performance.now() >= worldBackgroundNotBefore + extraQuietMs &&
-              performance.now() >= worldBackgroundAdmissionAt))
-        ) {
-          // Concurrent optional systems used to all wake from the same idle
-          // callback and begin expensive constructors together. Admit one stage
-          // at a time with a small presentation gap; quality is unchanged and
-          // every stage still loads, just without a post-reveal thundering herd.
-          worldBackgroundAdmissionAt = performance.now() + WORLD_BACKGROUND_STAGE_GAP_MS;
-          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-          return;
-        }
-      }
-      const remaining = Math.max(16, Math.min(100, target - performance.now()));
-      await new Promise<void>((resolve) => setTimeout(resolve, remaining));
-    }
-  };
-  const nextPresentationFrame = () => new Promise<void>((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
-  /**
-   * CityGen's destination cell is part of the nearby world, not optional far
-   * scenery. Yield one frame between WebGPU owner preparations, and continue to
-   * defer across an active arrival, but never require the player to stop moving.
-   * A per-cell generation predicate lets a teleport cancel an old owner before
-   * its non-cancellable compileAsync call begins.
-   */
-  const waitForCityGenRenderWindow = async (isCurrent?: () => boolean): Promise<boolean> => {
-    while (worldArrival.active) {
-      if (isCurrent && !isCurrent()) return false;
-      await nextPresentationFrame();
-    }
-    if (isCurrent && !isCurrent()) return false;
-    await nextPresentationFrame();
-    return !isCurrent || isCurrent();
   };
   const navigation = new NavigationController({
     player,
@@ -2259,70 +1942,16 @@ async function boot() {
   };
   minimap.setDevice(input.device);
 
-  // Escape priority: dismiss an open overlay (stay unlocked). Pointer-lock exit
-  // is the browser's job — do not call releaseLock here. Registered after
-  // minimap exists so an early Esc can't hit a TDZ binding.
-  //
-  // Chrome may reserve the *locked* Escape keydown for its native pointer-lock
-  // exit, so overlay dismissal also listens on keyup: one Esc both unlocks
-  // (browser) and closes the overlay when the keydown was swallowed.
-  const dismissEscapeOverlay = (e: KeyboardEvent): boolean => {
-    const reader = getBehindTheScenes();
-    if (buskerTalk.close()) {
-      // A conversation owns the screen: Esc leaves it before any other overlay.
-    } else if (missionDolores?.bookOpen) {
-      missionDolores.closeBook();
-    } else if (reader?.isOpen) {
-      reader.setOpen(false);
-    } else if (minimap.expanded) {
-      minimap.setExpanded(false);
-    } else {
-      return false;
-    }
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    return true;
-  };
-  window.addEventListener(
-    "keydown",
-    (e) => {
-      if ((e.code !== "Escape" && e.key !== "Escape") || e.repeat) return;
-      const t = e.target;
-      // Debug search / other fields keep their own Esc behavior.
-      if (
-        (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) &&
-        !chat.focused
-      ) {
-        return;
-      }
-      if (dismissEscapeOverlay(e)) return;
-      if (chat.focused) {
-        skipChatRelock = true;
-        chat.blur();
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        return;
-      }
-    },
-    true
-  );
-  // Keyup mirror: when Chrome swallowed the locked Escape keydown, the keyup is
-  // still delivered here (pointer already released by then), so the overlay
-  // closes on the same single Escape instead of needing a second press. Chat /
-  // field clearing stays keydown-only — a focused field means the pointer is
-  // unlocked, so that keydown is never swallowed.
-  window.addEventListener(
-    "keyup",
-    (e) => {
-      if (e.code !== "Escape" && e.key !== "Escape") return;
-      dismissEscapeOverlay(e);
-    },
-    true
-  );
-  // Fullscreen Esc often exits fullscreen first and leaves pointer lock on —
-  // drop the lock whenever fullscreen ends so one Esc is enough.
-  document.addEventListener("fullscreenchange", () => {
-    if (!document.fullscreenElement) input.releaseLock();
+  // Escape priority stack (overlay dismissal + fullscreen unlock) — extracted
+  // per docs/MAIN_DECOMPOSITION.md. Wired here, after minimap exists, so an
+  // early Esc can't hit a TDZ binding.
+  wireEscapeStack({
+    input,
+    minimap,
+    chat,
+    closeConversation: () => buskerTalk.close(),
+    getMissionDolores: () => missionDolores,
+    markChatEscapeBlur: () => { skipChatRelock = true; }
   });
 
   // interactive tutorial (ui/tutorial.ts): the 🎓 button under Share starts a
@@ -2410,92 +2039,10 @@ async function boot() {
     }
   });
 
-  // Kid-with-a-kite ambient life is an optional, fully procedural chunk. It
-  // stands on the sandy NW-headland beach just south of Sutro Baths (roughly
-  // between Sutro Baths and the Archery Range), where the player trolley passes.
-  // Resolve the waterline X now (cheap) but defer the person/cloth/behavior code
-  // until a post-reveal approach so detached WebGPU compilation has runway.
-  const KITE_BEACH_Z = 1650;
-  let kiteShoreX = -6160;
-  for (let x = -6260; x < -6040; x += 2) {
-    if (!map.isWater(x, KITE_BEACH_Z)) {
-      kiteShoreX = x;
-      break;
-    }
-  }
-  const oceanKiteSite = { x: kiteShoreX, z: KITE_BEACH_Z };
-  const OCEAN_KITE_LOAD_DISTANCE = 650;
-  let oceanBeachKite: import("./world/oceanBeachKite").OceanBeachKiteEncounter | null = null;
-  let oceanBeachKiteLoading: Promise<void> | null = null;
-  let unregisterOceanKiteTuning: (() => void) | null = null;
-  let oceanKiteGeneration = 0;
-  const refreshOceanKiteDebug = () => {
-    const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-    if (hooks) Object.assign(hooks, { oceanBeachKite, ensureOceanBeachKite });
-  };
-  const ensureOceanBeachKite = () => {
-    if (oceanBeachKite || oceanBeachKiteLoading) return oceanBeachKiteLoading ?? Promise.resolve();
-    const generation = oceanKiteGeneration;
-    const loading = import("./world/oceanBeachKite")
-      .then(async ({ createOceanBeachKiteEncounter }) => {
-        if (generation !== oceanKiteGeneration) return;
-        const distance = Math.hypot(
-          player.position.x - oceanKiteSite.x,
-          player.position.z - oceanKiteSite.z
-        );
-        // The player can teleport away while the split chunk is in flight.
-        if (distance > OCEAN_KITE_LOAD_DISTANCE) return;
-        const encounter = createOceanBeachKiteEncounter(map, oceanKiteSite);
-        // compileAsync skips invisible roots. Prepare the feature while detached,
-        // and temporarily un-cull its descendants so an approach from outside
-        // the current camera frustum still warms the rig and node cloth.
-        encounter.group.visible = true;
-        const culling = new Map<THREE.Object3D, boolean>();
-        encounter.group.traverse((object) => {
-          culling.set(object, object.frustumCulled);
-          object.frustumCulled = false;
-        });
-        try {
-          await renderer.compileAsync(encounter.group, camera, scene);
-        } catch (error) {
-          console.warn("[ocean kite] detached shader warmup failed", error);
-        } finally {
-          for (const [object, frustumCulled] of culling) object.frustumCulled = frustumCulled;
-        }
-        if (generation !== oceanKiteGeneration) {
-          encounter.dispose();
-          return;
-        }
-        const stillNear = Math.hypot(
-          player.position.x - oceanKiteSite.x,
-          player.position.z - oceanKiteSite.z
-        ) <= OCEAN_KITE_LOAD_DISTANCE;
-        if (!stillNear) {
-          encounter.dispose();
-          return;
-        }
-        encounter.group.visible = false;
-        scene.add(encounter.group);
-        oceanBeachKite = encounter;
-        unregisterOceanKiteTuning = debugPanel.registerFeatureTuning(encounter.tuningDescriptor());
-        refreshOceanKiteDebug();
-      })
-      .catch((error) => console.warn("[ocean kite] encounter failed to load", error))
-      .finally(() => {
-        if (oceanBeachKiteLoading === loading) oceanBeachKiteLoading = null;
-      });
-    oceanBeachKiteLoading = loading;
-    return loading;
-  };
-  const disposeOceanBeachKite = () => {
-    oceanKiteGeneration++;
-    unregisterOceanKiteTuning?.();
-    unregisterOceanKiteTuning = null;
-    oceanBeachKite?.dispose();
-    oceanBeachKite = null;
-    refreshOceanKiteDebug();
-  };
-  import.meta.hot?.dispose(disposeOceanBeachKite);
+  // Kid-with-a-kite ambient encounter (lazy first-approach gate) — extracted
+  // per docs/MAIN_DECOMPOSITION.md.
+  const oceanKite = createOceanKiteGate({ map, scene, renderer, camera, player, debugPanel });
+  import.meta.hot?.dispose(oceanKite.dispose);
 
   // Resume last session: position, heading and vehicle survive a refresh. A
   // Vite structural reload additionally restores the exact chase-camera view.
@@ -2800,29 +2347,9 @@ async function boot() {
   // first reveal, nearby optional regions may hydrate; distant ones wait for
   // first approach. NEAR_GATE is metres from each region's footprint.
   const NEAR_GATE = 1300;
-  const GARDEN_XZ = {
-    x: (BOTANICAL_GARDEN_BOUNDS.minX + BOTANICAL_GARDEN_BOUNDS.maxX) / 2,
-    z: (BOTANICAL_GARDEN_BOUNDS.minZ + BOTANICAL_GARDEN_BOUNDS.maxZ) / 2
-  };
-  const GOLF_XZ = { x: -1979, z: -194 }; // Presidio course centroid (golf.json tee coords)
-
-  // Landmark + minigame map pins are registered EAGERLY at boot from static
-  // coords, independent of the lazy region builds — the pin is always on the map
-  // and clickable (teleport), while the heavy assets stream in only when you
-  // approach or teleport there. Names dedupe, so a lazy build re-adding the same
-  // name just refines the pin's coords (e.g. golf snaps to the first tee on load).
-  minimap.addLandmark(JAPANESE_TEA_GARDEN_ENTRANCE.x, JAPANESE_TEA_GARDEN_ENTRANCE.z, "Japanese Tea Garden");
-  minimap.addLandmark(GARDEN_XZ.x, GARDEN_XZ.z, "Botanical Garden");
-  minimap.addLandmark(GOLF_XZ.x, GOLF_XZ.z, "Presidio Golf");
-  minimap.addLandmark(CORONA_HEIGHTS_SUMMIT.x, CORONA_HEIGHTS_SUMMIT.z, "Corona Heights");
-  // Buena Vista summit clearing — west of Corona Heights. Plain park name so
-  // the pin reads as a place, not a secret quest.
-  minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Buena Vista");
-  const missionDoloresSpawn = SPAWN_POINTS.missionDolores;
-  minimap.addLandmark(missionDoloresSpawn.x, missionDoloresSpawn.z, missionDoloresSpawn.label);
-  for (const arrival of authoredRegions.landmarkArrivals()) {
-    minimap.addLandmark(arrival.x, arrival.z, arrival.label);
-  }
+  // Park + authored-region map pins (eager, coords-only) — extracted per
+  // docs/MAIN_DECOMPOSITION.md; GARDEN_XZ/GOLF_XZ now live beside the pins.
+  registerParkLandmarks(minimap, authoredRegions);
 
   type LazyRegionTimingEvent = { phase: string; atMs: number; elapsedMs: number };
   const lazyRegionTimings: Record<string, { startedAt: number; events: LazyRegionTimingEvent[] }> = {};
@@ -4524,7 +4051,7 @@ async function boot() {
   const revealWorld = (reason = "settled") => {
     if (revealed) return;
     revealed = true;
-    worldBackgroundNotBefore = Math.max(worldBackgroundNotBefore, performance.now() + 1200);
+    backgroundAdmission.deferAtLeast(1200);
     resolveRevealed(); // release any region-deferred park builds
     progress(100, "ready");
     bootScreen.markReady();
@@ -4671,16 +4198,8 @@ async function boot() {
   // toggle flips this to freeze the player too, for a still shot.
   let freezePlayer = false;
   let immersive = false;
-  // Z (hold): scrub the time of day with the trackpad — cursor drag or
-  // two-finger swipe, right = later. `target` accumulates raw input; the sky
-  // eases toward it each frame so fast swipes glide instead of stepping. The
-  // cycle pauses while scrubbing and resumes (from the new time) on release.
-  let timeScrub: { target: number; wasCycling: boolean } | null = null;
-  const clock12 = (t: number) => {
-    const h = Math.floor(t) % 24;
-    const m = Math.floor((t % 1) * 60);
-    return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
-  };
+  // Z-hold time scrub + N-hold look/speed adjust — extracted per docs/MAIN_DECOMPOSITION.md.
+  const timeScrubGestures = createTimeScrubAndTuningGestures({ input, sky, hud });
 
   // Immersive mode snapshots HUD + debug visibility and restores them on exit.
   type ImmersiveSnap = { debugOn: boolean; uiOpen: boolean };
@@ -4808,7 +4327,7 @@ async function boot() {
     // Optional regions and shader warmups require a genuinely quiet user
     // window. Continuous first-play movement keeps pushing those stages back;
     // the fixed-quality local tile streamer remains active throughout.
-    noteWorldBackgroundMotion();
+    backgroundAdmission.noteMotion();
 
     // gamepad first so its synthetic key codes exist for every consumer below,
     // then the scripted driver (third device on the same rails — cinematics,
@@ -5049,7 +4568,7 @@ async function boot() {
       }
       remotes.glueRidersToLocalVehicle();
       applyPickleballPlayerPose();
-      consumeCarLandingFeedback();
+      carLanding.consume();
       const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
       highUp = highUp ? altitude > 110 : altitude > 150;
       tiles.update(player.position.x, player.position.z, highUp);
@@ -5517,54 +5036,7 @@ async function boot() {
       orbit.distance = orbitFlip.startDist + (orbitFlip.endDist - orbitFlip.startDist) * eased;
       if (u >= 1) orbitFlip = null;
     }
-    if (scrubHeld && !timeScrub) timeScrub = { target: sky.timeOfDay, wasCycling: sky.cycleEnabled };
-    if (timeScrub) {
-      if (scrubHeld) {
-        sky.cycleEnabled = false;
-        timeScrub.target += input.mouseDX * 0.01 + input.wheelX * 0.005;
-        input.mouseDX = 0;
-        input.mouseDY = 0;
-        input.wheelX = 0;
-        input.wheel = 0; // momentum scroll must not zoom the camera mid-scrub
-      }
-      // shortest way around the 24h wrap, critically-damped ease
-      const d = ((((timeScrub.target - sky.timeOfDay) % 24) + 36) % 24) - 12;
-      sky.advanceCivilHours(d * (1 - Math.exp(-frameDt * 10)));
-      hud.message(clock12(sky.timeOfDay), 0.8);
-      if (!scrubHeld && Math.abs(d) < 0.01) {
-        sky.cycleEnabled = timeScrub.wasCycling;
-        timeScrub = null;
-      }
-    }
-    if (adjustHeld) {
-      const look = INPUT_TUNING.values;
-      const nextLook = THREE.MathUtils.clamp(
-        look.lookSensitivity + input.mouseDX * 0.002 + input.wheelX * 0.001,
-        0.25,
-        3
-      );
-      const nextSpeed = THREE.MathUtils.clamp(
-        look.moveSpeedScale - input.mouseDY * 0.002 - input.wheel * 0.001,
-        0.4,
-        2.5
-      );
-      if (nextLook !== look.lookSensitivity) {
-        look.lookSensitivity = nextLook;
-        saveTweak("input.lookSensitivity", nextLook);
-      }
-      if (nextSpeed !== look.moveSpeedScale) {
-        look.moveSpeedScale = nextSpeed;
-        saveTweak("input.moveSpeedScale", nextSpeed);
-      }
-      input.mouseDX = 0;
-      input.mouseDY = 0;
-      input.wheelX = 0;
-      input.wheel = 0;
-      hud.message(
-        `Look ${look.lookSensitivity.toFixed(2)}× · Move ${look.moveSpeedScale.toFixed(2)}×`,
-        0.8
-      );
-    }
+    timeScrubGestures.update(frameDt, scrubHeld, adjustHeld);
 
     // fly: mouse steers the plane at frame rate; W/S throttle happens in the fixed step
     if (player.mode === "plane") player.steerFly(input, frameDt);
@@ -5629,7 +5101,7 @@ async function boot() {
     // settled — without this they'd sit one frame behind the cabin at speed
     remotes.glueRidersToLocalVehicle();
     applyPickleballPlayerPose();
-    consumeCarLandingFeedback();
+    carLanding.consume();
     const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
     highUp = highUp ? altitude > 110 : altitude > 150;
     // Optional park chunks remain unfetched until first approach. Capture the
@@ -5755,18 +5227,7 @@ async function boot() {
     gardenDisplacer.x = player.renderPosition.x;
     gardenDisplacer.z = player.renderPosition.z;
     updateVegetationEnvironment(frameDt, foliageOn ? gardenDisplacers : undefined);
-    const oceanKiteDx = player.position.x - oceanKiteSite.x;
-    const oceanKiteDz = player.position.z - oceanKiteSite.z;
-    if (
-      revealed &&
-      !oceanBeachKite &&
-      !oceanBeachKiteLoading &&
-      oceanKiteDx * oceanKiteDx + oceanKiteDz * oceanKiteDz <
-        OCEAN_KITE_LOAD_DISTANCE * OCEAN_KITE_LOAD_DISTANCE
-    ) {
-      void ensureOceanBeachKite();
-    }
-    oceanBeachKite?.update(frameDt, elapsed, player.renderPosition, windGustValue());
+    oceanKite.update(frameDt, elapsed, revealed);
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
     buskerTalk.update(player.renderPosition);
     if (!worldArrival.active) {
@@ -6215,13 +5676,15 @@ async function boot() {
     tracer.end("render");
     diagnostics.updateStats();
   };
+  const adaptiveRes = createAdaptiveResolution(renderer);
   const frameDriver = startFrameDriver({
     renderer,
     camera,
     app,
     tick,
     tracer,
-    isRevealed: () => revealed
+    isRevealed: () => revealed,
+    adaptiveRes
   });
   // Deterministic capture stops the wall-clock loop so tools can drive tick(dt).
   // Discard any fractional wall-clock remainder on entry; otherwise identical
@@ -6255,9 +5718,8 @@ async function boot() {
 
   console.log("[sf] city online (webgpu)");
 
-  // Retained in the profiling hook for shadow probe compatibility; dynamic
-  // resolution is currently owned internally by the render pipeline.
-  const dynRes = undefined;
+  // The adaptive-resolution governor doubles as the probe-visible dynRes hook.
+  const dynRes = adaptiveRes;
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
@@ -6277,9 +5739,9 @@ async function boot() {
         worldArrival,
         lazyRegionTimings,
         teaGardenBuildingSwapState,
-        oceanBeachKite,
-        ensureOceanBeachKite,
-        oceanKiteSite
+        oceanBeachKite: oceanKite.current(),
+        ensureOceanBeachKite: oceanKite.ensure,
+        oceanKiteSite: oceanKite.site
       });
     }
   };

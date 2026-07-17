@@ -30,7 +30,8 @@ export function installFlickerSpy(opts: {
   const ctx = off.getContext("2d", { willReadFrequently: true });
   if (!ctx) return;
 
-  type DrawRec = [string, number, number, number];
+  // [label, x, y, z, vertexCount, materialColorHex]
+  type DrawRec = [string, number, number, number, number, string];
   type FrameRec = { frame: number; time: number; draws: DrawRec[]; pixels: ImageData | null; shot: string | null };
 
   const ring: FrameRec[] = [];
@@ -38,8 +39,12 @@ export function installFlickerSpy(opts: {
   let lastCaptureAt = -Infinity;
   let captures = 0;
   const v = new THREE.Vector3();
+  // Session tag so multi-session downloads sort into groups by boot.
+  const SESSION = new Date().toISOString().slice(5, 19).replace(/[T:]/g, "-");
 
-  // Draw-list wrap: cheap name+position capture of everything rendered.
+  // Draw-list wrap: name/parent-chain + position + geometry/material
+  // fingerprint for everything rendered, so anonymous "Mesh" draws stay
+  // identifiable (vertex count + color pin down the source builder).
   let currentDraws: DrawRec[] = [];
   const anyRenderer = renderer as unknown as {
     renderObject: (...args: unknown[]) => unknown;
@@ -51,7 +56,23 @@ export function installFlickerSpy(opts: {
       if (object && currentDraws.length < 900) {
         v.setFromMatrixPosition(object.matrixWorld);
         if (v.distanceToSquared(camera.position) > 4) {
-          currentDraws.push([object.name || object.type, Math.round(v.x * 10) / 10, Math.round(v.y * 10) / 10, Math.round(v.z * 10) / 10]);
+          let label = object.name;
+          if (!label) {
+            const parts: string[] = [object.type];
+            for (let p = object.parent, n = 0; p && n < 3; p = p.parent, n++) {
+              if (p.name) {
+                parts.push(p.name);
+                break;
+              }
+              parts.push(p.type);
+            }
+            label = parts.join("<");
+          }
+          const mesh = object as THREE.Mesh;
+          const verts = (mesh.geometry as THREE.BufferGeometry | undefined)?.attributes?.position?.count ?? 0;
+          const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+          const color = (material as THREE.MeshBasicMaterial | undefined)?.color?.getHexString?.() ?? "";
+          currentDraws.push([label, Math.round(v.x * 10) / 10, Math.round(v.y * 10) / 10, Math.round(v.z * 10) / 10, verts, color]);
         }
       }
     } catch {
@@ -84,8 +105,8 @@ export function installFlickerSpy(opts: {
     } catch {
       fullShot = null;
     }
-    if (fullShot) download(`flicker-${stamp}.png`, fullShot);
-    if (previous?.shot) download(`flicker-${stamp}-prev.png`, previous.shot);
+    if (fullShot) download(`flicker-s${SESSION}-${stamp}.png`, fullShot);
+    if (previous?.shot) download(`flicker-s${SESSION}-${stamp}-prev.png`, previous.shot);
     const payload = {
       reason,
       meta,
@@ -95,7 +116,7 @@ export function installFlickerSpy(opts: {
       previousDraws: previous?.draws ?? []
     };
     const blob = new Blob([JSON.stringify(payload, null, 1)], { type: "application/json" });
-    download(`flicker-${stamp}.json`, URL.createObjectURL(blob));
+    download(`flicker-s${SESSION}-${stamp}.json`, URL.createObjectURL(blob));
     console.warn(`[flickerspy] captured (${reason})`, meta);
   };
 
@@ -125,28 +146,8 @@ export function installFlickerSpy(opts: {
       }
       ring.push({ frame, time: performance.now(), draws: currentDraws, pixels, shot });
       if (ring.length > 40) ring.shift();
-
-      const prev = ring[ring.length - 2];
-      if (prev?.pixels) {
-        const a = pixels.data;
-        const b = prev.pixels.data;
-        let hits = 0;
-        let cx = 0;
-        let cy = 0;
-        for (let p = 0; p < a.length; p += 4) {
-          const d = Math.abs(a[p] - b[p]) + Math.abs(a[p + 1] - b[p + 1]) + Math.abs(a[p + 2] - b[p + 2]);
-          if (d > 110) {
-            hits++;
-            cx += (p / 4) % W;
-            cy += Math.floor(p / 4 / W);
-          }
-        }
-        // compact transient: a handful of sky pixels changed hard, but not the
-        // whole band (camera pans change everything a little, not a lot).
-        if (hits >= 3 && hits <= 500) {
-          dump("sky transient", { hits, px: Math.round((cx / hits / W) * 100) / 100, py: Math.round((cy / hits / SKY_ROWS) * 100) / 100 });
-        }
-      }
+      // Auto-detection intentionally does NOT download — capture is manual (G)
+      // only, so the tester controls exactly which frame is dumped.
     } catch {
       /* keep scanning */
     }

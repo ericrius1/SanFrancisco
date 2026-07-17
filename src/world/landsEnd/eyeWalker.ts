@@ -7,6 +7,7 @@ import { buildUkulelist } from "../../gameplay/buskers/ukulelist";
 import { COUNTIN_BEATS, SEC_PER_BEAT } from "../../gameplay/buskers/song";
 import type { Musician, NoteEvent, TrioClock, TrioPhase } from "../../gameplay/buskers/types";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
+import { attachKtx2Loader } from "../../render/textures";
 import { WINDOW_GLOW_W } from "../facade";
 import type { WorldMap } from "../heightmap";
 import { KEEPER, LABYRINTH } from "./layout";
@@ -152,6 +153,7 @@ export class EyeWalker {
   async #loadAssets(): Promise<void> {
     const loader = new GLTFLoader();
     loader.setMeshoptDecoder(MeshoptDecoder);
+    await attachKtx2Loader(loader); // eye-walker.glb ships KTX2 (KHR_texture_basisu)
     const gltf = await loader.loadAsync(MODEL_URL);
     if (this.#disposed) return;
 

@@ -230,6 +230,10 @@ export class AudioEngine {
     uy /= ul;
     uz /= ul;
 
+    // Teleports can leave the camera matrix non-finite for a frame; AudioParam
+    // setters throw on non-finite values, so skip the update until it settles.
+    if (!Number.isFinite(px + py + pz + fx + fy + fz + ux + uy + uz)) return;
+
     const l = ctx.listener;
     if (l.positionX) {
       const t = ctx.currentTime;

@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import type { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 // App-standard texture loader. Pre-authored image textures ship as GPU-native
 // KTX2 (Basis/ETC1S, transcoded to BC1/BC7/ASTC/ETC on load — stays COMPRESSED in
@@ -35,7 +36,7 @@ export function ktx2Available(): boolean {
 // synchronous boot hook and does not accidentally capture the loader chunk.
 let activeRenderer: THREE.WebGPURenderer | null = null;
 
-async function getKtx2Loader(): Promise<import("three/examples/jsm/loaders/KTX2Loader.js").KTX2Loader | null> {
+export async function getKtx2Loader(): Promise<import("three/examples/jsm/loaders/KTX2Loader.js").KTX2Loader | null> {
   const currentRenderer = activeRenderer;
   if (!currentRenderer || ktx2Failed) return null;
   if (!ktx2Promise) {
@@ -58,6 +59,24 @@ async function getKtx2Loader(): Promise<import("three/examples/jsm/loaders/KTX2L
       });
   }
   return ktx2Promise;
+}
+
+/**
+ * Wire the shared lazy KTX2 loader into a GLTFLoader so GLBs using
+ * KHR_texture_basisu (KTX2/Basis, built by tools/optimize-glb-textures.mjs) can
+ * transcode their embedded textures on the GPU. AWAIT this before loadAsync/parse
+ * so the KTX2 loader is present when GLTFLoader hits a basisu texture.
+ *
+ * Inert for GLBs without KHR_texture_basisu: plain PNG/JPEG GLBs load
+ * identically whether or not a KTX2 loader is attached. If the renderer is not
+ * yet ready (initTextures not called) or KTX2 is unavailable, this is a no-op and
+ * the loader is returned unchanged — so it never blocks or breaks a load. The
+ * transcoder chunk/WASM stays unfetched until the first basisu texture is parsed.
+ */
+export async function attachKtx2Loader(loader: GLTFLoader): Promise<GLTFLoader> {
+  const ktx2 = await getKtx2Loader();
+  if (ktx2) loader.setKTX2Loader(ktx2);
+  return loader;
 }
 
 export interface LoadTextureOpts {

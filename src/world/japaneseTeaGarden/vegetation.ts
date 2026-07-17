@@ -116,11 +116,13 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
   }
 ] as const;
 
+// Brighter, pastel-leaning greens so the beds sit with the app's sunlit grass
+// instead of reading as near-black clumps against it.
 const SHRUB_PALETTES: readonly AuthoredShrubPalette[] = [
-  { foliageA: 0x2d5730, foliageB: 0x547a3a },
-  { foliageA: 0x315b33, foliageB: 0x61813d, blooms: [0xb94e6f, 0xd97591, 0xe8a0b3], bloomChance: 0.7 },
-  { foliageA: 0x356037, foliageB: 0x668640, blooms: [0xd97798, 0xe79bb5, 0xf0becd], bloomChance: 0.78 },
-  { foliageA: 0x294f30, foliageB: 0x476f3b }
+  { foliageA: 0x40703f, foliageB: 0x74a052 },
+  { foliageA: 0x457542, foliageB: 0x82ab58, blooms: [0xc95f80, 0xe287a1, 0xf0b2c3], bloomChance: 0.7 },
+  { foliageA: 0x4b7b47, foliageB: 0x8fb35e, blooms: [0xe288a6, 0xefacc2, 0xf7ccd9], bloomChance: 0.78 },
+  { foliageA: 0x3a663c, foliageB: 0x639147 }
 ] as const;
 
 const SHRUB_PALETTE_INDEX: Record<TeaGardenShrubPalette, number> = {
