@@ -448,7 +448,7 @@ function makeTrails(map: WorldMap) {
   return group;
 }
 
-function makeRockField(map: WorldMap, physics: Physics) {
+function makeRockField(map: WorldMap, physics: Physics, bodies: number[]) {
   const geometry = new THREE.DodecahedronGeometry(1, 0);
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0 });
   const capacity = 118;
@@ -498,6 +498,7 @@ function makeRockField(map: WorldMap, physics: Physics) {
       });
       physics.world.setBodyTransform(body, [x, cy, z], [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]);
       physics.addQuerySolid(body, { x, y: cy, z, hx, hy, hz, yaw });
+      bodies.push(body);
     }
     count++;
   }
@@ -826,12 +827,12 @@ function makeDogParkSign(map: WorldMap) {
   return group;
 }
 
-function makeDogPark(map: WorldMap, physics: Physics) {
+function makeDogPark(map: WorldMap, physics: Physics, bodies: number[]) {
   const group = new THREE.Group();
   group.name = "corona_heights_dog_park";
   group.add(polygonSurface(map, CORONA_DOG_PARK));
   group.add(makeWoodchips(map));
-  group.add(makeDogParkFence(map, physics));
+  group.add(makeDogParkFence(map, physics, bodies));
   group.add(makeDogParkSign(map));
   group.add(makeBench(map, 350.1, 2703.4, -0.68, DOG_SURFACE_LIFT));
   group.add(makeBench(map, 353.1, 2720.6, -1.02, DOG_SURFACE_LIFT));
@@ -1262,6 +1263,9 @@ export class CoronaHeightsPark {
   lastThrowAt = -Infinity;
 
   #map: WorldMap;
+  #physics: Physics;
+  #bodies: number[] = [];
+  #disposed = false;
   #ball: THREE.Mesh;
   #ballMaterial: THREE.MeshStandardMaterial;
   #frisbee: THREE.Mesh;
@@ -1308,6 +1312,7 @@ export class CoronaHeightsPark {
 
   constructor(map: WorldMap, physics: Physics) {
     this.#map = map;
+    this.#physics = physics;
     this.group.name = "corona_heights_park";
     this.activity.name = "corona_heights_dog_activity";
     this.foliage.name = "corona_heights_foliage";
@@ -1316,10 +1321,10 @@ export class CoronaHeightsPark {
     this.group.add(makeHillSkin(map));
     this.group.add(makeQuarryFace(map));
     this.group.add(makeTrails(map));
-    this.group.add(makeRockField(map, physics));
-    this.group.add(makeSummitCrags(map, physics));
+    this.group.add(makeRockField(map, physics, this.#bodies));
+    this.group.add(makeSummitCrags(map, physics, this.#bodies));
     this.group.add(this.foliage);
-    this.props.add(makeDogPark(map, physics));
+    this.props.add(makeDogPark(map, physics, this.#bodies));
     this.props.add(makeBench(map, 430, 2751, Math.PI * 0.44));
     this.group.add(this.props);
 
@@ -1390,6 +1395,41 @@ export class CoronaHeightsPark {
     }
   }
 
+  /** Full teardown for a distance unload: colliders, lazy foliage, dog/owner
+   * activity and every locally built mesh. Owner rigs come from player/rig's
+   * shared geometry cache, so their subtrees are detached, never disposed. */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#foliageRuntime?.dispose();
+    this.#foliageRuntime = null;
+    this.#foliageLoading = null;
+    for (const owner of this.owners) owner.rig.group.removeFromParent();
+    for (const body of this.#bodies) {
+      this.#physics.removeQuerySolid(body);
+      this.#physics.world.destroyBody(body);
+    }
+    this.#bodies.length = 0;
+    this.group.removeFromParent();
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    const textures = new Set<THREE.Texture>();
+    this.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      geometries.add(object.geometry);
+      const list = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of list) {
+        materials.add(material);
+        const map = (material as THREE.MeshBasicMaterial).map;
+        if (map) textures.add(map);
+      }
+    });
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
+    for (const texture of textures) texture.dispose();
+    this.group.clear();
+  }
+
   #ensureFoliage() {
     if (this.#foliageRuntime || this.#foliageLoading) return;
     // Keep the optional tree/flower code and template assets out of clean boot.
@@ -1408,6 +1448,10 @@ export class CoronaHeightsPark {
         // The patch remains detached and visible while the app compiles it;
         // Three skips hidden roots, and attaching first would hitch a live frame.
         await this.prepareFoliage?.(patch.group);
+        if (this.#disposed) {
+          patch.dispose();
+          return;
+        }
         this.#foliageRuntime = patch;
         this.foliage.add(patch.group);
         // `foliage` was frozen with the other static Corona subtrees before

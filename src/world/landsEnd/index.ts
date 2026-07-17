@@ -72,6 +72,27 @@ export class LandsEndRegion {
     this.foliage.visible = visible;
   }
 
+  /** Full teardown for a distance unload. The lantern-keeper's rig boxes come
+   * from player/rig's shared geometry cache, so that subtree is detached
+   * rather than disposed; everything else here is locally built. */
+  dispose() {
+    this.#walker.dispose();
+    this.#keeper.group.removeFromParent();
+    this.group.removeFromParent();
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    this.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) && !(object instanceof THREE.Points)) return;
+      geometries.add((object as THREE.Mesh).geometry);
+      const material = (object as THREE.Mesh).material;
+      const list = Array.isArray(material) ? material : [material];
+      for (const m of list) materials.add(m);
+    });
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
+    this.group.clear();
+  }
+
   update(
     dt: number,
     elapsed: number,

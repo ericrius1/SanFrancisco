@@ -243,6 +243,26 @@ export class WaveOrganAudio {
     if (!io || !this.#layer) return;
     this.#layer.gain.setTargetAtTime(0, io.ctx.currentTime, 0.3);
   }
+
+  /** Full teardown for a distance unload: stop every looping source and
+   * detach the whole voice graph from the shared nature buses. */
+  dispose(): void {
+    this.#sleep();
+    for (const voice of this.#voices) {
+      try { voice.src.stop(); } catch { /* already stopped */ }
+      try { voice.osc.stop(); } catch { /* already stopped */ }
+      voice.src.disconnect();
+      voice.osc.disconnect();
+      for (const filter of voice.filters) filter.disconnect();
+      voice.gain.disconnect();
+      voice.send.disconnect();
+      voice.panner.disconnect();
+    }
+    this.#voices.length = 0;
+    this.#layer?.disconnect();
+    this.#layer = null;
+    this.#io = null;
+  }
 }
 
 function movePanner(p: PannerNode, ctx: AudioContext, x: number, y: number, z: number, tc = 0.05): void {

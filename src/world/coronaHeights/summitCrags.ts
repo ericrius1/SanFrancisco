@@ -378,7 +378,7 @@ function makeCragMesh(map: WorldMap) {
 // Colliders
 // ---------------------------------------------------------------------------
 
-function registerCragColliders(map: WorldMap, physics: Physics) {
+function registerCragColliders(map: WorldMap, physics: Physics, bodies: number[]) {
   for (const spec of SUMMIT_CRAGS) {
     if (spec.decorative && spec.height < 0.6) continue;
     const groundY = map.groundTop(spec.x, spec.z);
@@ -399,6 +399,7 @@ function registerCragColliders(map: WorldMap, physics: Physics) {
       });
       physics.world.setBodyTransform(body, [spec.x, y, spec.z], [0, Math.sin(spec.yaw / 2), 0, Math.cos(spec.yaw / 2)]);
       physics.addQuerySolid(body, { x: spec.x, y, z: spec.z, hx: b.hx, hy: b.hy, hz: b.hz, yaw: spec.yaw });
+      bodies.push(body);
     }
   }
 }
@@ -617,12 +618,12 @@ function makeScree(map: WorldMap) {
 
 // ---------------------------------------------------------------------------
 
-export function makeSummitCrags(map: WorldMap, physics: Physics) {
+export function makeSummitCrags(map: WorldMap, physics: Physics, bodies: number[]) {
   const group = new THREE.Group();
   group.name = "corona_summit_crags";
   group.add(makePlatformSkin(map));
   group.add(makeCragMesh(map));
   group.add(makeScree(map));
-  registerCragColliders(map, physics);
+  registerCragColliders(map, physics, bodies);
   return group;
 }

@@ -406,6 +406,31 @@ export class WaveOrgan {
   }
 
   /** Force the payoff (demo/debug). */
+  /** Full teardown for a distance unload — audio graph first (it holds the
+   * shared nature context awake), then every locally built mesh. */
+  dispose() {
+    this.#audio.dispose();
+    this.group.removeFromParent();
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    const textures = new Set<THREE.Texture>();
+    this.group.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh && !(object as THREE.Points).isPoints) return;
+      geometries.add(mesh.geometry);
+      const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of list) {
+        materials.add(material);
+        const map = (material as THREE.MeshBasicMaterial).map;
+        if (map) textures.add(map);
+      }
+    });
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
+    for (const texture of textures) texture.dispose();
+    this.group.clear();
+  }
+
   triggerComplete(hud?: { message(t: string, s?: number): void }) {
     for (const [i, pipe] of this.#pipes.entries()) {
       pipe.awakened = true;

@@ -2023,9 +2023,15 @@ async function boot() {
       player.releaseWorldArrivalHold("boot-arrival");
     }
   };
-  const waitForWorldBackgroundWindow = async (extraQuietMs = 0): Promise<void> => {
+  /** `deadline` (ms, performance.now clock) caps how long quiet is awaited:
+   * past it the caller admits on the next idle+frame even while the player
+   * keeps moving. An active arrival always blocks regardless of deadline. */
+  const waitForWorldBackgroundWindow = async (extraQuietMs = 0, deadline = Infinity): Promise<void> => {
     while (true) {
-      const target = Math.max(worldBackgroundNotBefore + extraQuietMs, worldBackgroundAdmissionAt);
+      const target = Math.min(
+        Math.max(worldBackgroundNotBefore + extraQuietMs, worldBackgroundAdmissionAt),
+        deadline
+      );
       if (!worldArrival.active && performance.now() >= target) {
         await new Promise<void>((resolve) => {
           if ("requestIdleCallback" in window) {
@@ -2036,8 +2042,9 @@ async function boot() {
         });
         if (
           !worldArrival.active &&
-          performance.now() >= worldBackgroundNotBefore + extraQuietMs &&
-          performance.now() >= worldBackgroundAdmissionAt
+          (performance.now() >= deadline ||
+            (performance.now() >= worldBackgroundNotBefore + extraQuietMs &&
+              performance.now() >= worldBackgroundAdmissionAt))
         ) {
           // Concurrent optional systems used to all wake from the same idle
           // callback and begin expensive constructors together. Admit one stage
@@ -3009,6 +3016,10 @@ async function boot() {
   };
 
   prepareDestinationEssentials = async (destination, signal) => {
+    // Optional exhibit at the destination: retire irrelevant in-flight sites
+    // and put the destination's own site on the arrival priority lane. Fire
+    // and forget — the travel cover must never wait on optional content.
+    reprioritizeOptionalSitesForArrival(destination);
     const teaDistance = Math.hypot(
       destination.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
       destination.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
@@ -3045,6 +3056,17 @@ async function boot() {
     | "pup"
     | "fort-mason-ensemble";
   type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
+  type OptionalSiteStage = () => Promise<void>;
+  type OptionalSiteLoadContext = {
+    /** Abortable stage boundary: waits for admission, then throws if the load
+     * was aborted or the player left residency. Use between stages whose
+     * partial work the load function can dispose. */
+    stage: OptionalSiteStage;
+    /** Admission wait without abort semantics, for stages after a
+     * construction step the site cannot roll back. */
+    waitStage: OptionalSiteStage;
+    signal: AbortSignal;
+  };
   type OptionalWorldSite = {
     id: OptionalSiteId;
     label: string;
@@ -3052,14 +3074,75 @@ async function boot() {
     z: number;
     state: OptionalSiteState;
     forced: boolean;
+    /** Arrival lane: this site is the teleport/boot destination's exhibit.
+     * Skips background quiet windows; only the travel cover outranks it. */
+    priority: boolean;
+    /** First time the player was inside the approach radius while dormant.
+     * Caps quiet-window deferral so a moving player still gets the exhibit. */
+    eligibleSince: number;
+    controller: AbortController | null;
     promise: Promise<void> | null;
-    load: () => Promise<void>;
+    load: (context: OptionalSiteLoadContext) => Promise<void>;
     /** A false value prevents automatic import; explicit debug loads still work. */
     available?: () => boolean;
   };
-  const OPTIONAL_SITE_APPROACH_RADIUS = 1100;
+  const OPTIONAL_SITE_APPROACH_RADIUS = 500;
   const OPTIONAL_SITE_RECHECK_RADIUS = OPTIONAL_SITE_APPROACH_RADIUS * 1.25;
+  const OPTIONAL_SITE_UNLOAD_RADIUS = 1000;
+  const OPTIONAL_SITE_STARVATION_CAP_MS = 2500;
   const waitForOptionalSiteStage = () => waitForWorldBackgroundWindow(700);
+  const optionalSiteAbortError = () =>
+    new DOMException("Optional site load aborted", "AbortError");
+  const isAbortError = (error: unknown): boolean =>
+    error instanceof DOMException && error.name === "AbortError";
+  const optionalSiteDistance = (site: OptionalWorldSite): number =>
+    Math.hypot(player.position.x - site.x, player.position.z - site.z);
+  // rAF raced against a timeout: a hidden tab has no presentation frames, and
+  // an rAF-only wait would deadlock the load exactly like the tea-garden
+  // backgrounded-tab build once did.
+  const presentationFrameOrTimeout = () => new Promise<void>((resolve) => {
+    let settled = false;
+    const settle = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+    requestAnimationFrame(settle);
+    setTimeout(settle, 250);
+  });
+  const optionalSiteAdmission = async (site: OptionalWorldSite): Promise<void> => {
+    if (site.priority) {
+      // Destination content. The travel cover keeps the main thread for the
+      // arrival's own cells; the first frames after it lifts belong to us.
+      while (worldArrival.active) await presentationFrameOrTimeout();
+      await presentationFrameOrTimeout();
+      return;
+    }
+    const deadline = site.eligibleSince > 0
+      ? site.eligibleSince + OPTIONAL_SITE_STARVATION_CAP_MS
+      : Infinity;
+    await waitForWorldBackgroundWindow(700, deadline);
+  };
+  const optionalSiteStagesFor = (
+    site: OptionalWorldSite,
+    signal: AbortSignal
+  ): Pick<OptionalSiteLoadContext, "stage" | "waitStage"> => ({
+    waitStage: () => optionalSiteAdmission(site),
+    stage: async () => {
+      if (signal.aborted) throw signal.reason ?? optionalSiteAbortError();
+      await optionalSiteAdmission(site);
+      if (signal.aborted) throw signal.reason ?? optionalSiteAbortError();
+      if (
+        !site.forced && !site.priority &&
+        (site.state === "queued" || site.state === "loading") &&
+        optionalSiteDistance(site) > OPTIONAL_SITE_RECHECK_RADIUS
+      ) {
+        site.controller?.abort(optionalSiteAbortError());
+        throw optionalSiteAbortError();
+      }
+    }
+  });
 
   const refreshOptionalSiteDebug = () => {
     const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
@@ -3083,7 +3166,11 @@ async function boot() {
     });
   };
 
-  const prepareOptionalRoot = async (label: string, root: THREE.Object3D): Promise<void> => {
+  const prepareOptionalRoot = async (
+    label: string,
+    root: THREE.Object3D,
+    stage: OptionalSiteStage = waitForOptionalSiteStage
+  ): Promise<void> => {
     const parent = root.parent;
     const renderState: Array<{ object: THREE.Object3D; visible: boolean; frustumCulled: boolean }> = [];
     root.removeFromParent();
@@ -3097,11 +3184,13 @@ async function boot() {
       // Construction can outlast the idle decision that admitted it. Keep the
       // subtree detached and re-check movement/arrival quiet immediately before
       // asking the WebGPU driver for pipelines.
-      await waitForOptionalSiteStage();
+      await stage();
       await renderer.compileAsync(root, camera, scene);
     } catch (error) {
       // Compilation is a presentation optimization, never a reason to discard
-      // a successfully constructed site. The normal first render remains valid.
+      // a successfully constructed site. An abortable stage may still retire
+      // the whole load here — the caller owns that cleanup.
+      if (isAbortError(error)) throw error;
       console.warn(`[${label}] deferred compile failed:`, error);
     } finally {
       for (const state of renderState) {
@@ -3112,9 +3201,32 @@ async function boot() {
     }
   };
 
-  const loadGoldman = async (): Promise<void> => {
+  // Gate registrations are kept so a distance unload can retire its site's
+  // wake/sleep pads with the rest of the feature.
+  const optionalSiteGateRegistrations: Partial<
+    Record<OptionalSiteId, ReturnType<typeof siteGate.register>>
+  > = {};
+
+  // Shared teardown for distance unload and mid-load aborts: the court, its
+  // physics and overlay, the clubhouse swap, and the pickleball layer all
+  // return to their pre-approach state so a later approach rebuilds cleanly.
+  const teardownGoldman = (): void => {
+    pickleballController?.dispose();
+    pickleballController = null;
+    if (goldenGateTennis) {
+      goldenGateTennis.dispose();
+      goldenGateTennis = null;
+      for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
+        tiles.unsuppressBuildingMesh(building.key, building.index);
+      }
+      sky.invalidateStaticShadows();
+    }
+    refreshOptionalSiteDebug();
+  };
+
+  const loadGoldman = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
     const { createGoldenGateTennisSite } = await import("./world/goldenGateTennis");
-    await waitForOptionalSiteStage();
+    await stage();
     let site: GoldenGateTennisSite | null = null;
     let suppressed = false;
     try {
@@ -3122,7 +3234,7 @@ async function boot() {
         physics,
         daylight: () => sky.sunElevation > 0
       });
-      await prepareOptionalRoot("goldman", site.group);
+      await prepareOptionalRoot("goldman", site.group, stage);
       // Swap the generic clubhouse only when its authored replacement is ready
       // to attach. Any failure restores the baked fallback immediately.
       for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
@@ -3148,9 +3260,9 @@ async function boot() {
     // second idle boundary so its athletes, UI and audio never pile onto the
     // authored-site construction task.
     try {
-      await waitForOptionalSiteStage();
+      await stage();
       const { PickleballController: LoadedPickleballController } = await import("./app/systems/pickleball");
-      await waitForOptionalSiteStage();
+      await stage();
       const controller = new LoadedPickleballController({
         goldman: site,
         scene,
@@ -3169,96 +3281,125 @@ async function boot() {
       });
       pickleballController = controller;
       try {
-        await waitForOptionalSiteStage();
+        await stage();
         await controller.prepareRender(renderer, camera, scene);
       } catch (error) {
+        if (isAbortError(error)) throw error;
         console.warn("[pickleball] deferred compile failed:", error);
       }
       if (net.status === "online") controller.onWelcome();
       else controller.syncSlots();
       refreshOptionalSiteDebug();
     } catch (error) {
+      if (isAbortError(error)) {
+        // A superseded destination mid-build: leave nothing half-attached. The
+        // whole site returns to dormant so the next approach rebuilds it.
+        teardownGoldman();
+        throw error;
+      }
       console.warn("[pickleball] first-approach construction failed:", error);
     }
   };
 
-  const loadArchery = async (): Promise<void> => {
+  const loadArchery = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { createArchery } = await import("./gameplay/archery");
-    await waitForOptionalSiteStage();
+    await stage();
+    // Construction registers physics and gate state the site cannot yet roll
+    // back, so no abort boundaries after this point — only admission waits.
     const game = createArchery(map, physics, worldQueries, scene, {
       nature,
       daylight: () => sky.sunElevation > 0.05
     });
-    await prepareOptionalRoot("archery", game.root);
+    await prepareOptionalRoot("archery", game.root, waitStage);
     archery = game;
-    siteGate.register(game.siteHooks());
+    optionalSiteGateRegistrations.archery = siteGate.register(game.siteHooks());
     refreshOptionalSiteDebug();
   };
 
-  const loadPup = async (): Promise<void> => {
+  const loadPup = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { createPupPen } = await import("./gameplay/pup");
-    await waitForOptionalSiteStage();
+    await stage();
     const pen = createPupPen(map, physics, scene);
-    await prepareOptionalRoot("pup", pen.root);
+    await prepareOptionalRoot("pup", pen.root, waitStage);
     pup = pen;
-    siteGate.register(pen.siteHooks());
+    optionalSiteGateRegistrations.pup = siteGate.register(pen.siteHooks());
     refreshOptionalSiteDebug();
   };
 
-  const loadFortMasonEnsemble = async (): Promise<void> => {
+  const loadFortMasonEnsemble = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
     const { createFortMasonEnsemble } = await import("./gameplay/fortMasonEnsemble");
-    await waitForOptionalSiteStage();
+    await stage();
     const ensemble = createFortMasonEnsemble({ map, net, player, input, hud, chase });
-    await prepareOptionalRoot("fort-mason ensemble", ensemble.root);
-    fortMasonEnsemble = ensemble;
-    scene.add(ensemble.root);
-    sky.invalidateStaticShadows();
-    refreshOptionalSiteDebug();
-  };
-
-  const loadPalace = async (): Promise<void> => {
-    const { createPalaceReverie } = await import("./gameplay/palaceReverie");
-    await waitForOptionalSiteStage();
-    const game = createPalaceReverie(map, scene);
-    await prepareOptionalRoot("palace-reverie", game.root);
-    palaceReverie = game;
-    siteGate.register(game.siteHooks());
-    refreshOptionalSiteDebug();
-  };
-
-  const loadAfterlight = async (): Promise<void> => {
-    const { createAfterlight } = await import("./gameplay/afterlight");
-    await waitForOptionalSiteStage();
-    const experience = createAfterlight(map, scene, nature);
-    await experience.ready;
-    // prepareWarmup exposes every authored state; detach immediately so none of
-    // those temporary states can flash into a live frame while WebGPU compiles.
-    const restore = experience.prepareWarmup();
-    experience.root.removeFromParent();
-    experience.root.updateMatrixWorld(true);
     try {
-      await waitForOptionalSiteStage();
-      await renderer.compileAsync(experience.root, camera, scene);
+      await prepareOptionalRoot("fort-mason ensemble", ensemble.root, stage);
+      fortMasonEnsemble = ensemble;
+      scene.add(ensemble.root);
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
     } catch (error) {
-      console.warn("[afterlight] deferred compile failed:", error);
-    } finally {
-      restore();
+      if (fortMasonEnsemble === ensemble) fortMasonEnsemble = null;
+      ensemble.dispose();
+      throw error;
     }
-    afterlight = experience;
-    experience.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
-    siteGate.register(experience.siteHooks());
-    refreshOptionalSiteDebug();
   };
 
-  const loadCorona = async (): Promise<void> => {
+  const loadPalace = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+    const { createPalaceReverie } = await import("./gameplay/palaceReverie");
+    await stage();
+    const game = createPalaceReverie(map, scene);
+    try {
+      await prepareOptionalRoot("palace-reverie", game.root, stage);
+      palaceReverie = game;
+      optionalSiteGateRegistrations.palace = siteGate.register(game.siteHooks());
+      refreshOptionalSiteDebug();
+    } catch (error) {
+      if (palaceReverie === game) palaceReverie = null;
+      game.dispose();
+      throw error;
+    }
+  };
+
+  const loadAfterlight = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+    const { createAfterlight } = await import("./gameplay/afterlight");
+    await stage();
+    const experience = createAfterlight(map, scene, nature);
+    try {
+      await experience.ready;
+      // prepareWarmup exposes every authored state; detach immediately so none of
+      // those temporary states can flash into a live frame while WebGPU compiles.
+      const restore = experience.prepareWarmup();
+      experience.root.removeFromParent();
+      experience.root.updateMatrixWorld(true);
+      try {
+        await stage();
+        await renderer.compileAsync(experience.root, camera, scene);
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        console.warn("[afterlight] deferred compile failed:", error);
+      } finally {
+        restore();
+      }
+      afterlight = experience;
+      experience.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
+      optionalSiteGateRegistrations.afterlight = siteGate.register(experience.siteHooks());
+      refreshOptionalSiteDebug();
+    } catch (error) {
+      if (afterlight === experience) afterlight = null;
+      experience.root.removeFromParent();
+      experience.dispose();
+      throw error;
+    }
+  };
+
+  const loadCorona = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { CoronaHeightsPark: LoadedCoronaHeightsPark } = await import("./world/coronaHeights");
-    await waitForOptionalSiteStage();
+    await stage();
     const park = new LoadedCoronaHeightsPark(map, physics);
     park.prepareFoliage = async (group) => {
-      await waitForOptionalSiteStage();
-      await prepareOptionalRoot("corona-heights foliage", group);
+      await waitStage();
+      await prepareOptionalRoot("corona-heights foliage", group, waitStage);
     };
-    await prepareOptionalRoot("corona-heights", park.group);
+    await prepareOptionalRoot("corona-heights", park.group, waitStage);
     park.setFoliageVisible(foliageOn);
     park.onDogAudioCue = (dog, cue) => dogParkAudio.cue(dog, cue);
     coronaHeights = park;
@@ -3267,14 +3408,14 @@ async function boot() {
     refreshOptionalSiteDebug();
   };
 
-  const loadLandsEnd = async (): Promise<void> => {
+  const loadLandsEnd = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { LandsEndRegion: LoadedLandsEndRegion } = await import("./world/landsEnd");
-    await waitForOptionalSiteStage();
+    await stage();
     const region = new LoadedLandsEndRegion(map);
     // The eye-walker's GLB + rider arm later (near the labyrinth); warm their
     // pipelines off-frame when that happens.
-    region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root);
-    await prepareOptionalRoot("lands-end", region.group);
+    region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root, waitStage);
+    await prepareOptionalRoot("lands-end", region.group, waitStage);
     region.setFoliageVisible(foliageOn);
     landsEnd = region;
     scene.add(region.group);
@@ -3305,20 +3446,20 @@ async function boot() {
     return sutroRemoteScratch;
   };
 
-  const loadWaveOrgan = async (): Promise<void> => {
+  const loadWaveOrgan = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { WaveOrgan: LoadedWaveOrgan } = await import("./world/waveOrgan");
-    await waitForOptionalSiteStage();
+    await stage();
     const organ = new LoadedWaveOrgan(map, nature);
-    await prepareOptionalRoot("wave-organ", organ.group);
+    await prepareOptionalRoot("wave-organ", organ.group, waitStage);
     waveOrgan = organ;
     scene.add(organ.group);
     sky.invalidateStaticShadows();
     refreshOptionalSiteDebug();
   };
 
-  const loadSutroBaths = async (): Promise<void> => {
+  const loadSutroBaths = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
     const { createSutroBaths } = await import("./world/sutroBaths");
-    await waitForOptionalSiteStage();
+    await stage();
     let candidate: import("./world/sutroBaths").SutroBaths | null = null;
     try {
       candidate = createSutroBaths({
@@ -3333,7 +3474,7 @@ async function boot() {
       // its optional living layer (foliage, bathers and nearby effects) here.
       candidate.setFoliageVisible(true);
       await candidate.ready;
-      await prepareOptionalRoot("sutro-baths", candidate.group);
+      await prepareOptionalRoot("sutro-baths", candidate.group, stage);
 
       candidate.setFoliageVisible(foliageOn);
       scene.add(candidate.group);
@@ -3362,52 +3503,53 @@ async function boot() {
     }
   };
 
+  const optionalWorldSite = (
+    base: Pick<OptionalWorldSite, "id" | "label" | "x" | "z" | "load"> &
+      Partial<Pick<OptionalWorldSite, "available">>
+  ): OptionalWorldSite => ({
+    ...base,
+    state: "dormant",
+    forced: false,
+    priority: false,
+    eligibleSince: 0,
+    controller: null,
+    promise: null
+  });
+
   const optionalWorldSites: OptionalWorldSite[] = [
-    {
+    optionalWorldSite({
       id: "goldman",
       label: "Goldman Tennis Center",
       x: GOLDMAN_SITE_CENTER.x,
       z: GOLDMAN_SITE_CENTER.z,
-      state: "dormant",
-      forced: false,
-      promise: null,
       load: loadGoldman
-    },
-    { id: "archery", label: "Archery Range", ...ARCHERY_CENTER, state: "dormant", forced: false, promise: null, load: loadArchery },
-    { id: "pup", label: "Puppy Nursery", ...PUP_CENTER, state: "dormant", forced: false, promise: null, load: loadPup },
-    {
+    }),
+    optionalWorldSite({ id: "archery", label: "Archery Range", ...ARCHERY_CENTER, load: loadArchery }),
+    optionalWorldSite({ id: "pup", label: "Puppy Nursery", ...PUP_CENTER, load: loadPup }),
+    optionalWorldSite({
       id: "fort-mason-ensemble",
       label: "Fort Mason Jam",
       ...FORT_MASON_ENSEMBLE_CENTER,
-      state: "dormant",
-      forced: false,
-      promise: null,
       load: loadFortMasonEnsemble
-    },
-    { id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, state: "dormant", forced: false, promise: null, load: loadPalace },
-    {
+    }),
+    optionalWorldSite({ id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, load: loadPalace }),
+    optionalWorldSite({
       id: "afterlight",
       label: "Afterlight · 21:00–05:00",
       ...AFTERLIGHT_ARRIVAL,
-      state: "dormant",
-      forced: false,
-      promise: null,
       load: loadAfterlight,
       available: () => isAfterlightOpenAtHour(sky.timeOfDay)
-    },
-    { id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, state: "dormant", forced: false, promise: null, load: loadCorona },
-    { id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, state: "dormant", forced: false, promise: null, load: loadLandsEnd },
-    { id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, state: "dormant", forced: false, promise: null, load: loadWaveOrgan },
-    {
+    }),
+    optionalWorldSite({ id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, load: loadCorona }),
+    optionalWorldSite({ id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, load: loadLandsEnd }),
+    optionalWorldSite({ id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, load: loadWaveOrgan }),
+    optionalWorldSite({
       id: "sutro-baths",
       label: "Sutro Baths · 1896",
       x: SUTRO_BATHS_ARRIVAL.x,
       z: SUTRO_BATHS_ARRIVAL.z,
-      state: "dormant",
-      forced: false,
-      promise: null,
       load: loadSutroBaths
-    }
+    })
   ];
 
   // One compact truth panel for the authored-site streaming contract. "ready"
@@ -3626,26 +3768,40 @@ async function boot() {
     if (site.state === "ready" || site.state === "failed") return site.promise ?? Promise.resolve();
     if (site.promise) return site.promise;
     site.state = "queued";
+    const controller = new AbortController();
+    site.controller = controller;
+    const { stage, waitStage } = optionalSiteStagesFor(site, controller.signal);
     const run = optionalSiteQueue.then(async () => {
       await revealedPromise;
-      await waitForOptionalSiteStage();
-      const distance = Math.hypot(player.position.x - site.x, player.position.z - site.z);
-      if (!site.forced && (distance > OPTIONAL_SITE_RECHECK_RADIUS || site.available?.() === false)) {
-        site.state = "dormant";
-        site.forced = false;
-        return;
+      if (controller.signal.aborted) throw controller.signal.reason ?? optionalSiteAbortError();
+      // Destination-lane sites start at once so their chunk fetch can overlap
+      // the travel cover; background sites wait for the quiet window and
+      // re-check residency here.
+      if (!site.priority) await stage();
+      if (!site.forced && !site.priority && site.available?.() === false) {
+        throw optionalSiteAbortError();
       }
       site.state = "loading";
-      await site.load();
+      await site.load({ stage, waitStage, signal: controller.signal });
       site.state = "ready";
       console.info(`[lazy-site] ${site.label} ready`);
       applyOptionalSitePerfGate(site);
     }).catch((error) => {
-      site.state = "failed";
-      console.warn(`[lazy-site] ${site.label} unavailable:`, error);
+      if (isAbortError(error) || controller.signal.aborted) {
+        site.state = "dormant";
+      } else {
+        site.state = "failed";
+        console.warn(`[lazy-site] ${site.label} unavailable:`, error);
+      }
     });
     site.promise = run.finally(() => {
-      if (site.state === "dormant") site.promise = null;
+      if (site.controller === controller) site.controller = null;
+      site.priority = false;
+      if (site.state !== "ready") site.forced = false;
+      if (site.state === "dormant") {
+        site.promise = null;
+        site.eligibleSince = 0;
+      }
     });
     optionalSiteQueue = site.promise;
     return site.promise;
@@ -3656,8 +3812,145 @@ async function boot() {
     return site ? requestOptionalWorldSite(site, true) : Promise.resolve();
   };
 
+  // Distance unload: every optional site owns a complete teardown, so leaving
+  // an exhibit's 1 km residency ring returns the world to its pre-approach
+  // state. A site the streaming panel force-loaded is pinned until its toggle
+  // releases it.
+  const OPTIONAL_SITE_UNLOADERS: Record<OptionalSiteId, () => void> = {
+    goldman: teardownGoldman,
+    "fort-mason-ensemble": () => {
+      fortMasonEnsemble?.dispose();
+      fortMasonEnsemble = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    palace: () => {
+      optionalSiteGateRegistrations.palace?.dispose();
+      delete optionalSiteGateRegistrations.palace;
+      palaceReverie?.dispose();
+      palaceReverie = null;
+      refreshOptionalSiteDebug();
+    },
+    afterlight: () => {
+      optionalSiteGateRegistrations.afterlight?.dispose();
+      delete optionalSiteGateRegistrations.afterlight;
+      if (afterlight) {
+        afterlight.root.removeFromParent();
+        afterlight.dispose();
+        afterlight = null;
+      }
+      refreshOptionalSiteDebug();
+    },
+    archery: () => {
+      optionalSiteGateRegistrations.archery?.dispose();
+      delete optionalSiteGateRegistrations.archery;
+      archery?.dispose();
+      archery = null;
+      refreshOptionalSiteDebug();
+    },
+    pup: () => {
+      optionalSiteGateRegistrations.pup?.dispose();
+      delete optionalSiteGateRegistrations.pup;
+      pup?.dispose();
+      pup = null;
+      refreshOptionalSiteDebug();
+    },
+    corona: () => {
+      coronaHeights?.dispose();
+      coronaHeights = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    "lands-end": () => {
+      landsEnd?.dispose();
+      landsEnd = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    "wave-organ": () => {
+      waveOrgan?.dispose();
+      waveOrgan = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    "sutro-baths": () => {
+      sutroBaths?.dispose();
+      sutroBaths = null;
+      refreshOptionalSiteDebug();
+    }
+  };
+
+  const unloadOptionalWorldSite = (site: OptionalWorldSite): void => {
+    const unloader = OPTIONAL_SITE_UNLOADERS[site.id];
+    if (!unloader || site.state !== "ready") return;
+    unloader();
+    site.state = "dormant";
+    site.promise = null;
+    site.priority = false;
+    site.eligibleSince = 0;
+    console.info(`[lazy-site] ${site.label} unloaded (left residency)`);
+  };
+
+  /** Arrival participant (fire-and-forget): retire in-flight sites the new
+   * destination makes irrelevant and put the destination's own exhibit on the
+   * priority lane. Never awaited — the travel cover must not wait on it. */
+  const reprioritizeOptionalSitesForArrival = (
+    destination: Readonly<{ x: number; z: number }>
+  ): void => {
+    for (const site of optionalWorldSites) {
+      const destDistance = Math.hypot(destination.x - site.x, destination.z - site.z);
+      const inFlight = site.state === "queued" || site.state === "loading";
+      if (inFlight && !site.forced && destDistance > OPTIONAL_SITE_RECHECK_RADIUS) {
+        site.controller?.abort(optionalSiteAbortError());
+      }
+    }
+    let nearest: OptionalWorldSite | null = null;
+    let nearestDistance = OPTIONAL_SITE_APPROACH_RADIUS;
+    for (const site of optionalWorldSites) {
+      if (site.state === "ready" || site.state === "failed") continue;
+      if (!optionalSitePerfAllowed(site.id)) continue;
+      if (site.available?.() === false) continue;
+      const destDistance = Math.hypot(destination.x - site.x, destination.z - site.z);
+      if (destDistance <= nearestDistance) {
+        nearest = site;
+        nearestDistance = destDistance;
+      }
+    }
+    if (nearest) {
+      nearest.priority = true;
+      void requestOptionalWorldSite(nearest);
+    }
+  };
+
   const updateOptionalWorldSites = (): void => {
     if (!revealed || worldArrival.active) return;
+    const now = performance.now();
+    for (const site of optionalWorldSites) {
+      const distance = optionalSiteDistance(site);
+      // Ordinary travel out of residency: retire a ready site with a teardown
+      // (hysteresis: load ≤ 500 m, unload ≥ 1 km) and abort an in-flight build
+      // the player has clearly walked away from.
+      if (site.state === "ready" && !site.forced && distance >= OPTIONAL_SITE_UNLOAD_RADIUS) {
+        const runtime = optionalSiteRuntimeState(site).runtime;
+        const busy = runtime === "ACTIVE" || runtime === "DETAIL" ||
+          (site.id === "goldman" && (pickleballController?.playing ?? false));
+        if (!busy) unloadOptionalWorldSite(site);
+      } else if (
+        (site.state === "queued" || site.state === "loading") &&
+        !site.forced && !site.priority &&
+        distance > OPTIONAL_SITE_RECHECK_RADIUS
+      ) {
+        site.controller?.abort(optionalSiteAbortError());
+      } else if (site.state === "dormant") {
+        // Starvation cap anchor: first moment the player is inside the
+        // approach radius. Cleared when they wander back out.
+        if (distance <= OPTIONAL_SITE_APPROACH_RADIUS) {
+          if (site.eligibleSince === 0) site.eligibleSince = now;
+        } else {
+          site.eligibleSince = 0;
+        }
+      }
+    }
     // Sutro owns an internal, closer GPU gate whose promise is intentionally
     // private. Treat its observable warmup as render-busy before admitting the
     // neighboring Lands End site to this serialized scheduler.
@@ -3679,6 +3972,13 @@ async function boot() {
     }
     if (nearest) void requestOptionalWorldSite(nearest);
   };
+
+  // Boot arrivals bypass the WorldArrivalCoordinator (they own the
+  // "boot-arrival" hold), so give the spawn landmark's exhibit the same
+  // priority lane the moment the world reveals.
+  void revealedPromise.then(() => {
+    reprioritizeOptionalSitesForArrival({ x: player.position.x, z: player.position.z });
+  });
 
   const touchesBounds = (
     x: number,
