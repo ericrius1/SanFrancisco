@@ -29,6 +29,8 @@ import type { RadialLightParams } from "./radialLightTypes";
  *
  *  - ink & wash: pen outlines from the outline prepass's normals + depth, plus a
  *    soft luminance posterize — storybook illustration.
+ *  - ukiyo-e print: cool carved contours, compressed vegetable-pigment blocks,
+ *    warm washi highlights and stable pulp/fibre variation — woodblock print.
  *  - dream haze: halation blur + radial color fringe in linear light, then a
  *    pastel lift, gentle vignette and fine animated grain — hazy memory.
  *  - retro crt: virtual pixel grid, Bayer-dithered color quantize and
@@ -46,6 +48,12 @@ export const POSTFX_TUNING = tunables("postfx", {
   ink: { v: false, label: "ink & wash" },
   inkStrength: { v: 0.65, min: 0, max: 1, step: 0.05, label: "· ink strength" },
   inkWidth: { v: 1.5, min: 1, max: 4, step: 0.5, label: "· line width (px)" },
+  ukiyo: { v: false, label: "ukiyo-e woodblock" },
+  ukiyoAmount: { v: 0.88, min: 0, max: 1, step: 0.02, label: "· print character" },
+  ukiyoPalette: { v: 0.82, min: 0, max: 1, step: 0.02, label: "· pigment blocks" },
+  ukiyoLines: { v: 0.78, min: 0, max: 1, step: 0.02, label: "· carved contours" },
+  ukiyoLineWidth: { v: 1.75, min: 1, max: 4, step: 0.25, label: "· contour width (px)" },
+  ukiyoPaper: { v: 0.46, min: 0, max: 1, step: 0.02, label: "· washi texture" },
   dream: { v: false, label: "dream haze" },
   dreamAmount: { v: 0.55, min: 0, max: 1, step: 0.05, label: "· haze" },
   dreamFringe: { v: 0.5, min: 0, max: 1, step: 0.05, label: "· color fringe" },
@@ -67,7 +75,7 @@ export const POSTFX_TUNING = tunables("postfx", {
 });
 
 /** Toggles that require a pipeline selection/update (everything else is a live uniform). */
-export const POSTFX_TOGGLES = ["fxaa", "ink", "dream", "retro"] as const;
+export const POSTFX_TOGGLES = ["fxaa", "ink", "ukiyo", "dream", "retro"] as const;
 export const POSTFX_RADIAL_LIGHT_KEYS = [
   "museumRays",
   "museumRaysIntensity",
@@ -101,12 +109,24 @@ export const POSTFX_VARIANT_MASKS = [0, 1, 2, 3, 4, 5, 6, 7] as const;
 /** Return the cached-variant mask selected by the live tweak values. */
 export function getPostFxVariantMask() {
   const v = POSTFX_TUNING.values;
-  return (v.ink ? POSTFX_INK : 0) | (v.dream ? POSTFX_DREAM : 0) | (v.retro ? POSTFX_RETRO : 0);
+  // Ink and ukiyo-e share the same normal/depth outline specialization. Their
+  // independent uniform weights decide which treatment is visible, keeping the
+  // retained graph count at eight instead of doubling it to sixteen.
+  return (v.ink || v.ukiyo ? POSTFX_INK : 0) |
+    (v.dream ? POSTFX_DREAM : 0) |
+    (v.retro ? POSTFX_RETRO : 0);
 }
 
 const U = {
-  inkStrength: uniform(POSTFX_TUNING.values.inkStrength),
-  inkWidth: uniform(POSTFX_TUNING.values.inkWidth),
+  inkStrength: uniform(POSTFX_TUNING.values.ink ? POSTFX_TUNING.values.inkStrength : 0),
+  outlineWidth: uniform(Math.max(
+    POSTFX_TUNING.values.ink ? POSTFX_TUNING.values.inkWidth : 0,
+    POSTFX_TUNING.values.ukiyo ? POSTFX_TUNING.values.ukiyoLineWidth : 0
+  )),
+  ukiyoAmount: uniform(POSTFX_TUNING.values.ukiyo ? POSTFX_TUNING.values.ukiyoAmount : 0),
+  ukiyoPalette: uniform(POSTFX_TUNING.values.ukiyoPalette),
+  ukiyoLines: uniform(POSTFX_TUNING.values.ukiyoLines),
+  ukiyoPaper: uniform(POSTFX_TUNING.values.ukiyoPaper),
   dreamAmount: uniform(POSTFX_TUNING.values.dreamAmount),
   dreamFringe: uniform(POSTFX_TUNING.values.dreamFringe),
   retroPixel: uniform(POSTFX_TUNING.values.retroPixel),
@@ -127,8 +147,15 @@ export function setFlowPostFx(amount: number, phase: number) {
 /** Push the pane's slider values into the live uniforms. */
 export function applyPostFxParams() {
   const v = POSTFX_TUNING.values;
-  U.inkStrength.value = v.inkStrength;
-  U.inkWidth.value = v.inkWidth;
+  U.inkStrength.value = v.ink ? v.inkStrength : 0;
+  U.outlineWidth.value = Math.max(
+    v.ink ? v.inkWidth : 0,
+    v.ukiyo ? v.ukiyoLineWidth : 0
+  );
+  U.ukiyoAmount.value = v.ukiyo ? v.ukiyoAmount : 0;
+  U.ukiyoPalette.value = v.ukiyoPalette;
+  U.ukiyoLines.value = v.ukiyoLines;
+  U.ukiyoPaper.value = v.ukiyoPaper;
   U.dreamAmount.value = v.dreamAmount;
   U.dreamFringe.value = v.dreamFringe;
   U.retroPixel.value = v.retroPixel;
@@ -146,6 +173,11 @@ const bayer4 = (a: any) => bayer2(a.mul(0.5)).mul(0.25).add(bayer2(a));
 // classic screen-space hash, re-seeded per frame for living grain
 const grainNoise = (p: any) =>
   p.dot(vec2(127.1, 311.7)).add(time.fract().mul(43.7)).sin().mul(43758.5453).fract();
+
+// Stable paper/pigment hash: unlike dream grain this deliberately ignores time,
+// so the print substrate stays attached to the screen instead of sparkling.
+const printNoise = (p: any) =>
+  p.dot(vec2(41.37, 289.11)).sin().mul(45758.5453).fract();
 
 export function createPostFx(deps: {
   /** lit scene pass texture (linear HDR) */
@@ -225,9 +257,9 @@ export function createPostFx(deps: {
 
       const c = renderOutput(vec4(lin, 1)).rgb.toVar();
 
-      // ---- ink & wash: outlines where the prepass normals/depth jump
+      // ---- ink / ukiyo-e: one shared edge field from normal + depth jumps
       if (ink) {
-        const w = U.inkWidth.div(screenSize);
+        const w = U.outlineWidth.max(1).div(screenSize);
         const ox = vec2(w.x, 0);
         const oy = vec2(0, w.y);
         const nEdge = normalAt(uv.sub(ox))
@@ -250,7 +282,85 @@ export function createPostFx(deps: {
         const lum = luminance(c).max(1e-4);
         const t6 = lum.mul(6.0);
         const ql = t6.floor().add(smoothstep(0.3, 0.7, t6.fract())).div(6.0);
-        c.assign(mix(c, c.mul(ql.div(lum)), 0.5));
+        c.assign(mix(c, c.mul(ql.div(lum)), U.inkStrength.mul(0.77)));
+
+        // Ukiyo-e: preserve the scene's hues but pull them into a restrained
+        // blue/green/ochre pigment family. Quantizing luminance (not RGB)
+        // produces broad carved colour blocks without rainbow banding.
+        const printAmount = U.ukiyoAmount;
+        const paletteAmount = printAmount.mul(U.ukiyoPalette);
+        const sourceLum = luminance(c).max(1e-4);
+        const muted = saturation(c, float(1).sub(paletteAmount.mul(0.3)))
+          .mul(vec3(0.94, 0.98, 1.02));
+        const t7 = sourceLum.mul(7.0);
+        const blockLum = t7.floor().add(smoothstep(0.22, 0.78, t7.fract())).div(7.0);
+        const blocked = muted.mul(blockLum.div(sourceLum));
+        const shadowMask = smoothstep(0.48, 0.04, sourceLum);
+        const highlightMask = smoothstep(0.58, 0.96, sourceLum);
+        const indigoShadow = vec3(0.055, 0.105, 0.13);
+        const washi = vec3(0.91, 0.85, 0.75);
+        const pigment = mix(
+          blocked,
+          indigoShadow,
+          shadowMask.mul(paletteAmount).mul(0.3)
+        ).toVar();
+        pigment.assign(mix(
+          pigment,
+          washi,
+          highlightMask.mul(paletteAmount).mul(0.18)
+        ));
+        // Preserve a restrained set of named print pigments from the source:
+        // warm-dominant pixels lean cherry/vermilion, cool-dominant pixels lean
+        // malachite teal. The low mix keeps material identity and sky/fog intact.
+        const warmDominance = muted.r.sub(muted.g.max(muted.b)).max(0).mul(2.2).clamp(0, 1);
+        const coolDominance = muted.g.max(muted.b).sub(muted.r).max(0).mul(1.6).clamp(0, 1);
+        pigment.assign(mix(
+          pigment,
+          vec3(0.72, 0.35, 0.35),
+          warmDominance.mul(paletteAmount).mul(0.2)
+        ));
+        pigment.assign(mix(
+          pigment,
+          vec3(0.21, 0.4, 0.38),
+          coolDominance.mul(paletteAmount).mul(0.14)
+        ));
+
+        // Imperfect carved lines: a low-amplitude directional wobble plus fine
+        // dry-brush breakup. This suggests block registration/pressure without
+        // shifting the whole image or making thin geometry shimmer.
+        const printPx = screenCoordinate.xy.floor();
+        const contourWobble = printPx.y.mul(0.031)
+          .add(printPx.x.mul(0.009).sin().mul(1.7))
+          .sin()
+          .mul(0.055)
+          .add(0.945);
+        const dryBrush = printNoise(printPx.mul(0.53)).mul(0.12).add(0.88);
+        const carvedEdge = edge
+          .mul(contourWobble)
+          .mul(dryBrush)
+          .mul(U.ukiyoLines)
+          .mul(printAmount)
+          .clamp(0, 1);
+        pigment.assign(
+          pigment.mul(carvedEdge.oneMinus()).add(vec3(0.045, 0.075, 0.085).mul(carvedEdge))
+        );
+
+        // Two-scale, static washi grain. The long fibre term is deliberately
+        // faint and oblique so it reads as paper rather than scanlines.
+        const pulp = printNoise(printPx.mul(0.29)).sub(0.5);
+        const fibre = printPx.x.mul(0.017)
+          .add(printPx.y.mul(0.61))
+          .sin()
+          .mul(printPx.x.mul(0.071).sub(printPx.y.mul(0.013)).sin())
+          .mul(0.5);
+        const paperGrain = pulp.mul(0.72).add(fibre.mul(0.28));
+        pigment.addAssign(
+          washi.mul(paperGrain).mul(U.ukiyoPaper).mul(printAmount).mul(0.07)
+        );
+        pigment.mulAssign(
+          paperGrain.mul(U.ukiyoPaper).mul(printAmount).mul(0.045).add(1)
+        );
+        c.assign(mix(c, pigment, printAmount));
       }
 
       // ---- dream haze grade: pastel lift, gentle vignette, living grain
