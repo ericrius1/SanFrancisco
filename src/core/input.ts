@@ -82,6 +82,44 @@ const PAD_BUTTONS: Record<number, string> = {
   15: "PadModeNext"
 };
 
+/**
+ * Programmatic control — the third device on the same logical rails as
+ * keyboard and gamepad. A script (cinematic, QA probe, autopilot) attaches an
+ * InputDriver; once per frame — after pollPad, before any consumer —
+ * pollDriver() hands it this channel to write held codes, analog axis pairs,
+ * mouselook deltas and tool fire. Walk, every vehicle controller and the chase
+ * camera keep reading the ordinary down()/axis()/mouseDX rails, so scripted
+ * movement works in every transportation mode with zero controller changes.
+ *
+ * Channel state is persistent like a real device: a held code stays held and
+ * an axis keeps its deflection until changed — write deltas, not full state,
+ * or call clear(). Axis pairs are the canonical strings consumers already use
+ * ("KeyA|KeyD", "KeyS|KeyW", plane throttle "ArrowDown|ArrowUp", drone
+ * vertical "KeyQ|KeyU", bird twirl "KeyQ|KeyE", board pitch
+ * "BoardNoseDown|BoardNoseUp"). Suspension and the surf camera lock gate
+ * scripted input exactly like the physical devices.
+ */
+export interface ScriptedControls {
+  /** Hold a key code (digital rail: down/held/axis) until release(). */
+  hold(code: string): void;
+  release(code: string): void;
+  /** One-frame edge on the pressed() rail (also leaves the code un-held). */
+  tap(code: string): void;
+  /** Analog deflection −1..1 for a canonical "neg|pos" pair; merges like a stick. */
+  axis(pair: string, value: number): void;
+  /** Mouse-pixel-equivalent look deltas for this frame. */
+  look(dx: number, dy: number): void;
+  /** Tool fire (mouse-hold equivalent); edge=true also fires the pressed edge. */
+  fire(held: boolean, edge?: boolean): void;
+  /** Release every held code, zero every axis, drop fire. */
+  clear(): void;
+}
+
+export interface InputDriver {
+  /** Called once per frame before consumers read. Write into `controls`. */
+  update(dt: number, controls: ScriptedControls): void;
+}
+
 /** Last keyboard/pad device that produced input — for glyph prompts without plumbing. */
 let lastInputDevice: "kb" | "pad" = "kb";
 
@@ -168,6 +206,7 @@ export class Input {
       this.firePressed = false;
       this.fireHeld = false;
       this.#padFireHeld = false;
+      this.#scriptFireHeld = false;
     } else {
       this.#suspensionHolds.delete(reason);
     }
@@ -184,6 +223,37 @@ export class Input {
   #padPrev: boolean[] = [];
   #padAxes = new Map<string, number>();
   #padFireHeld = false;
+  // scripted-driver state, written through the ScriptedControls channel
+  #driver: InputDriver | null = null;
+  #scriptHeld = new Set<string>();
+  #scriptAxes = new Map<string, number>();
+  #scriptFireHeld = false;
+  #scriptControls: ScriptedControls = {
+    hold: (code) => {
+      if (!this.#scriptHeld.has(code)) this.#justPressed.add(code);
+      this.#scriptHeld.add(code);
+    },
+    release: (code) => this.#scriptHeld.delete(code),
+    tap: (code) => this.#justPressed.add(code),
+    axis: (pair, value) =>
+      this.#scriptAxes.set(pair, Math.max(-1, Math.min(1, value))),
+    look: (dx, dy) => {
+      // same gates as the physical devices: no look while suspended, and surf's
+      // authored camera treats all look input as a mathematical no-op
+      if (this.suspended || this.#mode === "surf") return;
+      this.mouseDX += dx;
+      this.mouseDY += dy;
+    },
+    fire: (held, edge = false) => {
+      this.#scriptFireHeld = held;
+      if (edge && !this.suspended) this.firePressed = true;
+    },
+    clear: () => {
+      this.#scriptHeld.clear();
+      this.#scriptAxes.clear();
+      this.#scriptFireHeld = false;
+    }
+  };
   #mapPadAxes: MapPadAxes = { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
   #triggerRoute: "plane" | "bird" | "drone" | null = null; // plane: ↑/↓ throttle; bird: LB/RB twirl; drone: Q/U vertical
   #mode: PlayerMode = "walk";
@@ -497,6 +567,26 @@ export class Input {
   }
 
   /**
+   * Attach/detach the scripted control source. Passing null (or a different
+   * driver) clears all scripted state so nothing stays held across handoffs —
+   * the same guarantee a pad disconnect provides.
+   */
+  setDriver(driver: InputDriver | null): void {
+    if (this.#driver === driver) return;
+    this.#driver = driver;
+    this.#scriptControls.clear();
+  }
+
+  get driver(): InputDriver | null {
+    return this.#driver;
+  }
+
+  /** Run the scripted driver once per frame, after pollPad, before consumers. */
+  pollDriver(dt: number): void {
+    this.#driver?.update(dt, this.#scriptControls);
+  }
+
+  /**
    * An in-world station owns locomotion, camera look, wheel and tool fire for
    * the rest of this frame. Edge buttons remain readable so E/Y can release it
    * and global UI shortcuts still work.
@@ -571,12 +661,16 @@ export class Input {
   }
 
   down(code: string) {
-    return !this.suspended && !this.#activityCaptured && (this.keys.has(code) || this.#padHeld.has(code));
+    return (
+      !this.suspended &&
+      !this.#activityCaptured &&
+      (this.keys.has(code) || this.#padHeld.has(code) || this.#scriptHeld.has(code))
+    );
   }
 
   /** Physical hold — ignores `suspended` so global holds (Z time-scrub) work in camera-orbit mode. */
   holding(code: string) {
-    return this.keys.has(code) || this.#padHeld.has(code);
+    return this.keys.has(code) || this.#padHeld.has(code) || this.#scriptHeld.has(code);
   }
 
   /**
@@ -611,17 +705,19 @@ export class Input {
   /** True while a key (or pad-mapped code) is held, honoring suspension. */
   held(code: string) {
     if (this.suspended || this.#activityCaptured) return false;
-    return this.keys.has(code) || this.#padHeld.has(code);
+    return this.keys.has(code) || this.#padHeld.has(code) || this.#scriptHeld.has(code);
   }
 
   /** −1..1: keyboard keys are digital, pad sticks/triggers merge in analog. */
   axis(neg: string, pos: string) {
     if (this.suspended || this.#activityCaptured) return 0;
-    const d = (c: string) => (this.keys.has(c) || this.#padHeld.has(c) ? 1 : 0);
+    const d = (c: string) =>
+      this.keys.has(c) || this.#padHeld.has(c) || this.#scriptHeld.has(c) ? 1 : 0;
     let v = d(pos) - d(neg);
-    // pad contributions are stored under one canonical pair; the reversed
-    // lookup (e.g. steering's axis("KeyD","KeyA")) flips the sign
+    // pad/script contributions are stored under one canonical pair; the
+    // reversed lookup (e.g. steering's axis("KeyD","KeyA")) flips the sign
     v += this.#padAxisValue(neg, pos);
+    v += this.#scriptAxisValue(neg, pos);
     return Math.max(-1, Math.min(1, v));
   }
 
@@ -636,8 +732,17 @@ export class Input {
     return this.#padAxes.get(`${neg}|${pos}`) ?? -(this.#padAxes.get(`${pos}|${neg}`) ?? 0);
   }
 
+  #scriptAxisValue(neg: string, pos: string) {
+    return this.#scriptAxes.get(`${neg}|${pos}`) ?? -(this.#scriptAxes.get(`${pos}|${neg}`) ?? 0);
+  }
+
   get firing() {
-    return this.#mode !== "surf" && !this.suspended && !this.#activityCaptured && (this.fireHeld || this.#padFireHeld);
+    return (
+      this.#mode !== "surf" &&
+      !this.suspended &&
+      !this.#activityCaptured &&
+      (this.fireHeld || this.#padFireHeld || this.#scriptFireHeld)
+    );
   }
 
   /** Diagnostics/QA contract: surf never forwards pointer/right-stick look. */
