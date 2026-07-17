@@ -3274,6 +3274,10 @@ async function boot() {
     // The eye-walker's GLB + rider arm later (near the labyrinth); warm their
     // pipelines off-frame when that happens.
     region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root);
+    region.prepareFoliage = async (group) => {
+      await waitForOptionalSiteStage();
+      await prepareOptionalRoot("lands-end foliage", group);
+    };
     await prepareOptionalRoot("lands-end", region.group);
     region.setFoliageVisible(foliageOn);
     landsEnd = region;
