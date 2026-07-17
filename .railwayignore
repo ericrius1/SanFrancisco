@@ -2,3 +2,5 @@
 /data/
 /feature-research/
 /*.png
+# iOS companion sources — not needed by the server build
+/ios/

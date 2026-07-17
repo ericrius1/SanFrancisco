@@ -21,3 +21,7 @@ data/city
 
 # API keys for asset-generation tooling (Tripo etc.)
 .env
+
+# Xcode user state (SF Companion)
+ios/**/xcuserdata/
+ios/**/*.xcworkspace/xcshareddata/swiftpm/

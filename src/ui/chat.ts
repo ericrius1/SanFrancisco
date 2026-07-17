@@ -6,6 +6,7 @@
 export class Chat {
   #root: HTMLElement;
   #log: HTMLElement;
+  #toasts: HTMLElement;
   #input: HTMLInputElement;
   #onSend: (text: string) => void;
   #onFocusChange: (focused: boolean) => void;
@@ -17,6 +18,12 @@ export class Chat {
 
     this.#root = document.createElement("div");
     this.#root.className = "chat";
+
+    // Transient arrival toasts stack just above the panel (own the space so
+    // they float over the world even when the chat log is empty).
+    this.#toasts = document.createElement("div");
+    this.#toasts.className = "chat-toasts";
+    this.#toasts.setAttribute("aria-live", "polite");
 
     const head = document.createElement("div");
     head.className = "chat-head";
@@ -55,8 +62,30 @@ export class Chat {
     this.#input.addEventListener("focus", () => this.#onFocusChange(true));
     this.#input.addEventListener("blur", () => this.#onFocusChange(false));
 
-    this.#root.append(head, this.#log, this.#input);
+    this.#root.append(this.#toasts, head, this.#log, this.#input);
     document.getElementById("hud")!.appendChild(this.#root);
+  }
+
+  /** Someone entered the world — a brief toast above the panel that fades out.
+   *  Separate from the chat log so it reads as a presence event, not a line. */
+  showJoin(name: string) {
+    const toast = document.createElement("div");
+    toast.className = "chat-toast";
+    const who = document.createElement("span");
+    who.className = "chat-toast-who";
+    who.textContent = name;
+    const rest = document.createElement("span");
+    rest.textContent = " entered the world";
+    toast.append(who, rest);
+    this.#toasts.appendChild(toast);
+    // trim to the last few so a join storm can't grow the stack unbounded
+    while (this.#toasts.childElementCount > 4) this.#toasts.firstElementChild?.remove();
+    // fade in next frame, auto-remove after the hold
+    requestAnimationFrame(() => toast.classList.add("show"));
+    window.setTimeout(() => {
+      toast.classList.remove("show");
+      window.setTimeout(() => toast.remove(), 400);
+    }, 4200);
   }
 
   get focused() {
