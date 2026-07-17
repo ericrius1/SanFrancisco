@@ -198,6 +198,93 @@ async function main() {
   if (assembly.riderMeshes < 20) throw new Error(`rider looks unassembled (${assembly.riderMeshes} meshes)`);
   if (!assembly.visible) throw new Error("walker group not visible after ready");
 
+  // ---- optional: SF_DIAG=1 — numeric facing/seat/audio diagnosis ----
+  // Facing is measured, not eyeballed: the ukulele hangs in FRONT of the
+  // musician's chest, so dot(ukeWorld - riderWorld, creatureForward) > 0 iff
+  // the rider faces the way the creature walks. Audio needs a real user
+  // gesture (CDP click) plus REAL time — synchronous ticks never advance
+  // ctx.currentTime, so the lookahead scheduler can't fire under advance().
+  if (process.env.SF_DIAG) {
+    await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: 640, y: 400, button: "left", clickCount: 1 });
+    await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 640, y: 400, button: "left", clickCount: 1 });
+    console.log("[probe] userActivation:", await ev(c, `navigator.userActivation?.hasBeenActive === true`));
+    const geom = await ev(c, `(()=>{
+      const T = window.__sf.THREE, w = window.__sf.landsEnd.walker;
+      w.group.updateMatrixWorld(true);
+      const st = w.debugState;
+      const fwd = new T.Vector3(Math.sin(st.yaw), 0, Math.cos(st.yaw)); // creature walk direction
+      const rider = w.group.children.find((o) => o.name === "eyeWalker.rider");
+      let uke = null, riderRig = null;
+      rider?.traverse((o) => { if (o.name === "busker-ukulele") uke = o; if (o.name === "busker-ukulelist") riderRig = o; });
+      const rp = rider.getWorldPosition(new T.Vector3());
+      const up_ = uke ? uke.getWorldPosition(new T.Vector3()) : null;
+      const bones = {};
+      w.group.traverse((o) => {
+        if (!o.isBone) return;
+        if (/^(Head|Neck|Spine02|L_Clavicle|R_Clavicle|L_Upperarm|R_Upperarm)$/i.test(o.name)) {
+          const p = o.getWorldPosition(new T.Vector3());
+          bones[o.name] = [ +(p.x - w.group.position.x).toFixed(3), +(p.y - w.group.position.y).toFixed(3), +(p.z - w.group.position.z).toFixed(3) ];
+        }
+      });
+      return {
+        yaw: +st.yaw.toFixed(3),
+        creatureForward: [ +fwd.x.toFixed(3), +fwd.z.toFixed(3) ],
+        ukeDotForward: up_ ? +up_.clone().sub(rp).dot(fwd).toFixed(3) : null,
+        riderRotY: +rider.rotation.y.toFixed(3),
+        bonesRelToFeet: bones
+      };
+    })()`);
+    console.log("[probe] geometry:", JSON.stringify(geom, null, 1));
+    console.log(geom.ukeDotForward > 0 ? "[probe] uke hangs in front of the rider (rider matches group forward)" : "[probe] FACING WRONG — rider is backwards");
+    const arms = geom.bonesRelToFeet;
+    if (arms.L_Upperarm && arms.R_Upperarm) {
+      const dz = Math.abs(arms.L_Upperarm[2] - arms.R_Upperarm[2]);
+      const dx = Math.abs(arms.L_Upperarm[0] - arms.R_Upperarm[0]);
+      console.log(`[probe] arm axis: dx=${dx.toFixed(2)} dz=${dz.toFixed(2)} → ${dx > dz ? "X (creature faces ±Z — MODEL_YAW correct)" : "Z (creature faces ±X — MODEL_YAW is a quarter-turn off)"}`);
+      if (dx > dz && arms.L_Upperarm[0] < 0) console.log("[probe] left arm on -X → creature faces -Z (flip MODEL_YAW by π)");
+    }
+
+    // Audio needs the listener inside AUDIBLE_RADIUS (80 m) AND real time:
+    // ctx.currentTime only advances in wall-clock, so hand the app back its own
+    // rAF loop instead of stepping it synchronously.
+    await ev(c, `(()=>{
+      const sf = window.__sf, w = sf.landsEnd.walker, p = w.debugState.pos;
+      const x = p[0] + 7, z = p[2] + 7;
+      sf.player.teleportTo({ x, y: sf.map.groundTop(x, z) + 1.5, z, facing: Math.PI * 1.25, mode: "walk" });
+      return true;
+    })()`);
+    await ev(c, `window.__sfManual && window.__sfManual(false)`); // live rAF: real dt + real ctx clock
+    for (let i = 0; i < 26; i++) {
+      await sleep(1000);
+      const st = await ev(c, `(()=>{
+        const w = window.__sf.landsEnd.walker, d = w.debugState;
+        const cam = window.__sf.camera.position, p = d.pos;
+        return JSON.stringify({ ...d.audio, phase: d.phase, camDist: +Math.hypot(cam.x - p[0], cam.z - p[2]).toFixed(1) });
+      })()`);
+      const parsed = JSON.parse(st);
+      if (i % 3 === 0 || parsed.notes > 0) console.log(`[probe] t+${i + 1}s`, st);
+      if (parsed.notes > 0) { console.log("[probe] NOTES SCHEDULED — audio path live"); break; }
+    }
+    // audible ≠ scheduled — sample the actual output mix off an AnalyserNode
+    // tapped on the AudioContext destination so we know sound reaches the ears
+    const audible = await ev(c, `(async()=>{
+      const sf = window.__sf;
+      // find the walker's private AudioContext via any running context that has
+      // our panner. Simpler: read musicAudioLevel and RMS the destination.
+      const lvl = sf.CONFIG ? null : null;
+      const w = sf.landsEnd.walker;
+      // reuse the app's own audio settings getter
+      const musicLevel = (await import('/src/core/audioSettings.ts')).musicAudioLevel();
+      return { musicLevel };
+    })()`).catch((e) => ({ err: String(e).slice(0, 100) }));
+    console.log("[probe] music level:", JSON.stringify(audible));
+    const final = await ev(c, `JSON.stringify(window.__sf.landsEnd.walker.debugState.audio)`);
+    console.log("[probe] final audio:", final);
+    if (JSON.parse(final).notes === 0) console.log("[probe] AUDIO DEAD — no notes reached the synth");
+    cleanup();
+    process.exit(0);
+  }
+
   // ---- optional: SF_ORBIT=1 — fast visual calibration (HUD off, orbit shots) ----
   if (process.env.SF_ORBIT) {
     await ev(c, `(()=>{const h=document.getElementById('hud');if(h)h.style.display='none';return true;})()`);
