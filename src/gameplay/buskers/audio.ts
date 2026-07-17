@@ -1,34 +1,28 @@
 import * as THREE from "three/webgpu";
 import { musicAudioLevel } from "../../core/audioSettings";
+import { audioEngine } from "../../audio/engine";
 import type { BuskerId, MusicianAudio } from "./types";
 
 /**
- * The trio's audio core: ONE AudioContext for all three musicians (the app
- * is already near the browser's context budget), a spatial HRTF panner per
- * musician placed at their seat, and a master gain that tracks the HUD
- * music-volume slider every frame. The context suspends itself when the
- * listener wanders out of earshot and quietly retries resume() while the
- * browser is still waiting for a user gesture.
+ * The trio's audio core: three spatial HRTF panners (one per musician, placed
+ * at their seat) into a shared "off the mountains" reverb and a safety
+ * compressor. Live, the graph rides the shared AudioEngine music group — the
+ * engine owns the context, the gesture unlock, the HUD music volume/mute, the
+ * visibility policy, the ctx.listener camera track and idle suspend. This
+ * module keeps only its own sonic character and an engine hold while the
+ * listener is within earshot. Offline (film render) the same graph is built on
+ * an injected OfflineAudioContext straight to its destination.
  *
  * Musicians never see any of this — they get a `{ctx, out}` tap
  * (MusicianAudio) and connect self-cleaning voices to it.
  */
 
-const AUDIBLE_RADIUS = 80; // beyond this the context suspends
-const RESUME_HYSTERESIS = 8; // re-enter this much closer than we left
-const RESUME_RETRY_SECONDS = 1.5;
-
-const _fwd = new THREE.Vector3();
-const _up = new THREE.Vector3();
-const _pos = new THREE.Vector3();
-
-function setParam(p: AudioParam | undefined, v: number, t: number) {
-  if (!p) return;
-  p.setTargetAtTime(v, t, 0.08);
-}
+const AUDIBLE_RADIUS = 80; // inside this we hold the engine ctx alive
+const AUDIBLE_TAIL = 4; // seconds of engine hold slack when leaving earshot (reverb tail)
 
 export class TrioAudio {
   #ctx: AudioContext | null = null;
+  #offline = false; // injected OfflineAudioContext (film render) vs live engine
   #master: GainNode | null = null;
   #comp: DynamicsCompressorNode | null = null; // final mix node (post master + reverb)
   #reverbIn: GainNode | null = null; // shared wet bus → convolver → master
@@ -42,8 +36,8 @@ export class TrioAudio {
     position: [number, number, number];
   }>();
   #impulseWorker: Worker | null = null;
-  #retryAt = 0;
-  #wantSuspend = false;
+  #holdRelease: (() => void) | null = null; // engine hold while inside earshot
+  #inRange = false; // listener within AUDIBLE_RADIUS (gates scheduling in index.ts)
   /** Force master gain to 0 (film cue: kill mid-song tails before the next pass). */
   #holdSilent = false;
 
@@ -53,16 +47,22 @@ export class TrioAudio {
   }
 
   get running(): boolean {
-    return this.#ctx?.state === "running";
+    // In-range gate so index.ts stops scheduling when the listener leaves the
+    // radius, even though the shared engine ctx may keep running for other
+    // features (music/effects/world all share it now).
+    return this.#inRange && this.#ctx?.state === "running";
   }
 
   /**
    * A live MediaStream of the trio's FINAL mix — the compressor output, so it
    * carries the master gain, the shared "off the mountains" reverb, everything.
-   * Lazily taps a MediaStreamAudioDestinationNode off the compressor (the tap
-   * is cached; the compressor keeps feeding ctx.destination unchanged). The
-   * render tool records this with MediaRecorder in a realtime pass. Null when
-   * Web Audio is unavailable (headless test contexts).
+   * The compressor is the trio's OWN pre-engine mix node: it feeds the engine
+   * music group (live) but the tap sits before it, so the capture is the trio
+   * alone, never other app audio riding the same shared context. Lazily taps a
+   * MediaStreamAudioDestinationNode off the compressor (cached; the compressor
+   * keeps feeding its normal output unchanged). The render tool records this
+   * with MediaRecorder in a realtime pass. Null when Web Audio is unavailable
+   * (headless test contexts).
    */
   captureStream(): MediaStream | null {
     this.#ensureLiveContext();
@@ -85,7 +85,7 @@ export class TrioAudio {
     const t = ctx.currentTime;
     // Immediate cut — setTargetAtTime alone left audible tails through the Q gap.
     master.gain.cancelScheduledValues(t);
-    master.gain.setValueAtTime(on ? 0 : musicAudioLevel(), t);
+    master.gain.setValueAtTime(on ? 0 : this.#masterOpen(), t);
     // Gate the wet bus too so the convolver can't spit a leftover hall into the
     // unmute that starts the next song.
     const reverbIn = this.#reverbIn;
@@ -98,32 +98,48 @@ export class TrioAudio {
   /**
    * @param injectedCtx when supplied (an OfflineAudioContext for the
    * deterministic film render — see offlineRender.ts), the whole graph is built
-   * on it instead of a fresh live AudioContext. Suspend/resume/capture-stream
-   * are never exercised in that path, so the identical build works unchanged.
-   * Omit it and the live game gets exactly the same `new AudioContext()` as before.
+   * on it, straight to its destination, instead of the live engine music group.
+   * The capture-stream path is never exercised offline, so the identical build
+   * works unchanged. Omit it and the live game lazily rides the shared
+   * AudioEngine music bus once a gesture unlocks it.
    */
   constructor(injectedCtx?: BaseAudioContext) {
     if (injectedCtx) {
       // OfflineAudioContext exposes every create*/gain method the graph uses;
-      // the AudioContext-only bits (suspend, resume, createMediaStreamDestination)
-      // are simply never called offline.
-      this.#initialize(injectedCtx as unknown as AudioContext, true);
+      // the AudioContext-only bits (createMediaStreamDestination) are simply
+      // never called offline. The offline graph feeds its own destination — no
+      // engine group offline — and holdSilent() bakes musicAudioLevel() into the
+      // master so a rendered film keeps its absolute loudness.
+      this.#offline = true;
+      const ctx = injectedCtx as unknown as AudioContext;
+      this.#initialize(ctx, true, ctx.destination);
     }
   }
 
-  #ensureLiveContext(): void {
-    if (this.#ctx || typeof AudioContext === "undefined") return;
-    // Do not create a heavyweight audio graph during boot or headless autostart.
-    // The Start click (or any earlier real gesture) unlocks it; distance gating
-    // in update() ensures a distant trio still costs nothing.
-    if (typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive !== true) return;
-    this.#initialize(new AudioContext(), false);
+  /** The master trim opened by holdSilent(false). Offline bakes the HUD music
+   *  level in (no engine group to apply it); live holds unity and lets the
+   *  engine music group apply musicAudioLevel()/mute/visibility. */
+  #masterOpen(): number {
+    return this.#offline ? musicAudioLevel() : 1;
   }
 
-  #initialize(ctx: AudioContext, synchronousImpulse: boolean): void {
+  #ensureLiveContext(): void {
+    if (this.#ctx) return;
+    // The engine owns the context and the gesture gate: bus() is null until the
+    // first user gesture unlocks it (same tolerated contract as before). Distance
+    // gating in update() ensures a distant trio still costs nothing.
+    const bus = audioEngine.bus("music");
+    if (!bus) return;
+    this.#initialize(bus.ctx, false, bus.input);
+  }
+
+  #initialize(ctx: AudioContext, synchronousImpulse: boolean, output: AudioNode): void {
     this.#ctx = ctx;
     const master = ctx.createGain();
-    master.gain.value = 0;
+    // Honor the current film-cue gate: the ctx can be created AFTER a
+    // holdSilent()/phase call (e.g. restored state), and there is no per-frame
+    // master re-assertion anymore, so open (or hold silent) it right here.
+    master.gain.value = this.#holdSilent ? 0 : this.#masterOpen();
     // gentle safety compressor so three simultaneous voices can't clip
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -18;
@@ -131,7 +147,9 @@ export class TrioAudio {
     comp.ratio.value = 4;
     comp.attack.value = 0.004;
     comp.release.value = 0.24;
-    master.connect(comp).connect(ctx.destination);
+    // Live: comp → engine music group input. Offline: comp → ctx.destination.
+    // The capture tap sits on comp, so it is the trio's pre-engine mix node.
+    master.connect(comp).connect(output);
     this.#master = master;
     this.#comp = comp;
 
@@ -260,82 +278,46 @@ export class TrioAudio {
   }
 
   /**
-   * Per-frame: move the listener onto the camera, track the HUD volume, and
-   * suspend/resume with distance. `distance` = camera → platform centre.
+   * Per-frame distance lifecycle. `distance` = camera → platform centre. The
+   * engine owns the ctx.listener camera track and the HUD music volume/mute, so
+   * this only holds the engine ctx alive while inside earshot (edge-triggered so
+   * we never churn the hold per frame) and drops it outside — which lets index.ts
+   * stop scheduling (via `running`) and lets the engine suspend once quiet. The
+   * `#holdSilent` film cue still hard-zeros the master in holdSilent().
    */
-  update(camera: THREE.Camera, distance: number, elapsed: number) {
-    if (!this.#ctx && distance < AUDIBLE_RADIUS - RESUME_HYSTERESIS) this.#ensureLiveContext();
-    const ctx = this.#ctx;
-    const master = this.#master;
-    if (!ctx || !master) return;
+  update(_camera: THREE.Camera, distance: number, _elapsed: number) {
+    const inside = distance <= AUDIBLE_RADIUS;
+    if (inside && !this.#ctx) this.#ensureLiveContext();
+    this.#inRange = inside;
 
-    if (distance > AUDIBLE_RADIUS) {
-      if (ctx.state === "running" && !this.#wantSuspend) {
-        this.#wantSuspend = true;
-        void ctx.suspend().catch(() => {});
-      }
-      return;
-    }
-    if (distance < AUDIBLE_RADIUS - RESUME_HYSTERESIS || this.#wantSuspend) {
-      // inside earshot: (re)start — also covers the initial autoplay unlock,
-      // which browsers may reject until the first user gesture, so retry.
-      if (ctx.state !== "running" && elapsed >= this.#retryAt) {
-        this.#retryAt = elapsed + RESUME_RETRY_SECONDS;
-        this.#wantSuspend = false;
-        void ctx.resume().catch(() => {});
-      } else if (ctx.state === "running") {
-        this.#wantSuspend = false;
-      }
-    }
-    if (ctx.state !== "running") return;
-
-    const t = ctx.currentTime;
-    if (this.#holdSilent) {
-      master.gain.setValueAtTime(0, t);
-    } else {
-      setParam(master.gain, musicAudioLevel(), t);
-    }
-
-    camera.getWorldPosition(_pos);
-    camera.getWorldDirection(_fwd);
-    _up.set(0, 1, 0).applyQuaternion((camera as THREE.Object3D).quaternion).normalize();
-    const l = ctx.listener;
-    if (l.positionX) {
-      l.positionX.value = _pos.x;
-      l.positionY.value = _pos.y;
-      l.positionZ.value = _pos.z;
-      l.forwardX.value = _fwd.x;
-      l.forwardY.value = _fwd.y;
-      l.forwardZ.value = _fwd.z;
-      l.upX.value = _up.x;
-      l.upY.value = _up.y;
-      l.upZ.value = _up.z;
-    } else {
-      const legacy = l as unknown as {
-        setPosition(x: number, y: number, z: number): void;
-        setOrientation(x: number, y: number, z: number, ux: number, uy: number, uz: number): void;
-      };
-      legacy.setPosition(_pos.x, _pos.y, _pos.z);
-      legacy.setOrientation(_fwd.x, _fwd.y, _fwd.z, _up.x, _up.y, _up.z);
+    if (inside && !this.#holdRelease) {
+      this.#holdRelease = audioEngine.acquireHold();
+    } else if (!inside && this.#holdRelease) {
+      // Cover any in-flight scheduled notes / reverb tail past the hold release.
+      audioEngine.touch(AUDIBLE_TAIL);
+      this.#holdRelease();
+      this.#holdRelease = null;
     }
   }
 
   dispose() {
     this.#impulseWorker?.terminate();
     this.#impulseWorker = null;
+    this.#holdRelease?.();
+    this.#holdRelease = null;
     for (const ch of this.#channels.values()) {
       ch.gain?.disconnect();
       ch.panner?.disconnect();
       ch.reverb?.disconnect();
     }
     this.#channels.clear();
+    this.#master?.disconnect();
+    this.#comp?.disconnect();
     this.#reverbIn?.disconnect();
     this.#convolver?.disconnect();
     this.#captureDest?.disconnect();
-    // OfflineAudioContext has no close(); guard so an injected-context TrioAudio
-    // can be disposed without throwing.
-    const c = this.#ctx as AudioContext | null;
-    if (c && typeof c.close === "function") void c.close().catch(() => {});
+    // Disconnect our own nodes only; never close the shared engine context (the
+    // engine owns it) — and the offline OfflineAudioContext has no close() anyway.
     this.#ctx = null;
     this.#master = null;
     this.#comp = null;

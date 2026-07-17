@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { tunables } from "../core/persist";
 import { voiceAudioLevel } from "../core/audioSettings";
+import { audioEngine } from "../audio/engine";
 import type { Net } from "./net";
 
 /**
@@ -27,8 +28,11 @@ import type { Net } from "./net";
  * (Chrome quirk: a MediaStreamAudioSourceNode is silent unless the stream is
  * also attached to a playing media element) → PannerNode (HRTF, linear
  * distance model with a large full-volume range and a long fade band) →
- * GainNode → destination.
- * The listener follows the camera, panners follow the interpolated avatars.
+ * GainNode → the shared AudioEngine's "voice" group input.
+ * The engine owns the ctx and the listener (tracked from the camera every
+ * frame); panners follow the interpolated avatars. A background engine hold
+ * (acquired while the mic is on or any peer is wired) keeps the ctx running
+ * even while the tab is hidden — proximity chat is a social feature.
  *
  * Privacy: mic off = track stopped and stream released (browser mic indicator
  * turns off), not just muted.
@@ -105,7 +109,8 @@ export class Voice {
   #posOf: (id: number) => THREE.Vector3 | null;
   #selfPos: () => THREE.Vector3;
   #peers = new Map<number, Peer>();
-  #ctx: AudioContext | null = null;
+  // One background engine hold, live while the mic is on OR ≥1 peer is wired.
+  #hold: (() => void) | null = null;
   #micStream: MediaStream | null = null;
   #micTrack: MediaStreamTrack | null = null;
   #scanAt = 0;
@@ -124,6 +129,9 @@ export class Voice {
   async setMic(on: boolean): Promise<boolean> {
     if (on === this.micOn) return true;
     if (on) {
+      // Toggling the mic IS a user gesture: open the engine gate even if this is
+      // somehow the first interaction. getUserMedia below is itself gesture-gated.
+      void audioEngine.unlock();
       try {
         this.#micStream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -133,16 +141,30 @@ export class Voice {
       }
       this.#micTrack = this.#micStream.getAudioTracks()[0] ?? null;
       this.micOn = true;
-      void this.#ensureCtx()?.resume(); // toggling is a user gesture — resume while we have it
     } else {
       this.#micTrack?.stop(); // releases the device (browser mic indicator off)
       this.#micTrack = null;
       this.#micStream = null;
       this.micOn = false;
     }
+    this.#refreshHold();
     for (const p of this.#peers.values()) this.#attachMic(p);
     this.onMicChange(this.micOn);
     return true;
+  }
+
+  /**
+   * Hold the shared context alive (background: true → survives tab-hidden) while
+   * the mic is on or any peer is wired; release when both are gone. Edge-
+   * triggered from setMic and from peer add/drop — never per frame.
+   */
+  #refreshHold() {
+    const want = this.micOn || this.#peers.size > 0;
+    if (want && !this.#hold) this.#hold = audioEngine.acquireHold({ background: true });
+    else if (!want && this.#hold) {
+      this.#hold();
+      this.#hold = null;
+    }
   }
 
   /** Put the current mic track (or silence) on a peer's one audio m-line. */
@@ -154,13 +176,6 @@ export class Voice {
   }
 
   /* ------------------------------------------------------------- peers */
-
-  #ensureCtx(): AudioContext | null {
-    if (this.#ctx) return this.#ctx;
-    if (typeof AudioContext === "undefined") return null;
-    this.#ctx = new AudioContext();
-    return this.#ctx;
-  }
 
   #createPeer(id: number, withTransceiver: boolean): Peer {
     const pc = new RTCPeerConnection({ iceServers: iceServers() });
@@ -177,6 +192,7 @@ export class Voice {
       speakingUntil: 0
     };
     this.#peers.set(id, p);
+    this.#refreshHold(); // first peer wires the shared ctx (resumes once unlocked)
 
     pc.onicecandidate = (e) => this.#net.sendRtc(id, { candidate: e.candidate?.toJSON() ?? null });
     pc.onnegotiationneeded = async () => {
@@ -204,10 +220,15 @@ export class Voice {
     return p;
   }
 
-  /** Remote stream → hidden <audio> (Chrome quirk) → panner → gain → out. */
+  /** Remote stream → hidden <audio> (Chrome quirk) → panner → gain → voice group. */
   #wireAudio(p: Peer, stream: MediaStream) {
-    const ctx = this.#ensureCtx();
-    if (!ctx) return;
+    // prewarmBus (not bus()) so the receive graph builds even when a remote
+    // track arrives before any local gesture — audibility stays gated by the
+    // engine's voice group gain and the suspended ctx; the background hold
+    // resumes it once unlocked.
+    const bus = audioEngine.prewarmBus("voice");
+    if (!bus) return;
+    const ctx = bus.ctx;
     if (!p.audioEl) {
       p.audioEl = new Audio();
       p.audioEl.muted = true; // WebAudio does the audible playback
@@ -227,11 +248,12 @@ export class Voice {
       rolloffFactor: range.fadeSlope
     });
     p.gain = ctx.createGain();
-    p.gain.gain.value = VOICE_TUNING.values.volume * voiceAudioLevel();
+    // No voiceAudioLevel() here — the engine's voice group gain applies it.
+    p.gain.gain.value = VOICE_TUNING.values.volume;
     p.analyser = ctx.createAnalyser();
     p.analyser.fftSize = 256;
     p.analyserBuf = new Float32Array(p.analyser.fftSize);
-    src.connect(p.panner).connect(p.gain).connect(ctx.destination);
+    src.connect(p.panner).connect(p.gain).connect(bus.input);
     src.connect(p.analyser); // parallel tap, pre-gain, for the speaking indicator
   }
 
@@ -260,6 +282,7 @@ export class Voice {
     const p = this.#peers.get(id);
     if (!p) return;
     this.#peers.delete(id);
+    this.#refreshHold(); // last peer + mic off releases the ctx hold
     if (p.speakingUntil > performance.now()) this.onSpeaking(id, false);
     p.pc.onicecandidate = p.pc.onnegotiationneeded = p.pc.onconnectionstatechange = p.pc.ontrack = null;
     p.pc.close();
@@ -274,41 +297,25 @@ export class Voice {
 
   /* ------------------------------------------------------------- update */
 
-  /** Per rendered frame: listener pose, panner poses, gains, speaking, scan. */
-  update(camera: THREE.Camera) {
+  /** Per rendered frame: panner poses, gains, speaking, scan. */
+  // camera is unused now (the engine owns the ctx.listener), but the signature
+  // stays for main.ts's per-frame call.
+  update(_camera: THREE.Camera) {
     const now = performance.now();
     if (now >= this.#scanAt) {
       this.#scanAt = now + SCAN_MS;
       this.#scan(now);
     }
-    const ctx = this.#ctx;
-    if (!ctx || this.#peers.size === 0) return;
-
-    // listener = camera (position + facing); AudioParam API with a Safari fallback
-    const l = ctx.listener;
-    const cp = camera.getWorldPosition(TMP.v1);
-    const fwd = camera.getWorldDirection(TMP.v2);
-    const up = TMP.v3.set(0, 1, 0).applyQuaternion(camera.getWorldQuaternion(TMP.q));
-    if (l.positionX) {
-      l.positionX.value = cp.x;
-      l.positionY.value = cp.y;
-      l.positionZ.value = cp.z;
-      l.forwardX.value = fwd.x;
-      l.forwardY.value = fwd.y;
-      l.forwardZ.value = fwd.z;
-      l.upX.value = up.x;
-      l.upY.value = up.y;
-      l.upZ.value = up.z;
-    } else {
-      l.setPosition(cp.x, cp.y, cp.z);
-      l.setOrientation(fwd.x, fwd.y, fwd.z, up.x, up.y, up.z);
-    }
+    if (this.#peers.size === 0) return;
 
     const t = VOICE_TUNING.values;
-    const level = t.volume * voiceAudioLevel();
+    // Per-peer gain drops voiceAudioLevel() — the engine's voice group applies
+    // it. voiceAudioLevel() survives only as a cheap gate on the speaking meter.
+    const gain = t.volume;
+    const audible = voiceAudioLevel() > 0;
     const range = voiceRange();
     for (const p of this.#peers.values()) {
-      if (p.gain) p.gain.gain.value = level;
+      if (p.gain) p.gain.gain.value = gain;
       if (p.panner) {
         p.panner.refDistance = range.fullVolumeRadius;
         p.panner.maxDistance = range.fadeEndRadius;
@@ -321,7 +328,7 @@ export class Voice {
         }
       }
       // speaking indicator: RMS over a short window, with hold
-      if (p.analyser && p.analyserBuf && level > 0) {
+      if (p.analyser && p.analyserBuf && audible) {
         p.analyser.getFloatTimeDomainData(p.analyserBuf);
         let sum = 0;
         for (let i = 0; i < p.analyserBuf.length; i++) sum += p.analyserBuf[i] * p.analyserBuf[i];
@@ -370,7 +377,7 @@ export class Voice {
   debugState() {
     return {
       mic: this.micOn,
-      ctx: this.#ctx?.state ?? "none",
+      ctx: audioEngine.debugState.ctx,
       range: voiceRange(),
       peers: [...this.#peers.values()].map((p) => ({
         id: p.id,
@@ -385,14 +392,8 @@ export class Voice {
   dispose() {
     void this.setMic(false);
     for (const id of [...this.#peers.keys()]) this.drop(id);
-    void this.#ctx?.close();
-    this.#ctx = null;
+    // Release our hold but never close the shared engine ctx.
+    this.#hold?.();
+    this.#hold = null;
   }
 }
-
-const TMP = {
-  v1: new THREE.Vector3(),
-  v2: new THREE.Vector3(),
-  v3: new THREE.Vector3(),
-  q: new THREE.Quaternion()
-};

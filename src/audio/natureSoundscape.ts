@@ -1,7 +1,9 @@
 // Nature soundscape engine — a modular, multi-region ambient audio layer.
 //
-// One AudioContext (the app is already near the browser's context budget, so we
-// deliberately do NOT add a THREE.AudioListener context) drives three layers:
+// Rides the shared AudioEngine context (engine.ts owns context, gesture unlock,
+// group volume/mute, visibility, the ctx.listener camera track, and idle
+// suspend). This layer keeps only its own sonic character and drives three
+// layers:
 //
 //   • beds    — four looped field recordings (forest birds, meadow wind, canopy
 //               wind, night crickets), a SHARED pool blended per region so the
@@ -15,13 +17,14 @@
 //               the foreground never audibly repeats.
 //
 // Regions are pure data (regions.ts). Adding a nature area is one config entry;
-// this engine is generic over the list. The master respects the HUD volume/mute
-// (soundscapeAudioLevel) and the whole context suspends itself when the listener is
-// nowhere near any nature region, so it costs nothing in the city.
+// this engine is generic over the list. A persistent engine hold keeps the
+// shared context running only while the listener is near a region (or a sibling
+// layer needs it); released otherwise, so it costs nothing in the city.
 
 import * as THREE from "three/webgpu";
 import { tunables } from "../core/persist";
-import { effectsAudioLevel, soundscapeAudioLevel } from "../core/audioSettings";
+import { soundscapeAudioLevel } from "../core/audioSettings";
+import { audioEngine } from "./engine";
 import type { NatureBufferResult } from "./natureBuffersWorker";
 import { ProceduralWindSynth } from "./proceduralWind";
 import { VOICE_LIB, RESPONDER_KINDS, type NatureVoiceKind } from "./voices";
@@ -68,6 +71,8 @@ export class NatureSoundscape {
   #bus!: GainNode; // regional soundscape volume + presence fade
   #worldBus!: GainNode; // presence-independent environmental soundscape
   #alwaysBus!: GainNode; // foreground effects, never nature/presence-faded
+  #worldComp!: DynamicsCompressorNode; // world side → engine world group
+  #effectsComp!: DynamicsCompressorNode; // effects side → engine effects group
   #externalAwake = false; // a sibling layer (pet at heel) needs the ctx kept alive
   #regionalReverbSend!: GainNode;
   #worldReverbSend!: GainNode;
@@ -80,10 +85,10 @@ export class NatureSoundscape {
   #beds = new Map<BedId, Bed>();
   #bedBuffers = new Map<BedId, AudioBuffer>();
   #voices: ActiveVoice[] = [];
-  #unlocked = false;
   #loading = false;
   #bufferPreparation: Promise<void> | null = null;
   #buffersReady = false;
+  #holdRelease: (() => void) | null = null; // engine hold while near a region / awake
   #masterLevel = 0;
   #presence = 0;
   #voiceTimer = 0.8;
@@ -92,24 +97,10 @@ export class NatureSoundscape {
   #lastKind: NatureVoiceKind | "-" = "-";
   #voiceCount = 0;
 
-  constructor() {
-    const unlock = () => {
-      this.#unlocked = true;
-      const ctx = this.#ctx;
-      if (ctx?.state === "suspended") void ctx.resume();
-      window.removeEventListener("pointerdown", unlock);
-      window.removeEventListener("keydown", unlock);
-      window.removeEventListener("touchstart", unlock);
-    };
-    window.addEventListener("pointerdown", unlock, { passive: true });
-    window.addEventListener("keydown", unlock);
-    window.addEventListener("touchstart", unlock, { passive: true });
-  }
-
   get debugState() {
     return {
       ctx: this.#ctx?.state ?? "none",
-      unlocked: this.#unlocked,
+      unlocked: audioEngine.unlocked,
       regional: +this.#masterLevel.toFixed(3),
       world: +(this.#worldBus?.gain.value ?? 0).toFixed(3),
       effects: +(this.#alwaysBus?.gain.value ?? 0).toFixed(3),
@@ -122,12 +113,11 @@ export class NatureSoundscape {
     };
   }
 
-  /** Force-unlock without a gesture (headless tests). */
+  /** Force-unlock without a gesture (headless tests). Delegates the gate to the
+   *  engine, then builds our graph so voiceBus() can go live. */
   async unlock(): Promise<void> {
-    const ctx = this.#ensure();
-    if (!ctx) return;
-    if (ctx.state !== "running") await ctx.resume().catch(() => {});
-    this.#unlocked = true;
+    await audioEngine.unlock();
+    this.#ensure();
   }
 
   /** Build the lightweight graph early when a caller wants it. Long procedural
@@ -156,7 +146,7 @@ export class NatureSoundscape {
     // headless-test unlock) has crossed the browser's audio gate, do not create
     // the context, synth buffers, or fetch/decode the four sampled nature beds.
     // Callers already tolerate a null bus and retry when they are actually live.
-    if (!this.#unlocked) return null;
+    if (!audioEngine.unlocked) return null;
     const ctx = this.#ensure();
     if (!ctx || !this.#buffersReady) return null;
     return {
@@ -215,55 +205,45 @@ export class NatureSoundscape {
       fog /= infSum;
     }
     let ctx = this.#ctx;
-    if (!ctx && this.#unlocked && (presence > 0.02 || this.#externalAwake)) {
+    if (!ctx && audioEngine.unlocked && (presence > 0.02 || this.#externalAwake)) {
       ctx = this.#ensure();
     }
     if (!ctx) return;
     // Sampled ambience is first-approach content. A city keydown unlocks the
     // graph and starts worker synthesis, but does not fetch/decode four nature
     // beds until the listener is actually close enough to hear them.
-    if (this.#unlocked && presence > 0.02) {
+    if (audioEngine.unlocked && presence > 0.02) {
       if (o.allowNewLoads !== false) void this.#loadBeds();
       this.#startBeds();
     }
 
-    const visible = document.visibilityState === "visible";
-    const allowed = visible && Boolean(T.enabled) && Number(T.master) > 0.001;
-    const effects = effectsAudioLevel();
-    const soundscape = soundscapeAudioLevel();
+    const allowed = Boolean(T.enabled) && Number(T.master) > 0.001;
     const targetPresence = allowed ? presence : 0;
     this.#presence = approach(this.#presence, targetPresence, dt, 1.6);
 
-    // NatureSoundscape owns the one shared Web Audio listener. Keep its full
-    // camera position + orientation current for presence-independent sibling
-    // SFX too (an adopted dog can follow the player outside every region).
-    if (presence > 0.02 || this.#externalAwake) this.#updateListener(o.camera);
-
-    // ---- master fade + park the whole graph when far from any region ------
-    const targetMaster = allowed ? soundscape * Number(T.master) * this.#presence : 0;
-    const worldTarget = visible ? soundscape : 0;
-    // Sibling gameplay SFX (currently dog fetch audio) must not disappear when
-    // the optional nature layer or its wildlife slider is disabled. This tap
-    // follows only the user's global FX/mute preference and page visibility.
-    const alwaysTarget = visible ? effects : 0;
-    if (ctx.state === "running") this.#reapVoices(ctx.currentTime);
-    const graphAwake = visible && (presence > 0.02 || this.#externalAwake);
-    if (!graphAwake && targetMaster <= 0.0001 && this.#masterLevel <= 0.001) {
-      if (ctx.state === "running") {
-        this.#bus.gain.value = 0;
-        this.#masterLevel = 0;
-        this.#worldBus.gain.value = 0;
-        this.#alwaysBus.gain.value = 0;
-        void ctx.suspend();
-      }
-      return; // suspended: no per-frame cost out in the city
+    // Keep the shared engine context running while we — or a sibling layer such
+    // as a pet at heel / nearby surf (#externalAwake) — need it. Edge-triggered
+    // so we never churn the hold per frame; released otherwise, and the engine
+    // suspends once its groups fall quiet. The ctx.listener is the engine's job.
+    const wantHold = presence > 0.02 || this.#externalAwake;
+    if (wantHold && !this.#holdRelease) this.#holdRelease = audioEngine.acquireHold();
+    else if (!wantHold && this.#holdRelease) {
+      this.#holdRelease();
+      this.#holdRelease = null;
     }
-    if (ctx.state === "suspended") void ctx.resume();
+
+    // The engine owns suspend/resume; until it has the context running there is
+    // nothing to mix this frame (our hold makes it resume shortly).
     if (ctx.state !== "running") return;
+    this.#reapVoices(ctx.currentTime);
+
+    // #bus carries the region fade (master × presence). #worldBus and #alwaysBus
+    // hold constant unity (set in #ensure) — the engine's world/effects groups
+    // apply the HUD volume, mute, and visibility, so no *AudioLevel term belongs
+    // here (invariant: no double attenuation).
+    const targetMaster = allowed ? Number(T.master) * this.#presence : 0;
     this.#masterLevel = approach(this.#masterLevel, targetMaster, dt, 3.5);
     this.#bus.gain.value = this.#masterLevel;
-    this.#worldBus.gain.setTargetAtTime(worldTarget, ctx.currentTime, 0.2);
-    this.#alwaysBus.gain.setTargetAtTime(alwaysTarget, ctx.currentTime, 0.2);
 
     const now = ctx.currentTime;
     const day = daylight(o.timeOfDay);
@@ -302,7 +282,7 @@ export class NatureSoundscape {
     }
 
     // ---- spatial voice scheduler ----------------------------------------
-    if (presence > 0.02 && soundscape > 0.001 && Number(T.voices) > 0.001) {
+    if (presence > 0.02 && soundscapeAudioLevel() > 0.001 && Number(T.voices) > 0.001) {
       let ratePerMin = 0;
       for (let i = 0; i < NATURE_REGIONS.length; i++) {
         ratePerMin += this.#inf[i] * NATURE_REGIONS[i].density;
@@ -321,7 +301,6 @@ export class NatureSoundscape {
   }
 
   dispose(): void {
-    const ctx = this.#ctx;
     for (const v of this.#voices) {
       try {
         v.panner.disconnect();
@@ -336,7 +315,15 @@ export class NatureSoundscape {
       bed.panLfo?.stop();
     }
     this.#wind?.dispose();
-    if (ctx && ctx.state !== "closed") void ctx.close();
+    this.#holdRelease?.();
+    this.#holdRelease = null;
+    // Disconnect our own graph from the engine groups; never close the shared
+    // engine context (the engine owns it).
+    this.#bus?.disconnect();
+    this.#worldBus?.disconnect();
+    this.#alwaysBus?.disconnect();
+    this.#worldComp?.disconnect();
+    this.#effectsComp?.disconnect();
     this.#ctx = null;
   }
 
@@ -344,38 +331,42 @@ export class NatureSoundscape {
 
   #ensure(): AudioContext | null {
     if (this.#ctx) return this.#ctx;
-    if (typeof AudioContext === "undefined") return null;
-    const ctx = new AudioContext();
+    // Build pre-gesture under the loading cover: prewarmBus creates the shared
+    // context (or returns null under Node) without the unlocked gate. The world
+    // side and the effects side land in DIFFERENT engine groups, so the single
+    // limiter of old must split into two — one compressor can't feed two group
+    // inputs. Same character on both so the sonics don't change.
+    const worldSide = audioEngine.prewarmBus("world");
+    const effectsSide = audioEngine.prewarmBus("effects");
+    if (!worldSide || !effectsSide) return null; // no AudioContext (Node probes)
+    const ctx = worldSide.ctx;
     this.#ctx = ctx;
     void this.#prepareBuffers(ctx);
 
-    const limiter = ctx.createDynamicsCompressor();
-    limiter.threshold.value = -14;
-    limiter.knee.value = 22;
-    limiter.ratio.value = 5;
-    limiter.attack.value = 0.005;
-    limiter.release.value = 0.35;
-    limiter.connect(ctx.destination);
+    this.#worldComp = makeNatureComp(ctx);
+    this.#worldComp.connect(worldSide.input);
+    this.#effectsComp = makeNatureComp(ctx);
+    this.#effectsComp.connect(effectsSide.input);
 
     this.#bus = ctx.createGain();
     this.#bus.gain.value = 0;
-    this.#bus.connect(limiter);
+    this.#bus.connect(this.#worldComp);
 
     // Environmental layers such as ocean wash and garden streams belong to the
     // World slider, but manage their own distance fades instead of a nature
-    // region. Their bus stays independent of #presence.
+    // region. Their bus stays independent of #presence and holds constant unity
+    // — the engine world group applies the HUD volume/mute.
     this.#worldBus = ctx.createGain();
-    this.#worldBus.gain.value = 0;
-    this.#worldBus.connect(limiter);
+    this.#worldBus.gain.value = 1;
+    this.#worldBus.connect(this.#worldComp);
 
-    // Presence-independent tap straight to the limiter: sibling layers (the dog
-    // park's pet at heel) route here so a pet trotting through the city — where
-    // region presence and thus #bus are 0 and the ctx would otherwise suspend —
-    // stays audible. Still scaled by HUD master/mute (set each update) so mute
-    // and the foreground FX slider silence it.
+    // Presence-independent tap: sibling layers (the dog park's pet at heel) route
+    // here so a pet trotting through the city — where region presence and thus
+    // #bus are 0 — stays audible. Routes to the engine EFFECTS group via its own
+    // compressor; the group applies the HUD FX volume/mute, so this holds unity.
     this.#alwaysBus = ctx.createGain();
-    this.#alwaysBus.gain.value = 0;
-    this.#alwaysBus.connect(limiter);
+    this.#alwaysBus.gain.value = 1;
+    this.#alwaysBus.connect(this.#effectsComp);
 
     // Worker-generated buffers replace these silent fallbacks asynchronously.
     // Audio is allowed to stream in after the gesture; input is never held up.
@@ -490,12 +481,12 @@ export class NatureSoundscape {
         }
       })
     );
-    if (this.#unlocked) this.#startBeds();
+    if (audioEngine.unlocked) this.#startBeds();
   }
 
   #startBeds(): void {
     const ctx = this.#ctx;
-    if (!ctx || !this.#unlocked) return;
+    if (!ctx || !audioEngine.unlocked) return;
     for (const id of BED_IDS) {
       const bed = this.#beds.get(id);
       const buf = this.#bedBuffers.get(id);
@@ -517,42 +508,6 @@ export class NatureSoundscape {
       lfo.start();
       bed.source = src;
       bed.panLfo = lfo;
-    }
-  }
-
-  #updateListener(camera: THREE.Camera): void {
-    const ctx = this.#ctx;
-    if (!ctx) return;
-    const l = ctx.listener;
-    camera.getWorldPosition(tmpPos);
-    camera.getWorldDirection(tmpFwd); // -Z, normalized
-    tmpUp.set(0, 1, 0).applyQuaternion(camera.getWorldQuaternion(tmpQuat));
-    if (l.positionX) {
-      const t = ctx.currentTime;
-      l.positionX.setTargetAtTime(tmpPos.x, t, 0.02);
-      l.positionY.setTargetAtTime(tmpPos.y, t, 0.02);
-      l.positionZ.setTargetAtTime(tmpPos.z, t, 0.02);
-      l.forwardX.setTargetAtTime(tmpFwd.x, t, 0.02);
-      l.forwardY.setTargetAtTime(tmpFwd.y, t, 0.02);
-      l.forwardZ.setTargetAtTime(tmpFwd.z, t, 0.02);
-      l.upX.setTargetAtTime(tmpUp.x, t, 0.05);
-      l.upY.setTargetAtTime(tmpUp.y, t, 0.05);
-      l.upZ.setTargetAtTime(tmpUp.z, t, 0.05);
-    } else {
-      // deprecated Safari path
-      (l as unknown as { setPosition(x: number, y: number, z: number): void }).setPosition(
-        tmpPos.x,
-        tmpPos.y,
-        tmpPos.z
-      );
-      (l as unknown as { setOrientation(...a: number[]): void }).setOrientation(
-        tmpFwd.x,
-        tmpFwd.y,
-        tmpFwd.z,
-        tmpUp.x,
-        tmpUp.y,
-        tmpUp.z
-      );
     }
   }
 
@@ -602,6 +557,9 @@ export class NatureSoundscape {
 
     const level = Number(NATURE_AUDIO_TUNING.values.voices) * (0.7 + Math.random() * 0.35);
     const dur = VOICE_LIB[kind]({ ctx, out: panner, t0: now + 0.02, noise: this.#noise, rng: Math.random, level });
+    // Keep the shared ctx alive past this spatial one-shot's scheduled tail even
+    // if presence dips and our hold releases mid-call.
+    audioEngine.touch(dur + 2.6);
     this.#voices.push({ panner, send, expires: now + dur + 2.6 });
     this.#lastKind = kind;
     this.#voiceCount++;
@@ -634,6 +592,17 @@ export class NatureSoundscape {
 }
 
 /* ------------------------------------------------------------- free helpers */
+
+/** The nature-side limiter, one instance per engine group we feed. */
+function makeNatureComp(ctx: AudioContext): DynamicsCompressorNode {
+  const c = ctx.createDynamicsCompressor();
+  c.threshold.value = -14;
+  c.knee.value = 22;
+  c.ratio.value = 5;
+  c.attack.value = 0.005;
+  c.release.value = 0.35;
+  return c;
+}
 
 function approach(cur: number, target: number, dt: number, rate: number): number {
   return cur + (target - cur) * (1 - Math.exp(-dt * rate));
@@ -702,9 +671,3 @@ function setPannerPos(p: PannerNode, ctx: AudioContext, x: number, y: number, z:
     (p as unknown as { setPosition(x: number, y: number, z: number): void }).setPosition(x, y, z);
   }
 }
-
-// scratch vectors — module-scope, reused every frame (no per-frame allocation)
-const tmpPos = new THREE.Vector3();
-const tmpFwd = new THREE.Vector3();
-const tmpUp = new THREE.Vector3();
-const tmpQuat = new THREE.Quaternion();
