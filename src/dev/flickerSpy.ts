@@ -125,28 +125,8 @@ export function installFlickerSpy(opts: {
       }
       ring.push({ frame, time: performance.now(), draws: currentDraws, pixels, shot });
       if (ring.length > 40) ring.shift();
-
-      const prev = ring[ring.length - 2];
-      if (prev?.pixels) {
-        const a = pixels.data;
-        const b = prev.pixels.data;
-        let hits = 0;
-        let cx = 0;
-        let cy = 0;
-        for (let p = 0; p < a.length; p += 4) {
-          const d = Math.abs(a[p] - b[p]) + Math.abs(a[p + 1] - b[p + 1]) + Math.abs(a[p + 2] - b[p + 2]);
-          if (d > 110) {
-            hits++;
-            cx += (p / 4) % W;
-            cy += Math.floor(p / 4 / W);
-          }
-        }
-        // compact transient: a handful of sky pixels changed hard, but not the
-        // whole band (camera pans change everything a little, not a lot).
-        if (hits >= 3 && hits <= 500) {
-          dump("sky transient", { hits, px: Math.round((cx / hits / W) * 100) / 100, py: Math.round((cy / hits / SKY_ROWS) * 100) / 100 });
-        }
-      }
+      // Auto-detection intentionally does NOT download — capture is manual (G)
+      // only, so the tester controls exactly which frame is dumped.
     } catch {
       /* keep scanning */
     }
