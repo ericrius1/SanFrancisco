@@ -332,12 +332,15 @@ async function boot() {
     const resumed = invite || requestedSpawn ? null : (devReload?.player ?? loadPlayerState());
     const requestedCodeSpawn = requestedSpawn ? resolveSpawnPoint(requestedSpawn) : undefined;
     const requestedBakedSpawn = requestedSpawn ? map.meta.spawns[requestedSpawn] : undefined;
+    const requestedAuthoredSpawn = requestedSpawn
+      ? authoredRegions.arrivalForKey(requestedSpawn)
+      : null;
     // Default arrival — no ?spawn=, no invite, no resumable position — drops a
     // fresh visitor at a random landmark from LANDMARK_POOL. A resumed player is
     // placed at their saved spot instead (resumeStart wins downstream), and a
     // start location the user has pinned (START.spawn ≠ the default) is honored.
     const spawnKey =
-      requestedCodeSpawn || requestedBakedSpawn
+      requestedCodeSpawn || requestedBakedSpawn || requestedAuthoredSpawn
         ? requestedSpawn!
         : resumed || invite
           ? START.spawn
@@ -360,7 +363,9 @@ async function boot() {
       requestedBakedSpawn ??
       map.meta.spawns[spawnKey] ??
       map.meta.spawns[START_DEFAULTS.spawn];
-    const authoredStart = invite || resumed ? null : authoredRegions.arrivalForKey(spawnKey);
+    const authoredStart = invite || resumed
+      ? null
+      : requestedAuthoredSpawn ?? authoredRegions.arrivalForKey(spawnKey);
     const inviteMode = invite?.animal ? "drive" : invite?.mode;
     const inviteSide = invite
       ? inviteMode === "boat" || inviteMode === "plane"
@@ -3543,8 +3548,11 @@ async function boot() {
         {
           excludeBuilding: (key, index) =>
             // The roster is fixed here, before the restored hall wakes. Reserve
-            // its boiler-room footprint alongside the authored Tea Garden.
-            isTeaGardenBuilding(key, index) || (key === "1_12" && index === 0)
+            // its boiler-room footprint alongside the authored Tea Garden and
+            // the six source-authored Fort Mason replacements.
+            isTeaGardenBuilding(key, index) ||
+            (key === "1_12" && index === 0) ||
+            (key === "10_8" && [0, 19, 20, 22, 23, 24].includes(index))
         },
         {
           scene,

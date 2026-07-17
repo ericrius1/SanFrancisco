@@ -54,6 +54,41 @@
           }
         ]
       }
+    },
+    {
+      "id": "fort-mason",
+      "label": "Fort Mason · Fisherman's Wharf Hostel",
+      "source": "assets-src/world/sites/fort-mason.blend",
+      "collection": "SITE_fort_mason",
+      "rootName": "fort_mason_historic_campus",
+      "asset": "/regions/fort-mason.glb",
+      "tile": "10_8",
+      "colliderBase": 120000,
+      "bounds": {
+        "centerX": 1180,
+        "centerZ": -1870,
+        "halfX": 245,
+        "halfZ": 175,
+        "yaw": 0
+      },
+      "arrival": {
+        "spawnKey": "fortMason",
+        "x": 1368.4,
+        "y": 29.7,
+        "z": -1869,
+        "heading": 0.24
+      },
+      "arrivalDistance": 280,
+      "loadDistance": 1800,
+      "unloadDistance": 2400,
+      "replaces": [
+        { "tile": "10_8", "index": 0 },
+        { "tile": "10_8", "index": 19 },
+        { "tile": "10_8", "index": 20 },
+        { "tile": "10_8", "index": 22 },
+        { "tile": "10_8", "index": 23 },
+        { "tile": "10_8", "index": 24 }
+      ]
     }
   ]
 }
