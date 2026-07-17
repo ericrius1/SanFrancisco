@@ -18,3 +18,6 @@ renders/
 tmp/
 # generation workspace (lives in the main repo checkout)
 data/city
+
+# API keys for asset-generation tooling (Tripo etc.)
+.env

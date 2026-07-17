@@ -1,21 +1,21 @@
-import * as THREE from "three/webgpu";
+import type * as THREE from "three/webgpu";
 import { tunables } from "../core/persist";
 import { voiceAudioLevel } from "../core/audioSettings";
 import { audioEngine } from "../audio/engine";
 import type { Net } from "./net";
 
 /**
- * Proximity voice chat: WebRTC peer-to-peer audio, signaled through the
- * existing presence relay (net.sendRtc / net.onRtc — the server just forwards
+ * Voice chat: WebRTC peer-to-peer audio, signaled through the existing
+ * presence relay (net.sendRtc / net.onRtc — the server just forwards
  * {t:"rtc"} frames to one peer). Voice packets themselves never touch the
  * server.
  *
- * Connection gating: peers connect when they come within preconnectRadius and
- * tear down past preconnectRadius × DISCONNECT_FACTOR after a linger — a wide
- * hysteresis band so two players dancing around the boundary don't churn
- * connections. preconnectRadius is deliberately larger than fadeEndRadius: ICE
- * takes 1–3 s, so the link is already up (and spatially silent) by the time a
- * peer walks into earshot.
+ * Who you hear: the closest `audibleCount` players, at full volume, at ANY
+ * distance — no proximity falloff. Hearing is kept mutual: a link also forms
+ * when YOU are in the other player's closest set, so two friends always hear
+ * each other even if one of them is surrounded by strangers. Links drop only
+ * after a peer has been outside both closest-sets for a linger window, so
+ * players trading ranks don't churn connections.
  *
  * Signaling avoids glare entirely: the LOWER id owns the offer. It creates the
  * connection with a sendrecv audio transceiver (which fires
@@ -24,15 +24,17 @@ import type { Net } from "./net";
  * setRemoteDescription(offer) creates, and answers. Mic on/off is
  * sender.replaceTrack(track|null) on that one m-line — never a renegotiation.
  *
- * Spatialization: per peer, remote MediaStream → hidden muted <audio> element
+ * Playback: per peer, remote MediaStream → hidden muted <audio> element
  * (Chrome quirk: a MediaStreamAudioSourceNode is silent unless the stream is
- * also attached to a playing media element) → PannerNode (HRTF, linear
- * distance model with a large full-volume range and a long fade band) →
- * GainNode → the shared AudioEngine's "voice" group input.
- * The engine owns the ctx and the listener (tracked from the camera every
- * frame); panners follow the interpolated avatars. A background engine hold
- * (acquired while the mic is on or any peer is wired) keeps the ctx running
- * even while the tab is hidden — proximity chat is a social feature.
+ * also attached to a playing media element) → compressor (levels quiet mics
+ * up toward a consistent loudness) → GainNode → the shared AudioEngine's
+ * "voice" group input (the group applies the HUD voice volume/mute).
+ * Deliberately non-spatial: intelligibility beats immersion for chat.
+ *
+ * The engine owns the ctx and its gesture unlock — a listen-only player's
+ * first input opens it, no local resume plumbing needed. A background engine
+ * hold (acquired while the mic is on or any peer is wired) keeps the ctx
+ * running even while the tab is hidden — voice chat is a social feature.
  *
  * Privacy: mic off = track stopped and stream released (browser mic indicator
  * turns off), not just muted.
@@ -40,22 +42,16 @@ import type { Net } from "./net";
 
 export const VOICE_TUNING = tunables("voice", {
   volume: { v: 1, min: 0, max: 2, step: 0.05, label: "voice volume" },
-  fullVolumeRadius: { v: 220, min: 20, max: 800, step: 5, label: "full voice range (m)" },
-  fadeEndRadius: { v: 700, min: 80, max: 1600, step: 10, label: "silent past (m)" },
-  fadeSlope: { v: 1, min: 0.1, max: 1, step: 0.05, label: "fade slope" },
-  preconnectRadius: { v: 760, min: 80, max: 1800, step: 10, label: "connect at (m)" }
+  audibleCount: { v: 3, min: 1, max: 8, step: 1, label: "hear closest N players" }
 });
 
-const DISCONNECT_FACTOR = 1.35; // hysteresis: drop at preconnectRadius × this…
-const LINGER_MS = 10_000; // …only after being out of range this long
-const SCAN_MS = 1000; // proximity scan cadence
+const LINGER_MS = 10_000; // keep a link this long after it leaves both closest-sets
+const SCAN_MS = 1000; // roster scan cadence
 const MAX_PEERS = 8; // uplink cap: mic is re-encoded per peer (~32 kbps each)
 const RETRY_MS = 5000; // wait after a failed connection before re-offering
-const HEAD_Y = 1.5; // voices come from head height, not the avatar's feet
 const SPEAK_RMS = 0.015; // analyser RMS above this = "speaking"
 const SPEAK_HOLD_MS = 250; // indicator hold so it doesn't flicker between words
-const MIN_FADE_BAND = 40; // keep bad pane values from turning the fade into a cliff
-const PRECONNECT_MARGIN = 60; // ICE should be ready before someone reaches audibility
+const VOICE_BOOST = 1.35; // makeup on top of the compressor so voices sit above the world bed
 
 type Signal = { description?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit | null };
 
@@ -64,26 +60,13 @@ type Peer = {
   pc: RTCPeerConnection;
   polite: boolean; // higher id yields (only lower id ever offers first)
   audioEl: HTMLAudioElement | null;
-  panner: PannerNode | null;
+  compressor: DynamicsCompressorNode | null;
   gain: GainNode | null;
   analyser: AnalyserNode | null;
   analyserBuf: Float32Array<ArrayBuffer> | null;
-  outOfRangeSince: number; // performance.now() when it left range; 0 = in range
+  unwantedSince: number; // performance.now() when it left both closest-sets; 0 = wanted
   speakingUntil: number;
 };
-
-function voiceRange() {
-  const t = VOICE_TUNING.values;
-  const fullVolumeRadius = Math.max(1, t.fullVolumeRadius);
-  const fadeEndRadius = Math.max(t.fadeEndRadius, fullVolumeRadius + MIN_FADE_BAND);
-  const preconnectRadius = Math.max(t.preconnectRadius, fadeEndRadius + PRECONNECT_MARGIN);
-  return {
-    fullVolumeRadius,
-    fadeEndRadius,
-    fadeSlope: t.fadeSlope,
-    preconnectRadius
-  };
-}
 
 function iceServers(): RTCIceServer[] {
   const servers: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
@@ -184,11 +167,11 @@ export class Voice {
       pc,
       polite: this.#net.selfId > id,
       audioEl: null,
-      panner: null,
+      compressor: null,
       gain: null,
       analyser: null,
       analyserBuf: null,
-      outOfRangeSince: 0,
+      unwantedSince: 0,
       speakingUntil: 0
     };
     this.#peers.set(id, p);
@@ -220,7 +203,7 @@ export class Voice {
     return p;
   }
 
-  /** Remote stream → hidden <audio> (Chrome quirk) → panner → gain → voice group. */
+  /** Remote stream → hidden <audio> (Chrome quirk) → compressor → gain → voice group. */
   #wireAudio(p: Peer, stream: MediaStream) {
     // prewarmBus (not bus()) so the receive graph builds even when a remote
     // track arrives before any local gesture — audibility stays gated by the
@@ -235,25 +218,26 @@ export class Voice {
     }
     p.audioEl.srcObject = stream;
     void p.audioEl.play().catch(() => {}); // muted play is allowed pre-gesture
-    p.panner?.disconnect();
+    p.compressor?.disconnect();
     p.gain?.disconnect();
     p.analyser?.disconnect();
     const src = ctx.createMediaStreamSource(stream);
-    const range = voiceRange();
-    p.panner = new PannerNode(ctx, {
-      panningModel: "HRTF",
-      distanceModel: "linear",
-      refDistance: range.fullVolumeRadius,
-      maxDistance: range.fadeEndRadius,
-      rolloffFactor: range.fadeSlope
+    // Voice leveler: browser AGC output varies a lot between mics; squash the
+    // dynamics so quiet talkers come through, then make up the level in #gain.
+    p.compressor = new DynamicsCompressorNode(ctx, {
+      threshold: -30,
+      knee: 15,
+      ratio: 6,
+      attack: 0.003,
+      release: 0.2
     });
     p.gain = ctx.createGain();
     // No voiceAudioLevel() here — the engine's voice group gain applies it.
-    p.gain.gain.value = VOICE_TUNING.values.volume;
+    p.gain.gain.value = VOICE_TUNING.values.volume * VOICE_BOOST;
     p.analyser = ctx.createAnalyser();
     p.analyser.fftSize = 256;
     p.analyserBuf = new Float32Array(p.analyser.fftSize);
-    src.connect(p.panner).connect(p.gain).connect(bus.input);
+    src.connect(p.compressor).connect(p.gain).connect(bus.input);
     src.connect(p.analyser); // parallel tap, pre-gain, for the speaking indicator
   }
 
@@ -277,7 +261,7 @@ export class Voice {
     }
   }
 
-  /** Tear down one peer (out of range, left the server, or ICE failed). */
+  /** Tear down one peer (left the closest-sets, left the server, or ICE failed). */
   drop(id: number) {
     const p = this.#peers.get(id);
     if (!p) return;
@@ -286,7 +270,7 @@ export class Voice {
     if (p.speakingUntil > performance.now()) this.onSpeaking(id, false);
     p.pc.onicecandidate = p.pc.onnegotiationneeded = p.pc.onconnectionstatechange = p.pc.ontrack = null;
     p.pc.close();
-    p.panner?.disconnect();
+    p.compressor?.disconnect();
     p.gain?.disconnect();
     p.analyser?.disconnect();
     if (p.audioEl) {
@@ -297,10 +281,8 @@ export class Voice {
 
   /* ------------------------------------------------------------- update */
 
-  /** Per rendered frame: panner poses, gains, speaking, scan. */
-  // camera is unused now (the engine owns the ctx.listener), but the signature
-  // stays for main.ts's per-frame call.
-  update(_camera: THREE.Camera) {
+  /** Per rendered frame: gains, speaking indicator, roster scan. */
+  update() {
     const now = performance.now();
     if (now >= this.#scanAt) {
       this.#scanAt = now + SCAN_MS;
@@ -308,25 +290,12 @@ export class Voice {
     }
     if (this.#peers.size === 0) return;
 
-    const t = VOICE_TUNING.values;
     // Per-peer gain drops voiceAudioLevel() — the engine's voice group applies
     // it. voiceAudioLevel() survives only as a cheap gate on the speaking meter.
-    const gain = t.volume;
+    const level = VOICE_TUNING.values.volume * VOICE_BOOST;
     const audible = voiceAudioLevel() > 0;
-    const range = voiceRange();
     for (const p of this.#peers.values()) {
-      if (p.gain) p.gain.gain.value = gain;
-      if (p.panner) {
-        p.panner.refDistance = range.fullVolumeRadius;
-        p.panner.maxDistance = range.fadeEndRadius;
-        p.panner.rolloffFactor = range.fadeSlope;
-        const pos = this.#posOf(p.id);
-        if (pos) {
-          p.panner.positionX.value = pos.x;
-          p.panner.positionY.value = pos.y + HEAD_Y;
-          p.panner.positionZ.value = pos.z;
-        }
-      }
+      if (p.gain) p.gain.gain.value = level;
       // speaking indicator: RMS over a short window, with hold
       if (p.analyser && p.analyserBuf && audible) {
         p.analyser.getFloatTimeDomainData(p.analyserBuf);
@@ -340,36 +309,67 @@ export class Voice {
     }
   }
 
-  /** 1 Hz: open links to the nearest in-range peers, linger-drop the far ones. */
+  /**
+   * 1 Hz: figure out who should be audible and reconcile connections.
+   * Wanted = my closest `audibleCount` players ∪ players whose own closest
+   * `audibleCount` includes me (all positions are known locally, so both
+   * directions are computable — this is what keeps hearing mutual under the
+   * lower-id-offers rule).
+   */
   #scan(now: number) {
     if (!this.#net.selfId) return;
     const self = this.#selfPos();
-    const range = voiceRange();
-    // pre-connect margin: the link must exist before anyone is audible
-    const connectR = range.preconnectRadius;
-    const dropR = connectR * DISCONNECT_FACTOR;
+    const count = Math.max(1, Math.round(VOICE_TUNING.values.audibleCount));
 
-    const inRange: { id: number; d: number }[] = [];
+    const others: { id: number; pos: THREE.Vector3; d: number }[] = [];
     for (const id of this.#net.roster.keys()) {
       const pos = this.#posOf(id);
       if (!pos) continue;
-      const d = Math.hypot(pos.x - self.x, pos.y - self.y, pos.z - self.z);
-      const p = this.#peers.get(id);
-      if (p) {
-        if (d > dropR) {
-          if (!p.outOfRangeSince) p.outOfRangeSince = now;
-          else if (now - p.outOfRangeSince > LINGER_MS) this.drop(id);
-        } else {
-          p.outOfRangeSince = 0;
-        }
-      } else if (d <= connectR && id > this.#net.selfId && (this.#retryAt.get(id) ?? 0) <= now) {
-        // only the lower id initiates (see header) — selfId < id here
-        inRange.push({ id, d });
+      others.push({ id, pos, d: Math.hypot(pos.x - self.x, pos.y - self.y, pos.z - self.z) });
+    }
+    others.sort((a, b) => a.d - b.d);
+
+    const wanted = new Set<number>();
+    for (const o of others.slice(0, count)) wanted.add(o.id);
+    // symmetric side: am I in o's closest `count`? (fewer than `count` players
+    // nearer to o than I am — counting the other remotes, not just me)
+    for (const o of others) {
+      if (wanted.has(o.id)) continue;
+      let closer = 0;
+      for (const other of others) {
+        if (other.id === o.id) continue;
+        const dx = other.pos.x - o.pos.x;
+        const dy = other.pos.y - o.pos.y;
+        const dz = other.pos.z - o.pos.z;
+        if (Math.hypot(dx, dy, dz) < o.d) closer++;
+        if (closer >= count) break;
+      }
+      if (closer < count) wanted.add(o.id);
+    }
+
+    // linger-drop peers that fell out of both closest-sets (rank churn guard)
+    for (const p of this.#peers.values()) {
+      if (wanted.has(p.id)) {
+        p.unwantedSince = 0;
+      } else if (!p.unwantedSince) {
+        p.unwantedSince = now;
+      } else if (now - p.unwantedSince > LINGER_MS) {
+        this.drop(p.id);
       }
     }
-    inRange.sort((a, b) => a.d - b.d);
-    for (const { id } of inRange.slice(0, Math.max(0, MAX_PEERS - this.#peers.size))) {
-      this.#createPeer(id, true);
+
+    // connect the missing ones, closest first — only the lower id initiates
+    // (see header); the higher-id side of each pair runs the same wanted-set
+    // computation and simply waits for the offer
+    const openSlots = Math.max(0, MAX_PEERS - this.#peers.size);
+    let opened = 0;
+    for (const o of others) {
+      if (opened >= openSlots) break;
+      if (!wanted.has(o.id) || this.#peers.has(o.id)) continue;
+      if (o.id < this.#net.selfId) continue;
+      if ((this.#retryAt.get(o.id) ?? 0) > now) continue;
+      this.#createPeer(o.id, true);
+      opened++;
     }
   }
 
@@ -378,13 +378,13 @@ export class Voice {
     return {
       mic: this.micOn,
       ctx: audioEngine.debugState.ctx,
-      range: voiceRange(),
+      audibleCount: Math.max(1, Math.round(VOICE_TUNING.values.audibleCount)),
       peers: [...this.#peers.values()].map((p) => ({
         id: p.id,
         conn: p.pc.connectionState,
         ice: p.pc.iceConnectionState,
         speaking: p.speakingUntil > performance.now(),
-        hasAudio: !!p.panner
+        hasAudio: !!p.gain
       }))
     };
   }

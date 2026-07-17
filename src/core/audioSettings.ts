@@ -24,8 +24,9 @@ const DEFAULTS: AudioPrefs = {
   musicVolume: 0.42,
   effectsVolume: 0.68,
   soundscapeVolume: 0.25,
-  // Voice stays present enough for proximity chat to cut through the mix.
-  voiceVolume: 0.62,
+  // Voice leads the mix — chat intelligibility beats ambience (levels square
+  // in levelFrom, so 0.85 → ~0.72 gain; the old 0.62 landed at a faint ~0.38).
+  voiceVolume: 0.85,
   enabled: true
 };
 

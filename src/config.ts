@@ -108,7 +108,7 @@ export const WORLD_TUNING = tunables("world", {
   // The default opens the entire city slightly; the streamed edge veil remains
   // independent because it hides unloaded tiles rather than depicting weather.
   fogMaster: {
-    v: 0.85,
+    v: 0.11,
     min: 0,
     max: 1.5,
     step: 0.01,

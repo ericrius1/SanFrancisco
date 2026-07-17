@@ -74,7 +74,7 @@
       "arrival": {
         "spawnKey": "fortMason",
         "x": 1368.4,
-        "y": 29.7,
+        "y": 32.85,
         "z": -1869,
         "heading": 0.24
       },
@@ -88,7 +88,23 @@
         { "tile": "10_8", "index": 22 },
         { "tile": "10_8", "index": 23 },
         { "tile": "10_8", "index": 24 }
-      ]
+      ],
+      "terrain": {
+        "mode": "flat-ownership",
+        "groundY": 32.55,
+        "footprints": [
+          {
+            "id": "hostel-terrace",
+            "centerX": 1362.428,
+            "centerZ": -1893.452,
+            "halfX": 36.0,
+            "halfZ": 15.0,
+            "yaw": 0.24,
+            "feather": 0.28,
+            "groundY": 32.55
+          }
+        ]
+      }
     }
   ]
 }

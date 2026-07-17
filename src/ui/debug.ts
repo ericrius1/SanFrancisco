@@ -505,12 +505,18 @@ export class DebugPanel {
     // avoid text selection), which also cancels the label→input activation, so
     // clicks on the visible box do nothing. Size the input to the mark and make
     // the decorative sibling ignore pointers so the input receives the click.
-    if (!document.getElementById("sf-tp-checkbox-fix")) {
+    //
+    // Tweakpane also switches an opening folder to overflow:visible before its
+    // height transition has moved the following rows. A tall folder therefore
+    // paints over its siblings for the first 200 ms. Its `-cpl` class marks the
+    // transition end, so clip only while expansion is in progress.
+    if (!document.getElementById("sf-tp-ui-fixes")) {
       const style = document.createElement("style");
-      style.id = "sf-tp-checkbox-fix";
+      style.id = "sf-tp-ui-fixes";
       style.textContent = [
         ".tp-ckbv_i{width:var(--cnt-usz,20px);height:var(--cnt-usz,20px);z-index:1;cursor:pointer}",
-        ".tp-ckbv_w,.tp-ckbv_w *{pointer-events:none}"
+        ".tp-ckbv_w,.tp-ckbv_w *{pointer-events:none}",
+        ".tp-fldv.tp-fldv-expanded:not(.tp-fldv-cpl)>.tp-fldv_c{overflow:hidden}"
       ].join("");
       document.head.appendChild(style);
     }
