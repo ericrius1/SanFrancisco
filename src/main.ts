@@ -4216,7 +4216,7 @@ async function boot() {
       citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
     }
 
-    // Forest + Creatures: ambient wildlife and rideable animals
+    // Forest + Creatures: the bay serpent and rideable animals
     await waitForWorldBackgroundWindow(1800);
     const [forestMod, creaturesMod] = await Promise.all([
       import("./gameplay/forest"),
@@ -4224,7 +4224,7 @@ async function boot() {
     ]);
     await waitForWorldBackgroundWindow(1800);
     ANIMALS = forestMod.ANIMALS as NonNullable<typeof ANIMALS>;
-    creatures = new creaturesMod.Creatures(map, scene);
+    creatures = new creaturesMod.Creatures(scene);
     forest = new forestMod.Forest(map, scene);
 
     // Each optional region keeps its code, textures and tree growth behind its
@@ -5633,7 +5633,7 @@ async function boot() {
     refreshCarHeadlightUniforms();
     abandonedMounts.update(frameDt, player.position);
     if (!worldArrival.active) {
-      creatures?.update(elapsed, camera.position); // gulls live at altitude — never distance-gated
+      creatures?.update(elapsed, camera.position);
       forest?.update(frameDt, camera.position);
     }
     // Night ball glow amount from the current sun elevation (park / fetch / held /
