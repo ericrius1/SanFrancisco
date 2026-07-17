@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { positionLocal, sin, smoothstep, time, uniform, uv, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor } from "../../player/lightPool";
+import type { Cockpit } from "../../player/types";
 import { capsulesToLocal, clothColliders, pushOutOfColliders, type Capsule, type ClothColliders } from "../../fx/cloth";
 import { applyVehicleShadowPolicy } from "../shadows";
 
@@ -248,6 +249,13 @@ export function buildBoatMesh(): THREE.Group {
   jib.userData.clothCapsules = jibCaps;
 
   g.userData.sail = { flap, billow, boom, heel } satisfies BoatSailRig;
+  // Shared local/remote helmsman anchors. RemotePlayers clones this plain
+  // metadata from its prototype, so the remote sailboat gets the same seated
+  // avatar placement as the local player's rig.
+  g.userData.cockpit = {
+    seat: [0, 0.5, 2.26],
+    wheel: [0, 0.61, 1.72]
+  } satisfies Cockpit;
   // Three casters cover the physical read: one hull slab plus the two large
   // animated sails. Spars, stays, deck fittings, and lamps are below the useful
   // CSM silhouette scale, but opaque surfaces still receive self/player shade.
