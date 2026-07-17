@@ -38,6 +38,8 @@ const PICKLEBALL_INPUT_MAX = 16;
 const PICKLEBALL_VALUE_LIMIT = 1_000_000;
 const RAKE_BATCH_MAX = 16;
 const RAKE_HISTORY_MAX = 256;
+const FETCH_BALL_MAX_PER_OWNER = 16;
+const FETCH_BALL_ID_MAX = 1_000_000_000;
 const MSG_MAX_BYTES = 16384; // fits a WebRTC SDP offer (voice signaling); poses are ~100 B
 const MSG_BUDGET_PER_SEC = 80; // state at 12 Hz + several simultaneous RTC negotiations; flooders get cut
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // no state for 5 min → drop
@@ -492,6 +494,8 @@ const wss = new WebSocketServer({ server, path: "/ws", maxPayload: MSG_MAX_BYTES
 let nextId = 1;
 /** id -> player presence plus latest reconnect-safe golf state (if any). */
 const players = new Map();
+/** Stable throw ids currently eligible for a one-winner pickup transfer. */
+const liveFetchBalls = new Map();
 
 // Companion-app hub (iOS notifications): SSE feed + optional APNs push.
 const companion = createCompanionHub({ getPlayers: () => players });
@@ -980,6 +984,7 @@ const broadcast = (obj, exceptId = 0) => {
 
 const finite = (n, limit = 20000) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= limit;
 const intBetween = (n, lo, hi) => Number.isInteger(n) && n >= lo && n <= hi;
+const fetchBallKey = (ownerId, throwId) => `${ownerId}:${throwId}`;
 const pickleballAuthority = () => pickleball.slots[0] || pickleball.slots[1] || 0;
 const pickleballNumbers = (d, maxLength) =>
   Array.isArray(d) &&
@@ -1213,6 +1218,35 @@ wss.on("connection", (ws) => {
       if (msg.d.every((n) => typeof n === "number" && Number.isFinite(n))) {
         broadcast({ t: "paint", id, d: msg.d }, id);
       }
+    } else if (msg.t === "ball" && msg.k === "throw" && Array.isArray(msg.d) && msg.d.length === 6) {
+      // Stable-id tennis-ball release. Peers run the same bounded simulation;
+      // the registry exists only to arbitrate a later one-winner pickup.
+      if (
+        intBetween(msg.n, 1, FETCH_BALL_ID_MAX) &&
+        msg.d.slice(0, 3).every((n, i) => finite(n, i === 1 ? 5000 : 20000)) &&
+        msg.d.slice(3).every((n) => finite(n, 100))
+      ) {
+        const key = fetchBallKey(id, msg.n);
+        if (!liveFetchBalls.has(key)) {
+          const owned = [...liveFetchBalls.entries()].filter(([, ball]) => ball.ownerId === id);
+          if (owned.length >= FETCH_BALL_MAX_PER_OWNER) liveFetchBalls.delete(owned[0][0]);
+          liveFetchBalls.set(key, { ownerId: id, throwId: msg.n });
+          broadcast({ t: "ball", k: "throw", id, n: msg.n, d: msg.d }, id);
+        }
+      }
+    } else if (msg.t === "ball" && msg.k === "pickup") {
+      const ownerId = msg.owner;
+      const throwId = msg.n;
+      const key = intBetween(ownerId, 1, Number.MAX_SAFE_INTEGER) && intBetween(throwId, 1, FETCH_BALL_ID_MAX)
+        ? fetchBallKey(ownerId, throwId)
+        : "";
+      if (key && liveFetchBalls.delete(key)) {
+        // No exceptId: the picker waits for this authoritative echo before the
+        // ball enters their hand, so simultaneous requests produce one winner.
+        broadcast({ t: "ball", k: "pickup", id, owner: ownerId, n: throwId, ok: true });
+      } else if (key) {
+        send(ws, { t: "ball", k: "pickup", id, owner: ownerId, n: throwId, ok: false });
+      }
     } else if (msg.t === "fw" && Array.isArray(msg.d) && msg.d.length >= 1 && msg.d.length <= 64) {
       // fireworks volley: rows [ox,oy,oz,tx,ty,tz,flightTime,palette,size] —
       // pure relay, every client replays the launches locally
@@ -1346,6 +1380,9 @@ wss.on("connection", (ws) => {
   const drop = () => {
     if (!players.has(id)) return;
     players.delete(id);
+    for (const [key, ball] of liveFetchBalls) {
+      if (ball.ownerId === id) liveFetchBalls.delete(key);
+    }
     releasePickleballOwner(id);
     releaseEnsembleOwner(id);
     broadcast({ t: "leave", id });

@@ -85,6 +85,12 @@ export interface FetchBallDeps {
    *  landings are voiced by the owning water feature, so the caller suppresses
    *  this when the impact point is submerged. */
   onGroundImpact?: (x: number, y: number, z: number, speed: number) => void;
+  /** A local throw committed its release pose. The multiplayer layer relays
+   *  this compact origin + velocity event so peers can run the same ball sim. */
+  onThrow?: (throwId: number, x: number, y: number, z: number, vx: number, vy: number, vz: number) => void;
+  /** Request one stable network ball id. The relay arbitrates racing pickups
+   *  and echoes the accepted transfer to every client. */
+  onPickupRequest?: (sourceId: number | null, throwId: number) => boolean;
 }
 
 /** Bottom-center charge bar: fill + threshold notch so the 1s throw gate reads. */
@@ -139,6 +145,11 @@ class ThrowMeter {
 
 type FreeBall = {
   id: number;
+  /** Null for this player's balls; otherwise the server-stamped peer id. */
+  sourceId: number | null;
+  /** Stable within the source player's connection; used to transfer pickup ownership. */
+  throwId: number;
+  pendingPickup: boolean;
   mesh: THREE.Mesh;
   material: THREE.MeshStandardMaterial;
   state: BallSimState;
@@ -170,6 +181,7 @@ export class FetchBall {
   #ctxOpen: BallSimCtx; // open terrain: pure roll, no lift
   #free: FreeBall[] = [];
   #nextBallId = 1;
+  #nextThrowId = 1;
   #dogPhase: DogPhase = { kind: "none" };
   #active = false;
   #elapsed = 0;
@@ -316,8 +328,16 @@ export class FetchBall {
     }
     const nearest = this.#nearestPickupBall(playerPos);
     if (!nearest) return false;
-    this.#removeFree(nearest.ball);
+    const ball = nearest.ball;
+    if (ball.sourceId !== null) {
+      if (ball.pendingPickup) return true;
+      if (!this.#deps.onPickupRequest?.(ball.sourceId, ball.throwId)) return false;
+      ball.pendingPickup = true;
+      return true;
+    }
+    this.#removeFree(ball);
     this.#receiveBall();
+    this.#deps.onPickupRequest?.(null, ball.throwId);
     return true;
   }
 
@@ -437,13 +457,68 @@ export class FetchBall {
     return true;
   }
 
+  /** Replay a friend's release through the same bounded ball simulation. Peer
+   *  balls remain visual/physical world effects but cannot be picked up and do
+   *  not claim a local dog, keeping fetch ownership client-authoritative. */
+  spawnRemote(
+    sourceId: number,
+    throwId: number,
+    x: number,
+    y: number,
+    z: number,
+    vx: number,
+    vy: number,
+    vz: number
+  ): boolean {
+    if (!Number.isInteger(sourceId) || sourceId <= 0) return false;
+    if (!Number.isInteger(throwId) || throwId <= 0) return false;
+    const values = [x, y, z, vx, vy, vz];
+    if (!values.every(Number.isFinite)) return false;
+    const speed = Math.hypot(vx, vy, vz);
+    if (speed < 0.05) return false;
+    const scale = Math.min(1, THROW_SPEED_MAX / speed);
+    return this.#spawnBall(x, y, z, vx * scale, vy * scale, vz * scale, sourceId, throwId);
+  }
+
+  /** Apply the relay's one-winner pickup result. `sourceId` is null when this
+   *  client originally threw the ball. Returns true when this client received it. */
+  resolvePickup(pickerIsLocal: boolean, sourceId: number | null, throwId: number, accepted: boolean): boolean {
+    const matches = this.#free.filter((ball) => ball.sourceId === sourceId && ball.throwId === throwId);
+    for (const ball of matches) ball.pendingPickup = false;
+    if (!accepted) return false;
+    for (const ball of matches) this.#removeFree(ball);
+    if (!pickerIsLocal) return false;
+    this.#receiveBall();
+    return true;
+  }
+
+  /** Drop only the departed player's cosmetic balls; local throws and other
+   *  peers' balls keep their normal lifetime. */
+  removeRemoteBalls(sourceId: number): void {
+    for (const ball of [...this.#free]) {
+      if (ball.sourceId === sourceId) this.#removeFree(ball);
+    }
+  }
+
+  /** Read-only gameplay/test seam for confirming an accepted pickup transfer. */
+  hasBallInHand(): boolean {
+    return this.#held;
+  }
+
   /** Latest live player ball, suitable as a camera focus point. */
   activeBallWorld(out: THREE.Vector3): boolean {
-    if (!this.#free.length) return false;
-    const active =
-      this.#dogPhase.kind === "none"
-        ? this.#free[this.#free.length - 1]
-        : this.#dogPhase.ball;
+    let active: FreeBall | undefined;
+    if (this.#dogPhase.kind === "none") {
+      for (let i = this.#free.length - 1; i >= 0; i--) {
+        if (this.#free[i].sourceId === null) {
+          active = this.#free[i];
+          break;
+        }
+      }
+    } else {
+      active = this.#dogPhase.ball;
+    }
+    if (!active) return false;
     out.copy(active.mesh.position);
     return true;
   }
@@ -587,11 +662,26 @@ export class FetchBall {
     );
   }
 
-  #spawnBall(x: number, y: number, z: number, vx: number, vy: number, vz: number): void {
-    // cap: recycle the oldest ball no dog is working before adding another
+  #spawnBall(
+    x: number,
+    y: number,
+    z: number,
+    vx: number,
+    vy: number,
+    vz: number,
+    sourceId: number | null = null,
+    remoteThrowId?: number
+  ): boolean {
+    // Cap: a peer can recycle another remote ball but never evict this player's
+    // fetch state. A local throw prefers recycling a remote before an idle local.
     if (this.#free.length >= MAX_FREE_BALLS) {
-      const idle = this.#free.find((b) => !this.#dogWorking(b));
-      if (idle) this.#removeFree(idle);
+      const recyclableRemote = this.#free.find((ball) => ball.sourceId !== null && !this.#dogWorking(ball));
+      const recyclableLocal = sourceId === null
+        ? this.#free.find((ball) => ball.sourceId === null && !this.#dogWorking(ball))
+        : null;
+      const recyclable = recyclableRemote ?? recyclableLocal;
+      if (!recyclable) return false;
+      this.#removeFree(recyclable);
     }
 
     const mesh = this.#acquireMesh();
@@ -600,6 +690,9 @@ export class FetchBall {
     this.#deps.scene.add(mesh);
     const ball: FreeBall = {
       id: this.#nextBallId++,
+      sourceId,
+      throwId: sourceId === null ? this.#nextThrowId++ : remoteThrowId!,
+      pendingPickup: false,
       mesh,
       material: this.#ballMat!,
       born: this.#elapsed,
@@ -614,6 +707,8 @@ export class FetchBall {
       }
     };
     this.#free.push(ball);
+    if (sourceId === null) this.#deps.onThrow?.(ball.throwId, x, y, z, vx, vy, vz);
+    return true;
   }
 
   #dogWorking(ball: FreeBall): boolean {
@@ -692,6 +787,7 @@ export class FetchBall {
     if (!park) return;
     // Start a fetch on the first free ball that lands inside the run.
     for (const ball of this.#free) {
+      if (ball.sourceId !== null) continue;
       if (!park.isInsidePark(ball.state.x, ball.state.z)) continue;
       if (!this.#dog) {
         this.#dog = park.claimFreeDog(ball.state.x, ball.state.z);
@@ -787,9 +883,11 @@ export class FetchBall {
       }
       // else: keep the dog claimed so the SAME dog runs the next fetch cycle.
     }
-    this.#removeFree(phase.ball);
+    const ball = phase.ball;
+    this.#removeFree(ball);
     this.#dogPhase = { kind: "none" };
     this.#receiveBall();
+    this.#deps.onPickupRequest?.(null, ball.throwId);
   }
 
   #nearestPickupBall(playerPos: THREE.Vector3): { ball: FreeBall; dist: number } | null {
