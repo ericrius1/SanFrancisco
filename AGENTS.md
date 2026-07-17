@@ -29,6 +29,16 @@
 - Publish approved videos to `/Users/eric/videos/my creations/sf/renders/cinematics` and keep only final MP4 files there.
 - Keep frames, review MP4s, manifests, audits, contacts, posters, probes, logs, and temporary encodes under `.data/`; do not create platform-specific publish folders.
 
+# Unified vegetation system
+
+- All new trees, shrubs, flowers, and grass MUST plant through the shared vegetation runtime. Never build bespoke primitive foliage (icosahedron/sphere canopy blobs, cone pines, hand-rolled trunk+blob groups) — that is a visual-quality and performance regression, even for a "small" decorative grove.
+  - Trees: `createAuthoredTreePatch` (`src/world/vegetation/authoredTrees.ts`) over the shared `NativeTreeForest`. Pick a species from `src/world/vegetation/nativeTreeRecipes.ts` (redwood, cypress, windswept cypress, pine, oak, eucalyptus, maple, cherry, ginkgo, magnolia, palm…); extend the recipe file if a genuinely new species is needed.
+  - Shrubs: `createAuthoredShrubPatch`; flowers: `createAuthoredFlowerPatch` (`src/world/vegetation/`).
+  - Grass/groundcover: `src/world/groundcover/` (bladeGrass + shared wind/trample).
+- Regions own botanical intent only — positions, archetype ids, yaw, scale. The shared runtime owns compilation, instancing/batching, wind shading, LOD grades, chunk culling, and shadow proxies. Do not duplicate any of those per region.
+- Region vegetation is lazy: put placements in a separate `vegetation.ts` module, dynamic-import it on first approach, call `patch.update(focus)` each frame while visible, `await patch.ready`, warm the detached group off-frame (`prepareFoliage` hook → `prepareOptionalRoot`), then attach. Reference implementations: `src/world/coronaHeights/vegetation.ts`, `src/world/landsEnd/vegetation.ts`, `src/world/sutroBaths/vegetation.ts`.
+- Respect the master foliage toggle: expose `setFoliageVisible` and gate per-frame updates on it.
+
 # Massive-app loading policy
 
 - Treat this as a massive open-world app. Boot may load only the fundamentals needed for the player's immediate starting space; optional regions, activities, vehicles, editors, cinematics, and their media must lazy-load by default.
