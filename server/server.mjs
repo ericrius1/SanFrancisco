@@ -4,9 +4,8 @@
 // Design (matches the client in src/net/):
 //  - Anyone can join, no accounts. The server assigns an id + a color hue.
 //  - Clients own their physics (box3d runs in each browser); the server mostly
-//    relays transforms. It does arbitrate the two pickleball player slots so
-//    one browser owns at most one side, then relays the selected authority's
-//    snapshots and the other owner's input.
+//    relays transforms. It arbitrates pickleball sides and the three Fort Mason
+//    ensemble stations so one browser owns at most one slot within each activity.
 //    This stays cheap and cheat-tolerant-by-design for a co-op sandbox.
 //  - Clients send state at ~12 Hz; the server rebroadcasts one batched
 //    snapshot per tick (12 Hz) with a server timestamp the clients use for
@@ -32,6 +31,7 @@ const TICK_HZ = 12; // snapshot broadcast rate
 const NAME_MAX = 20;
 const CHAT_MAX = 200;
 const PICKLEBALL_SLOTS = 2;
+const ENSEMBLE_SLOTS = 3;
 const PICKLEBALL_STATE_MAX = 96;
 const PICKLEBALL_INPUT_MAX = 16;
 const PICKLEBALL_VALUE_LIMIT = 1_000_000;
@@ -501,6 +501,8 @@ const pickleball = { slots: Array(PICKLEBALL_SLOTS).fill(0), state: null };
 const rakeSession = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const rakeHistory = [];
 let rakeSequence = 0;
+/** Fort Mason wire: three owned stations; note messages are bounded scale steps. */
+const ensemble = { slots: Array(ENSEMBLE_SLOTS).fill(0) };
 
 const ADJ = [
   "Foggy",
@@ -1005,6 +1007,8 @@ const pickleballWelcome = () => ({
   state: pickleball.state ? { id: pickleball.state.id, d: pickleball.state.d.slice() } : null
 });
 
+const ensembleWelcome = () => ({ slots: ensemble.slots.slice() });
+
 const golfPosition = (d, length) =>
   Array.isArray(d) &&
   d.length === length &&
@@ -1050,6 +1054,14 @@ const releasePickleballOwner = (id) => {
     pickleball.slots[slot] = 0;
     const authority = refreshPickleballAuthority();
     broadcast({ t: "pickle", k: "release", slot, id, ok: true, authority });
+  }
+};
+
+const releaseEnsembleOwner = (id) => {
+  for (let slot = 0; slot < ENSEMBLE_SLOTS; slot++) {
+    if (ensemble.slots[slot] !== id) continue;
+    ensemble.slots[slot] = 0;
+    broadcast({ t: "ensemble", k: "release", slot, id, ok: true });
   }
 };
 
@@ -1120,7 +1132,8 @@ wss.on("connection", (ws) => {
             golf: o.golf
           })),
         pickle: pickleballWelcome(),
-        sand: rakeWelcome()
+        sand: rakeWelcome(),
+        ensemble: ensembleWelcome()
       });
       broadcast(
         {
@@ -1256,6 +1269,45 @@ wss.on("connection", (ws) => {
           if (target) send(target.ws, { t: "pickle", k: "input", slot: msg.slot, id, authority, d });
         }
       }
+    } else if (msg.t === "ensemble" && typeof msg.k === "string") {
+      if ((msg.k === "claim" || msg.k === "release") && intBetween(msg.slot, 0, ENSEMBLE_SLOTS - 1)) {
+        const slot = msg.slot;
+        const owner = ensemble.slots[slot];
+        if (msg.k === "claim") {
+          const ownedSlot = ensemble.slots.findIndex((candidate) => candidate === id);
+          if (owner === id) {
+            broadcast({ t: "ensemble", k: "claim", slot, id, ok: true });
+          } else if (owner !== 0) {
+            send(ws, { t: "ensemble", k: "claim", slot, id: owner, ok: false, reason: "occupied" });
+          } else if (ownedSlot >= 0) {
+            send(ws, { t: "ensemble", k: "claim", slot, id, ok: false, reason: "already-owns-slot" });
+          } else {
+            ensemble.slots[slot] = id;
+            broadcast({ t: "ensemble", k: "claim", slot, id, ok: true });
+          }
+        } else if (owner === id) {
+          ensemble.slots[slot] = 0;
+          broadcast({ t: "ensemble", k: "release", slot, id, ok: true });
+        } else {
+          send(ws, { t: "ensemble", k: "release", slot, id: owner, ok: false });
+        }
+      } else if (
+        msg.k === "note" &&
+        intBetween(msg.slot, 0, ENSEMBLE_SLOTS - 1) &&
+        ensemble.slots[msg.slot] === id &&
+        intBetween(msg.step, 0, 7) &&
+        finite(msg.velocity, 1) &&
+        msg.velocity >= 0
+      ) {
+        broadcast({
+          t: "ensemble",
+          k: "note",
+          slot: msg.slot,
+          id,
+          step: msg.step,
+          velocity: Math.min(1, msg.velocity)
+        }, id);
+      }
     } else if (msg.t === "golf" && typeof msg.k === "string") {
       const out = sanitizeGolf(msg, id);
       if (out) {
@@ -1283,6 +1335,7 @@ wss.on("connection", (ws) => {
     if (!players.has(id)) return;
     players.delete(id);
     releasePickleballOwner(id);
+    releaseEnsembleOwner(id);
     broadcast({ t: "leave", id });
     console.log(`[sf-server] leave #${id} (${players.size} online)`);
   };
