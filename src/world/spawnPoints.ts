@@ -5,6 +5,7 @@
 import type { PlayerMode } from "../player/types";
 import { oceanBeachSurfShackApproxPose } from "../gameplay/surfing/shack";
 import { mdToWorldXZ, Z_ENTRANCE } from "./missionDolores/layout";
+import { BEACH_PIANIST_BRIDGE_AIM, BEACH_PIANIST_SITE } from "./beachPianist/meta";
 
 /** Lightweight gate metadata stays in the boot spawn registry; the restored
  * hall, pools, vegetation and effects remain wholly behind their dynamic import. */
@@ -229,6 +230,22 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     heading: -1.1,
     mode: "walk"
   },
+  // Marshall's Beach sand, ~11 m out from the pianist on the exact line
+  // through the Golden Gate deck aim point — spawn, pianist and bridge are
+  // collinear, so the arrival looks at the grand piano with the deck spanning
+  // directly behind and above him (the offset lands on the same dry pad).
+  beachPianist: (() => {
+    const d = 11;
+    const ax = BEACH_PIANIST_BRIDGE_AIM.x - BEACH_PIANIST_SITE.x;
+    const az = BEACH_PIANIST_BRIDGE_AIM.z - BEACH_PIANIST_SITE.z;
+    const len = Math.hypot(ax, az);
+    const x = BEACH_PIANIST_SITE.x - (ax / len) * d;
+    const z = BEACH_PIANIST_SITE.z - (az / len) * d;
+    // forward = (−sinθ, −cosθ) points from the arrival through the pianist at
+    // the bridge (same direction as site→aim).
+    const heading = Math.atan2(-ax, -az);
+    return { key: "beachPianist", label: "Beach Pianist", x, z, heading, mode: "walk" as const };
+  })(),
   presidio: {
     key: "presidio",
     label: "The Presidio",
@@ -301,7 +318,8 @@ export const LANDMARK_POOL = [
   "teaGardenDrumBridge",
   "botanicalGarden",
   "archeryRange",
-  "marinRedwoods"
+  "marinRedwoods",
+  "beachPianist"
 ] as const;
 
 /** A guaranteed-open spawn used if a random landmark has no movement-safe

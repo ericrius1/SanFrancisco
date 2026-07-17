@@ -51,6 +51,12 @@ const FEATURE_SPECS = {
     label: "Lands End",
     markers: ["landsEnd.labyrinth", "landsEnd.keeper"],
     relatedMarkers: []
+  },
+  beachPianist: {
+    label: "Beach Pianist",
+    // Both group names live only in the beach-pianist dynamic chunk.
+    markers: ["beachPianist.piano", "beachPianist.pianist"],
+    relatedMarkers: []
   }
 };
 
@@ -155,7 +161,8 @@ async function discoverProductionFeatures() {
   const afterlight = discover(FEATURE_SPECS.afterlight);
   const corona = discover(FEATURE_SPECS.corona);
   const landsEnd = discover(FEATURE_SPECS.landsEnd);
-  const primaryChunks = [afterlight, corona, landsEnd].flatMap((feature) => feature.primary);
+  const beachPianist = discover(FEATURE_SPECS.beachPianist);
+  const primaryChunks = [afterlight, corona, landsEnd, beachPianist].flatMap((feature) => feature.primary);
   const overlap = primaryChunks.filter((name, index) => primaryChunks.indexOf(name) !== index);
   if (overlap.length > 0) throw new Error(`Feature discovery overlapped: ${[...new Set(overlap)].join(", ")}`);
 
@@ -165,7 +172,8 @@ async function discoverProductionFeatures() {
     scannedChunks: names.length,
     afterlight,
     corona,
-    landsEnd
+    landsEnd,
+    beachPianist
   };
 }
 
@@ -600,6 +608,7 @@ async function main() {
     console.log(`[optional-site-lazy] Afterlight chunk ${discovery.afterlight.primary.join(", ")}`);
     console.log(`[optional-site-lazy] Corona chunk ${discovery.corona.primary.join(", ")}`);
     console.log(`[optional-site-lazy] Lands End chunk ${discovery.landsEnd.primary.join(", ")}`);
+    console.log(`[optional-site-lazy] Beach Pianist chunk ${discovery.beachPianist.primary.join(", ")}`);
     for (const check of checks) console.log(`[${check.pass ? "PASS" : "FAIL"}] ${check.id}`);
     console.log(`[optional-site-lazy] boot ${summarize(boot).featureRequests} feature request(s)`);
     console.log(`[optional-site-lazy] Afterlight ${summarize(afterlight).featureRequests} feature request(s)`);

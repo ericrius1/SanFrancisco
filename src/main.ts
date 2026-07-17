@@ -130,6 +130,8 @@ import type { LandsEndRegion } from "./world/landsEnd";
 import { LANDS_END_CENTER } from "./world/landsEnd/meta";
 import type { WaveOrgan } from "./world/waveOrgan";
 import { WAVE_ORGAN_CENTER } from "./world/waveOrgan/meta";
+import type { BeachPianist } from "./world/beachPianist";
+import { BEACH_PIANIST_CENTER } from "./world/beachPianist/meta";
 import type { AfterlightExperience } from "./gameplay/afterlight";
 import {
   AFTERLIGHT_ARRIVAL,
@@ -1190,6 +1192,10 @@ async function boot() {
   // Sutro Baths ruins, cypress and a lantern-keeper. Distance-LOD region.
   let landsEnd: LandsEndRegion | null = null;
   let waveOrgan: WaveOrgan | null = null;
+  // Baker Beach — a bearded voxel pianist at a voxel grand, the Golden Gate
+  // Bridge behind him. Lazy optional site (procedural build; recording + note
+  // timeline fetched on first approach).
+  let beachPianist: BeachPianist | null = null;
   // Buena Vista's hidden summit ritual: five wandering echoes and a sky-scale
   // finale, asleep outside its clearing like the other located activities.
   let afterlight: AfterlightExperience | null = null;
@@ -1940,6 +1946,7 @@ async function boot() {
   // The Marina breakwater sculpture. The pin is just the place's name — what
   // sleeps out there is for the walker to find.
   minimap.addLandmark(WAVE_ORGAN_CENTER.x, WAVE_ORGAN_CENTER.z, "Wave Organ");
+  minimap.addLandmark(BEACH_PIANIST_CENTER.x, BEACH_PIANIST_CENTER.z, "Beach Pianist");
   const playerLocator = new PlayerLocator();
   let prepareDestinationEssentials: (
     destination: Readonly<{ x: number; z: number }>,
@@ -3043,7 +3050,8 @@ async function boot() {
     | "wave-organ"
     | "sutro-baths"
     | "pup"
-    | "fort-mason-ensemble";
+    | "fort-mason-ensemble"
+    | "beach-pianist";
   type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
   type OptionalWorldSite = {
     id: OptionalSiteId;
@@ -3079,6 +3087,7 @@ async function boot() {
       coronaHeights,
       landsEnd,
       waveOrgan,
+      beachPianist,
       sutroBaths
     });
   };
@@ -3316,6 +3325,22 @@ async function boot() {
     refreshOptionalSiteDebug();
   };
 
+  const loadBeachPianist = async (): Promise<void> => {
+    const { BeachPianist: LoadedBeachPianist } = await import("./world/beachPianist");
+    await waitForOptionalSiteStage();
+    // The whole site is procedural; its pipelines warm off-frame at PRIME range
+    // (prepareRender), so the first visible flip never compiles mid-frame.
+    const site = new LoadedBeachPianist({
+      map,
+      nature,
+      prepareRender: (root) => prepareOptionalRoot("beach-pianist", root)
+    });
+    scene.add(site.group);
+    beachPianist = site;
+    sky.invalidateStaticShadows();
+    refreshOptionalSiteDebug();
+  };
+
   const loadSutroBaths = async (): Promise<void> => {
     const { createSutroBaths } = await import("./world/sutroBaths");
     await waitForOptionalSiteStage();
@@ -3398,6 +3423,7 @@ async function boot() {
     { id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, state: "dormant", forced: false, promise: null, load: loadCorona },
     { id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, state: "dormant", forced: false, promise: null, load: loadLandsEnd },
     { id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, state: "dormant", forced: false, promise: null, load: loadWaveOrgan },
+    { id: "beach-pianist", label: "Beach Pianist", ...BEACH_PIANIST_CENTER, state: "dormant", forced: false, promise: null, load: loadBeachPianist },
     {
       id: "sutro-baths",
       label: "Sutro Baths · 1896",
@@ -3430,7 +3456,8 @@ async function boot() {
     "wave-organ": true,
     "sutro-baths": true,
     pup: true,
-    "fort-mason-ensemble": true
+    "fort-mason-ensemble": true,
+    "beach-pianist": true
   };
   let optionalSitePerfGating = false;
   const OPTIONAL_SITE_GATE_ID: Partial<Record<OptionalSiteId, string>> = {
@@ -3475,6 +3502,9 @@ async function boot() {
         break;
       case "wave-organ":
         if (!on && waveOrgan) waveOrgan.group.visible = false;
+        break;
+      case "beach-pianist":
+        if (!on && beachPianist) beachPianist.group.visible = false;
         break;
       case "sutro-baths":
         sutroBaths?.setPerfSuppressed(!on);
@@ -3543,6 +3573,11 @@ async function boot() {
         return {
           runtime: waveOrgan?.group.visible ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(waveOrgan?.group)
+        };
+      case "beach-pianist":
+        return {
+          runtime: beachPianist?.group.visible ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(beachPianist?.group)
         };
       case "sutro-baths":
         return {
@@ -5189,6 +5224,11 @@ async function boot() {
       } else if (waveOrgan) {
         waveOrgan.group.visible = false;
       }
+      if (optionalSitePerfAllowed("beach-pianist")) {
+        beachPianist?.update(frameDt, elapsed, player.position, camera, windGustValue());
+      } else if (beachPianist) {
+        beachPianist.group.visible = false;
+      }
     }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
@@ -5725,7 +5765,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, beachPianist, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"
@@ -5766,6 +5806,7 @@ async function boot() {
       get palaceReverie() { return palaceReverie ?? undefined; },
       get landsEnd() { return landsEnd ?? undefined; },
       get waveOrgan() { return waveOrgan ?? undefined; },
+      get beachPianist() { return beachPianist ?? undefined; },
       fireworks,
       worldQueries,
       setTool: (t: string) => setTool(t as ToolName),

@@ -21,7 +21,7 @@
 
 import * as THREE from "three/webgpu";
 import { tunables } from "../core/persist";
-import { effectsAudioLevel, soundscapeAudioLevel } from "../core/audioSettings";
+import { effectsAudioLevel, musicAudioLevel, soundscapeAudioLevel } from "../core/audioSettings";
 import type { NatureBufferResult } from "./natureBuffersWorker";
 import { ProceduralWindSynth } from "./proceduralWind";
 import { VOICE_LIB, RESPONDER_KINDS, type NatureVoiceKind } from "./voices";
@@ -68,13 +68,16 @@ export class NatureSoundscape {
   #bus!: GainNode; // regional soundscape volume + presence fade
   #worldBus!: GainNode; // presence-independent environmental soundscape
   #alwaysBus!: GainNode; // foreground effects, never nature/presence-faded
+  #musicBus!: GainNode; // in-world performances (beach pianist), Music slider
   #externalAwake = false; // a sibling layer (pet at heel) needs the ctx kept alive
   #regionalReverbSend!: GainNode;
   #worldReverbSend!: GainNode;
   #effectsReverbSend!: GainNode;
+  #musicReverbSend!: GainNode;
   #regionalConvolver!: ConvolverNode;
   #worldConvolver!: ConvolverNode;
   #effectsConvolver!: ConvolverNode;
+  #musicConvolver!: ConvolverNode;
   #noise!: AudioBuffer;
   #wind: ProceduralWindSynth | null = null;
   #beds = new Map<BedId, Bed>();
@@ -113,6 +116,7 @@ export class NatureSoundscape {
       regional: +this.#masterLevel.toFixed(3),
       world: +(this.#worldBus?.gain.value ?? 0).toFixed(3),
       effects: +(this.#alwaysBus?.gain.value ?? 0).toFixed(3),
+      music: +(this.#musicBus?.gain.value ?? 0).toFixed(3),
       presence: +this.#presence.toFixed(3),
       beds: BED_IDS.map((id) => ({ id, level: +(this.#beds.get(id)?.level ?? 0).toFixed(3) })),
       influence: NATURE_REGIONS.map((r, i) => ({ id: r.id, inf: +this.#inf[i].toFixed(3) })),
@@ -146,9 +150,11 @@ export class NatureSoundscape {
         bus: GainNode;
         worldBus: GainNode;
         alwaysBus: GainNode;
+        musicBus: GainNode;
         regionalReverbSend: GainNode;
         worldReverbSend: GainNode;
         effectsReverbSend: GainNode;
+        musicReverbSend: GainNode;
         noise: AudioBuffer;
       }
     | null {
@@ -164,9 +170,11 @@ export class NatureSoundscape {
       bus: this.#bus,
       worldBus: this.#worldBus,
       alwaysBus: this.#alwaysBus,
+      musicBus: this.#musicBus,
       regionalReverbSend: this.#regionalReverbSend,
       worldReverbSend: this.#worldReverbSend,
       effectsReverbSend: this.#effectsReverbSend,
+      musicReverbSend: this.#musicReverbSend,
       noise: this.#noise
     };
   }
@@ -231,6 +239,7 @@ export class NatureSoundscape {
     const allowed = visible && Boolean(T.enabled) && Number(T.master) > 0.001;
     const effects = effectsAudioLevel();
     const soundscape = soundscapeAudioLevel();
+    const music = musicAudioLevel();
     const targetPresence = allowed ? presence : 0;
     this.#presence = approach(this.#presence, targetPresence, dt, 1.6);
 
@@ -242,6 +251,9 @@ export class NatureSoundscape {
     // ---- master fade + park the whole graph when far from any region ------
     const targetMaster = allowed ? soundscape * Number(T.master) * this.#presence : 0;
     const worldTarget = visible ? soundscape : 0;
+    // Music-slider performances (beach pianist) manage their own distance fade
+    // and keepAwake, so this bus is presence-independent like the world bus.
+    const musicTarget = visible ? music : 0;
     // Sibling gameplay SFX (currently dog fetch audio) must not disappear when
     // the optional nature layer or its wildlife slider is disabled. This tap
     // follows only the user's global FX/mute preference and page visibility.
@@ -254,6 +266,7 @@ export class NatureSoundscape {
         this.#masterLevel = 0;
         this.#worldBus.gain.value = 0;
         this.#alwaysBus.gain.value = 0;
+        this.#musicBus.gain.value = 0;
         void ctx.suspend();
       }
       return; // suspended: no per-frame cost out in the city
@@ -264,6 +277,7 @@ export class NatureSoundscape {
     this.#bus.gain.value = this.#masterLevel;
     this.#worldBus.gain.setTargetAtTime(worldTarget, ctx.currentTime, 0.2);
     this.#alwaysBus.gain.setTargetAtTime(alwaysTarget, ctx.currentTime, 0.2);
+    this.#musicBus.gain.setTargetAtTime(musicTarget, ctx.currentTime, 0.2);
 
     const now = ctx.currentTime;
     const day = daylight(o.timeOfDay);
@@ -377,6 +391,13 @@ export class NatureSoundscape {
     this.#alwaysBus.gain.value = 0;
     this.#alwaysBus.connect(limiter);
 
+    // In-world musical performances (the beach pianist) belong to the Music
+    // slider, not the World/soundscape one. Its own bus + reverb return keeps
+    // that slider from leaking into the ambience mix, the same way the others do.
+    this.#musicBus = ctx.createGain();
+    this.#musicBus.gain.value = 0;
+    this.#musicBus.connect(limiter);
+
     // Worker-generated buffers replace these silent fallbacks asynchronously.
     // Audio is allowed to stream in after the gesture; input is never held up.
     const sr = ctx.sampleRate;
@@ -388,12 +409,15 @@ export class NatureSoundscape {
     this.#regionalConvolver = ctx.createConvolver();
     this.#worldConvolver = ctx.createConvolver();
     this.#effectsConvolver = ctx.createConvolver();
+    this.#musicConvolver = ctx.createConvolver();
     const regionalReverbReturn = ctx.createGain();
     regionalReverbReturn.gain.value = 0.9;
     const worldReverbReturn = ctx.createGain();
     worldReverbReturn.gain.value = 0.9;
     const effectsReverbReturn = ctx.createGain();
     effectsReverbReturn.gain.value = 0.9;
+    const musicReverbReturn = ctx.createGain();
+    musicReverbReturn.gain.value = 0.9;
     this.#regionalReverbSend = ctx.createGain();
     this.#regionalReverbSend.gain.value = 1;
     this.#regionalReverbSend
@@ -412,6 +436,12 @@ export class NatureSoundscape {
       .connect(this.#effectsConvolver)
       .connect(effectsReverbReturn)
       .connect(this.#alwaysBus);
+    this.#musicReverbSend = ctx.createGain();
+    this.#musicReverbSend.gain.value = 1;
+    this.#musicReverbSend
+      .connect(this.#musicConvolver)
+      .connect(musicReverbReturn)
+      .connect(this.#musicBus);
 
     // wind synth draws into the master bus (with a small fixed reverb tap)
     this.#wind = new ProceduralWindSynth(ctx, this.#bus);
@@ -463,6 +493,7 @@ export class NatureSoundscape {
       this.#regionalConvolver.buffer = impulse;
       this.#worldConvolver.buffer = impulse;
       this.#effectsConvolver.buffer = impulse;
+      this.#musicConvolver.buffer = impulse;
       this.#wind?.setNoiseBuffer(makeBuffer([result.windLeft, result.windRight]));
       this.#buffersReady = true;
     }).catch((error) => {
