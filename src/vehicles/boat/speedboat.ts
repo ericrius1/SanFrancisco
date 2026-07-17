@@ -134,6 +134,8 @@ export function buildSpeedboatMesh(): THREE.Group {
 
   // helm crew seat + wheel anchor (player.ts seats the driver rig here)
   g.userData.cockpit = { seat: [0, 0.5, 0.62], wheel: [0, 0.72, 0.12] };
+  // Passenger rides the open well aft of the bucket seats.
+  g.userData.passengerSeat = [0, 0.52, 1.55] as [number, number, number];
 
   // The closed hull supplies almost the entire water/ground silhouette; the
   // outboard cowl is the one meaningful overhang. All interior matte surfaces
