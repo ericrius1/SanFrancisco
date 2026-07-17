@@ -3,6 +3,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import type { GroundTopOverlay, WorldMap } from "./heightmap";
 import type { TerrainCutoutSpec, TileStreamer } from "./tiles";
+import { attachKtx2Loader } from "../render/textures";
 
 export type AuthoredRegionBounds = {
   centerX: number;
@@ -202,6 +203,9 @@ export class AuthoredRegionStreamer {
   }
 
   async init(): Promise<void> {
+    // Wire KTX2 before any region can load (update()/prepareAt() only fire after
+    // init resolves). Inert for region GLBs without KHR_texture_basisu.
+    await attachKtx2Loader(this.#loader);
     const response = await fetch("/data/authored-regions.json");
     if (!response.ok) throw new Error(`authored-region manifest HTTP ${response.status}`);
     const manifest: unknown = await response.json();

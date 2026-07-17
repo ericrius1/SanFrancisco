@@ -1,9 +1,65 @@
-import type * as THREE from "three/webgpu";
+import * as THREE from "three/webgpu";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { waterHeight } from "../world/heightmap";
 import type { PlayerCtx } from "../player/types";
 
 /** Typical tall park/street canopy (m). Plane/phoenix launches clear ~2× this. */
 export const TYPICAL_TREE_HEIGHT = 28;
+
+/**
+ * Collapse many small static child meshes into ONE vertex-colored
+ * BufferGeometry, turning ~30 near-field draws into one. For each part we bake
+ * its LOCAL transform (its `.matrix` — i.e. its pose in the destination group's
+ * frame) into positions + normals, then write per-vertex colour attributes from
+ * `paint(mesh)` (a `color` for the diffuse, optionally an `emissive`, etc.).
+ *
+ * Contract:
+ * - Every part must be rigid (no non-uniform scale) and expressed in the SAME
+ *   destination frame — pass meshes whose `.matrix` reads in the space of the
+ *   group the merged mesh will be added to.
+ * - All parts in one call must yield the SAME attribute keys from `paint`, so
+ *   the merge sees one consistent attribute set.
+ * - Each part's original per-part normals are TRANSFORMED (not recomputed), so
+ *   flat boxes stay faceted and round spars stay smooth. Geometries are
+ *   expanded to non-indexed so an ExtrudeGeometry hull can merge with indexed
+ *   Box/Cylinder parts.
+ *
+ * Input geometries are cloned; the caller still owns (and should dispose) the
+ * originals. Nothing shared is disposed here.
+ */
+export function mergeVertexColoredParts(
+  parts: readonly THREE.Mesh[],
+  paint: (mesh: THREE.Mesh) => Record<string, THREE.Color>
+): THREE.BufferGeometry | null {
+  const baked: THREE.BufferGeometry[] = [];
+  for (const mesh of parts) {
+    mesh.updateMatrix();
+    const posed = mesh.geometry.clone();
+    posed.applyMatrix4(mesh.matrix);
+    // Non-indexed so heterogeneous primitives (extrude/box/cylinder) merge and
+    // each keeps its own faceting; applyMatrix4 already fixed the normals.
+    const geo = posed.index ? posed.toNonIndexed() : posed;
+    if (geo !== posed) posed.dispose();
+    for (const name of Object.keys(geo.attributes)) {
+      if (name !== "position" && name !== "normal") geo.deleteAttribute(name);
+    }
+    if (!geo.getAttribute("normal")) geo.computeVertexNormals();
+    const count = geo.getAttribute("position").count;
+    for (const [name, color] of Object.entries(paint(mesh))) {
+      const arr = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        arr[i * 3] = color.r;
+        arr[i * 3 + 1] = color.g;
+        arr[i * 3 + 2] = color.b;
+      }
+      geo.setAttribute(name, new THREE.Float32BufferAttribute(arr, 3));
+    }
+    baked.push(geo);
+  }
+  const merged = mergeGeometries(baked, false);
+  for (const g of baked) g.dispose();
+  return merged;
+}
 
 /**
  * Arcade driveables sit on a scripted ride spring (`ground + rideHeight`), not

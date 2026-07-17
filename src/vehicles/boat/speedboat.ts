@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { lightAnchor } from "../../player/lightPool";
 import { applyVehicleShadowPolicy } from "../shadows";
+import { mergeVertexColoredParts } from "../shared";
 
 /**
  * A sleek open-cockpit speedboat — the fast cousin of the day-sailer. Front is
@@ -30,6 +31,15 @@ export function buildSpeedboatMesh(): THREE.Group {
     depthWrite: false
   });
 
+  // Every opaque static part is authored below then baked into ONE vertex-
+  // colored draw (`parts`); only the transparent windscreen stays its own mesh.
+  // Nothing animates independently on the speedboat, so the whole body merges.
+  const parts: THREE.Mesh[] = [];
+  const add = (mesh: THREE.Mesh) => {
+    parts.push(mesh);
+    return mesh;
+  };
+
   // hull silhouette (top-down): pointed bow at -Z, transom at +Z. Shape is laid
   // out in X (beam) / Y (length) then rotated so length runs along Z and the
   // extrude falls downward into the water.
@@ -52,14 +62,13 @@ export function buildSpeedboatMesh(): THREE.Group {
   const hullGeo = new THREE.ExtrudeGeometry(outline, { depth: 0.78, bevelEnabled: false });
   hullGeo.rotateX(Math.PI / 2); // shape-Y → +Z (length), extrude → -Y (hull depth)
   hullGeo.translate(0, 0.22, 0); // deck lip at +0.22, keel at -0.56
-  const hull = new THREE.Mesh(hullGeo, hullWhite);
-  g.add(hull);
+  add(new THREE.Mesh(hullGeo, hullWhite));
 
   // navy sheer stripe + red boot-top, thin flat bands hugging the hull sides
   const band = (matlYo: number, mat: THREE.Material, h: number) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(2.14, h, 5.75), mat);
     m.position.set(0, matlYo, -0.05);
-    g.add(m);
+    add(m);
   };
   band(0.08, navy, 0.16);
   band(-0.16, red, 0.1);
@@ -67,23 +76,25 @@ export function buildSpeedboatMesh(): THREE.Group {
   // foredeck cap over the bow (closes the extruded well forward of the cockpit)
   const foredeck = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.12, 2.0), hullWhite);
   foredeck.position.set(0, 0.26, -1.35);
-  g.add(foredeck);
+  add(foredeck);
 
   // cockpit sole + coaming (open well amidships/aft)
   const sole = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.1, 2.7), deckTan);
   sole.position.set(0, 0.02, 0.85);
-  g.add(sole);
+  add(sole);
   const coaming = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.34, 3.0), navy);
   coaming.position.set(0, 0.3, 0.8);
-  g.add(coaming);
+  add(coaming);
   const well = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.4, 2.6), trim);
   well.position.set(0, 0.34, 0.85);
-  g.add(well);
+  add(well);
 
   // helm console + wraparound windscreen just aft of the foredeck
   const console_ = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.42, 0.5), hullWhite);
   console_.position.set(0, 0.42, -0.2);
-  g.add(console_);
+  add(console_);
+  // windscreen is translucent (depthWrite off) — it stays its own draw so the
+  // vertex-colored body behind it reads through the glass.
   const screen = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.34, 0.06), glass);
   screen.position.set(0, 0.66, -0.42);
   screen.rotation.x = -0.5;
@@ -93,10 +104,10 @@ export function buildSpeedboatMesh(): THREE.Group {
   const seatMk = (x: number, mat: THREE.Material) => {
     const base = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.16, 0.5), mat);
     base.position.set(x, 0.5, 0.5);
-    g.add(base);
+    add(base);
     const backrest = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.14), mat);
     backrest.position.set(x, 0.72, 0.72);
-    g.add(backrest);
+    add(backrest);
   };
   seatMk(-0.38, red);
   seatMk(0.38, navy);
@@ -104,27 +115,36 @@ export function buildSpeedboatMesh(): THREE.Group {
   // engine cowl + outboard leg on the transom
   const cowl = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.44, 0.7), trim);
   cowl.position.set(0, 0.36, 2.55);
-  g.add(cowl);
+  add(cowl);
   const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.7, 0.26), chrome);
   leg.position.set(0, -0.05, 2.95);
-  g.add(leg);
+  add(leg);
   const skeg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.3, 0.5), chrome);
   skeg.position.set(0, -0.4, 3.02);
-  g.add(skeg);
+  add(skeg);
 
   // stubby flagstaff + a little pennant at the stern (July-4 flavour, static)
   const staff = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.9, 6), chrome);
   staff.position.set(0, 0.7, 2.75);
-  g.add(staff);
+  add(staff);
   const flag = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.28, 0.42), red);
   flag.position.set(0, 0.95, 2.53);
-  g.add(flag);
+  add(flag);
 
   // grab rail along the foredeck
   const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.5, 6), chrome);
   rail.rotation.z = Math.PI / 2;
   rail.position.set(0, 0.34, -1.9);
-  g.add(rail);
+  add(rail);
+
+  // Bake every opaque part into a single vertex-colored Lambert mesh.
+  const body = new THREE.Mesh(
+    mergeVertexColoredParts(parts, (m) => ({ color: (m.material as THREE.MeshLambertMaterial).color }))!,
+    new THREE.MeshLambertMaterial({ vertexColors: true })
+  );
+  g.add(body);
+  // Authoring geometries are baked in — release their standalone buffers.
+  for (const m of parts) m.geometry.dispose();
 
   // navigation lamps served by the shared LightPool (markers only — no Lights)
   g.add(lightAnchor({ color: 0xffe2b8, intensity: 16, distance: 12 }, 0, 0.7, 0.1)); // dash glow
@@ -137,9 +157,9 @@ export function buildSpeedboatMesh(): THREE.Group {
   // Passenger rides the open well aft of the bucket seats.
   g.userData.passengerSeat = [0, 0.52, 1.55] as [number, number, number];
 
-  // The closed hull supplies almost the entire water/ground silhouette; the
-  // outboard cowl is the one meaningful overhang. All interior matte surfaces
-  // receive, while the transparent windscreen stays shadowless.
-  applyVehicleShadowPolicy(g, [hull, cowl]);
+  // The merged body carries the whole opaque silhouette (hull + outboard cowl),
+  // so it is the single caster; its vertex-colored Lambert receives, while the
+  // transparent windscreen stays shadowless.
+  applyVehicleShadowPolicy(g, [body]);
   return g;
 }

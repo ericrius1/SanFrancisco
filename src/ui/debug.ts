@@ -1,5 +1,4 @@
-import { Pane } from "tweakpane";
-import type { BladeApi, FolderApi } from "tweakpane";
+import type { BladeApi, FolderApi, Pane } from "tweakpane";
 import * as THREE from "three/webgpu";
 import {
   CAMERA_TUNING,
@@ -560,6 +559,9 @@ export class DebugPanel {
     });
     root.appendChild(search);
 
+    // Tweakpane is debug-only tooling: fetch its chunk on first "/" instead of
+    // shipping it in the boot bundle.
+    const { Pane } = await import("tweakpane");
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
     // Yield between heavy folder groups so the animation loop keeps presenting.

@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { Inspector } from "three/addons/inspector/Inspector.js";
+import type { Inspector } from "three/addons/inspector/Inspector.js";
 import Stats from "three/addons/libs/stats.module.js";
 import type { DebugPanel } from "../ui/debug";
 
@@ -10,6 +10,7 @@ export class RendererDiagnostics {
 
   #renderer: THREE.WebGPURenderer;
   #inspector: Inspector | null = null;
+  #inspectorCtor: (new () => Inspector) | null = null;
   #inspectorAttached = false;
   #stats = new Stats();
   #style: HTMLStyleElement | null = null;
@@ -36,9 +37,14 @@ export class RendererDiagnostics {
   setInspector(on: boolean): void {
     if (this.inspectorOn === on) return;
     this.inspectorOn = on;
-    // Renderer brackets each loop call with inspector begin/finish. Defer the
-    // swap so it cannot tear that pair halfway through a frame.
-    requestAnimationFrame(() => this.#applyInspector());
+    // The inspector addon is debug-only tooling — load its chunk on first use
+    // instead of shipping it in the boot bundle. Renderer brackets each loop
+    // call with inspector begin/finish; defer the swap past the dynamic import
+    // (and a frame) so it cannot tear that pair halfway through a frame.
+    void import("three/addons/inspector/Inspector.js").then(({ Inspector }) => {
+      this.#inspectorCtor ??= Inspector;
+      requestAnimationFrame(() => this.#applyInspector());
+    });
   }
 
   updateStats(): void {
@@ -61,13 +67,14 @@ export class RendererDiagnostics {
     const backend = this.#renderer.backend as unknown as { trackTimestamp: boolean };
     if (this.inspectorOn) {
       if (!this.#inspector) {
+        if (!this.#inspectorCtor) return; // chunk still loading; setInspector re-applies
         this.#style = document.createElement("style");
         this.#style.textContent = [
           ".three-inspector .profiler-toggle { right: auto !important; left: 50% !important; transform: translateX(-50%); }",
           ".three-inspector .profiler-mini-panel { right: auto !important; left: 50% !important; transform: translateX(-50%); }"
         ].join("\n");
         document.head.appendChild(this.#style);
-        this.#inspector = new Inspector();
+        this.#inspector = new this.#inspectorCtor();
         // Detaching can null the renderer while a timestamp callback is still
         // in flight. InspectorBase + trackTimestamp=false already stop work.
         const attach = this.#inspector.setRenderer.bind(this.#inspector);

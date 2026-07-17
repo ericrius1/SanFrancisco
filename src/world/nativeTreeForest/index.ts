@@ -489,7 +489,8 @@ function nativeShadowProfile(template: GrownTemplate): TreeShadowProfile {
   return {
     baseY: template.geometry.bounds.min[1],
     height: Math.max(1, profile.height),
-    crownDiameter: Math.max(0.75, profile.canopyRadii[0] * 2, profile.canopyRadii[2] * 2)
+    crownDiameter: Math.max(0.75, profile.canopyRadii[0] * 2, profile.canopyRadii[2] * 2),
+    cover: profile.opacity
   };
 }
 
