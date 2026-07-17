@@ -114,7 +114,7 @@ export class NavigationController {
         this.#hud.message(spot.label, 2.2);
         this.onTeleported();
       },
-      onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+      onVisualBlocked: () => this.#hud.message("This place is still loading", 6),
       onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
       onError: () => this.#hud.message("That place could not be restored", 2.2)
     });
@@ -158,7 +158,7 @@ export class NavigationController {
           };
         },
         onCommitted: () => this.onTeleported(),
-        onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+        onVisualBlocked: () => this.#hud.message("This place is still loading", 6),
         onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
         onError: () => this.#hud.message("That mode could not find a safe starting place", 2.2)
       });
@@ -262,7 +262,7 @@ export class NavigationController {
         this.#hud.message(toName ? `Teleported to ${toName}` : "Teleported", 2.4);
         this.onTeleported();
       },
-      onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+      onVisualBlocked: () => this.#hud.message("This place is still loading", 6),
       onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
       onError: (error) => {
         const message = error instanceof Error && error.message.includes("no longer available")
@@ -294,7 +294,7 @@ export class NavigationController {
         }
         this.onTeleported();
       },
-      onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+      onVisualBlocked: () => this.#hud.message("This place is still loading", 6),
       onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
       onError: (error) => {
         const message = error instanceof Error && error.message
@@ -353,7 +353,7 @@ export class NavigationController {
         if (forceWalkLanding) this.#hud.message(`Returned to ${label}`, 2.4);
         this.onTeleported();
       },
-      onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+      onVisualBlocked: () => this.#hud.message("This place is still loading", 6),
       onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
       onError: () => this.#hud.message("That destination could not be loaded", 2.2)
     });
