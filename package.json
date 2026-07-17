@@ -75,7 +75,7 @@
     "test:hmr": "node --experimental-strip-types tools/hmr-lifecycle-probe.mjs",
     "test:hmr:browser": "node tools/hmr-browser-probe.mjs",
     "test:pointer-lock": "node tools/esc-pointerlock-probe.mjs",
-    "test:avatar": "node tools/avatar-zfight-probe.mjs",
+    "test:avatar": "node tools/bathing-costume-zfight-test.mjs && node tools/avatar-zfight-probe.mjs",
     "test:transport-avatar": "node tools/transport-avatar-probe.mjs",
     "test:groundcover": "node --experimental-strip-types tools/grounding-fit-probe.mjs && node tools/groundcover-anchor-fade-probe.mjs",
     "fetch:osm": "node tools/fetch-osm.mjs",

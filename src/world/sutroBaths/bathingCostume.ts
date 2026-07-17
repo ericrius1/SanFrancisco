@@ -190,7 +190,59 @@ export function applyBathingCostume(rig: Rig, seed: string | number, opts: Costu
   s.materials.visor.opacity = 0;
   s.materials.visor.depthWrite = false;
 
-  // ---- box helper (tracks + shadow-diets its own additions) ------------
+  // Decorative bands wrap a host block, so their visible surface is only the
+  // four vertical sides. A closed BoxGeometry also emits horizontal caps; the
+  // highest pinstripe cap used to land exactly on the torso's top plane and the
+  // two materials alternated under tiny camera motion. Keep the host's top and
+  // bottom as the sole depth owners instead of trying to bias coplanar faces.
+  const bandGeometry = (w: number, h: number, d: number): THREE.BufferGeometry => {
+    const x = w * 0.5;
+    const y = h * 0.5;
+    const z = d * 0.5;
+    const positions: number[] = [];
+    const normals: number[] = [];
+    const indices: number[] = [];
+    const face = (vertices: readonly [number, number, number][], normal: readonly [number, number, number]) => {
+      const start = positions.length / 3;
+      for (const vertex of vertices) {
+        positions.push(...vertex);
+        normals.push(...normal);
+      }
+      indices.push(start, start + 1, start + 2, start, start + 2, start + 3);
+    };
+    face([[-x, -y, -z], [-x, y, -z], [x, y, -z], [x, -y, -z]], [0, 0, -1]);
+    face([[-x, -y, z], [x, -y, z], [x, y, z], [-x, y, z]], [0, 0, 1]);
+    face([[-x, -y, z], [-x, y, z], [-x, y, -z], [-x, -y, -z]], [-1, 0, 0]);
+    face([[x, -y, -z], [x, y, -z], [x, y, z], [x, -y, z]], [1, 0, 0]);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+    geometry.setIndex(indices);
+    geometry.computeBoundingSphere();
+    return geometry;
+  };
+
+  // ---- geometry helpers (track + shadow-diet their own additions) ------
+  const addMesh = (
+    parent: THREE.Object3D,
+    material: THREE.Material,
+    geometry: THREE.BufferGeometry,
+    volume: number,
+    x: number,
+    y: number,
+    z: number
+  ): THREE.Mesh => {
+    created.geometries.push(geometry);
+    const m = new THREE.Mesh(geometry, material);
+    m.position.set(x, y, z);
+    m.castShadow = volume >= CASTER_MIN_VOLUME;
+    if (m.castShadow) enableShadowLayer(m, SHADOW_LAYERS.HERO_DYNAMIC);
+    m.receiveShadow = true;
+    parent.add(m);
+    addedMeshes.push(m);
+    return m;
+  };
+
   const addBox = (
     parent: THREE.Object3D,
     material: THREE.Material,
@@ -202,14 +254,24 @@ export function applyBathingCostume(rig: Rig, seed: string | number, opts: Costu
     z: number
   ): THREE.Mesh => {
     const g = new THREE.BoxGeometry(w, h, d);
-    created.geometries.push(g);
-    const m = new THREE.Mesh(g, material);
-    m.position.set(x, y, z);
-    m.castShadow = w * h * d >= CASTER_MIN_VOLUME;
-    if (m.castShadow) enableShadowLayer(m, SHADOW_LAYERS.HERO_DYNAMIC);
-    m.receiveShadow = true;
-    parent.add(m);
-    addedMeshes.push(m);
+    const m = addMesh(parent, material, g, w * h * d, x, y, z);
+    return m;
+  };
+
+  const addBand = (
+    parent: THREE.Object3D,
+    material: THREE.Material,
+    role: "stripe" | "belt" | "hem" | "cap" | "towel",
+    w: number,
+    h: number,
+    d: number,
+    x: number,
+    y: number,
+    z: number
+  ): THREE.Mesh => {
+    const m = addMesh(parent, material, bandGeometry(w, h, d), w * h * d, x, y, z);
+    m.name = `sutroBaths.costumeBand.${role}`;
+    m.userData.bathingCostumeBand = role;
     return m;
   };
 
@@ -264,7 +326,7 @@ export function applyBathingCostume(rig: Rig, seed: string | number, opts: Costu
     s.headBlock.scale.setScalar(0.94);
     // skirtlet over the hips (knee-length flare like the dress skirt)
     addBox(rig.hips, suitMat, 0.5, 0.3, 0.3, 0, -0.15, 0);
-    addBox(rig.hips, trimMat, 0.53, 0.05, 0.32, 0, -0.29, 0); // hem trim
+    addBand(rig.hips, trimMat, "hem", 0.53, 0.05, 0.32, 0, -0.29, 0); // hem trim
   } else {
     // men's suits carry a touch more chest bulk
     s.torsoBlock.scale.set(style === "mens-tank" ? 1.04 : 1.0, 1, 1.02);
@@ -281,10 +343,10 @@ export function applyBathingCostume(rig: Rig, seed: string | number, opts: Costu
     const bandMat = accentMat;
     if (stripePattern === "stripe2") {
       // bold two-tone: three fat bands across the chest
-      for (const y of [0.09, 0.24, 0.39]) addBox(rig.torso, bandMat, bandW, 0.06, bandD, 0, y, 0);
+      for (const y of [0.09, 0.24, 0.39]) addBand(rig.torso, bandMat, "stripe", bandW, 0.06, bandD, 0, y, 0);
     } else {
       // pinstripe: several thin bands
-      for (const y of [0.06, 0.15, 0.24, 0.33, 0.42]) addBox(rig.torso, bandMat, bandW, 0.02, bandD, 0, y, 0);
+      for (const y of [0.06, 0.15, 0.24, 0.33, 0.42]) addBand(rig.torso, bandMat, "stripe", bandW, 0.02, bandD, 0, y, 0);
     }
   }
 
@@ -301,7 +363,7 @@ export function applyBathingCostume(rig: Rig, seed: string | number, opts: Costu
   // ---- webbing belt -----------------------------------------------------
   if (hasBelt) {
     const beltMat = trim === primary ? accentMat : trimMat;
-    addBox(rig.torso, beltMat, 0.462, 0.05, 0.278, 0, 0.03, 0); // band
+    addBand(rig.torso, beltMat, "belt", 0.462, 0.05, 0.278, 0, 0.03, 0); // band
     addBox(rig.torso, accentMat, 0.06, 0.055, 0.02, 0, 0.03, -0.14); // buckle
   }
 
@@ -310,10 +372,10 @@ export function applyBathingCostume(rig: Rig, seed: string | number, opts: Costu
     // pale rounded cap covering the crown + a short brim band
     const capMat = mat(pick([0xe7dcc0, 0xf1ead6, 0x2a2c30], r));
     addBox(rig.head, capMat, 0.31, 0.16, 0.31, 0, 0.29, 0);
-    addBox(rig.head, capMat, 0.32, 0.05, 0.32, 0, 0.2, 0); // band round the head
+    addBand(rig.head, capMat, "cap", 0.32, 0.05, 0.32, 0, 0.2, 0); // band round the head
   } else if (cap === "bandana") {
     const bandMat = mat(pick([...TRIM_COLORS], r));
-    addBox(rig.head, bandMat, 0.29, 0.06, 0.29, 0, 0.28, 0);
+    addBand(rig.head, bandMat, "cap", 0.29, 0.06, 0.29, 0, 0.28, 0);
   }
 
   // ---- optional accessory: striped towel over one shoulder -------------
@@ -325,7 +387,7 @@ export function applyBathingCostume(rig: Rig, seed: string | number, opts: Costu
     const towel = addBox(rig.torso, towelMat, 0.12, 0.5, 0.05, side * 0.2, 0.2, -0.02);
     towel.rotation.z = side * 0.12;
     // one contrast end-stripe
-    addBox(towel, accentMat, 0.13, 0.05, 0.055, 0, -0.2, 0);
+    addBand(towel, accentMat, "towel", 0.13, 0.05, 0.055, 0, -0.2, 0);
   }
 
   // ---------------------------------------------------------------- return
