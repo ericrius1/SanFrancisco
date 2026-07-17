@@ -39,6 +39,8 @@
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
     "test:tea-garden": "node --experimental-strip-types tools/tea-garden-probe.mjs",
     "test:multiplayer-rake": "node tools/multiplayer-rake-probe.mjs",
+    "test:multiplayer-ball": "node tools/multiplayer-ball-probe.mjs",
+    "test:multiplayer-ball:browser": "node tools/multiplayer-ball-browser-probe.mjs",
     "test:multiplayer-rake:browser": "node tools/multiplayer-rake-browser-probe.mjs",
     "test:minigame-session": "node --experimental-strip-types tools/minigame-session-probe.mjs",
     "test:ocean-beach-kite": "node tools/ocean-beach-kite-probe.mjs",

@@ -1253,6 +1253,8 @@ async function boot() {
       handWorldPos: (out) => player.handWorldPos(out)
     },
     hud: { message: (t, s) => hud.message(t, s) },
+    onThrow: (throwId, x, y, z, vx, vy, vz) => net.sendBall(throwId, x, y, z, vx, vy, vz),
+    onPickupRequest: (sourceId, throwId) => net.requestBallPickup(sourceId ?? net.selfId, throwId),
     // A bounce on the tea-garden pond bottom is submerged — its plonk is voiced
     // by the water feature, so skip the dry thud there.
     onGroundImpact: (x, y, z, speed) => {
@@ -1797,10 +1799,26 @@ async function boot() {
     remotes.remove(id);
     voice.drop(id);
     golf?.removeRemote(id);
+    fetchBall?.removeRemoteBalls(id);
   };
   net.onSample = (id, s) => remotes.sample(id, s);
   // someone else's paintball: same ballistic sim, their color, splats locally
   net.onPaint = (id, x, y, z, vx, vy, vz, rgb) => paintballs.spawn(x, y, z, vx, vy, vz, remotePaint.set(rgb), id);
+  // Friends' tennis balls use the exact local bounce/roll sim. They remain
+  // non-pickup world effects so fetch dogs and ownership never fork by client.
+  net.onBall = (id, throwId, x, y, z, vx, vy, vz) => fetchBall?.spawnRemote(id, throwId, x, y, z, vx, vy, vz);
+  net.onBallPickup = (pickerId, ownerId, throwId, accepted) => {
+    const received = fetchBall?.resolvePickup(
+      pickerId === net.selfId,
+      ownerId === net.selfId ? null : ownerId,
+      throwId,
+      accepted
+    ) ?? false;
+    if (received && ownerId !== net.selfId) {
+      const ownerName = net.roster.get(ownerId)?.name;
+      hud.message(`Picked up ${ownerName ? `${ownerName}'s` : "your friend's"} ball!`, 2.4);
+    }
+  };
   const remotePaint = new THREE.Color();
   // shared skies: my rocket launches go out, friends' volleys replay here
   fireworks.onVolley = (rockets) => net.sendFireworks(rockets);

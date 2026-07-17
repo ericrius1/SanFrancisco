@@ -33,6 +33,10 @@ import {
  *   ← {t:"rtc", from, payload}          relayed with sender id stamped
  *   → {t:"paint", d:[x,y,z,vx,vy,vz,rgb]}  one paintball shot (fire-and-forget)
  *   ← {t:"paint", id, d}                relayed to everyone else
+ *   → {t:"ball", k:"throw", n, d:[x,y,z,vx,vy,vz]} stable-id tennis-ball throw
+ *   ← {t:"ball", k:"throw", id, n, d}              relayed to everyone else
+ *   → {t:"ball", k:"pickup", owner, n}             request ownership transfer
+ *   ← {t:"ball", k:"pickup", id, owner, n, ok}     one-winner transfer result
  *   → {t:"fw", d:[[ox,oy,oz,tx,ty,tz,T,pal,size],...]}  fireworks volley
  *   ← {t:"fw", id, d}                   relayed to everyone else
  *   → {t:"chat", text}                  ephemeral text chat (no persistence)
@@ -363,6 +367,10 @@ export class Net {
   onRtc: (from: number, payload: unknown) => void = () => {}; // voice signaling (src/net/voice.ts)
   /** Someone else fired a paintball: origin, velocity, 24-bit rgb. */
   onPaint: (id: number, x: number, y: number, z: number, vx: number, vy: number, vz: number, rgb: number) => void = () => {};
+  /** Someone else threw a tennis ball: release origin and velocity. */
+  onBall: (id: number, throwId: number, x: number, y: number, z: number, vx: number, vy: number, vz: number) => void = () => {};
+  /** Server-arbitrated pickup result: picker, original owner, stable throw id. */
+  onBallPickup: (pickerId: number, ownerId: number, throwId: number, accepted: boolean) => void = () => {};
   /** Someone else launched fireworks: rows [ox,oy,oz,tx,ty,tz,T,pal,size]
    * (replayed locally by fireworks.launchRemote). */
   onFireworks: (id: number, rockets: number[][]) => void = () => {};
@@ -831,6 +839,39 @@ export class Net {
         }
         break;
       }
+      case "ball": {
+        if (msg.k === "throw") {
+          const id = msg.id as number;
+          const throwId = msg.n as number;
+          const d = msg.d as number[];
+          if (
+            id !== this.selfId &&
+            this.roster.has(id) &&
+            Number.isInteger(throwId) &&
+            throwId > 0 &&
+            Array.isArray(d) &&
+            d.length === 6 &&
+            d.every(Number.isFinite)
+          ) {
+            this.onBall(id, throwId, d[0], d[1], d[2], d[3], d[4], d[5]);
+          }
+        } else if (msg.k === "pickup") {
+          const pickerId = msg.id as number;
+          const ownerId = msg.owner as number;
+          const throwId = msg.n as number;
+          if (
+            Number.isInteger(pickerId) &&
+            Number.isInteger(ownerId) &&
+            Number.isInteger(throwId) &&
+            throwId > 0 &&
+            (pickerId === this.selfId || this.roster.has(pickerId)) &&
+            (ownerId === this.selfId || this.roster.has(ownerId))
+          ) {
+            this.onBallPickup(pickerId, ownerId, throwId, msg.ok === true);
+          }
+        }
+        break;
+      }
       case "fw": {
         const id = msg.id as number;
         const d = msg.d as number[][];
@@ -967,6 +1008,22 @@ export class Net {
       rgb
     ];
     this.#ws.send(JSON.stringify({ t: "paint", d }));
+  }
+
+  /** Broadcast one tennis-ball release. Peers run the shared ball simulation. */
+  sendBall(throwId: number, x: number, y: number, z: number, vx: number, vy: number, vz: number): boolean {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return false;
+    const d = [x, y, z, vx, vy, vz].map((value) => Math.round(value * 100) / 100);
+    this.#ws.send(JSON.stringify({ t: "ball", k: "throw", n: throwId, d }));
+    return true;
+  }
+
+  /** Ask the relay to atomically transfer one stable ball to this player. */
+  requestBallPickup(ownerId: number, throwId: number): boolean {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return false;
+    if (!Number.isInteger(ownerId) || ownerId <= 0 || !Number.isInteger(throwId) || throwId <= 0) return false;
+    this.#ws.send(JSON.stringify({ t: "ball", k: "pickup", owner: ownerId, n: throwId }));
+    return true;
   }
 
   /** Broadcast one fireworks volley (rows [ox,oy,oz,tx,ty,tz,T,pal,size]).
