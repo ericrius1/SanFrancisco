@@ -62,9 +62,11 @@ async function main() {
   try {
     await waitHttp(`http://localhost:${vitePort}/`, 30000, "vite");
     const dbgPort = await freePort();
+    const headed = process.env.SF_HEADED === "1";
     const chrome = spawn(await findChrome(), [
       `--remote-debugging-port=${dbgPort}`,
-      "--headless=new", "--use-angle=metal", "--enable-unsafe-webgpu",
+      ...(headed ? ["--window-position=-3400,60"] : ["--headless=new"]),
+      "--use-angle=metal", "--enable-unsafe-webgpu",
       "--enable-features=Vulkan,WebGPU", "--hide-scrollbars", "--mute-audio",
       `--window-size=${W},${H}`, "--no-first-run", "--no-default-browser-check",
       `--user-data-dir=${path.join(OUT, "chrome-profile")}`,
@@ -79,7 +81,8 @@ async function main() {
       await cdp.send("Page.enable");
       await cdp.send("Runtime.enable");
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
-      await cdp.send("Page.navigate", { url: `http://localhost:${vitePort}/?autostart=1&spawn=oceanBeach&fullfps=1` });
+      await cdp.send("Runtime.enable");
+      await cdp.send("Page.navigate", { url: `http://localhost:${vitePort}/?autostart=1&spawn=oceanBeach&fullfps=1${process.env.SF_QS ?? ""}` });
       const t0 = Date.now();
       while (Date.now() - t0 < 120000) {
         const ready = await ev(cdp, `!!(window.__sf && window.__sf.player && document.body.classList.contains("started"))`).catch(() => false);
@@ -119,6 +122,107 @@ async function main() {
           };
           return n + " hidden";
         })()`));
+      }
+      if (process.env.SF_PATCH === "realwalk") {
+        // REAL walking via the scripted InputDriver (full player.update, trample,
+        // chase camera) while the pixel spy watches the sky band.
+        console.log("[repro] patch:", await ev(cdp, `(() => {
+          const sf = window.__sf;
+          const canvas = document.querySelector("canvas");
+          const off = document.createElement("canvas");
+          off.width = 220; off.height = 138;
+          const ctx = off.getContext("2d", { willReadFrequently: true });
+          window.__walkSpy = { events: [], frame: 0, err: null };
+          const spy = window.__walkSpy;
+          sf.input.setDriver({
+            update(dt, controls) {
+              spy.frame++;
+              if (spy.frame === 1 && sf.chase) sf.chase.yaw = Number("${process.env.SF_YAW ?? "3.14"}");
+              controls.hold("KeyW");
+              // slow weave so the camera sweeps sky+grass; occasional look up
+              controls.look(Math.sin(spy.frame * 0.004) * 3.0, Math.sin(spy.frame * 0.0113) * 1.4);
+              try {
+                ctx.drawImage(canvas, 0, 0, 220, 138);
+                const img = ctx.getImageData(0, 4, 220, 44).data;
+                let hits = 0, cx = 0, cy = 0;
+                for (let p = 0; p < img.length; p += 4) {
+                  const r = img[p], g = img[p + 1], b = img[p + 2];
+                  const bright = (r + g + b) / 3;
+                  const greenish = g > b + 12 && g > 60;
+                  const cream = bright > 228 && b < 246;
+                  const darkblob = bright < 100;
+                  if (greenish || cream || darkblob) { hits++; cx += (p / 4) % 220; cy += Math.floor(p / 4 / 220); }
+                }
+                if (hits >= 3 && hits < 2500) {
+                  spy.events.push({ frame: spy.frame, hits, px: Math.round(cx / hits * (1600 / 220)), py: Math.round((cy / hits + 4) * (1000 / 138)) });
+                  if (spy.events.length > 80) spy.events.shift();
+                }
+              } catch (err) { spy.err = String(err); }
+            }
+          });
+          return "real-walk driver installed";
+        })()`));
+        await sleep(Number(process.env.SF_SPY_SECONDS ?? 90) * 1000);
+        const out = await ev(cdp, `(() => { const sf = window.__sf; return { frames: window.__walkSpy.frame, err: window.__walkSpy.err, eventCount: window.__walkSpy.events.length, events: window.__walkSpy.events.slice(-20), pos: sf.player.position.toArray().map(Math.round) }; })()`);
+        writeFileSync(path.join(OUT, "realwalk.json"), JSON.stringify(out, null, 1));
+        console.log("[repro] realwalk:", JSON.stringify(out).slice(0, 700));
+      }
+      if (process.env.SF_PATCH === "grasswalk") {
+        // Drive the player along the beach through wildlands grass while a
+        // pixel spy watches the sky band for grass-colored/bright spikes
+        // (stretched or misplaced blade instances). Camera trails the player.
+        console.log("[repro] patch:", await ev(cdp, `(() => {
+          const sf = window.__sf;
+          const canvas = document.querySelector("canvas");
+          const off = document.createElement("canvas");
+          off.width = 220; off.height = 138;
+          const ctx = off.getContext("2d", { willReadFrequently: true });
+          window.__walkSpy = { events: [], frame: 0, err: null, moved: 0 };
+          const spy = window.__walkSpy;
+          const base = { x: sf.player.position.x, z: sf.player.position.z };
+          const speed = Number("${process.env.SF_WALK_SPEED ?? "0.12"}");
+          const freeze = "${process.env.SF_FREEZE_GRASS ?? ""}" === "1";
+          if (freeze && sf.wildlands && sf.wildlands.grass && sf.wildlands.grass.update) {
+            sf.wildlands.grass.update = () => {};
+          }
+          const scan = () => {
+            spy.frame++;
+            // stroll north along the dune line, gentle weave
+            const t = spy.frame;
+            sf.player.position.x = base.x + Math.sin(t * 0.005) * 25;
+            sf.player.position.z = base.z - t * speed;
+            spy.moved = Math.round(t * speed);
+            window.__sfFreeCam(
+              [sf.player.position.x + 3, sf.player.position.y + 2.2, sf.player.position.z + 26],
+              [sf.player.position.x, sf.player.position.y + 14, sf.player.position.z - 60]
+            );
+            try {
+              ctx.drawImage(canvas, 0, 0, 220, 138);
+              // sky band: rows 4..52 of 138 (~upper 40%)
+              const img = ctx.getImageData(0, 4, 220, 48).data;
+              let hits = 0, cx = 0, cy = 0;
+              for (let p = 0; p < img.length; p += 4) {
+                const r = img[p], g = img[p + 1], b = img[p + 2];
+                const bright = (r + g + b) / 3;
+                const greenish = g > b + 12 && g > 60;
+                const cream = bright > 225 && b < 245;
+                const darkblob = bright < 105;
+                if (greenish || cream || darkblob) { hits++; cx += (p / 4) % 220; cy += Math.floor(p / 4 / 220); }
+              }
+              if (hits >= 3 && hits < 2500) {
+                spy.events.push({ frame: spy.frame, hits, px: Math.round(cx / hits * (1600 / 220)), py: Math.round((cy / hits + 4) * (1000 / 138)) });
+                if (spy.events.length > 60) spy.events.shift();
+              }
+            } catch (err) { spy.err = String(err); }
+            requestAnimationFrame(scan);
+          };
+          requestAnimationFrame(scan);
+          return "walk spy on" + (freeze ? " (grass streaming frozen)" : "");
+        })()`));
+        await sleep(Number(process.env.SF_SPY_SECONDS ?? 60) * 1000);
+        const out = await ev(cdp, `window.__walkSpy && { frames: window.__walkSpy.frame, movedMeters: window.__walkSpy.moved, err: window.__walkSpy.err, eventCount: window.__walkSpy.events.length, events: window.__walkSpy.events.slice(-15) }`);
+        writeFileSync(path.join(OUT, "grasswalk.json"), JSON.stringify(out, null, 1));
+        console.log("[repro] grasswalk:", JSON.stringify(out).slice(0, 600));
       }
       if (process.env.SF_PATCH === "echochurn") {
         // Waterline churn: oscillate the (freecam-frozen) player across the
@@ -514,6 +618,107 @@ async function main() {
         if (["drawspy", "drawspy2", "hullspy"].includes(process.env.SF_PATCH || "")) shotTimes.push(await ev(cdp, `Math.round(performance.now())`));
         const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
         writeFileSync(path.join(OUT, "shots", `s${String(i).padStart(3, "0")}.png`), Buffer.from(shot.data, "base64"));
+      }
+      if (process.env.SF_PATCH === "realwalk") {
+        // REAL walking via the scripted InputDriver (full player.update, trample,
+        // chase camera) while the pixel spy watches the sky band.
+        console.log("[repro] patch:", await ev(cdp, `(() => {
+          const sf = window.__sf;
+          const canvas = document.querySelector("canvas");
+          const off = document.createElement("canvas");
+          off.width = 220; off.height = 138;
+          const ctx = off.getContext("2d", { willReadFrequently: true });
+          window.__walkSpy = { events: [], frame: 0, err: null };
+          const spy = window.__walkSpy;
+          sf.input.setDriver({
+            update(dt, controls) {
+              spy.frame++;
+              if (spy.frame === 1 && sf.chase) sf.chase.yaw = Number("${process.env.SF_YAW ?? "3.14"}");
+              controls.hold("KeyW");
+              // slow weave so the camera sweeps sky+grass; occasional look up
+              controls.look(Math.sin(spy.frame * 0.004) * 3.0, Math.sin(spy.frame * 0.0113) * 1.4);
+              try {
+                ctx.drawImage(canvas, 0, 0, 220, 138);
+                const img = ctx.getImageData(0, 4, 220, 44).data;
+                let hits = 0, cx = 0, cy = 0;
+                for (let p = 0; p < img.length; p += 4) {
+                  const r = img[p], g = img[p + 1], b = img[p + 2];
+                  const bright = (r + g + b) / 3;
+                  const greenish = g > b + 12 && g > 60;
+                  const cream = bright > 228 && b < 246;
+                  const darkblob = bright < 100;
+                  if (greenish || cream || darkblob) { hits++; cx += (p / 4) % 220; cy += Math.floor(p / 4 / 220); }
+                }
+                if (hits >= 3 && hits < 2500) {
+                  spy.events.push({ frame: spy.frame, hits, px: Math.round(cx / hits * (1600 / 220)), py: Math.round((cy / hits + 4) * (1000 / 138)) });
+                  if (spy.events.length > 80) spy.events.shift();
+                }
+              } catch (err) { spy.err = String(err); }
+            }
+          });
+          return "real-walk driver installed";
+        })()`));
+        await sleep(Number(process.env.SF_SPY_SECONDS ?? 90) * 1000);
+        const out = await ev(cdp, `(() => { const sf = window.__sf; return { frames: window.__walkSpy.frame, err: window.__walkSpy.err, eventCount: window.__walkSpy.events.length, events: window.__walkSpy.events.slice(-20), pos: sf.player.position.toArray().map(Math.round) }; })()`);
+        writeFileSync(path.join(OUT, "realwalk.json"), JSON.stringify(out, null, 1));
+        console.log("[repro] realwalk:", JSON.stringify(out).slice(0, 700));
+      }
+      if (process.env.SF_PATCH === "grasswalk") {
+        // Drive the player along the beach through wildlands grass while a
+        // pixel spy watches the sky band for grass-colored/bright spikes
+        // (stretched or misplaced blade instances). Camera trails the player.
+        console.log("[repro] patch:", await ev(cdp, `(() => {
+          const sf = window.__sf;
+          const canvas = document.querySelector("canvas");
+          const off = document.createElement("canvas");
+          off.width = 220; off.height = 138;
+          const ctx = off.getContext("2d", { willReadFrequently: true });
+          window.__walkSpy = { events: [], frame: 0, err: null, moved: 0 };
+          const spy = window.__walkSpy;
+          const base = { x: sf.player.position.x, z: sf.player.position.z };
+          const speed = Number("${process.env.SF_WALK_SPEED ?? "0.12"}");
+          const freeze = "${process.env.SF_FREEZE_GRASS ?? ""}" === "1";
+          if (freeze && sf.wildlands && sf.wildlands.grass && sf.wildlands.grass.update) {
+            sf.wildlands.grass.update = () => {};
+          }
+          const scan = () => {
+            spy.frame++;
+            // stroll north along the dune line, gentle weave
+            const t = spy.frame;
+            sf.player.position.x = base.x + Math.sin(t * 0.005) * 25;
+            sf.player.position.z = base.z - t * speed;
+            spy.moved = Math.round(t * speed);
+            window.__sfFreeCam(
+              [sf.player.position.x + 3, sf.player.position.y + 2.2, sf.player.position.z + 26],
+              [sf.player.position.x, sf.player.position.y + 14, sf.player.position.z - 60]
+            );
+            try {
+              ctx.drawImage(canvas, 0, 0, 220, 138);
+              // sky band: rows 4..52 of 138 (~upper 40%)
+              const img = ctx.getImageData(0, 4, 220, 48).data;
+              let hits = 0, cx = 0, cy = 0;
+              for (let p = 0; p < img.length; p += 4) {
+                const r = img[p], g = img[p + 1], b = img[p + 2];
+                const bright = (r + g + b) / 3;
+                const greenish = g > b + 12 && g > 60;
+                const cream = bright > 225 && b < 245;
+                const darkblob = bright < 105;
+                if (greenish || cream || darkblob) { hits++; cx += (p / 4) % 220; cy += Math.floor(p / 4 / 220); }
+              }
+              if (hits >= 3 && hits < 2500) {
+                spy.events.push({ frame: spy.frame, hits, px: Math.round(cx / hits * (1600 / 220)), py: Math.round((cy / hits + 4) * (1000 / 138)) });
+                if (spy.events.length > 60) spy.events.shift();
+              }
+            } catch (err) { spy.err = String(err); }
+            requestAnimationFrame(scan);
+          };
+          requestAnimationFrame(scan);
+          return "walk spy on" + (freeze ? " (grass streaming frozen)" : "");
+        })()`));
+        await sleep(Number(process.env.SF_SPY_SECONDS ?? 60) * 1000);
+        const out = await ev(cdp, `window.__walkSpy && { frames: window.__walkSpy.frame, movedMeters: window.__walkSpy.moved, err: window.__walkSpy.err, eventCount: window.__walkSpy.events.length, events: window.__walkSpy.events.slice(-15) }`);
+        writeFileSync(path.join(OUT, "grasswalk.json"), JSON.stringify(out, null, 1));
+        console.log("[repro] grasswalk:", JSON.stringify(out).slice(0, 600));
       }
       if (process.env.SF_PATCH === "echochurn") {
         // Waterline churn: oscillate the (freecam-frozen) player across the

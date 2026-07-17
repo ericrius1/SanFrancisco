@@ -4005,6 +4005,13 @@ async function boot() {
   let settlePct = 88;
   let settleLabel = "";
   const bootQuery = new URLSearchParams(location.search);
+  // `?flickerspy=1`: in-session diagnostic for the sky-flicker reports — see
+  // dev/flickerSpy.ts. Lazy import; costs nothing without the flag.
+  if (bootQuery.has("flickerspy")) {
+    void import("./dev/flickerSpy").then(({ installFlickerSpy }) =>
+      installFlickerSpy({ renderer, scene, camera })
+    );
+  }
   // Local development is primarily exercised by browser agents, so enter the
   // world as soon as it is ready instead of leaving them stranded at a purely
   // human identity gate. `?startscreen=1` keeps the real onboarding path easy
