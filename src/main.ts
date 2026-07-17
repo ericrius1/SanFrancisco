@@ -3626,19 +3626,44 @@ async function boot() {
   // gameplay sites above: trees read from far offshore and survive their
   // exhibit unloading behind the player. Each build() dynamic-imports the
   // site's placement module and plants through the shared vegetation runtime.
+  // The destination exhibit always outranks scenery: a cypress compile racing
+  // the labyrinth's own pipeline work at boot can starve the thing the player
+  // actually teleported to. Foliage admissions wait until no optional site is
+  // mid-construction (bounded — exhibit builds complete or abort).
+  const optionalSiteConstructionIdle = async (): Promise<void> => {
+    while (
+      optionalWorldSites.some((site) => site.state === "queued" || site.state === "loading")
+    ) {
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const settle = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        requestAnimationFrame(settle);
+        setTimeout(settle, 250);
+      });
+    }
+  };
   siteFoliage = new SiteFoliageStreamer({
     scene,
-    admit: (eligibleSince) =>
-      waitForWorldBackgroundWindow(
+    admit: async (eligibleSince) => {
+      await optionalSiteConstructionIdle();
+      await waitForWorldBackgroundWindow(
         700,
         eligibleSince > 0 ? eligibleSince + OPTIONAL_SITE_STARVATION_CAP_MS : Infinity
-      ),
-    // The compile admission needs the same starvation cap as build admission:
-    // an uncapped quiet window never opens for a player who keeps moving.
+      );
+    },
+    // The compile admission needs the same treatment as build admission: an
+    // uncapped quiet window never opens for a player who keeps moving, and an
+    // exhibit that started constructing meanwhile takes the GPU first.
     prepare: (label, root) =>
-      prepareOptionalRoot(label, root, () =>
-        waitForWorldBackgroundWindow(700, performance.now() + OPTIONAL_SITE_STARVATION_CAP_MS)
-      ),
+      prepareOptionalRoot(label, root, async () => {
+        await optionalSiteConstructionIdle();
+        await waitForWorldBackgroundWindow(700, performance.now() + OPTIONAL_SITE_STARVATION_CAP_MS);
+      }),
     onResidencyChanged: () => sky.invalidateStaticShadows()
   });
   siteFoliage.setVisible(foliageOn);
