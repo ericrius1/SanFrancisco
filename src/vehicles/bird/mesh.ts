@@ -1,4 +1,10 @@
 import * as THREE from "three/webgpu";
+import type { Cockpit } from "../../player/types";
+import {
+  PHOENIX_DRIVER_SEAT,
+  PHOENIX_PASSENGER_CAPACITY,
+  PHOENIX_PASSENGER_SEATS
+} from "./saddleContract";
 
 /**
  * Playable phoenix, loaded lazily from /models/phoenix-hero.glb. The hero faces
@@ -47,6 +53,10 @@ export function poseBone(c: BoneCtl, x: number, y: number, z: number) {
 
 export function buildBirdMesh(): THREE.Group {
   const g = new THREE.Group();
+  g.name = "phoenix_mount";
+  g.userData.cockpit = { seat: [...PHOENIX_DRIVER_SEAT] } satisfies Cockpit;
+  g.userData.passengerSeats = PHOENIX_PASSENGER_SEATS.map((seat) => [...seat]);
+  g.userData.rideCapacity = PHOENIX_PASSENGER_CAPACITY;
   g.userData.embodimentVisible = false;
   g.visible = false;
   return g;

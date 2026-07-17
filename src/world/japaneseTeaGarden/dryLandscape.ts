@@ -6,6 +6,7 @@ import type { GardenRakeMotion, GardenRakeTool } from "../../player/gardenRake";
 import type { TeaGardenTerrain } from "./layout";
 import {
   createSandSimulation,
+  type SandRakeStamp,
   type SandSimulation,
   type SandSimulationStats
 } from "./sandSimulation";
@@ -52,6 +53,12 @@ export type DryLandscape = {
   group: THREE.Group;
   update(dt: number, time: number, player: { x: number; y: number; z: number }, mode: string): void;
   interact(player: { x: number; y: number; z: number }, mode: string): boolean;
+  isPlayerActive(): boolean;
+  /** Quiet teardown used by teleport and the shared minigame exit button. */
+  releaseForNavigation(): boolean;
+  /** Apply a server-ordered local or remote stroke to this client's GPU field. */
+  queueRakeStamp(stamp: SandRakeStamp): void;
+  resetSand(): void;
   addTuning(folder: FolderApi): DebugMonitorBinding[];
   syncTuning(): void;
   dispose(): void;
@@ -64,6 +71,9 @@ export type DryLandscapeOptions = {
   nature: NatureSoundscape;
   onCarryRake?: (rake: GardenRakeTool | null) => void;
   onRakeMotion?: (motion: Readonly<GardenRakeMotion> | null) => void;
+  /** Return true when multiplayer accepted the stroke and will echo it back in
+   *  canonical server order. False leaves the activity to apply it locally. */
+  onRakeStamp?: (stamp: Readonly<SandRakeStamp>) => boolean;
   notify?: (message: string, seconds?: number) => void;
 };
 
@@ -158,7 +168,7 @@ function cylinderBetween(a: THREE.Vector3, b: THREE.Vector3, radius: number, mat
   return mesh;
 }
 
-function createRake(): GardenRakeTool {
+export function createGardenRakeTool(): GardenRakeTool {
   const root = new THREE.Group();
   root.name = "dry_landscape_little_rake";
   const bamboo = new THREE.MeshStandardMaterial({ color: 0xc18a43, roughness: 0.82 });
@@ -219,7 +229,7 @@ function createRake(): GardenRakeTool {
   };
 }
 
-function createRakeRack(map: TeaGardenTerrain, rake: GardenRakeTool): THREE.Group {
+function createRakeRack(map: TeaGardenTerrain, rakes: readonly GardenRakeTool[]): THREE.Group {
   const group = new THREE.Group();
   group.name = "dry_landscape_rake_rack";
   const y = map.groundTop(RAKE_RACK.x, RAKE_RACK.z);
@@ -239,9 +249,14 @@ function createRakeRack(map: TeaGardenTerrain, rake: GardenRakeTool): THREE.Grou
   rest.castShadow = true;
   rest.receiveShadow = true;
   group.add(rest);
-  group.add(rake.root);
-  rake.root.position.set(0.1, 1.92, -0.05);
-  rake.root.rotation.set(0.08, 0.08, -0.12);
+  // These are reusable visual templates, not a finite inventory. Every player
+  // receives a fresh carried instance, so two friends can take rakes while the
+  // stand still advertises that anyone else may grab another one.
+  rakes.forEach((rake, index) => {
+    group.add(rake.root);
+    rake.root.position.set(index === 0 ? -0.12 : 0.15, 1.9 + index * 0.035, -0.03 - index * 0.09);
+    rake.root.rotation.set(0.08, 0.08 + index * 0.035, index === 0 ? -0.15 : -0.08);
+  });
   return group;
 }
 
@@ -302,8 +317,14 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
 
   const rakeAudio = new TeaGardenRakeAudio(options.nature);
 
-  const rake = createRake();
-  const rack = createRakeRack(map, rake);
+  const rackTemplates = [createGardenRakeTool(), createGardenRakeTool()];
+  rackTemplates.forEach((template, index) => {
+    template.root.name = `dry_landscape_rake_template_${index + 1}`;
+  });
+  const rack = createRakeRack(map, rackTemplates);
+  const rake = createGardenRakeTool();
+  rake.root.visible = false;
+  rack.add(rake.root);
   group.add(rack);
 
   let held = false;
@@ -341,12 +362,12 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
     pull: { x: 0, z: -1 }
   };
 
-  const resetRakePose = () => {
+  const parkCarriedRake = () => {
     rack.add(rake.root);
-    rake.root.position.set(0.1, 1.92, -0.05);
-    rake.root.rotation.set(0.08, 0.08, -0.12);
+    rake.root.position.set(0, 0, 0);
+    rake.root.quaternion.identity();
     rake.root.scale.setScalar(1);
-    rake.root.visible = true;
+    rake.root.visible = false;
   };
 
   const setRaking = (next: boolean) => {
@@ -373,10 +394,11 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
     if (next) {
       rake.root.removeFromParent();
       options.onCarryRake?.(rake);
+      publishMotion(false, false);
     } else {
       options.onRakeMotion?.(null);
       options.onCarryRake?.(null);
-      resetRakePose();
+      parkCarriedRake();
     }
     if (message) options.notify?.(message, 3.3);
   };
@@ -485,7 +507,10 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
             // shading, which is opposite the shaft's head→player pose axis.
             stamp.pull.x = -pullX;
             stamp.pull.z = -pullZ;
-            simulation.queueStamp(stamp);
+            // Online clients wait for the relay to echo this segment to every
+            // participant (including its sender), giving all GPU fields one
+            // canonical order. Offline play keeps the immediate local path.
+            if (!options.onRakeStamp?.(stamp)) simulation.queueStamp(stamp);
           }
         }
         previousContactX = motion.contactX;
@@ -505,6 +530,20 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
       if (mode !== "walk" || Math.hypot(player.x - RAKE_RACK.x, player.z - RAKE_RACK.z) > PICKUP_RANGE) return false;
       setHeld(true, "Rake in both hands — walk through the sand to sculpt seven real furrows. E returns it.");
       return true;
+    },
+    isPlayerActive() {
+      return held;
+    },
+    releaseForNavigation() {
+      if (!held) return false;
+      setHeld(false);
+      return true;
+    },
+    queueRakeStamp(stamp) {
+      simulation.queueStamp(stamp);
+    },
+    resetSand() {
+      simulation.reset();
     },
     addTuning(folder) {
       return simulation.addTuning(folder);

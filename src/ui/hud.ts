@@ -59,8 +59,8 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Mouse"], label: "aim" },
     { c: ["W", "S"], label: "along the view" },
     { c: ["A", "D"], label: "strafe" },
-    { c: ["E", "Q"], label: "up · down" },
-    { c: ["Space"], label: "hover" },
+    { c: ["U", "Q"], label: "up · down" },
+    { c: ["Space"], label: "fly up" },
     { c: ["Shift"], label: "boost" },
     { c: ["Click"], label: "shoot" }
   ],
@@ -89,7 +89,8 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["A", "D"], label: "strafe" },
     { c: ["Space"], label: "flap · climb" },
     { c: ["Shift"], label: "tuck dive" },
-    { c: ["Q", "E"], label: "twirl" },
+    { c: ["Q"], label: "twirl" },
+    { c: ["E"], label: "dismount" },
     { c: ["Click"], label: "shoot" }
   ]
 }
@@ -153,7 +154,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LS"], label: "move" },
     { c: ["RT", "LB"], label: "up · down" },
     { c: ["L3", "LT"], label: "boost" },
-    { c: ["A"], label: "hover" },
+    { c: ["A"], label: "fly up" },
     { c: ["Y"], label: "land" },
     { c: ["X"], label: "shoot" }
   ],
@@ -182,6 +183,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["A"], label: "flap · climb" },
     { c: ["L3", "LT"], label: "tuck dive" },
     { c: ["LB", "RB"], label: "twirl" },
+    { c: ["Y"], label: "dismount" },
     { c: ["RT"], label: "shoot" }
   ]
 }
@@ -193,7 +195,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   scooter: "LB power-slide with steer · ramps launch cleanly · rear seat fits a friend",
   board: "White glow = nose · pull right stick back in the air to flip",
   surf: "Carve toward the beach for speed, then up the wave and off the lip · double-tap A/D to cut back · hold the pocket for the barrel",
-  bird: "Look down + Shift to stoop — skim the bay for spray"
+  bird: "Three-seat saddle — two friends can press E nearby and fly with you"
 }
 
 // Xbox face buttons get their signature colors
@@ -231,6 +233,7 @@ const PANELS: Record<string, string> = {
   links: ".links-ui",
   locator: ".player-locator",
   pause: ".pause-ui",
+  minigameExit: ".minigame-exit",
   restore: ".ui-restore",
 }
 
@@ -243,6 +246,7 @@ export class HUD {
   #helpToggle = document.createElement("button")
   #center = document.querySelector<HTMLElement>('[data-hud="center"]')!
   #history = document.createElement("div")
+  #minigameExit = document.createElement("button")
   #msgTimer = 0
   #current: PlayerMode = "walk"
   #device: "kb" | "pad" = "kb"
@@ -254,6 +258,7 @@ export class HUD {
 
   onHistoryBack: () => void = () => {}
   onHistoryForward: () => void = () => {}
+  onMinigameExit: () => void = () => {}
 
   constructor() {
     this.#helpBody.className = "help-body"
@@ -286,6 +291,16 @@ export class HUD {
       }
     })
     this.#renderHistory()
+
+    this.#minigameExit.type = "button"
+    this.#minigameExit.className = "minigame-exit"
+    this.#minigameExit.hidden = true
+    this.#minigameExit.addEventListener("click", (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      this.onMinigameExit()
+    })
+    this.#root.querySelector<HTMLElement>(".br-stack")?.appendChild(this.#minigameExit)
   }
 
   #syncHelpCollapse() {
@@ -316,6 +331,16 @@ export class HUD {
     this.#historyCanBack = canBack
     this.#historyCanForward = canForward
     this.#renderHistory()
+  }
+
+  setMinigameExit(label: string | null) {
+    this.#minigameExit.hidden = !label
+    if (!label) return
+    this.#minigameExit.title = `Exit ${label} and return to where you started`
+    this.#minigameExit.setAttribute("aria-label", this.#minigameExit.title)
+    this.#minigameExit.innerHTML =
+      `<span class="minigame-exit-icon" aria-hidden="true">↩</span>` +
+      `<span class="minigame-exit-copy"><b>Exit ${label}</b><small>Return to start</small></span>`
   }
 
   /** Swap the help labels to whichever device was touched last. */

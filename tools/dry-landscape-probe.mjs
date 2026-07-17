@@ -194,6 +194,14 @@ try {
   await page.waitForFunction(() => window.__sf.japaneseTeaGarden.debugState().dryLandscape.raking, undefined, { timeout: 5000 });
   await page.waitForTimeout(650);
   await page.keyboard.up("w");
+  // Online sand waits for the relay's canonical echo so every client applies
+  // concurrent strokes in the same order. Allow that small batch round trip.
+  await page.waitForFunction(
+    (dispatches) =>
+      window.__sf.japaneseTeaGarden.debugState().dryLandscape.simulation.totalDispatches > dispatches,
+    realInputBefore.dispatches,
+    { timeout: 5000 }
+  );
   const realInputAfter = await page.evaluate(() => ({
     x: window.__sf.player.renderPosition.x,
     z: window.__sf.player.renderPosition.z,
@@ -311,14 +319,19 @@ try {
   assert.equal(simulationAudit.renderer.webgpu, true, "garden did not run on the required WebGPU backend");
   assert.ok(simulationAudit.dry.simulation.totalDispatches > 40, "raking did not execute the granular GPU pipeline");
   assert.ok(simulationAudit.dry.simulation.revision > 10, "sand state did not advance while raking");
-  assert.ok(simulationAudit.dry.simulation.queuedStamps <= 18, "bounded stamp queue overflowed");
+  assert.ok(
+    simulationAudit.dry.simulation.queuedStamps <= 256,
+    "shared-history stamp queue overflowed"
+  );
 
   const actionRequests = requests.slice(actionStart).filter(teaRequest);
   assert.deepEqual(actionRequests, [], `raking fetched more Tea Garden code/assets: ${actionRequests.join(", ")}`);
 
   // Controls register only after the lazy activity exists, and remain part of
   // the shared slash diagnostics surface rather than an always-on activity UI.
-  await page.evaluate(() => window.__sf.debugPanel.toggle());
+  await page.evaluate(() => {
+    if (!window.__sf.debugPanel.visible) window.__sf.debugPanel.toggle();
+  });
   await page.waitForTimeout(250);
   const tuningAudit = await page.evaluate(() => ({
     hasRepose: document.body.textContent.includes("angle of repose"),
@@ -334,7 +347,9 @@ try {
     hasRakeMarkContrast: true,
     hasReset: true
   });
-  await page.evaluate(() => window.__sf.debugPanel.toggle());
+  await page.evaluate(() => {
+    if (window.__sf.debugPanel.visible) window.__sf.debugPanel.toggle();
+  });
 
   await page.evaluate(({ center }) => {
     const sf = window.__sf;

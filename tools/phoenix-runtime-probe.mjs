@@ -63,17 +63,21 @@ try {
     let meshes = 0;
     let skinnedMeshes = 0;
     let triangles = 0;
-    const materials = [];
+    let heroTriangles = 0;
+    const heroMaterials = [];
     const attributes = [];
     root.traverse((object) => {
       if (!object.isMesh) return;
       meshes++;
       if (object.isSkinnedMesh) skinnedMeshes++;
       const geometry = object.geometry;
-      triangles += geometry.index ? geometry.index.count / 3 : geometry.getAttribute("position").count / 3;
+      const meshTriangles = geometry.index ? geometry.index.count / 3 : geometry.getAttribute("position").count / 3;
+      triangles += meshTriangles;
+      if (!object.isSkinnedMesh) return;
+      heroTriangles += meshTriangles;
       attributes.push(Object.keys(geometry.attributes));
       for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
-        materials.push({
+        heroMaterials.push({
           type: material.type,
           name: material.name,
           hasPositionNode: !!material.positionNode,
@@ -93,8 +97,11 @@ try {
       meshes,
       skinnedMeshes,
       triangles,
-      materials,
+      heroTriangles,
+      heroMaterials,
       attributes,
+      saddle: root.getObjectByName("phoenix_saddle")?.name,
+      passengerSeats: root.userData.passengerSeats,
       trails: root.userData.trailPoints?.map((point) => point.name),
       wingTips: root.userData.wingTips?.map((point) => point.name),
       bounds: { x: size.x, y: size.y, z: size.z },
@@ -104,13 +111,15 @@ try {
 
   assert.equal(runtime.mode, "bird");
   assert.deepEqual(runtime.asset, { url: "/models/phoenix-hero.glb", lod: 0, featherMode: "tsl-vertex" });
-  assert.equal(runtime.meshes, 1, `expected one phoenix draw mesh, got ${runtime.meshes}`);
+  assert(runtime.meshes > 1, `expected the hero plus procedural saddle meshes, got ${runtime.meshes}`);
   assert.equal(runtime.skinnedMeshes, 1, `expected one skinned phoenix mesh, got ${runtime.skinnedMeshes}`);
-  assert.equal(runtime.triangles, 58_000);
-  assert(runtime.materials.every((material) => material.type === "MeshSSSNodeMaterial"));
-  assert(runtime.materials.every((material) => material.hasPositionNode && material.hasEmissiveNode && material.hasThicknessNode));
-  assert(runtime.materials.every((material) => material.hasBaseColor && material.hasNormal && material.hasOrm));
+  assert.equal(runtime.heroTriangles, 58_000);
+  assert(runtime.heroMaterials.every((material) => material.type === "MeshSSSNodeMaterial"));
+  assert(runtime.heroMaterials.every((material) => material.hasPositionNode && material.hasEmissiveNode && material.hasThicknessNode));
+  assert(runtime.heroMaterials.every((material) => material.hasBaseColor && material.hasNormal && material.hasOrm));
   assert(runtime.attributes.every((names) => ["phxDynamics", "phxStyle"].every((name) => names.includes(name))));
+  assert.equal(runtime.saddle, "phoenix_saddle");
+  assert.equal(runtime.passengerSeats.length, 2);
   assert.deepEqual(runtime.trails, ["PHX_Gen_Trail_L", "PHX_Gen_Trail_R"]);
   assert.deepEqual(runtime.wingTips, ["PHX_Gen_Wingtip_L", "PHX_Gen_Wingtip_R"]);
   assert(!requests.some((url) => /\/models\/phoenix\.glb(?:\?|$)/.test(url)), "legacy phoenix was requested");

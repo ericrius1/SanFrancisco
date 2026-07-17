@@ -7,14 +7,14 @@ import { OCEAN_BEACH_SURF } from "./oceanBeachWaves";
  * three.js city generator uses for its road asphalt.
  * (TSL node generics don't compose across ops; any keeps the math readable.)
  */
-export function bumpNormal(height: any): any {
+export function bumpNormal(height: any, baseNormal: any = normalView): any {
   const dpdx = positionView.dFdx();
   const dpdy = positionView.dFdy();
-  const r1 = dpdy.cross(normalView);
-  const r2 = normalView.cross(dpdx);
+  const r1 = dpdy.cross(baseNormal);
+  const r2 = baseNormal.cross(dpdx);
   const det = dpdx.dot(r1);
   const grad = det.sign().mul(height.dFdx().mul(r1).add(height.dFdy().mul(r2)));
-  return det.abs().mul(normalView).sub(grad).normalize();
+  return det.abs().mul(baseNormal).sub(grad).normalize();
 }
 
 /**

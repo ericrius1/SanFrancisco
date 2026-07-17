@@ -16,7 +16,6 @@ import time
 
 import numpy as np
 from mathutils import Vector
-from mathutils.geometry import delaunay_2d_cdt
 
 ROOT = "/Users/eric/codeprojects/sanfrancisco"
 CITY_JSON = os.path.join(ROOT, "data/city/city.json")
@@ -466,76 +465,14 @@ def bridge_deck_heights(xs, zs, meta):
     return out
 
 
-PARK_LIFT = 0.15
-PARK_GRID = 8.0  # interior point spacing = heightmap resolution
-
-
-def conforming_park(poly):
-    """Constrained-Delaunay triangulation of a park polygon with interior
-    steiner points every PARK_GRID metres, so the lawn can drape over the
-    heightmap. The old single flat n-gon spanned the whole hill as one plate —
-    it jutted out of the downhill side and buried itself uphill.
-    poly: [(x, z)...] game frame. Returns (pts_blender_2d, tri_faces) or None."""
-    n = len(poly)
-    if n < 3:
-        return None
-    # blender 2D frame (x, -z) so CCW faces come out facing +Z up
-    pts = [Vector((float(x), float(-z))) for x, z in poly]
-    minx = min(p[0] for p in poly)
-    maxx = max(p[0] for p in poly)
-    minz = min(p[1] for p in poly)
-    maxz = max(p[1] for p in poly)
-    gxs = np.arange(math.floor(minx / PARK_GRID) * PARK_GRID + PARK_GRID, maxx, PARK_GRID)
-    gzs = np.arange(math.floor(minz / PARK_GRID) * PARK_GRID + PARK_GRID, maxz, PARK_GRID)
-    if gxs.size and gzs.size:
-        gx, gz = np.meshgrid(gxs, gzs)
-        px = gx.ravel()
-        pz = gz.ravel()
-        inside = np.zeros(px.shape, dtype=bool)
-        for i in range(n):
-            x1, z1 = poly[i]
-            x2, z2 = poly[(i + 1) % n]
-            if z1 == z2:
-                continue
-            hit = ((z1 > pz) != (z2 > pz)) & (px < (x2 - x1) * (pz - z1) / (z2 - z1) + x1)
-            inside ^= hit
-        for x, z in zip(px[inside], pz[inside]):
-            pts.append(Vector((float(x), float(-z))))
-    try:
-        vout, _, tris, _, _, _ = delaunay_2d_cdt(pts, [], [list(range(n))], 1, 1e-4)
-    except Exception:
-        return None
-    if not tris:
-        return None
-    return [(v.x, v.y) for v in vout], tris
-
-
 def build_tile_green(key, tile, collection):
+    # Park lawns are NOT baked anymore: they render on the runtime terrain
+    # clipmap (surface class 1), which lights them from the prefiltered normal
+    # field and follows the adaptive 1 m near mesh. Only piers still need
+    # authored geometry here (they stand off the heightfield over water).
     verts = []
     faces = []
     colors = []
-    c4 = (PARK_COLOR[0], PARK_COLOR[1], PARK_COLOR[2], 1.0)
-    skipped = 0
-    for k, poly in enumerate(tile.get("green", [])):
-        res = conforming_park(poly)
-        if res is None:
-            skipped += 1
-            continue
-        pts2d, tris = res
-        # nested lawns (park + playground + garden rings) all drape the same
-        # terrain now — stagger the lift so coincident layers don't z-fight
-        lift = PARK_LIFT + (k % 4) * 0.05
-        xs = np.array([p[0] for p in pts2d])
-        zs = np.array([-p[1] for p in pts2d])
-        hs = sample_height(xs, zs) + lift
-        i0 = len(verts)
-        for i, (bx, by) in enumerate(pts2d):
-            verts.append((bx, by, float(hs[i])))
-        for tri in tris:
-            faces.append(tuple(i0 + i for i in tri))
-            colors.extend([c4] * len(tri))
-    if skipped:
-        log(f"grn_{key}: skipped {skipped} degenerate park polys")
     for poly in tile.get("piers", []):
         n = len(poly)
         if n < 3:

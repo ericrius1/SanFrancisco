@@ -13,6 +13,7 @@ import {
   attribute
 } from "three/tsl";
 import { bumpNormal } from "./tslUtil";
+import { terrainCutoutMask } from "./terrainCutouts";
 
 /**
  * Street asphalt in the spirit of the reference city generator's road material:
@@ -23,6 +24,11 @@ import { bumpNormal } from "./tslUtil";
  */
 export function createRoadMaterial(): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial();
+  // Baked drapes ship without a NORMAL attribute (optimize-tiles strips it —
+  // lighting comes from the terrain field via groundConformNormalBase). Flat
+  // shading supplies the derivative fallback normal the conform gate mixes
+  // against on bridge decks and other off-terrain spans.
+  mat.flatShading = true;
   const p = positionWorld;
 
   const dist = p.distance(cameraPosition);
@@ -44,7 +50,11 @@ export function createRoadMaterial(): THREE.MeshStandardNodeMaterial {
   // keep it mostly diffuse: at grazing angles a smooth road turns into a sky
   // mirror and the whole street reads blue
   mat.roughnessNode = mix(float(0.96), float(0.62), wet);
-  mat.normalNode = bumpNormal(grit.mul(0.003).mul(detail).add(micro.mul(0.0016).mul(microFade)));
+  // Stashed so the tile streamer can rebuild this bump on top of the terrain
+  // lighting field once the clipmap's normal pyramid exists (ground drapes are
+  // baked flat-shaded; their lighting normal comes from the field, not the mesh).
+  mat.userData.bumpHeightNode = grit.mul(0.003).mul(detail).add(micro.mul(0.0016).mul(microFade));
+  mat.normalNode = bumpNormal(mat.userData.bumpHeightNode);
   mat.envMapIntensity = 0.12;
   return mat;
 }
@@ -52,6 +62,10 @@ export function createRoadMaterial(): THREE.MeshStandardNodeMaterial {
 /** Parks and green areas: soft warm grass with large-scale mow/patch variation. */
 export function createParkMaterial(): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial();
+  // Same normal-less drape contract as createRoadMaterial: pier walls/decks
+  // (baked into grn_ meshes) take this flat fallback where the conform gate
+  // releases them.
+  mat.flatShading = true;
   const vColor = attribute("color", "vec3") as unknown as ReturnType<typeof vec3>;
   const p = positionWorld;
 
@@ -65,7 +79,10 @@ export function createParkMaterial(): THREE.MeshStandardNodeMaterial {
   mat.colorNode = mix(vColor, grass, 0.75);
   mat.roughnessNode = float(1);
   const detail = clamp(float(1).sub(p.distance(cameraPosition).div(400)), 0, 1);
-  mat.normalNode = bumpNormal(tuft.mul(0.012).mul(detail));
+  mat.userData.bumpHeightNode = tuft.mul(0.012).mul(detail);
+  mat.normalNode = bumpNormal(mat.userData.bumpHeightNode);
+  mat.opacityNode = terrainCutoutMask();
+  mat.alphaTestNode = float(0.5);
   mat.envMapIntensity = 0.4;
   return mat;
 }

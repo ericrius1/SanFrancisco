@@ -215,16 +215,23 @@ class ProjectedSurfaceLightPassNode extends THREE.TempNode {
           0.58,
           receiverNormal.dot(lightNormal).abs()
         );
+        // Per-light Reinhard knee at full strength, crossfade weight applied
+        // AFTER — the exact structure of the instanced fallback disc (knee
+        // inside, weights outside). Raw pools peak ~4.8 linear and clipped
+        // flat on the tone-map shoulder; the knee restores the gradient and
+        // keeps the two paths matched through the 55–85 m crossfade.
+        const contribution = color(0xffb866)
+          .mul(radial)
+          .mul(heightGate)
+          .mul(facing)
+          .mul(this.#intensity)
+          .toVar();
         accumulated.addAssign(
-          color(0xffb866)
-            .mul(radial)
-            .mul(heightGate)
-            .mul(facing)
-            .mul(normalAndWeight.w)
+          contribution.div(contribution.add(1)).mul(normalAndWeight.w)
         );
       });
 
-      return vec4(accumulated.mul(this.#intensity), float(1));
+      return vec4(accumulated, float(1));
     });
 
     this.#material.fragmentNode = evaluate().context(builder.getSharedContext());

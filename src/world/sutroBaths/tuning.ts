@@ -14,7 +14,13 @@ export const SUTRO_BATHS_TUNING = tunables("sutroBaths", {
   waterRelief: { v: 0.72, min: 0, max: 2.5, step: 0.02, label: "surface relief" },
   waterNormal: { v: 1.05, min: 0, max: 5, step: 0.05, label: "surface normal" },
   waterRipple: { v: 0.018, min: 0, max: 0.08, step: 0.001, label: "fine ripple" },
-  waterOpacity: { v: 0.9, min: 0.45, max: 1, step: 0.01, label: "water opacity" },
+  waterClarity: { v: 1.5, min: 0.4, max: 6, step: 0.05, label: "clarity depth (m)" },
+  waterRefraction: { v: 0.5, min: 0, max: 1.6, step: 0.01, label: "refraction bend" },
+  waterBedTint: { v: 0.5, min: 0, max: 1, step: 0.01, label: "sandy bed tint" },
+  waterCaustics: { v: 0.85, min: 0, max: 2, step: 0.01, label: "bed caustics" },
+  waterSparkle: { v: 0.85, min: 0, max: 2, step: 0.01, label: "sun sparkles" },
+  waterShoreFoam: { v: 0.5, min: 0, max: 1.5, step: 0.01, label: "edge foam rings" },
+  waterDepth: { v: 1.35, min: 0.3, max: 3, step: 0.05, label: "pool depth (m)" },
   steamEnabled: { v: true, label: "thermal steam" },
   steamAmount: { v: 0.68, min: 0, max: 1, step: 0.01, label: "steam amount" },
   steamHeight: { v: 5.8, min: 1, max: 12, step: 0.1, label: "steam rise" },
@@ -39,8 +45,20 @@ export const SUTRO_TUNING_FOLDERS = [
       "waterSubsteps",
       "waterRelief",
       "waterNormal",
-      "waterRipple",
-      "waterOpacity"
+      "waterRipple"
+    ]
+  },
+  {
+    title: "sunlit clarity",
+    expanded: true,
+    keys: [
+      "waterClarity",
+      "waterRefraction",
+      "waterBedTint",
+      "waterCaustics",
+      "waterSparkle",
+      "waterShoreFoam",
+      "waterDepth"
     ]
   },
   {

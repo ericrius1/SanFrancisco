@@ -42,5 +42,5 @@ for (let i = 0; i < top.length; i++) {
 }
 console.log(
   `[groundtop] wrote groundtop-delta.bin ${(deltaBuf.byteLength / 1e3).toFixed(1)}KB (was ${(top.buffer.byteLength / 1e6).toFixed(1)}MB float32); ` +
-    `raised ${raised} ground cells park+road (${((100 * raised) / top.length).toFixed(1)}%), max lift ${maxLift.toFixed(3)}m`
+    `raised ${raised} ground cells road (${((100 * raised) / top.length).toFixed(1)}%), max lift ${maxLift.toFixed(3)}m`
 );

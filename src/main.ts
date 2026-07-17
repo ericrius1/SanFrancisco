@@ -17,6 +17,9 @@ import {
   type SurfShack
 } from "./gameplay/surfing/shack";
 import { Sky, SKY_TUNING } from "./world/sky";
+import { GhostShipBeacon } from "./world/ghostShip/beacon";
+import { GHOST_SHIP_DETAIL_WAKE_DISTANCE, GHOST_SHIP_RIDE_ID } from "./world/ghostShip/route";
+import type { GhostShip } from "./world/ghostShip";
 import { Water } from "./world/water";
 import { emitEmbodimentWaterEcho } from "./world/waterEchoes";
 import { UnderwaterOverlay } from "./fx/underwater";
@@ -64,6 +67,7 @@ import {
 import { WILD_REGIONS } from "./world/wildlands/regions";
 import { BUENA_VISTA_REGION } from "./world/buenaVista";
 import { Player } from "./player/player";
+import type { GardenRakeMotion } from "./player/gardenRake";
 import type { PlayerMode } from "./player/types";
 import { ChaseCamera } from "./core/camera";
 import { FX } from "./fx/fx";
@@ -112,17 +116,22 @@ import type { CityGenRing } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
+import { MinigameSessionController, type MinigameOrigin } from "./gameplay/minigameSession";
 import { createSiteGate } from "./gameplay/siteGate";
 import type { ArcheryGame } from "./gameplay/archery";
 import { ARCHERY_CENTER } from "./gameplay/archery/meta";
 import type { PupPen } from "./gameplay/pup";
 import { PUP_CENTER } from "./gameplay/pup/meta";
+import type { FortMasonEnsemble } from "./gameplay/fortMasonEnsemble";
+import { FORT_MASON_ENSEMBLE_CENTER } from "./gameplay/fortMasonEnsemble/meta";
 import type { Ranch } from "./gameplay/ranch";
 import { RANCH_CENTER, HORSE_PADDOCK } from "./gameplay/ranch/meta";
 import type { PalaceReverieGame } from "./gameplay/palaceReverie";
 import { REVERIE_CENTER } from "./gameplay/palaceReverie/meta";
 import type { LandsEndRegion } from "./world/landsEnd";
 import { LANDS_END_CENTER } from "./world/landsEnd/meta";
+import type { WaveOrgan } from "./world/waveOrgan";
+import { WAVE_ORGAN_CENTER } from "./world/waveOrgan/meta";
 import type { AfterlightExperience } from "./gameplay/afterlight";
 import {
   AFTERLIGHT_ARRIVAL,
@@ -181,6 +190,7 @@ import { BootScreen } from "./app/bootScreen";
 import { createRenderCore } from "./app/renderCore";
 import { initTextures } from "./render/textures";
 import { createBuskersSystem } from "./app/systems/buskers";
+import { createBuskerConversation } from "./gameplay/buskers/conversation";
 import { createSessionPersistence } from "./app/sessionPersistence";
 import { startFrameDriver } from "./app/frameDriver";
 import { isInGameScreenshotBusy, takeInGameScreenshot } from "./app/inGameScreenshot";
@@ -843,6 +853,7 @@ async function boot() {
   let setRemoteSurfboardAssetsActive: (active: boolean) => void = () => {};
   let setRemoteScooterAssetsActive: (active: boolean) => void = () => {};
   let setRemoteCarAssetsActive: (active: boolean) => void = () => {};
+  let setRemoteBirdAssetsActive: (active: boolean) => void = () => {};
   let leaveCameraModeForSurf: () => void = () => {};
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
@@ -904,6 +915,7 @@ async function boot() {
     setRemoteSurfboardAssetsActive(mode === "surf");
     setRemoteScooterAssetsActive(mode === "scooter");
     setRemoteCarAssetsActive(mode === "drive");
+    setRemoteBirdAssetsActive(mode === "bird");
     syncCustomizerForMode(mode);
     if (fresh) {
       const msg = modeDiscovery.revealMessage(mode);
@@ -967,6 +979,8 @@ async function boot() {
     abandonedMounts,
     getForest: () => forest
   });
+  let ghostShipRideZoom: number | null = null;
+  let ghostShipRideYaw: number | null = null;
   let switchModeFromExit: (mode: PlayerMode) => void = (mode) => embodiments.switchMode(mode);
   const exitToWalk = () => {
     // Surf exits relocate from a live crest to the shoreline. The normal E/B
@@ -976,7 +990,14 @@ async function boot() {
       switchModeFromExit("walk");
       return true;
     }
-    return embodiments.exitToWalk();
+    const leavingGhostShip = embodiments.passengerOf === GHOST_SHIP_RIDE_ID;
+    const exited = embodiments.exitToWalk();
+    if (exited && leavingGhostShip && ghostShipRideZoom !== null) {
+      chase.zoom = ghostShipRideZoom;
+      ghostShipRideZoom = null;
+      ghostShipRideYaw = null;
+    }
+    return exited;
   };
   type ViewMode = "third" | "first" | "orbit";
   const VIEW_CYCLE: ViewMode[] = ["third", "first", "orbit"];
@@ -1053,6 +1074,7 @@ async function boot() {
   } | null = null;
   let goldenGateTennis: GoldenGateTennisSite | null = null;
   let japaneseTeaGarden: import("./world/japaneseTeaGarden").JapaneseTeaGarden | null = null;
+  let localGardenRakeMotion: Readonly<GardenRakeMotion> | null = null;
   let wakeDeferredGarden: (() => void) | null = null;
   let wakeDeferredTeaGarden: (() => void) | null = null;
   let wakeDeferredBuenaVistaTrees: (() => void) | null = null;
@@ -1170,6 +1192,7 @@ async function boot() {
   // Lands End — the NW headland: a cliff-top Labyrinth you light by walking,
   // Sutro Baths ruins, cypress and a lantern-keeper. Distance-LOD region.
   let landsEnd: LandsEndRegion | null = null;
+  let waveOrgan: WaveOrgan | null = null;
   // Buena Vista's hidden summit ritual: five wandering echoes and a sky-scale
   // finale, asleep outside its clearing like the other located activities.
   let afterlight: AfterlightExperience | null = null;
@@ -1254,6 +1277,9 @@ async function boot() {
     physics,
     prepareRender: (root) => warmHiddenRoot(renderer, camera, scene, root)
   });
+  // Summit dialogue: the trio chills until you walk up, press E and ask for a
+  // song (shared NPC conversation system — gameplay/agents/conversation.ts).
+  const buskerTalk = createBuskerConversation(buskers);
   let ridePromptShown = false;
   let doorPromptShown = false;
   let doorScanCountdown = 0;
@@ -1430,22 +1456,77 @@ async function boot() {
   );
   const remotes = new RemotePlayers(scene);
   remotes.localPlayerPosition = () => player.renderPosition;
+  net.onRakeStamp = (stamp) => japaneseTeaGarden?.queueRakeStamp(stamp) ?? false;
+  net.onRakeReset = () => japaneseTeaGarden?.resetSand();
+  // The request-free horizon proxy is a world fundamental; detailed geometry,
+  // particles and the WebGPU hot-tub solver cross a separate proximity gate.
+  const ghostShipBeacon = new GhostShipBeacon(scene, map);
+  let ghostShip: GhostShip | null = null;
+  let ghostShipLoading: Promise<void> | null = null;
+  let ghostShipLoadFailed = false;
+  let unregisterGhostShipTuning: (() => void) | null = null;
+  let ensureGhostShipDetail: () => void = () => {};
+  remotes.worldRidePose = (rideId, seat, outPosition, outQuaternion) =>
+    rideId === GHOST_SHIP_RIDE_ID &&
+    (ghostShip?.seatPose(seat, outPosition, outQuaternion) ?? false);
   setRemoteSurfboardAssetsActive = (active) => remotes.setSurfboardAssetsEnabled(active);
   setRemoteScooterAssetsActive = (active) => remotes.setScooterAssetsEnabled(active);
   setRemoteCarAssetsActive = (active) => remotes.setCarAssetsEnabled(active);
+  setRemoteBirdAssetsActive = (active) => remotes.setBirdAssetsEnabled(active);
   // Startup/invite can enter surf before networking and its remote-art gate exist.
   setRemoteSurfboardAssetsActive(player.mode === "surf");
   setRemoteScooterAssetsActive(player.mode === "scooter");
   setRemoteCarAssetsActive(player.mode === "drive");
+  setRemoteBirdAssetsActive(player.mode === "bird");
   // The controller statically owns every pickleball mesh, UI and audio class,
   // so even constructing an empty facade would pull the activity into boot.
   // It is installed together with the Goldman site on first approach.
   let pickleballController: PickleballController | null = null;
+  let fortMasonEnsemble: FortMasonEnsemble | null = null;
+  const captureMinigameOrigin = (): MinigameOrigin => ({
+    x: player.position.x,
+    y: player.position.y,
+    z: player.position.z,
+    facing: player.heading - Math.PI,
+    mode: player.mode
+  });
+  const minigameSession = new MinigameSessionController({
+    resetPlayerState: () => player.resetMinigameState(),
+    onChange: (session) => hud.setMinigameExit(session?.label ?? null)
+  });
+  minigameSession.register({
+    id: "sand-raking",
+    label: "sand raking",
+    isActive: () => japaneseTeaGarden?.isRaking() ?? false,
+    release: () => { japaneseTeaGarden?.releaseForNavigation(); }
+  });
+  minigameSession.register({
+    id: "pickleball",
+    label: "pickleball",
+    isActive: () => pickleballController?.playing ?? false,
+    release: () => { pickleballController?.releaseForNavigation(); }
+  });
+  minigameSession.register({
+    id: "fort-mason-ensemble",
+    label: "Fort Mason ensemble",
+    isActive: () => fortMasonEnsemble?.playing ?? false,
+    release: () => { fortMasonEnsemble?.releaseForNavigation(); }
+  });
+  minigameSession.register({
+    id: "golf",
+    label: "golf",
+    isActive: () => golf?.active ?? false,
+    release: () => { golf?.abandonForNavigation(hud); }
+  });
+  minigameSession.register({
+    id: "archery",
+    label: "archery",
+    isActive: () => archery?.firstPersonActive ?? false,
+    release: () => { archery?.releaseForNavigation(player); }
+  });
   const releaseGameplayForNavigation = () => {
     if (inOrbit()) setViewMode("third");
-    pickleballController?.releaseForNavigation();
-    golf?.abandonForNavigation(hud);
-    archery?.releaseForNavigation(player);
+    return minigameSession.releaseForNavigation(captureMinigameOrigin());
   };
   const avatarSelector = new AvatarSelector(
     avatarTraits,
@@ -1697,6 +1778,7 @@ async function boot() {
     golf?.syncNetState();
     net.replayGolf();
     pickleballController?.onWelcome();
+    fortMasonEnsemble?.onWelcome();
   };
   const syncRoster = () => {
     for (const info of net.roster.values()) {
@@ -1761,9 +1843,12 @@ async function boot() {
       hud.message("Click the scene to capture · Esc releases · L toggles free cursor", 2.8);
     }
   };
-  // passenger seat support: cars and scooters both publish a local seat anchor.
+  // Passenger support: cars/scooters publish one anchor; the Phoenix publishes
+  // two, so a driver plus two friends can share its saddle.
   remotes.localDriveMesh = () =>
-    (player.mode === "drive" || player.mode === "scooter") && !player.riding ? player.meshes[player.mode] : null;
+    (player.mode === "drive" || player.mode === "scooter" || player.mode === "bird") && !player.riding
+      ? player.meshes[player.mode]
+      : null;
 
   // Passenger pose scratch; attachment ownership lives in EmbodimentController.
   const ridePos = new THREE.Vector3();
@@ -1799,6 +1884,7 @@ async function boot() {
     else if (status === "full") hud.message(detail ?? "Server is full", 4);
     else if (status === "offline") {
       pickleballController?.onOffline();
+      fortMasonEnsemble?.onOffline();
       // Offline stays silent: the local AI match keeps working and Net retries.
     }
   };
@@ -1843,8 +1929,10 @@ async function boot() {
   // the range is asleep. Marks the field + gives a teleport like golf/tennis.
   minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
   minimap.addLandmark(PUP_CENTER.x, PUP_CENTER.z, "Puppy Nursery");
+  minimap.addLandmark(FORT_MASON_ENSEMBLE_CENTER.x, FORT_MASON_ENSEMBLE_CENTER.z, "Fort Mason Jam");
   minimap.addLandmark(HORSE_PADDOCK.x, HORSE_PADDOCK.z, "Horse Paddock");
   minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
+  minimap.addLandmark(-1680, -1050, "Ghost Ship · nightly landing");
   // Ocean Beach surf shack. Teleporting arrives on foot at the apron;
   // one E press on a racked board enters the live face already standing and moving.
   {
@@ -1853,6 +1941,9 @@ async function boot() {
     ensureSurfShack();
   }
   minimap.addLandmark(LANDS_END_CENTER.x, LANDS_END_CENTER.z, "Lands End · Labyrinth");
+  // The Marina breakwater sculpture. The pin is just the place's name — what
+  // sleeps out there is for the walker to find.
+  minimap.addLandmark(WAVE_ORGAN_CENTER.x, WAVE_ORGAN_CENTER.z, "Wave Organ");
   const playerLocator = new PlayerLocator();
   let prepareDestinationEssentials: (
     destination: Readonly<{ x: number; z: number }>,
@@ -1999,6 +2090,7 @@ async function boot() {
   let surfEntryRequest = 0;
   const switchMode = (mode: PlayerMode) => {
     const request = ++surfEntryRequest;
+    if (mode === "bird") setRemoteBirdAssetsActive(true);
     // Surf is an isolated activity context. Prevent number keys, toolbar clicks,
     // and d-pad travel cycling from silently swapping vehicles mid-wave; E/Y is
     // the single clear exit back to the beach.
@@ -2023,6 +2115,15 @@ async function boot() {
   switchModeFromToolbar = switchMode;
   hud.onHistoryBack = () => applyPlaceHistory(-1);
   hud.onHistoryForward = () => applyPlaceHistory(1);
+  hud.onMinigameExit = () => {
+    if (worldArrival.active) {
+      hud.message("Finishing the arrival…", 1.2);
+      return;
+    }
+    const session = releaseGameplayForNavigation();
+    if (!session) return;
+    navigation.returnToMinigameStart(session.origin, session.label);
+  };
   minimap.onTeleport = teleportToTarget;
   minimap.onPlaceClick = (place) => {
     const layer = place.layer[0].toUpperCase() + place.layer.slice(1);
@@ -2063,7 +2164,9 @@ async function boot() {
   // (browser) and closes the overlay when the keydown was swallowed.
   const dismissEscapeOverlay = (e: KeyboardEvent): boolean => {
     const reader = getBehindTheScenes();
-    if (missionDolores?.bookOpen) {
+    if (buskerTalk.close()) {
+      // A conversation owns the screen: Esc leaves it before any other overlay.
+    } else if (missionDolores?.bookOpen) {
       missionDolores.closeBook();
     } else if (reader?.isOpen) {
       reader.setOpen(false);
@@ -2153,6 +2256,38 @@ async function boot() {
     () => wildlands?.grass.refresh(),
     () => diagnostics.toggleInspector()
   );
+
+  ensureGhostShipDetail = () => {
+    if (ghostShip || ghostShipLoading || ghostShipLoadFailed) return;
+    ghostShipLoading = import("./world/ghostShip")
+      .then(async ({ createGhostShip }) => {
+        const candidate = createGhostShip({ scene, renderer });
+        try {
+          await candidate.warmup();
+        } catch (error) {
+          candidate.dispose();
+          throw error;
+        }
+        ghostShip = candidate;
+        ghostShipBeacon.detailedVisible = true;
+        unregisterGhostShipTuning = debugPanel.registerFeatureTuning(candidate.tuningDescriptor());
+        const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+        if (hooks) hooks.ghostShip = candidate;
+      })
+      .catch((error) => {
+        ghostShipLoadFailed = true;
+        console.warn("[ghost-ship] detailed runtime unavailable", error);
+      })
+      .finally(() => {
+        ghostShipLoading = null;
+      });
+  };
+
+  import.meta.hot?.dispose(() => {
+    unregisterGhostShipTuning?.();
+    ghostShip?.dispose();
+    ghostShipBeacon.dispose();
+  });
   debugPanel.setMode(player.mode);
 
   // Thrown-ball impact SFX + the fey-realm magic echo are adjustable at runtime.
@@ -2569,9 +2704,9 @@ async function boot() {
   minimap.addLandmark(GARDEN_XZ.x, GARDEN_XZ.z, "Botanical Garden");
   minimap.addLandmark(GOLF_XZ.x, GOLF_XZ.z, "Presidio Golf");
   minimap.addLandmark(CORONA_HEIGHTS_SUMMIT.x, CORONA_HEIGHTS_SUMMIT.z, "Corona Heights");
-  // Buena Vista summit clearing — west of Corona Heights. Static pin so the
-  // quest stays findable even if the site-gated experience fails to boot.
-  minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Afterlight · 9 PM–5 AM");
+  // Buena Vista summit clearing — west of Corona Heights. Plain park name so
+  // the pin reads as a place, not a secret quest.
+  minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Buena Vista");
   const missionDoloresSpawn = SPAWN_POINTS.missionDolores;
   minimap.addLandmark(missionDoloresSpawn.x, missionDoloresSpawn.z, missionDoloresSpawn.label);
   for (const arrival of authoredRegions.landmarkArrivals()) {
@@ -2800,12 +2935,20 @@ async function boot() {
               visitFreeBalls: (visitor) => fetchBall?.visitFreeBalls(visitor)
             },
             onBallWaterImpact: (x, y, z, speed) => ballImpactAudio.water(x, y, z, speed),
-            onCarryRake: (rake) => player.setGardenRakeTool(rake),
-            onRakeMotion: (motion) => player.setGardenRakeMotion(motion),
+            onCarryRake: (rake) => {
+              if (!rake) localGardenRakeMotion = null;
+              player.setGardenRakeTool(rake);
+            },
+            onRakeMotion: (motion) => {
+              localGardenRakeMotion = motion;
+              player.setGardenRakeMotion(motion);
+            },
+            onRakeStamp: (stamp) => net.sendRakeStamp(stamp),
             notify: (message, seconds) => hud.message(message, seconds)
           });
           site.deferOptionalFoliage();
           japaneseTeaGarden = site;
+          net.replayRakeStamps();
           teaGardenPaintWater = (impact) => site?.paintWater(impact) ?? false;
           teaGardenPaintWaterSegment = (segment) => site?.paintWaterSegment(segment) ?? false;
           debugPanel.registerFeatureTuning(site.tuningDescriptor());
@@ -2830,6 +2973,10 @@ async function boot() {
           }
 
           scene.add(site.group);
+          // The rack's visible templates have now warmed the rake material
+          // pipelines. Only at this local first-use boundary may remote rake
+          // presence instantiate matching geometry in the live scene.
+          remotes.setGardenRakeFactory(teaGardenMod.createGardenRakeTool);
           site.update(0, performance.now() / 1000, player.renderPosition, camera, player.mode);
           if (site.group.visible) claimTeaGardenBuildings();
           if (autoStartHiroTour) site.interact(player.renderPosition, player.mode);
@@ -2897,8 +3044,10 @@ async function boot() {
     | "afterlight"
     | "corona"
     | "lands-end"
+    | "wave-organ"
     | "sutro-baths"
     | "pup"
+    | "fort-mason-ensemble"
     | "ranch";
   type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
   type OptionalWorldSite = {
@@ -2929,11 +3078,13 @@ async function boot() {
       pickleballUI: pickleballController?.ui ?? null,
       archery,
       pup,
+      fortMasonEnsemble,
       ranch,
       palaceReverie,
       afterlight,
       coronaHeights,
       landsEnd,
+      waveOrgan,
       sutroBaths
     });
   };
@@ -3070,6 +3221,17 @@ async function boot() {
     refreshOptionalSiteDebug();
   };
 
+  const loadFortMasonEnsemble = async (): Promise<void> => {
+    const { createFortMasonEnsemble } = await import("./gameplay/fortMasonEnsemble");
+    await waitForOptionalSiteStage();
+    const ensemble = createFortMasonEnsemble({ map, net, player, input, hud, chase });
+    await prepareOptionalRoot("fort-mason ensemble", ensemble.root);
+    fortMasonEnsemble = ensemble;
+    scene.add(ensemble.root);
+    sky.invalidateStaticShadows();
+    refreshOptionalSiteDebug();
+  };
+
   const loadPalace = async (): Promise<void> => {
     const { createPalaceReverie } = await import("./gameplay/palaceReverie");
     await waitForOptionalSiteStage();
@@ -3156,6 +3318,17 @@ async function boot() {
     return sutroRemoteScratch;
   };
 
+  const loadWaveOrgan = async (): Promise<void> => {
+    const { WaveOrgan: LoadedWaveOrgan } = await import("./world/waveOrgan");
+    await waitForOptionalSiteStage();
+    const organ = new LoadedWaveOrgan(map, nature);
+    await prepareOptionalRoot("wave-organ", organ.group);
+    waveOrgan = organ;
+    scene.add(organ.group);
+    sky.invalidateStaticShadows();
+    refreshOptionalSiteDebug();
+  };
+
   const loadSutroBaths = async (): Promise<void> => {
     const { createSutroBaths } = await import("./world/sutroBaths");
     await waitForOptionalSiteStage();
@@ -3215,6 +3388,15 @@ async function boot() {
     },
     { id: "archery", label: "Archery Range", ...ARCHERY_CENTER, state: "dormant", forced: false, promise: null, load: loadArchery },
     { id: "pup", label: "Puppy Nursery", ...PUP_CENTER, state: "dormant", forced: false, promise: null, load: loadPup },
+    {
+      id: "fort-mason-ensemble",
+      label: "Fort Mason Jam",
+      ...FORT_MASON_ENSEMBLE_CENTER,
+      state: "dormant",
+      forced: false,
+      promise: null,
+      load: loadFortMasonEnsemble
+    },
     { id: "ranch", label: "Creature Ranch", ...RANCH_CENTER, state: "dormant", forced: false, promise: null, load: loadRanch },
     { id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, state: "dormant", forced: false, promise: null, load: loadPalace },
     {
@@ -3229,6 +3411,7 @@ async function boot() {
     },
     { id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, state: "dormant", forced: false, promise: null, load: loadCorona },
     { id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, state: "dormant", forced: false, promise: null, load: loadLandsEnd },
+    { id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, state: "dormant", forced: false, promise: null, load: loadWaveOrgan },
     {
       id: "sutro-baths",
       label: "Sutro Baths · 1896",
@@ -3258,8 +3441,10 @@ async function boot() {
     afterlight: true,
     corona: true,
     "lands-end": true,
+    "wave-organ": true,
     "sutro-baths": true,
     pup: true,
+    "fort-mason-ensemble": true,
     ranch: true
   };
   let optionalSitePerfGating = false;
@@ -3289,6 +3474,9 @@ async function boot() {
       case "pup":
         if (!on && pup) pup.root.visible = false;
         break;
+      case "fort-mason-ensemble":
+        if (!on && fortMasonEnsemble) fortMasonEnsemble.root.visible = false;
+        break;
       case "ranch":
         if (!on && ranch) ranch.root.visible = false;
         break;
@@ -3303,6 +3491,9 @@ async function boot() {
         break;
       case "lands-end":
         if (!on && landsEnd) landsEnd.group.visible = false;
+        break;
+      case "wave-organ":
+        if (!on && waveOrgan) waveOrgan.group.visible = false;
         break;
       case "sutro-baths":
         sutroBaths?.setPerfSuppressed(!on);
@@ -3338,6 +3529,11 @@ async function boot() {
           runtime: siteGate.awake("pup") ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(pup?.root)
         };
+      case "fort-mason-ensemble":
+        return {
+          runtime: fortMasonEnsemble?.root.visible ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(fortMasonEnsemble?.root)
+        };
       case "ranch":
         return {
           runtime: siteGate.awake("ranch") ? "ACTIVE" : "SLEEP",
@@ -3366,6 +3562,11 @@ async function boot() {
         return {
           runtime: landsEnd?.group.visible ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(landsEnd?.group)
+        };
+      case "wave-organ":
+        return {
+          runtime: waveOrgan?.group.visible ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(waveOrgan?.group)
         };
       case "sutro-baths":
         return {
@@ -3934,6 +4135,41 @@ async function boot() {
   const timer = new THREE.Timer();
   let accumulator = 0;
   let elapsed = 0;
+  const updateGhostShip = (dt: number) => {
+    const pose = ghostShipBeacon.update(Date.now());
+    const distance = ghostShipBeacon.horizontalDistanceTo(player.renderPosition);
+    if (
+      !worldArrival.active &&
+      !ghostShip &&
+      !ghostShipLoading &&
+      !ghostShipLoadFailed &&
+      (distance <= GHOST_SHIP_DETAIL_WAKE_DISTANCE || embodiments.passengerOf === GHOST_SHIP_RIDE_ID)
+    ) {
+      ensureGhostShipDetail();
+    }
+    ghostShip?.update(
+      dt,
+      elapsed,
+      pose,
+      player.renderPosition,
+      embodiments.passengerOf === GHOST_SHIP_RIDE_ID
+    );
+    if (ghostShip && embodiments.passengerOf === GHOST_SHIP_RIDE_ID) {
+      const shipYaw = ghostShip.root.rotation.y;
+      if (ghostShipRideYaw === null) {
+        chase.yaw = shipYaw;
+      } else {
+        const delta = Math.atan2(
+          Math.sin(shipYaw - ghostShipRideYaw),
+          Math.cos(shipYaw - ghostShipRideYaw)
+        );
+        chase.yaw += delta;
+      }
+      ghostShipRideYaw = shipYaw;
+    } else {
+      ghostShipRideYaw = null;
+    }
+  };
   let paused = false;
   // When paused, the world sim freezes but the player stays live by default
   // (walk/drive/fly on) so you can keep roaming the frozen city. The pause
@@ -4014,7 +4250,10 @@ async function boot() {
   let cineHook: ((dt: number) => void) | null = null;
 
   const updatePickleballGameplay = (dt: number) => pickleballController?.update(dt) ?? false;
-  const applyPickleballPlayerPose = () => pickleballController?.applyPlayerPose();
+  const applyPickleballPlayerPose = () => {
+    pickleballController?.applyPlayerPose();
+    fortMasonEnsemble?.applyPlayerPose();
+  };
   const hidePickleballRemoteAvatars = () => pickleballController?.hideClaimedRemoteAvatars();
   const sendLocalPresence = (speed = player.speed) => {
     if (pickleballController) {
@@ -4026,7 +4265,9 @@ async function boot() {
       player.meshes[player.mode].position,
       player.meshes[player.mode].quaternion,
       speed,
-      embodiments.passengerOf ?? 0
+      embodiments.passengerOf ?? 0,
+      embodiments.passengerSeat,
+      localGardenRakeMotion
     );
   };
   const sendPickleballNetwork = () => pickleballController?.sendNetwork();
@@ -4067,8 +4308,12 @@ async function boot() {
     // the fixed-quality local tile streamer remains active throughout.
     noteWorldBackgroundMotion();
 
-    // gamepad first so its synthetic key codes exist for every consumer below
+    // gamepad first so its synthetic key codes exist for every consumer below,
+    // then the scripted driver (third device on the same rails — cinematics,
+    // QA probes, autopilots) so its writes land before any consumer reads
     input.pollPad(frameDt);
+    input.pollDriver(frameDt);
+    minigameSession.beginFrame(captureMinigameOrigin());
 
     // Behind-the-scenes overlay open: freeze the world completely — no sim, no
     // render. The canvas keeps its last frame (dimmed via CSS) so nothing
@@ -4139,6 +4384,11 @@ async function boot() {
       }
     }
 
+    // Wall-clock route remains shared even when the local simulation/sky clock
+    // is paused or scrubbed. This runs before remotes so world passengers glue
+    // to the current deck transform in every branch below.
+    updateGhostShip(frameDt);
+
     // Expanded map: gamepad pan / zoom / select / teleport / pin cycle.
     // World + player are fully frozen while the map is open (kb or pad).
     if (minimap.expanded) {
@@ -4169,7 +4419,10 @@ async function boot() {
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
       hidePickleballRemoteAvatars();
-      if (embodiments.passengerOf !== null && remotes.ridePose(embodiments.passengerOf, ridePos, rideQuat)) {
+      if (
+        embodiments.passengerOf !== null &&
+        remotes.ridePose(embodiments.passengerOf, embodiments.passengerSeat, ridePos, rideQuat)
+      ) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
       voice.update(camera);
@@ -4200,6 +4453,10 @@ async function boot() {
         ? false
         : updatePickleballGameplay(frameDt);
     const playingPickleball = pickleballController?.playing ?? false;
+    const playingFortMasonEnsemble =
+      !worldArrival.active && optionalSitePerfAllowed("fort-mason-ensemble")
+        ? fortMasonEnsemble?.update(frameDt, elapsed, player.renderPosition, camera) ?? false
+        : false;
     applyPickleballPlayerPose();
 
     // Full freeze: a pause with "freeze player" armed. Everything holds — sim,
@@ -4224,7 +4481,10 @@ async function boot() {
       remotes.update(frameDt);
       hidePickleballRemoteAvatars();
       // stay glued to a friend's car while frozen
-      if (embodiments.passengerOf !== null && remotes.ridePose(embodiments.passengerOf, ridePos, rideQuat)) {
+      if (
+        embodiments.passengerOf !== null &&
+        remotes.ridePose(embodiments.passengerOf, embodiments.passengerSeat, ridePos, rideQuat)
+      ) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
       voice.update(camera); // keep talking while paused — it's a social feature
@@ -4247,14 +4507,14 @@ async function boot() {
     if (paused) {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
-      if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
+      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
         player.requestSurfJump();
       }
-      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
+      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
         player.requestSurfFlow();
       }
-      if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
+      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
       chase.lookDir(aim);
       physics.maintainStreaming(player.position);
       let steps = 0;
@@ -4274,7 +4534,10 @@ async function boot() {
       player.separateFromAvatars(remotes.walkingPositions(), frameDt);
       // riding shotgun with a friend keeps you glued; otherwise settle the render
       // transform between physics states like a live frame
-      if (embodiments.passengerOf !== null && remotes.ridePose(embodiments.passengerOf, ridePos, rideQuat)) {
+      if (
+        embodiments.passengerOf !== null &&
+        remotes.ridePose(embodiments.passengerOf, embodiments.passengerSeat, ridePos, rideQuat)
+      ) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       } else {
         player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
@@ -4314,7 +4577,7 @@ async function boot() {
         surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
         driveVoice: player.driveSpec.voice ?? "engine",
         driveSlide: player.driveSlideFeedback.intensity,
-        lampLight: computeLampField()
+        lampLight: player.mode === "board" ? computeLampField() : 0
       });
       swimAudio.update(frameDt, {
         swimming: player.swimming,
@@ -4358,7 +4621,7 @@ async function boot() {
     const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
     for (let i = 1; i <= 9; i++) {
       if (!numberPressed(i)) continue;
-      if (playingPickleball) break;
+      if (playingPickleball || playingFortMasonEnsemble) break;
       if (golf?.capturesDigits) break; // golf swing UI owns the number row (club picks)
       if (ctrlNumberPress(i)) {
         const nextTool = TOOL_ORDER[i - 1];
@@ -4384,7 +4647,7 @@ async function boot() {
     }
     // Keyboard arrows and d-pad share the toolbar: ↑/↓ change row focus,
     // ←/→ cycle the focused row (vehicles / tools / paint swatches).
-    if (!playingPickleball) {
+    if (!playingPickleball && !playingFortMasonEnsemble) {
       const dx =
         (input.pressed("ArrowRight") && !input.altPressed("ArrowRight") ? 1 : 0) -
         (input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft") ? 1 : 0) +
@@ -4395,10 +4658,23 @@ async function boot() {
         (input.pressed("ArrowUp") ? 1 : 0) +
         (input.pressed("PadNavDown") ? 1 : 0) -
         (input.pressed("PadNavUp") ? 1 : 0);
-      if (dx || dy) toolbar.navigate(dx, dy);
+      // An open dialogue choice list owns the nav keys; the toolbar resumes
+      // the moment the decision is made.
+      if (buskerTalk.choosing) {
+        if (dy) buskerTalk.navigate(dy);
+      } else if (dx || dy) {
+        toolbar.navigate(dx, dy);
+      }
     }
     if (!playingPickleball && input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
     if (!playingPickleball && input.altPressed("ArrowRight")) applyPlaceHistory(1);
+
+    // Enter is the primary "select" gesture inside an open conversation (E and
+    // pad Y confirm too, via the interact chain below). Gated on an active
+    // conversation so Enter keeps its other jobs (chat/minimap) everywhere else.
+    if (buskerTalk.active && (input.pressed("Enter") || input.pressed("NumpadEnter"))) {
+      buskerTalk.confirm();
+    }
 
     // E / pad Y: nearby conversations get first refusal. When the prompt was
     // reached on a vehicle or creature, the same press dismounts and is handed
@@ -4418,10 +4694,13 @@ async function boot() {
       !teaGardenEConsumed &&
       interactPressed &&
       !exitedToWalk &&
+      !buskerTalk.tryInteract(player.renderPosition, player.mode) &&
       !golf?.tryStartAtTee(player, hud) &&
       !archery?.tryInteract(player, hud, chase) &&
+      !fortMasonEnsemble?.tryInteract(player.renderPosition, player.mode) &&
       !palaceReverie?.tryInteract(player, hud) &&
       !landsEnd?.keeper.tryInteract(player, hud) &&
+      !waveOrgan?.tryInteract(player, hud) &&
       !missionDolores?.tryInteract(player.position, player.mode, hud) &&
       !afterlight?.tryInteract(player, hud) &&
       !(
@@ -4439,8 +4718,23 @@ async function boot() {
         }) ?? false
       )
     ) {
-      const nearOceanBeach = player.mode === "walk" && nearOceanBeachShore(player.position.x, player.position.z);
-      if (nearOceanBeach) {
+      const nearGhostShip = player.mode === "walk" && (ghostShip?.nearbyBoarding(player.position) ?? false);
+      if (nearGhostShip) {
+        const seat = ghostShip?.board(
+          player.position,
+          remotes.occupiedRideSeats(GHOST_SHIP_RIDE_ID)
+        ) ?? 0;
+        if (seat > 0) {
+          ghostShipRideZoom ??= chase.zoom;
+          chase.zoom = Math.max(chase.zoom, 3.2);
+          embodiments.startPassengerRide(GHOST_SHIP_RIDE_ID, seat);
+          hud.message(`Aboard the wandering ghost ship · deck station ${seat} · E to step off`, 3.2);
+        } else {
+          hud.message("The ghost ship's deck stations are full", 2.2);
+        }
+      } else {
+        const nearOceanBeach = player.mode === "walk" && nearOceanBeachShore(player.position.x, player.position.z);
+        if (nearOceanBeach) {
         // Load both exclusive camera and activity runtime before changing
         // embodiment, so the first visible surf frame is already complete.
         const request = ++surfEntryRequest;
@@ -4452,11 +4746,12 @@ async function boot() {
           // quick entry confirmation so it is gone before a fast tube line.
           hud.message("You're surfing — A/D carve · W pump · S stall · E exits to the beach", 1);
         });
-      } else if (!fetchBall?.tryPickup(player.position)) {
+        } else if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
         if (drv) {
-          embodiments.startPassengerRide(drv.id);
+          if (drv.mode === "bird") setRemoteBirdAssetsActive(true);
+          embodiments.startPassengerRide(drv.id, drv.seat);
           hud.message(`Riding with ${drv.name} — E to hop out`, 2.6);
         } else if (animal && forest && ANIMALS) {
           const info = forest.consume(animal);
@@ -4475,9 +4770,7 @@ async function boot() {
           const mount = abandonedMounts.boardNearest(player.position.x, player.position.z, 5.5);
           if (mount) {
             if (mount.mode === "drive") player.setDriveStyle(null);
-            player.position.set(mount.x, mount.y, mount.z);
-            player.heading = mount.heading;
-            player.trySwitch(mount.mode);
+            player.boardMount(mount);
             hud.message("Back on board — E to hop off", 2.4);
           } else if (player.mode === "walk" && citygenRing.current) {
             // front doors: on foot, E toggles the nearest generated-building
@@ -4504,6 +4797,7 @@ async function boot() {
             }
           }
         }
+      }
       }
     }
 
@@ -4771,15 +5065,16 @@ async function boot() {
     // Latch hoverboard ollies at render-frame rate. On high-refresh displays a
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
-    if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
+    if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+    if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
       player.requestSurfJump();
     }
-    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
+    if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
       player.requestSurfFlow();
     }
     if (
       !playingPickleball &&
+      !playingFortMasonEnsemble &&
       !afterlightControlsCaptured &&
       !input.suspended &&
       player.mode === "walk" &&
@@ -4811,7 +5106,7 @@ async function boot() {
     // personal space: standing inside another avatar shimmers like z-fighting
     player.separateFromAvatars(remotes.walkingPositions(), frameDt);
     if (embodiments.passengerOf !== null) {
-      if (remotes.ridePose(embodiments.passengerOf, ridePos, rideQuat)) {
+      if (remotes.ridePose(embodiments.passengerOf, embodiments.passengerSeat, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       } else {
         // driver left, parked, or switched modes — back on our feet right here
@@ -4912,6 +5207,12 @@ async function boot() {
       } else if (landsEnd) {
         landsEnd.group.visible = false;
       }
+      if (optionalSitePerfAllowed("wave-organ")) {
+        // hud only while on foot — walking is how you put an ear to a pipe.
+        waveOrgan?.update(frameDt, elapsed, player.position, player.mode === "walk" ? hud : null);
+      } else if (waveOrgan) {
+        waveOrgan.group.visible = false;
+      }
     }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
@@ -4950,6 +5251,7 @@ async function boot() {
     }
     oceanBeachKite?.update(frameDt, elapsed, player.renderPosition, windGustValue());
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
+    buskerTalk.update(player.renderPosition);
     if (!worldArrival.active) {
       if (optionalSitePerfAllowed("sutro-baths")) {
         sutroBaths?.update(frameDt, elapsed, player.renderPosition, camera, windGustValue());
@@ -5066,7 +5368,9 @@ async function boot() {
 
     // "hop in" nudge when standing near a ride (friend → wildlife → parked mount)
     if (!worldArrival.active && player.mode === "walk" && embodiments.passengerOf === null) {
-      const drv = remotes.nearestDriver(player.position, 5.5);
+      const nearGhostShip = ghostShip?.nearbyBoarding(player.position) ?? false;
+      const drv = nearGhostShip ? null : remotes.nearestDriver(player.position, 5.5);
+      if (drv?.mode === "bird") setRemoteBirdAssetsActive(true);
       const nearAnimal = drv ? null : forest?.nearest(player.position, 5);
       const nearMount =
         !drv && !nearAnimal
@@ -5080,8 +5384,10 @@ async function boot() {
         !drv && !nearAnimal && !nearMount && !surfBoardPrompt
           ? palaceReverie?.nearbyPrompt(player.position.x, player.position.z) ?? null
           : null;
-      if ((drv || nearAnimal || nearMount || surfBoardPrompt || reveriePrompt) && !ridePromptShown) {
-        const rideCopy = drv
+      if ((nearGhostShip || drv || nearAnimal || nearMount || surfBoardPrompt || reveriePrompt) && !ridePromptShown) {
+        const rideCopy = nearGhostShip
+          ? formatInteractPrompt("board the wandering ghost ship", input.device)
+          : drv
           ? formatInteractPrompt(`ride with ${drv.name}`, input.device)
           : nearAnimal
             ? formatInteractPrompt(`ride the ${nearAnimal.label}`, input.device)
@@ -5093,7 +5399,7 @@ async function boot() {
         hud.message(rideCopy, 1.8);
         ridePromptShown = true;
       }
-      if (!drv && !nearAnimal && !nearMount && !surfBoardPrompt && !reveriePrompt) ridePromptShown = false;
+      if (!nearGhostShip && !drv && !nearAnimal && !nearMount && !surfBoardPrompt && !reveriePrompt) ridePromptShown = false;
       // "open the door" nudge — same one-shot pattern; the ride prompt wins
       // when both are in range. nearestDoor is alloc-light but not free, so
       // it runs every 6th frame (prompt latency ~0.1 s) and only on foot.
@@ -5103,7 +5409,7 @@ async function boot() {
       }
       const door = doorScanHit;
       const nearClosedDoor = !!door && !door.open && door.dist < 3.2;
-      if (nearClosedDoor && !drv && !nearAnimal && !nearMount && !doorPromptShown) {
+      if (nearClosedDoor && !nearGhostShip && !drv && !nearAnimal && !nearMount && !doorPromptShown) {
         hud.message(formatInteractPrompt("open the door", input.device), 1.8);
         doorPromptShown = true;
       }
@@ -5133,6 +5439,7 @@ async function boot() {
     // committed this frame's final camera pose; projecting during simulation
     // left Hiro's card one camera frame behind and visibly jittering.
     japaneseTeaGarden?.project(camera);
+    buskerTalk.project(camera);
     sky.update(elapsed, camera.position, player.renderPosition);
     // Surf contact/camera use Player's fixed-step simulation clock. Feed that
     // exact clock to the displaced ocean and lazy face/roof too; using render
@@ -5225,7 +5532,9 @@ async function boot() {
       surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
       driveVoice: player.driveSpec.voice ?? "engine",
       driveSlide: player.driveSlideFeedback.intensity,
-      lampLight: computeLampField()
+      // Lamp-field whoosh only exists on the hoverboard voice — skip the
+      // all-lamps scan for every other mode (it already early-outs by day).
+      lampLight: player.mode === "board" ? computeLampField() : 0
     });
     swimAudio.update(frameDt, {
       swimming: player.swimming,
@@ -5387,6 +5696,7 @@ async function boot() {
     settleTick();
     tracer.end("sched");
 
+    minigameSession.endFrame(captureMinigameOrigin());
     input.endFrame();
     tracer.begin("render");
     renderFrame();
@@ -5443,7 +5753,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"
@@ -5483,6 +5793,7 @@ async function boot() {
       get coronaHeights() { return coronaHeights ?? undefined; },
       get palaceReverie() { return palaceReverie ?? undefined; },
       get landsEnd() { return landsEnd ?? undefined; },
+      get waveOrgan() { return waveOrgan ?? undefined; },
       fireworks,
       worldQueries,
       setTool: (t: string) => setTool(t as ToolName),

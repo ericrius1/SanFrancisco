@@ -293,6 +293,7 @@ export class Player {
   #speedRig: Rig; // speedboat helm: same deal, its own seated crew + wheel
   #speedWheel: { group: THREE.Group; spin: THREE.Group };
   #pilotRig: Rig; // plane crew: open cockpit, hands on the built-in yoke
+  #phoenixRiderRig: Rig; // front saddle seat; two friends attach over the network
   #planeAnim: PlaneAnim;
   #avatar: AvatarTraits;
   #firstPersonView = false;
@@ -431,8 +432,9 @@ export class Player {
     this.#helmRig = buildRig(this.#avatar);
     this.#helmWheel = buildSteeringWheel();
     const boatDeck = (this.meshes.boat.userData.sail as BoatSailRig).heel;
-    this.#helmRig.group.position.set(0, 0.5, 2.26);
-    this.#helmWheel.group.position.set(0, 0.61, 1.72);
+    const boatCockpit = this.meshes.boat.userData.cockpit as Cockpit;
+    this.#helmRig.group.position.set(...boatCockpit.seat);
+    this.#helmWheel.group.position.set(...boatCockpit.wheel!);
     boatDeck.add(this.#helmRig.group, this.#helmWheel.group);
     // speedboat helmsman at the open console (cockpit anchors on the mesh)
     this.#speedRig = buildRig(this.#avatar);
@@ -446,6 +448,12 @@ export class Player {
     const pc = this.meshes.plane.userData.cockpit as Cockpit;
     this.#pilotRig.group.position.set(pc.seat[0], pc.seat[1], pc.seat[2]);
     this.meshes.plane.add(this.#pilotRig.group);
+    this.#phoenixRiderRig = buildRig(this.#avatar);
+    this.#phoenixRiderRig.group.name = "phoenix_local_rider";
+    const birdSeat = (this.meshes.bird.userData.cockpit as Cockpit).seat;
+    this.#phoenixRiderRig.group.position.set(...birdSeat);
+    this.#phoenixRiderRig.group.visible = false;
+    this.meshes.bird.add(this.#phoenixRiderRig.group);
     this.#planeAnim = collectPlaneAnim(this.meshes.plane);
     this.#defaultDriveMesh = this.meshes.drive;
     this.#defaultDroneMesh = this.meshes.drone;
@@ -471,6 +479,7 @@ export class Player {
     applyAvatarToRig(this.#helmRig, this.#avatar);
     applyAvatarToRig(this.#speedRig, this.#avatar);
     applyAvatarToRig(this.#pilotRig, this.#avatar);
+    applyAvatarToRig(this.#phoenixRiderRig, this.#avatar);
   }
 
   /** Snapshot used by activity-owned embodiment rigs without exposing mutable player state. */
@@ -503,7 +512,7 @@ export class Player {
    * default converts back — passing `this.heading` raw here is what used to
    * spin every mode switch 180°.
    */
-  #spawnBody(mode: PlayerMode, facing = this.heading - Math.PI) {
+  #spawnBody(mode: PlayerMode, facing = this.heading - Math.PI, exactBodyY?: number) {
     const w = this.physics.world;
     const p = this.position;
     // A mode switch can bypass the chase camera for a frame (cinematics/orbit).
@@ -515,10 +524,12 @@ export class Player {
     const q: [number, number, number, number] = [0, Math.sin(facing / 2), 0, Math.cos(facing / 2)];
     // the controller creates its body shape at p and resets its per-mode state
     const placedY = this.#modes[mode].spawnBody(this, facing);
-    w.setBodyTransform(this.body, [p.x, placedY, p.z], q);
+    const bodyY = exactBodyY ?? placedY;
+    w.setBodyTransform(this.body, [p.x, bodyY, p.z], q);
+    if (exactBodyY !== undefined) p.y = bodyY;
     // reset the interpolation history so a teleport/mode switch doesn't smear
     this.quaternion.set(q[0], q[1], q[2], q[3]);
-    this.#currPosition.set(p.x, placedY, p.z);
+    this.#currPosition.set(p.x, bodyY, p.z);
     this.#currQuaternion.copy(this.quaternion);
     this.#prevPosition.copy(this.#currPosition);
     this.#prevQuaternion.copy(this.quaternion);
@@ -568,6 +579,17 @@ export class Player {
     const entered = this.#modes[mode].enter?.(this);
     if (typeof entered === "number") facing = entered;
     this.#spawnBody(mode, facing);
+  }
+
+  /**
+   * Claim a nearby world mount without running its menu-entry relocation. In
+   * particular, boarding a grounded Phoenix must preserve its waiting body
+   * height instead of invoking BirdController.enter() and jumping to cruise.
+   */
+  boardMount(pose: { mode: PlayerMode; x: number; y: number; z: number; heading: number }) {
+    if (pose.mode === this.mode) return;
+    this.position.set(pose.x, pose.y, pose.z);
+    this.#spawnBody(pose.mode, pose.heading - Math.PI, pose.y);
   }
 
   /** Landmark teleport landing — always on foot. Callers should exitToWalk first
@@ -1067,6 +1089,21 @@ export class Player {
     }
   }
 
+  /**
+   * Final player-owned safety net for minigame teardown. Activity controllers
+   * release their world/UI state first; this clears presentation and movement
+   * state that must never cross a teleport or explicit minigame exit.
+   */
+  resetMinigameState() {
+    this.setGolfPose(false);
+    this.setGolfAddress(null);
+    this.setArcherPose(false);
+    this.setBowCarried(false);
+    this.setGardenRakeMotion(null);
+    this.setGardenRakeTool(null);
+    this.setExternalEmbodimentHidden(false);
+  }
+
   /** Synthesize the old callback's missing contact/normal until main is rewired. */
   #updateLegacyGardenRakeMotion() {
     const motion = this.#gardenRakeMotion;
@@ -1363,6 +1400,10 @@ export class Player {
     return this.mode === "walk" && this.#modes.walk.grounded;
   }
 
+  get walkSwimming(): boolean {
+    return this.mode === "walk" && this.#modes.walk.swimming;
+  }
+
   /** The exact animation phase that alternates the visible feet. */
   get walkStridePhase(): number {
     return this.#strideT;
@@ -1655,6 +1696,8 @@ export class Player {
   /** Per-frame character animation: pose whichever rig is embodied right now. */
   #animate(dt: number) {
     this.#animT += dt;
+    this.#phoenixRiderRig.group.visible =
+      this.mode === "bird" && Boolean(this.meshes.bird.userData.phoenixAsset);
     if (this.mode !== "walk") applyBallGlow(this.#ballMaterial, 0);
     if (this.mode === "walk") {
       const r = this.#walkRig;
@@ -1805,6 +1848,8 @@ export class Player {
       const steer = this.#modes.speedboat.steerVis;
       poseDrive(this.#speedRig, steer, this.#animT, true);
       this.#speedWheel.spin.rotation.z = steer * 2.3;
+    } else if (this.mode === "bird" && this.#phoenixRiderRig.group.visible) {
+      poseDrive(this.#phoenixRiderRig, 0, this.#animT, false);
     }
   }
 

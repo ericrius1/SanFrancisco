@@ -34,6 +34,7 @@ import {
   vec4
 } from "three/tsl";
 import { groundSwayFlow, groundSwayLite, WIND_DIR } from "./sway";
+import { terrainFieldNormal } from "./terrainFieldNormal";
 import { DISPLACERS, MAX_DISPLACERS } from "./displacers";
 import { fadeAroundInstanceAnchor, instanceAnchorWorld, worldOffsetToModelLocal } from "./instanceDeform";
 
@@ -350,7 +351,15 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
     sourceNormal.y,
     sourceNormal.x.mul(yawSin).add(sourceNormal.z.mul(yawCos))
   );
-  const normalWorld = normalize(modelNormalMatrix.mul(rotatedNormal));
+  let normalWorld = normalize(modelNormalMatrix.mul(rotatedNormal));
+  // Cover lights mostly like the ground it stands on: grading the blade normal
+  // toward the terrain lighting field keeps hillsides reading as one lit
+  // surface (sunny side bright, shaded side dark) instead of every blade
+  // carrying flat-ground lighting up a slope. The authored blade component is
+  // kept for rolling highlights and backlight. Null before the clipmap
+  // registers (portable garden/probe contexts) — authored normals stand alone.
+  const fieldNormal = terrainFieldNormal(anchorWorld.xz) as TslNode | null;
+  if (fieldNormal) normalWorld = normalize(mix(normalWorld, fieldNormal, 0.55));
   const normalView = cameraViewMatrix.mul(vec4(normalWorld, 0)).xyz;
   const deformView = cameraViewMatrix.mul(vec4(bendWorld.add(trampleWorld), 0)).xyz;
   mat.normalNode = normalize(normalView.sub(deformView.mul(bladeT.mul(0.3).add(0.08))));

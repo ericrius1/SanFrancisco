@@ -349,8 +349,8 @@ async function main() {
       const names = [
         "sutro_baths_restored_1896",
         "sutro_baths_restored_architecture",
-        "sutro_baths_player_entrances_v2",
-        "sutro_baths_beach_gate_v2",
+        "sutro_baths_player_entrances_v3",
+        "sutro_baths_beach_gate_v3",
         "sutro_baths_glass_barrel_roof",
         "sutro_baths_ocean_window_seating_gallery",
         "sutro_baths_unified_foliage",
@@ -475,8 +475,11 @@ async function main() {
     const forceBelowFloor = async (point) => {
       await page.evaluate(([x, y, z]) => {
         const sf = window.__sf;
-        const transform = sf.physics.world.getBodyTransform(sf.player.body);
-        sf.physics.world.setBodyTransform(sf.player.body, [x, y, z], transform.rotation);
+        // Recreate the walk body through Player so its interpolation history
+        // cannot overwrite the forced pose on the next frame. Writing only
+        // the physics transform made sequential recovery checks race the walk
+        // controller and occasionally continue falling from the prior check.
+        sf.player.restoreState({ x, y, z, heading: sf.player.heading, mode: "walk" });
         sf.physics.world.setBodyVelocity(sf.player.body, [0, -8, 0], [0, 0, 0]);
         sf.physics.world.setBodyAwake(sf.player.body, true);
       }, point);
@@ -501,7 +504,7 @@ async function main() {
     };
     expect(
       "activation-road-entrance-fallthrough-recovers",
-      Math.abs(roadRecovery.y - (31.08 + 0.92)) < 0.12,
+      Math.abs(roadRecovery.y - (31.18 + 0.92)) < 0.12,
       collisionRecovery
     );
     expect(
@@ -511,7 +514,7 @@ async function main() {
     );
     expect(
       "activation-beach-stair-fallthrough-recovers",
-      Math.abs(beachRecovery.y - (4.08 + 0.92)) < 0.12,
+      Math.abs(beachRecovery.y - (4.23 + 0.92)) < 0.12,
       collisionRecovery
     );
     expect(
@@ -668,7 +671,9 @@ async function main() {
       // runtime failures; production/server probes still treat them as errors.
       return !(
         /WebSocket connection .*\/ws.*404/i.test(message.text) ||
-        (/404 \(Not Found\)/i.test(message.text) && message.location?.url?.includes("/api/weather/fog"))
+        (/404 \(Not Found\)/i.test(message.text) && message.location?.url?.includes("/api/weather/fog")) ||
+        (/503 \(Service Unavailable\)/i.test(message.text) &&
+          message.location?.url?.includes("/api/starlink"))
       );
     });
     expect("runtime-no-page-errors", pageErrors.length === 0, pageErrors);

@@ -219,6 +219,16 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     heading: 0,
     mode: "walk"
   },
+  // Landward end of the Marina breakwater spit, facing out along the jetty
+  // walk toward whatever hums at its tip.
+  waveOrgan: {
+    key: "waveOrgan",
+    label: "Wave Organ",
+    x: 262,
+    z: -2012,
+    heading: -1.1,
+    mode: "walk"
+  },
   presidio: {
     key: "presidio",
     label: "The Presidio",

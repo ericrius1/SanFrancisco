@@ -7,6 +7,7 @@ import {
   mix,
   modelWorldMatrix,
   normalize,
+  normalView,
   positionLocal,
   positionWorld,
   smoothstep,
@@ -30,6 +31,11 @@ import {
 } from "./terrainClipmapLayout";
 import { TERRAIN_CLIPMAP_TUNING } from "./terrainClipmapTuning";
 import {
+  setTerrainCutoutUniforms,
+  terrainCutoutMask,
+  type TerrainCutoutSpec
+} from "./terrainCutouts";
+import {
   createTerrainDetailTextureData,
   createTerrainNormalMipData,
   createTerrainSurfaceMipData
@@ -44,18 +50,7 @@ const HEIGHT_MIP_LEVELS = 4;
 const HEIGHT_BOUNDS_BLOCK_CELLS = 8;
 const BOUNDS_Y_MARGIN = 1;
 
-export type TerrainCutoutSpec = {
-  centerX: number;
-  centerZ: number;
-  halfX: number;
-  halfZ: number;
-  yaw: number;
-  /** Narrow transition band in metres around the authored ownership boundary. */
-  feather?: number;
-};
-
-/** Fixed graph capacity: changing active cutouts updates uniforms, not pipelines. */
-export const TERRAIN_CUTOUT_CAPACITY = 2;
+export { TERRAIN_CUTOUT_CAPACITY, type TerrainCutoutSpec } from "./terrainCutouts";
 
 const LEVEL_DEBUG_COLORS = [
   0x4ee6a8,
@@ -410,15 +405,6 @@ export class TerrainClipmap {
   readonly #macroVariation = uniform(TERRAIN_CLIPMAP_TUNING.values.macroVariation);
   readonly #microVariation = uniform(TERRAIN_CLIPMAP_TUNING.values.microVariation);
   readonly #debugLevels = uniform(TERRAIN_CLIPMAP_TUNING.values.debugLevels ? 1 : 0);
-  readonly #cutoutBounds = [
-    uniform(new THREE.Vector4(0, 0, 1, 1)),
-    uniform(new THREE.Vector4(0, 0, 1, 1))
-  ] as const;
-  // xy = cos/sin(yaw), z = enabled, w = feather.
-  readonly #cutoutFrames = [
-    uniform(new THREE.Vector4(1, 0, 0, 0.2)),
-    uniform(new THREE.Vector4(1, 0, 0, 0.2))
-  ] as const;
   #buildMs = 0;
   #geometryBytes = 0;
   #centerX = Number.NaN;
@@ -464,19 +450,85 @@ export class TerrainClipmap {
     this.#buildMs = performance.now() - buildStarted;
   }
 
+  #decodeHeight(packed: N): N {
+    return packed.r.mul(255 * 256)
+      .add(packed.g.mul(255))
+      .div(65535)
+      .mul(this.#height.range)
+      .add(this.#height.min);
+  }
+
+  /** Mip dims are exact halvings for the lods in use (verified 1888×1736 / 4 levels). */
+  #mipDims(sourceLod: number): { width: number; height: number } {
+    return { width: this.#grid.width >> sourceLod, height: this.#grid.height >> sourceLod };
+  }
+
+  #heightTap(cellX: N, cellY: N, sourceLod: number): N {
+    const dims = this.#mipDims(sourceLod);
+    const uv = vec2(cellX.add(0.5).div(dims.width), cellY.add(0.5).div(dims.height));
+    return this.#decodeHeight((texture(this.#height.texture, uv) as N).level(float(sourceLod)));
+  }
+
+  /**
+   * Clamped Catmull-Rom bicubic reconstruction of the 8 m source lattice.
+   * Bilinear reconstruction is C0 with a slope kink at every source cell edge —
+   * rolling hills read as 8 m facets no matter how dense the render mesh is.
+   * Catmull-Rom interpolates the lattice values exactly and is C1, so hills
+   * genuinely curve. The result is clamped to the min/max of the FULL 4×4 tap
+   * neighbourhood — an anti-ringing guard only. Clamping to the central cell's
+   * 4 corners instead flattens every in-cell crest/dip into a per-cell plateau
+   * (hilltops terrace into visible contour bands); the 4×4 hull never binds on
+   * smooth terrain while still bounding cliff-notch ringing to real
+   * neighbourhood heights.
+   * Must stay in lockstep with the CPU twin in heightmap.ts #sampleGrid.
+   */
   #heightAt(worldXZ: N, sourceLod: number): N {
     const grid = this.#grid;
-    const texel = worldXZ
-      .sub(vec2(grid.minX, grid.minZ))
-      .div(grid.cellSize)
-      .add(0.5);
-    const uv = texel.div(vec2(grid.width, grid.height));
-    const packed = (texture(this.#height.texture, uv) as N).level(float(sourceLod));
-    const normalizedHeight = packed.r.mul(255 * 256)
-      .add(packed.g.mul(255))
-      .div(65535);
-    return normalizedHeight.mul(this.#height.range)
-      .add(this.#height.min);
+    // Base texel index; mip L texel index = (f0 + 0.5) / 2^L - 0.5 (exact for
+    // the power-of-two-halving dims above).
+    const baseTexel = worldXZ.sub(vec2(grid.minX, grid.minZ)).div(grid.cellSize);
+    const scale = 1 / (1 << sourceLod);
+    const texel = baseTexel.add(0.5).mul(scale).sub(0.5);
+    const cell = texel.floor();
+    const t = texel.fract();
+    const weights1D = (f: N): [N, N, N, N] => {
+      const f2 = f.mul(f);
+      const f3 = f2.mul(f);
+      return [
+        f3.mul(-0.5).add(f2).sub(f.mul(0.5)),
+        f3.mul(1.5).sub(f2.mul(2.5)).add(1),
+        f3.mul(-1.5).add(f2.mul(2)).add(f.mul(0.5)),
+        f3.mul(0.5).sub(f2.mul(0.5))
+      ];
+    };
+    const wx = weights1D(t.x);
+    const wy = weights1D(t.y);
+    const taps: N[][] = [];
+    for (let j = -1; j <= 2; j++) {
+      const row: N[] = [];
+      for (let i = -1; i <= 2; i++) {
+        row.push(this.#heightTap(cell.x.add(i), cell.y.add(j), sourceLod));
+      }
+      taps.push(row);
+    }
+    let value: N = float(0);
+    for (let j = 0; j < 4; j++) {
+      const row = taps[j][0].mul(wx[0])
+        .add(taps[j][1].mul(wx[1]))
+        .add(taps[j][2].mul(wx[2]))
+        .add(taps[j][3].mul(wx[3]));
+      value = value.add(row.mul(wy[j]));
+    }
+    let low: N = taps[0][0];
+    let high: N = taps[0][0];
+    for (let j = 0; j < 4; j++) {
+      for (let i = 0; i < 4; i++) {
+        if (i === 0 && j === 0) continue;
+        low = low.min(taps[j][i]);
+        high = high.max(taps[j][i]);
+      }
+    }
+    return value.clamp(low, high);
   }
 
   #coarseHeightAt(worldXZ: N, spacing: number, sourceLod: number): N {
@@ -491,31 +543,51 @@ export class TerrainClipmap {
     return mix(mix(h00, h10, blend.x), mix(h01, h11, blend.x), blend.y);
   }
 
-  #normalAt(worldXZ: N, sourceLod: number): N {
-    const grid = this.#grid;
-    const texel = worldXZ
-      .sub(vec2(grid.minX, grid.minZ))
-      .div(grid.cellSize)
-      .add(0.5);
-    const uv = texel.div(vec2(grid.width, grid.height));
-    const packed = (texture(this.#normal.texture, uv) as N).level(float(sourceLod));
-    const xz = packed.rg.mul(2).sub(1);
-    const y = float(1).sub(xz.dot(xz)).max(0).sqrt();
-    return normalize(vec3(xz.x, y, xz.y));
+  #normalTapRG(cellX: N, cellY: N, sourceLod: number): N {
+    const dims = this.#mipDims(sourceLod);
+    const uv = vec2(cellX.add(0.5).div(dims.width), cellY.add(0.5).div(dims.height));
+    return (texture(this.#normal.texture, uv) as N).level(float(sourceLod)).rg;
   }
 
-  /** Fragment visibility for one oriented authored-site handoff rectangle. */
-  #cutoutVisibility(slot: 0 | 1): N {
-    const bound = this.#cutoutBounds[slot] as N;
-    const frame = this.#cutoutFrames[slot] as N;
-    const world = positionWorld as N;
-    const dx = world.x.sub(bound.x);
-    const dz = world.z.sub(bound.y);
-    const localX = dx.mul(frame.x).sub(dz.mul(frame.y));
-    const localZ = dx.mul(frame.y).add(dz.mul(frame.x));
-    const signedOutside = localX.abs().sub(bound.z).max(localZ.abs().sub(bound.w));
-    const outside = smoothstep(frame.w.negate(), frame.w, signedOutside);
-    return mix(float(1), outside, frame.z);
+  /**
+   * Bicubic B-spline sample of the prefiltered normal pyramid. Bilinear
+   * filtering of an 8 m normal lattice is C0 — the derivative jumps at every
+   * texel edge read as Mach-band quilting on smooth lawns and hills. The
+   * B-spline kernel is C2 (pure smoothing, no overshoot) and the encoded RG
+   * channels are linear in the normal's XZ, so weighting before decode is
+   * exact. Y is reconstructed after filtering, as before.
+   */
+  #normalAt(worldXZ: N, sourceLod: number): N {
+    const grid = this.#grid;
+    const baseTexel = worldXZ.sub(vec2(grid.minX, grid.minZ)).div(grid.cellSize);
+    const scale = 1 / (1 << sourceLod);
+    const texel = baseTexel.add(0.5).mul(scale).sub(0.5);
+    const cell = texel.floor();
+    const t = texel.fract();
+    const weights1D = (f: N): [N, N, N, N] => {
+      const oneMinus = float(1).sub(f);
+      const f2 = f.mul(f);
+      const f3 = f2.mul(f);
+      return [
+        oneMinus.mul(oneMinus).mul(oneMinus).div(6),
+        f3.mul(3).sub(f2.mul(6)).add(4).div(6),
+        f3.mul(-3).add(f2.mul(3)).add(f.mul(3)).add(1).div(6),
+        f3.div(6)
+      ];
+    };
+    const wx = weights1D(t.x);
+    const wy = weights1D(t.y);
+    let filtered: N = vec2(0, 0);
+    for (let j = 0; j < 4; j++) {
+      let row: N = vec2(0, 0);
+      for (let i = 0; i < 4; i++) {
+        row = row.add(this.#normalTapRG(cell.x.add(i - 1), cell.y.add(j - 1), sourceLod).mul(wx[i]));
+      }
+      filtered = filtered.add(row.mul(wy[j]));
+    }
+    const xz = filtered.mul(2).sub(1);
+    const y = float(1).sub(xz.dot(xz)).max(0).sqrt();
+    return normalize(vec3(xz.x, y, xz.y));
   }
 
   #createMaterial(level: TerrainClipmapLevelLayout): THREE.MeshStandardNodeMaterial {
@@ -582,7 +654,9 @@ export class TerrainClipmap {
       .max(0.001);
     const surface = surfaceSample.div(surfaceWeight);
     const urban = color(0xa19d96);
-    const grass = color(0x78986d);
+    // Warmed toward the retired lawn-drape palette (PARK_COLOR mixed with its
+    // grass noise) so parks keep their pre-consolidation richness.
+    const grass = color(0x7aa163);
     const sand = color(0xd1c49f);
     const bayFloor = color(0x466c68);
     const rock = color(0x878178);
@@ -651,12 +725,59 @@ export class TerrainClipmap {
       .mul(step((positionWorld as N).x, worldMaxX))
       .mul(step(grid.minZ, (positionWorld as N).z))
       .mul(step((positionWorld as N).z, worldMaxZ));
-    material.opacityNode = inBounds
-      .mul(this.#cutoutVisibility(0))
-      .mul(this.#cutoutVisibility(1));
+    material.opacityNode = inBounds.mul(terrainCutoutMask());
     material.alphaTestNode = float(0.5);
     material.envMapIntensity = 0.68;
     return material;
+  }
+
+  /**
+   * World-space terrain lighting normal at an arbitrary world XZ, sampled from
+   * the prefiltered pyramid with fragment auto-mip (distance band-limiting for
+   * free). Shared by ground drapes and groundcover so everything standing on
+   * the terrain lights consistently with it.
+   */
+  worldFieldNormal(worldXZ: N): N {
+    const grid = this.#grid;
+    const uv = worldXZ
+      .sub(vec2(grid.minX, grid.minZ))
+      .div(grid.cellSize)
+      .add(0.5)
+      .div(vec2(grid.width, grid.height));
+    const packedNormal = texture(this.#normal.texture, uv) as N;
+    const xz = packedNormal.rg.mul(2).sub(1);
+    const upComponent = float(1).sub(xz.dot(xz)).max(0).sqrt();
+    return normalize(vec3(xz.x, upComponent, xz.y));
+  }
+
+  /**
+   * View-space base normal that conforms a draped ground mesh (baked lawn/road
+   * ribbons, which ship flat-shaded) to the same prefiltered terrain lighting
+   * field the clipmap uses, so drape shading is seamless with the ground around
+   * it. A height-agreement gate falls back to the mesh's own interpolated
+   * normal wherever the surface leaves the heightfield — pier decks, bridge
+   * roadways, graded terraces — those are not terrain and must keep their own
+   * lighting.
+   */
+  groundConformNormalBase(): unknown {
+    const grid = this.#grid;
+    const world = positionWorld as N;
+    const uv = world.xz
+      .sub(vec2(grid.minX, grid.minZ))
+      .div(grid.cellSize)
+      .add(0.5)
+      .div(vec2(grid.width, grid.height));
+    const fieldWorld = this.worldFieldNormal(world.xz);
+    const packedHeight = texture(this.#height.texture, uv) as N;
+    const terrainY = packedHeight.r.mul(255 * 256)
+      .add(packedHeight.g.mul(255))
+      .div(65535)
+      .mul(this.#height.range)
+      .add(this.#height.min);
+    // 1 while the drape hugs the terrain (lifts are 0.15-0.45 m), fading to 0
+    // by ~2.4 m of separation. Edges ordered low->high (reversed edges emit 0).
+    const conform = smoothstep(1.4, 2.4, world.y.sub(terrainY).abs()).oneMinus();
+    return mix(normalView as N, transformNormalToView(fieldWorld) as N, conform);
   }
 
   /**
@@ -665,25 +786,7 @@ export class TerrainClipmap {
    * across ring and morph boundaries.
    */
   setCutouts(cutouts: readonly TerrainCutoutSpec[]): void {
-    if (cutouts.length > TERRAIN_CUTOUT_CAPACITY) {
-      throw new Error(`terrain cutout capacity ${TERRAIN_CUTOUT_CAPACITY} exceeded`);
-    }
-    for (let slot = 0; slot < TERRAIN_CUTOUT_CAPACITY; slot++) {
-      const cutout = cutouts[slot];
-      const bound = this.#cutoutBounds[slot].value;
-      const frame = this.#cutoutFrames[slot].value;
-      if (!cutout) {
-        frame.z = 0;
-        continue;
-      }
-      bound.set(cutout.centerX, cutout.centerZ, cutout.halfX, cutout.halfZ);
-      frame.set(
-        Math.cos(cutout.yaw),
-        Math.sin(cutout.yaw),
-        1,
-        Math.max(0.02, cutout.feather ?? 0.2)
-      );
-    }
+    setTerrainCutoutUniforms(cutouts);
   }
 
   update(x: number, z: number, force = false): void {

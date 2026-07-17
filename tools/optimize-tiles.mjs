@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeIO } from "@gltf-transform/core";
 import { EXTMeshoptCompression, KHRMeshQuantization } from "@gltf-transform/extensions";
-import { meshopt, reorder } from "@gltf-transform/functions";
+import { meshopt, prune, reorder, unweld, weld } from "@gltf-transform/functions";
 import { MeshoptDecoder, MeshoptEncoder } from "meshoptimizer";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,6 +36,85 @@ function vertexCount(doc) {
     }
   }
   return n;
+}
+
+function triangleCount(doc) {
+  let n = 0;
+  for (const mesh of doc.getRoot().listMeshes()) {
+    for (const prim of mesh.listPrimitives()) {
+      const indices = prim.getIndices();
+      n += (indices ? indices.getCount() : (prim.getAttribute("POSITION")?.getCount() ?? 0)) / 3;
+    }
+  }
+  return n;
+}
+
+// Ground drapes (park lawns, road ribbons) are lit from the terrain normal
+// field at runtime (terrainClipmap.groundConformNormalBase; flat-shading
+// derivative normals cover the gate fallback), so their baked flat-shaded
+// normals are dead weight. Dropping NORMAL also lets weld() collapse the
+// per-face-unwelded corners the flat bake produced (~3x vertex inflation).
+const DRAPE_MESH = /^(grn_|road_)/;
+
+function stripDrapeNormals(doc) {
+  let stripped = 0;
+  for (const mesh of doc.getRoot().listMeshes()) {
+    if (!DRAPE_MESH.test(mesh.getName())) continue;
+    for (const prim of mesh.listPrimitives()) {
+      if (!prim.getAttribute("NORMAL")) continue;
+      prim.setAttribute("NORMAL", null);
+      stripped++;
+    }
+  }
+  return stripped;
+}
+
+// Park lawns render on the terrain clipmap now (surface class 1 = grass), so
+// lawn triangles in grn_ meshes are dropped entirely; only the pier decks that
+// share those meshes survive. Classified by baked corner color: lawns are
+// uniform PARK_COLOR, piers use PIER_COLOR (+0.6x dark sides) — verified byte
+// values from shipped tiles. Idempotent: pier-only meshes have no lawn corners.
+const LAWN_COLOR_BYTES = [39, 70, 29];
+const LAWN_COLOR_TOLERANCE = 4;
+
+function isLawnCorner(colors, index, element) {
+  colors.getElement(index, element);
+  for (let channel = 0; channel < 3; channel++) {
+    if (Math.abs(element[channel] * 255 - LAWN_COLOR_BYTES[channel]) > LAWN_COLOR_TOLERANCE) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function dropLawnTriangles(doc) {
+  let dropped = 0;
+  for (const mesh of doc.getRoot().listMeshes()) {
+    if (!mesh.getName().startsWith("grn_")) continue;
+    for (const prim of mesh.listPrimitives()) {
+      const colors = prim.getAttribute("COLOR_0");
+      const indices = prim.getIndices();
+      if (!colors || !indices) continue;
+      const source = indices.getArray();
+      const kept = [];
+      const element = [];
+      for (let tri = 0; tri < source.length; tri += 3) {
+        const lawn = isLawnCorner(colors, source[tri], element) &&
+          isLawnCorner(colors, source[tri + 1], element) &&
+          isLawnCorner(colors, source[tri + 2], element);
+        if (!lawn) kept.push(source[tri], source[tri + 1], source[tri + 2]);
+        else dropped++;
+      }
+      if (kept.length === source.length) continue;
+      if (kept.length === 0) {
+        prim.dispose();
+        continue;
+      }
+      indices.setArray(source.constructor.from(kept));
+    }
+    if (mesh.listPrimitives().length === 0) mesh.dispose();
+  }
+  return dropped;
 }
 
 function isCompressed(buffer) {
@@ -77,6 +156,8 @@ async function main() {
 
     const doc = await io.readBinary(input);
     const vertsBefore = vertexCount(doc);
+    const trisBefore = triangleCount(doc);
+    let lawnDropped = 0;
     if (SKIP_QUANTIZE.has(name)) {
       await doc.transform(reorder({ encoder: MeshoptEncoder, target: "size" }));
       doc
@@ -84,24 +165,37 @@ async function main() {
         .setRequired(true)
         .setEncoderOptions({ method: EXTMeshoptCompression.EncoderMethod.FILTER });
     } else {
+      stripDrapeNormals(doc);
+      lawnDropped = dropLawnTriangles(doc);
+      // unweld+weld round-trips welded meshes untouched while reclaiming
+      // vertices orphaned by the lawn drop; weld() only merges bitwise-identical
+      // vertices, which cannot change the rendered image.
       await doc.transform(
+        prune(),
+        unweld(),
+        weld(),
         meshopt({ encoder: MeshoptEncoder, level: "high", quantizePosition: QUANTIZE_POSITION_BITS })
       );
     }
     const output = await io.writeBinary(doc);
 
-    // prove the bytes decode before replacing the original
+    // prove the bytes decode before replacing the original. Triangles are the
+    // invariant (weld may legitimately reduce vertices; dropped lawn triangles
+    // are accounted exactly).
     const check = await io.readBinary(output);
-    const vertsAfter = vertexCount(check);
-    if (vertsAfter !== vertsBefore) {
-      throw new Error(`${name}: vertex count changed ${vertsBefore} -> ${vertsAfter}, aborting`);
+    const trisAfter = triangleCount(check);
+    if (trisAfter !== trisBefore - lawnDropped) {
+      throw new Error(
+        `${name}: triangle count ${trisBefore} -> ${trisAfter} (expected ${trisBefore - lawnDropped}), aborting`
+      );
     }
     await fs.writeFile(file, output);
 
     inTotal += input.length;
     outTotal += output.length;
     console.log(
-      `${name}: ${(input.length / 1e6).toFixed(2)}MB -> ${(output.length / 1e6).toFixed(2)}MB`
+      `${name}: ${(input.length / 1e6).toFixed(2)}MB -> ${(output.length / 1e6).toFixed(2)}MB` +
+        (vertsBefore === vertexCount(check) ? "" : ` (verts ${vertsBefore} -> ${vertexCount(check)})`)
     );
   }
   const mb = (n) => (n / 1e6).toFixed(1);

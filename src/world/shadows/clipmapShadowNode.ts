@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu"
 import {
   Fn,
   If,
+  float,
   mix,
   nodeObject,
   positionWorld,
@@ -349,16 +350,40 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
         farFadeEnd,
         farRadius
       ).oneMinus()
-      const farVisible = mix(1, far as N, farEdgeFade)
+      // WGSL materializes each TSL node once, inside the FIRST branch that
+      // references it; any other branch would read a zero-initialized private
+      // var. The domain ShadowNode samples and the shared atlas sample must
+      // therefore each be referenced from exactly ONE branch (or none), never
+      // from two arms of an If/ElseIf/Else. Each sample lands in a pre-declared
+      // neutral var via its own single-purpose gate, and the composition below
+      // is pure branch-free weight math over those vars.
+      const localHalfExtent = CLIPMAP_SHADOW_CONFIG.local.extent * 0.5
+      const localFadeEnd = localHalfExtent - CLIPMAP_SHADOW_EDGES.local.sampleMarginMeters
+      const localFadeStart = localFadeEnd - CLIPMAP_SHADOW_EDGES.local.fadeMeters
+      const farWeight = smoothstep(localFadeStart, localFadeEnd, localRadius)
+
+      // Sampling gates keep the PCF reads skippable: LOCAL is never read where
+      // it has fully retired, FAR is never read inside the local core. The
+      // neutral default is only ever combined at zero weight.
+      const localSample = float(1).toVar()
+      If(localRadius.lessThan(localFadeEnd), () => {
+        localSample.assign(local as N)
+      })
+      const farSample = float(1).toVar()
+      If(localRadius.greaterThan(localFadeStart), () => {
+        farSample.assign(far as N)
+      })
+      const farVisible = mix(1, farSample, farEdgeFade)
+
       const farFieldVisibility = farField
-        ? mix(1, farField.visibility as N, farFieldStrength)
+        ? mix(1, (farField.visibility as N).toVar(), farFieldStrength)
         : null
       // Coverage includes atlas availability and its world-edge guard. Fold it
       // into a neutral-to-atlas base once, then keep that base continuous under
       // both raster domains. `min` unions duplicated caster representations;
       // multiplying them here would darken buildings twice.
       const farFieldBase = farField && farFieldVisibility
-        ? mix(1, farFieldVisibility as N, farField.coverage)
+        ? mix(1, farFieldVisibility as N, (farField.coverage as N).toVar())
         : null
       // A focus-relative far-map edge is itself a moving square. Retiring the
       // raster only in that band made raster-only darkness appear/disappear as
@@ -375,38 +400,22 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       const atlasOwnership = farField
         ? smoothstep(0, 0.6, farField.coverage as N).mul(farFieldStrength)
         : null
-      const composeWithFarField = (rasterVisibility: N, rasterRetireWeight: N) => {
-        if (!farFieldBase) return rasterVisibility
-        return composeRasterAtlasVisibility(
-          rasterVisibility,
+
+      // Continuous equivalent of the former inner/feather/far branches:
+      // farWeight 0 -> min(local, atlasBase); feather -> blended raster with a
+      // proportional atlas retire; farWeight 1 -> atlas-owned far domain.
+      const rasterVisibility = mix(localSample as N, farVisible, farWeight)
+      if (!farFieldBase || !atlasOwnership) {
+        visibility.mulAssign(rasterVisibility)
+      } else {
+        visibility.mulAssign(composeRasterAtlasVisibility(
+          rasterVisibility as N,
           farFieldBase as N,
-          rasterRetireWeight,
+          farWeight.mul(atlasOwnership),
           (a, b) => (a as N).min(b as N),
           (a, b, weight) => (mix as N)(a, b, weight)
-        )
+        ))
       }
-      const localHalfExtent = CLIPMAP_SHADOW_CONFIG.local.extent * 0.5
-      const localFadeEnd = localHalfExtent - CLIPMAP_SHADOW_EDGES.local.sampleMarginMeters
-      const localFadeStart = localFadeEnd - CLIPMAP_SHADOW_EDGES.local.fadeMeters
-      If(localRadius.lessThan(localFadeStart), () => {
-        visibility.mulAssign(composeWithFarField(local as N, 0 as N))
-      }).ElseIf(localRadius.lessThan(localFadeEnd), () => {
-        const farWeight = smoothstep(localFadeStart, localFadeEnd, localRadius)
-        const rasterVisibility = mix(local as N, farVisible, farWeight)
-        const rasterRetire = atlasOwnership
-          ? farWeight.mul(atlasOwnership)
-          : 0 as N
-        visibility.mulAssign(composeWithFarField(rasterVisibility as N, rasterRetire))
-      }).Else(() => {
-        // Stop sampling LOCAL once its weight reaches zero. Besides avoiding an
-        // unnecessary PCF read over the rest of the world, this guarantees no
-        // out-of-domain texture result can participate in the composition.
-        if (!farField || !farFieldBase || !atlasOwnership) {
-          visibility.mulAssign(farVisible)
-        } else {
-          visibility.mulAssign(composeWithFarField(farVisible, atlasOwnership))
-        }
-      })
 
       return mix(vec4(1), visibility, enabled)
     })()

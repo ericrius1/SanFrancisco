@@ -288,6 +288,70 @@
         border: 1px solid var(--hairline);
         box-shadow: var(--shadow-sm), var(--edge-hi);
       }
+      #hud .minigame-exit {
+        order: 2;
+        min-height: 44px;
+        max-width: min(240px, calc(100vw - 40px));
+        padding: 5px 12px 5px 9px;
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        pointer-events: auto;
+        cursor: pointer;
+        border-radius: var(--r-md);
+        border: 1px solid rgba(242, 185, 111, 0.68);
+        background: linear-gradient(180deg, rgba(54, 35, 13, 0.96), rgba(32, 22, 11, 0.96));
+        color: #ffe3b5;
+        box-shadow: var(--shadow-sm), var(--edge-hi);
+        text-align: left;
+        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.72);
+        transition:
+          border-color var(--dur) var(--ease),
+          background var(--dur) var(--ease),
+          transform 0.12s var(--ease);
+      }
+      #hud .minigame-exit[hidden] {
+        display: none;
+      }
+      #hud .minigame-exit:hover {
+        border-color: #ffd08e;
+        background: linear-gradient(180deg, rgba(70, 45, 15, 0.98), rgba(40, 27, 12, 0.98));
+        transform: translateY(-1px);
+      }
+      #hud .minigame-exit:active {
+        transform: translateY(0);
+      }
+      #hud .minigame-exit-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 30px;
+        width: 30px;
+        height: 30px;
+        border-radius: 9px;
+        background: rgba(242, 185, 111, 0.16);
+        border: 1px solid rgba(242, 185, 111, 0.32);
+        font-size: 18px;
+      }
+      #hud .minigame-exit-copy {
+        min-width: 0;
+        display: grid;
+        gap: 1px;
+      }
+      #hud .minigame-exit-copy b,
+      #hud .minigame-exit-copy small {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #hud .minigame-exit-copy b {
+        font: 800 11.5px var(--font);
+        letter-spacing: 0.015em;
+      }
+      #hud .minigame-exit-copy small {
+        color: rgba(255, 227, 181, 0.72);
+        font: 650 10px var(--font);
+      }
       #hud .help.collapsed .help-body-wrap {
         grid-template-rows: 0fr;
         opacity: 0;
@@ -364,6 +428,11 @@
         opacity: 0.86;
       }
       @media (max-width: 620px) {
+        #hud .br-stack {
+          /* The compact toolbar spans the full bottom rail. Keep the help and
+             minigame-exit controls one rail above it, including phone safe area. */
+          bottom: calc(max(16px, env(safe-area-inset-bottom)) + 105px);
+        }
         #hud .place-history {
           top: 266px;
           left: 20px;
@@ -386,6 +455,7 @@
       #hud .tutorial-ui,
       #hud .tutorial-panel,
       #hud .links-ui,
+      #hud .minigame-exit,
       #hud .player-locator {
         transition: opacity 0.35s ease;
       }
@@ -401,6 +471,7 @@
       #hud.faded .tutorial-ui,
       #hud.faded .tutorial-panel,
       #hud.faded .links-ui,
+      #hud.faded .minigame-exit,
       #hud.faded .player-locator {
         opacity: 0;
         transition: opacity 1s ease;
@@ -415,7 +486,8 @@
       #hud.faded .share-ui,
       #hud.faded .tutorial-ui,
       #hud.faded .tutorial-panel,
-      #hud.faded .links-ui {
+      #hud.faded .links-ui,
+      #hud.faded .minigame-exit {
         pointer-events: none;
       }
       /* Hard per-panel hide (hud.setPanelHidden / hud.soloPanel) — beats every
@@ -3153,6 +3225,10 @@
         font-size: 15px;
         line-height: 1;
       }
+      #hud .audio .mic-btn .ic {
+        position: relative;
+        display: inline-block;
+      }
       #hud .audio .mixer-btn .chev {
         color: rgba(188, 217, 230, 0.56);
         font-size: 9px;
@@ -3167,6 +3243,30 @@
       #hud .audio .mic-btn.on {
         border-color: var(--accent);
         color: var(--accent-strong);
+      }
+      /* Mic-off: dim chrome + slash over the icon so it never reads as live. */
+      #hud .audio .mic-btn.off {
+        border-color: rgba(190, 225, 240, 0.18);
+        color: rgba(188, 217, 230, 0.55);
+        opacity: 0.78;
+      }
+      #hud .audio .mic-btn.off:hover {
+        border-color: rgba(190, 225, 240, 0.4);
+        color: rgba(188, 217, 230, 0.78);
+        opacity: 1;
+      }
+      #hud .audio .mic-btn.off .ic::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: -2px;
+        width: 2px;
+        height: calc(100% + 4px);
+        background: #e8a0a8;
+        border-radius: 1px;
+        transform: translateX(-50%) rotate(-42deg);
+        box-shadow: 0 0 0 1px rgba(18, 40, 56, 0.85);
+        pointer-events: none;
       }
       #hud .audio input[type="range"] {
         -webkit-appearance: none;

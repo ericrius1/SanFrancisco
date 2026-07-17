@@ -125,6 +125,48 @@ function downsampleWeights(source: Uint8Array, width: number, height: number): T
 }
 
 /**
+ * Narrow urban cells embedded in park interiors are footpaths in the OSM
+ * raster. While parks were covered by opaque lawn drapes these never rendered;
+ * on the clipmap they read as isolated grey blobs, so for the VISUAL weight
+ * texture a park-majority urban cell becomes park. The raw class array is
+ * untouched — gameplay gating (groundcover placement, surfaceType) still sees
+ * real paths. Roads (class 4) keep their developed underlay by design.
+ */
+function reclassifyParkPaths(
+  sourceClasses: Uint8Array,
+  width: number,
+  height: number
+): Uint8Array {
+  // Up to three erosion passes: pass one clears single-cell paths, later
+  // passes finish two-cell-wide segments the first pass turned park-majority.
+  // Wide plazas keep their interiors (never park-majority) and stay urban.
+  let source = sourceClasses;
+  for (let pass = 0; pass < 3; pass++) {
+    const cleaned = Uint8Array.from(source);
+    let changed = 0;
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        if (source[y * width + x] !== 0) continue;
+        let parkNeighbors = 0;
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            if (kx === 0 && ky === 0) continue;
+            if (source[(y + ky) * width + (x + kx)] === 1) parkNeighbors++;
+          }
+        }
+        if (parkNeighbors >= 5) {
+          cleaned[y * width + x] = 1;
+          changed++;
+        }
+      }
+    }
+    source = cleaned;
+    if (changed === 0) break;
+  }
+  return source;
+}
+
+/**
  * Convert discrete source classes into a one-cell Gaussian feather before mip
  * generation. Roads (class 4) retain their developed-ground terrain underlay.
  */
@@ -134,6 +176,7 @@ export function createTerrainSurfaceMipData(
   sourceHeight: number,
   levels: number
 ): TerrainByteMipChain {
+  sourceClasses = reclassifyParkPaths(sourceClasses, sourceWidth, sourceHeight);
   const kernel = [1, 2, 1] as const;
   let data: Uint8Array = new Uint8Array(sourceWidth * sourceHeight * 4);
   for (let y = 0; y < sourceHeight; y++) {

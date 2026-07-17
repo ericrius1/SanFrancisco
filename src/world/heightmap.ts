@@ -118,21 +118,53 @@ export class WorldMap {
     return map;
   }
 
-  /** Bilinear sample of a W*H grid array at world (x, z). */
+  /**
+   * Clamped Catmull-Rom bicubic sample of a W*H grid array at world (x, z) —
+   * the exact CPU twin of the terrain clipmap's GPU reconstruction
+   * (terrainClipmap.ts #heightAt), so the walk carpet, vehicle grounding,
+   * paint and cursor sit on the surface the player sees. CR interpolates the
+   * lattice values exactly and is C1 (hills curve instead of kinking every
+   * 8 m); the clamp to the 4×4 tap neighbourhood's min/max is an anti-ringing
+   * guard only — clamping to the central cell's corners would terrace every
+   * in-cell crest into per-cell plateaus. Any change here must be mirrored on
+   * the GPU.
+   */
   #sampleGrid(arr: Float32Array, x: number, z: number): number {
     const { cellSize, width: W, height: H, minX, minZ } = this.meta.grid;
     const fx = Math.min(Math.max((x - minX) / cellSize, 0), W - 1.001);
     const fy = Math.min(Math.max((z - minZ) / cellSize, 0), H - 1.001);
     const ix = Math.floor(fx);
     const iy = Math.floor(fy);
-    const ax = fx - ix;
-    const ay = fy - iy;
-    const i = iy * W + ix;
-    const h00 = arr[i];
-    const h10 = arr[i + 1];
-    const h01 = arr[i + W];
-    const h11 = arr[i + W + 1];
-    return (h00 * (1 - ax) + h10 * ax) * (1 - ay) + (h01 * (1 - ax) + h11 * ax) * ay;
+    const tx = fx - ix;
+    const ty = fy - iy;
+    const clampX = (v: number) => (v < 0 ? 0 : v > W - 1 ? W - 1 : v);
+    const clampY = (v: number) => (v < 0 ? 0 : v > H - 1 ? H - 1 : v);
+    const cr1 = (p0: number, p1: number, p2: number, p3: number, t: number) => {
+      const t2 = t * t;
+      const t3 = t2 * t;
+      return (
+        p0 * (-0.5 * t3 + t2 - 0.5 * t) +
+        p1 * (1.5 * t3 - 2.5 * t2 + 1) +
+        p2 * (-1.5 * t3 + 2 * t2 + 0.5 * t) +
+        p3 * (0.5 * t3 - 0.5 * t2)
+      );
+    };
+    let low = Infinity;
+    let high = -Infinity;
+    const rowAt = (j: number) => {
+      const row = clampY(iy + j) * W;
+      const p0 = arr[row + clampX(ix - 1)];
+      const p1 = arr[row + clampX(ix)];
+      const p2 = arr[row + clampX(ix + 1)];
+      const p3 = arr[row + clampX(ix + 2)];
+      const rowLow = Math.min(p0, p1, p2, p3);
+      const rowHigh = Math.max(p0, p1, p2, p3);
+      if (rowLow < low) low = rowLow;
+      if (rowHigh > high) high = rowHigh;
+      return cr1(p0, p1, p2, p3, tx);
+    };
+    const value = cr1(rowAt(-1), rowAt(0), rowAt(1), rowAt(2), ty);
+    return value < low ? low : value > high ? high : value;
   }
 
   /** Raw heightfield: the base terrain / bay floor. Use for water depth and

@@ -1,21 +1,20 @@
 // Shared bake for the terrain-query surface (emitted as `groundtop-delta.bin`).
 //
-// The RENDERED ground the player sees is NOT the raw heightfield: BOTH park lawns
-// and road ribbons are separate meshes draped ABOVE the terrain (see
-// build_tile_green / build_tile_roads in tools/blender_city.py). The raw
-// heightfield (`heightmap.bin`) therefore sits UNDER every lawn AND every street,
-// so ground raycasts (paint, cursor, walk carpet) that march it land beneath the
-// visible surface and get occluded — "the paint disappears" / "the player stands
-// ankle-deep in asphalt".
+// The RENDERED ground the player sees is NOT always the raw heightfield: road
+// ribbons are separate meshes draped ABOVE the terrain (build_tile_roads in
+// tools/blender_city.py). The raw heightfield (`heightmap.bin`) sits UNDER every
+// street, so ground raycasts (paint, cursor, walk carpet) that march it land
+// beneath the visible asphalt and get occluded — "the paint disappears" / "the
+// player stands ankle-deep in asphalt".
+//
+// Park lawns used to be draped meshes too; they now render directly on the
+// terrain clipmap at raw heightfield level, so greens no longer contribute here.
 //
 // This module exports the actual top ground surface — base terrain raised to the
-// highest lawn/road covering each cell — so the runtime ray/carpet sample what's
-// on screen. It is the single source of truth for that surface: the numbers below
-// MUST match the mesh bake in tools/blender_city.py (PARK_LIFT + nested stagger,
-// ROAD_LIFT + draped centerline heights).
-
-export const PARK_LIFT = 0.15; // MUST match blender_city.py PARK_LIFT
-export const PARK_NEST_STAGGER = 0.05; // MUST match blender_city.py `lift = PARK_LIFT + (k % 4) * 0.05`
+// road ribbon covering each cell — so the runtime ray/carpet sample what's on
+// screen. It is the single source of truth for that surface: the numbers below
+// MUST match the mesh bake in tools/blender_city.py (ROAD_LIFT + draped
+// centerline heights).
 
 // Road drape — MUST match build_tile_roads in tools/blender_city.py:
 //   hs = max(sample_height(centerline), ROAD_MIN_H) + ROAD_LIFT
@@ -32,9 +31,8 @@ export const ROAD_EDGE_PAD = 4.0;
  * Topmost rendered ground height per grid cell.
  * @param grid   meta.grid: { cellSize, width, height, minX, minZ }
  * @param height Float32Array W*H — base terrain (heightmap.bin), row-major (gy*W+gx)
- * @param greenLists iterable of per-tile green lists; each green list is an array
- *   of polygons ([[x,z],...] game frame), enumerated in the SAME per-tile order
- *   the mesh bake uses so the k-indexed nested-lawn stagger lines up.
+ * @param greenLists ignored (kept for caller-signature stability) — lawns render
+ *   on the terrain clipmap at raw heightfield level since the drape removal.
  * @param roadLists iterable of per-tile road lists; each road is
  *   { pts:[[x,z],...], w, bridge }. Bridge-flagged roads are SKIPPED — the bridge
  *   deck is a real solid cast separately (physics.raycastWorld); lifting groundTop
@@ -42,21 +40,16 @@ export const ROAD_EDGE_PAD = 4.0;
  * @param opts   { roadPad } — extra metres added to each road's half-width when
  *   testing which cells the ribbon covers (default ROAD_EDGE_PAD). Set 0 to bake
  *   the bare ribbon (used by the mismatch probe to measure the un-padded surface).
- * @returns Float32Array W*H — base terrain off-surface (identity), lawn/road height on top.
+ * @returns Float32Array W*H — base terrain off-surface (identity), road height on top.
  */
 export function computeGroundTop(grid, height, greenLists, roadLists = [], opts = {}) {
   const { width: W, height: H, cellSize: cell, minX, minZ } = grid;
   const roadPad = opts.roadPad ?? ROAD_EDGE_PAD;
-  const top = new Float32Array(height); // start = base terrain; only park/road cells rise
-  for (const green of greenLists) {
-    if (!green) continue;
-    for (let k = 0; k < green.length; k++) {
-      // nested lawns (park + playground + garden rings) drape the same terrain;
-      // the mesh staggers their lift to avoid z-fight — the visible top is the
-      // highest, so we max() and reproduce the same per-tile stagger here.
-      rasterPoly(green[k], PARK_LIFT + (k % 4) * PARK_NEST_STAGGER, top, height, W, H, cell, minX, minZ);
-    }
-  }
+  const top = new Float32Array(height); // start = base terrain; only road cells rise
+  // Park lawns no longer drape as meshes — they render on the terrain clipmap
+  // at raw heightfield level, so greens contribute nothing here anymore. The
+  // parameter stays so historical callers/probes keep their signature.
+  void greenLists;
   for (const roads of roadLists) {
     if (!roads) continue;
     for (const road of roads) {
@@ -64,37 +57,6 @@ export function computeGroundTop(grid, height, greenLists, roadLists = [], opts 
     }
   }
   return top;
-}
-
-/** Raise every grid cell whose centre falls inside `poly` to base + lift (keeping
- *  the higher value where lawns overlap). Bounded to the polygon's grid AABB. */
-function rasterPoly(poly, lift, top, height, W, H, cell, minX, minZ) {
-  const n = poly.length;
-  if (n < 3) return;
-  let minx = Infinity;
-  let maxx = -Infinity;
-  let minz = Infinity;
-  let maxz = -Infinity;
-  for (const [x, z] of poly) {
-    if (x < minx) minx = x;
-    if (x > maxx) maxx = x;
-    if (z < minz) minz = z;
-    if (z > maxz) maxz = z;
-  }
-  const gx0 = Math.max(0, Math.floor((minx - minX) / cell));
-  const gx1 = Math.min(W - 1, Math.ceil((maxx - minX) / cell));
-  const gy0 = Math.max(0, Math.floor((minz - minZ) / cell));
-  const gy1 = Math.min(H - 1, Math.ceil((maxz - minZ) / cell));
-  for (let gy = gy0; gy <= gy1; gy++) {
-    const wz = minZ + gy * cell;
-    for (let gx = gx0; gx <= gx1; gx++) {
-      const wx = minX + gx * cell;
-      if (!pointInPoly(wx, wz, poly)) continue;
-      const i = gy * W + gx;
-      const v = height[i] + lift;
-      if (v > top[i]) top[i] = v;
-    }
-  }
 }
 
 /**
@@ -194,15 +156,3 @@ export function bilinearHeight(height, W, H, cell, minX, minZ, x, z) {
   return (h00 * (1 - axf) + h10 * axf) * (1 - ayf) + (h01 * (1 - axf) + h11 * axf) * ayf;
 }
 
-/** Ray-casting point-in-polygon (handles the concave park footprints). */
-function pointInPoly(x, z, poly) {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i][0];
-    const zi = poly[i][1];
-    const xj = poly[j][0];
-    const zj = poly[j][1];
-    if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
-  }
-  return inside;
-}

@@ -12,7 +12,11 @@ export type AuthoredRegionBounds = {
   yaw: number;
 };
 
-export type AuthoredTerrainFootprint = TerrainCutoutSpec & { id: string };
+export type AuthoredTerrainFootprint = TerrainCutoutSpec & {
+  id: string;
+  /** Collision/ground authority beneath this particular authored surface. */
+  groundY?: number;
+};
 
 export type AuthoredRegionArrival = {
   spawnKey: string;
@@ -116,6 +120,11 @@ function validateManifest(value: unknown): asserts value is AuthoredRegionManife
         region.terrain.footprints.length === 0
       ) {
         throw new Error(`authored region ${region.id} has invalid terrain ownership`);
+      }
+      for (const footprint of region.terrain.footprints) {
+        if (footprint.groundY !== undefined && !Number.isFinite(footprint.groundY)) {
+          throw new Error(`authored region ${region.id} has an invalid footprint ground height`);
+        }
       }
     }
   }
@@ -388,7 +397,9 @@ export class AuthoredRegionStreamer {
       if (terrain) {
         const overlay: GroundTopOverlay = (x, z, base) => {
           for (const footprint of terrain.footprints) {
-            if (insideFootprint(x, z, footprint)) return Math.min(base, terrain.groundY);
+            if (insideFootprint(x, z, footprint)) {
+              return Math.min(base, footprint.groundY ?? terrain.groundY);
+            }
           }
           return base;
         };

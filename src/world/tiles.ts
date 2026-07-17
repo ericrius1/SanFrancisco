@@ -5,6 +5,8 @@ import { CONFIG } from "../config";
 import { tracer } from "../core/hitchTracer";
 import { createFacadeMaterial, BASEY_OFFSET, BASEY_SCALE, TOPH_SCALE } from "./facade";
 import { createRoadMaterial, createParkMaterial } from "./streets";
+import { bumpNormal } from "./tslUtil";
+import { registerTerrainFieldNormal } from "./groundcover/terrainFieldNormal";
 import { createCrownMaterial } from "./salesforceCrown";
 import { applyLandmarkFixes } from "./landmarkFixes";
 import type { WorldMap } from "./heightmap";
@@ -74,8 +76,9 @@ type LoadedTile = {
   // meshes not yet attached to the group: a whole tile uploading its geometry in
   // one frame is a visible spike, so children re-attach one per frame instead
   pendingParts?: THREE.Object3D[];
-  // park ground (grn_) held back while the player is high — a plane climb should
-  // upload only the skyline, not the (up to 379k-vert) lawn meshes. Drained
+  // pier decks (grn_) held back while the player is high — a plane climb should
+  // upload only the skyline. (Lawns render on the terrain clipmap now; grn_
+  // meshes only carry piers.) Drained
   // once the player descends, at a catch-up rate for the first few frames so
   // it doesn't trickle in tile by tile (see #drainAttach / #resumeDetail).
   detailParts?: THREE.Object3D[];
@@ -582,6 +585,20 @@ export class TileStreamer {
     this.terrainClipmap.update(0, 0, true);
     this.terrain.set("terrain_clipmap", this.terrainClipmap.group);
     this.#scene.add(this.terrainClipmap.group);
+
+    // Baked road ribbons and park lawns are flat-shaded CDT drapes; rebase
+    // their bump on the clipmap's terrain lighting field so ground shading is
+    // seamless (the height gate inside keeps piers/bridge decks on their own
+    // normals). Must run before any residency clones or pipeline warmup.
+    const groundBase = this.terrainClipmap.groundConformNormalBase();
+    for (const mat of [roadMat, parkMat]) {
+      mat.normalNode = bumpNormal(mat.userData.bumpHeightNode, groundBase);
+      mat.needsUpdate = true;
+    }
+    // Groundcover (grass blades etc.) builds later, behind region deferral —
+    // hand it the same lighting field so hillside cover shades with the hill.
+    const clipmap = this.terrainClipmap;
+    registerTerrainFieldNormal((worldXZ) => clipmap.worldFieldNormal(worldXZ));
   }
 
   keyToCenter(key: string): [number, number] {
@@ -926,7 +943,7 @@ export class TileStreamer {
   /**
    * Hand a small oriented footprint from the GPU clipmap to authored
    * geometry. IDs make ownership explicit and let the feature undo its claim on
-   * disposal or failed creation. A hard two-slot cap bounds terrain shader cost.
+   * disposal or failed creation. A hard three-slot cap bounds terrain shader cost.
    */
   setTerrainCutout(id: string, cutout: TerrainCutoutSpec): void {
     if (!id) throw new Error("terrain cutout id must be non-empty");

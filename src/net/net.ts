@@ -1,4 +1,5 @@
 import type * as THREE from "three/webgpu";
+import type { GardenRakeMotion } from "../player/gardenRake";
 import type { PlayerMode } from "../player/types";
 import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTraits } from "../player/avatar";
 import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig } from "../vehicles/board/config";
@@ -24,7 +25,9 @@ import {
  *   → {t:"hi", name, avatar, board, scooter, surfboard, car} on open
  *   ← {t:"welcome", id, hue, name, players:[{id,name,hue,avatar,board,scooter,surfboard,car}]}
  *   ← {t:"join"|{t:"leave"}|{t:"name"}|{t:"avatar"}|{t:"board"}|{t:"scooter"}|{t:"surfboard"}|{t:"car"} roster changes
- *   → {t:"s", d:[mode,x,y,z,qx,qy,qz,qw,speed,ride?]}   ~12 Hz while moving
+ *   → {t:"s", d:[mode,x,y,z,qx,qy,qz,qw,speed,ride?,rideSeat?]}   ~12 Hz while moving
+ *      Positive ride ids are player vehicles; reserved negative ids are shared
+ *      deterministic world rides such as the wandering ghost ship.
  *   ← {t:"snap", ts, ps:[[id,...d]]}    batched world snapshot, ~12 Hz
  *   → {t:"rtc", to, payload}            voice signaling to one peer
  *   ← {t:"rtc", from, payload}          relayed with sender id stamped
@@ -34,6 +37,8 @@ import {
  *   ← {t:"fw", id, d}                   relayed to everyone else
  *   → {t:"chat", text}                  ephemeral text chat (no persistence)
  *   ← {t:"chat", id, name, text}        relayed to everyone else
+ *   → {t:"rake", d:[[px,pz,cx,cz,ax,az,dx,dz,strength],...]} batched sand strokes
+ *   ← {t:"rake", id, session, d:[[sequence,...stroke],...]} ordered echo to everyone
  *   → {t:"golf", k, d?|h?|p?|s?|r?}     golf events + cached state for late joins
  *   ← {t:"golf", id, ...}               relayed to everyone else (owner-simulated ball)
  *   → {t:"pickle", k:"claim"|"release", slot:0|1}  court-side ownership request
@@ -43,6 +48,10 @@ import {
  *   → {t:"pickle", k:"input", slot, d:number[]}      owned-side controls
  *   ← {t:"pickle", k:"input", slot, id, authority, d} targeted relay to authority
  *   ← welcome.pickle={slots:[id,id],authority,state:{id,d}|null} late-join cache
+ *   → {t:"ensemble", k:"claim"|"release", slot:0|1|2} Fort Mason station ownership
+ *   → {t:"ensemble", k:"note", slot, step:0..7, velocity:0..1} linked-scale note
+ *   ← {t:"ensemble", k, slot, id, ...} server-stamped ownership / note relay
+ *   ← welcome.ensemble={slots:[id,id,id]} late-join station ownership
  *
  * Movement and minigame physics are client-authoritative by design. For
  * pickleball only, the relay reserves two sides and selects one full-match
@@ -54,7 +63,16 @@ export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone
 
 export type RemoteGolfState = { d: number[]; h: number; p: number; s: number; r: number };
 export type PickleballSlot = 0 | 1;
+export type EnsembleSlot = 0 | 1 | 2;
 export type RemotePickleballState = { id: number; d: number[] };
+export type SharedRakeStamp = {
+  previous: { x: number; z: number };
+  current: { x: number; z: number };
+  across: { x: number; z: number };
+  pull: { x: number; z: number };
+  strength?: number;
+};
+type SequencedRakeStamp = SharedRakeStamp & { sequence: number };
 export type RemoteInfo = {
   id: number;
   name: string;
@@ -83,18 +101,28 @@ export type NetSample = {
    * glue the avatar to THEIR interpolation of the driver's car, so the
    * passenger never trails outside the cabin. */
   ride?: number;
+  /** Present only while this remote is carrying a spawned garden rake. */
+  rake?: GardenRakeMotion;
+  /** One-based passenger anchor. Phoenix uses 1..2; legacy vehicles use 1. */
+  rideSeat?: number;
 };
 
 export type NetStatus = "connecting" | "online" | "offline" | "full";
 
 const SEND_HZ = 12;
 const KEEPALIVE_MS = 2000; // resend an unchanged pose this often (server idle-timer food)
+const MAX_PLAYER_RIDE_SEAT = 2;
+const MAX_WORLD_RIDE_SEAT = 12;
 const NAME_MAX = 20;
 const CHAT_MAX = 200;
 /** Mirrors the relay caps: compact numeric snapshots, never arbitrary JSON. */
 const PICKLEBALL_STATE_MAX = 96;
 const PICKLEBALL_INPUT_MAX = 16;
 const PICKLEBALL_VALUE_LIMIT = 1_000_000;
+const RAKE_BATCH_MAX = 16;
+const RAKE_HISTORY_MAX = 256;
+const RAKE_COORD_LIMIT = 20_000;
+const RAKE_BATCH_DELAY_MS = 50;
 const PLAYER_NAME_KEY = "sf.playerName";
 const PLAYER_NAME_KIND_KEY = "sf.playerNameKind";
 const LAST_GENERATED_NAME_KEY = "sf.lastGeneratedPlayerName";
@@ -142,6 +170,10 @@ function isPickleballSlot(value: unknown): value is PickleballSlot {
   return value === 0 || value === 1;
 }
 
+function isEnsembleSlot(value: unknown): value is EnsembleSlot {
+  return value === 0 || value === 1 || value === 2;
+}
+
 function pickleballOwner(value: unknown): number {
   return Number.isInteger(value) && (value as number) >= 0 ? (value as number) : 0;
 }
@@ -150,6 +182,55 @@ function pickleballNumbers(value: unknown, maxLength: number): number[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > maxLength) return null;
   if (!value.every((n) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= PICKLEBALL_VALUE_LIMIT)) return null;
   return value.slice();
+}
+
+function finiteRakeNumber(value: unknown, limit: number): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= limit;
+}
+
+function rakeWireRow(value: unknown, sequenced: boolean): number[] | null {
+  if (!Array.isArray(value) || value.length !== (sequenced ? 10 : 9)) return null;
+  const offset = sequenced ? 1 : 0;
+  if (sequenced && (!Number.isInteger(value[0]) || value[0] <= 0)) return null;
+  if (!value.slice(offset, offset + 4).every((n) => finiteRakeNumber(n, RAKE_COORD_LIMIT))) return null;
+  if (!value.slice(offset + 4, offset + 8).every((n) => finiteRakeNumber(n, 2))) return null;
+  if (!finiteRakeNumber(value[offset + 8], 2) || value[offset + 8] < 0) return null;
+  return value.slice() as number[];
+}
+
+function rakeStampFromRow(row: readonly number[], sequenced: boolean): SequencedRakeStamp {
+  const offset = sequenced ? 1 : 0;
+  return {
+    sequence: sequenced ? row[0] : 0,
+    previous: { x: row[offset], z: row[offset + 1] },
+    current: { x: row[offset + 2], z: row[offset + 3] },
+    across: { x: row[offset + 4], z: row[offset + 5] },
+    pull: { x: row[offset + 6], z: row[offset + 7] },
+    strength: row[offset + 8]
+  };
+}
+
+function rakeRowFromStamp(stamp: Readonly<SharedRakeStamp>): number[] | null {
+  const values = [
+    stamp.previous.x,
+    stamp.previous.z,
+    stamp.current.x,
+    stamp.current.z,
+    stamp.across.x,
+    stamp.across.z,
+    stamp.pull.x,
+    stamp.pull.z,
+    stamp.strength ?? 1
+  ];
+  if (!rakeWireRow(values, false)) return null;
+  return values.map((value, index) => {
+    const precision = index < 4 ? 1000 : 10_000;
+    return Math.round(value * precision) / precision;
+  });
+}
+
+function finiteRakeMotion(value: unknown, limit = RAKE_COORD_LIMIT): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= limit;
 }
 
 function cleanName(raw: string): string {
@@ -267,6 +348,8 @@ export class Net {
   readonly golfStates = new Map<number, RemoteGolfState>();
   /** Server-arbitrated owner id for each pickleball side (0 means available). */
   readonly pickleballSlots: [number, number] = [0, 0];
+  /** Server-arbitrated owners for piano, steel drum and pan pipes. */
+  readonly ensembleSlots: [number, number, number] = [0, 0, 0];
   /** Deterministic full-match authority: side 0's owner, otherwise side 1's. */
   pickleballAuthority = 0;
   /** Latest validated full-match snapshot, cached for lazy/late initialization. */
@@ -285,6 +368,11 @@ export class Net {
   onFireworks: (id: number, rockets: number[][]) => void = () => {};
   /** Someone else sent a chat line (name is server-stamped from their roster). */
   onChat: (id: number, name: string, text: string) => void = () => {};
+  /** Canonical server-ordered rake segment. Return true once a live sand
+   *  simulation consumed it; false keeps it cached for lazy replay. */
+  onRakeStamp: (stamp: SharedRakeStamp) => boolean = () => false;
+  /** The relay restarted its in-memory sand session; reset the local field. */
+  onRakeReset: () => void = () => {};
   /** relayed golf event from another player (k discriminates; see gameplay/golf) */
   onGolf: (id: number, msg: Record<string, unknown>) => void = () => {};
   /** Any accepted ownership change or welcome hydration. The tuple is a copy. */
@@ -297,6 +385,10 @@ export class Net {
   onPickleballState: (ownerId: number, state: number[]) => void = () => {};
   /** Bounded controls from a side owner, delivered only to the match authority. */
   onPickleballInput: (slot: PickleballSlot, ownerId: number, input: number[]) => void = () => {};
+  onEnsembleSlots: (slots: readonly [number, number, number]) => void = () => {};
+  onEnsembleClaim: (slot: EnsembleSlot, ownerId: number, ok: boolean) => void = () => {};
+  onEnsembleRelease: (slot: EnsembleSlot, ownerId: number, ok: boolean) => void = () => {};
+  onEnsembleNote: (slot: EnsembleSlot, ownerId: number, step: number, velocity: number) => void = () => {};
 
   #ws: WebSocket | null = null;
   #url: string;
@@ -310,6 +402,11 @@ export class Net {
   #scooter: ScooterConfig | null;
   #surfboard: SurfboardConfig | null;
   #car: CarConfig | null;
+  #rakeSession = "";
+  #rakeHistory: SequencedRakeStamp[] = [];
+  #lastAppliedRakeSequence = 0;
+  #pendingRakeRows: number[][] = [];
+  #rakeFlushTimer: number | null = null;
   // serverTs → local-clock mapping (EWMA of arrival offset; interp buffer
   // absorbs the residual jitter)
   #clockOffset: number | null = null;
@@ -334,8 +431,109 @@ export class Net {
     this.#connect();
   }
 
+  #adoptRakeSession(raw: unknown): boolean {
+    const session = typeof raw === "string" ? raw.slice(0, 80) : "";
+    if (!session) return false;
+    if (!this.#rakeSession) {
+      this.#rakeSession = session;
+      // A delayed first connection can follow offline local raking. Reset if
+      // the lazy simulation already exists so the server session remains the
+      // one shared source of truth; before construction this is a no-op.
+      this.onRakeReset();
+      return true;
+    }
+    if (session === this.#rakeSession) return true;
+    this.#rakeSession = session;
+    this.#rakeHistory.length = 0;
+    this.#lastAppliedRakeSequence = 0;
+    this.onRakeReset();
+    return true;
+  }
+
+  #rememberRake(stamp: SequencedRakeStamp) {
+    const last = this.#rakeHistory[this.#rakeHistory.length - 1];
+    if (last && stamp.sequence <= last.sequence) return;
+    this.#rakeHistory.push(stamp);
+    if (this.#rakeHistory.length > RAKE_HISTORY_MAX) this.#rakeHistory.shift();
+  }
+
+  #hydrateRakes(raw: unknown) {
+    if (!raw || typeof raw !== "object") return;
+    const data = raw as { session?: unknown; stamps?: unknown };
+    if (!this.#adoptRakeSession(data.session) || !Array.isArray(data.stamps)) return;
+    for (const value of data.stamps) {
+      const row = rakeWireRow(value, true);
+      if (row) this.#rememberRake(rakeStampFromRow(row, true));
+    }
+    this.replayRakeStamps();
+  }
+
+  #flushRakeRows() {
+    if (this.#rakeFlushTimer !== null) {
+      window.clearTimeout(this.#rakeFlushTimer);
+      this.#rakeFlushTimer = null;
+    }
+    const ws = this.#ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !this.selfId) return;
+    const rows = this.#pendingRakeRows.splice(0, RAKE_BATCH_MAX);
+    if (rows.length) ws.send(JSON.stringify({ t: "rake", d: rows }));
+    if (this.#pendingRakeRows.length) this.#scheduleRakeFlush(0);
+  }
+
+  #scheduleRakeFlush(delay = RAKE_BATCH_DELAY_MS) {
+    if (this.#rakeFlushTimer !== null) return;
+    this.#rakeFlushTimer = window.setTimeout(() => this.#flushRakeRows(), delay);
+  }
+
+  #applyPendingRakesLocally() {
+    if (this.#rakeFlushTimer !== null) {
+      window.clearTimeout(this.#rakeFlushTimer);
+      this.#rakeFlushTimer = null;
+    }
+    const rows = this.#pendingRakeRows.splice(0);
+    for (const row of rows) this.onRakeStamp(rakeStampFromRow(row, false));
+  }
+
   #emitPickleballSlots() {
     this.onPickleballSlots([this.pickleballSlots[0], this.pickleballSlots[1]], this.pickleballAuthority);
+  }
+
+  #emitEnsembleSlots() {
+    this.onEnsembleSlots([
+      this.ensembleSlots[0],
+      this.ensembleSlots[1],
+      this.ensembleSlots[2]
+    ]);
+  }
+
+  #resetEnsemble(notify = true) {
+    this.ensembleSlots[0] = 0;
+    this.ensembleSlots[1] = 0;
+    this.ensembleSlots[2] = 0;
+    if (notify) this.#emitEnsembleSlots();
+  }
+
+  #hydrateEnsemble(raw: unknown) {
+    this.#resetEnsemble(false);
+    if (raw && typeof raw === "object") {
+      const slots = Array.isArray((raw as { slots?: unknown }).slots)
+        ? (raw as { slots: unknown[] }).slots
+        : [];
+      for (const slot of [0, 1, 2] as const) {
+        const ownerId = pickleballOwner(slots[slot]);
+        this.ensembleSlots[slot] = ownerId === this.selfId || this.roster.has(ownerId) ? ownerId : 0;
+      }
+    }
+    this.#emitEnsembleSlots();
+  }
+
+  #dropEnsembleOwner(ownerId: number) {
+    for (const slot of [0, 1, 2] as const) {
+      if (this.ensembleSlots[slot] !== ownerId) continue;
+      this.ensembleSlots[slot] = 0;
+      this.onEnsembleRelease(slot, ownerId, true);
+      this.#emitEnsembleSlots();
+    }
   }
 
   #refreshPickleballAuthority(advertised?: unknown) {
@@ -429,11 +627,15 @@ export class Net {
     ws.onmessage = (ev) => this.#handle(String(ev.data));
     ws.onclose = () => {
       this.#ws = null;
+      // Segments accepted just before disconnect have not been applied locally
+      // yet because online play waits for the server's canonical echo.
+      this.#applyPendingRakesLocally();
       // Clear identity before synthetic slot-release notifications so the app
       // can keep an already-controlled side alive as an offline AI match and
       // reclaim it after reconnect, instead of treating disconnect as a leave.
       this.selfId = 0;
       this.#resetPickleball();
+      this.#resetEnsemble();
       if (this.roster.size) {
         for (const id of [...this.roster.keys()]) {
           this.roster.delete(id);
@@ -484,6 +686,8 @@ export class Net {
           if (p.golf) this.golfStates.set(p.id, p.golf);
         }
         this.#hydratePickleball(msg.pickle);
+        this.#hydrateRakes(msg.sand);
+        this.#hydrateEnsemble(msg.ensemble);
         this.#setStatus("online");
         this.onRoster();
         this.onWelcome();
@@ -507,6 +711,7 @@ export class Net {
         const id = msg.id as number;
         this.golfStates.delete(id);
         this.#dropPickleballOwner(id);
+        this.#dropEnsembleOwner(id);
         this.roster.delete(id);
         this.onLeave(id);
         this.onRoster();
@@ -570,7 +775,43 @@ export class Net {
         for (const row of msg.ps as number[][]) {
           const [id, m, x, y, z, qx, qy, qz, qw, speed] = row;
           if (id === this.selfId || !this.roster.has(id)) continue;
-          this.onSample(id, { t: tLocal, mode: NET_MODES[m] ?? "walk", x, y, z, qx, qy, qz, qw, speed, ride: row[10] || undefined });
+          let rake: GardenRakeMotion | undefined;
+          if (
+            row.length === 21 &&
+            (row[11] === 0 || row[11] === 1) &&
+            (row[12] === 0 || row[12] === 1) &&
+            row.slice(13, 16).every((n) => finiteRakeMotion(n)) &&
+            row.slice(16, 18).every((n) => finiteRakeMotion(n, 2)) &&
+            row.slice(18, 21).every((n) => finiteRakeMotion(n, 2))
+          ) {
+            rake = {
+              engaged: row[11] === 1,
+              dragging: row[12] === 1,
+              contactX: row[13],
+              contactY: row[14],
+              contactZ: row[15],
+              pullX: row[16],
+              pullZ: row[17],
+              normalX: row[18],
+              normalY: row[19],
+              normalZ: row[20]
+            };
+          }
+          this.onSample(id, {
+            t: tLocal,
+            mode: NET_MODES[m] ?? "walk",
+            x,
+            y,
+            z,
+            qx,
+            qy,
+            qz,
+            qw,
+            speed,
+            ride: row[10] || undefined,
+            rideSeat: row.length === 12 ? row[11] || undefined : undefined,
+            rake
+          });
         }
         break;
       }
@@ -604,6 +845,18 @@ export class Net {
         const name = String(msg.name ?? "");
         const text = String(msg.text ?? "");
         if (id !== this.selfId && this.roster.has(id) && name && text) this.onChat(id, name, text);
+        break;
+      }
+      case "rake": {
+        if (!this.#adoptRakeSession(msg.session) || !Array.isArray(msg.d)) break;
+        for (const value of msg.d.slice(0, RAKE_BATCH_MAX)) {
+          const row = rakeWireRow(value, true);
+          if (!row) continue;
+          const stamp = rakeStampFromRow(row, true);
+          this.#rememberRake(stamp);
+          if (stamp.sequence <= this.#lastAppliedRakeSequence) continue;
+          if (this.onRakeStamp(stamp)) this.#lastAppliedRakeSequence = stamp.sequence;
+        }
         break;
       }
       case "golf": {
@@ -662,6 +915,39 @@ export class Net {
           )
             break;
           this.onPickleballInput(msg.slot, ownerId, input);
+        }
+        break;
+      }
+      case "ensemble": {
+        if (typeof msg.k !== "string" || !isEnsembleSlot(msg.slot)) break;
+        const slot = msg.slot;
+        const ownerId = pickleballOwner(msg.id);
+        if (msg.k === "claim") {
+          const ok = msg.ok === true;
+          if (ok && ownerId > 0 && (ownerId === this.selfId || this.roster.has(ownerId))) {
+            this.ensembleSlots[slot] = ownerId;
+            this.#emitEnsembleSlots();
+          }
+          this.onEnsembleClaim(slot, ownerId, ok);
+        } else if (msg.k === "release") {
+          const ok = msg.ok === true;
+          if (ok && this.ensembleSlots[slot] === ownerId) {
+            this.ensembleSlots[slot] = 0;
+            this.#emitEnsembleSlots();
+          }
+          this.onEnsembleRelease(slot, ownerId, ok);
+        } else if (
+          msg.k === "note" &&
+          ownerId !== this.selfId &&
+          this.roster.has(ownerId) &&
+          this.ensembleSlots[slot] === ownerId &&
+          Number.isInteger(msg.step) &&
+          (msg.step as number) >= 0 &&
+          (msg.step as number) <= 7 &&
+          typeof msg.velocity === "number" &&
+          Number.isFinite(msg.velocity)
+        ) {
+          this.onEnsembleNote(slot, ownerId, msg.step as number, Math.min(1, Math.max(0, msg.velocity)));
         }
         break;
       }
@@ -749,6 +1035,60 @@ export class Net {
     this.onPickleballState(state.id, state.d.slice());
   }
 
+  /** Queue one local sand segment for a small ordered relay batch. The sender
+   * also waits for the echo, so every participant applies concurrent strokes
+   * in the same server-defined order. */
+  sendRakeStamp(stamp: Readonly<SharedRakeStamp>): boolean {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return false;
+    const row = rakeRowFromStamp(stamp);
+    if (!row) return false;
+    this.#pendingRakeRows.push(row);
+    if (this.#pendingRakeRows.length >= RAKE_BATCH_MAX) this.#flushRakeRows();
+    else this.#scheduleRakeFlush();
+    return true;
+  }
+
+  /** Replay relay-cached strokes after the lazy Tea Garden simulation exists. */
+  replayRakeStamps() {
+    for (const stamp of this.#rakeHistory) {
+      if (stamp.sequence <= this.#lastAppliedRakeSequence) continue;
+      if (!this.onRakeStamp(stamp)) break;
+      this.#lastAppliedRakeSequence = stamp.sequence;
+    }
+  }
+
+  /** Reserve one Fort Mason instrument. A player may own at most one station. */
+  claimEnsemble(slot: EnsembleSlot) {
+    if (!isEnsembleSlot(slot) || this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    this.#ws.send(JSON.stringify({ t: "ensemble", k: "claim", slot }));
+  }
+
+  releaseEnsemble(slot: EnsembleSlot) {
+    if (!isEnsembleSlot(slot) || this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    this.#ws.send(JSON.stringify({ t: "ensemble", k: "release", slot }));
+  }
+
+  /** The relay accepts only the shared eight-step scale, never raw pitch data. */
+  sendEnsembleNote(slot: EnsembleSlot, step: number, velocity: number) {
+    if (
+      !isEnsembleSlot(slot) ||
+      this.#ws?.readyState !== WebSocket.OPEN ||
+      !this.selfId ||
+      this.ensembleSlots[slot] !== this.selfId ||
+      !Number.isInteger(step) ||
+      step < 0 ||
+      step > 7 ||
+      !Number.isFinite(velocity)
+    ) return;
+    this.#ws.send(JSON.stringify({
+      t: "ensemble",
+      k: "note",
+      slot,
+      step,
+      velocity: Math.round(Math.min(1, Math.max(0, velocity)) * 100) / 100
+    }));
+  }
+
   /** Broadcast one chat line (server sanitizes + stamps name; no persistence). */
   sendChat(text: string) {
     if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
@@ -807,7 +1147,15 @@ export class Net {
    * (a keepalive copy still goes out every KEEPALIVE_MS so the server's idle
    * timer sees a live player). Call once per rendered frame.
    */
-  sendState(mode: PlayerMode, pos: THREE.Vector3, quat: THREE.Quaternion, speed: number, ride = 0) {
+  sendState(
+    mode: PlayerMode,
+    pos: THREE.Vector3,
+    quat: THREE.Quaternion,
+    speed: number,
+    ride = 0,
+    rideSeat = 0,
+    rake?: Readonly<GardenRakeMotion> | null
+  ) {
     const ws = this.#ws;
     if (!ws || ws.readyState !== WebSocket.OPEN || !this.selfId) return;
     const now = performance.now();
@@ -824,7 +1172,27 @@ export class Net {
       Math.round(quat.w * 1000) / 1000,
       Math.round(speed * 10) / 10
     ];
-    if (ride) d.push(ride);
+    if (rake && mode === "walk") {
+      // Presence rows keep the old compact 9/10-value shape until a rake is
+      // actually held. A held row has an explicit ride slot followed by the
+      // exact contact frame used by the sand brush.
+      d.push(
+        ride,
+        rake.engaged ? 1 : 0,
+        rake.dragging ? 1 : 0,
+        Math.round(rake.contactX * 1000) / 1000,
+        Math.round(rake.contactY * 1000) / 1000,
+        Math.round(rake.contactZ * 1000) / 1000,
+        Math.round(rake.pullX * 10_000) / 10_000,
+        Math.round(rake.pullZ * 10_000) / 10_000,
+        Math.round(rake.normalX * 10_000) / 10_000,
+        Math.round(rake.normalY * 10_000) / 10_000,
+        Math.round(rake.normalZ * 10_000) / 10_000
+      );
+    } else if (ride) {
+      const capacity = ride < 0 ? MAX_WORLD_RIDE_SEAT : MAX_PLAYER_RIDE_SEAT;
+      d.push(ride, Math.max(1, Math.min(capacity, Math.round(rideSeat || 1))));
+    }
     const key = d.join(",");
     if (key === this.#lastSent && now - this.#lastSentAt < KEEPALIVE_MS) return;
     this.#lastSent = key;
@@ -834,6 +1202,7 @@ export class Net {
 
   dispose() {
     this.#closed = true;
+    this.#applyPendingRakesLocally();
     this.#ws?.close();
   }
 }

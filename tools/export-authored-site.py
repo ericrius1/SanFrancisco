@@ -154,12 +154,13 @@ def main():
                 "id": str(obj["sf_footprint_id"]),
                 **values,
                 "feather": round(float(obj.get("sf_feather", 0.2)), 6),
+                "groundY": round(float(obj["sf_ground_y"]), 6),
             })
-        if not footprints or len(ground_values) != 1 or modes != {"flat-ownership"}:
-            raise RuntimeError("Terrain ownership must contain one flat authority and at least one footprint")
+        if not footprints or modes != {"flat-ownership"}:
+            raise RuntimeError("Terrain ownership must contain at least one flat authority footprint")
         terrain_payload = {
             "mode": "flat-ownership",
-            "groundY": next(iter(ground_values)),
+            "groundY": min(ground_values),
             "footprints": footprints,
         }
 

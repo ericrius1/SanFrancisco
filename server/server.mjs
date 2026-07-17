@@ -4,9 +4,8 @@
 // Design (matches the client in src/net/):
 //  - Anyone can join, no accounts. The server assigns an id + a color hue.
 //  - Clients own their physics (box3d runs in each browser); the server mostly
-//    relays transforms. It does arbitrate the two pickleball player slots so
-//    one browser owns at most one side, then relays the selected authority's
-//    snapshots and the other owner's input.
+//    relays transforms. It arbitrates pickleball sides and the three Fort Mason
+//    ensemble stations so one browser owns at most one slot within each activity.
 //    This stays cheap and cheat-tolerant-by-design for a co-op sandbox.
 //  - Clients send state at ~12 Hz; the server rebroadcasts one batched
 //    snapshot per tick (12 Hz) with a server timestamp the clients use for
@@ -32,9 +31,12 @@ const TICK_HZ = 12; // snapshot broadcast rate
 const NAME_MAX = 20;
 const CHAT_MAX = 200;
 const PICKLEBALL_SLOTS = 2;
+const ENSEMBLE_SLOTS = 3;
 const PICKLEBALL_STATE_MAX = 96;
 const PICKLEBALL_INPUT_MAX = 16;
 const PICKLEBALL_VALUE_LIMIT = 1_000_000;
+const RAKE_BATCH_MAX = 16;
+const RAKE_HISTORY_MAX = 256;
 const MSG_MAX_BYTES = 16384; // fits a WebRTC SDP offer (voice signaling); poses are ~100 B
 const MSG_BUDGET_PER_SEC = 80; // state at 12 Hz + several simultaneous RTC negotiations; flooders get cut
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // no state for 5 min → drop
@@ -493,6 +495,14 @@ const players = new Map();
  * always stamps `id` and `authority`; `state` is cached for late joiners.
  */
 const pickleball = { slots: Array(PICKLEBALL_SLOTS).fill(0), state: null };
+// Sand strokes are an ordered, bounded in-memory session log. The server
+// echoes each accepted batch to its sender too, so concurrent GPU fields apply
+// exactly the same stroke order; late joiners replay the recent visible work.
+const rakeSession = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const rakeHistory = [];
+let rakeSequence = 0;
+/** Fort Mason wire: three owned stations; note messages are bounded scale steps. */
+const ensemble = { slots: Array(ENSEMBLE_SLOTS).fill(0) };
 
 const ADJ = [
   "Foggy",
@@ -972,6 +982,19 @@ const pickleballNumbers = (d, maxLength) =>
     ? d.slice()
     : null;
 
+const rakeRow = (row) => {
+  if (!Array.isArray(row) || row.length !== 9) return null;
+  if (!row.slice(0, 4).every((n) => finite(n, 20000))) return null;
+  if (!row.slice(4, 8).every((n) => finite(n, 2))) return null;
+  if (!finite(row[8], 2) || row[8] < 0) return null;
+  return row.slice();
+};
+
+const rakeWelcome = () => ({
+  session: rakeSession,
+  stamps: rakeHistory.map((row) => row.slice())
+});
+
 const refreshPickleballAuthority = () => {
   const authority = pickleballAuthority();
   if (pickleball.state && pickleball.state.id !== authority) pickleball.state = null;
@@ -983,6 +1006,8 @@ const pickleballWelcome = () => ({
   authority: pickleballAuthority(),
   state: pickleball.state ? { id: pickleball.state.id, d: pickleball.state.d.slice() } : null
 });
+
+const ensembleWelcome = () => ({ slots: ensemble.slots.slice() });
 
 const golfPosition = (d, length) =>
   Array.isArray(d) &&
@@ -1029,6 +1054,14 @@ const releasePickleballOwner = (id) => {
     pickleball.slots[slot] = 0;
     const authority = refreshPickleballAuthority();
     broadcast({ t: "pickle", k: "release", slot, id, ok: true, authority });
+  }
+};
+
+const releaseEnsembleOwner = (id) => {
+  for (let slot = 0; slot < ENSEMBLE_SLOTS; slot++) {
+    if (ensemble.slots[slot] !== id) continue;
+    ensemble.slots[slot] = 0;
+    broadcast({ t: "ensemble", k: "release", slot, id, ok: true });
   }
 };
 
@@ -1098,7 +1131,9 @@ wss.on("connection", (ws) => {
             car: o.car,
             golf: o.golf
           })),
-        pickle: pickleballWelcome()
+        pickle: pickleballWelcome(),
+        sand: rakeWelcome(),
+        ensemble: ensembleWelcome()
       });
       broadcast(
         {
@@ -1115,9 +1150,20 @@ wss.on("connection", (ws) => {
         id
       );
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
-    } else if (msg.t === "s" && Array.isArray(msg.d) && (msg.d.length === 9 || msg.d.length === 10)) {
-      // [modeIndex, x, y, z, qx, qy, qz, qw, speed, ride?] — validate finite numbers
-      if (msg.d.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    } else if (
+      msg.t === "s" &&
+      Array.isArray(msg.d) &&
+      (msg.d.length === 9 || msg.d.length === 10 || msg.d.length === 11 || msg.d.length === 20)
+    ) {
+      // Base pose is [mode,x,y,z,qx,qy,qz,qw,speed,ride?]. An 11-value
+      // packet adds rideSeat; a 20-value held-rake packet instead appends
+      // [engaged,dragging,contact xyz,pull xz,normal xyz].
+      const rideId = msg.d.length >= 10 ? msg.d[9] : 0;
+      const seatCapacity = rideId < 0 ? 12 : 2;
+      const seatValid =
+        msg.d.length !== 11 ||
+        (Number.isInteger(msg.d[10]) && msg.d[10] >= 1 && msg.d[10] <= seatCapacity);
+      if (seatValid && msg.d.every((n) => typeof n === "number" && Number.isFinite(n))) {
         p.state = msg.d;
         p.lastState = Date.now();
       }
@@ -1160,6 +1206,18 @@ wss.on("connection", (ws) => {
       // pure relay, every client replays the launches locally
       if (msg.d.every((r) => Array.isArray(r) && r.length === 9 && r.every((n) => typeof n === "number" && Number.isFinite(n)))) {
         broadcast({ t: "fw", id, d: msg.d }, id);
+      }
+    } else if (msg.t === "rake" && Array.isArray(msg.d) && msg.d.length >= 1 && msg.d.length <= RAKE_BATCH_MAX) {
+      const rows = msg.d.map(rakeRow);
+      if (rows.every(Boolean)) {
+        const stamped = rows.map((row) => [++rakeSequence, ...row]);
+        rakeHistory.push(...stamped);
+        if (rakeHistory.length > RAKE_HISTORY_MAX) {
+          rakeHistory.splice(0, rakeHistory.length - RAKE_HISTORY_MAX);
+        }
+        // No exceptId: the sender consumes the same authoritative echo as its
+        // friends instead of applying an optimistic client-local order.
+        broadcast({ t: "rake", id, session: rakeSession, d: stamped });
       }
     } else if (msg.t === "pickle" && typeof msg.k === "string") {
       // Ownership is the one competitive invariant the relay enforces. The
@@ -1211,6 +1269,45 @@ wss.on("connection", (ws) => {
           if (target) send(target.ws, { t: "pickle", k: "input", slot: msg.slot, id, authority, d });
         }
       }
+    } else if (msg.t === "ensemble" && typeof msg.k === "string") {
+      if ((msg.k === "claim" || msg.k === "release") && intBetween(msg.slot, 0, ENSEMBLE_SLOTS - 1)) {
+        const slot = msg.slot;
+        const owner = ensemble.slots[slot];
+        if (msg.k === "claim") {
+          const ownedSlot = ensemble.slots.findIndex((candidate) => candidate === id);
+          if (owner === id) {
+            broadcast({ t: "ensemble", k: "claim", slot, id, ok: true });
+          } else if (owner !== 0) {
+            send(ws, { t: "ensemble", k: "claim", slot, id: owner, ok: false, reason: "occupied" });
+          } else if (ownedSlot >= 0) {
+            send(ws, { t: "ensemble", k: "claim", slot, id, ok: false, reason: "already-owns-slot" });
+          } else {
+            ensemble.slots[slot] = id;
+            broadcast({ t: "ensemble", k: "claim", slot, id, ok: true });
+          }
+        } else if (owner === id) {
+          ensemble.slots[slot] = 0;
+          broadcast({ t: "ensemble", k: "release", slot, id, ok: true });
+        } else {
+          send(ws, { t: "ensemble", k: "release", slot, id: owner, ok: false });
+        }
+      } else if (
+        msg.k === "note" &&
+        intBetween(msg.slot, 0, ENSEMBLE_SLOTS - 1) &&
+        ensemble.slots[msg.slot] === id &&
+        intBetween(msg.step, 0, 7) &&
+        finite(msg.velocity, 1) &&
+        msg.velocity >= 0
+      ) {
+        broadcast({
+          t: "ensemble",
+          k: "note",
+          slot: msg.slot,
+          id,
+          step: msg.step,
+          velocity: Math.min(1, msg.velocity)
+        }, id);
+      }
     } else if (msg.t === "golf" && typeof msg.k === "string") {
       const out = sanitizeGolf(msg, id);
       if (out) {
@@ -1238,6 +1335,7 @@ wss.on("connection", (ws) => {
     if (!players.has(id)) return;
     players.delete(id);
     releasePickleballOwner(id);
+    releaseEnsembleOwner(id);
     broadcast({ t: "leave", id });
     console.log(`[sf-server] leave #${id} (${players.size} online)`);
   };

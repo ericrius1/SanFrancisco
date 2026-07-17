@@ -10,6 +10,7 @@ import {
   createDryLandscape,
   type DryLandscapeDebugState
 } from "./dryLandscape";
+import type { SandRakeStamp } from "./sandSimulation";
 import type { TeaGardenDialogueSource } from "./dialogue";
 import {
   createTeaGardenGuide,
@@ -50,6 +51,7 @@ export {
   type TeaGardenDialogueChapter,
   type TeaGardenDialogueSource
 } from "./dialogue";
+export { createGardenRakeTool } from "./dryLandscape";
 
 export type JapaneseTeaGardenStats = {
   architectureMeshes: number;
@@ -150,6 +152,13 @@ export type JapaneseTeaGarden = {
   ): void;
   project(camera: THREE.Camera): void;
   interact(player: TeaGardenPlayerPosition, mode: string): boolean;
+  isRaking(): boolean;
+  /** Quiet teardown used by teleport and the shared minigame exit button. */
+  releaseForNavigation(): boolean;
+  /** Apply one canonical multiplayer stroke to the shared local GPU field. */
+  queueRakeStamp(stamp: SandRakeStamp): boolean;
+  /** Return to the authored pattern when the relay starts a fresh sand session. */
+  resetSand(): void;
   /** True when (x, z) is over an authored water feature (pond/stream). Lets the
    *  ball tool suppress its dry ground thud for a bounce on the pond bottom. */
   containsWater(x: number, z: number): boolean;
@@ -176,6 +185,8 @@ export type JapaneseTeaGardenOptions = {
   onCarryRake?: (rake: GardenRakeTool | null) => void;
   /** One exact world contact drives both the granular brush and the avatar pose. */
   onRakeMotion?: (motion: Readonly<GardenRakeMotion> | null) => void;
+  /** Return true when the relay accepted the segment for ordered echo. */
+  onRakeStamp?: (stamp: Readonly<SandRakeStamp>) => boolean;
   /** Boot-resident ball state is sampled only while this lazy world feature is awake. */
   ballSource?: TeaGardenBallSource;
   /** A thrown ball broke the tea water surface at `speed` m/s — voice a plonk +
@@ -232,6 +243,7 @@ export function createJapaneseTeaGarden(
     nature: options.nature,
     onCarryRake: options.onCarryRake,
     onRakeMotion: options.onRakeMotion,
+    onRakeStamp: options.onRakeStamp,
     notify: options.notify
   });
   const guide = createTeaGardenGuide(map, {
@@ -660,6 +672,20 @@ export function createJapaneseTeaGarden(
       if (disposed || !awake) return false;
       if (dryLandscape.interact(player, mode)) return true;
       return guide.interact(player, mode);
+    },
+    isRaking(): boolean {
+      return dryLandscape.isPlayerActive();
+    },
+    releaseForNavigation(): boolean {
+      return dryLandscape.releaseForNavigation();
+    },
+    queueRakeStamp(stamp: SandRakeStamp): boolean {
+      if (disposed) return false;
+      dryLandscape.queueRakeStamp(stamp);
+      return true;
+    },
+    resetSand() {
+      if (!disposed) dryLandscape.resetSand();
     },
     containsWater(x: number, z: number): boolean {
       return inTeaGardenWater(x, z);

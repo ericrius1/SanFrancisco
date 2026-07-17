@@ -16,3 +16,5 @@ data/city/
 scratchpad/
 renders/
 tmp/
+# generation workspace (lives in the main repo checkout)
+data/city
