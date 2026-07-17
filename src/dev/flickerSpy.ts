@@ -67,9 +67,10 @@ export function installFlickerSpy(opts: {
     a.click();
   };
 
-  const dump = (reason: string, meta: Record<string, unknown>) => {
+  const dump = (reason: string, meta: Record<string, unknown>, manual = false) => {
     const now = performance.now();
-    if (now - lastCaptureAt < 2000 || captures >= 12) return;
+    // Auto-detections are throttled/capped; a manual key press always dumps.
+    if (!manual && (now - lastCaptureAt < 2000 || captures >= 30)) return;
     lastCaptureAt = now;
     captures++;
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -98,9 +99,18 @@ export function installFlickerSpy(opts: {
     console.warn(`[flickerspy] captured (${reason})`, meta);
   };
 
-  window.addEventListener("keydown", (event) => {
-    if (event.code === "F9") dump("manual F9", {});
-  });
+  // Capture-phase on both window and document so nothing swallows it first.
+  // `G` (grab) is a free key — F9 is intercepted by the OS/browser.
+  const onKey = (event: KeyboardEvent) => {
+    if (event.code === "KeyG") {
+      event.preventDefault();
+      event.stopPropagation();
+      console.warn("[flickerspy] G pressed — dumping frame");
+      dump("manual G", {}, true);
+    }
+  };
+  window.addEventListener("keydown", onKey, { capture: true });
+  document.addEventListener("keydown", onKey, { capture: true });
 
   const scan = () => {
     frame++;
@@ -144,5 +154,5 @@ export function installFlickerSpy(opts: {
     requestAnimationFrame(scan);
   };
   requestAnimationFrame(scan);
-  console.warn("[flickerspy] armed — F9 dumps the current+previous frame and draw lists");
+  console.warn("[flickerspy] armed — press G to dump the current+previous frame and draw lists");
 }
