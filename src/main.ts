@@ -130,6 +130,8 @@ import type { PalaceReverieGame } from "./gameplay/palaceReverie";
 import { REVERIE_CENTER } from "./gameplay/palaceReverie/meta";
 import type { LandsEndRegion } from "./world/landsEnd";
 import { LANDS_END_CENTER } from "./world/landsEnd/meta";
+import type { WaveOrgan } from "./world/waveOrgan";
+import { WAVE_ORGAN_CENTER } from "./world/waveOrgan/meta";
 import type { AfterlightExperience } from "./gameplay/afterlight";
 import {
   AFTERLIGHT_ARRIVAL,
@@ -1185,6 +1187,7 @@ async function boot() {
   // Lands End — the NW headland: a cliff-top Labyrinth you light by walking,
   // Sutro Baths ruins, cypress and a lantern-keeper. Distance-LOD region.
   let landsEnd: LandsEndRegion | null = null;
+  let waveOrgan: WaveOrgan | null = null;
   // Buena Vista's hidden summit ritual: five wandering echoes and a sky-scale
   // finale, asleep outside its clearing like the other located activities.
   let afterlight: AfterlightExperience | null = null;
@@ -1933,6 +1936,9 @@ async function boot() {
     ensureSurfShack();
   }
   minimap.addLandmark(LANDS_END_CENTER.x, LANDS_END_CENTER.z, "Lands End · Labyrinth");
+  // The Marina breakwater sculpture. The pin is just the place's name — what
+  // sleeps out there is for the walker to find.
+  minimap.addLandmark(WAVE_ORGAN_CENTER.x, WAVE_ORGAN_CENTER.z, "Wave Organ");
   const playerLocator = new PlayerLocator();
   let prepareDestinationEssentials: (
     destination: Readonly<{ x: number; z: number }>,
@@ -3033,6 +3039,7 @@ async function boot() {
     | "afterlight"
     | "corona"
     | "lands-end"
+    | "wave-organ"
     | "sutro-baths"
     | "pup"
     | "fort-mason-ensemble"
@@ -3072,6 +3079,7 @@ async function boot() {
       afterlight,
       coronaHeights,
       landsEnd,
+      waveOrgan,
       sutroBaths
     });
   };
@@ -3305,6 +3313,17 @@ async function boot() {
     return sutroRemoteScratch;
   };
 
+  const loadWaveOrgan = async (): Promise<void> => {
+    const { WaveOrgan: LoadedWaveOrgan } = await import("./world/waveOrgan");
+    await waitForOptionalSiteStage();
+    const organ = new LoadedWaveOrgan(map, nature);
+    await prepareOptionalRoot("wave-organ", organ.group);
+    waveOrgan = organ;
+    scene.add(organ.group);
+    sky.invalidateStaticShadows();
+    refreshOptionalSiteDebug();
+  };
+
   const loadSutroBaths = async (): Promise<void> => {
     const { createSutroBaths } = await import("./world/sutroBaths");
     await waitForOptionalSiteStage();
@@ -3387,6 +3406,7 @@ async function boot() {
     },
     { id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, state: "dormant", forced: false, promise: null, load: loadCorona },
     { id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, state: "dormant", forced: false, promise: null, load: loadLandsEnd },
+    { id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, state: "dormant", forced: false, promise: null, load: loadWaveOrgan },
     {
       id: "sutro-baths",
       label: "Sutro Baths · 1896",
@@ -3416,6 +3436,7 @@ async function boot() {
     afterlight: true,
     corona: true,
     "lands-end": true,
+    "wave-organ": true,
     "sutro-baths": true,
     pup: true,
     "fort-mason-ensemble": true,
@@ -3465,6 +3486,9 @@ async function boot() {
         break;
       case "lands-end":
         if (!on && landsEnd) landsEnd.group.visible = false;
+        break;
+      case "wave-organ":
+        if (!on && waveOrgan) waveOrgan.group.visible = false;
         break;
       case "sutro-baths":
         sutroBaths?.setPerfSuppressed(!on);
@@ -3533,6 +3557,11 @@ async function boot() {
         return {
           runtime: landsEnd?.group.visible ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(landsEnd?.group)
+        };
+      case "wave-organ":
+        return {
+          runtime: waveOrgan?.group.visible ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(waveOrgan?.group)
         };
       case "sutro-baths":
         return {
@@ -4660,6 +4689,7 @@ async function boot() {
       !fortMasonEnsemble?.tryInteract(player.renderPosition, player.mode) &&
       !palaceReverie?.tryInteract(player, hud) &&
       !landsEnd?.keeper.tryInteract(player, hud) &&
+      !waveOrgan?.tryInteract(player, hud) &&
       !missionDolores?.tryInteract(player.position, player.mode, hud) &&
       !afterlight?.tryInteract(player, hud) &&
       !(
@@ -5165,6 +5195,12 @@ async function boot() {
         }
       } else if (landsEnd) {
         landsEnd.group.visible = false;
+      }
+      if (optionalSitePerfAllowed("wave-organ")) {
+        // hud only while on foot — walking is how you put an ear to a pipe.
+        waveOrgan?.update(frameDt, elapsed, player.position, player.mode === "walk" ? hud : null);
+      } else if (waveOrgan) {
+        waveOrgan.group.visible = false;
       }
     }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
@@ -5746,6 +5782,7 @@ async function boot() {
       get coronaHeights() { return coronaHeights ?? undefined; },
       get palaceReverie() { return palaceReverie ?? undefined; },
       get landsEnd() { return landsEnd ?? undefined; },
+      get waveOrgan() { return waveOrgan ?? undefined; },
       fireworks,
       worldQueries,
       setTool: (t: string) => setTool(t as ToolName),
