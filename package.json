@@ -63,6 +63,7 @@
     "test:shadows:contact": "node tools/contact-shadow-contract-test.mjs",
     "test:fog-weather": "node --experimental-strip-types tools/fog-weather-test.mjs",
     "test:palace-softness": "node --experimental-strip-types tools/palace-surface-softness-test.mjs",
+    "test:ukiyo-postfx": "node tools/ukiyo-postfx-probe.mjs",
     "profile:shadows": "node tools/shadow-performance-probe.mjs",
     "test:hmr": "node --experimental-strip-types tools/hmr-lifecycle-probe.mjs",
     "test:hmr:browser": "node tools/hmr-browser-probe.mjs",
