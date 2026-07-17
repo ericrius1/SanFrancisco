@@ -71,43 +71,9 @@ export type CreatureSpec = {
   fall: { minUp: number; minHeight: number };
 };
 
-// A horse, sim-scaled. Torso box (unambiguous body axes) + four two-segment
+// A dog, sim-scaled. Torso box (unambiguous body axes) + four two-segment
 // capsule legs. Lateral-sequence WALK (HL -> FL -> HR -> FR, a quarter cycle
 // apart) keeps three feet down: easy for a fresh policy to balance.
-function leg(hip: V3, phase: number): LegSpec {
-  return {
-    hip,
-    thigh: { halfHeight: 0.16, radius: 0.09, density: 250 }, // longer legs: taller stance, room to bound
-    shank: { halfHeight: 0.16, radius: 0.075, density: 230 },
-    phase
-  };
-}
-export const HORSE: CreatureSpec = {
-  name: "horse",
-  torso: { half: [0.22, 0.13, 0.52], density: 120 },
-  legs: [
-    leg([-0.2, -0.07, 0.42], Math.PI * 0.5), // FL
-    leg([0.2, -0.07, 0.42], Math.PI * 1.5), // FR
-    leg([-0.2, -0.07, -0.42], 0), // HL
-    leg([0.2, -0.07, -0.42], Math.PI) // HR
-  ],
-  standHeight: 0.72,
-  // faster base rhythm + bigger stride so a run/gallop is reachable; the policy
-  // widens or slows it from here. kneeLag ~pi/2: foot lifts on the forward swing,
-  // plants to push back through stance -> net thrust.
-  cpg: { baseFreq: 2.0, hipAmp: 0.5, kneeAmp: 0.8, kneeRest: 0.04, kneeLag: 1.57 },
-  // strong, snappy "muscles" (quaternion servo) so the legs can drive a dynamic
-  // gait, not just hold a slow shuffle.
-  pd: { hipKp: 72, hipKd: 3.0, latKp: 26, latKd: 1.6, kneeKp: 72, kneeKd: 3.0, maxTorque: 95, reaction: 0.2 },
-  // RUN: forward speed dominates, staying TALL is strongly rewarded (kills the
-  // crouch-shuffle), alive bonus tiny. Speed only pays while upright (in reward()).
-  // height is a modest stand-tall entry gradient; the tall-GATE (in reward())
-  // already forces tallness, so keeping this small makes RUNNING the way to earn
-  // real reward instead of just standing there.
-  reward: { forward: 6.0, upright: 0.25, alive: 0.03, height: 0.9, energy: 0.0012, spin: 0.03, heading: 0.9 },
-  fall: { minUp: 0.4, minHeight: 0.32 }
-};
-
 function dogLeg(hip: V3, phase: number): LegSpec {
   return {
     hip,
@@ -129,33 +95,6 @@ export const DOG: CreatureSpec = {
   cpg: { baseFreq: 2.05, hipAmp: 0.42, kneeAmp: 0.68, kneeRest: 0.03, kneeLag: 1.57 },
   pd: { hipKp: 60, hipKd: 2.8, latKp: 30, latKd: 1.7, kneeKp: 60, kneeKd: 2.8, maxTorque: 58, reaction: 0.18 },
   reward: { forward: 4.0, upright: 0.14, alive: 0.04, height: 0.34, energy: 0.002, spin: 0.035, heading: 0.5 },
-  fall: { minUp: 0.4, minHeight: 0.32 }
-};
-
-function goatLeg(hip: V3, phase: number): LegSpec {
-  return {
-    hip,
-    thigh: { halfHeight: 0.14, radius: 0.075, density: 235 },
-    shank: { halfHeight: 0.15, radius: 0.06, density: 225 },
-    phase
-  };
-}
-/** A goat: compact light body on long springy legs — trained under heavy random
- *  shoves (the "balance chaos" experiment), so it should end up the most
- *  sure-footed of the ranch. Higher cadence than the dog, less raw torque. */
-export const GOAT: CreatureSpec = {
-  name: "goat",
-  torso: { half: [0.15, 0.11, 0.3], density: 68 },
-  legs: [
-    goatLeg([-0.13, -0.06, 0.24], Math.PI * 0.5), // FL
-    goatLeg([0.13, -0.06, 0.24], Math.PI * 1.5), // FR
-    goatLeg([-0.13, -0.06, -0.24], 0), // HL
-    goatLeg([0.13, -0.06, -0.24], Math.PI) // HR
-  ],
-  standHeight: 0.66,
-  cpg: { baseFreq: 2.3, hipAmp: 0.44, kneeAmp: 0.7, kneeRest: 0.03, kneeLag: 1.57 },
-  pd: { hipKp: 58, hipKd: 2.7, latKp: 30, latKd: 1.7, kneeKp: 58, kneeKd: 2.7, maxTorque: 54, reaction: 0.18 },
-  reward: { forward: 4.0, upright: 0.2, alive: 0.04, height: 0.4, energy: 0.002, spin: 0.035, heading: 0.5 },
   fall: { minUp: 0.4, minHeight: 0.32 }
 };
 

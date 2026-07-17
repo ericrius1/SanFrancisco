@@ -1,9 +1,9 @@
 import { createBox3D } from "../../src/core/box3dWorld.ts";
-import { DOG, HORSE, actDim, thighPitch, kneeAngle, qRot, type CreatureSpec } from "../../src/creatures/quadruped.ts";
+import { DOG, actDim, thighPitch, kneeAngle, qRot, type CreatureSpec } from "../../src/creatures/quadruped.ts";
 import { Box3DEnv } from "../core/box3dEnv.ts";
 import { rng32 } from "../core/es.ts";
 const box3d = await createBox3D();
-const SPECS: Record<string, CreatureSpec> = { horse: HORSE, dog: DOG };
+const SPECS: Record<string, CreatureSpec> = { dog: DOG };
 const creatureArg = process.argv.indexOf("--creature");
 const creature = creatureArg >= 0 ? process.argv[creatureArg + 1] : "dog";
 const target = SPECS[creature];

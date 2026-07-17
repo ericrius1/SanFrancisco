@@ -2,7 +2,7 @@
  * Train a creature locomotion policy with Evolution Strategies against box3d,
  * headless in Node. No GPU, no Python, no autodiff — just rollouts.
  *
- *   node --experimental-strip-types rl/train.ts [--gens 120] [--pairs 96] [--creature horse]
+ *   node --experimental-strip-types rl/train.ts [--gens 120] [--pairs 96] [--creature pup]
  *
  * Writes:
  *   public/models/<creature>_policy.json   best "center" policy (browser loads this)
@@ -12,7 +12,7 @@
 import { createBox3D } from "../src/core/box3dWorld.ts";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { Policy, paramCount } from "../src/creatures/policy.ts";
-import { DOG, HORSE, GOAT, obsDim, actDim, setTuning, type CreatureSpec } from "../src/creatures/quadruped.ts";
+import { DOG, obsDim, actDim, setTuning, type CreatureSpec } from "../src/creatures/quadruped.ts";
 import { readFileSync as _readFileSync } from "node:fs";
 import { Box3DEnv } from "./core/box3dEnv.ts";
 import { ES, rng32 } from "./core/es.ts";
@@ -20,7 +20,7 @@ import { rollout } from "./core/rollout.ts";
 
 // "pup" trains the DOG body but deploys to pup_policy.json — the in-world
 // puppy nursery (src/gameplay/pup) polls that file and hot-swaps the brain.
-const CREATURES: Record<string, CreatureSpec> = { horse: HORSE, dog: DOG, pup: DOG, goat: GOAT };
+const CREATURES: Record<string, CreatureSpec> = { dog: DOG, pup: DOG };
 
 function arg(name: string, def: number): number {
   const i = process.argv.indexOf("--" + name);
@@ -31,7 +31,7 @@ function argStr(name: string, def: string): string {
   return i >= 0 ? process.argv[i + 1] : def;
 }
 
-const creatureName = argStr("creature", "horse");
+const creatureName = argStr("creature", "pup");
 const spec = CREATURES[creatureName];
 if (!spec) throw new Error("unknown creature " + creatureName);
 
