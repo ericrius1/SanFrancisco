@@ -23,6 +23,7 @@ import { createBrotliCompress, createGzip, constants as zlibConstants } from "no
 import { WebSocketServer } from "ws";
 import { weatherNumber } from "./weather-utils.mjs";
 import { starlinkGpPayload } from "./starlink.mjs";
+import { createCompanionHub } from "./companion.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -361,6 +362,9 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ ok: true, players: players.size }));
     return;
   }
+  if (urlPath.startsWith("/companion/")) {
+    if (await companion.handleHttp(req, res, urlPath)) return;
+  }
   if (urlPath === "/api/weather/fog") {
     if (req.method !== "GET" && req.method !== "HEAD") {
       res.writeHead(405, { allow: "GET, HEAD", "cache-control": "no-store" });
@@ -488,6 +492,9 @@ const wss = new WebSocketServer({ server, path: "/ws", maxPayload: MSG_MAX_BYTES
 let nextId = 1;
 /** id -> player presence plus latest reconnect-safe golf state (if any). */
 const players = new Map();
+
+// Companion-app hub (iOS notifications): SSE feed + optional APNs push.
+const companion = createCompanionHub({ getPlayers: () => players });
 /**
  * Pickleball wire: clients claim/release slot 0|1, the owner of slot 0 (or
  * slot 1 while 0 is empty) alone may publish bounded `state` arrays, and each
@@ -1150,6 +1157,11 @@ wss.on("connection", (ws) => {
         id
       );
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
+      // companion announce once per connection (repeat `hi` must not re-notify)
+      if (!p.greeted) {
+        p.greeted = true;
+        companion.announceJoin(p);
+      }
     } else if (
       msg.t === "s" &&
       Array.isArray(msg.d) &&
@@ -1338,6 +1350,7 @@ wss.on("connection", (ws) => {
     releaseEnsembleOwner(id);
     broadcast({ t: "leave", id });
     console.log(`[sf-server] leave #${id} (${players.size} online)`);
+    if (p.greeted) companion.announceLeave(p);
   };
   ws.on("close", drop);
   ws.on("error", drop);
