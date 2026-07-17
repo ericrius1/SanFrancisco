@@ -46,10 +46,30 @@ try {
   }));
 
   await Promise.all(pages.map((page) => page.waitForFunction(
-    () => window.__sf?.fetchBall && window.__sf?.net?.status === "online",
+    () => window.__sf?.fetchBall && window.__sf?.net?.status === "online" && window.__sf.net.roster.size === 1,
     undefined,
     { timeout: 150_000 }
   )));
+
+  // Saved positions can place the two clean browser contexts across the city.
+  // Co-locate them so the receiver's intentional 150 m visibility cap does not
+  // discard a throw that no nearby player could see in real play either.
+  const meetup = await pages[0].evaluate(() => ({
+    x: window.__sf.player.position.x,
+    z: window.__sf.player.position.z,
+    facing: window.__sf.player.heading
+  }));
+  await Promise.all(pages.map((page) => page.evaluate((target) => {
+    const sf = window.__sf;
+    sf.player.teleportTo({
+      x: target.x,
+      y: sf.map.effectiveGround(target.x, target.z) + 0.9,
+      z: target.z,
+      facing: target.facing,
+      mode: "walk"
+    });
+  }, meetup)));
+  await pages[0].waitForTimeout(500);
 
   const initialCounts = await Promise.all(pages.map((page) => page.evaluate(() => {
     let count = 0;

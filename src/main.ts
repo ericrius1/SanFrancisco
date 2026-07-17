@@ -1819,8 +1819,8 @@ async function boot() {
   net.onSample = (id, s) => remotes.sample(id, s);
   // someone else's paintball: same ballistic sim, their color, splats locally
   net.onPaint = (id, x, y, z, vx, vy, vz, rgb) => paintballs.spawn(x, y, z, vx, vy, vz, remotePaint.set(rgb), id);
-  // Friends' tennis balls use the exact local bounce/roll sim. They remain
-  // non-pickup world effects so fetch dogs and ownership never fork by client.
+  // Friends' tennis balls use the exact local bounce/roll sim. They stay out of
+  // local dog-fetch ownership, but settled balls transfer through E pickup.
   net.onBall = (id, throwId, x, y, z, vx, vy, vz) => fetchBall?.spawnRemote(id, throwId, x, y, z, vx, vy, vz);
   net.onBallPickup = (pickerId, ownerId, throwId, accepted) => {
     const received = fetchBall?.resolvePickup(
