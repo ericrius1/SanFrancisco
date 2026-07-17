@@ -510,13 +510,13 @@ export class DebugPanel {
     // height transition has moved the following rows. A tall folder therefore
     // paints over its siblings for the first 200 ms. Its `-cpl` class marks the
     // transition end, so clip only while expansion is in progress.
-    if (!document.getElementById("sf-tp-checkbox-fix")) {
+    if (!document.getElementById("sf-tp-ui-fixes")) {
       const style = document.createElement("style");
-      style.id = "sf-tp-checkbox-fix";
+      style.id = "sf-tp-ui-fixes";
       style.textContent = [
         ".tp-ckbv_i{width:var(--cnt-usz,20px);height:var(--cnt-usz,20px);z-index:1;cursor:pointer}",
         ".tp-ckbv_w,.tp-ckbv_w *{pointer-events:none}",
-        ".tp-fldv-expanded:not(.tp-fldv-cpl)>.tp-fldv_c{overflow:hidden}"
+        ".tp-fldv.tp-fldv-expanded:not(.tp-fldv-cpl)>.tp-fldv_c{overflow:hidden}"
       ].join("");
       document.head.appendChild(style);
     }
