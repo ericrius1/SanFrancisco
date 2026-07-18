@@ -32,7 +32,8 @@ export type NativeTreeGeometryPrototype = {
   skeletonFingerprint: string;
   lods: readonly NativeTreeLodGeometry[];
   bounds: TreeBounds;
-  shadow: CompiledTreePrototype["shadow"];
+  /** Crown ellipsoid used only for distant beauty-pass normal shaping. */
+  canopy: Readonly<{ center: readonly [number, number, number]; radii: readonly [number, number, number] }>;
   stats: CompiledTreeStats;
   /** Release the shared prototype buffers only when no forest can use them. */
   dispose(): void;
@@ -107,6 +108,19 @@ export function createNativeTreeGeometryPrototype(
   compiled: CompiledTreePrototype
 ): NativeTreeGeometryPrototype {
   const lods = compiled.lods.map(createLodGeometry);
+  const foliageBounds = compiled.lods[0]?.foliage.bounds ?? compiled.bounds;
+  const canopy = Object.freeze({
+    center: Object.freeze([
+      (foliageBounds.min[0] + foliageBounds.max[0]) * 0.5,
+      (foliageBounds.min[1] + foliageBounds.max[1]) * 0.5,
+      (foliageBounds.min[2] + foliageBounds.max[2]) * 0.5
+    ] as const),
+    radii: Object.freeze([
+      Math.max(0.01, (foliageBounds.max[0] - foliageBounds.min[0]) * 0.5),
+      Math.max(0.01, (foliageBounds.max[1] - foliageBounds.min[1]) * 0.5),
+      Math.max(0.01, (foliageBounds.max[2] - foliageBounds.min[2]) * 0.5)
+    ] as const)
+  });
   let disposed = false;
   return {
     recipeName: compiled.recipeName,
@@ -114,7 +128,7 @@ export function createNativeTreeGeometryPrototype(
     skeletonFingerprint: compiled.skeletonFingerprint,
     lods,
     bounds: compiled.bounds,
-    shadow: compiled.shadow,
+    canopy,
     stats: compiled.stats,
     dispose() {
       if (disposed) return;

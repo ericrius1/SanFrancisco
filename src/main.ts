@@ -997,7 +997,6 @@ async function boot() {
     sutroBaths?.setFoliageVisible(visible);
     siteFoliage?.setVisible(visible);
     islands.setFoliageVisible(visible);
-    sky.invalidateStaticShadows();
   };
   const islands = new Islands(physics, map, scene);
   islands.setFoliageVisible(foliageOn);
@@ -2762,7 +2761,6 @@ async function boot() {
       await waitForWorldBackgroundWindow(1800);
       const g = gardenMod.createBotanicalGarden(map);
       garden = g;
-      void g.ready.then(() => sky.invalidateStaticShadows(), () => {});
       const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (h) Object.assign(h, { garden: g });
       return g;
@@ -2821,7 +2819,6 @@ async function boot() {
       }
       scene.add(forest.group);
       forest.group.visible = foliageOn;
-      sky.invalidateStaticShadows();
       const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (h) Object.assign(h, { buenaVistaTrees: forest });
     };
@@ -2879,7 +2876,6 @@ async function boot() {
       wildTreeGroup.visible = foliageOn;
       scene.add(wildTreeGroup);
       markLazyRegion("wildlands", "trees-attached");
-      if (foliageOn) sky.invalidateStaticShadows();
       // Presidio golf game. Own guard — a bad golf.json must not take the
       // groves/city down with it.
       if (loadedGolfCourse) {

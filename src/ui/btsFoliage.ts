@@ -1106,7 +1106,7 @@ const gpuMeadow = createGpuMeadowPipeline();
 
 /* --------------------------------------------------- scrolly: forest diagram */
 
-// "How a forest stays cheap" — a five-stage plan view. Element ids are the
+// "How a forest stays cheap" — a four-stage plan view. Element ids are the
 // contract with renderForest(); the painter only sets opacity / a few attrs.
 const DIAGRAM_FOREST = `
   <svg viewBox="145 0 530 330" class="ss-svg" style="overflow:hidden" role="img" aria-label="How a forest is drawn cheaply">
@@ -1163,9 +1163,6 @@ const DIAGRAM_FOREST = `
 
     <!-- the trees themselves (planted once in mount, coloured by tier here) -->
     <g id="fo-forest"></g>
-
-    <!-- stage 4: a static shadow layer that never pops -->
-    <g id="fo-shadows" opacity="0"></g>
 
     <circle id="fo-you" cx="410" cy="180" r="7" fill="url(#fo-you-g)" filter="url(#fo-glow)"/>
     <text id="fo-youlbl" x="410" y="200" class="ss-t ss-tc" style="font-size:8px" opacity="0">you</text>
@@ -1381,8 +1378,8 @@ export const FOLIAGE_TAB_HTML = `
     and UV, the compiler bakes the less visible assets the shader needs: each leaf's supporting anchor, wind
     phase and stiffness, height and tip weights, palette variation and canopy opening. The result is one
     interleaved vertex buffer plus one index buffer per branch/foliage pair, transferred out of the worker
-    without copying. Bounds, triangle and byte counts, a skeleton fingerprint and an analytic canopy-shadow
-    profile ride along in the same prototype.</p>
+    without copying. Bounds, triangle and byte counts, plus a skeleton fingerprint ride along in the same
+    prototype. The beauty renderer derives its canopy ellipsoid directly from the nearest foliage bounds.</p>
   </section>
 
   <section>
@@ -1425,10 +1422,10 @@ export const FOLIAGE_TAB_HTML = `
   <div class="scrolly" data-diagram="forest">
     <div class="scrolly-graphic">
       <div class="fo-scene-head" aria-live="polite" aria-atomic="true">
-        <span class="fo-scene-count" data-fo-stage-count>Stage 1 of 5</span>
+        <span class="fo-scene-count" data-fo-stage-count>Stage 1 of 4</span>
         <strong class="fo-scene-title" data-fo-stage-title>Grow one prototype</strong>
         <span class="fo-scene-dots" aria-hidden="true">
-          <span class="active"></span><span></span><span></span><span></span><span></span>
+          <span class="active"></span><span></span><span></span><span></span>
         </span>
       </div>
       ${DIAGRAM_FOREST}
@@ -1456,10 +1453,6 @@ export const FOLIAGE_TAB_HTML = `
       probe, that whole CPU decision took only 0.2 ms at the 95th percentile; the expensive part is the
       geometry that survives, not deciding which chunks can draw.</p></div>
 
-      <div class="scrolly-step"><p><strong>The shadows sit still.</strong> If tree shadows switched detail
-      with the trees, every LOD swap would twitch the shade on the ground. So the shadows are cast by a
-      separate, static proxy that never changes tier — the massing on the grass stays put while the trees
-      themselves quietly gain and lose leaves in front of it.</p></div>
     </div>
   </div>
 
@@ -1490,15 +1483,12 @@ export const FOLIAGE_TAB_HTML = `
   </section>
 
   <section>
-    <h3><span class="bts-ic">🌑</span> Shadows that don't flinch</h3>
-    <p>Worth its own note, because it's the kind of bug you feel before you see: if the thing casting a
-    shadow keeps changing shape, the shadow shimmers. Trees change shape constantly — that's what LOD
-    <em>is</em>. So tree shadows here aren't cast by the trees you see at all. They're cast by a separate,
-    <strong>static shadow proxy</strong>: coarse stand-in massing, chopped into world-space microcells,
-    drawn once through a single shared depth material and left alone. It never switches level, so the shade
-    pooled under a stand of redwoods stays rock-steady while the redwoods themselves gain and drop leaves as
-    you move. You get the weight of a forest's shadow without paying to re-shadow it every time a tree at
-    the edge of view changes tier.</p>
+    <h3><span class="bts-ic">🌤️</span> Foliage skips the shadow maps</h3>
+    <p>Trees, shrubs, flowers and grass render only in the beauty pass: they neither cast into cascaded
+    shadow maps nor sample those maps while shading. That removes a second set of plant geometry draws,
+    avoids shadow lookups across the densest layers in the world, and lets plant chunks stream or toggle
+    without forcing static shadow domains to refresh. Crown normals, subsurface lighting and authored colour
+    keep the vegetation dimensional without a separate foliage-shadow system.</p>
   </section>
 
   <section>
@@ -1633,8 +1623,8 @@ export const FOLIAGE_TAB_HTML = `
     no extra projected fill. Close trunks and primary branches gained rounder 10-segment geometry, while
     close broadleaf twig tips split into six smaller leaflets, and close conifers gained a third rolled
     needle spray. Flower fields learned
-    to dissolve into scattered singles over a staggered band instead of ending on a hard rim. The shadow
-    proxy was decoupled so LOD swaps stop twitching the shade. And destination foliage learned to prime
+    to dissolve into scattered singles over a staggered band instead of ending on a hard rim. Foliage was
+    removed from shadow casting and receiving, along with its proxy meshes and invalidation work. Destination foliage learned to prime
     itself under the teleport cover — compiled and warmed before it's shown — so arriving in a park no longer
     means watching it grow in. The close-detail handoff was also made transactional: a candidate stays in its
     safe landscape representation until its complete detail material pack is loaded and compiled, so an
@@ -1703,8 +1693,7 @@ const FOREST_STAGE_TITLES = [
   "Grow one prototype",
   "Instance it across a chunk",
   "Spend detail by distance",
-  "Cull outside the camera view",
-  "Cast one stable shadow layer"
+  "Cull outside the camera view"
 ] as const;
 
 function setOpacity(svg: SVGSVGElement, id: string, v: number) {
@@ -1731,7 +1720,7 @@ export function mountFoliage(pane: HTMLElement, scrollEl: HTMLElement) {
     lastStage: -1
   }));
 
-  // plant the diagram's trees + shadow proxies once (positions reused each frame)
+  // Plant the diagram's trees once (positions are reused each frame).
   for (const s of scrollies) if (s.svg) plantForestDiagram(s.svg);
 
   let raf = 0;
@@ -1813,9 +1802,8 @@ const diagTrees: DiagTree[] = [];
 
 function plantForestDiagram(svg: SVGSVGElement) {
   const forest = svg.getElementById("fo-forest");
-  const shadows = svg.getElementById("fo-shadows");
   const instances = svg.getElementById("fo-instances");
-  if (!forest || !shadows) return;
+  if (!forest) return;
   const cx = 410, cy = 180;
   diagTrees.length = 0;
   // scatter trees on a jittered radial field around "you"
@@ -1840,11 +1828,6 @@ function plantForestDiagram(svg: SVGSVGElement) {
       ph: rnd() * Math.PI * 2
     });
   }
-  // shadow blobs (static) + tree marks (tinted per stage)
-  const shadowSvg = diagTrees
-    .map((t) => `<ellipse data-i cx="${t.sx.toFixed(1)}" cy="${(t.sy + 3).toFixed(1)}" rx="8" ry="2.8" transform="rotate(-18 ${t.sx.toFixed(1)} ${(t.sy + 3).toFixed(1)})" fill="rgba(0,10,8,0.38)"/>`)
-    .join("");
-  shadows.innerHTML = shadowSvg;
   forest.innerHTML = diagTrees
     .map(
       (_t, i) =>
@@ -1871,14 +1854,13 @@ const TIER_FILL = ["#5fce93", "#4f9d72", "#3c7d5b", "#2f5f47"];
 
 function renderForest(svg: SVGSVGElement, stage: number, p: number, t: number) {
   // Each caption owns one discrete visual scene. Do not cross-fade adjacent
-  // stages: rings + frustum + shadow layers read as one muddled diagram when
+  // Rings and the frustum read as one muddled diagram when
   // their partial opacities overlap during a slow scroll.
   const forestStage = stage >= 2;
   setOpacity(svg, "fo-seed", stage === 0 ? 1 : 0);
   setOpacity(svg, "fo-chunk", stage === 1 ? 1 : 0);
   setOpacity(svg, "fo-rings", stage === 2 ? 1 : 0);
   setOpacity(svg, "fo-frustum", stage === 3 ? 1 : 0);
-  setOpacity(svg, "fo-shadows", stage === 4 ? 1 : 0);
   setOpacity(svg, "fo-forest", forestStage ? 1 : 0);
   setOpacity(svg, "fo-you", forestStage ? 1 : 0);
   setOpacity(svg, "fo-youlbl", forestStage ? 1 : 0);

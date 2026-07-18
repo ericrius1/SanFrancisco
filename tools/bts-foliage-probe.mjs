@@ -121,7 +121,6 @@ const targets = [
   ["forest-stage-2", '[data-pane="foliage"] .scrolly-step:nth-child(2)', "stage"],
   ["forest-stage-3", '[data-pane="foliage"] .scrolly-step:nth-child(3)', "stage"],
   ["forest-stage-4", '[data-pane="foliage"] .scrolly-step:nth-child(4)', "stage"],
-  ["forest-stage-5", '[data-pane="foliage"] .scrolly-step:nth-child(5)', "stage"],
   ["lod", '[data-ftoy="lodDial"]'],
   ["gpu-meadow", '[data-ftoy="gpuMeadow"]'],
   ["flower-pipeline", '.fo-asset-flow[aria-label="Flower asset generation pipeline"]'],
@@ -176,7 +175,7 @@ for (const [name, selector, alignment] of targets) {
         activeCaptionRect: activeRect ? { top: Math.round(activeRect.top), bottom: Math.round(activeRect.bottom) } : null,
         stacked: scrolly ? getComputedStyle(scrolly).flexDirection === 'column' : false,
         graphicBottom: graphic ? Math.round(graphic.getBoundingClientRect().bottom) : null,
-        layers: Object.fromEntries(['fo-seed', 'fo-chunk', 'fo-rings', 'fo-frustum', 'fo-shadows', 'fo-forest', 'fo-you'].map(id => [id, opacity(id)]))
+        layers: Object.fromEntries(['fo-seed', 'fo-chunk', 'fo-rings', 'fo-frustum', 'fo-forest', 'fo-you'].map(id => [id, opacity(id)]))
       };
     })()`));
   }
@@ -194,11 +193,10 @@ const layout = await evaluate(cdp, `(() => ({
 }))()`);
 
 const expectedStages = [
-  { count: "Stage 1 of 5", on: ["fo-seed"] },
-  { count: "Stage 2 of 5", on: ["fo-chunk"] },
-  { count: "Stage 3 of 5", on: ["fo-rings", "fo-forest", "fo-you"] },
-  { count: "Stage 4 of 5", on: ["fo-frustum", "fo-forest", "fo-you"] },
-  { count: "Stage 5 of 5", on: ["fo-shadows", "fo-forest", "fo-you"] }
+  { count: "Stage 1 of 4", on: ["fo-seed"] },
+  { count: "Stage 2 of 4", on: ["fo-chunk"] },
+  { count: "Stage 3 of 4", on: ["fo-rings", "fo-forest", "fo-you"] },
+  { count: "Stage 4 of 4", on: ["fo-frustum", "fo-forest", "fo-you"] }
 ];
 writeFileSync(path.join(OUT, "result.json"), `${JSON.stringify({ layout, forestStages, errors }, null, 2)}\n`);
 console.log(JSON.stringify({ layout, forestStages, errors, captures: targets.map(([name]) => path.join(OUT, `${name}.png`)) }, null, 2));

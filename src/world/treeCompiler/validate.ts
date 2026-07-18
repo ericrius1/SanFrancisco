@@ -141,11 +141,6 @@ export function validateTreeRecipe(recipe: TreeRecipe): ResolvedCompileLimits {
     }
   });
 
-  if (recipe.shadow?.opacity !== undefined) numberIn("shadow.opacity", recipe.shadow.opacity, 0, 1);
-  if (recipe.shadow?.preferredLod !== undefined && !names.has(recipe.shadow.preferredLod)) {
-    fail("shadow.preferredLod", "must name one of the compiled LODs");
-  }
-
   const limits: ResolvedCompileLimits = {
     maxBranches: optionalPositiveInteger("limits.maxBranches", recipe.limits?.maxBranches, DEFAULT_LIMITS.maxBranches),
     maxFoliageAnchors: optionalPositiveInteger(

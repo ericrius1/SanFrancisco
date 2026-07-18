@@ -113,6 +113,46 @@ async function readFoliageState(c) {
   })()`);
 }
 
+async function readFoliageShadowState(c) {
+  return await ev(c, `(()=>{
+    const sf=window.__sf,scene=sf.scene;
+    const roots=[
+      sf.garden?.group,
+      ...(sf.wildlands?.groups??[]),
+      sf.buenaVistaTrees?.group,
+      sf.siteFoliage?.root,
+      scene.getObjectByName('japanese_tea_garden_live_plants'),
+      scene.getObjectByName('japanese_tea_garden_trees'),
+      scene.getObjectByName('floating_island_trees')
+    ].filter(Boolean);
+    const seen=new Set(),violations=[];
+    let meshes=0;
+    for(const root of roots)root.traverse((object)=>{
+      if(!object.isMesh||seen.has(object.uuid))return;
+      seen.add(object.uuid);meshes++;
+      if(object.castShadow||object.receiveShadow){
+        violations.push({name:object.name||object.type,castShadow:object.castShadow,receiveShadow:object.receiveShadow});
+      }
+    });
+    const proxies=[];
+    scene.traverse((object)=>{
+      const name=String(object.name||'');
+      if(/treeShadow|tree_shadow|fern_shadow_proxy/i.test(name))proxies.push(name);
+    });
+    return{roots:roots.map((root)=>root.name),meshes,violations,proxies};
+  })()`);
+}
+
+async function foliageToggleInvalidations(c) {
+  return await ev(c, `(()=>{
+    const sf=window.__sf,original=sf.sky.invalidateStaticShadows;
+    let calls=0;
+    sf.sky.invalidateStaticShadows=function(...args){calls++;return original.apply(this,args)};
+    try{sf.setFoliageVisible(false);sf.setFoliageVisible(true)}finally{sf.sky.invalidateStaticShadows=original}
+    return calls;
+  })()`);
+}
+
 function visibleFlags(state) {
   return [state.garden, ...state.wildlands, state.tea, state.corona, state.islands]
     .filter((value) => value !== null);
@@ -174,6 +214,10 @@ async function main() {
   console.log(`[probe] __sf ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   await ev(c, `window.__sfManual&&window.__sfManual(true)`);
   await settle(c, 12);
+  const toggleInvalidations = await foliageToggleInvalidations(c);
+  if (toggleInvalidations !== 0) {
+    throw new Error(`foliage toggle invalidated static shadows ${toggleInvalidations} time(s)`);
+  }
 
   if (REQUEST_AUDIT) {
     await ev(c, `performance.setResourceTimingBufferSize(10000)`);
@@ -261,6 +305,11 @@ async function main() {
     await setFoliage(c, true);
     for (let i = 0; i < 10; i++) { await tick(c, 1 / 60); await sleep(25); }
     const onState = await readFoliageState(c);
+    const onShadows = await readFoliageShadowState(c);
+    if (onShadows.meshes === 0) throw new Error(`foliage shadow census found no meshes: ${JSON.stringify(onShadows)}`);
+    if (onShadows.violations.length || onShadows.proxies.length) {
+      throw new Error(`foliage shadow census failed: ${JSON.stringify(onShadows)}`);
+    }
     await shot(c, `${name}_on`);
 
     // OFF
@@ -274,6 +323,10 @@ async function main() {
     await setFoliage(c, true);
     for (let i = 0; i < 10; i++) { await tick(c, 1 / 60); await sleep(25); }
     const restoredState = await readFoliageState(c);
+    const restoredShadows = await readFoliageShadowState(c);
+    if (restoredShadows.violations.length || restoredShadows.proxies.length) {
+      throw new Error(`restored foliage shadow census failed: ${JSON.stringify(restoredShadows)}`);
+    }
     await shot(c, `${name}_restored`);
     const onPerf = await measureP50(c);
 
@@ -286,7 +339,7 @@ async function main() {
     }
 
     report[name] = {
-      onState, offState, restoredState,
+      onState, offState, restoredState, onShadows, restoredShadows, toggleInvalidations,
       offP50ms: +offPerf.p50.toFixed(2), offCalls: offPerf.calls, offTris: offPerf.tris,
       onP50ms: +onPerf.p50.toFixed(2), onCalls: onPerf.calls, onTris: onPerf.tris
     };

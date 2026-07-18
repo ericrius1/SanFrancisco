@@ -196,7 +196,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       needleBlades: 2
     }),
     lods: lods(2),
-    shadow: { opacity: 0.84, preferredLod: "landscape" },
     limits: { maxBranches: 256, maxFoliageAnchors: 1_800, maxVerticesPerLod: 80_000 }
   },
   "monterey-cypress": {
@@ -231,7 +230,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       needleBlades: 2
     }),
     lods: lods(2),
-    shadow: { opacity: 0.82, preferredLod: "landscape" },
     limits: { maxBranches: 192, maxFoliageAnchors: 1_600, maxVerticesPerLod: 72_000 }
   },
   "windswept-monterey-cypress": {
@@ -278,7 +276,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       needleBlades: 2
     }),
     lods: lods(2),
-    shadow: { opacity: 0.8, preferredLod: "landscape" },
     limits: { maxBranches: 196, maxFoliageAnchors: 1_450, maxVerticesPerLod: 72_000 }
   },
   "monterey-pine": {
@@ -322,7 +319,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       needleBlades: 2
     }),
     lods: lods(2),
-    shadow: { opacity: 0.75, preferredLod: "landscape" },
     limits: { maxBranches: 196, maxFoliageAnchors: 1_100, maxVerticesPerLod: 68_000 }
   },
   "coast-live-oak": {
@@ -356,7 +352,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       stiffness: 0.42
     }),
     lods: lods(3),
-    shadow: { opacity: 0.8, preferredLod: "landscape" },
     limits: { maxBranches: 192, maxFoliageAnchors: 1_800, maxVerticesPerLod: 72_000 }
   },
   eucalyptus: {
@@ -389,7 +384,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       stiffness: 0.36
     }),
     lods: lods(3),
-    shadow: { opacity: 0.68, preferredLod: "landscape" },
     limits: { maxBranches: 192, maxFoliageAnchors: 1_100, maxVerticesPerLod: 64_000 }
   },
   "japanese-black-pine": {
@@ -424,7 +418,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       needleBlades: 2
     }),
     lods: lods(2),
-    shadow: { opacity: 0.78, preferredLod: "landscape" },
     limits: { maxBranches: 128, maxFoliageAnchors: 1_500, maxVerticesPerLod: 64_000 }
   },
   "japanese-maple": {
@@ -457,7 +450,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       stiffness: 0.34
     }),
     lods: lods(3),
-    shadow: { opacity: 0.7, preferredLod: "landscape" },
     limits: { maxBranches: 160, maxFoliageAnchors: 1_600, maxVerticesPerLod: 64_000 }
   },
   "flowering-cherry": {
@@ -490,7 +482,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       stiffness: 0.3
     }),
     lods: lods(3),
-    shadow: { opacity: 0.7, preferredLod: "landscape" },
     limits: { maxBranches: 180, maxFoliageAnchors: 1_700, maxVerticesPerLod: 80_000 }
   },
   ginkgo: {
@@ -522,7 +513,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       stiffness: 0.44
     }),
     lods: lods(2),
-    shadow: { opacity: 0.68, preferredLod: "landscape" },
     limits: { maxBranches: 128, maxFoliageAnchors: 1_300, maxVerticesPerLod: 56_000 }
   },
   magnolia: {
@@ -555,7 +545,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       stiffness: 0.48
     }),
     lods: lods(3),
-    shadow: { opacity: 0.75, preferredLod: "landscape" },
     limits: { maxBranches: 160, maxFoliageAnchors: 1_400, maxVerticesPerLod: 64_000 }
   },
   "chilean-palm": {
@@ -591,7 +580,6 @@ const RECIPES: Record<NativeTreeSpecies, TreeRecipe> = {
       rosettePetals: 13
     }),
     lods: lods(0),
-    shadow: { opacity: 0.64, preferredLod: "landscape" },
     limits: { maxBranches: 4, maxFoliageAnchors: 3, maxVerticesPerLod: 12_000 }
   }
 };

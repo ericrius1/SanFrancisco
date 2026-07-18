@@ -435,8 +435,7 @@ export class BotanicalGrassController extends THREE.Group {
         `sfbg_base_${tier}_grass_${key}`,
         list.length,
         geometry,
-        this.#baseMaterialState.material,
-        false
+        this.#baseMaterialState.material
       );
       writeGrassMesh(mesh, list, fadeRadius);
       let minX = Infinity;
@@ -519,8 +518,7 @@ export class BotanicalGrassController extends THREE.Group {
       `sfbg_detail_${tile.tx}_${tile.tz}_${lod}`,
       all.length,
       this.#detailGeometry[lod],
-      this.#detailMaterials[lod].material,
-      false
+      this.#detailMaterials[lod].material
     );
     writeGrassMesh(mesh, selected, Math.max(1, radius));
     setGrassMeshBounds(mesh, all, 2.5);

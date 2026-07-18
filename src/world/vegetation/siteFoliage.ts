@@ -48,8 +48,6 @@ export type SiteFoliageStreamerOptions = {
   admit(eligibleSince: number): Promise<void>;
   /** Off-frame pipeline warmup for a detached, fully built patch root. */
   prepare(label: string, root: THREE.Object3D): Promise<void>;
-  /** Static-shadow invalidation after a patch attaches or is removed. */
-  onResidencyChanged?(): void;
 };
 
 type EntryState = {
@@ -184,7 +182,6 @@ export class SiteFoliageStreamer {
         entry.patch = patch;
         entry.status = "ready";
         this.root.add(patch.group);
-        this.#options.onResidencyChanged?.();
         console.info(`[site-foliage] ${registration.id} planted`);
       } catch (error) {
         patch.dispose();
@@ -211,7 +208,6 @@ export class SiteFoliageStreamer {
     entry.patch = null;
     entry.status = "dormant";
     entry.eligibleSince = 0;
-    this.#options.onResidencyChanged?.();
     console.info(`[site-foliage] ${entry.registration.id} unplanted`);
   }
 }

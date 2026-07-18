@@ -2,19 +2,12 @@
 //
 // The compiler flattens each tree LOD into one branch mesh and one foliage mesh.
 // This runtime instances those whole-tree prototypes per chunk, shares immutable
-// vertex/index buffers across every chunk, batches close trees by design+LOD,
-// and uses a stable low-cost proxy for shadows. All distance grades share this
-// whole-tree batching path and its compact instance storage.
+// vertex/index buffers across every chunk and batches close trees by design+LOD.
+// All distance grades share this whole-tree batching path and its compact
+// instance storage. Vegetation is excluded from both shadow casting and sampling.
 
 import * as THREE from "three/webgpu";
 import { createFrameBudgetCheckpoint, yieldToFrame } from "../../core/cooperativeWork";
-import {
-  createTreeShadowProxy,
-  type TreeShadowInstance,
-  type TreeShadowProfile,
-  type TreeShadowProxy,
-  type TreeShadowShape
-} from "../shadows/treeShadowProxy";
 import {
   loadNativeTreeMaterialSet,
   releaseNativeTreeMaterialSet,
@@ -68,8 +61,6 @@ export type NativeTreeForestOptions = {
   nearExitRadius?: number;
   /** Maximum close trees across this whole forest. */
   nearMax?: number;
-  /** Opt-in solid shadow silhouette. Existing forests keep the massed proxy. */
-  shadowProxyShape?: TreeShadowShape;
 };
 
 export type NativeTreePrepareUnit = (unit: THREE.Object3D) => Promise<void>;
@@ -189,7 +180,6 @@ type Chunk = {
   preparing: Promise<void> | null;
   retireRequested: boolean;
   byDesign: Map<number, ChunkDesign>;
-  shadowProxy: TreeShadowProxy | null;
 };
 
 type ChunkDescriptor = {
@@ -433,10 +423,6 @@ function createBatch(
   );
   branch.name = `${name}_branch`;
   foliage.name = `${name}_foliage`;
-  branch.castShadow = false;
-  foliage.castShadow = false;
-  branch.receiveShadow = true;
-  foliage.receiveShadow = false;
   branch.frustumCulled = sphere !== null;
   foliage.frustumCulled = sphere !== null;
   for (const variant of variants) {
@@ -483,16 +469,6 @@ function disposeBatch(batch: TreeBatch): void {
     disposeTreeInstanceGeometry(variant.branch);
     disposeTreeInstanceGeometry(variant.foliage);
   }
-}
-
-function nativeShadowProfile(template: GrownTemplate): TreeShadowProfile {
-  const profile = template.geometry.shadow;
-  return {
-    baseY: template.geometry.bounds.min[1],
-    height: Math.max(1, profile.height),
-    crownDiameter: Math.max(0.75, profile.canopyRadii[0] * 2, profile.canopyRadii[2] * 2),
-    cover: profile.opacity
-  };
 }
 
 function chunkSphere(slots: readonly Slot[], templates: readonly (GrownTemplate | null)[]): THREE.Sphere {
@@ -657,8 +633,8 @@ export function createNativeTreeForest(
         detailMaterials = createNativeTreeMaterials(
           template.archetype.style,
           detailAssets,
-          template.geometry.shadow.canopyCenter,
-          template.geometry.shadow.canopyRadii
+          template.geometry.canopy.center,
+          template.geometry.canopy.radii
         );
       } catch (error) {
         releaseNativeTreeMaterialSet(detailAssets);
@@ -861,8 +837,7 @@ export function createNativeTreeForest(
       prepareEpoch: 0,
       preparing: null,
       retireRequested: false,
-      byDesign: new Map(),
-      shadowProxy: null
+      byDesign: new Map()
     };
     chunk.group.name = `${options.name}_${descriptor.key}`;
     chunk.group.visible = false;
@@ -874,7 +849,6 @@ export function createNativeTreeForest(
       else byDesign.set(slot.design, [slot]);
     }
 
-    const shadowInstances: TreeShadowInstance[] = [];
     for (const [design, designSlots] of byDesign) {
       const template = templates[design];
       const materialPack = materials[design];
@@ -914,16 +888,7 @@ export function createNativeTreeForest(
       setTransitionBatchEntries(transitionBatch, []);
       chunk.byDesign.set(design, { slots: designSlots, batch, transitionBatch });
 
-      const shadowProfile = nativeShadowProfile(template);
       for (const slot of designSlots) {
-        shadowInstances.push({
-          x: slot.x,
-          y: slot.y,
-          z: slot.z,
-          yaw: slot.yaw,
-          scale: slot.scale,
-          profile: shadowProfile
-        });
         if (
           nearMax > 0 &&
           template.design.nearDetail !== false &&
@@ -933,20 +898,7 @@ export function createNativeTreeForest(
         }
       }
     }
-    if (shadowInstances.length > 0) {
-      chunk.shadowProxy = createTreeShadowProxy({
-        name: `${options.name}_shadow_${descriptor.key}`,
-        instances: shadowInstances,
-        // Beauty residency is already chunk-bounded. Matching that ownership
-        // unit collapses the former ~3.3 shadow microcells/chunk into one stable
-        // WebGPU render object without changing any proxy triangles.
-        cellSize: chunkSize,
-        shape: options.shadowProxyShape
-      });
-      chunk.group.add(chunk.shadowProxy.group);
-    }
     if (chunk.byDesign.size === 0) {
-      chunk.shadowProxy?.dispose();
       chunk.group.clear();
       return null;
     }
@@ -974,7 +926,6 @@ export function createNativeTreeForest(
       disposeBatch(entry.batch);
       disposeBatch(entry.transitionBatch);
     }
-    chunk.shadowProxy?.dispose();
     chunk.group.removeFromParent();
     chunk.group.clear();
     const residentIndex = chunks.indexOf(chunk);
@@ -1565,8 +1516,8 @@ export function createNativeTreeForest(
         const materialPack = createNativeTreeMaterials(
           template.archetype.style,
           materialAssets,
-          template.geometry.shadow.canopyCenter,
-          template.geometry.shadow.canopyRadii
+          template.geometry.canopy.center,
+          template.geometry.canopy.radii
         );
         return { index, template, materialAssets, materialPack };
       } catch (error) {
@@ -1703,18 +1654,12 @@ export function createNativeTreeForest(
       chunks.filter((chunk) => chunk.preparedLods.has(LOD_HORIZON)).length;
     group.userData.nativeTreeHiddenPreparedHorizonChunks = () =>
       chunks.filter((chunk) => !chunk.wantedVisible && chunk.preparedLods.has(LOD_HORIZON)).length;
-    group.userData.nativeTreeShadowMeshes = () =>
-      chunks.reduce((sum, chunk) => sum + (chunk.shadowProxy?.meshes.length ?? 0), 0);
     group.userData.nativeTreeLodTransitionStats = collectLodTransitionStats;
     group.userData.nativeTreeNearLodStats = collectNearLodStats;
     group.userData.nativeTreeLodProbeAt = (x: number, z: number) => {
       applyDistanceCull(x, z, true);
       return collectLodTransitionStats();
     };
-    group.userData.disposeTreeShadowProxies = () => {
-      for (const chunk of chunks) chunk.shadowProxy?.dispose();
-    };
-
     if (Number.isFinite(lastFocus.x) && Math.abs(lastFocus.x) < 1e8) {
       // The destination may change while initial chunks stream. Restart from the
       // latest focus; stale loops stop at the next per-chunk frame boundary.

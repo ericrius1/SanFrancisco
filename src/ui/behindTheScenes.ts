@@ -163,7 +163,7 @@ const TAB_LIFE = `
     <h3><span class="bts-ic">🎨</span> Rendering on WebGPU</h3>
     <p>${a("https://threejs.org/", "three.js")} on <strong>WebGPU</strong>, with shaders written in
     TSL (three's node shading language) rather than raw WGSL strings — so the same node graph drives
-    facades, water, foliage and particles. Sunlight near you casts <strong>cascaded shadow maps</strong>
+    facades, water, foliage and particles. Opaque architecture, terrain and characters near you cast <strong>cascaded shadow maps</strong>
     (nested depth slices, fine underfoot and coarser outward), while shadows far across the city come from
     a <strong>world-locked occlusion field</strong> baked off to the side rather than re-rendered every
     frame — so a crisp shadow at your feet and the massing of a distant hillside share one sun without the
@@ -341,9 +341,8 @@ const TAB_SMOOTH = `
     <strong>staggered</strong>, so a stand converts a few trees at a time across a wide band instead of the
     whole grid flipping at once along a circle, with a hysteresis margin so a jittering camera can't make
     them flicker back and forth. Distant flower fields dissolve into scattered singles over a fading band
-    rather than ending on a hard rim. And so the shadows don't pop along with the trees, tree shadows are
-    cast by a separate <strong>static proxy</strong> that never switches levels at all — the massing on the
-    ground stays put while the trees themselves change detail in front of it.</p>
+    rather than ending on a hard rim. Vegetation stays out of the shadow-map passes entirely, removing the
+    extra proxy draws and avoiding shadow-sampling work across dense plant layers.</p>
   </section>
 
   <section>

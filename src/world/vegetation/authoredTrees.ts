@@ -2,7 +2,7 @@
 //
 // Parks own only botanical intent (archetype + rooted transform). The shared
 // NativeTreeForest owns compilation, shared geometry, wind-shaded foliage, LOD,
-// chunk culling, shadow proxies and the session-wide prototype cache.
+// chunk culling and the session-wide prototype cache.
 
 import * as THREE from "three/webgpu";
 import {

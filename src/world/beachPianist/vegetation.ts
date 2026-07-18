@@ -1,7 +1,7 @@
 // Lazy Beach Pianist planting adapter for the shared vegetation runtime.
 //
 // The site owns only the coastal planting intent below. Tree compilation,
-// instancing, wind, LOD, culling and shadow proxies remain owned by the shared
+// instancing, wind, LOD and culling remain owned by the shared
 // NativeTreeForest; flowers use the shared authored-flower renderer. main.ts
 // reaches this module only through SiteFoliageStreamer on first approach.
 

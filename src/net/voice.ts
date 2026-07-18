@@ -52,6 +52,40 @@ const RETRY_MS = 5000; // wait after a failed connection before re-offering
 const SPEAK_RMS = 0.015; // analyser RMS above this = "speaking"
 const SPEAK_HOLD_MS = 250; // indicator hold so it doesn't flicker between words
 const VOICE_BOOST = 1.35; // makeup on top of the compressor so voices sit above the world bed
+// Keep loudspeaker spill below the browser AEC's working range while our mic is
+// live. This is intentionally mild: conversation remains full duplex, unlike a
+// hard gate that would cut off people talking over one another.
+const OPEN_MIC_PLAYBACK_DUCK = 0.72;
+
+type EchoCancellationMode = boolean | "all" | "remote-only";
+
+function voiceCaptureConstraints(): MediaTrackConstraints {
+  return {
+    // Bare `true` is only an ideal constraint. Requiring it prevents a browser
+    // from silently handing us an uncancelled speaker-loop track.
+    echoCancellation: { exact: true },
+    noiseSuppression: { ideal: true },
+    autoGainControl: { ideal: true },
+    channelCount: { ideal: 1 },
+    sampleRate: { ideal: 48_000 }
+  };
+}
+
+/** Prefer the newer, stronger AEC mode without excluding browsers on boolean AEC. */
+async function preferAllPlaybackEchoCancellation(track: MediaStreamTrack) {
+  const capabilities = track.getCapabilities?.() as MediaTrackCapabilities & {
+    echoCancellation?: EchoCancellationMode[];
+  };
+  if (!capabilities.echoCancellation?.includes("all")) return;
+  try {
+    await track.applyConstraints({
+      echoCancellation: { exact: "all" }
+    } as unknown as MediaTrackConstraints);
+  } catch {
+    // The required boolean AEC constraint remains active. Some browsers expose
+    // draft capabilities before accepting the matching string constraint.
+  }
+}
 
 type Signal = { description?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit | null };
 
@@ -94,7 +128,6 @@ export class Voice {
   #peers = new Map<number, Peer>();
   // One background engine hold, live while the mic is on OR ≥1 peer is wired.
   #hold: (() => void) | null = null;
-  #micStream: MediaStream | null = null;
   #micTrack: MediaStreamTrack | null = null;
   #scanAt = 0;
   #retryAt = new Map<number, number>(); // failed peers wait out RETRY_MS
@@ -115,19 +148,33 @@ export class Voice {
       // Toggling the mic IS a user gesture: open the engine gate even if this is
       // somehow the first interaction. getUserMedia below is itself gesture-gated.
       void audioEngine.unlock();
+      let stream: MediaStream;
       try {
-        this.#micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: voiceCaptureConstraints()
         });
       } catch {
-        return false; // denied or no device
+        return false; // denied, no device, or the device cannot provide AEC
       }
-      this.#micTrack = this.#micStream.getAudioTracks()[0] ?? null;
+      const track = stream.getAudioTracks()[0];
+      if (!track) {
+        for (const orphan of stream.getTracks()) orphan.stop();
+        return false;
+      }
+      track.contentHint = "speech";
+      await preferAllPlaybackEchoCancellation(track);
+      const echoCancellation = (track.getSettings() as MediaTrackSettings & {
+        echoCancellation?: EchoCancellationMode;
+      }).echoCancellation;
+      if (echoCancellation === false) {
+        for (const orphan of stream.getTracks()) orphan.stop();
+        return false;
+      }
+      this.#micTrack = track;
       this.micOn = true;
     } else {
       this.#micTrack?.stop(); // releases the device (browser mic indicator off)
       this.#micTrack = null;
-      this.#micStream = null;
       this.micOn = false;
     }
     this.#refreshHold();
@@ -292,7 +339,8 @@ export class Voice {
 
     // Per-peer gain drops voiceAudioLevel() — the engine's voice group applies
     // it. voiceAudioLevel() survives only as a cheap gate on the speaking meter.
-    const level = VOICE_TUNING.values.volume * VOICE_BOOST;
+    const playbackDuck = this.micOn ? OPEN_MIC_PLAYBACK_DUCK : 1;
+    const level = VOICE_TUNING.values.volume * VOICE_BOOST * playbackDuck;
     const audible = voiceAudioLevel() > 0;
     for (const p of this.#peers.values()) {
       if (p.gain) p.gain.gain.value = level;
@@ -375,8 +423,19 @@ export class Voice {
 
   /** Headless-verify hook (window.__sf.voice.debugState()). */
   debugState() {
+    const micSettings = this.#micTrack?.getSettings() as (MediaTrackSettings & {
+      echoCancellation?: EchoCancellationMode;
+    }) | undefined;
     return {
       mic: this.micOn,
+      micProcessing: micSettings ? {
+        echoCancellation: micSettings.echoCancellation ?? "unknown",
+        noiseSuppression: micSettings.noiseSuppression ?? "unknown",
+        autoGainControl: micSettings.autoGainControl ?? "unknown",
+        channelCount: micSettings.channelCount ?? "unknown",
+        sampleRate: micSettings.sampleRate ?? "unknown",
+        contentHint: this.#micTrack?.contentHint || "none"
+      } : null,
       ctx: audioEngine.debugState.ctx,
       audibleCount: Math.max(1, Math.round(VOICE_TUNING.values.audibleCount)),
       peers: [...this.#peers.values()].map((p) => ({

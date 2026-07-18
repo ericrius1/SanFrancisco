@@ -4,8 +4,8 @@
 //
 // The region owns botanical intent only (a wind-bent cypress ring on the
 // plateau around the labyrinth). The shared NativeTreeForest owns compilation,
-// instanced geometry, wind-shaded foliage, LOD grades, chunk culling and
-// shadow proxies — the same path every other park and landmark plants through.
+// instanced geometry, wind-shaded foliage, LOD grades and chunk culling — the
+// same path every other park and landmark plants through.
 
 import * as THREE from "three/webgpu";
 import type { WorldMap } from "../heightmap";

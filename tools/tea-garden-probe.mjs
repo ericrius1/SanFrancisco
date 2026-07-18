@@ -43,6 +43,7 @@ for (const stop of TEA_GARDEN_TOUR_STOPS) {
 }
 
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const teaGardenControllerSource = readFileSync(new URL("../src/app/compose/teaGarden.ts", import.meta.url), "utf8");
 const initialArrivalSource = readFileSync(new URL("../src/app/compose/initialArrival.ts", import.meta.url), "utf8");
 const viteConfigSource = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
 const citygenSource = readFileSync(new URL("../src/world/citygen/stream/ring.ts", import.meta.url), "utf8");
@@ -78,7 +79,7 @@ assert.equal(
   false,
   "Vite reconnect/HMR recovery reloads are disabled, which can duplicate Three/TSL state"
 );
-assert.match(mainSource, /tiles\.suppressBuilding\(building\.key, building\.index\)/, "baked Tea Garden colliders are not suppressed");
+assert.match(teaGardenControllerSource, /tiles\.suppressBuilding\(building\.key, building\.index\)/, "baked Tea Garden colliders are not suppressed");
 assert.match(initialArrivalSource, /get\("tour"\) === "hiro"/, "Hiro deep-link contract disappeared");
 assert.match(citygenSource, /excludeBuilding\?\./, "CityGen exclusion seam disappeared");
 assert.equal(new RegExp(["Ha", "ru"].join(""), "i").test(teaGardenSources), false, "legacy Tea Garden guide name returned");
@@ -157,7 +158,7 @@ assert.equal(dryLandscapeSource.includes("dry_garden_player_rake_trails"), false
 assert.match(vegetationSource, /inDryLandscape\(px, pz, 1\.2\)/, "Tea Garden grass can clip into the sand rim");
 assert.match(vegetationSource, /createAuthoredShrubPatch/, "Tea shrubs bypass the unified authored foliage runtime");
 assert.match(vegetationSource, /"tea-azalea"/, "Tea azaleas lost their filled-volume unified profile");
-assert.match(vegetationSource, /shadowProxyShape: "organic-lobes"/, "Tea trees lost their organic proxy-shadow opt-in");
+assert.equal(vegetationSource.includes("shadowProxyShape"), false, "Tea trees reintroduced a foliage shadow proxy");
 assert.equal(mainSource.includes('from "./world/japaneseTeaGarden/dryLandscape"'), false, "rake activity leaked into the boot-critical main chunk");
 
 // Connected-water contract: one direct-WebGPU shallow-water field owns both
@@ -268,7 +269,10 @@ for (const seam of [
   "paintballs.onWaterSegment",
   "paintballs.onWater = (impact)"
 ]) {
-  assert.ok(mainSource.includes(seam), `paintball Tea Garden routing seam missing: ${seam}`);
+  assert.ok(
+    `${mainSource}\n${teaGardenControllerSource}`.includes(seam),
+    `paintball Tea Garden routing seam missing: ${seam}`
+  );
 }
 for (const seam of ["#nextBallId", "visitFreeBalls(", "FetchBallWorldState"]) {
   assert.ok(fetchBallSource.includes(seam), `allocation-free thrown-ball sampling seam missing: ${seam}`);
@@ -276,7 +280,7 @@ for (const seam of ["#nextBallId", "visitFreeBalls(", "FetchBallWorldState"]) {
 for (const seam of ["TeaGardenKoiVisitor", "waterSurfaceY", "visitKoi("]) {
   assert.ok(architectureSource.includes(seam), `near-surface koi wake seam missing: ${seam}`);
 }
-assert.match(mainSource, /fetchBall\?\.visitFreeBalls\(visitor\)/, "Tea Garden does not sample live thrown balls lazily");
+assert.match(teaGardenControllerSource, /getFetchBall\(\)\?\.visitFreeBalls\(visitor\)/, "Tea Garden does not sample live thrown balls lazily");
 assert.match(mainSource, /player\.mode,\s*player\.velocity/s, "Tea Garden does not receive live player velocity for directional foot wakes");
 
 // Audio stays procedural and shares the one nature context/FX buses. It must
