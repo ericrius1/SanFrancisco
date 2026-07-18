@@ -90,3 +90,32 @@ Rule: one agent per file set; only the decomposition agent touches main.ts.
 - Localized sims sleep on player distance, not just region awake radius.
 - New features never add per-frame work without a tracer phase/counter.
 - Optional/debug tooling never ships in the boot chunk.
+
+## Wave 3 (2026-07-17, fresh analysis on merged main)
+
+Fresh probes on the combined codebase (this program + codex tea-garden +
+flickerspy/water-echo sessions):
+
+- Every stop measured FAST when booted fresh: pier 3.4ms, meadow 3.5-4.7ms
+  (9.4ms with garden fully hydrated), marina ~8ms, downtown ~5ms frame p50.
+- The baseline probe's scary pier numbers (52-76ms) do NOT reproduce in a
+  clean environment and do NOT reproduce after a 4-stop teleport tour
+  (3.4→3.6ms). They are an artifact of that probe's own shadows/DPR toggling
+  ladder. Lesson recorded: trust fresh-boot single-stop measurements.
+- Residency-leak theory tested and rejected: pier after touring
+  downtown+marina+meadow = no frame cost delta.
+- Census-script lesson: a visibility tally MUST walk ancestor visibility;
+  counting `o.visible` alone reports pooled/hidden meshes (traffic-rig pool,
+  embodiment stacks) as "visible" — several hundred phantom meshes.
+- Garden tall-grass base = deliberate 48m frustum-cull tiles with count
+  grading and a hard instance budget; bounded and healthy. Batching it is a
+  modest optional win (~1-2ms at meadow), not a priority.
+- Heightmap already ships int16-quantized (2.0 bytes/cell, terrain-codec
+  repack) — the "quantize heightmap" idea was already shipped.
+- dpr≥1.25 GPU cliffs at grass/water stops remain physical GPU load; the
+  adaptive-resolution governor is the intended mitigation in real play.
+
+Verdict: no measurement-supported CPU regressions remain on merged main.
+Remaining backlog is speculative or architectural (worker sim, BatchedMesh
+far-city, vehicle merges for extreme multiplayer crowds) — docs/WORKER_SIM.md
+and MAIN_DECOMPOSITION.md carry those forward.
