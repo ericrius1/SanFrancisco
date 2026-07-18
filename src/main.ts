@@ -72,9 +72,7 @@ import { WorldCursor } from "./fx/worldCursor";
 import { WorldQueries, ProxySet } from "./core/worldQueries";
 import { BuildingRayRefiner } from "./core/buildingRayRefine";
 import { Toolbar, type ToolName } from "./ui/toolbar";
-import { AvatarSelector } from "./ui/avatarSelector";
-import { BoardSelector } from "./ui/boardSelector";
-import { ScooterSelector } from "./ui/scooterSelector";
+import { createLazySelector } from "./app/compose/selectorHub";
 import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
@@ -148,8 +146,7 @@ import {
   randomCarConfig,
   refreshCarHeadlightUniforms,
   saveCarConfig,
-  setLocalCarConfig,
-  type CarConfig
+  setLocalCarConfig
 } from "./vehicles/car";
 import { loadSavedScooter, randomScooterConfig, saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "./vehicles/scooter";
 import { passengerCapacity } from "./vehicles/rideable";
@@ -1365,24 +1362,45 @@ async function boot() {
     if (inOrbit()) setViewMode("third");
     return minigameSession.releaseForNavigation(captureMinigameOrigin());
   };
-  const avatarSelector = new AvatarSelector(
-    avatarTraits,
-    net.name,
-    (traits) => {
-      avatarTraits = traits;
-      customized = true; // an explicit edit — persist it and broadcast from here on
-      saveAvatarTraits(traits);
-      player.setAvatar(traits);
-      net.setAvatar(traits);
-    },
-    (name) => {
-      // rename from the avatar panel: net normalizes (blank / fun → a generated
-      // fun name), then we reflect that back into the field.
-      net.setName(name);
-      avatarSelector.setName(net.name);
-      hud.message(`You're now ${net.name}`, 2.2);
+  // Customizer selectors are all lazy (docs/MAIN_DECOMPOSITION.md step 3): only a
+  // placeholder launcher exists at boot; each selector's UI chunk dynamic-imports
+  // on FIRST OPEN via the shared createLazySelector mechanic. The mutable config
+  // state (avatarTraits/boardConfig/…) stays boot-resident here — net.onWelcome
+  // and other call sites read/write it and optional-chain through `.get()` so a
+  // pre-load setter is a safe no-op; each `load()` closure reads the current
+  // config when it finally constructs the panel.
+  const hudRoot = document.getElementById("hud")!;
+  const avatar = createLazySelector(hudRoot, {
+    id: "avatar",
+    launcherClass: "avatar-ui avatar-launcher-ui",
+    toggleClass: "avatar-toggle",
+    icon: "/ui/customizer-icons/avatar.webp",
+    title: "Edit avatar and name",
+    ariaLabel: "Edit avatar and name",
+    active: () => player.mode === "walk",
+    onLauncherClick: () => input.releaseLock(),
+    load: async () => {
+      const { AvatarSelector } = await import("./ui/avatarSelector");
+      return new AvatarSelector(
+        avatarTraits,
+        net.name,
+        (traits) => {
+          avatarTraits = traits;
+          customized = true; // an explicit edit — persist it and broadcast from here on
+          saveAvatarTraits(traits);
+          player.setAvatar(traits);
+          net.setAvatar(traits);
+        },
+        (name) => {
+          // rename from the avatar panel: net normalizes (blank / fun → a generated
+          // fun name), then we reflect that back into the field.
+          net.setName(name);
+          avatar.get()?.setName(net.name);
+          hud.message(`You're now ${net.name}`, 2.2);
+        }
+      );
     }
-  );
+  });
   // Hoverboard lab: pad moves preview only the live texture/audio graph; one
   // pointer-up commit persists and broadcasts. Audio-only edits skip the mesh
   // teardown entirely.
@@ -1393,98 +1411,97 @@ async function boot() {
     if (visualChanged) player.setBoardConfig(config);
     vehicleAudio.setBoardStyle(config);
   };
-  const boardSelector = new BoardSelector(
-    boardConfig,
-    (config) => {
-      boardCustomized = true; // an explicit edit — persist it and broadcast from here on
-      saveBoardConfig(config);
-      applyBoardConfig(config);
-      net.setBoard(config);
-    },
-    (config, kind) => {
-      if (kind === "surface") player.previewBoardSurface(config);
-      else vehicleAudio.setBoardStyle(config);
-    },
-    () => vehicleAudio.previewBoard(),
-    () => {
-      // The object being edited should always be on screen while the lab is open.
-      if (player.mode !== "board" && !player.riding) player.trySwitch("board");
+  const board = createLazySelector(hudRoot, {
+    id: "board",
+    launcherClass: "avatar-ui board-ui board-launcher-ui",
+    toggleClass: "avatar-toggle board-toggle",
+    icon: "/ui/customizer-icons/hoverboard.webp",
+    title: "Hoverboard lab",
+    ariaLabel: "Open hoverboard lab",
+    active: () => player.mode === "board",
+    onLauncherClick: () => input.releaseLock(),
+    load: async () => {
+      const { BoardSelector } = await import("./ui/boardSelector");
+      return new BoardSelector(
+        boardConfig,
+        (config) => {
+          boardCustomized = true; // an explicit edit — persist it and broadcast from here on
+          saveBoardConfig(config);
+          applyBoardConfig(config);
+          net.setBoard(config);
+        },
+        (config, kind) => {
+          if (kind === "surface") player.previewBoardSurface(config);
+          else vehicleAudio.setBoardStyle(config);
+        },
+        () => vehicleAudio.previewBoard(),
+        () => {
+          // The object being edited should always be on screen while the lab is open.
+          if (player.mode !== "board" && !player.riding) player.trySwitch("board");
+        }
+      );
     }
-  );
-  const scooterSelector = new ScooterSelector(
-    scooterConfig,
-    (config) => {
-      scooterCustomized = true;
-      const changed = scooterKey(config) !== scooterKey(scooterConfig);
-      scooterConfig = config;
-      setLocalScooterConfig(config);
-      saveScooterConfig(config);
-      if (changed) player.setScooterConfig(config);
-      net.setScooter(config);
-    },
-    (config) => player.previewScooterConfig(config),
-    () => {
-      if (player.mode !== "scooter" && !player.riding) switchModeFromToolbar("scooter");
-    }
-  );
-  let carSelector: {
-    setConfig(config: CarConfig): void;
-    setOpen(open: boolean): void;
-    setVisible(visible: boolean): void;
-  } | null = null;
-  let carSelectorLoading: Promise<void> | null = null;
-  let openCarSelectorAfterLoad = false;
-  const carLauncher = document.createElement("div");
-  carLauncher.className = "avatar-ui car-ui car-launcher-ui";
-  const carLauncherButton = document.createElement("button");
-  carLauncherButton.type = "button";
-  carLauncherButton.className = "avatar-toggle car-toggle";
-  carLauncherButton.title = "Open car atelier";
-  carLauncherButton.setAttribute("aria-label", "Open car atelier");
-  carLauncherButton.innerHTML = '<img class="customizer-icon" src="/ui/customizer-icons/car.webp" alt="" draggable="false">';
-  carLauncher.appendChild(carLauncherButton);
-  document.getElementById("hud")!.appendChild(carLauncher);
-  const ensureCarCustomizer = (open = false) => {
-    // Drive-mode only — refuse open/load intent while another locomotion owns the slot.
-    if (open && player.mode !== "drive") return;
-    if (open) openCarSelectorAfterLoad = true;
-    if (carSelector) {
-      if (open) carSelector.setOpen(true);
-      return;
-    }
-    if (carSelectorLoading) return;
-    carSelectorLoading = import("./ui/carSelector")
-      .then(({ CarSelector }) => {
-        carSelector = new CarSelector(
-          carConfig,
-          (config) => {
-            carCustomized = true;
-            const changed = carKey(config) !== carKey(carConfig);
-            carConfig = config;
-            setLocalCarConfig(config);
-            saveCarConfig(config);
-            if (changed) player.setCarConfig(config);
-            net.setCar(config);
-          },
-          (config) => player.previewCarConfig(config),
-          () => {
-            if (player.mode !== "drive" && !player.riding) switchModeFromToolbar("drive");
-          }
-        );
-        carLauncher.hidden = true;
-        carSelector.setVisible(player.mode === "drive");
-        if (openCarSelectorAfterLoad && player.mode === "drive") carSelector.setOpen(true);
-        openCarSelectorAfterLoad = false;
-      })
-      .catch((error) => console.warn("[car] atelier failed to load", error))
-      .finally(() => {
-        carSelectorLoading = null;
-      });
-  };
-  carLauncherButton.addEventListener("click", () => {
-    input.releaseLock();
-    ensureCarCustomizer(true);
   });
+  const scooter = createLazySelector(hudRoot, {
+    id: "scooter",
+    launcherClass: "avatar-ui scooter-ui scooter-launcher-ui",
+    toggleClass: "avatar-toggle scooter-toggle",
+    icon: "/ui/customizer-icons/scooter.webp",
+    title: "Electric scooter atelier",
+    ariaLabel: "Open electric scooter atelier",
+    active: () => player.mode === "scooter",
+    onLauncherClick: () => input.releaseLock(),
+    load: async () => {
+      const { ScooterSelector } = await import("./ui/scooterSelector");
+      return new ScooterSelector(
+        scooterConfig,
+        (config) => {
+          scooterCustomized = true;
+          const changed = scooterKey(config) !== scooterKey(scooterConfig);
+          scooterConfig = config;
+          setLocalScooterConfig(config);
+          saveScooterConfig(config);
+          if (changed) player.setScooterConfig(config);
+          net.setScooter(config);
+        },
+        (config) => player.previewScooterConfig(config),
+        () => {
+          if (player.mode !== "scooter" && !player.riding) switchModeFromToolbar("scooter");
+        }
+      );
+    }
+  });
+  const car = createLazySelector(hudRoot, {
+    id: "car",
+    launcherClass: "avatar-ui car-ui car-launcher-ui",
+    toggleClass: "avatar-toggle car-toggle",
+    icon: "/ui/customizer-icons/car.webp",
+    title: "Open car atelier",
+    ariaLabel: "Open car atelier",
+    active: () => player.mode === "drive",
+    onLauncherClick: () => input.releaseLock(),
+    load: async () => {
+      const { CarSelector } = await import("./ui/carSelector");
+      return new CarSelector(
+        carConfig,
+        (config) => {
+          carCustomized = true;
+          const changed = carKey(config) !== carKey(carConfig);
+          carConfig = config;
+          setLocalCarConfig(config);
+          saveCarConfig(config);
+          if (changed) player.setCarConfig(config);
+          net.setCar(config);
+        },
+        (config) => player.previewCarConfig(config),
+        () => {
+          if (player.mode !== "drive" && !player.riding) switchModeFromToolbar("drive");
+        }
+      );
+    }
+  });
+  // __sf-exposed opener; also called by the drive-mode toolbar wiring.
+  const ensureCarCustomizer = (open = false) => car.ensure(open);
   const applySurfboardConfig = (config: SurfboardConfig) => {
     const changed = surfboardVisualKey(config) !== surfboardVisualKey(surfboardConfig);
     surfboardConfig = config;
@@ -1492,87 +1509,42 @@ async function boot() {
     if (changed) player.setSurfboardConfig(config);
     else player.previewSurfboardSurface(config);
   };
-  let surfboardSelector: {
-    setConfig(config: SurfboardConfig): void;
-    setOpen(open: boolean): void;
-    setVisible(visible: boolean): void;
-  } | null = null;
-  let surfboardSelectorLoading: Promise<void> | null = null;
-  let openSurfboardSelectorAfterLoad = false;
-  const surfboardLauncher = document.createElement("div");
-  surfboardLauncher.className = "avatar-ui board-ui surfboard-ui surfboard-launcher-ui";
-  const surfboardLauncherButton = document.createElement("button");
-  surfboardLauncherButton.type = "button";
-  surfboardLauncherButton.className = "avatar-toggle board-toggle surfboard-toggle";
-  surfboardLauncherButton.title = "Open surfboard shaping room";
-  surfboardLauncherButton.setAttribute("aria-label", "Open surfboard shaping room");
-  surfboardLauncherButton.innerHTML = '<img class="customizer-icon" src="/ui/customizer-icons/surfboard.webp" alt="" draggable="false">';
-  surfboardLauncher.appendChild(surfboardLauncherButton);
-  document.getElementById("hud")!.appendChild(surfboardLauncher);
-  surfboardLauncherButton.addEventListener("click", () => {
-    input.releaseLock();
-    ensureSurfboardCustomizer(true);
-  });
-  ensureSurfboardCustomizer = (open = false) => {
-    // Surf-mode only — shaping room must never open from Drive/Walk/etc.
-    if (open && player.mode !== "surf") return;
-    if (open) openSurfboardSelectorAfterLoad = true;
-    if (surfboardSelector) {
-      if (open) surfboardSelector.setOpen(true);
-      return;
+  const surfboard = createLazySelector(hudRoot, {
+    id: "surfboard",
+    launcherClass: "avatar-ui board-ui surfboard-ui surfboard-launcher-ui",
+    toggleClass: "avatar-toggle board-toggle surfboard-toggle",
+    icon: "/ui/customizer-icons/surfboard.webp",
+    title: "Open surfboard shaping room",
+    ariaLabel: "Open surfboard shaping room",
+    active: () => player.mode === "surf",
+    onLauncherClick: () => input.releaseLock(),
+    load: async () => {
+      const { SurfboardSelector } = await import("./ui/surfboardSelector");
+      return new SurfboardSelector(
+        surfboardConfig,
+        (config) => {
+          surfboardCustomized = true;
+          saveSurfboardConfig(config);
+          applySurfboardConfig(config);
+          net.setSurfboard(config);
+        },
+        (config) => player.previewSurfboardSurface(config),
+        () => {}
+      );
     }
-    if (surfboardSelectorLoading) return;
-    surfboardSelectorLoading = import("./ui/surfboardSelector")
-      .then(({ SurfboardSelector }) => {
-        surfboardSelector = new SurfboardSelector(
-          surfboardConfig,
-          (config) => {
-            surfboardCustomized = true;
-            saveSurfboardConfig(config);
-            applySurfboardConfig(config);
-            net.setSurfboard(config);
-          },
-          (config) => player.previewSurfboardSurface(config),
-          () => {}
-        );
-        surfboardLauncher.hidden = true;
-        surfboardSelector.setVisible(player.mode === "surf");
-        if (openSurfboardSelectorAfterLoad && player.mode === "surf") surfboardSelector.setOpen(true);
-        openSurfboardSelectorAfterLoad = false;
-      })
-      .catch((error) => console.warn("[surf] shaping room failed to load", error))
-      .finally(() => {
-        surfboardSelectorLoading = null;
-      });
-  };
+  });
+  ensureSurfboardCustomizer = (open = false) => surfboard.ensure(open);
   // One top-right customizer slot: show only the active mode's atelier (or none).
   syncCustomizerForMode = (mode) => {
-    const showAvatar = mode === "walk";
-    const showBoard = mode === "board";
-    const showScooter = mode === "scooter";
-    const showCar = mode === "drive";
-    const showSurf = mode === "surf";
-    if (!showCar) openCarSelectorAfterLoad = false;
-    if (!showSurf) openSurfboardSelectorAfterLoad = false;
-    avatarSelector.setVisible(showAvatar);
-    boardSelector.setVisible(showBoard);
-    scooterSelector.setVisible(showScooter);
-    if (carSelector) {
-      carSelector.setVisible(showCar);
-      carLauncher.hidden = true;
-    } else {
-      carLauncher.hidden = !showCar;
-    }
-    if (surfboardSelector) {
-      surfboardSelector.setVisible(showSurf);
-      surfboardLauncher.hidden = true;
-    } else {
-      surfboardLauncher.hidden = !showSurf;
-    }
+    avatar.syncVisible(mode === "walk");
+    board.syncVisible(mode === "board");
+    scooter.syncVisible(mode === "scooter");
+    car.syncVisible(mode === "drive");
+    surfboard.syncVisible(mode === "surf");
   };
   syncCustomizerForMode(player.mode);
   net.onWelcome = () => {
-    avatarSelector.setName(net.name); // server may canonicalize a duplicate/invalid name
+    avatar.get()?.setName(net.name); // server may canonicalize a duplicate/invalid name
     if (customized) {
       net.setAvatar(avatarTraits); // re-assert my chosen look after a (re)connect
     } else {
@@ -1580,14 +1552,14 @@ async function boot() {
       // sees me, and reflect it in the editor
       avatarTraits = avatarFromSeed(net.selfId);
       player.setAvatar(avatarTraits);
-      avatarSelector.setTraits(avatarTraits);
+      avatar.get()?.setTraits(avatarTraits);
     }
     if (boardCustomized) {
       net.setBoard(boardConfig); // re-assert my chosen board after a (re)connect
     } else {
       const seeded = boardFromSeed(net.selfId);
       applyBoardConfig(seeded);
-      boardSelector.setConfig(seeded);
+      board.get()?.setConfig(seeded);
     }
     if (scooterCustomized) {
       net.setScooter(scooterConfig);
@@ -1595,7 +1567,7 @@ async function boot() {
       scooterConfig = scooterFromSeed(net.selfId);
       setLocalScooterConfig(scooterConfig);
       player.setScooterConfig(scooterConfig);
-      scooterSelector.setConfig(scooterConfig);
+      scooter.get()?.setConfig(scooterConfig);
     }
     if (carCustomized) {
       net.setCar(carConfig);
@@ -1603,14 +1575,14 @@ async function boot() {
       carConfig = carFromSeed(net.selfId);
       setLocalCarConfig(carConfig);
       player.setCarConfig(carConfig);
-      carSelector?.setConfig(carConfig);
+      car.get()?.setConfig(carConfig);
     }
     if (surfboardCustomized) {
       net.setSurfboard(surfboardConfig);
     } else {
       const seeded = surfboardFromSeed(net.selfId);
       applySurfboardConfig(seeded);
-      surfboardSelector?.setConfig(seeded);
+      surfboard.get()?.setConfig(seeded);
     }
     golf?.syncNetState();
     net.replayGolf();
@@ -1796,7 +1768,7 @@ async function boot() {
   // callback is attached once the game objects it needs exist.
   bootScreen.setStartHandler((typedName, opts) => {
     net.setName(typedName);
-    avatarSelector.setName(net.name); // keep the avatar-panel field in step with the gate
+    avatar.get()?.setName(net.name); // keep the avatar-panel field in step with the gate (no-op until opened)
     nameInput.blur(); // hand the keyboard back to the game
     document.body.classList.add("started"); // reveals the HUD (hidden behind the gate)
     loading.classList.add("done");
@@ -4721,7 +4693,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden: teaGarden.current(), pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, beachPianist, afterlight, optionalWorldSites: sites.list, ensureOptionalWorldSite: sites.ensure, siteFoliage,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden: teaGarden.current(), pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector: board, getBoardSelector: () => board.get(), ensureCarCustomizer, getCarSelector: () => car.get(), getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, beachPianist, afterlight, optionalWorldSites: sites.list, ensureOptionalWorldSite: sites.ensure, siteFoliage,
         TSL,
         renderIdle: () => modulesReady && sites.streamingIdle() }
     });
@@ -4766,7 +4738,7 @@ async function boot() {
       setTool: (t: string) => setTool(t as ToolName),
       setBoardConfig: (config: typeof boardConfig) => {
         applyBoardConfig(config);
-        boardSelector.setConfig(config);
+        board.get()?.setConfig(config);
       },
       setCine: (fn: ((dt: number) => void) | null) => {
         cineHook = fn;
