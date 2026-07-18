@@ -4,9 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "node tools/copy-litert-webgpu-runtime.mjs",
     "dev": "vite",
+    "predev:hmr": "node tools/copy-litert-webgpu-runtime.mjs",
     "dev:hmr": "SF_FULL_RELOAD=1 vite",
+    "predev:play": "node tools/copy-litert-webgpu-runtime.mjs",
     "dev:play": "SF_HMR=0 vite",
+    "prebuild": "node tools/copy-litert-webgpu-runtime.mjs",
     "build": "node tools/ambient-bird-removal-contract-test.mjs && tsc --noEmit && vite build && node tools/precompress-dist.mjs",
     "build:native-foliage-textures": "node tools/build-native-foliage-textures.mjs",
     "check:native-foliage-textures": "node tools/build-native-foliage-textures.mjs --check",
@@ -89,6 +93,7 @@
     "sync:box3d": "rm -rf vendor/box3d-wasm && mkdir -p vendor/box3d-wasm && cp -R ../box3d-wasm/packages/box3d-wasm/dist ../box3d-wasm/packages/box3d-wasm/package.json vendor/box3d-wasm/ && npm install"
   },
   "dependencies": {
+    "@litertjs/core": "^2.5.3",
     "box3d.js": "^0.0.2",
     "camera-controls": "^3.1.2",
     "lil-gui": "^0.21.0",

@@ -1,0 +1,7 @@
+MediaPipe BlazePose pose_landmark_full model
+
+Source: https://storage.googleapis.com/mediapipe-assets/pose_landmark_full.tflite
+License: Apache License 2.0
+Project: https://github.com/google-ai-edge/mediapipe
+
+The model is loaded only when the player enables webcam pose control.
