@@ -446,7 +446,10 @@ export class NatureSoundscape {
       const makeBuffer = (channels: readonly ArrayBuffer[]): AudioBuffer => {
         const length = channels[0]?.byteLength ? channels[0].byteLength / Float32Array.BYTES_PER_ELEMENT : 1;
         const buffer = ctx.createBuffer(channels.length, length, ctx.sampleRate);
-        channels.forEach((channel, index) => buffer.copyToChannel(new Float32Array(channel), index));
+        channels.forEach((channel, index) => {
+          const samples = new Float32Array(channel) as Float32Array<ArrayBuffer>;
+          buffer.copyToChannel(samples, index);
+        });
         return buffer;
       };
       this.#noise = makeBuffer([result.voiceNoise]);

@@ -3239,7 +3239,8 @@
       }
       #hud .audio .mute-btn,
       #hud .audio .mixer-btn,
-      #hud .audio .mic-btn {
+      #hud .audio .mic-btn,
+      #hud .audio .mocap-btn {
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -3259,7 +3260,8 @@
       }
       #hud .audio .mute-btn .ic,
       #hud .audio .mixer-btn .ic,
-      #hud .audio .mic-btn .ic {
+      #hud .audio .mic-btn .ic,
+      #hud .audio .mocap-btn .ic {
         font-size: 15px;
         line-height: 1;
       }
@@ -3273,12 +3275,14 @@
       }
       #hud .audio .mute-btn:hover,
       #hud .audio .mixer-btn:hover,
-      #hud .audio .mic-btn:hover {
+      #hud .audio .mic-btn:hover,
+      #hud .audio .mocap-btn:hover {
         border-color: rgba(190, 225, 240, 0.55);
       }
       #hud .audio .mute-btn.off,
       #hud .audio.mixer-open .mixer-btn,
-      #hud .audio .mic-btn.on {
+      #hud .audio .mic-btn.on,
+      #hud .audio .mocap-btn.on {
         border-color: var(--accent);
         color: var(--accent-strong);
       }
@@ -3305,6 +3309,95 @@
         transform: translateX(-50%) rotate(-42deg);
         box-shadow: 0 0 0 1px rgba(18, 40, 56, 0.85);
         pointer-events: none;
+      }
+      #hud .audio .mocap-btn.off {
+        color: rgba(188, 217, 230, 0.68);
+      }
+      #hud .audio .mocap-btn.loading {
+        cursor: wait;
+        color: var(--warn-strong);
+        border-color: var(--warn);
+      }
+      #hud .audio .mocap-btn.loading .ic {
+        animation: mocap-spin 0.9s linear infinite;
+      }
+      #hud .audio .mocap-btn.error {
+        color: var(--danger-strong);
+        border-color: var(--danger);
+      }
+      @keyframes mocap-spin {
+        to { transform: rotate(360deg); }
+      }
+      #hud .mocap-preview {
+        position: absolute;
+        left: calc(100% + 8px);
+        bottom: 0;
+        width: 196px;
+        aspect-ratio: 4 / 3;
+        overflow: hidden;
+        border-radius: 10px;
+        border: 1px solid rgba(111, 215, 196, 0.42);
+        background: #061019;
+        box-shadow: var(--shadow-md);
+      }
+      #hud .mocap-preview[hidden] {
+        display: none;
+      }
+      #hud .mocap-preview video {
+        width: 100%;
+        height: 100%;
+        display: block;
+        object-fit: cover;
+        transform: scaleX(-1);
+      }
+      #hud .mocap-preview-label {
+        position: absolute;
+        left: 7px;
+        right: 7px;
+        bottom: 7px;
+        overflow: hidden;
+        padding: 4px 7px;
+        border-radius: var(--r-pill);
+        background: rgba(6, 16, 25, 0.82);
+        color: var(--accent-strong);
+        font: 700 10px/1.2 var(--font);
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        text-shadow: 0 1px 3px #000;
+      }
+      #hud .mic-nudge {
+        position: absolute;
+        left: 92px;
+        bottom: calc(100% + 9px);
+        width: max-content;
+        max-width: min(210px, calc(100vw - 40px));
+        box-sizing: border-box;
+        padding: 7px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(111, 215, 196, 0.48);
+        background: #0a1824;
+        color: var(--accent-strong);
+        box-shadow: var(--shadow-sm);
+        font: 700 11px/1.25 var(--font);
+        animation: mic-nudge-life 6s ease both;
+        pointer-events: none;
+      }
+      #hud .mic-nudge::after {
+        content: "";
+        position: absolute;
+        left: 54px;
+        top: 100%;
+        border: 6px solid transparent;
+        border-top-color: rgba(111, 215, 196, 0.7);
+      }
+      #hud .mic-nudge.closing {
+        opacity: 0;
+        animation: none;
+        transition: opacity 0.22s ease;
+      }
+      @keyframes mic-nudge-life {
+        0%, 100% { opacity: 0; transform: translateY(4px); }
+        8%, 82% { opacity: 1; transform: translateY(0); }
       }
       #hud .audio input[type="range"] {
         -webkit-appearance: none;
@@ -3342,8 +3435,17 @@
           bottom: max(42px, env(safe-area-inset-bottom));
         }
         #hud .audio .mute-btn .label,
-        #hud .audio .mic-btn .label {
+        #hud .audio .mic-btn .label,
+        #hud .audio .mocap-btn .label {
           display: none;
+        }
+        #hud .mocap-preview {
+          left: 0;
+          bottom: calc(100% + 8px);
+          width: min(196px, calc(100vw - 20px));
+        }
+        #hud .mic-nudge {
+          left: 44px;
         }
         #hud .audio-sliders {
           width: min(196px, calc(100vw - 32px));

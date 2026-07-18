@@ -1,5 +1,7 @@
 import { AUDIO_PREFS, saveAudioPrefs } from "../core/audioSettings";
 
+export type MocapControlState = "off" | "loading" | "searching" | "tracking" | "error";
+
 /**
  * Compact master audio widget. The always-visible row stays small; a disclosure
  * opens the music/effects/world/voice mixer only when the player asks for it.
@@ -15,6 +17,12 @@ export class AudioControls {
   #mic: HTMLButtonElement;
   #micIcon: HTMLSpanElement;
   #micLabel: HTMLSpanElement;
+  #mocap: HTMLButtonElement;
+  #mocapIcon: HTMLSpanElement;
+  #mocapLabel: HTMLSpanElement;
+  #mocapPreview: HTMLDivElement;
+  #mocapStatus: HTMLSpanElement;
+  #mocapVideo: HTMLVideoElement;
   #mixerButton: HTMLButtonElement;
   #mixerPanel: HTMLDivElement;
   #root: HTMLDivElement;
@@ -23,9 +31,14 @@ export class AudioControls {
   #soundscapeSlider: HTMLInputElement;
   #voiceSlider!: HTMLInputElement;
   #mixerOpen = false;
+  #mocapState: MocapControlState = "off";
+  #micNudgeShown = false;
+  #micNudge: HTMLDivElement | null = null;
 
   /** Voice chat hook — set by main.ts once Voice exists (V key does the same). */
   onMicToggle: () => void = () => {};
+  /** Lazy webcam-pose hook — set by main.ts after the player exists. */
+  onMocapToggle: () => void = () => {};
 
   constructor() {
     const root = document.createElement("div");
@@ -97,14 +110,46 @@ export class AudioControls {
     this.#micLabel.className = "label";
     this.#mic.append(this.#micIcon, this.#micLabel);
     this.#mic.addEventListener("click", () => {
+      this.#dismissMicNudge();
       this.onMicToggle();
       this.#mic.blur();
     });
 
+    this.#mocap = document.createElement("button");
+    this.#mocap.className = "mocap-btn off";
+    this.#mocap.type = "button";
+    this.#mocapIcon = document.createElement("span");
+    this.#mocapIcon.className = "ic";
+    this.#mocapIcon.setAttribute("aria-hidden", "true");
+    this.#mocapIcon.textContent = "◉";
+    this.#mocapLabel = document.createElement("span");
+    this.#mocapLabel.className = "label";
+    this.#mocapLabel.textContent = "Pose";
+    this.#mocap.append(this.#mocapIcon, this.#mocapLabel);
+    this.#mocap.addEventListener("click", () => {
+      if (this.#mocapState !== "loading") this.onMocapToggle();
+      this.#mocap.blur();
+    });
+
+    this.#mocapVideo = document.createElement("video");
+    this.#mocapVideo.autoplay = true;
+    this.#mocapVideo.muted = true;
+    this.#mocapVideo.playsInline = true;
+    this.#mocapVideo.setAttribute("aria-label", "Mirrored webcam pose preview");
+    this.#mocapStatus = document.createElement("span");
+    this.#mocapStatus.textContent = "WebGPU pose";
+    const previewLabel = document.createElement("div");
+    previewLabel.className = "mocap-preview-label";
+    previewLabel.append(this.#mocapStatus);
+    this.#mocapPreview = document.createElement("div");
+    this.#mocapPreview.className = "mocap-preview";
+    this.#mocapPreview.hidden = true;
+    this.#mocapPreview.append(this.#mocapVideo, previewLabel);
+
     const actions = document.createElement("div");
     actions.className = "audio-actions";
-    actions.append(this.#btn, this.#mixerButton, this.#mic);
-    root.append(sliders, actions);
+    actions.append(this.#btn, this.#mixerButton, this.#mic, this.#mocap);
+    root.append(this.#mocapPreview, sliders, actions);
     document.getElementById("hud")!.appendChild(root);
     document.addEventListener("pointerdown", (event) => {
       if (this.#mixerOpen && !this.#root.contains(event.target as Node)) this.#setMixerOpen(false);
@@ -113,7 +158,25 @@ export class AudioControls {
       if (event.key === "Escape" && this.#mixerOpen) this.#setMixerOpen(false);
     });
     this.setMic(false);
+    this.setMocap("off");
     this.#refresh();
+  }
+
+  get mocapVideo(): HTMLVideoElement {
+    return this.#mocapVideo;
+  }
+
+  /** A brief first-entry pointer toward opt-in voice chat. */
+  showMicNudge(): void {
+    if (this.#micNudgeShown || !this.#mic.classList.contains("off")) return;
+    this.#micNudgeShown = true;
+    const nudge = document.createElement("div");
+    nudge.className = "mic-nudge";
+    nudge.textContent = "Click the mic to unmute and chat";
+    nudge.setAttribute("role", "status");
+    this.#root.appendChild(nudge);
+    this.#micNudge = nudge;
+    window.setTimeout(() => this.#dismissMicNudge(), 6000);
   }
 
   #makeSlider(kind: "music" | "effects" | "soundscape" | "voice", title: string, apply: (v: number) => void) {
@@ -157,6 +220,24 @@ export class AudioControls {
     this.#mic.title = on ? "mic live — press V to mute" : "mic off — press V to go live";
     this.#mic.setAttribute("aria-label", on ? "Microphone on" : "Microphone off");
     this.#mic.setAttribute("aria-pressed", on ? "true" : "false");
+    if (on) this.#dismissMicNudge();
+  }
+
+  setMocap(state: MocapControlState, message = "WebGPU pose"): void {
+    this.#mocapState = state;
+    const active = state === "loading" || state === "searching" || state === "tracking";
+    this.#mocap.classList.toggle("on", state === "searching" || state === "tracking");
+    this.#mocap.classList.toggle("off", state === "off");
+    this.#mocap.classList.toggle("loading", state === "loading");
+    this.#mocap.classList.toggle("error", state === "error");
+    this.#mocap.disabled = state === "loading";
+    this.#mocap.setAttribute("aria-pressed", active ? "true" : "false");
+    this.#mocap.setAttribute("aria-label", active ? "Turn webcam pose control off" : "Drive avatar with webcam pose");
+    this.#mocap.title = active ? "webcam pose active — click to stop" : "drive your avatar from the webcam (WebGPU)";
+    this.#mocapIcon.textContent = state === "loading" ? "◌" : state === "tracking" ? "●" : "◉";
+    this.#mocapLabel.textContent = state === "tracking" ? "Pose on" : state === "error" ? "Retry pose" : "Pose";
+    this.#mocapStatus.textContent = message;
+    this.#mocapPreview.hidden = state === "off" || state === "error";
   }
 
   #setMixerOpen(open: boolean) {
@@ -201,5 +282,13 @@ export class AudioControls {
     this.#effectsSlider.classList.toggle("off", !fxOn);
     this.#soundscapeSlider.classList.toggle("off", !soundscapeOn);
     this.#voiceSlider.classList.toggle("off", !voiceOn);
+  }
+
+  #dismissMicNudge(): void {
+    const nudge = this.#micNudge;
+    if (!nudge) return;
+    this.#micNudge = null;
+    nudge.classList.add("closing");
+    window.setTimeout(() => nudge.remove(), 240);
   }
 }

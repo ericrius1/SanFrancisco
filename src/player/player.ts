@@ -213,6 +213,8 @@ function prepareLocalSurfHero(root: THREE.Object3D): void {
  * fixed-step→render-frame transform interpolation, and the character rigs
  * posed onto whichever embodiment is active.
  */
+export type MocapPoseDriver = (rig: Rig, dt: number) => void;
+
 export class Player {
   mode: PlayerMode = "walk";
   body = 0;
@@ -301,6 +303,7 @@ export class Player {
   #hasWheel = false;
   #animT = 0; // free-running clock for idle sway/bob
   #strideT = 0; // stride/stroke phase, advanced by speed
+  #mocapPoseDriver: MocapPoseDriver | null = null;
 
   // what the player is currently driving; swapped when mounting a ridden animal
   driveSpec: DriveSpec = DEFAULT_DRIVE_SPEC;
@@ -485,6 +488,11 @@ export class Player {
   /** Snapshot used by activity-owned embodiment rigs without exposing mutable player state. */
   get avatarTraits(): AvatarTraits {
     return { ...this.#avatar };
+  }
+
+  /** Optional, first-use webcam pose overlay. Activity-owned poses keep priority. */
+  setMocapPoseDriver(driver: MocapPoseDriver | null): void {
+    this.#mocapPoseDriver = driver;
   }
 
   /** Hide only the local walk embodiment once the camera reaches the FPS eye. */
@@ -1776,6 +1784,17 @@ export class Player {
       // throw swing: an additive overlay on the right arm + torso, layered AFTER
       // the base pose so it rides on top of walk/idle without a dedicated pose fn.
       if (this.#throwT > 0 && !golfing && !this.#gardenRakeTool) this.#applyThrowSwing(r);
+      if (
+        this.#mocapPoseDriver &&
+        !golfing &&
+        !archering &&
+        !walk.swimming &&
+        !gardenPoseAllowed &&
+        !this.#bowCarried &&
+        !this.#carryingBoard
+      ) {
+        this.#mocapPoseDriver(r, dt);
+      }
     } else if (this.mode === "board") {
       const board = this.#modes.board;
       const crouch = Math.min(1, this.speed / BOARD_TUNING.values.boostMaxSpeed + Math.abs(board.lean) * 0.6);

@@ -250,6 +250,9 @@ export default defineConfig({
         // biggest chunk; the app chunk shrinks to what actually changes.
         manualChunks(id: string) {
           if (id.includes("node_modules")) {
+            // Webcam pose capture is first-use only. Keep LiteRT out of the
+            // shared vendor chunk so a clean city boot never downloads it.
+            if (id.includes("/@litertjs/")) return "litert-webgpu";
             if (id.includes("/three/")) return "three";
             if (id.includes("tweakpane") || id.includes("lil-gui")) return "debug-ui";
             return "vendor";

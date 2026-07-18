@@ -1741,6 +1741,55 @@ async function boot() {
     });
   };
   audioControls.onMicToggle = toggleMic;
+
+  // Webcam pose control is a first-use feature: neither LiteRT, its WebGPU
+  // runtime, the model, nor camera permission is touched until this button.
+  let mocapSession: import("./mocap/poseMocapSession").PoseMocapSession | null = null;
+  const stopMocap = (announce = true) => {
+    mocapSession?.stop();
+    mocapSession = null;
+    player.setMocapPoseDriver(null);
+    audioControls.setMocap("off");
+    if (announce) hud.message("Webcam pose off", 2.4);
+  };
+  const startMocap = async () => {
+    audioControls.setMocap("loading", "Loading WebGPU pose");
+    hud.message("Starting WebGPU webcam pose…", 3);
+    try {
+      const { PoseMocapSession } = await import("./mocap/poseMocapSession");
+      const session = new PoseMocapSession({
+        video: audioControls.mocapVideo,
+        onState: (state, message) => audioControls.setMocap(state, message),
+        onFatal: (error) => {
+          if (mocapSession !== session) return;
+          mocapSession = null;
+          player.setMocapPoseDriver(null);
+          audioControls.setMocap("error", "Pose stopped");
+          hud.message(`Webcam pose stopped — ${error.message}`, 4.5);
+        }
+      });
+      mocapSession = session;
+      await session.start();
+      if (mocapSession !== session) {
+        session.stop();
+        return;
+      }
+      player.setMocapPoseDriver(session.poseDriver);
+      hud.message("Webcam pose ready — step into view", 3.4);
+    } catch (error) {
+      mocapSession?.stop();
+      mocapSession = null;
+      player.setMocapPoseDriver(null);
+      const message = error instanceof Error ? error.message : String(error);
+      audioControls.setMocap("error", "Pose unavailable");
+      hud.message(`Webcam pose unavailable — ${message}`, 4.8);
+    }
+  };
+  audioControls.onMocapToggle = () => {
+    if (mocapSession) stopMocap();
+    else void startMocap();
+  };
+  window.addEventListener("pagehide", () => stopMocap(false), { once: true });
   net.onStatus = (status, detail) => {
     if (status === "online") {
       if (!paintColorTouched && !paintColorSeeded) {
@@ -1765,6 +1814,7 @@ async function boot() {
     nameInput.blur(); // hand the keyboard back to the game
     document.body.classList.add("started"); // reveals the HUD (hidden behind the gate)
     loading.classList.add("done");
+    window.setTimeout(() => audioControls.showMicNudge(), 650);
     // the submit click/Enter is the gesture pointer lock needs. A deep-link start
     // has no gesture (and opens a modal that frees the cursor anyway), so skip it.
     if (opts?.lock !== false) input.requestLock();
