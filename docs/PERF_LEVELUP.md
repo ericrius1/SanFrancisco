@@ -119,3 +119,24 @@ Verdict: no measurement-supported CPU regressions remain on merged main.
 Remaining backlog is speculative or architectural (worker sim, BatchedMesh
 far-city, vehicle merges for extreme multiplayer crowds) — docs/WORKER_SIM.md
 and MAIN_DECOMPOSITION.md carry those forward.
+
+## Wave 4 (landed)
+
+- Minimap repaint gate: 30 Hz cap + idle-signature skip (+force flag for the
+  15 event repaint sites). Most of the OffscreenCanvas win in ~20 lines.
+- Worker-sim payload audit (WORKER_SIM.md): all worker-eligible systems
+  measure <0.3 ms — worker ships no payload until one crosses ~1 ms
+  (first candidate: remote interpolation at 20+ players).
+- BatchedMesh far-city ROADS: src/world/tileBatch.ts (size-classed slots,
+  arena growth, per-instance frustum culling, handle add/free). Downtown
+  ~44 road draws → 1; meadow ~59 → 1. Streaming cadence preserved (one
+  arena upload per attach frame); boot unchanged.
+
+## Wave 5 candidates (designed, not started)
+
+- Building-tile batching — blocked on making createFacadeMaterial
+  (facade.ts) batch-aware: shared alive-texture atlas with per-instance row
+  via getIndirectIndex, and replace the modelScale dequant divide with a
+  per-instance scale (or bake world-space positions at load). Collapses the
+  remaining ~42-59 bld draws per stop — the larger prize.
+- Park (grn_) tile meshes through the same generic tileBatch (~40 tiles).

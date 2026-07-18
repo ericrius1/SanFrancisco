@@ -6,6 +6,7 @@ import { attachKtx2Loader } from "../render/textures";
 import { tracer } from "../core/hitchTracer";
 import { createFacadeMaterial, BASEY_OFFSET, BASEY_SCALE, TOPH_SCALE } from "./facade";
 import { createRoadMaterial, createParkMaterial } from "./streets";
+import { createTileMeshBatch, type TileMeshBatch, type TileBatchHandle } from "./tileBatch";
 import { bumpNormal } from "./tslUtil";
 import { registerTerrainFieldNormal } from "./groundcover/terrainFieldNormal";
 import { createCrownMaterial } from "./salesforceCrown";
@@ -83,6 +84,14 @@ type LoadedTile = {
   // once the player descends, at a catch-up rate for the first few frames so
   // it doesn't trickle in tile by tile (see #drainAttach / #resumeDetail).
   detailParts?: THREE.Object3D[];
+  // road meshes waiting to be folded into the shared road BatchedMesh, one per
+  // frame on the same attach cadence as bundle parts (a batch add is one GPU
+  // arena upload). Each carries its dequantization matrix in mesh.matrixWorld.
+  // A road that cannot fit the batch (full/exhausted) falls back into the bundle.
+  pendingRoadParts?: THREE.Mesh[];
+  // handles for road geometries already folded into the shared batch; freed on
+  // unload so the batch releases the instance + returns the geometry slot.
+  roadBatchHandles?: TileBatchHandle[];
 };
 
 type TileLoadToken = {
@@ -473,6 +482,13 @@ export class TileStreamer {
   // reusable facade material slots (see FacadeSlot)
   #slotPool: FacadeSlot[] = [];
   #aliveW = 4;
+  // Shared road BatchedMesh: every resident tile's road_ mesh folds into one
+  // owner (one pipeline bind, one indirect encode, per-instance frustum cull)
+  // instead of one bundle draw per tile. Lazily created on the first road add,
+  // after roadMat's terrain-field normal is wired in init(). Buildings CANNOT
+  // batch this way — their facade material is per-tile (alive texture) and
+  // modelScale-relative (see tileBatch.ts / facade.ts).
+  #roadBatch: TileMeshBatch | null = null;
 
   // landmarks GLB still in flight (counts toward `busy` for the boot settle gate)
   #landmarksPending = false;
@@ -890,6 +906,7 @@ export class TileStreamer {
       const dz = pz - cz;
       const destinationRelevant = dx * dx + dz * dz <= tileLoadRadiusSq;
       tile.group.visible = destinationRelevant;
+      this.#setTileRoadVisible(tile, destinationRelevant);
       if (tile.shadowProxy) tile.shadowProxy.group.visible = destinationRelevant;
       if (!destinationRelevant) continue;
       tile.generation = generation;
@@ -915,7 +932,11 @@ export class TileStreamer {
         return;
       }
       const tile = this.loaded.get(key);
-      if (!tile || (tile.pendingParts?.length ?? 0) > 0) return;
+      if (
+        !tile ||
+        (tile.pendingParts?.length ?? 0) > 0 ||
+        (tile.pendingRoadParts?.length ?? 0) > 0
+      ) return;
     }
     for (const name of prime.requiredTerrainKeys) {
       if (!this.terrain.has(name)) return;
@@ -1002,6 +1023,7 @@ export class TileStreamer {
       const loadedTile = this.loaded.get(e.key);
       if (loadedTile && e.d2 < loadR2 && loadedTile.generation !== this.#generation) {
         loadedTile.group.visible = true;
+        this.#setTileRoadVisible(loadedTile, true);
         if (loadedTile.shadowProxy) loadedTile.shadowProxy.group.visible = true;
         loadedTile.generation = this.#generation;
         loadedTile.loadToken.generation = this.#generation;
@@ -1388,11 +1410,20 @@ export class TileStreamer {
       });
       // the group enters the scene empty; its meshes re-attach one per frame in
       // #drainAttach so a big tile can't upload all its geometry in one frame.
-      // buildings + roads are "core" (always stream); park ground (grn_) is
-      // "detail" — held back while the player is high (see #drainAttach).
+      // buildings are "core" (always stream); park ground (grn_) is "detail"
+      // (held back while the player is high); road_ meshes fold into the shared
+      // road BatchedMesh instead of the per-tile bundle (also core cadence).
+      // Compose the dequantization matrices now so each road instance can carry
+      // its world transform into the batch.
+      group.updateMatrixWorld(true);
       const core: THREE.Object3D[] = [];
       const detail: THREE.Object3D[] = [];
-      for (const o of group.children) (o.name.startsWith("grn_") ? detail : core).push(o);
+      const roadParts: THREE.Mesh[] = [];
+      for (const o of group.children) {
+        if (o.name.startsWith("grn_")) detail.push(o);
+        else if ((o as THREE.Mesh).isMesh && o.name.startsWith("road_")) roadParts.push(o as THREE.Mesh);
+        else core.push(o);
+      }
       group.clear();
       // static tile content renders as one WebGPU render bundle: ~40 per-building
       // draws per tile collapse to a cached command buffer, so per-frame encode
@@ -1413,7 +1444,8 @@ export class TileStreamer {
         loadId: token.id,
         loadToken: token,
         pendingParts: core,
-        detailParts: detail.length ? detail : undefined
+        detailParts: detail.length ? detail : undefined,
+        pendingRoadParts: roadParts.length ? roadParts : undefined
       });
       this.#attaching.push(key);
     } else {
@@ -1634,11 +1666,19 @@ export class TileStreamer {
         continue;
       }
       if (this.#visualPrime && tile.generation !== this.#generation) return false;
-      // 1) core meshes (buildings/roads): one GPU upload per frame
+      // 1) core meshes (buildings): one GPU upload per frame
       if (tile.pendingParts && tile.pendingParts.length > 0) {
         tile.group.add(tile.pendingParts.shift()!);
         (tile.group as THREE.BundleGroup).needsUpdate = true; // structure changed → re-record bundle
         if (tile.pendingParts.length === 0) tile.pendingParts = undefined;
+        tracer.count("tileAttach");
+        return true;
+      }
+      // 1b) road meshes: fold one into the shared road batch per frame (one arena
+      // upload, same core cadence — roads always stream, never held back while high)
+      if (tile.pendingRoadParts && tile.pendingRoadParts.length > 0) {
+        this.#attachRoadPart(tile);
+        if (tile.pendingRoadParts.length === 0) tile.pendingRoadParts = undefined;
         tracer.count("tileAttach");
         return true;
       }
@@ -1662,6 +1702,49 @@ export class TileStreamer {
     return false;
   }
 
+  /** Fold one queued road mesh into the shared road batch (one GPU arena
+   *  upload), or fall back into the tile bundle if the batch is full/exhausted
+   *  so the tile is never partially drawn. */
+  #attachRoadPart(tile: LoadedTile): void {
+    const mesh = tile.pendingRoadParts!.shift()!;
+    // Lazily create the batch after roadMat's terrain-field normal is wired in
+    // init(). Its own clone gives the batched-pipeline variant a clean owner
+    // while the shared roadMat keeps serving the GG bridge road + bundle
+    // fallbacks. Capacity + arena cover a healthy residency ring; an unusually
+    // dense district grows the arena once, then add() returns null (fallback).
+    this.#roadBatch ??= createTileMeshBatch(this.#scene, {
+      name: "tileRoadBatch",
+      material: roadMat.clone(),
+      capacity: 192,
+      initialVertices: 393_216,
+      initialIndices: 1_048_576,
+      maxVertices: 1_048_576,
+      maxIndices: 2_621_440,
+      receiveShadow: true
+    });
+    mesh.updateWorldMatrix(true, false);
+    const handle = this.#roadBatch.add(mesh.geometry, mesh.matrixWorld);
+    if (handle) {
+      // a road folded into a currently-hidden tile (non-destination during a
+      // covered arrival) must start hidden — the batch is not under tile.group
+      if (!tile.group.visible) handle.setVisible(false);
+      (tile.roadBatchHandles ??= []).push(handle);
+      mesh.geometry.dispose(); // the batch copied the geometry into its arena
+    } else {
+      // batch full/exhausted — keep this road on the per-tile bundle (its
+      // materials.road was already bound at finalize; frustumCulled=false too)
+      tile.group.add(mesh);
+      (tile.group as THREE.BundleGroup).needsUpdate = true;
+    }
+  }
+
+  /** Mirror a tile's group visibility onto its batched road instances — they are
+   *  not under tile.group, so a hidden tile must hide its instances too. */
+  #setTileRoadVisible(tile: LoadedTile, visible: boolean): void {
+    if (!tile.roadBatchHandles) return;
+    for (const handle of tile.roadBatchHandles) handle.setVisible(visible);
+  }
+
   #bestAttachIndex(): number {
     const required = this.#visualPrime?.generation === this.#generation
       ? this.#visualPrime.requiredTileSet
@@ -1673,7 +1756,8 @@ export class TileStreamer {
       const key = this.#attaching[i];
       const tile = this.loaded.get(key);
       const requiredHere = required?.has(key) === true;
-      const corePending = (tile?.pendingParts?.length ?? 0) > 0;
+      const corePending =
+        (tile?.pendingParts?.length ?? 0) > 0 || (tile?.pendingRoadParts?.length ?? 0) > 0;
       const current = tile?.generation === this.#generation;
       const rank = corePending && requiredHere
         ? 0
@@ -1730,6 +1814,12 @@ export class TileStreamer {
     }
     this.onTileUnload(key);
     this.#scene.remove(tile.group);
+    // release this tile's road instances back to the shared batch — frees the
+    // instance id and returns each geometry slot for the next district to reuse
+    if (tile.roadBatchHandles) {
+      for (const handle of tile.roadBatchHandles) handle.free();
+      tile.roadBatchHandles = undefined;
+    }
     if (tile.shadowProxy) {
       tile.shadowProxy.dispose();
       tile.shadowProxy = null;
@@ -1742,7 +1832,9 @@ export class TileStreamer {
       }
     });
     // meshes still waiting in the attach queue never joined the group — free them too
-    for (const parked of [tile.pendingParts, tile.detailParts]) {
+    // (pendingRoadParts are roads not yet folded into the batch; batched roads
+    // were already disposed at add and are released via roadBatchHandles above)
+    for (const parked of [tile.pendingParts, tile.detailParts, tile.pendingRoadParts]) {
       if (!parked) continue;
       for (const part of parked) {
         part.traverse((o) => {
@@ -1753,6 +1845,7 @@ export class TileStreamer {
     }
     tile.pendingParts = undefined;
     tile.detailParts = undefined;
+    tile.pendingRoadParts = undefined;
     this.#deferred.delete(key);
     // Keep only the tiny texture/data allocation. The material lifecycle is
     // per-residency so the WebGPU renderer can release old geometry pairings.
