@@ -5,12 +5,13 @@ import { KEY_CONTACT } from "./piano";
 import { keyCenterX } from "./keys";
 
 /**
- * The bearded voxel pianist: light skin, buzz-cut light-blond hair, black tee
- * with bare arms, black pants, white shoes, a full dark beard and black
- * sunglasses. He sits at the bench, thighs level, shins down, feet at the
- * pedals, and plays the keyboard with build-time IK arm stations blended at
- * runtime toward the current notes' key positions. Between phrases his hands
- * hover; during the rest he drops them to his lap and gazes out to sea.
+ * The bearded voxel pianist: light skin, a dark-brown side/back cut with an
+ * open crown and forehead, a black long-sleeve tee, black pants, white shoes, a
+ * full dark beard and black sunglasses. He sits at the bench, thighs level,
+ * shins down, feet at the pedals, and plays the keyboard with build-time IK arm
+ * stations blended at runtime toward the current notes' key positions. Between
+ * phrases his hands hover; during the rest he drops them to his lap and gazes
+ * out to sea.
  *
  * Local frame matches the piano: he faces -Z (the keyboard), bass at +X, so his
  * left hand (rig "L", the +X shoulder) naturally covers the low half.
@@ -23,7 +24,7 @@ const { damp, lerp, clamp } = THREE.MathUtils;
 export const SEAT = { x: 0, y: 0.6, z: 0.16 } as const;
 
 const SKIN = 0xf2c7ad;
-const BLOND = 0xd8c48f;
+const DARK_HAIR = 0x5b4933;
 const BEARD = 0x241a12;
 const BLACK_CLOTH = 0x141414;
 const WHITE_SHOE = 0xf3f1ea;
@@ -92,10 +93,10 @@ export function buildPianist(stage: THREE.Group): Pianist {
   const rig = buildRig({ skin: 0, hair: "buzz", hat: "none", outfit: "tee", color: 5, accent: 5 });
   const m = rig.avatar.materials;
   m.skin.color.set(SKIN);
-  m.hair.color.set(BLOND);
+  m.hair.color.set(DARK_HAIR);
   m.jacket.color.set(BLACK_CLOTH); // tee torso
   m.trim.color.set(BLACK_CLOTH); // tee collar
-  m.sleeve.color.set(SKIN); // bare arms below the tee
+  m.sleeve.color.set(BLACK_CLOTH); // sleeves run from shoulder to wrist
   m.pants.color.set(0x101010); // black pants (hips + legs)
   m.shoe.color.set(WHITE_SHOE);
   m.sole.color.set(0xcfcabd);
@@ -136,6 +137,17 @@ export function buildPianist(stage: THREE.Group): Pianist {
     (child) => child instanceof THREE.Mesh && child.material === rig.avatar.materials.visor
   );
   if (stockShades instanceof THREE.Mesh) stockShades.material = shades;
+
+  // Replace the stock buzz crown with a close side/back wrap. The thin panels
+  // meet the scalp without covering the face, forehead, or crown, while the
+  // broad occipital panel makes the haircut read clearly from behind.
+  for (const crown of rig.avatar.hair.buzz) crown.visible = false;
+  const hairWrap = new THREE.Group();
+  hairWrap.name = "beachPianist.sideBackHair";
+  rig.head.add(hairWrap);
+  box(hairWrap, m.hair, 0.27, 0.2, 0.04, 0, 0.2, 0.15); // back/occipital hair
+  box(hairWrap, m.hair, 0.035, 0.2, 0.18, -0.1475, 0.2, 0.06); // left side
+  box(hairWrap, m.hair, 0.035, 0.2, 0.18, 0.1475, 0.2, 0.06); // right side
 
   // Fuller dark beard than the ukulelist: chin slab, jaw frames, upper cheeks.
   const beard = mat(BEARD);
