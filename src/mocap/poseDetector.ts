@@ -20,7 +20,10 @@ export type PoseDetection = {
 };
 
 const MODEL_URL = "/models/pose_landmark_full.tflite";
-const WEBGPU_RUNTIME_URL = "/litert-wasm/litert_wasm_internal.js";
+// Directory, not a file: loadLiteRt picks the right runtime variant itself
+// (litert_wasm_internal.js on relaxed-SIMD browsers, the compat build
+// otherwise). Forcing one file skips that feature detection.
+const WEBGPU_RUNTIME_URL = "/litert-wasm/";
 
 const sigmoid = (value: number) => 1 / (1 + Math.exp(-value));
 
