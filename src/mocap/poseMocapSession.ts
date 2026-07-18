@@ -1,5 +1,6 @@
 import type { MocapPoseDriver } from "../player/player";
 import { AvatarRetargeter } from "./avatarRetargeter";
+import { clearPoseDebug, drawPoseDebug } from "./debugOverlay";
 import { LANDMARK_COUNT, mirrorAndExtendLandmarks } from "./landmarks";
 import { PoseDetector } from "./poseDetector";
 import { LandmarkSmoother } from "./smoothing";
@@ -8,6 +9,8 @@ export type MocapSessionState = "loading" | "searching" | "tracking" | "error";
 
 type SessionOptions = {
   video: HTMLVideoElement;
+  /** Optional joint-debug canvas layered over the preview video. */
+  debugCanvas?: HTMLCanvasElement;
   onState: (state: MocapSessionState, message: string) => void;
   onFatal: (error: Error) => void;
 };
@@ -16,6 +19,7 @@ export class PoseMocapSession {
   readonly poseDriver: MocapPoseDriver;
 
   #video: HTMLVideoElement;
+  #debugCanvas?: HTMLCanvasElement;
   #onState: SessionOptions["onState"];
   #onFatal: SessionOptions["onFatal"];
   #detector: PoseDetector | null = null;
@@ -29,9 +33,12 @@ export class PoseMocapSession {
   #tracking = false;
   #inferenceActive = false;
   #disposePending = false;
+  #inferenceMsEma = 0;
+  #lastStatusAt = 0;
 
   constructor(options: SessionOptions) {
     this.#video = options.video;
+    this.#debugCanvas = options.debugCanvas;
     this.#onState = options.onState;
     this.#onFatal = options.onFatal;
     this.poseDriver = (rig, dt) => this.#retargeter.apply(rig, dt);
@@ -72,6 +79,7 @@ export class PoseMocapSession {
     this.#video.pause();
     this.#video.srcObject = null;
     this.#retargeter.reset();
+    if (this.#debugCanvas) clearPoseDebug(this.#debugCanvas);
   }
 
   async #openCamera(): Promise<MediaStream> {
@@ -134,13 +142,28 @@ export class PoseMocapSession {
       const now = performance.now();
       const dt = this.#lastInferenceAt ? Math.min((now - this.#lastInferenceAt) / 1000, 0.25) : 1 / 30;
       this.#lastInferenceAt = now;
+      if (this.#debugCanvas) {
+        drawPoseDebug(
+          this.#debugCanvas,
+          detection?.screen ?? null,
+          this.#detector?.roi ?? null,
+          this.#video.videoWidth,
+          this.#video.videoHeight
+        );
+      }
       if (detection) {
         const smooth = this.#smoother.apply(detection.world, dt);
         this.#retargeter.update(mirrorAndExtendLandmarks(smooth), true);
         this.#lastPoseAt = now;
+        const ms = detection.inferenceMs;
+        this.#inferenceMsEma = this.#inferenceMsEma ? this.#inferenceMsEma * 0.8 + ms * 0.2 : ms;
         if (!this.#tracking) {
           this.#tracking = true;
-          this.#onState("tracking", `Tracking · ${Math.round(detection.inferenceMs)} ms`);
+          this.#lastStatusAt = now;
+          this.#onState("tracking", `Tracking · ${Math.max(1, Math.round(this.#inferenceMsEma))} ms`);
+        } else if (now - this.#lastStatusAt >= 500) {
+          this.#lastStatusAt = now;
+          this.#onState("tracking", `Tracking · ${Math.max(1, Math.round(this.#inferenceMsEma))} ms`);
         }
       } else if (now - this.#lastPoseAt > 500) {
         this.#retargeter.setFresh(false);

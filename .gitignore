@@ -1,6 +1,5 @@
 node_modules/
 /dist/
-public/litert-wasm/
 .data/
 # RL training artifacts: logs, frame recordings, checkpoints-in-progress.
 # Deployed policies live in public/models/ and ARE committed.

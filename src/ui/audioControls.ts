@@ -21,6 +21,7 @@ export class AudioControls {
   #mocapIcon: HTMLSpanElement;
   #mocapLabel: HTMLSpanElement;
   #mocapPreview: HTMLDivElement;
+  #mocapDebug: HTMLCanvasElement;
   #mocapStatus: HTMLSpanElement;
   #mocapVideo: HTMLVideoElement;
   #mixerButton: HTMLButtonElement;
@@ -136,6 +137,9 @@ export class AudioControls {
     this.#mocapVideo.muted = true;
     this.#mocapVideo.playsInline = true;
     this.#mocapVideo.setAttribute("aria-label", "Mirrored webcam pose preview");
+    this.#mocapDebug = document.createElement("canvas");
+    this.#mocapDebug.className = "mocap-debug";
+    this.#mocapDebug.setAttribute("aria-hidden", "true");
     this.#mocapStatus = document.createElement("span");
     this.#mocapStatus.textContent = "WebGPU pose";
     const previewLabel = document.createElement("div");
@@ -144,7 +148,7 @@ export class AudioControls {
     this.#mocapPreview = document.createElement("div");
     this.#mocapPreview.className = "mocap-preview";
     this.#mocapPreview.hidden = true;
-    this.#mocapPreview.append(this.#mocapVideo, previewLabel);
+    this.#mocapPreview.append(this.#mocapVideo, this.#mocapDebug, previewLabel);
 
     const actions = document.createElement("div");
     actions.className = "audio-actions";
@@ -164,6 +168,10 @@ export class AudioControls {
 
   get mocapVideo(): HTMLVideoElement {
     return this.#mocapVideo;
+  }
+
+  get mocapDebugCanvas(): HTMLCanvasElement {
+    return this.#mocapDebug;
   }
 
   /** A brief first-entry pointer toward opt-in voice chat. */

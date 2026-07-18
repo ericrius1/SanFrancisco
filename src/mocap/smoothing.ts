@@ -22,7 +22,7 @@ class OneEuro {
 
   constructor(
     readonly minCutoff = 1.2,
-    readonly beta = 0.05,
+    readonly beta = 0.3,
     readonly derivativeCutoff = 1
   ) {}
 

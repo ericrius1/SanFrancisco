@@ -3329,10 +3329,11 @@
         to { transform: rotate(360deg); }
       }
       #hud .mocap-preview {
-        position: absolute;
-        left: calc(100% + 8px);
-        bottom: 0;
-        width: 196px;
+        position: fixed;
+        top: max(14px, env(safe-area-inset-top));
+        left: 50%;
+        transform: translateX(-50%);
+        width: 224px;
         aspect-ratio: 4 / 3;
         overflow: hidden;
         border-radius: 10px;
@@ -3349,6 +3350,13 @@
         display: block;
         object-fit: cover;
         transform: scaleX(-1);
+      }
+      #hud .mocap-preview canvas.mocap-debug {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
       }
       #hud .mocap-preview-label {
         position: absolute;
@@ -3440,9 +3448,8 @@
           display: none;
         }
         #hud .mocap-preview {
-          left: 0;
-          bottom: calc(100% + 8px);
-          width: min(196px, calc(100vw - 20px));
+          left: 50%;
+          width: min(224px, calc(100vw - 20px));
         }
         #hud .mic-nudge {
           left: 44px;
