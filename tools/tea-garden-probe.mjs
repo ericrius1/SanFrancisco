@@ -43,6 +43,7 @@ for (const stop of TEA_GARDEN_TOUR_STOPS) {
 }
 
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const initialArrivalSource = readFileSync(new URL("../src/app/compose/initialArrival.ts", import.meta.url), "utf8");
 const viteConfigSource = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
 const citygenSource = readFileSync(new URL("../src/world/citygen/stream/ring.ts", import.meta.url), "utf8");
 const tourSource = readFileSync(new URL("../src/world/japaneseTeaGarden/dialogue.ts", import.meta.url), "utf8");
@@ -59,6 +60,9 @@ const costumeSource = readFileSync(new URL("../src/world/japaneseTeaGarden/hiroC
 const guideSource = readFileSync(new URL("../src/world/japaneseTeaGarden/guide.ts", import.meta.url), "utf8");
 const teaMasterSource = readFileSync(new URL("../src/world/japaneseTeaGarden/teaMaster.ts", import.meta.url), "utf8");
 const teaGardenSources = [mainSource, tourSource, architectureSource, costumeSource, guideSource, teaMasterSource].join("\n");
+// The excludeBuilding closure carries an explanatory comment before it calls
+// isTeaGardenBuilding, so anchor on the arrow and allow a wide window rather
+// than being sensitive to comment length.
 assert.match(
   mainSource,
   /excludeBuilding:\s*\(key, index\)\s*=>[\s\S]{0,500}isTeaGardenBuilding\(key, index\)/,
@@ -75,7 +79,7 @@ assert.equal(
   "Vite reconnect/HMR recovery reloads are disabled, which can duplicate Three/TSL state"
 );
 assert.match(mainSource, /tiles\.suppressBuilding\(building\.key, building\.index\)/, "baked Tea Garden colliders are not suppressed");
-assert.match(mainSource, /get\("tour"\) === "hiro"/, "Hiro deep-link contract disappeared");
+assert.match(initialArrivalSource, /get\("tour"\) === "hiro"/, "Hiro deep-link contract disappeared");
 assert.match(citygenSource, /excludeBuilding\?\./, "CityGen exclusion seam disappeared");
 assert.equal(new RegExp(["Ha", "ru"].join(""), "i").test(teaGardenSources), false, "legacy Tea Garden guide name returned");
 assert.match(tourSource, /id: "tea-master-hiro"/, "Hiro speaker identity disappeared");
@@ -116,11 +120,11 @@ for (const stem of [
 }
 assert.equal(architectureSource.includes("tea_house_core"), false, "sealed Tea House core collider returned");
 for (const art of ["misty-pines", "drum-bridge-moon", "koi-ginkgo", "four-seasons"]) {
+  assert.ok(architectureSource.includes(`/art/tea-house/${art}`), `Tea House does not mount artwork: ${art}`);
   for (const extension of ["ktx2", "webp"]) {
     const file = new URL(`../public/art/tea-house/${art}.${extension}`, import.meta.url);
     assert.ok(statSync(file).size > 100_000, `Tea House artwork is missing or unexpectedly tiny: ${art}.${extension}`);
   }
-  assert.ok(architectureSource.includes(`/art/tea-house/${art}`), `Tea House does not mount artwork: ${art}`);
 }
 
 // Dry-landscape activity contract: the granular compute field follows terrain,
@@ -244,7 +248,7 @@ for (const seam of [
   "updateBallWaterInteractions",
   "water.queueImpulse(impulse)",
   "options.ballSource?.visitFreeBalls",
-  "architecture.update(time, visitKoi)",
+  "architecture.update(time, simsNear ? visitKoi : undefined)",
   "waterInteractions: { ...waterInteractions }"
 ]) {
   assert.ok(teaGardenIndexSource.includes(seam), `water gameplay-interaction seam missing: ${seam}`);
@@ -281,6 +285,8 @@ for (const seam of [
   "voiceBus()",
   "alwaysBus",
   "#wet",
+  "worldReverbSend",
+  "effectsReverbSend",
   "TEA_GARDEN_STREAM_AUDIO_ANCHORS",
   "MAX_ACTIVE_EDDIES = 2",
   "targetDistanceGain",
