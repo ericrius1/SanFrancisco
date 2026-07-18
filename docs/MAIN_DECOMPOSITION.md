@@ -92,6 +92,51 @@ bar):
   `__sf` (byte-for-byte the prior payload) in one place. Probe-visible `__sf`
   keys are preserved via `sites.list`/`sites.ensure`/`sites.streamingIdle`.
 
+## Step 2 landed — `src/app/gameLoop.ts` (frame-order skeleton)
+
+`createGameLoop(deps) → tick(forcedDt?)` now owns the per-frame **order**, not the
+frame **content**:
+
+- the `forcedDt`/`frameDt` contract (deterministic capture drives `tick(1/60)`;
+  the wall-clock loop uses the clamped `THREE.Timer` delta) — the exported `tick`
+  signature and its forcedDt behavior are unchanged, so `window.__sf.tick` still
+  works byte-for-byte for probes;
+- the reduced-tick **dispatch**: reading-overlay freeze → global keys → minimap →
+  the two paused branches → the live frame (pause semantics: world frozen /
+  player live, and full freeze, both preserved exactly);
+- the tracer phase brackets `"physics"`/`"world"`/`"sched"`/`"render"` (names
+  kept identical — hitch attribution + `perf-baseline`/`perf-shot` probes depend
+  on them);
+- the `frameBudget` `scheduler.run` live pacing and the render call.
+
+`main.ts` provides the frame **body** as a small set of ordered, named callbacks
+(`GameLoopHooks`): `beginFrame`, `globalKeysAndGhost`, `runMinimapFrame`,
+`preSimulate` (site/minigame precompute + the paused branches; returns
+`"handled"|"live"`), `liveInput`, `simulate`, `updateWorld`, `postSchedule`,
+plus the trivial hooks (`onFrameStart`/`readingFrozen`/`endInputOnly`/
+`minimapOpen`/`endFrameInput`/`render`/`afterRender`) inlined at the
+`createGameLoop` call. Four frame-local crossings (`steps`, `playingPickleball`,
+`playingFortMasonEnsemble`, `pickleballEConsumed`) were hoisted to loop scope so
+the split hooks share one value per frame (the pickleball gameplay advance has
+side effects and must run exactly once).
+
+**Body stayed in `main.ts` by design.** The hooks are plain closures over main's
+scope rather than a `ctx`-threaded module because the ~1300-line body's ~28
+mutable frame vars (`paused`, `freezePlayer`, `elapsed`, `accumulator`,
+`initialArrivalReleased`/`initialVisualState`/… , `highUp`, `overlayRayHit`,
+`immersive`, `wakeDeferred*`, …) are shared with ~15 **other** main closures
+(`settleTick`, `updateGhostShip`, `exitImmersive`, the `PauseToggle` callback,
+`__sfManual`, the reveal path, the surf-entry handlers). Physically relocating
+the body would mean threading all of that shared mutable state across the module
+boundary — the "big risky" path this plan defers. The skeleton seam moves frame
+timing/order/pacing/tracing out with **zero** state threading and zero behavior
+change (tsc green; boot-probe reveal + `errors: []`; `perf-baseline` all stops,
+no FAIL; `perf-shot` PNG; `test:lazy-sites` 32/0). Net: `main.ts` grows a little
+(~+45 lines of hook wrappers + the `createGameLoop` wiring) in exchange for the
+150-line, independently readable frame-order module — line count was not the
+goal this round; the seam is. Future rounds can migrate individual body hooks
+into `gameLoop.ts` once their mutable state is consolidated.
+
 Deliberately **left** in `main.ts` (not clean self-contained wiring): the ghost
 ship (its `teleportAboardGhostShip` boarding flow orchestrates
 `navigation.teleportCustom` + embodiments + chase + player, and its ride-camera

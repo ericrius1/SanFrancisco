@@ -170,6 +170,7 @@ import { createBuskersSystem } from "./app/systems/buskers";
 import { createBuskerConversation } from "./gameplay/buskers/conversation";
 import { createSessionPersistence } from "./app/sessionPersistence";
 import { startFrameDriver } from "./app/frameDriver";
+import { createGameLoop } from "./app/gameLoop";
 import { createAdaptiveResolution } from "./render/adaptiveResolution";
 import { isInGameScreenshotBusy, takeInGameScreenshot } from "./app/inGameScreenshot";
 import { EmbodimentController } from "./app/player/embodimentController";
@@ -3281,12 +3282,17 @@ async function boot() {
     }
     return hit * nightW;
   };
-  const tick = (forcedDt?: number) => {
-    // HMR factories are queued by Vite's socket callback and committed only at
-    // this frame boundary, never halfway through simulation/render work.
-    buskers.flushHotSwap();
-    timer.update();
-    const frameDt = forcedDt ?? Math.min(timer.getDelta(), 0.09);
+  // Frame-local crossings hoisted to loop scope so the split hooks share one
+  // value per frame: preSimulate computes them (the pickleball gameplay advance
+  // has side effects and must run exactly once), the live path reads them; the
+  // fixed-step count crosses from simulate into updateWorld.
+  let steps = 0;
+  let playingPickleball = false;
+  let playingFortMasonEnsemble = false;
+  let pickleballEConsumed = false;
+  // The always-run prologue every branch shares. timer.update()/frameDt and the
+  // HMR flush live in createGameLoop (app/gameLoop.ts), which owns frame timing.
+  const beginFrame = (frameDt: number) => {
     // The one audio-engine tick — placed before every branch's early return so
     // group gains, idle suspend, and the listener advance in all of them
     // (active, map-open, paused, and the reading-overlay freeze; voice keeps
@@ -3303,23 +3309,19 @@ async function boot() {
     input.pollPad(frameDt);
     input.pollDriver(frameDt);
     minigameSession.beginFrame(captureMinigameOrigin());
+  };
 
-    // Behind-the-scenes overlay open: freeze the world completely — no sim, no
-    // render. The canvas keeps its last frame (dimmed via CSS) so nothing
-    // flickers behind the modal; the panel's own diagrams animate on their own
-    // rAF, independent of this loop. Resumes cleanly the frame it's closed.
-    // Behind-the-scenes and the Canticle book both freeze the world completely —
-    // no sim, no render; the canvas keeps its last frame (dimmed via CSS) behind
-    // the DOM overlay, whose own animation runs on its own rAF.
-    // Freeze the world (no sim, no render) while a reading overlay is open DURING
-    // play. Before the player has entered (a shared ?read= link opens the panel
-    // over the loading folio), keep ticking so the world keeps streaming in behind
-    // the modal — otherwise it would never finish loading while you read.
-    if ((btsReading && document.body.classList.contains("started")) || museumBookOpen) {
-      input.endFrame();
-      return;
-    }
+  // Behind-the-scenes and the Canticle book both freeze the world completely —
+  // no sim, no render; the canvas keeps its last frame (dimmed via CSS) behind
+  // the DOM overlay, whose own animation runs on its own rAF. Before the player
+  // has entered (a shared ?read= link opens the panel over the loading folio),
+  // keep ticking so the world keeps streaming in behind the modal — the gate is
+  // the `started` class. The freeze itself is dispatched in app/gameLoop.ts via
+  // the readingFrozen/endInputOnly hooks inlined at the createGameLoop call.
 
+  // Global toggles plus the shared wall-clock ghost-ship route. Runs before the
+  // minimap branch so an M press here can open/close the map this same frame.
+  const globalKeysAndGhost = (frameDt: number) => {
     // P freezes the whole game — player, physics, fx, sky, water, crown.
     // We keep rendering the frozen frame so the window stays live.
     if (input.pressed("KeyP")) {
@@ -3377,11 +3379,13 @@ async function boot() {
     // is paused or scrubbed. This runs before remotes so world passengers glue
     // to the current deck transform in every branch below.
     updateGhostShip(frameDt);
+  };
 
-    // Expanded map: gamepad pan / zoom / select / teleport / pin cycle.
-    // World + player are fully frozen while the map is open (kb or pad).
-    if (minimap.expanded) {
-      const axes = input.mapPadAxes();
+  // Expanded map: gamepad pan / zoom / select / teleport / pin cycle.
+  // World + player are fully frozen while the map is open (kb or pad). This
+  // branch renders itself; minimapOpen (inlined at createGameLoop) gates it.
+  const runMinimapFrame = (frameDt: number) => {
+    const axes = input.mapPadAxes();
       minimap.padPan(axes.lx, axes.ly, frameDt);
       // RT / stick-up zoom in; LT / stick-down zoom out. Selector stays centered.
       minimap.padZoom(axes.rt - axes.lt - axes.ry, frameDt);
@@ -3423,9 +3427,13 @@ async function boot() {
       hud.update(frameDt);
       input.endFrame();
       renderFrame();
-      return;
-    }
+  };
 
+  // Site wake/sleep + minigame precompute, then the two paused branches. Returns
+  // "handled" when a paused branch rendered this frame, else "live" to fall
+  // through to the live frame. The precompute writes the loop-scope crossings
+  // (pickleball/fort-mason) the live path also reads.
+  const preSimulate = (frameDt: number): "handled" | "live" => {
     // Crossing the generic approach radius requests at most one authored site;
     // the queue rechecks after the arrival-quiet window before importing it.
     afterlight?.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
@@ -3438,12 +3446,12 @@ async function boot() {
     // The shared court keeps advancing even while the rest of the world is
     // paused, so a remote opponent never loses the match when authority opens
     // photo/pause controls.
-    const pickleballEConsumed =
+    pickleballEConsumed =
       worldArrival.active || !sites.perfAllowed("goldman")
         ? false
         : updatePickleballGameplay(frameDt);
-    const playingPickleball = pickleballController?.playing ?? false;
-    const playingFortMasonEnsemble =
+    playingPickleball = pickleballController?.playing ?? false;
+    playingFortMasonEnsemble =
       !worldArrival.active && sites.perfAllowed("fort-mason-ensemble")
         ? fortMasonEnsemble?.update(frameDt, elapsed, player.renderPosition, camera) ?? false
         : false;
@@ -3487,7 +3495,7 @@ async function boot() {
       sky.update(elapsed, camera.position, player.renderPosition);
       input.endFrame();
       renderFrame();
-      return;
+      return "handled";
     }
 
     // World frozen, player live: the default pause. The whole city sim holds
@@ -3599,9 +3607,16 @@ async function boot() {
       sky.update(elapsed, camera.position, player.renderPosition);
       input.endFrame();
       renderFrame();
-      return;
+      return "handled";
     }
 
+    return "live";
+  };
+
+  // Live-frame input: mode/tool/teleport keys, interact chain, click-tool fire,
+  // time scrub, fly steering + latched jumps, ending at chase.lookDir. Advances
+  // the world clock too — this is the only path that increments elapsed.
+  const liveInput = (frameDt: number) => {
     elapsed += frameDt;
     accumulator += frameDt;
 
@@ -4035,9 +4050,13 @@ async function boot() {
     ) player.requestWalkJump();
 
     chase.lookDir(aim); // drone moves along the true view direction (no shot bias)
-    tracer.begin("physics");
+  };
+
+  // Fixed-step physics accumulation. gameLoop.ts brackets this with the "physics"
+  // tracer phase; `steps` crosses to updateWorld for the render interpolation.
+  const simulate = (_frameDt: number) => {
     physics.maintainStreaming(player.position);
-    let steps = 0;
+    steps = 0;
     while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
       if (playingPickleball) input.setSuspensionHold("pickleball-step", true);
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
@@ -4048,8 +4067,11 @@ async function boot() {
       steps++;
     }
     if (steps === 3) accumulator = 0;
-    tracer.end("physics");
-    tracer.begin("world");
+  };
+
+  // The full world update. gameLoop.ts brackets this with the "world" tracer
+  // phase. Camera commit, water/fx, entity proxies, cursor, HUD/debug all here.
+  const updateWorld = (frameDt: number) => {
 
     // everyone else's interpolation advances BEFORE my pose settles: a
     // passenger's seat is glued to this frame's view of the driver's car
@@ -4569,15 +4591,12 @@ async function boot() {
     syncDebugOverlays(); // "/" → overlays (no-op unless toggled)
     // grey cards ride the FINAL camera pose (chase or cine hook both settled above)
     calibrationChart.sync(camera, Boolean(RENDER_TUNING.values.greyCards));
-    tracer.end("world");
+  };
 
-    // Drain deferred bursty work (streamed bodies, citygen assembly, warmups)
-    // under a headroom-scaled budget: fast frames catch up, tight frames yield.
-    // Behind the opaque loading cover nothing is visible, so the budget jumps
-    // to 24 ms/frame and the settle gate re-checks after every drain.
-    tracer.begin("sched");
-    scheduler.run(revealed ? (frameDt < 1 / 55 ? 3 : frameDt < 1 / 35 ? 1.5 : 0.8) : 24);
-
+  // Post-scheduler drain: the deferred-work budget (scheduler.run) lives in
+  // gameLoop.ts, bracketed with the "sched" tracer phase; this hook runs after
+  // it — initial-arrival reveal release + the settle tick.
+  const postSchedule = (_frameDt: number) => {
     if (!initialArrivalReleased) {
       if (initialVisualState === "pending" && performance.now() >= initialVisualDeadlineAt) {
         initialVisualState = "fallback";
@@ -4616,15 +4635,40 @@ async function boot() {
     }
 
     settleTick();
-    tracer.end("sched");
-
-    minigameSession.endFrame(captureMinigameOrigin());
-    input.endFrame();
-    tracer.begin("render");
-    renderFrame();
-    tracer.end("render");
-    diagnostics.updateStats();
   };
+
+  // Compose the per-frame order in app/gameLoop.ts. It owns frame timing (the
+  // forcedDt/manual-tick contract + the clamped THREE.Timer delta), the reduced-
+  // tick dispatch, the tracer phase brackets ("physics"/"world"/"sched"/"render"
+  // — names probes depend on), the scheduler pacing, and the render call. The
+  // trivial branch hooks are inlined here; the substantial ones are the named
+  // closures above. See docs/MAIN_DECOMPOSITION.md for why the body stays here.
+  const tick = createGameLoop({
+    timer,
+    scheduler,
+    isRevealed: () => revealed,
+    hooks: {
+      onFrameStart: () => buskers.flushHotSwap(),
+      beginFrame,
+      readingFrozen: () =>
+        (btsReading && document.body.classList.contains("started")) || museumBookOpen,
+      endInputOnly: () => input.endFrame(),
+      globalKeysAndGhost,
+      minimapOpen: () => minimap.expanded,
+      runMinimapFrame,
+      preSimulate,
+      liveInput,
+      simulate,
+      updateWorld,
+      postSchedule,
+      endFrameInput: () => {
+        minigameSession.endFrame(captureMinigameOrigin());
+        input.endFrame();
+      },
+      render: renderFrame,
+      afterRender: () => diagnostics.updateStats()
+    }
+  });
   const adaptiveRes = createAdaptiveResolution(renderer);
   const frameDriver = startFrameDriver({
     renderer,
