@@ -830,7 +830,7 @@ export class DebugPanel {
         if (this.#syncingPane) return;
         if ((POSTFX_TOGGLES as readonly string[]).includes(key)) this.#postfx?.applyPostFx();
         else if ((POSTFX_RADIAL_LIGHT_KEYS as readonly string[]).includes(key)) {
-          if (key !== "museumRaysResolution" || last) this.#postfx?.applyRadialLightFx();
+          if (!key.endsWith("RaysResolution") || last) this.#postfx?.applyRadialLightFx();
         } else applyPostFxParams();
       }
     });

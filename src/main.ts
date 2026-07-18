@@ -928,7 +928,10 @@ async function boot() {
   let missionDolores: MissionDoloresMuseum | null = null;
   let missionDoloresLoading: Promise<void> | null = null;
   let sutroBaths: import("./world/sutroBaths").SutroBaths | null = null;
-  let activeMissionDoloresRadialSource: RadialLightSource | null = null;
+  let activeRadialLight: {
+    owner: "mission-dolores" | "beach-pianist";
+    source: RadialLightSource;
+  } | null = null;
   let museumBookOpen = false;
   const ensureMissionDolores = (playerPos: THREE.Vector3): void => {
     if (missionDolores || missionDoloresLoading) return;
@@ -955,19 +958,42 @@ async function boot() {
         console.warn("[boot] Mission Dolores museum unavailable:", err);
       });
   };
+  const releaseActiveRadialLight = () => {
+    if (!activeRadialLight) return;
+    // Detach and dispose the render graph before releasing the proxy scene it
+    // reads. Outside a bounded owner, the base post-FX pipeline is selected.
+    pipeline.setRadialLightSource(null);
+    if (activeRadialLight.owner === "mission-dolores") {
+      missionDolores?.releaseRadialLightSource();
+    } else {
+      beachPianist?.releaseRadialLightSource();
+    }
+    activeRadialLight = null;
+  };
   const renderFrame = () => {
     const wantsMuseumRays =
       Boolean(POSTFX_TUNING.values.museumRays) &&
       missionDolores?.isPlayerInInterior(player.position) === true;
-    if (!wantsMuseumRays && activeMissionDoloresRadialSource) {
-      // Detach the render graph before releasing the source proxies it reads.
-      pipeline.setRadialLightSource(null);
-      activeMissionDoloresRadialSource = null;
-      missionDolores?.releaseRadialLightSource();
-    } else if (wantsMuseumRays && !activeMissionDoloresRadialSource) {
-      const nextSource = missionDolores?.radialLightSource ?? null;
-      if (nextSource) {
-        activeMissionDoloresRadialSource = nextSource;
+    const wantsBeachPianistRays =
+      Boolean(POSTFX_TUNING.values.pianistRays) &&
+      foliageOn &&
+      siteFoliage?.isReady("beach-pianist-grove") === true &&
+      beachPianist?.isPlayerInGodRayArea(player.position) === true;
+    const nextOwner = wantsMuseumRays
+      ? "mission-dolores"
+      : wantsBeachPianistRays
+        ? "beach-pianist"
+        : null;
+
+    if (activeRadialLight?.owner !== nextOwner) {
+      releaseActiveRadialLight();
+      const nextSource = nextOwner === "mission-dolores"
+        ? missionDolores?.radialLightSource ?? null
+        : nextOwner === "beach-pianist"
+          ? beachPianist?.radialLightSource ?? null
+          : null;
+      if (nextOwner && nextSource) {
+        activeRadialLight = { owner: nextOwner, source: nextSource };
         pipeline.setRadialLightSource(nextSource);
       }
     }
@@ -3237,6 +3263,15 @@ async function boot() {
     unloadDistance: 2000,
     build: async () => (await import("./world/landsEnd/vegetation")).createLandsEndFoliage(map)
   });
+  siteFoliage.register({
+    id: "beach-pianist-grove",
+    x: BEACH_PIANIST_CENTER.x,
+    z: BEACH_PIANIST_CENTER.z,
+    loadDistance: 950,
+    unloadDistance: 1250,
+    build: async () =>
+      (await import("./world/beachPianist/vegetation")).createBeachPianistFoliage(map)
+  });
   const coronaFoliageRules = {
     hash: coronaHash2,
     inDogPark: (x: number, z: number) => coronaPointInPolygon(x, z, CORONA_DOG_PARK),
@@ -3601,6 +3636,7 @@ async function boot() {
       refreshOptionalSiteDebug();
     },
     "beach-pianist": () => {
+      if (activeRadialLight?.owner === "beach-pianist") releaseActiveRadialLight();
       beachPianist?.dispose();
       beachPianist = null;
       sky.invalidateStaticShadows();

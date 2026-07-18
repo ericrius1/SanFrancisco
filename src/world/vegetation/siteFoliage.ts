@@ -131,6 +131,12 @@ export class SiteFoliageStreamer {
     }));
   }
 
+  /** Allocation-free readiness query for effects that depend on actual resident
+   * foliage (for example, canopy rays must not run before their trees attach). */
+  isReady(id: string): boolean {
+    return this.#entries.some((entry) => entry.registration.id === id && entry.status === "ready");
+  }
+
   dispose(): void {
     this.#disposed = true;
     for (const entry of this.#entries) {

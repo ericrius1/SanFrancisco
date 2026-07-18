@@ -71,6 +71,18 @@ export const POSTFX_TUNING = tunables("postfx", {
     v: 0.5,
     options: { "⅓ resolution": 0.35, "½ resolution": 0.5, "¾ resolution": 0.75 },
     label: "museum · source quality"
+  },
+  pianistRays: { v: true, label: "pianist · god rays" },
+  pianistRaysIntensity: { v: 0.5, min: 0, max: 1.5, step: 0.02, label: "pianist · brightness" },
+  pianistRaysFeather: { v: 0.6, min: 0.15, max: 0.9, step: 0.01, label: "pianist · edge feather" },
+  pianistRaysWeight: { v: 0.9, min: 0, max: 1, step: 0.01, label: "pianist · spread" },
+  pianistRaysDecay: { v: 0.96, min: 0.85, max: 1, step: 0.005, label: "pianist · trail decay" },
+  pianistRaysSamples: { v: 30, min: 16, max: 48, step: 1, label: "pianist · samples" },
+  pianistRaysExposure: { v: 5.3, min: 1, max: 10, step: 0.1, label: "pianist · source exposure" },
+  pianistRaysResolution: {
+    v: 0.5,
+    options: { "⅓ resolution": 0.35, "½ resolution": 0.5, "¾ resolution": 0.75 },
+    label: "pianist · source quality"
   }
 });
 
@@ -83,7 +95,15 @@ export const POSTFX_RADIAL_LIGHT_KEYS = [
   "museumRaysDecay",
   "museumRaysSamples",
   "museumRaysExposure",
-  "museumRaysResolution"
+  "museumRaysResolution",
+  "pianistRays",
+  "pianistRaysIntensity",
+  "pianistRaysFeather",
+  "pianistRaysWeight",
+  "pianistRaysDecay",
+  "pianistRaysSamples",
+  "pianistRaysExposure",
+  "pianistRaysResolution"
 ] as const;
 
 export function getRadialLightParams(): RadialLightParams {
@@ -95,6 +115,18 @@ export function getRadialLightParams(): RadialLightParams {
     sampleCount: v.museumRaysSamples,
     exposure: v.museumRaysExposure,
     resolutionScale: v.museumRaysResolution
+  };
+}
+
+export function getBeachPianistRadialLightParams(): RadialLightParams {
+  const v = POSTFX_TUNING.values;
+  return {
+    intensity: v.pianistRaysIntensity,
+    weight: v.pianistRaysWeight,
+    decay: v.pianistRaysDecay,
+    sampleCount: v.pianistRaysSamples,
+    exposure: v.pianistRaysExposure,
+    resolutionScale: v.pianistRaysResolution
   };
 }
 

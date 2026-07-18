@@ -4,6 +4,10 @@ import type * as THREE from "three/webgpu";
 export interface RadialLightSource {
   readonly scene: THREE.Scene;
   readonly center: THREE.Vector2;
+  /** Optional source-local profile. Missing values inherit the global radial
+   * light controls, allowing a compact outdoor source to cost less than the
+   * museum's stained-glass installation. */
+  readonly params?: Partial<RadialLightParams> | (() => Partial<RadialLightParams>);
   update(camera: THREE.Camera): void;
 }
 
