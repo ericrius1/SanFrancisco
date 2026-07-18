@@ -24,11 +24,12 @@ export const PIANO_FINGER_COUNT = 5;
 
 const CHORD_WINDOW_MS = 45;
 const FINGER_REUSE_MS = 220;
+const MAX_ONE_HAND_SPAN = 12;
 // Natural semitone offsets around the middle of each hand. The left hand is
 // mirrored: its thumb reaches toward higher notes while its pinky covers bass.
 const NATURAL_OFFSETS = [
-  [4, 2, 0, -2, -4],
-  [-4, -2, 0, 2, 4]
+  [7, 3, 0, -3, -7],
+  [-7, -3, 0, 3, 7]
 ] as const;
 const PC_BLACK = [false, true, false, true, false, false, true, false, true, false, true, false] as const;
 
@@ -40,6 +41,42 @@ function bitCount(value: number): number {
   let count = 0;
   for (let bits = value; bits !== 0; bits &= bits - 1) count++;
   return count;
+}
+
+/**
+ * The transcription's coarse hand label occasionally puts both ends of a
+ * 10th/12th in one hand even when the other hand is free. Partition each onset
+ * at the keyboard midpoint so neither hand is asked to exceed an octave. This
+ * is both the playable choice and the one that prevents a wrist from chasing a
+ * mathematically unreachable average between two distant keys.
+ */
+function rebalanceWideChords(startMs: Float32Array, midi: Uint8Array, hand: Uint8Array): void {
+  for (let cursor = 0; cursor < midi.length;) {
+    const groupStart = startMs[cursor];
+    let end = cursor + 1;
+    while (end < midi.length && startMs[end] - groupStart <= CHORD_WINDOW_MS) end++;
+    const group: number[] = [];
+    for (let index = cursor; index < end; index++) group.push(index);
+
+    for (const handId of [0, 1] as const) {
+      for (;;) {
+        const own = group.filter((index) => hand[index] === handId).sort((a, b) => midi[a] - midi[b]);
+        if (own.length < 2 || midi[own[own.length - 1]] - midi[own[0]] <= MAX_ONE_HAND_SPAN) break;
+        // Move the note nearest the other hand: highest from left, lowest from right.
+        const candidate = handId === 0 ? own[own.length - 1] : own[0];
+        const other = group.filter((index) => hand[index] !== handId);
+        let otherLo = midi[candidate];
+        let otherHi = midi[candidate];
+        for (const index of other) {
+          otherLo = Math.min(otherLo, midi[index]);
+          otherHi = Math.max(otherHi, midi[index]);
+        }
+        if (otherHi - otherLo > MAX_ONE_HAND_SPAN) break;
+        hand[candidate] = handId === 0 ? 1 : 0;
+      }
+    }
+    cursor = end;
+  }
 }
 
 /**
@@ -122,7 +159,12 @@ function planFingering(
           const naturalSpan = Math.abs(
             NATURAL_OFFSETS[handId][lastFinger] - NATURAL_OFFSETS[handId][firstFinger]
           );
-          score += Math.abs(noteSpan - naturalSpan) * 0.2;
+          // Wide piano intervals belong on the outside digits. A weak span
+          // preference lets recent-note continuity choose adjacent fingers
+          // for an octave, which is both unplayable and visually crosses the
+          // digit chains while the hand moves. Keep continuity as a tiebreaker
+          // after the physical chord shape has been respected.
+          score += Math.abs(noteSpan - naturalSpan) * 1.8;
         }
 
         if (score < bestScore) {
@@ -195,6 +237,7 @@ export function parseNoteTimeline(raw: unknown, fallbackDurationMs: number): Not
     vel[i] = Math.min(127, Math.max(0, n[3] | 0));
     hand[i] = n[4] ? 1 : 0;
   }
+  rebalanceWideChords(startMs, midi, hand);
   const finger = planFingering(startMs, endMs, midi, hand);
   const durationMs =
     typeof data.durationMs === "number" && data.durationMs > 0 ? data.durationMs : fallbackDurationMs;
