@@ -147,8 +147,6 @@ function cloneGrassGeometry(
 
   const mesh = new THREE.Mesh(geometry, material) as GrassMesh;
   mesh.name = name;
-  mesh.castShadow = false;
-  mesh.receiveShadow = false;
   mesh.frustumCulled = false;
   mesh.userData.grassCapacity = capacity;
   mesh.userData.grassGpuGenerated = true;

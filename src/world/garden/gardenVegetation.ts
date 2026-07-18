@@ -21,7 +21,6 @@ import {
 } from "./layout";
 import { buildBotanicalGrass, type BotanicalGrassController } from "./botanicalGrass";
 import { NATIVE_TREE_DESIGNS } from "./treeDesigns";
-import { setLocalFarShadowOnly } from "../shadows/shadowLayers";
 import {
   createAuthoredFlowerPatch,
   type AuthoredFlowerPlacement,
@@ -172,26 +171,13 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
   group.add(treePatch.group);
 
   // Tree ferns use the same leaf-spray + shared-wind renderer as fern
-  // understory, with a trunk authored into the shared fern profile. Their
-  // stable low-poly proxy remains the dedicated distant shadow caster.
+  // understory, with a trunk authored into the shared fern profile.
   const treeFerns = trees.filter((tree) => !NATIVE_TREE_DESIGNS[tree.species]);
   const fernPatch = createAuthoredShrubPatch(treeFerns.map(authoredTreeFern), {
     name: "sfbg_tree_ferns",
     palettes: SHRUB_PALETTES
   });
   group.add(fernPatch.group);
-  let fernShadow: THREE.Mesh | null = null;
-  if (treeFerns.length > 0) {
-    fernShadow = new THREE.Mesh(
-      buildProxyGeometry(treeFerns),
-      new THREE.MeshBasicMaterial({ color: 0xffffff })
-    );
-    fernShadow.name = "sfbg_fern_shadow_proxy";
-    fernShadow.castShadow = true;
-    fernShadow.receiveShadow = false;
-    setLocalFarShadowOnly(fernShadow);
-    group.add(fernShadow);
-  }
 
   // Shared trees stream in asynchronously; colliders/proxy below come from the
   // full deterministic layout and are live immediately. Near LOD self-drives;
@@ -253,10 +239,6 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
       shrubPatch.dispose();
       flowerPatch.dispose();
       grass.dispose();
-      if (fernShadow) {
-        fernShadow.geometry.dispose();
-        (fernShadow.material as THREE.Material).dispose();
-      }
       proxy.geometry.dispose();
       (proxy.material as THREE.Material).dispose();
       group.removeFromParent();

@@ -786,8 +786,6 @@ export function createAuthoredFlowerPatch(
     }
     const mesh = new THREE.InstancedMesh(geometry, material, list.length);
     mesh.name = `${options.name}_${speciesIds[species]}`;
-    mesh.castShadow = false;
-    mesh.receiveShadow = true;
     mesh.layers.set(BEAUTY_ONLY_LAYER);
     mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     const bloom = new THREE.InstancedBufferAttribute(new Float32Array(list.length * 3), 3);
@@ -906,8 +904,6 @@ function createFlowerBucket(
 
   const mesh = new THREE.InstancedMesh(geometry, material, capacity);
   mesh.name = name;
-  mesh.castShadow = false;
-  mesh.receiveShadow = true;
   mesh.frustumCulled = true;
   mesh.layers.set(BEAUTY_ONLY_LAYER);
   mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);

@@ -379,8 +379,7 @@ export function createGrassMesh(
   name: string,
   capacity: number,
   geometry: THREE.BufferGeometry,
-  material: THREE.Material,
-  _castShadow = false
+  material: THREE.Material
 ): GrassMesh {
   const instancedGeometry = new THREE.InstancedBufferGeometry();
   if (geometry.index) instancedGeometry.setIndex(geometry.index.clone());
@@ -390,8 +389,6 @@ export function createGrassMesh(
   for (const group of geometry.groups) instancedGeometry.addGroup(group.start, group.count, group.materialIndex);
   const mesh = new THREE.Mesh(instancedGeometry, material) as GrassMesh;
   mesh.name = name;
-  mesh.castShadow = false;
-  mesh.receiveShadow = false;
   mesh.frustumCulled = false;
 
   // StaticDrawUsage on purpose: r185 re-uploads DynamicDrawUsage buffers every

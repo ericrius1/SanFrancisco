@@ -572,8 +572,6 @@ export function createAuthoredShrubPatch(
     const geometry = makeLeafSprayGeometry(profile);
     const mesh = new THREE.InstancedMesh(geometry, material, list.length);
     mesh.name = `${options.name}_${profile}`;
-    mesh.castShadow = false;
-    mesh.receiveShadow = true;
     const colorAttr = new THREE.StorageInstancedBufferAttribute(list.length, 3);
     const bloomAttr = new THREE.StorageInstancedBufferAttribute(list.length, 4);
     const anchorAttr = new THREE.StorageInstancedBufferAttribute(list.length, 4);

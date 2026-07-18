@@ -324,7 +324,6 @@ function texturedFoliageMaterial(
   configureCommon(material, `native-tree:${assets.id}:foliage:${NATIVE_TREE_MATERIAL_GRADES[gradeIndex]}`);
   const styleNodes = literalStyleNodes(style, gradeIndex);
   material.side = assets.leafStyle.twoSided ? THREE.DoubleSide : THREE.FrontSide;
-  material.shadowSide = THREE.DoubleSide;
   const colorSample: N = texture(assets.leafColor);
   const surfaceSample: N = texture(assets.leafSurface);
   const leafColor = foliageColorNode(styleNodes, colorSample);
@@ -387,7 +386,6 @@ function landscapeFoliageMaterial(
   configureCommon(material, `native-tree:${assets.id}:foliage:far`);
   applySilhouetteStyle(material, style, gradeIndex, canopyCenter, canopyRadii);
   material.side = THREE.DoubleSide;
-  material.shadowSide = THREE.DoubleSide;
   // At this distance the denser compiler shapes form one crown cluster. Keeping
   // them opaque gives a stable silhouette, skips texture sampling/alpha
   // overdraw, and lets KTX2 detail remain genuinely close-range and on-demand.

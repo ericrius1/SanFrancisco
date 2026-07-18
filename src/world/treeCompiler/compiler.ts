@@ -1,4 +1,3 @@
-import { clamp } from "./math.ts";
 import {
   BRANCH_VERTEX_STRIDE_FLOATS,
   FOLIAGE_VERTEX_STRIDE_FLOATS,
@@ -14,9 +13,7 @@ import {
   type CompiledTreeLod,
   type CompiledTreeLodStats,
   type CompiledTreePrototype,
-  type CompiledTreeShadowProfile,
   type CompiledTreeStats,
-  type TreeBounds,
   type TreeRecipe
 } from "./types.ts";
 import { validateTreeRecipe } from "./validate.ts";
@@ -40,37 +37,6 @@ function skeletonByteLength(skeleton: GeneratedTreeSkeleton["compiled"]): number
     skeleton.keepScores.byteLength +
     skeleton.windPhases.byteLength
   );
-}
-
-function createShadowProfile(
-  recipe: TreeRecipe,
-  skeleton: GeneratedTreeSkeleton,
-  lods: readonly CompiledTreeLod[],
-  bounds: TreeBounds
-): CompiledTreeShadowProfile {
-  const foliageBounds = lods[0].foliage.vertices.length > 0 ? lods[0].foliage.bounds : bounds;
-  const canopyRadii: [number, number, number] = [
-    Math.max(0.01, (foliageBounds.max[0] - foliageBounds.min[0]) * 0.5),
-    Math.max(0.01, (foliageBounds.max[1] - foliageBounds.min[1]) * 0.5),
-    Math.max(0.01, (foliageBounds.max[2] - foliageBounds.min[2]) * 0.5)
-  ];
-  const canopyCenter: [number, number, number] = [
-    (foliageBounds.min[0] + foliageBounds.max[0]) * 0.5,
-    (foliageBounds.min[1] + foliageBounds.max[1]) * 0.5,
-    (foliageBounds.min[2] + foliageBounds.max[2]) * 0.5
-  ];
-  const ellipsoidVolume = (4 / 3) * Math.PI * canopyRadii[0] * canopyRadii[1] * canopyRadii[2];
-  const canopyDensity = clamp(skeleton.foliageAnchors.length / Math.max(1, ellipsoidVolume * 3), 0, 1);
-
-  return {
-    trunkRadius: recipe.trunk.radius * (1 + recipe.trunk.flare),
-    height: bounds.max[1] - bounds.min[1],
-    canopyCenter,
-    canopyRadii,
-    canopyDensity,
-    opacity: recipe.shadow?.opacity ?? clamp(0.42 + canopyDensity * 0.42, 0.42, 0.86),
-    preferredLod: recipe.shadow?.preferredLod ?? lods[Math.min(1, lods.length - 1)].name
-  };
 }
 
 /**
@@ -138,7 +104,6 @@ export function compileTree(recipe: TreeRecipe, seed: number): CompiledTreeProto
     skeleton: skeleton.compiled,
     lods,
     bounds,
-    shadow: createShadowProfile(recipe, skeleton, lods, bounds),
     stats
   };
 }

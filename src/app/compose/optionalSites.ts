@@ -702,8 +702,7 @@ export function createOptionalSites({
       prepareOptionalRoot(label, root, async () => {
         await optionalSiteConstructionIdle();
         await waitForWorldBackgroundWindow(700, performance.now() + OPTIONAL_SITE_STARVATION_CAP_MS);
-      }),
-    onResidencyChanged: () => sky.invalidateStaticShadows()
+      })
   });
   siteFoliage.setVisible(getFoliageOn());
   siteFoliage.register({

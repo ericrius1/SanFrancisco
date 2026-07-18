@@ -200,7 +200,6 @@ for (let index = 0; index < first.lods.length; index++) {
   assert(first.lods[index].stats.foliageAnchors === expected, `${first.lods[index].name} missed its foliage budget`);
 }
 assert(first.bounds.sphereRadius > 0, "tree bounds are empty");
-assert(first.shadow.canopyRadii.every((radius) => radius > 0), "shadow canopy is empty");
 assert(treePrototypeTransferables(first).length === 19, "unexpected transferable buffer count");
 assertFinite(first);
 assertBranchWindingOutward(first);

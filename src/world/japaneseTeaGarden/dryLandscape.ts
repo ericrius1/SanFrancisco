@@ -293,7 +293,6 @@ function createLeafScatter(map: TeaGardenTerrain): THREE.InstancedMesh {
   mesh.instanceMatrix.needsUpdate = true;
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   mesh.computeBoundingSphere();
-  mesh.receiveShadow = true;
   return mesh;
 }
 

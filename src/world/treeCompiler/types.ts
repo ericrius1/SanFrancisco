@@ -115,13 +115,6 @@ export type TreeCompileLimits = {
   maxVerticesPerLod?: number;
 };
 
-export type TreeShadowRecipe = {
-  /** Density multiplier used by the future low-cost shadow renderer. */
-  opacity?: number;
-  /** Optional LOD name to use for geometry shadows. */
-  preferredLod?: string;
-};
-
 export type TreeRecipe = {
   version: 1;
   name: string;
@@ -132,7 +125,6 @@ export type TreeRecipe = {
   foliage: TreeFoliageRecipe;
   /** Ordered near to far. Every farther level must be a subset. */
   lods: readonly TreeLodRecipe[];
-  shadow?: TreeShadowRecipe;
   limits?: TreeCompileLimits;
 };
 
@@ -197,16 +189,6 @@ export type CompiledTreeSkeleton = {
   windPhases: Float32Array;
 };
 
-export type CompiledTreeShadowProfile = {
-  trunkRadius: number;
-  height: number;
-  canopyCenter: Vec3Tuple;
-  canopyRadii: Vec3Tuple;
-  canopyDensity: number;
-  opacity: number;
-  preferredLod: string;
-};
-
 export type CompiledTreeStats = {
   skeletonBranches: number;
   skeletonPoints: number;
@@ -224,7 +206,6 @@ export type CompiledTreePrototype = {
   skeleton: CompiledTreeSkeleton;
   lods: readonly CompiledTreeLod[];
   bounds: TreeBounds;
-  shadow: CompiledTreeShadowProfile;
   stats: CompiledTreeStats;
 };
 

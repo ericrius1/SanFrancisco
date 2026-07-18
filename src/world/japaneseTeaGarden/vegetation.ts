@@ -310,10 +310,7 @@ export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVeget
       visibleDistance: 920,
       nearRadius: 58,
       nearExitRadius: 68,
-      nearMax: 24,
-      // Tea Garden-only opt-in: retain the shared opaque proxy path, but use a
-      // clustered crown silhouette instead of the conspicuous single poly mass.
-      shadowProxyShape: "organic-lobes"
+      nearMax: 24
     });
     return trees;
   };

@@ -33,8 +33,8 @@ Boot (dev, headless): reveal 2.7 s — warmup ≈1.5 s (scene pipeline compile
 - Adaptive resolution governor (render/adaptiveResolution.ts), floor 0.7×.
 - Vendor/debug-ui chunk split; tweakpane + Inspector dynamic-import on first use.
 - Authored-shrub renderer: core hull + inner layer + skirt (visual, cost-neutral).
-- Tree shadow proxies: world-hash perforated crown + species cover + lumpy
-  silhouette (shadows/treeShadowProxy.ts) — dapple instead of blob.
+- Foliage shadow casting/receiving and the native-tree proxy renderer were
+  removed; plant residency and visibility changes no longer invalidate static CSM domains.
 
 ## Wave 1 (in flight, parallel agents, disjoint file ownership)
 

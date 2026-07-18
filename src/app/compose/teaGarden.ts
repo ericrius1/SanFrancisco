@@ -166,7 +166,6 @@ export function createTeaGardenController({
       ]);
       await site.ready;
       markLazyRegion("tea-garden", "optional-ready");
-      if (getFoliageOn()) sky.invalidateStaticShadows("all");
     })().catch((error) => {
       console.warn("[tea-garden] optional foliage preparation failed:", error);
     });
