@@ -1760,6 +1760,7 @@ async function boot() {
       const { PoseMocapSession } = await import("./mocap/poseMocapSession");
       const session = new PoseMocapSession({
         video: audioControls.mocapVideo,
+        debugCanvas: audioControls.mocapDebugCanvas,
         onState: (state, message) => audioControls.setMocap(state, message),
         onFatal: (error) => {
           if (mocapSession !== session) return;

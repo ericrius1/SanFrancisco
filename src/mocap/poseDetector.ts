@@ -13,6 +13,8 @@ type OutputMap = { screen: number; world: number; score: number };
 
 export type PoseDetection = {
   world: PoseLandmark[];
+  /** Video-frame-normalized landmarks (0..1), for debug overlays. */
+  screen: PoseLandmark[];
   score: number;
   inferenceMs: number;
 };
@@ -30,6 +32,7 @@ export class PoseDetector {
   #inputHeight = 256;
   #outputMap: OutputMap | null = null;
   #roi: Roi | null = null;
+  #missStreak = 0;
   #canvas = document.createElement("canvas");
   #context: CanvasRenderingContext2D;
   #rgb = new Float32Array(this.#inputWidth * this.#inputHeight * 3);
@@ -51,10 +54,9 @@ export class PoseDetector {
       onProgress(0.08 + fraction * 0.64, "Downloading pose model")
     );
     onProgress(0.76, "Compiling pose model for WebGPU");
-    const compiled = await loadAndCompile(bytes, {
-      accelerator: "webgpu",
-      gpuOptions: { precision: "fp16" }
-    });
+    // Full precision: fp16 visibly degrades the landmark regression head —
+    // joints collapse toward the crop centre and the presence score flickers.
+    const compiled = await loadAndCompile(bytes, { accelerator: "webgpu" });
 
     if (!compiled.isFullyAccelerated) {
       compiled.delete();
@@ -102,16 +104,37 @@ export class PoseDetector {
     const rawScore = outputs.score[0];
     const score = rawScore >= 0 && rawScore <= 1 ? rawScore : sigmoid(rawScore);
     if (score < 0.5) {
-      this.#roi = this.#fullFrameRoi(videoWidth, videoHeight);
+      // Losing the person must not snap the crop to full frame immediately:
+      // a raised hand dips the score for a few frames, and a full-frame crop
+      // shrinks the person so much that re-acquisition itself fails,
+      // producing a tracking↔searching flicker loop. Grow the crop outward
+      // from where the person just was, and only give up to a full-frame
+      // search after a sustained miss streak.
+      this.#missStreak++;
+      if (this.#missStreak > 12) {
+        this.#roi = this.#fullFrameRoi(videoWidth, videoHeight);
+      } else {
+        const full = this.#fullFrameRoi(videoWidth, videoHeight);
+        roi.size += (full.size - roi.size) * 0.12;
+        roi.centerX += (full.centerX - roi.centerX) * 0.08;
+        roi.centerY += (full.centerY - roi.centerY) * 0.08;
+      }
       return null;
     }
+    this.#missStreak = 0;
 
     const screen: PoseLandmark[] = [];
     const world: PoseLandmark[] = [];
     for (let index = 0; index < LANDMARK_COUNT; index++) {
       const cropX = outputs.screen[index * 5] / this.#inputWidth;
       const cropY = outputs.screen[index * 5 + 1] / this.#inputHeight;
-      const visibility = sigmoid(outputs.screen[index * 5 + 3]);
+      // visibility alone is not trustworthy: the model happily hallucinates
+      // below-frame hips at chest height with visibility ~0.9. The fifth
+      // channel is MediaPipe's per-landmark presence ("is this inside the
+      // crop at all") — multiplying the two kills phantom joints for
+      // waist-up webcam framing while leaving in-frame confidences intact.
+      const visibility =
+        sigmoid(outputs.screen[index * 5 + 3]) * sigmoid(outputs.screen[index * 5 + 4]);
       screen.push({
         x: (roi.centerX - roi.size * 0.5 + cropX * roi.size) / videoWidth,
         y: (roi.centerY - roi.size * 0.5 + cropY * roi.size) / videoHeight,
@@ -126,7 +149,12 @@ export class PoseDetector {
       });
     }
     this.#updateRoi(screen, videoWidth, videoHeight);
-    return { world, score, inferenceMs: outputs.inferenceMs };
+    return { world, screen, score, inferenceMs: outputs.inferenceMs };
+  }
+
+  /** Current tracking crop in video pixels, for debug overlays. */
+  get roi(): Roi | null {
+    return this.#roi;
   }
 
   dispose(): void {
@@ -194,19 +222,37 @@ export class PoseDetector {
   }
 
   #updateRoi(screen: PoseLandmark[], width: number, height: number): void {
-    const hipX = (screen[23].x + screen[24].x) * 0.5 * width;
-    const hipY = (screen[23].y + screen[24].y) * 0.5 * height;
-    let radius = 0;
+    // Track the bounding box of the joints the model is actually confident
+    // about. Anchoring on the hip estimate (the MediaPipe default) drags the
+    // crop toward hallucinated below-frame hips whenever the webcam frames
+    // the player from the waist up, which starves the crop of the upper body.
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let count = 0;
     for (const point of screen) {
-      if (point.visibility < 0.5) continue;
-      radius = Math.max(radius, Math.hypot(point.x * width - hipX, point.y * height - hipY));
+      // Deliberately looser than the retarget gates: a raised hand whose
+      // wrist confidence is sagging must still hold the crop open, or the
+      // crop tightens onto the torso, pushes the hand further out of frame,
+      // and detection spirals into a loss loop.
+      if (point.visibility < 0.3) continue;
+      count++;
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
     }
+    if (count < 4) return; // too little signal — keep the previous crop
+    const centerX = (minX + maxX) * 0.5 * width;
+    const centerY = (minY + maxY) * 0.5 * height;
+    const radius = Math.hypot((maxX - minX) * width, (maxY - minY) * height) * 0.5;
     const frameSize = Math.max(width, height);
-    const size = Math.min(Math.max(radius * 2.5, frameSize * 0.3), frameSize * 1.5);
+    const size = Math.min(Math.max(radius * 2.6, frameSize * 0.3), frameSize * 1.5);
     const smoothing = 0.35;
     this.#roi = {
-      centerX: this.#roi!.centerX + (hipX - this.#roi!.centerX) * smoothing,
-      centerY: this.#roi!.centerY + (hipY - this.#roi!.centerY) * smoothing,
+      centerX: this.#roi!.centerX + (centerX - this.#roi!.centerX) * smoothing,
+      centerY: this.#roi!.centerY + (centerY - this.#roi!.centerY) * smoothing,
       size: this.#roi!.size + (size - this.#roi!.size) * smoothing
     };
   }
