@@ -25,6 +25,7 @@ import { registerAmbientLightAnchor, type LightAnchorSpec } from "../../player/l
 import type { WorldMap } from "../heightmap";
 import { bumpNormal } from "../tslUtil";
 import { BEACH_PIANIST_SITE } from "./meta";
+import { BEACH_PIANIST_SHORELINE_TUNING } from "./tuning";
 
 type N = any;
 
@@ -37,7 +38,8 @@ const FAR_WATER = 74;
 const SHORE_SCAN_MIN = -24;
 const SHORE_SCAN_MAX = 108;
 const SHORE_SCAN_STEP = 1;
-const SPARKLE_COUNT = 144;
+const SPARKLE_BASE_COUNT = 144;
+const SPARKLE_CAPACITY = SPARKLE_BASE_COUNT * 2;
 const TAU = Math.PI * 2;
 
 type ShoreLayout = {
@@ -156,12 +158,19 @@ export class PianistShoreline {
   readonly group = new THREE.Group();
 
   #time = uniform(0);
+  #waveHeight = uniform(BEACH_PIANIST_SHORELINE_TUNING.values.waveHeight);
+  #crestFrequency = uniform(TAU / BEACH_PIANIST_SHORELINE_TUNING.values.crestSpacing);
+  #lapSpeed = uniform(BEACH_PIANIST_SHORELINE_TUNING.values.lapSpeed);
+  #bioluminescence = uniform(BEACH_PIANIST_SHORELINE_TUNING.values.bioluminescence);
+  #surfaceSparkle = uniform(BEACH_PIANIST_SHORELINE_TUNING.values.surfaceSparkle);
+  #sparkleBrightness = uniform(BEACH_PIANIST_SHORELINE_TUNING.values.sparkleBrightness);
   #seaY: number;
   #surface: THREE.Mesh;
   #sparkleGeometry: THREE.BufferGeometry;
   #sparkleMaterial: THREE.MeshBasicNodeMaterial;
   #sparkles: THREE.InstancedMesh;
   #sparkleLayout: Sparkle[] = [];
+  #activeSparkleCount = 0;
   #matrix = new THREE.Matrix4();
   #position = new THREE.Vector3();
   #quaternion = new THREE.Quaternion();
@@ -195,12 +204,18 @@ export class PianistShoreline {
       depthWrite: false,
       blending: THREE.AdditiveBlending
     });
-    this.#sparkleMaterial.colorNode = color(0x8cfff0).mul(1.05 * LIGHT_SCALE);
-    this.#sparkleMaterial.opacity = 0.92;
+    this.#sparkleMaterial.colorNode = color(0x8cfff0)
+      .mul(1.05 * LIGHT_SCALE)
+      .mul(this.#sparkleBrightness);
+    this.#sparkleMaterial.opacityNode = clamp(
+      this.#sparkleBrightness.mul(0.86),
+      0,
+      1
+    );
     this.#sparkles = new THREE.InstancedMesh(
       this.#sparkleGeometry,
       this.#sparkleMaterial,
-      SPARKLE_COUNT
+      SPARKLE_CAPACITY
     );
     this.#sparkles.name = "beachPianist.bioluminescentSparkles";
     this.#sparkles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -209,6 +224,7 @@ export class PianistShoreline {
     this.#sparkles.castShadow = false;
     this.#sparkles.receiveShadow = false;
     this.#buildSparkleLayout(layout.shore);
+    this.#syncTuning();
     this.#writeSparkles(0);
     this.group.add(this.#sparkles);
 
@@ -234,22 +250,26 @@ export class PianistShoreline {
     const v = uv().y.toVar();
     const along = positionGeometry.x;
     const distance = mix(float(NEAR_WATER), float(FAR_WATER), v.mul(0.62).add(v.mul(v).mul(0.38))).toVar();
-    const bend = sin(along.mul(0.027).add(t.mul(0.09))).mul(0.72);
+    const bend = sin(
+      along.mul(0.027).add(t.mul(this.#lapSpeed.mul(0.118)))
+    ).mul(0.72);
     // Constant phase travels toward decreasing shore distance as time advances.
     // Fifteen-metre spacing and ~1.8 m/s travel keep this a lap, not a surf set.
-    const primary = sin(distance.mul(0.42).add(t.mul(0.76)).add(bend)).toVar();
+    const primary = sin(
+      distance.mul(this.#crestFrequency).add(t.mul(this.#lapSpeed)).add(bend)
+    ).toVar();
     const cross = sin(
       distance.mul(0.78)
         .add(along.mul(0.052))
-        .add(t.mul(1.05))
+        .add(t.mul(this.#lapSpeed.mul(1.38)))
         .add(bend.mul(0.4))
     ).toVar();
     const shoreShape = smoothstep(0.01, 0.1, v)
       .mul(smoothstep(1, 0.58, v))
       .add(smoothstep(0.15, 0.01, v).mul(0.42))
       .toVar();
-    const height = primary.mul(0.105)
-      .add(cross.mul(0.028))
+    const height = primary.mul(this.#waveHeight)
+      .add(cross.mul(this.#waveHeight.mul(0.267)))
       .mul(shoreShape)
       .add(0.042)
       .toVar();
@@ -275,14 +295,21 @@ export class PianistShoreline {
       0.68,
       0.97,
       breakNoise.mul(0.72).add(crest.mul(0.43))
-    ).mul(crest.mul(0.74).add(wash.mul(0.38))).toVar();
+    ).mul(crest.mul(0.74).add(wash.mul(0.38)))
+      .mul(this.#surfaceSparkle)
+      .toVar();
 
     const waterColor = mix(color(0x0a5a65), color(0x65dcca), crest.mul(0.72));
     material.colorNode = mix(waterColor, color(0xd3fff6), foam.mul(0.72));
     material.emissiveNode = vec3(0.09, 1.0, 0.82)
       .mul(max(crest.mul(0.24), sparkle))
       .mul(0.86 * LIGHT_SCALE)
-      .add(vec3(0.18, 0.72, 0.68).mul(wash.mul(0.18 * LIGHT_SCALE)));
+      .mul(this.#bioluminescence)
+      .add(
+        vec3(0.18, 0.72, 0.68)
+          .mul(wash.mul(0.18 * LIGHT_SCALE))
+          .mul(this.#bioluminescence)
+      );
     material.normalNode = bumpNormal(height.add(breakNoise.mul(0.014)));
     material.roughnessNode = mix(float(0.38), float(0.74), foam);
 
@@ -301,7 +328,7 @@ export class PianistShoreline {
   }
 
   #buildSparkleLayout(shore: Float32Array): void {
-    for (let i = 0; i < SPARKLE_COUNT; i++) {
+    for (let i = 0; i < SPARKLE_CAPACITY; i++) {
       // A low-discrepancy stride avoids rows while keeping the layout stable.
       const x = THREE.MathUtils.lerp(ALONG_MIN + 5, ALONG_MAX - 5, hash(i * 13 + 1));
       const distance = THREE.MathUtils.lerp(4, 58, Math.pow(hash(i * 17 + 4), 1.18));
@@ -316,29 +343,62 @@ export class PianistShoreline {
     }
   }
 
+  #syncTuning(): void {
+    const tuning = BEACH_PIANIST_SHORELINE_TUNING.values;
+    this.#waveHeight.value = tuning.waveHeight;
+    this.#crestFrequency.value = TAU / tuning.crestSpacing;
+    this.#lapSpeed.value = tuning.lapSpeed;
+    this.#bioluminescence.value = tuning.bioluminescence;
+    this.#surfaceSparkle.value = tuning.surfaceSparkle;
+    this.#sparkleBrightness.value = tuning.sparkleBrightness;
+    this.#activeSparkleCount = THREE.MathUtils.clamp(
+      Math.round(SPARKLE_BASE_COUNT * tuning.sparkleAmount),
+      0,
+      SPARKLE_CAPACITY
+    );
+  }
+
   #writeSparkles(time: number): void {
+    const tuning = BEACH_PIANIST_SHORELINE_TUNING.values;
+    const frequency = TAU / tuning.crestSpacing;
     for (let i = 0; i < this.#sparkleLayout.length; i++) {
       const sparkle = this.#sparkleLayout[i];
-      const bend = Math.sin(sparkle.x * 0.027 + time * 0.09) * 0.72;
-      const wave = Math.sin(sparkle.distance * 0.42 + time * 0.76 + bend);
+      if (i >= this.#activeSparkleCount) {
+        this.#position.set(sparkle.x, this.#seaY + 0.08, sparkle.z);
+        this.#scale.setScalar(0);
+        this.#matrix.compose(this.#position, this.#quaternion, this.#scale);
+        this.#sparkles.setMatrixAt(i, this.#matrix);
+        continue;
+      }
+      const bend = Math.sin(sparkle.x * 0.027 + time * tuning.lapSpeed * 0.118) * 0.72;
+      const wave = Math.sin(sparkle.distance * frequency + time * tuning.lapSpeed + bend);
       const crest = THREE.MathUtils.smoothstep(wave, 0.22, 0.96);
-      const twinkle = 0.3 + 0.7 * Math.max(0, Math.sin(time * sparkle.twinkle + sparkle.phase));
+      const twinkle = 0.3 + 0.7 * Math.max(
+        0,
+        Math.sin(time * sparkle.twinkle * tuning.twinkleSpeed + sparkle.phase)
+      );
       const breathe = 0.78 + 0.22 * Math.sin(time * 0.44 + sparkle.phase * 0.31);
       const amount = crest * crest * twinkle * breathe;
-      const scale = 0.001 + sparkle.size * amount;
+      const scale = 0.001 + sparkle.size * tuning.sparkleSize * amount;
       this.#position.set(
         sparkle.x,
-        this.#seaY + 0.08 + wave * 0.095 + amount * 0.035,
+        this.#seaY + 0.08 + wave * tuning.waveHeight * 0.905 + amount * 0.035,
         sparkle.z
       );
       this.#scale.setScalar(scale);
       this.#matrix.compose(this.#position, this.#quaternion, this.#scale);
       this.#sparkles.setMatrixAt(i, this.#matrix);
     }
+    // Keep the submitted instance count stable. Inactive rows are degenerate
+    // zero-scale matrices, so dragging amount upward cannot expose a row before
+    // its matrix upload reaches WebGPU (the same invariant as water echoes).
+    this.#sparkles.count = SPARKLE_CAPACITY;
     this.#sparkles.instanceMatrix.needsUpdate = true;
   }
 
   update(elapsed: number, active: boolean): void {
+    this.#syncTuning();
+    active = active && BEACH_PIANIST_SHORELINE_TUNING.values.enabled;
     this.group.visible = active;
     if (!active) {
       this.#fillSpec.intensity = 0;
@@ -348,18 +408,19 @@ export class PianistShoreline {
     this.#writeSparkles(elapsed);
     // The pool owns the sole real light. Tiny variations make it feel like an
     // aggregate of many living flecks without visibly pulsing the performer.
-    this.#fillSpec.intensity =
-      14 + Math.sin(elapsed * 0.44) * 0.9 + Math.sin(elapsed * 0.19 + 1.7) * 0.45;
+    this.#fillSpec.intensity = (
+      14 + Math.sin(elapsed * 0.44) * 0.9 + Math.sin(elapsed * 0.19 + 1.7) * 0.45
+    ) * BEACH_PIANIST_SHORELINE_TUNING.values.collectiveLight;
   }
 
   get debugState() {
     return {
       visible: this.group.visible,
-      sparkleCount: SPARKLE_COUNT,
+      sparkleCount: this.#activeSparkleCount,
+      sparkleCapacity: SPARKLE_CAPACITY,
       lightCount: this.#fillSpec.intensity > 0 ? 1 : 0,
       lightIntensity: this.#fillSpec.intensity,
-      waveHeight: 0.105,
-      waveSpacing: TAU / 0.42
+      tuning: { ...BEACH_PIANIST_SHORELINE_TUNING.values }
     };
   }
 

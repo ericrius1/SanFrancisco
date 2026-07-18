@@ -13,6 +13,7 @@
 // the body language whenever the player wanders back (busker idiom).
 
 import * as THREE from "three/webgpu";
+import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import type { WorldMap } from "../heightmap";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { BeachPianistAudio } from "./audio";
@@ -27,6 +28,7 @@ import {
   type BeachPianistRadialSource
 } from "./radialSource";
 import { PianistShoreline } from "./shoreline";
+import { bindBeachPianistShorelineTuning } from "./tuning";
 
 export { BEACH_PIANIST_SITE } from "./meta";
 
@@ -417,6 +419,16 @@ export class BeachPianist {
       this.group.visible = false;
       this.#shoreline.update(0, false);
     }
+  }
+
+  tuningDescriptor(): DebugFeatureTuningRegistration {
+    return {
+      id: "beach-pianist-shoreline",
+      title: "Beach Pianist · shoreline",
+      build(folder) {
+        bindBeachPianistShorelineTuning(folder);
+      }
+    };
   }
 
   get debugState() {

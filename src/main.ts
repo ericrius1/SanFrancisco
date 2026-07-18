@@ -1064,6 +1064,7 @@ async function boot() {
   // Bridge behind him. Lazy optional site (procedural build; recording + note
   // timeline fetched on first approach).
   let beachPianist: BeachPianist | null = null;
+  let unregisterBeachPianistTuning: (() => void) | null = null;
   // Buena Vista's hidden summit ritual: five wandering echoes and a sky-scale
   // finale, asleep outside its clearing like the other located activities.
   let afterlight: AfterlightExperience | null = null;
@@ -3112,6 +3113,8 @@ async function boot() {
     });
     scene.add(site.group);
     beachPianist = site;
+    unregisterBeachPianistTuning?.();
+    unregisterBeachPianistTuning = debugPanel.registerFeatureTuning(site.tuningDescriptor());
     sky.invalidateStaticShadows();
     refreshOptionalSiteDebug();
   };
@@ -3637,6 +3640,8 @@ async function boot() {
     },
     "beach-pianist": () => {
       if (activeRadialLight?.owner === "beach-pianist") releaseActiveRadialLight();
+      unregisterBeachPianistTuning?.();
+      unregisterBeachPianistTuning = null;
       beachPianist?.dispose();
       beachPianist = null;
       sky.invalidateStaticShadows();
