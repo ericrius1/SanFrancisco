@@ -22,7 +22,10 @@ assert.match(
 );
 assert.match(
   mainSource,
-  /id: "sand-raking"[\s\S]{0,360}japaneseTeaGarden\?\.releaseForNavigation\(\)/,
+  // The Tea Garden wiring now lives in app/compose/teaGarden.ts; main registers
+  // the sand-raking session against the controller's releaseForNavigation, which
+  // forwards to japaneseTeaGarden?.releaseForNavigation() internally.
+  /id: "sand-raking"[\s\S]{0,360}teaGarden\.releaseForNavigation\(\)/,
   "sand raking is not registered with the shared minigame session"
 );
 assert.match(

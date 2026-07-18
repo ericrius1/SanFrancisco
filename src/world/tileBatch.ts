@@ -37,6 +37,11 @@ import * as THREE from "three/webgpu";
 export interface TileBatchHandle {
   free(): void;
   setVisible(visible: boolean): void;
+  /** This instance's id inside the BatchedMesh. It is also the row three writes
+   *  the per-instance matrix to (setMatrixAt) and the value the shader recovers
+   *  via the indirect index — so a caller carrying per-instance data in a shared
+   *  texture (e.g. the facade alive atlas) indexes that texture by this id. */
+  readonly instanceId: number;
 }
 
 export interface TileMeshBatch {
@@ -45,6 +50,11 @@ export interface TileMeshBatch {
    *  arena is exhausted — the caller keeps that mesh on the per-tile bundle
    *  fallback so a tile is never partially represented. */
   add(geometry: THREE.BufferGeometry, matrix: THREE.Matrix4): TileBatchHandle | null;
+  /** The batch owner. Exposed so a per-instance-keyed material (the facade batch
+   *  material) can be built against this mesh's `_indirectTexture` after
+   *  construction — the material needs the mesh, and the mesh needs a material,
+   *  so the caller creates a shell material, builds the batch, then configures. */
+  readonly mesh: THREE.BatchedMesh;
   stats(): {
     instances: number;
     capacity: number;
@@ -200,6 +210,7 @@ export function createTileMeshBatch(
       if (!mesh.parent) scene.add(mesh);
       let freed = false;
       return {
+        instanceId: inst,
         free() {
           if (freed) return;
           freed = true;
@@ -218,6 +229,7 @@ export function createTileMeshBatch(
         }
       };
     },
+    mesh,
     stats() {
       return {
         instances: used,

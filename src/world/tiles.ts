@@ -4,7 +4,13 @@ import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.j
 import { CONFIG } from "../config";
 import { attachKtx2Loader } from "../render/textures";
 import { tracer } from "../core/hitchTracer";
-import { createFacadeMaterial, BASEY_OFFSET, BASEY_SCALE, TOPH_SCALE } from "./facade";
+import {
+  createFacadeMaterial,
+  configureFacadeBatchMaterial,
+  BASEY_OFFSET,
+  BASEY_SCALE,
+  TOPH_SCALE
+} from "./facade";
 import { createRoadMaterial, createParkMaterial } from "./streets";
 import { createTileMeshBatch, type TileMeshBatch, type TileBatchHandle } from "./tileBatch";
 import { bumpNormal } from "./tslUtil";
@@ -92,6 +98,25 @@ type LoadedTile = {
   // handles for road geometries already folded into the shared batch; freed on
   // unload so the batch releases the instance + returns the geometry slot.
   roadBatchHandles?: TileBatchHandle[];
+  // building (bld_) mesh(es) waiting to be folded into the shared building
+  // BatchedMesh — core cadence, same one-per-frame as pendingParts. A tile has
+  // exactly one bld_ mesh (all its buildings merged, per-vertex _bid).
+  pendingBuildingParts?: THREE.Mesh[];
+  // handles for building geometries folded into the shared batch; freed on unload.
+  buildingBatchHandles?: TileBatchHandle[];
+  // handles for park (grn_ pier deck) geometries folded into the shared park
+  // batch; freed on unload. grn_ meshes ride the DETAIL cadence (held back while
+  // the player is high) and stay in tile.detailParts until folded in.
+  parkBatchHandles?: TileBatchHandle[];
+  // this tile's row in the shared alive ATLAS = its building batch instance id.
+  // The facade batch material recovers the same row via the batch indirect index,
+  // so the tile's per-building alive data lines up with its per-instance dequant
+  // matrix. undefined until the bld mesh is folded in (or when it fell back).
+  buildingRow?: number;
+  // true once the bld mesh is in the shared batch; false when it fell back to the
+  // per-tile bundle (batch full/arena exhausted). Gates the near/far facade LOD
+  // swap, which only applies to bundle-resident facades.
+  buildingBatched?: boolean;
 };
 
 type TileLoadToken = {
@@ -150,6 +175,18 @@ const FACADE_FAR_EXIT = 240;
 // A healthy residency set is much smaller than this. The cap prevents unusual
 // radius/settings changes from turning the pool into an unbounded session cache.
 const MAX_FACADE_SLOT_POOL = 64;
+
+// Shared building-batch sizing. Capacity is the alive-atlas row count; 256 covers
+// the whole city (184 building tiles) plus headroom, so even a maxed draw distance
+// never overflows into bundle fallback. The vertex/index arena is sized to hold a
+// full default-draw-distance residency without a mid-play setGeometrySize grow
+// (measured worst case ~3.1M verts / 5.1M idx for a city-centre ring); the ceiling
+// covers the entire baked city (~3.81M verts / 6.32M idx) for a maxed radius.
+const BUILDING_BATCH_CAPACITY = 256;
+const BUILDING_BATCH_INITIAL_VERTICES = 3_145_728;
+const BUILDING_BATCH_INITIAL_INDICES = 5_242_880;
+const BUILDING_BATCH_MAX_VERTICES = 4_718_592;
+const BUILDING_BATCH_MAX_INDICES = 8_388_608;
 
 // A parsed tile waiting for its main-thread finalize (materials, scene add = GPU
 // upload). Collider decode is intentionally independent: destination visuals must
@@ -426,6 +463,10 @@ export class TileStreamer {
   // suppression keeps the collider, so it does NOT fire this.
   onBuildingAlive: (key: string, index: number, alive: boolean) => void = () => {};
   onShadowCastersChanged: (scope?: StaticShadowScope) => void = () => {};
+  /** Fired once per newly created tile batch (building/road/park) so the app
+   *  can warm its render pipeline off the critical path (renderer.compileAsync)
+   *  instead of paying a serial compile on the first live frame that draws it. */
+  onBatchCreated: (mesh: THREE.BatchedMesh) => void = () => {};
 
   #loader = new GLTFLoader();
   #scene: THREE.Scene;
@@ -485,10 +526,29 @@ export class TileStreamer {
   // Shared road BatchedMesh: every resident tile's road_ mesh folds into one
   // owner (one pipeline bind, one indirect encode, per-instance frustum cull)
   // instead of one bundle draw per tile. Lazily created on the first road add,
-  // after roadMat's terrain-field normal is wired in init(). Buildings CANNOT
-  // batch this way — their facade material is per-tile (alive texture) and
-  // modelScale-relative (see tileBatch.ts / facade.ts).
+  // after roadMat's terrain-field normal is wired in init().
   #roadBatch: TileMeshBatch | null = null;
+  // Shared building BatchedMesh: every resident tile's bld_ mesh folds into one
+  // owner, collapsing ~one facade draw per resident tile into a single indirect
+  // encode. The blocker roads dodged — the facade material closes over a per-tile
+  // "alive" texture and a modelScale-relative position — is solved here by (1) a
+  // shared alive ATLAS, one row per batch instance addressed by the batch indirect
+  // index + _bid column, and (2) folding the per-instance dequant matrix into the
+  // BatchedMesh instance matrix so `positionLocal` is world-space and modelScale
+  // drops out (see facade.ts configureFacadeBatchMaterial). Lazily created on the
+  // first building add.
+  #buildingBatch: TileMeshBatch | null = null;
+  // The shared alive atlas backing the building batch: aliveW columns × capacity
+  // rows, one row per live batch instance. Nearest-filtered, exact texel fetch —
+  // no bleed between tile rows (roof-height alpha + rowFits masks depend on this).
+  #buildingAtlas: THREE.DataTexture | null = null;
+  #roadBatchAnnounced = false;
+  #parkBatchAnnounced = false;
+  #buildingAtlasData: Uint8Array | null = null;
+  // Shared park BatchedMesh: every resident tile's grn_ pier deck folds into one
+  // owner (parkMat is world-position keyed with no per-tile data, so this reuses
+  // the generic tileBatch exactly like roads). grn_ rides the detail cadence.
+  #parkBatch: TileMeshBatch | null = null;
 
   // landmarks GLB still in flight (counts toward `busy` for the boot settle gate)
   #landmarksPending = false;
@@ -907,6 +967,8 @@ export class TileStreamer {
       const destinationRelevant = dx * dx + dz * dz <= tileLoadRadiusSq;
       tile.group.visible = destinationRelevant;
       this.#setTileRoadVisible(tile, destinationRelevant);
+      this.#setTileBuildingVisible(tile, destinationRelevant);
+      this.#setTileParkVisible(tile, destinationRelevant);
       if (tile.shadowProxy) tile.shadowProxy.group.visible = destinationRelevant;
       if (!destinationRelevant) continue;
       tile.generation = generation;
@@ -935,7 +997,8 @@ export class TileStreamer {
       if (
         !tile ||
         (tile.pendingParts?.length ?? 0) > 0 ||
-        (tile.pendingRoadParts?.length ?? 0) > 0
+        (tile.pendingRoadParts?.length ?? 0) > 0 ||
+        (tile.pendingBuildingParts?.length ?? 0) > 0
       ) return;
     }
     for (const name of prime.requiredTerrainKeys) {
@@ -1024,6 +1087,8 @@ export class TileStreamer {
       if (loadedTile && e.d2 < loadR2 && loadedTile.generation !== this.#generation) {
         loadedTile.group.visible = true;
         this.#setTileRoadVisible(loadedTile, true);
+        this.#setTileBuildingVisible(loadedTile, true);
+        this.#setTileParkVisible(loadedTile, true);
         if (loadedTile.shadowProxy) loadedTile.shadowProxy.group.visible = true;
         loadedTile.generation = this.#generation;
         loadedTile.loadToken.generation = this.#generation;
@@ -1255,10 +1320,15 @@ export class TileStreamer {
   }
 
   /** Bind near or far facade material on every building mesh in a tile. Returns
-   *  true when the binding changed (caller must re-record the BundleGroup). */
+   *  true when the binding changed (caller must re-record the BundleGroup).
+   *  Batched facades render through the shared always-detail batch material (which
+   *  already cross-fades brick/weather to flat by distance), so they have no
+   *  per-tile material to swap — only bundle-fallback tiles LOD-swap. A tile whose
+   *  bld mesh is still queued for the batch also has nothing to swap yet. */
   #applyFacadeLod(tile: LoadedTile, wantFar: boolean): boolean {
     const slot = tile.slot;
     if (!slot || slot.far === wantFar) return false;
+    if (tile.buildingBatched || (tile.pendingBuildingParts?.length ?? 0) > 0) return false;
     slot.far = wantFar;
     const mat = wantFar ? slot.matFar : slot.matNear;
     if (!mat) return false;
@@ -1410,18 +1480,21 @@ export class TileStreamer {
       });
       // the group enters the scene empty; its meshes re-attach one per frame in
       // #drainAttach so a big tile can't upload all its geometry in one frame.
-      // buildings are "core" (always stream); park ground (grn_) is "detail"
-      // (held back while the player is high); road_ meshes fold into the shared
-      // road BatchedMesh instead of the per-tile bundle (also core cadence).
-      // Compose the dequantization matrices now so each road instance can carry
-      // its world transform into the batch.
+      // buildings (bld_) and roads (road_) fold into their shared BatchedMesh at
+      // core cadence; landmarks/misc are "core" bundle meshes; park ground (grn_)
+      // is "detail" (held back while the player is high). Compose the
+      // dequantization matrices now so each batched instance can carry its world
+      // transform into the arena.
       group.updateMatrixWorld(true);
       const core: THREE.Object3D[] = [];
       const detail: THREE.Object3D[] = [];
       const roadParts: THREE.Mesh[] = [];
+      const buildingParts: THREE.Mesh[] = [];
       for (const o of group.children) {
+        const mesh = o as THREE.Mesh;
         if (o.name.startsWith("grn_")) detail.push(o);
-        else if ((o as THREE.Mesh).isMesh && o.name.startsWith("road_")) roadParts.push(o as THREE.Mesh);
+        else if (mesh.isMesh && o.name.startsWith("road_")) roadParts.push(mesh);
+        else if (mesh.isMesh && mesh.geometry?.getAttribute("_bid")) buildingParts.push(mesh);
         else core.push(o);
       }
       group.clear();
@@ -1445,7 +1518,8 @@ export class TileStreamer {
         loadToken: token,
         pendingParts: core,
         detailParts: detail.length ? detail : undefined,
-        pendingRoadParts: roadParts.length ? roadParts : undefined
+        pendingRoadParts: roadParts.length ? roadParts : undefined,
+        pendingBuildingParts: buildingParts.length ? buildingParts : undefined
       });
       this.#attaching.push(key);
     } else {
@@ -1588,6 +1662,9 @@ export class TileStreamer {
         return true;
       }
       tile.slot.tex.needsUpdate = true;
+      // if this tile's facade is batched, publish the freshly decoded base/roof
+      // heights into its shared alive-atlas row too
+      this.#syncBuildingAtlasRow(tile);
     }
 
     token.collidersApplied = true;
@@ -1666,7 +1743,7 @@ export class TileStreamer {
         continue;
       }
       if (this.#visualPrime && tile.generation !== this.#generation) return false;
-      // 1) core meshes (buildings): one GPU upload per frame
+      // 1) core meshes (landmarks / misc): one GPU upload per frame
       if (tile.pendingParts && tile.pendingParts.length > 0) {
         tile.group.add(tile.pendingParts.shift()!);
         (tile.group as THREE.BundleGroup).needsUpdate = true; // structure changed → re-record bundle
@@ -1674,7 +1751,15 @@ export class TileStreamer {
         tracer.count("tileAttach");
         return true;
       }
-      // 1b) road meshes: fold one into the shared road batch per frame (one arena
+      // 1b) building meshes: fold one into the shared building batch per frame
+      // (one arena upload + one alive-atlas row sync — core cadence, always stream)
+      if (tile.pendingBuildingParts && tile.pendingBuildingParts.length > 0) {
+        this.#attachBuildingPart(tile);
+        if (tile.pendingBuildingParts.length === 0) tile.pendingBuildingParts = undefined;
+        tracer.count("tileAttach");
+        return true;
+      }
+      // 1c) road meshes: fold one into the shared road batch per frame (one arena
       // upload, same core cadence — roads always stream, never held back while high)
       if (tile.pendingRoadParts && tile.pendingRoadParts.length > 0) {
         this.#attachRoadPart(tile);
@@ -1682,10 +1767,10 @@ export class TileStreamer {
         tracer.count("tileAttach");
         return true;
       }
-      // 2) park detail: only while low — while high it stays off the GPU
+      // 2) park detail (grn_ pier decks): fold one into the shared park batch per
+      // frame — only while low, while high it stays off the GPU
       if (!this.#highUp && tile.detailParts && tile.detailParts.length > 0) {
-        tile.group.add(tile.detailParts.shift()!);
-        (tile.group as THREE.BundleGroup).needsUpdate = true;
+        this.#attachParkPart(tile);
         if (tile.detailParts.length === 0) tile.detailParts = undefined;
         tracer.count("tileAttach");
         return true;
@@ -1700,6 +1785,106 @@ export class TileStreamer {
       this.#attaching.splice(attachIndex, 1);
     }
     return false;
+  }
+
+  /** Lazily build the shared building batch: the alive ATLAS (aliveW × capacity,
+   *  one row per instance), a shell facade material, the BatchedMesh, then wire the
+   *  atlas-indexed facade node graph onto the material (needs the mesh's indirect
+   *  texture, hence the after-construction configure). */
+  #ensureBuildingBatch(): TileMeshBatch {
+    if (this.#buildingBatch) return this.#buildingBatch;
+    const cap = BUILDING_BATCH_CAPACITY;
+    const data = new Uint8Array(this.#aliveW * cap * 4);
+    // default every row to a benign "alive, base 0, never-mask" state so any
+    // instance drawn before its tile's first sync reads sane values (rows are
+    // fully overwritten from slot.data at attach, so this is only a safety net).
+    data.fill(255);
+    const enc0 = Math.round(BASEY_OFFSET * BASEY_SCALE);
+    for (let i = 0; i < this.#aliveW * cap; i++) {
+      data[i * 4 + 1] = enc0 >> 8;
+      data[i * 4 + 2] = enc0 & 255;
+    }
+    const atlas = new THREE.DataTexture(data, this.#aliveW, cap, THREE.RGBAFormat, THREE.UnsignedByteType);
+    // Nearest + no mipmaps: the facade material fetches exact texels (textureLoad),
+    // but pin the sampler too so nothing can ever blur roof-height alpha / rowFits
+    // across a tile-row boundary.
+    atlas.magFilter = THREE.NearestFilter;
+    atlas.minFilter = THREE.NearestFilter;
+    atlas.generateMipmaps = false;
+    atlas.needsUpdate = true;
+    this.#buildingAtlas = atlas;
+    this.#buildingAtlasData = data;
+    // Shell material first; the batch's BatchedMesh needs a material, and the
+    // material's per-instance atlas lookup needs the mesh's indirect texture.
+    const mat = new THREE.MeshStandardNodeMaterial();
+    const batch = createTileMeshBatch(this.#scene, {
+      name: "tileBuildingBatch",
+      material: mat,
+      capacity: cap,
+      initialVertices: BUILDING_BATCH_INITIAL_VERTICES,
+      initialIndices: BUILDING_BATCH_INITIAL_INDICES,
+      maxVertices: BUILDING_BATCH_MAX_VERTICES,
+      maxIndices: BUILDING_BATCH_MAX_INDICES,
+      receiveShadow: true
+    });
+    configureFacadeBatchMaterial(mat, atlas, batch.mesh);
+    this.#buildingBatch = batch;
+    this.onBatchCreated(batch.mesh);
+    return batch;
+  }
+
+  /** Copy a batched tile's per-building alive data (its FacadeSlot authoring
+   *  buffer) into its atlas ROW and mark the atlas for one re-upload. No-op for a
+   *  tile that is not (yet) batched or has no slot. */
+  #syncBuildingAtlasRow(tile: LoadedTile): void {
+    if (tile.buildingRow === undefined || !tile.slot || !this.#buildingAtlasData || !this.#buildingAtlas) return;
+    const rowBytes = this.#aliveW * 4;
+    this.#buildingAtlasData.set(tile.slot.data, tile.buildingRow * rowBytes);
+    this.#buildingAtlas.needsUpdate = true; // three coalesces to one upload per render
+  }
+
+  /** Fold one queued building mesh into the shared building batch (one GPU arena
+   *  upload + one alive-atlas row sync), or fall back onto the per-tile bundle with
+   *  the per-tile facade material if the batch is full/exhausted so the tile is
+   *  never partially drawn. */
+  #attachBuildingPart(tile: LoadedTile): void {
+    const mesh = tile.pendingBuildingParts!.shift()!;
+    const batch = this.#ensureBuildingBatch();
+    // Drop the redundant uppercase _BID alias so every batched geometry presents
+    // the identical attribute set {position, normal, _bid, color} — BatchedMesh
+    // rejects a geometry whose attributes differ from the arena's reference.
+    if (mesh.geometry.getAttribute("_bid") && mesh.geometry.getAttribute("_BID")) {
+      mesh.geometry.deleteAttribute("_BID");
+    }
+    mesh.updateWorldMatrix(true, false);
+    const handle = batch.add(mesh.geometry, mesh.matrixWorld);
+    if (handle) {
+      tile.buildingRow = handle.instanceId;
+      tile.buildingBatched = true;
+      (tile.buildingBatchHandles ??= []).push(handle);
+      // publish this tile's alive data into its atlas row before the instance can
+      // render (addInstance made it visible; no frame elapses before this sync)
+      this.#syncBuildingAtlasRow(tile);
+      // a building folded into a currently-hidden tile (non-destination during a
+      // covered arrival) must start hidden — the batch is not under tile.group
+      if (!tile.group.visible) handle.setVisible(false);
+      mesh.geometry.dispose(); // the batch copied the geometry into its arena
+    } else {
+      // batch full/exhausted — keep this building on the per-tile bundle with its
+      // own facade material (distance-picked, LOD-swappable like the old path)
+      tile.buildingBatched = false;
+      const bMat = tile.slot ? (tile.slot.far ? tile.slot.matFar : tile.slot.matNear) : null;
+      if (bMat) mesh.material = bMat;
+      tile.group.add(mesh);
+      (tile.group as THREE.BundleGroup).needsUpdate = true;
+    }
+  }
+
+  /** Mirror a tile's group visibility onto its batched building instances — they
+   *  are not under tile.group, so a hidden tile must hide its instances too. */
+  #setTileBuildingVisible(tile: LoadedTile, visible: boolean): void {
+    if (!tile.buildingBatchHandles) return;
+    for (const handle of tile.buildingBatchHandles) handle.setVisible(visible);
   }
 
   /** Fold one queued road mesh into the shared road batch (one GPU arena
@@ -1722,6 +1907,10 @@ export class TileStreamer {
       maxIndices: 2_621_440,
       receiveShadow: true
     });
+    if (!this.#roadBatchAnnounced) {
+      this.#roadBatchAnnounced = true;
+      this.onBatchCreated(this.#roadBatch.mesh);
+    }
     mesh.updateWorldMatrix(true, false);
     const handle = this.#roadBatch.add(mesh.geometry, mesh.matrixWorld);
     if (handle) {
@@ -1745,6 +1934,48 @@ export class TileStreamer {
     for (const handle of tile.roadBatchHandles) handle.setVisible(visible);
   }
 
+  /** Fold one queued park (grn_ pier deck) mesh into the shared park batch, or
+   *  fall back onto the per-tile bundle if the batch is full/exhausted. parkMat is
+   *  world-position keyed with no per-tile data, so this is the generic tileBatch
+   *  path exactly like roads (just on the detail cadence). */
+  #attachParkPart(tile: LoadedTile): void {
+    const mesh = tile.detailParts!.shift() as THREE.Mesh;
+    // grn_ pier decks are tiny (whole city < 8k verts / 23k idx); a small fixed
+    // arena holds every resident deck without ever growing.
+    this.#parkBatch ??= createTileMeshBatch(this.#scene, {
+      name: "tileParkBatch",
+      material: parkMat.clone(),
+      capacity: 64,
+      initialVertices: 16_384,
+      initialIndices: 49_152,
+      maxVertices: 32_768,
+      maxIndices: 98_304,
+      receiveShadow: true
+    });
+    if (!this.#parkBatchAnnounced) {
+      this.#parkBatchAnnounced = true;
+      this.onBatchCreated(this.#parkBatch.mesh);
+    }
+    mesh.updateWorldMatrix(true, false);
+    const handle = this.#parkBatch.add(mesh.geometry, mesh.matrixWorld);
+    if (handle) {
+      if (!tile.group.visible) handle.setVisible(false);
+      (tile.parkBatchHandles ??= []).push(handle);
+      mesh.geometry.dispose(); // the batch copied the geometry into its arena
+    } else {
+      // batch full/exhausted — keep this deck on the per-tile bundle (its
+      // materials.park was already bound at finalize; frustumCulled=false too)
+      tile.group.add(mesh);
+      (tile.group as THREE.BundleGroup).needsUpdate = true;
+    }
+  }
+
+  /** Mirror a tile's group visibility onto its batched park instances. */
+  #setTileParkVisible(tile: LoadedTile, visible: boolean): void {
+    if (!tile.parkBatchHandles) return;
+    for (const handle of tile.parkBatchHandles) handle.setVisible(visible);
+  }
+
   #bestAttachIndex(): number {
     const required = this.#visualPrime?.generation === this.#generation
       ? this.#visualPrime.requiredTileSet
@@ -1757,7 +1988,9 @@ export class TileStreamer {
       const tile = this.loaded.get(key);
       const requiredHere = required?.has(key) === true;
       const corePending =
-        (tile?.pendingParts?.length ?? 0) > 0 || (tile?.pendingRoadParts?.length ?? 0) > 0;
+        (tile?.pendingParts?.length ?? 0) > 0 ||
+        (tile?.pendingBuildingParts?.length ?? 0) > 0 ||
+        (tile?.pendingRoadParts?.length ?? 0) > 0;
       const current = tile?.generation === this.#generation;
       const rank = corePending && requiredHere
         ? 0
@@ -1820,6 +2053,21 @@ export class TileStreamer {
       for (const handle of tile.roadBatchHandles) handle.free();
       tile.roadBatchHandles = undefined;
     }
+    // release this tile's building instance(s) + their alive-atlas row(s). free()
+    // returns the instance id (= atlas row) for the next tile through this batch;
+    // that tile fully overwrites the row from its own slot.data at attach, so no
+    // stale alive data can be read.
+    if (tile.buildingBatchHandles) {
+      for (const handle of tile.buildingBatchHandles) handle.free();
+      tile.buildingBatchHandles = undefined;
+    }
+    tile.buildingRow = undefined;
+    tile.buildingBatched = false;
+    // release this tile's park (grn_) instances back to the shared park batch
+    if (tile.parkBatchHandles) {
+      for (const handle of tile.parkBatchHandles) handle.free();
+      tile.parkBatchHandles = undefined;
+    }
     if (tile.shadowProxy) {
       tile.shadowProxy.dispose();
       tile.shadowProxy = null;
@@ -1832,9 +2080,10 @@ export class TileStreamer {
       }
     });
     // meshes still waiting in the attach queue never joined the group — free them too
-    // (pendingRoadParts are roads not yet folded into the batch; batched roads
-    // were already disposed at add and are released via roadBatchHandles above)
-    for (const parked of [tile.pendingParts, tile.detailParts, tile.pendingRoadParts]) {
+    // (pendingRoadParts/pendingBuildingParts are meshes not yet folded into their
+    // batch; batched geometry was already disposed at add and is released via the
+    // handles above)
+    for (const parked of [tile.pendingParts, tile.detailParts, tile.pendingRoadParts, tile.pendingBuildingParts]) {
       if (!parked) continue;
       for (const part of parked) {
         part.traverse((o) => {
@@ -1846,6 +2095,7 @@ export class TileStreamer {
     tile.pendingParts = undefined;
     tile.detailParts = undefined;
     tile.pendingRoadParts = undefined;
+    tile.pendingBuildingParts = undefined;
     this.#deferred.delete(key);
     // Keep only the tiny texture/data allocation. The material lifecycle is
     // per-residency so the WebGPU renderer can release old geometry pairings.
@@ -1907,6 +2157,7 @@ export class TileStreamer {
     if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length) {
       tile.slot.data[index * 4] = 0;
       tile.slot.tex.needsUpdate = true;
+      this.#syncBuildingAtlasRow(tile);
     }
     this.#syncShadowBuilding(key, index);
     this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
@@ -1928,6 +2179,7 @@ export class TileStreamer {
     if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length && tile.slot.data[index * 4] !== 0) {
       tile.slot.data[index * 4] = 1;
       tile.slot.tex.needsUpdate = true;
+      this.#syncBuildingAtlasRow(tile);
     }
     this.#syncShadowBuilding(key, index);
     this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
@@ -1940,6 +2192,7 @@ export class TileStreamer {
     if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length && tile.slot.data[index * 4] === 1) {
       tile.slot.data[index * 4] = 255;
       tile.slot.tex.needsUpdate = true;
+      this.#syncBuildingAtlasRow(tile);
     }
     this.#syncShadowBuilding(key, index);
     this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
@@ -1955,6 +2208,7 @@ export class TileStreamer {
     if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length) {
       tile.slot.data[index * 4] = 255;
       tile.slot.tex.needsUpdate = true;
+      this.#syncBuildingAtlasRow(tile);
     }
     this.#syncShadowBuilding(key, index);
     this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
