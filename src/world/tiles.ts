@@ -463,6 +463,10 @@ export class TileStreamer {
   // suppression keeps the collider, so it does NOT fire this.
   onBuildingAlive: (key: string, index: number, alive: boolean) => void = () => {};
   onShadowCastersChanged: (scope?: StaticShadowScope) => void = () => {};
+  /** Fired once per newly created tile batch (building/road/park) so the app
+   *  can warm its render pipeline off the critical path (renderer.compileAsync)
+   *  instead of paying a serial compile on the first live frame that draws it. */
+  onBatchCreated: (mesh: THREE.BatchedMesh) => void = () => {};
 
   #loader = new GLTFLoader();
   #scene: THREE.Scene;
@@ -538,6 +542,8 @@ export class TileStreamer {
   // rows, one row per live batch instance. Nearest-filtered, exact texel fetch —
   // no bleed between tile rows (roof-height alpha + rowFits masks depend on this).
   #buildingAtlas: THREE.DataTexture | null = null;
+  #roadBatchAnnounced = false;
+  #parkBatchAnnounced = false;
   #buildingAtlasData: Uint8Array | null = null;
   // Shared park BatchedMesh: every resident tile's grn_ pier deck folds into one
   // owner (parkMat is world-position keyed with no per-tile data, so this reuses
@@ -1823,6 +1829,7 @@ export class TileStreamer {
     });
     configureFacadeBatchMaterial(mat, atlas, batch.mesh);
     this.#buildingBatch = batch;
+    this.onBatchCreated(batch.mesh);
     return batch;
   }
 
@@ -1900,6 +1907,10 @@ export class TileStreamer {
       maxIndices: 2_621_440,
       receiveShadow: true
     });
+    if (!this.#roadBatchAnnounced) {
+      this.#roadBatchAnnounced = true;
+      this.onBatchCreated(this.#roadBatch.mesh);
+    }
     mesh.updateWorldMatrix(true, false);
     const handle = this.#roadBatch.add(mesh.geometry, mesh.matrixWorld);
     if (handle) {
@@ -1941,6 +1952,10 @@ export class TileStreamer {
       maxIndices: 98_304,
       receiveShadow: true
     });
+    if (!this.#parkBatchAnnounced) {
+      this.#parkBatchAnnounced = true;
+      this.onBatchCreated(this.#parkBatch.mesh);
+    }
     mesh.updateWorldMatrix(true, false);
     const handle = this.#parkBatch.add(mesh.geometry, mesh.matrixWorld);
     if (handle) {

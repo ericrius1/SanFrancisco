@@ -37,12 +37,7 @@ import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTw
 import { createSutroBeacons, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
 import type { GoldenGateTennisSite } from "./world/goldenGateTennis";
 import {
-  GOLDMAN_SITE_CENTER,
-  GOLDMAN_SUPPRESSED_BUILDINGS
-} from "./world/goldenGateTennis/meta";
-import {
   JAPANESE_TEA_GARDEN_ENTRANCE,
-  TEA_GARDEN_SUPPRESSED_BUILDINGS,
   isTeaGardenBuilding
 } from "./world/japaneseTeaGarden/layout";
 import { AuthoredRegionStreamer } from "./world/authoredRegions";
@@ -50,17 +45,14 @@ import { warmStaticRegion } from "./render/warmStaticRegion";
 import { warmHiddenRoot } from "./render/warmHiddenRoot";
 import type { CoronaHeightsPark } from "./world/coronaHeights";
 import { prepareCoronaHeightsGround } from "./world/coronaHeights/ground";
-import { CORONA_HEIGHTS_SUMMIT } from "./world/coronaHeights/meta";
 import type { MissionDoloresMuseum } from "./world/missionDolores";
 import { MD_CENTER as MISSION_DOLORES_CENTER } from "./world/missionDolores/layout";
 import {
-  distanceToSutroBaths,
-  SUTRO_BATHS_ARRIVAL,
+  distanceToSutroBaths
 } from "./world/spawnPoints";
 import { WILD_REGIONS } from "./world/wildlands/regions";
 import { BUENA_VISTA_REGION } from "./world/buenaVista";
 import { Player } from "./player/player";
-import type { GardenRakeMotion } from "./player/gardenRake";
 import type { PlayerMode } from "./player/types";
 import { ChaseCamera } from "./core/camera";
 import { FX } from "./fx/fx";
@@ -73,15 +65,13 @@ import { Graffiti, PAINT_COLORS } from "./fx/graffiti";
 import {
   Paintballs,
   PaintSkins,
-  PAINTBALL_SPEED,
-  type PaintWaterImpact,
-  type PaintWaterSegment
+  PAINTBALL_SPEED
 } from "./fx/paintball";
 import { Bubbles } from "./fx/bubbles";
 import { WorldCursor } from "./fx/worldCursor";
 import { WorldQueries, ProxySet } from "./core/worldQueries";
 import { BuildingRayRefiner } from "./core/buildingRayRefine";
-import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
+import { Toolbar, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
 import { BoardSelector } from "./ui/boardSelector";
 import { ScooterSelector } from "./ui/scooterSelector";
@@ -114,31 +104,15 @@ import { FetchBall } from "./gameplay/fetchBall";
 import { MinigameSessionController, type MinigameOrigin } from "./gameplay/minigameSession";
 import { createSiteGate } from "./gameplay/siteGate";
 import type { ArcheryGame } from "./gameplay/archery";
-import { ARCHERY_CENTER } from "./gameplay/archery/meta";
 import type { PupPen } from "./gameplay/pup";
-import { PUP_CENTER } from "./gameplay/pup/meta";
 import type { FortMasonEnsemble } from "./gameplay/fortMasonEnsemble";
-import { FORT_MASON_ENSEMBLE_CENTER } from "./gameplay/fortMasonEnsemble/meta";
 import type { PalaceReverieGame } from "./gameplay/palaceReverie";
-import { REVERIE_CENTER } from "./gameplay/palaceReverie/meta";
 import type { LandsEndRegion } from "./world/landsEnd";
-import { LANDS_END_CENTER } from "./world/landsEnd/meta";
 import { SiteFoliageStreamer } from "./world/vegetation/siteFoliage";
-import { CORONA_DOG_PARK } from "./world/coronaHeights/meta";
-import {
-  distanceToTrails as coronaDistanceToTrails,
-  hash2 as coronaHash2,
-  pointInPolygon as coronaPointInPolygon
-} from "./world/coronaHeights/rules";
 import type { WaveOrgan } from "./world/waveOrgan";
-import { WAVE_ORGAN_CENTER } from "./world/waveOrgan/meta";
 import type { BeachPianist } from "./world/beachPianist";
-import { BEACH_PIANIST_CENTER } from "./world/beachPianist/meta";
 import type { AfterlightExperience } from "./gameplay/afterlight";
-import {
-  AFTERLIGHT_ARRIVAL,
-  isAfterlightOpenAtHour
-} from "./gameplay/afterlight/meta";
+import { isAfterlightOpenAtHour } from "./gameplay/afterlight/meta";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
@@ -211,6 +185,9 @@ import { wireEscapeStack } from "./app/compose/escapeStack";
 import { createOceanKiteGate } from "./app/compose/oceanKite";
 import { createBackgroundAdmission } from "./app/compose/backgroundAdmission";
 import { resolveInitialArrival } from "./app/compose/initialArrival";
+import { createToolCycle } from "./app/compose/toolCycle";
+import { createTeaGardenController } from "./app/compose/teaGarden";
+import { createOptionalSites, type OptionalSiteId } from "./app/compose/optionalSites";
 import { NavigationController } from "./app/navigation";
 import { WorldArrivalCoordinator } from "./app/worldArrival";
 import { writeDevReloadSnapshot } from "./app/hmr/devReloadSnapshot";
@@ -258,6 +235,13 @@ async function boot() {
   progress(40, "streaming the city");
   const tiles = new TileStreamer(scene);
   tiles.onShadowCastersChanged = (scope) => sky.invalidateStaticShadows(scope);
+  // Tile batches (buildings/roads/parks) are created lazily on first fold-in;
+  // compile their pipelines on the parallel async path the moment they exist so
+  // the first live frame that draws them never pays a serial compile (this was
+  // a measured ~0.8s of covered settle when left to the sync path).
+  tiles.onBatchCreated = (mesh) => {
+    void renderer.compileAsync(mesh, camera, scene).catch(() => {});
+  };
   await tiles.init(map);
   const authoredRegions = new AuthoredRegionStreamer({
     scene,
@@ -403,11 +387,11 @@ async function boot() {
   const graffiti = new Graffiti(scene);
   const paintballs = new Paintballs(scene);
   const paintSkins = new PaintSkins();
-  let teaGardenPaintWater: ((impact: PaintWaterImpact) => boolean) | null = null;
-  let teaGardenPaintWaterSegment: ((segment: Readonly<PaintWaterSegment>) => boolean) | null = null;
-  paintballs.onWaterSegment = (segment) => teaGardenPaintWaterSegment?.(segment) ?? false;
+  // Tea Garden owns the pond water response; teaGarden (created after its region
+  // helpers, below) null-checks its own null-until-approached site.
+  paintballs.onWaterSegment = (segment) => teaGarden.paintWaterSegment(segment);
   paintballs.onWater = (impact) => {
-    if (teaGardenPaintWater?.(impact)) return;
+    if (teaGarden.paintWater(impact)) return;
     // The generic plume is designed for bodies and aircraft. Paint gets a much
     // smaller fallback outside the Tea Garden so it cannot freeze into cyan
     // camera-facing islands across the water plane.
@@ -437,18 +421,18 @@ async function boot() {
       .finally(() => { bubbleAudioLoading = null; });
     return bubbleAudioLoading;
   };
-  let tool: ToolName = "ball";
   let fetchBall: FetchBall | null = null; // built after coronaHeights; setTool runs once before it exists
-  const setTool = (t: ToolName) => {
-    tool = t;
-    if (t === "spray") void ensurePaintAudio();
-    else if (t === "bubbles") void ensureBubbleAudio();
-    toolbar.setTool(t);
-    hud.setToolVerb(TOOL_VERB[t]);
-    // ball tool → hold-to-throw prop; leaving it hides the prop, but free balls,
-    // in-flight fetch + pet follow keep running because fetchBall.update runs every frame
-    fetchBall?.setActive(t === "ball");
-  };
+  // Click-tool selection + Ctrl+digit cycling — extracted per
+  // docs/MAIN_DECOMPOSITION.md. Late-bound getters break the Toolbar↔setTool
+  // and fetchBall-null-until-built cycles.
+  const toolCycle = createToolCycle({
+    hud,
+    getToolbar: () => toolbar,
+    getFetchBall: () => fetchBall,
+    ensurePaintAudio,
+    ensureBubbleAudio
+  });
+  const setTool = toolCycle.setTool;
   let paintColorTouched = false;
   let paintColorSeeded = false;
   const setColor = (i: number, userPicked = false) => {
@@ -913,10 +897,7 @@ async function boot() {
     update: (focus: { x: number; z: number }) => void;
   } | null = null;
   let goldenGateTennis: GoldenGateTennisSite | null = null;
-  let japaneseTeaGarden: import("./world/japaneseTeaGarden").JapaneseTeaGarden | null = null;
-  let localGardenRakeMotion: Readonly<GardenRakeMotion> | null = null;
   let wakeDeferredGarden: (() => void) | null = null;
-  let wakeDeferredTeaGarden: (() => void) | null = null;
   let wakeDeferredBuenaVistaTrees: (() => void) | null = null;
   let wakeDeferredWildlandsGolf: (() => void) | null = null;
   // Universal minigame site gate: each located game (pickleball, golf, soon
@@ -988,7 +969,7 @@ async function boot() {
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
     if (buenaVistaTrees) buenaVistaTrees.group.visible = visible;
     goldenGateTennis?.setFoliageVisible(visible);
-    japaneseTeaGarden?.setFoliageVisible(visible);
+    teaGarden.setFoliageVisible(visible);
     sutroBaths?.setFoliageVisible(visible);
     siteFoliage?.setVisible(visible);
     islands.setFoliageVisible(visible);
@@ -1106,12 +1087,12 @@ async function boot() {
     // A bounce on the tea-garden pond bottom is submerged — its plonk is voiced
     // by the water feature, so skip the dry thud there.
     onGroundImpact: (x, y, z, speed) => {
-      if (japaneseTeaGarden?.containsWater(x, z)) return;
+      if (teaGarden.containsWater(x, z)) return;
       ballImpactAudio.ground(x, y, z, speed);
     }
   });
   // setTool ran before fetchBall existed — sync the held prop to the active tool
-  fetchBall.setActive(tool === "ball");
+  toolCycle.syncHeldProp();
   // Dog-park sound layer: barks + paw-patter from the actual park dogs, riding
   // the nature soundscape's context/bus so HUD volume/mute and the corona
   // region fade all apply. Idles to a single distance check away from the park.
@@ -1272,8 +1253,10 @@ async function boot() {
   );
   const remotes = new RemotePlayers(scene);
   remotes.localPlayerPosition = () => player.renderPosition;
-  net.onRakeStamp = (stamp) => japaneseTeaGarden?.queueRakeStamp(stamp) ?? false;
-  net.onRakeReset = () => japaneseTeaGarden?.resetSand();
+  // net.onRakeStamp / onRakeReset are wired just after the Tea Garden controller
+  // is created (below) — before then the garden cannot exist, and net's no-op
+  // defaults absorb any rake hydration that arrives during a boot await; the
+  // controller's replayRakeStamps re-applies once the site loads.
   // The request-free horizon proxy is a world fundamental; detailed geometry,
   // particles and the WebGPU hot-tub solver cross a separate proximity gate.
   const ghostShipBeacon = new GhostShipBeacon(scene, map);
@@ -1323,8 +1306,8 @@ async function boot() {
   minigameSession.register({
     id: "sand-raking",
     label: "sand raking",
-    isActive: () => japaneseTeaGarden?.isRaking() ?? false,
-    release: () => { japaneseTeaGarden?.releaseForNavigation(); }
+    isActive: () => teaGarden.isRaking(),
+    release: () => { teaGarden.releaseForNavigation(); }
   });
   minigameSession.register({
     id: "pickleball",
@@ -2364,47 +2347,6 @@ async function boot() {
     }
   };
 
-  // Tea Garden destination essentials have their own immediate first-approach
-  // path. Merely defining this loader requests nothing: the split chunk remains
-  // absent at a distant clean boot, but a teleport can start it under the travel
-  // cover instead of waiting behind CityGen, fauna, or movement-idle admission.
-  let teaGardenModPromise: Promise<typeof import("./world/japaneseTeaGarden")> | null = null;
-  let teaGardenEssentialPromise: Promise<void> | null = null;
-  let teaGardenOptionalPromise: Promise<void> | null = null;
-  let teaGardenBuildingsClaimed = false;
-
-  const teaGardenBuildingSwapState = () => ({
-    claimed: teaGardenBuildingsClaimed,
-    buildings: TEA_GARDEN_SUPPRESSED_BUILDINGS.map((building) => ({
-      key: building.key,
-      index: building.index,
-      suppressed: tiles.isBuildingSuppressed(building.key, building.index)
-    }))
-  });
-
-  const publishTeaGardenDebug = () => {
-    const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-    if (hooks) Object.assign(hooks, {
-      japaneseTeaGarden,
-      lazyRegionTimings,
-      teaGardenBuildingSwapState
-    });
-  };
-  const claimTeaGardenBuildings = () => {
-    if (teaGardenBuildingsClaimed) return;
-    for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
-      tiles.suppressBuilding(building.key, building.index);
-    }
-    teaGardenBuildingsClaimed = true;
-    markLazyRegion("tea-garden", "baked-swap");
-  };
-  const restoreTeaGardenBuildings = () => {
-    if (!teaGardenBuildingsClaimed) return;
-    for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
-      tiles.unsuppressBuilding(building.key, building.index);
-    }
-    teaGardenBuildingsClaimed = false;
-  };
   const waitForAbortable = <T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> => {
     if (!signal) return promise;
     if (signal.aborted) return Promise.reject(new DOMException("Destination superseded", "AbortError"));
@@ -2530,146 +2472,59 @@ async function boot() {
     );
   };
 
-  const startTeaGardenOptionalPreparation = (
-    site: import("./world/japaneseTeaGarden").JapaneseTeaGarden
-  ) => {
-    if (teaGardenOptionalPromise) return;
-    teaGardenOptionalPromise = (async () => {
-      markLazyRegion("tea-garden", "optional-details-wait");
-      await waitForWorldBackgroundWindow();
-      markLazyRegion("tea-garden", "optional-trees-wait");
-      await Promise.all([
-        site.prepareOptionalDetails(async (detailsGroup) => {
-          markLazyRegion("tea-garden", "optional-detail-compile-start");
-          detailsGroup.updateMatrixWorld(true);
-          await renderer.compileAsync(detailsGroup, camera, scene);
-          markLazyRegion("tea-garden", "optional-detail-compile-end");
-        }),
-        site.prepareOptionalFoliage(async (treeGroup) => {
-          // Optional enrichment retains the movement/arrival quiet policy;
-          // architecture, Hiro, shrubs, grass and water are already live.
-          markLazyRegion("tea-garden", "optional-tree-compile-start");
-          treeGroup.updateMatrixWorld(true);
-          await renderer.compileAsync(treeGroup, camera, scene);
-          markLazyRegion("tea-garden", "optional-tree-compile-end");
-        })
-      ]);
-      await site.ready;
-      markLazyRegion("tea-garden", "optional-ready");
-      if (foliageOn) sky.invalidateStaticShadows("all");
-    })().catch((error) => {
-      console.warn("[tea-garden] optional foliage preparation failed:", error);
-    });
-  };
-
-  const ensureTeaGardenEssential = (signal?: AbortSignal): Promise<void> => {
-    if (!teaGardenEssentialPromise) {
-      const attempt = (async () => {
-        markLazyRegion("tea-garden", "requested");
-        teaGardenModPromise ??= import("./world/japaneseTeaGarden");
-        const teaGardenMod = await teaGardenModPromise;
-        markLazyRegion("tea-garden", "chunk-ready");
-        await nextPresentationFrame();
-
-        let site: import("./world/japaneseTeaGarden").JapaneseTeaGarden | null = null;
-        try {
-          site = teaGardenMod.createJapaneseTeaGarden(map, {
-            renderer,
-            physics,
-            nature,
-            dialogueParent: document.body,
-            ballSource: {
-              visitFreeBalls: (visitor) => fetchBall?.visitFreeBalls(visitor)
-            },
-            onBallWaterImpact: (x, y, z, speed) => ballImpactAudio.water(x, y, z, speed),
-            onCarryRake: (rake) => {
-              if (!rake) localGardenRakeMotion = null;
-              player.setGardenRakeTool(rake);
-            },
-            onRakeMotion: (motion) => {
-              localGardenRakeMotion = motion;
-              player.setGardenRakeMotion(motion);
-            },
-            onRakeStamp: (stamp) => net.sendRakeStamp(stamp),
-            notify: (message, seconds) => hud.message(message, seconds)
-          });
-          site.deferOptionalFoliage();
-          site.deferOptionalDetails();
-          japaneseTeaGarden = site;
-          net.replayRakeStamps();
-          teaGardenPaintWater = (impact) => site?.paintWater(impact) ?? false;
-          teaGardenPaintWaterSegment = (segment) => site?.paintWaterSegment(segment) ?? false;
-          debugPanel.registerFeatureTuning(site.tuningDescriptor());
-          site.setFoliageVisible(foliageOn);
-          site.update(0, performance.now() / 1000, player.renderPosition, camera, player.mode);
-          markLazyRegion("tea-garden", "constructed");
-          publishTeaGardenDebug();
-
-          const awakeBeforeCompile = site.group.visible;
-          site.group.visible = true;
-          site.group.updateMatrixWorld(true);
-          try {
-            markLazyRegion("tea-garden", "essential-compile-start");
-            await site.prepareEssential((root) => renderer.compileAsync(root, camera, scene));
-            markLazyRegion("tea-garden", "essential-compile-end");
-          } catch (error) {
-            // Compilation is a presentation optimization; the live renderer can
-            // still compile a valid fallback on the first authored frame.
-            console.warn("[tea-garden] essential compile failed:", error);
-          } finally {
-            site.group.visible = awakeBeforeCompile;
-          }
-
-          scene.add(site.group);
-          // The rack's visible templates have now warmed the rake material
-          // pipelines. Only at this local first-use boundary may remote rake
-          // presence instantiate matching geometry in the live scene.
-          remotes.setGardenRakeFactory(teaGardenMod.createGardenRakeTool);
-          site.update(0, performance.now() / 1000, player.renderPosition, camera, player.mode);
-          if (site.group.visible) claimTeaGardenBuildings();
-          if (autoStartHiroTour) site.interact(player.renderPosition, player.mode);
-          markLazyRegion("tea-garden", "essential-attached");
-          startTeaGardenOptionalPreparation(site);
-        } catch (error) {
-          site?.dispose();
-          if (japaneseTeaGarden === site) japaneseTeaGarden = null;
-          if (japaneseTeaGarden === null) teaGardenPaintWater = null;
-          if (japaneseTeaGarden === null) teaGardenPaintWaterSegment = null;
-          restoreTeaGardenBuildings();
-          publishTeaGardenDebug();
-          throw error;
-        }
-      })();
-      teaGardenEssentialPromise = attempt;
-      // A transient chunk/construction failure must not poison the one-shot
-      // cache forever. The baked buildings remain live, and a later approach
-      // gets a genuine retry instead of awaiting the same rejected promise.
-      void attempt.catch(() => {
-        if (teaGardenEssentialPromise !== attempt) return;
-        teaGardenEssentialPromise = null;
-        teaGardenModPromise = null;
+  // Japanese Tea Garden destination essentials + rake/paint/water/interact
+  // wiring — extracted per docs/MAIN_DECOMPOSITION.md. Merely creating the
+  // controller requests nothing: the split chunk stays absent at a distant clean
+  // boot; a teleport (prepareDestinationEssentials) or a first approach
+  // (maybeWakeDeferred) starts it. __sf.japaneseTeaGarden /
+  // teaGardenBuildingSwapState refresh through onDebugChanged.
+  const teaGarden = createTeaGardenController({
+    map,
+    renderer,
+    physics,
+    nature,
+    scene,
+    camera,
+    sky,
+    tiles,
+    hud,
+    net,
+    remotes,
+    player,
+    debugPanel,
+    ballImpactAudio,
+    getFetchBall: () => fetchBall,
+    getFoliageOn: () => foliageOn,
+    autoStartHiroTour,
+    entrance: JAPANESE_TEA_GARDEN_ENTRANCE,
+    markLazyRegion,
+    waitForWorldBackgroundWindow,
+    nextPresentationFrame,
+    waitForAbortable,
+    onDebugChanged: () => {
+      const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (hooks) Object.assign(hooks, {
+        japaneseTeaGarden: teaGarden.current(),
+        lazyRegionTimings,
+        teaGardenBuildingSwapState: teaGarden.buildingSwapState
       });
     }
-    return waitForAbortable(teaGardenEssentialPromise, signal);
-  };
-
-  wakeDeferredTeaGarden = () => {
-    wakeDeferredTeaGarden = null;
-    void ensureTeaGardenEssential().catch((error) =>
-      console.warn("[tea-garden] first-approach construction failed:", error)
-    );
-  };
+  });
+  // Wired here (not beside the other net handlers) so the closures never touch
+  // the Tea Garden controller before it exists; both are null-safe internally.
+  net.onRakeStamp = (stamp) => teaGarden.queueRakeStamp(stamp);
+  net.onRakeReset = () => teaGarden.resetSand();
 
   prepareDestinationEssentials = async (destination, signal) => {
     // Optional exhibit at the destination: retire irrelevant in-flight sites
     // and put the destination's own site on the arrival priority lane. Fire
     // and forget — the travel cover must never wait on optional content.
-    reprioritizeOptionalSitesForArrival(destination);
+    sites.reprioritizeForArrival(destination);
     const teaDistance = Math.hypot(
       destination.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
       destination.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
     );
-    if (teaDistance < 820) await ensureTeaGardenEssential(signal);
+    if (teaDistance < 820) await teaGarden.ensureEssential(signal);
 
     // Selected park groundcover starts under the travel cover even when its
     // bundle was not previously resident. The authored Tea Garden owns its own
@@ -2684,1034 +2539,58 @@ async function boot() {
     }
   };
 
-  // Authored sites share one first-approach policy: keep only lightweight
-  // coordinates at boot, request one site at a time after reveal, and re-check
-  // the destination after the arrival-quiet window before evaluating its chunk.
-  // The radius is deliberately generic; visual quality and each site's own LOD
-  // remain untouched once the exact same authored root is attached.
-  type OptionalSiteId =
-    | "goldman"
-    | "archery"
-    | "palace"
-    | "afterlight"
-    | "corona"
-    | "lands-end"
-    | "wave-organ"
-    | "sutro-baths"
-    | "pup"
-    | "fort-mason-ensemble"
-    | "beach-pianist";
-  type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
-  type OptionalSiteStage = () => Promise<void>;
-  type OptionalSiteLoadContext = {
-    /** Abortable stage boundary: waits for admission, then throws if the load
-     * was aborted or the player left residency. Use between stages whose
-     * partial work the load function can dispose. */
-    stage: OptionalSiteStage;
-    /** Admission wait without abort semantics, for stages after a
-     * construction step the site cannot roll back. */
-    waitStage: OptionalSiteStage;
-    signal: AbortSignal;
-  };
-  type OptionalWorldSite = {
-    id: OptionalSiteId;
-    label: string;
-    x: number;
-    z: number;
-    state: OptionalSiteState;
-    forced: boolean;
-    /** Arrival lane: this site is the teleport/boot destination's exhibit.
-     * Skips background quiet windows; only the travel cover outranks it. */
-    priority: boolean;
-    /** First time the player was inside the approach radius while dormant.
-     * Caps quiet-window deferral so a moving player still gets the exhibit. */
-    eligibleSince: number;
-    controller: AbortController | null;
-    promise: Promise<void> | null;
-    load: (context: OptionalSiteLoadContext) => Promise<void>;
-    /** A false value prevents automatic import; explicit debug loads still work. */
-    available?: () => boolean;
-  };
-  const OPTIONAL_SITE_APPROACH_RADIUS = 500;
-  const OPTIONAL_SITE_RECHECK_RADIUS = OPTIONAL_SITE_APPROACH_RADIUS * 1.25;
-  const OPTIONAL_SITE_UNLOAD_RADIUS = 1000;
-  const OPTIONAL_SITE_STARVATION_CAP_MS = 2500;
-  const waitForOptionalSiteStage = () => waitForWorldBackgroundWindow(700);
-  const optionalSiteAbortError = () =>
-    new DOMException("Optional site load aborted", "AbortError");
-  const isAbortError = (error: unknown): boolean =>
-    error instanceof DOMException && error.name === "AbortError";
-  const optionalSiteDistance = (site: OptionalWorldSite): number =>
-    Math.hypot(player.position.x - site.x, player.position.z - site.z);
-  // rAF raced against a timeout: a hidden tab has no presentation frames, and
-  // an rAF-only wait would deadlock the load exactly like the tea-garden
-  // backgrounded-tab build once did.
-  const presentationFrameOrTimeout = () => new Promise<void>((resolve) => {
-    let settled = false;
-    const settle = () => {
-      if (!settled) {
-        settled = true;
-        resolve();
-      }
-    };
-    requestAnimationFrame(settle);
-    setTimeout(settle, 250);
-  });
-  const optionalSiteAdmission = async (site: OptionalWorldSite): Promise<void> => {
-    if (site.priority) {
-      // Destination content. The travel cover keeps the main thread for the
-      // arrival's own cells; the first frames after it lifts belong to us.
-      while (worldArrival.active) await presentationFrameOrTimeout();
-      await presentationFrameOrTimeout();
-      return;
-    }
-    const deadline = site.eligibleSince > 0
-      ? site.eligibleSince + OPTIONAL_SITE_STARVATION_CAP_MS
-      : Infinity;
-    await waitForWorldBackgroundWindow(700, deadline);
-  };
-  const optionalSiteStagesFor = (
-    site: OptionalWorldSite,
-    signal: AbortSignal
-  ): Pick<OptionalSiteLoadContext, "stage" | "waitStage"> => ({
-    waitStage: () => optionalSiteAdmission(site),
-    stage: async () => {
-      if (signal.aborted) throw signal.reason ?? optionalSiteAbortError();
-      await optionalSiteAdmission(site);
-      if (signal.aborted) throw signal.reason ?? optionalSiteAbortError();
-      if (
-        !site.forced && !site.priority &&
-        (site.state === "queued" || site.state === "loading") &&
-        optionalSiteDistance(site) > OPTIONAL_SITE_RECHECK_RADIUS
-      ) {
-        site.controller?.abort(optionalSiteAbortError());
-        throw optionalSiteAbortError();
-      }
-    }
-  });
-
-  const refreshOptionalSiteDebug = () => {
-    const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-    if (!hooks) return;
-    Object.assign(hooks, {
-      goldenGateTennis,
-      pickleballController,
-      pickleball: pickleballController?.game ?? null,
-      pickleballAmbient: pickleballController?.ambient ?? null,
-      pickleballAudio: pickleballController?.audio ?? null,
-      pickleballUI: pickleballController?.ui ?? null,
-      archery,
-      pup,
-      fortMasonEnsemble,
-      palaceReverie,
-      afterlight,
-      coronaHeights,
-      landsEnd,
-      waveOrgan,
-      beachPianist,
-      sutroBaths
-    });
-  };
-
-  const prepareOptionalRoot = async (
-    label: string,
-    root: THREE.Object3D,
-    stage: OptionalSiteStage = waitForOptionalSiteStage
-  ): Promise<void> => {
-    const parent = root.parent;
-    const renderState: Array<{ object: THREE.Object3D; visible: boolean; frustumCulled: boolean }> = [];
-    root.removeFromParent();
-    root.traverse((object) => {
-      renderState.push({ object, visible: object.visible, frustumCulled: object.frustumCulled });
-      object.visible = true;
-      object.frustumCulled = false;
-    });
-    root.updateMatrixWorld(true);
-    try {
-      // Construction can outlast the idle decision that admitted it. Keep the
-      // subtree detached and re-check movement/arrival quiet immediately before
-      // asking the WebGPU driver for pipelines.
-      await stage();
-      await renderer.compileAsync(root, camera, scene);
-    } catch (error) {
-      // Compilation is a presentation optimization, never a reason to discard
-      // a successfully constructed site. An abortable stage may still retire
-      // the whole load here — the caller owns that cleanup.
-      if (isAbortError(error)) throw error;
-      console.warn(`[${label}] deferred compile failed:`, error);
-    } finally {
-      for (const state of renderState) {
-        state.object.visible = state.visible;
-        state.object.frustumCulled = state.frustumCulled;
-      }
-      parent?.add(root);
-    }
-  };
-
-  // Gate registrations are kept so a distance unload can retire its site's
-  // wake/sleep pads with the rest of the feature.
-  const optionalSiteGateRegistrations: Partial<
-    Record<OptionalSiteId, ReturnType<typeof siteGate.register>>
-  > = {};
-
-  // Shared teardown for distance unload and mid-load aborts: the court, its
-  // physics and overlay, the clubhouse swap, and the pickleball layer all
-  // return to their pre-approach state so a later approach rebuilds cleanly.
-  const teardownGoldman = (): void => {
-    pickleballController?.dispose();
-    pickleballController = null;
-    if (goldenGateTennis) {
-      goldenGateTennis.dispose();
-      goldenGateTennis = null;
-      for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
-        tiles.unsuppressBuildingMesh(building.key, building.index);
-      }
-      sky.invalidateStaticShadows();
-    }
-    refreshOptionalSiteDebug();
-  };
-
-  const loadGoldman = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
-    const { createGoldenGateTennisSite } = await import("./world/goldenGateTennis");
-    await stage();
-    let site: GoldenGateTennisSite | null = null;
-    let suppressed = false;
-    try {
-      site = createGoldenGateTennisSite(map, {
-        physics,
-        daylight: () => sky.sunElevation > 0
-      });
-      await prepareOptionalRoot("goldman", site.group, stage);
-      // Swap the generic clubhouse only when its authored replacement is ready
-      // to attach. Any failure restores the baked fallback immediately.
-      for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
-        tiles.suppressBuildingMesh(building.key, building.index);
-      }
-      suppressed = true;
-      site.addTo(scene);
-      site.setFoliageVisible(foliageOn);
-      goldenGateTennis = site;
-      sky.invalidateStaticShadows();
-      refreshOptionalSiteDebug();
-    } catch (error) {
-      site?.dispose();
-      if (suppressed) {
-        for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
-          tiles.unsuppressBuildingMesh(building.key, building.index);
-        }
-      }
-      throw error;
-    }
-
-    // Pickleball is coupled to the site's dynamic court anchors, but it gets a
-    // second idle boundary so its athletes, UI and audio never pile onto the
-    // authored-site construction task.
-    try {
-      await stage();
-      const { PickleballController: LoadedPickleballController } = await import("./app/systems/pickleball");
-      await stage();
-      const controller = new LoadedPickleballController({
-        goldman: site,
-        scene,
-        nature,
-        daylight: () => sky.sunElevation > 0.05,
-        fx,
-        siteGate,
-        net,
-        player,
-        input,
-        hud,
-        chase,
-        remotes,
-        embodiments,
-        getAvatar: () => avatarTraits
-      });
-      pickleballController = controller;
-      try {
-        await stage();
-        await controller.prepareRender(renderer, camera, scene);
-      } catch (error) {
-        if (isAbortError(error)) throw error;
-        console.warn("[pickleball] deferred compile failed:", error);
-      }
-      if (net.status === "online") controller.onWelcome();
-      else controller.syncSlots();
-      refreshOptionalSiteDebug();
-    } catch (error) {
-      if (isAbortError(error)) {
-        // A superseded destination mid-build: leave nothing half-attached. The
-        // whole site returns to dormant so the next approach rebuilds it.
-        teardownGoldman();
-        throw error;
-      }
-      console.warn("[pickleball] first-approach construction failed:", error);
-    }
-  };
-
-  const loadArchery = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
-    const { createArchery } = await import("./gameplay/archery");
-    await stage();
-    // Construction registers physics and gate state the site cannot yet roll
-    // back, so no abort boundaries after this point — only admission waits.
-    const game = createArchery(map, physics, worldQueries, scene, {
-      nature,
-      daylight: () => sky.sunElevation > 0.05
-    });
-    await prepareOptionalRoot("archery", game.root, waitStage);
-    archery = game;
-    optionalSiteGateRegistrations.archery = siteGate.register(game.siteHooks());
-    refreshOptionalSiteDebug();
-  };
-
-  const loadPup = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
-    const { createPupPen } = await import("./gameplay/pup");
-    await stage();
-    const pen = createPupPen(map, physics, scene);
-    await prepareOptionalRoot("pup", pen.root, waitStage);
-    pup = pen;
-    optionalSiteGateRegistrations.pup = siteGate.register(pen.siteHooks());
-    refreshOptionalSiteDebug();
-  };
-
-  const loadFortMasonEnsemble = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
-    const { createFortMasonEnsemble } = await import("./gameplay/fortMasonEnsemble");
-    await stage();
-    const ensemble = createFortMasonEnsemble({ map, net, player, input, hud, chase });
-    try {
-      await prepareOptionalRoot("fort-mason ensemble", ensemble.root, stage);
-      fortMasonEnsemble = ensemble;
-      scene.add(ensemble.root);
-      sky.invalidateStaticShadows();
-      refreshOptionalSiteDebug();
-    } catch (error) {
-      if (fortMasonEnsemble === ensemble) fortMasonEnsemble = null;
-      ensemble.dispose();
-      throw error;
-    }
-  };
-
-  const loadPalace = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
-    const { createPalaceReverie } = await import("./gameplay/palaceReverie");
-    await stage();
-    const game = createPalaceReverie(map, scene);
-    try {
-      await prepareOptionalRoot("palace-reverie", game.root, stage);
-      palaceReverie = game;
-      optionalSiteGateRegistrations.palace = siteGate.register(game.siteHooks());
-      refreshOptionalSiteDebug();
-    } catch (error) {
-      if (palaceReverie === game) palaceReverie = null;
-      game.dispose();
-      throw error;
-    }
-  };
-
-  const loadAfterlight = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
-    const { createAfterlight } = await import("./gameplay/afterlight");
-    await stage();
-    const experience = createAfterlight(map, scene, nature);
-    try {
-      await experience.ready;
-      // prepareWarmup exposes every authored state; detach immediately so none of
-      // those temporary states can flash into a live frame while WebGPU compiles.
-      const restore = experience.prepareWarmup();
-      experience.root.removeFromParent();
-      experience.root.updateMatrixWorld(true);
-      try {
-        await stage();
-        await renderer.compileAsync(experience.root, camera, scene);
-      } catch (error) {
-        if (isAbortError(error)) throw error;
-        console.warn("[afterlight] deferred compile failed:", error);
-      } finally {
-        restore();
-      }
-      afterlight = experience;
-      experience.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
-      optionalSiteGateRegistrations.afterlight = siteGate.register(experience.siteHooks());
-      refreshOptionalSiteDebug();
-    } catch (error) {
-      if (afterlight === experience) afterlight = null;
-      experience.root.removeFromParent();
-      experience.dispose();
-      throw error;
-    }
-  };
-
-  const loadCorona = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
-    const { CoronaHeightsPark: LoadedCoronaHeightsPark } = await import("./world/coronaHeights");
-    await stage();
-    const park = new LoadedCoronaHeightsPark(map, physics);
-    await prepareOptionalRoot("corona-heights", park.group, waitStage);
-    park.onDogAudioCue = (dog, cue) => dogParkAudio.cue(dog, cue);
-    coronaHeights = park;
-    scene.add(park.group);
-    sky.invalidateStaticShadows();
-    refreshOptionalSiteDebug();
-  };
-
-  const loadLandsEnd = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
-    const { LandsEndRegion: LoadedLandsEndRegion } = await import("./world/landsEnd");
-    await stage();
-    const region = new LoadedLandsEndRegion(map);
-    // The eye-walker's GLB + rider arm later (near the labyrinth); warm their
-    // pipelines off-frame when that happens.
-    region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root, waitStage);
-    await prepareOptionalRoot("lands-end", region.group, waitStage);
-    landsEnd = region;
-    scene.add(region.group);
-    sky.invalidateStaticShadows();
-    refreshOptionalSiteDebug();
-  };
-
-  const loadWaveOrgan = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
-    const { WaveOrgan: LoadedWaveOrgan } = await import("./world/waveOrgan");
-    await stage();
-    const organ = new LoadedWaveOrgan(map, nature);
-    await prepareOptionalRoot("wave-organ", organ.group, waitStage);
-    waveOrgan = organ;
-    scene.add(organ.group);
-    sky.invalidateStaticShadows();
-    refreshOptionalSiteDebug();
-  };
-
-  const loadBeachPianist = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
-    const { BeachPianist: LoadedBeachPianist } = await import("./world/beachPianist");
-    await stage();
-    // The whole site is procedural; its pipelines warm off-frame at PRIME range
-    // (prepareRender), so the first visible flip never compiles mid-frame.
-    const site = new LoadedBeachPianist({
-      map,
-      prepareRender: (root) => prepareOptionalRoot("beach-pianist", root, waitStage)
-    });
-    scene.add(site.group);
-    beachPianist = site;
-    sky.invalidateStaticShadows();
-    refreshOptionalSiteDebug();
-  };
-
-  const loadSutroBaths = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
-    const { createSutroBaths } = await import("./world/sutroBaths");
-    await stage();
-    let candidate: import("./world/sutroBaths").SutroBaths | null = null;
-    try {
-      candidate = createSutroBaths({
-        renderer,
-        scene,
-        physics,
-        authoredRegions
-      });
-      // The geographic tile already owns and displays the period hall. Warm only
-      // its optional living layer (foliage, bathers and nearby effects) here.
-      candidate.setFoliageVisible(true);
-      await candidate.ready;
-      await prepareOptionalRoot("sutro-baths", candidate.group, stage);
-
-      candidate.setFoliageVisible(foliageOn);
-      scene.add(candidate.group);
-      sutroBaths = candidate;
-      refreshOptionalSiteDebug();
-
-      // Let the feature cross its nested close-water gate only after the hall is
-      // warm. The scheduler and render-idle checks below observe that private
-      // warmup flag before admitting nearby Lands End or a probe capture.
-      candidate.update(
-        0,
-        performance.now() * 0.001,
-        player.renderPosition,
-        camera,
-        windGustValue()
-      );
-
-      debugPanel.registerFeatureTuning(candidate.tuningDescriptor());
-      sky.invalidateStaticShadows();
-      refreshOptionalSiteDebug();
-    } catch (error) {
-      if (sutroBaths === candidate) sutroBaths = null;
-      candidate?.dispose();
-      refreshOptionalSiteDebug();
-      throw error;
-    }
-  };
-
-  const optionalWorldSite = (
-    base: Pick<OptionalWorldSite, "id" | "label" | "x" | "z" | "load"> &
-      Partial<Pick<OptionalWorldSite, "available">>
-  ): OptionalWorldSite => ({
-    ...base,
-    state: "dormant",
-    forced: false,
-    priority: false,
-    eligibleSince: 0,
-    controller: null,
-    promise: null
-  });
-
-  const optionalWorldSites: OptionalWorldSite[] = [
-    optionalWorldSite({
-      id: "goldman",
-      label: "Goldman Tennis Center",
-      x: GOLDMAN_SITE_CENTER.x,
-      z: GOLDMAN_SITE_CENTER.z,
-      load: loadGoldman
-    }),
-    optionalWorldSite({ id: "archery", label: "Archery Range", ...ARCHERY_CENTER, load: loadArchery }),
-    optionalWorldSite({ id: "pup", label: "Puppy Nursery", ...PUP_CENTER, load: loadPup }),
-    optionalWorldSite({
-      id: "fort-mason-ensemble",
-      label: "Fort Mason Jam",
-      ...FORT_MASON_ENSEMBLE_CENTER,
-      load: loadFortMasonEnsemble
-    }),
-    optionalWorldSite({ id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, load: loadPalace }),
-    optionalWorldSite({
-      id: "afterlight",
-      label: "Afterlight · 21:00–05:00",
-      ...AFTERLIGHT_ARRIVAL,
-      load: loadAfterlight,
-      available: () => isAfterlightOpenAtHour(sky.timeOfDay)
-    }),
-    optionalWorldSite({ id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, load: loadCorona }),
-    optionalWorldSite({ id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, load: loadLandsEnd }),
-    optionalWorldSite({ id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, load: loadWaveOrgan }),
-    optionalWorldSite({ id: "beach-pianist", label: "Beach Pianist", ...BEACH_PIANIST_CENTER, load: loadBeachPianist }),
-    optionalWorldSite({
-      id: "sutro-baths",
-      label: "Sutro Baths · 1896",
-      x: SUTRO_BATHS_ARRIVAL.x,
-      z: SUTRO_BATHS_ARRIVAL.z,
-      load: loadSutroBaths
-    })
-  ];
-
-  // Exhibit vegetation streams on its own landscape radii, decoupled from the
-  // gameplay sites above: trees read from far offshore and survive their
-  // exhibit unloading behind the player. Each build() dynamic-imports the
-  // site's placement module and plants through the shared vegetation runtime.
-  // The destination exhibit always outranks scenery: a cypress compile racing
-  // the labyrinth's own pipeline work at boot can starve the thing the player
-  // actually teleported to. Foliage admissions wait until no optional site is
-  // mid-construction (bounded — exhibit builds complete or abort).
-  const optionalSiteConstructionIdle = async (): Promise<void> => {
-    while (
-      optionalWorldSites.some((site) => site.state === "queued" || site.state === "loading")
-    ) {
-      await new Promise<void>((resolve) => {
-        let settled = false;
-        const settle = () => {
-          if (!settled) {
-            settled = true;
-            resolve();
-          }
-        };
-        requestAnimationFrame(settle);
-        setTimeout(settle, 250);
+  // Optional authored-site scheduler (Goldman/pickleball, archery, pup, Fort
+  // Mason, palace, afterlight, Corona Heights, Lands End, Wave Organ, Beach
+  // Pianist, Sutro Baths) + exhibit vegetation + the streaming perf panel —
+  // extracted per docs/MAIN_DECOMPOSITION.md. The controller owns the site refs
+  // and the lazy loads; main keeps thin `let` aliases (declared above) so its
+  // hot per-frame loop and the __sf literal read the concrete instances
+  // unchanged, re-synced here via onSitesChanged (the old refreshOptionalSiteDebug
+  // points). The __sf assignment payload is byte-for-byte the prior one.
+  const sites = createOptionalSites({
+    map, physics, scene, sky, tiles, renderer, camera, nature, net, player,
+    input, hud, chase, remotes, embodiments, fx, siteGate, worldArrival,
+    debugPanel, dogParkAudio, authoredRegions, worldQueries,
+    waitForWorldBackgroundWindow,
+    revealedPromise,
+    getFoliageOn: () => foliageOn,
+    getRevealed: () => revealed,
+    getAvatar: () => avatarTraits,
+    onSitesChanged: (r) => {
+      goldenGateTennis = r.goldenGateTennis;
+      pickleballController = r.pickleballController;
+      archery = r.archery;
+      pup = r.pup;
+      fortMasonEnsemble = r.fortMasonEnsemble;
+      palaceReverie = r.palaceReverie;
+      afterlight = r.afterlight;
+      coronaHeights = r.coronaHeights;
+      landsEnd = r.landsEnd;
+      waveOrgan = r.waveOrgan;
+      beachPianist = r.beachPianist;
+      sutroBaths = r.sutroBaths;
+      const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (hooks) Object.assign(hooks, {
+        goldenGateTennis,
+        pickleballController,
+        pickleball: pickleballController?.game ?? null,
+        pickleballAmbient: pickleballController?.ambient ?? null,
+        pickleballAudio: pickleballController?.audio ?? null,
+        pickleballUI: pickleballController?.ui ?? null,
+        archery,
+        pup,
+        fortMasonEnsemble,
+        palaceReverie,
+        afterlight,
+        coronaHeights,
+        landsEnd,
+        waveOrgan,
+        beachPianist,
+        sutroBaths
       });
     }
-  };
-  siteFoliage = new SiteFoliageStreamer({
-    scene,
-    admit: async (eligibleSince) => {
-      await optionalSiteConstructionIdle();
-      await waitForWorldBackgroundWindow(
-        700,
-        eligibleSince > 0 ? eligibleSince + OPTIONAL_SITE_STARVATION_CAP_MS : Infinity
-      );
-    },
-    // The compile admission needs the same treatment as build admission: an
-    // uncapped quiet window never opens for a player who keeps moving, and an
-    // exhibit that started constructing meanwhile takes the GPU first.
-    prepare: (label, root) =>
-      prepareOptionalRoot(label, root, async () => {
-        await optionalSiteConstructionIdle();
-        await waitForWorldBackgroundWindow(700, performance.now() + OPTIONAL_SITE_STARVATION_CAP_MS);
-      }),
-    onResidencyChanged: () => sky.invalidateStaticShadows()
   });
-  siteFoliage.setVisible(foliageOn);
-  siteFoliage.register({
-    id: "lands-end-cypress",
-    x: LANDS_END_CENTER.x,
-    z: LANDS_END_CENTER.z,
-    loadDistance: 1500,
-    unloadDistance: 2000,
-    build: async () => (await import("./world/landsEnd/vegetation")).createLandsEndFoliage(map)
-  });
-  const coronaFoliageRules = {
-    hash: coronaHash2,
-    inDogPark: (x: number, z: number) => coronaPointInPolygon(x, z, CORONA_DOG_PARK),
-    distanceToTrails: coronaDistanceToTrails
-  };
-  siteFoliage.register({
-    id: "corona-trees",
-    x: CORONA_HEIGHTS_SUMMIT.x,
-    z: CORONA_HEIGHTS_SUMMIT.z,
-    loadDistance: 1500,
-    unloadDistance: 2000,
-    build: async () =>
-      (await import("./world/coronaHeights/vegetation")).createCoronaHeightsFoliage(
-        map,
-        coronaFoliageRules,
-        ["trees"]
-      )
-  });
-  siteFoliage.register({
-    id: "corona-groundcover",
-    x: CORONA_HEIGHTS_SUMMIT.x,
-    z: CORONA_HEIGHTS_SUMMIT.z,
-    loadDistance: 650,
-    unloadDistance: 950,
-    build: async () =>
-      (await import("./world/coronaHeights/vegetation")).createCoronaHeightsFoliage(
-        map,
-        coronaFoliageRules,
-        ["groundcover"]
-      )
-  });
-
-  // One compact truth panel for the authored-site streaming contract. "ready"
-  // means a chunk/resource set is resident after first approach; runtime and
-  // scene state answer the more important question of whether it is doing work
-  // or drawing right now. The debug panel invokes this only while open (4 Hz).
-  const optionalSiteMonitorView: Record<string, string> = { summary: "—" };
-  for (const site of optionalWorldSites) optionalSiteMonitorView[site.id] = "dormant";
-
-  // Perf A/B toggles on the streaming monitor. Inspection is side-effect free:
-  // opening "/" must never suppress dormant sites or block first approach.
-  // Flipping one off explicitly hides + skips that site's work.
-  const optionalSitePerfEnabled: Record<OptionalSiteId, boolean> = {
-    goldman: true,
-    archery: true,
-    palace: true,
-    afterlight: true,
-    corona: true,
-    "lands-end": true,
-    "wave-organ": true,
-    "sutro-baths": true,
-    pup: true,
-    "fort-mason-ensemble": true,
-    "beach-pianist": true
-  };
-  let optionalSitePerfGating = false;
-  const OPTIONAL_SITE_GATE_ID: Partial<Record<OptionalSiteId, string>> = {
-    goldman: "pickleball",
-    archery: "archery",
-    palace: "palace-reverie",
-    afterlight: "afterlight",
-    pup: "pup"
-  };
-  const optionalSitePerfAllowed = (id: OptionalSiteId): boolean =>
-    !optionalSitePerfGating || optionalSitePerfEnabled[id];
-
-  const applyOptionalSitePerfGate = (site: OptionalWorldSite): void => {
-    if (!optionalSitePerfGating) return;
-    const on = optionalSitePerfEnabled[site.id];
-    const gateId = OPTIONAL_SITE_GATE_ID[site.id];
-    if (gateId) siteGate.suppress(gateId, !on);
-    switch (site.id) {
-      case "goldman":
-        if (goldenGateTennis) goldenGateTennis.group.visible = on;
-        break;
-      case "archery":
-        if (!on && archery) archery.root.visible = false;
-        break;
-      case "pup":
-        if (!on && pup) pup.root.visible = false;
-        break;
-      case "fort-mason-ensemble":
-        if (!on && fortMasonEnsemble) fortMasonEnsemble.root.visible = false;
-        break;
-      case "palace":
-        if (!on && palaceReverie) palaceReverie.root.visible = false;
-        break;
-      case "afterlight":
-        if (!on && afterlight) afterlight.root.visible = false;
-        break;
-      case "corona":
-        if (!on && coronaHeights) coronaHeights.group.visible = false;
-        break;
-      case "lands-end":
-        if (!on && landsEnd) landsEnd.group.visible = false;
-        break;
-      case "wave-organ":
-        if (!on && waveOrgan) waveOrgan.group.visible = false;
-        break;
-      case "beach-pianist":
-        if (!on && beachPianist) beachPianist.group.visible = false;
-        break;
-      case "sutro-baths":
-        sutroBaths?.setPerfSuppressed(!on);
-        break;
-    }
-  };
-
-  const applyAllOptionalSitePerfGates = (): void => {
-    for (const site of optionalWorldSites) applyOptionalSitePerfGate(site);
-  };
-
-  const optionalSiteSceneState = (root: THREE.Object3D | null | undefined): string => {
-    if (!root?.parent) return "detached";
-    return root.visible ? "visible" : "hidden";
-  };
-
-  const optionalSiteRuntimeState = (
-    site: OptionalWorldSite
-  ): { runtime: "ACTIVE" | "DETAIL" | "STATIC" | "SLEEP"; sceneState: string } => {
-    switch (site.id) {
-      case "goldman":
-        return {
-          runtime: siteGate.awake("pickleball") ? "ACTIVE" : "STATIC",
-          sceneState: optionalSiteSceneState(goldenGateTennis?.group)
-        };
-      case "archery":
-        return {
-          runtime: siteGate.awake("archery") ? "ACTIVE" : "SLEEP",
-          sceneState: optionalSiteSceneState(archery?.root)
-        };
-      case "pup":
-        return {
-          runtime: siteGate.awake("pup") ? "ACTIVE" : "SLEEP",
-          sceneState: optionalSiteSceneState(pup?.root)
-        };
-      case "fort-mason-ensemble":
-        return {
-          runtime: fortMasonEnsemble?.root.visible ? "ACTIVE" : "SLEEP",
-          sceneState: optionalSiteSceneState(fortMasonEnsemble?.root)
-        };
-      case "palace":
-        return {
-          runtime: siteGate.awake("palace-reverie") ? "ACTIVE" : "SLEEP",
-          sceneState: optionalSiteSceneState(palaceReverie?.root)
-        };
-      case "afterlight":
-        return {
-          runtime: siteGate.awake("afterlight") ? "ACTIVE" : "SLEEP",
-          sceneState: optionalSiteSceneState(afterlight?.root)
-        };
-      case "corona":
-        return {
-          runtime: !coronaHeights?.group.visible
-            ? "SLEEP"
-            : coronaHeights.activity.visible
-              ? "ACTIVE"
-              : "DETAIL",
-          sceneState: optionalSiteSceneState(coronaHeights?.group)
-        };
-      case "lands-end":
-        return {
-          runtime: landsEnd?.group.visible ? "ACTIVE" : "SLEEP",
-          sceneState: optionalSiteSceneState(landsEnd?.group)
-        };
-      case "wave-organ":
-        return {
-          runtime: waveOrgan?.group.visible ? "ACTIVE" : "SLEEP",
-          sceneState: optionalSiteSceneState(waveOrgan?.group)
-        };
-      case "beach-pianist":
-        return {
-          runtime: beachPianist?.group.visible ? "ACTIVE" : "SLEEP",
-          sceneState: optionalSiteSceneState(beachPianist?.group)
-        };
-      case "sutro-baths":
-        return {
-          runtime: sutroBaths?.debugState().awake ? "ACTIVE" : "SLEEP",
-          sceneState: optionalSiteSceneState(sutroBaths?.group)
-        };
-    }
-  };
-
-  const refreshOptionalSiteMonitor = (): void => {
-    let ready = 0;
-    let working = 0;
-    for (const site of optionalWorldSites) {
-      const distance = Math.hypot(player.position.x - site.x, player.position.z - site.z);
-      const distanceText = `${Math.round(distance)}m`;
-      const availability = site.available?.() === false ? " | CLOSED" : "";
-      if (site.state !== "ready") {
-        optionalSiteMonitorView[site.id] = `${site.state} | — | — | ${distanceText}${availability}`;
-        continue;
-      }
-      ready++;
-      const state = optionalSiteRuntimeState(site);
-      if (state.runtime === "ACTIVE" || state.runtime === "DETAIL") working++;
-      const gated = optionalSitePerfGating && !optionalSitePerfEnabled[site.id] ? " | OFF" : "";
-      optionalSiteMonitorView[site.id] =
-        `ready | ${state.runtime} | ${state.sceneState} | ${distanceText}${availability}${gated}`;
-    }
-    optionalSiteMonitorView.summary =
-      `${ready}/${optionalWorldSites.length} resident | ${working} working`;
-  };
-
-  debugPanel.registerFeatureTuning({
-    id: "world-streaming-monitor",
-    title: "World streaming · optional sites",
-    build(folder) {
-      optionalSitePerfGating = true;
-      refreshOptionalSiteMonitor();
-      applyAllOptionalSitePerfGates();
-
-      const bindings = [
-        folder.addBinding(optionalSiteMonitorView, "summary", {
-          readonly: true,
-          label: "summary"
-        }),
-        ...optionalWorldSites.flatMap((site) => {
-          const toggle = folder.addBinding(optionalSitePerfEnabled, site.id, {
-            label: site.label
-          });
-          toggle.on("change", () => {
-            applyOptionalSitePerfGate(site);
-            if (optionalSitePerfEnabled[site.id]) {
-              void requestOptionalWorldSite(site, true);
-            }
-            refreshOptionalSiteMonitor();
-          });
-          return [
-            toggle,
-            folder.addBinding(optionalSiteMonitorView, site.id, {
-              readonly: true,
-              label: " "
-            })
-          ];
-        })
-      ];
-      refreshOptionalSiteMonitor();
-      return {
-        monitors: [{
-          refresh() {
-            refreshOptionalSiteMonitor();
-            applyAllOptionalSitePerfGates();
-            for (const binding of bindings) binding.refresh();
-          }
-        }]
-      };
-    }
-  });
-  let optionalSiteQueue: Promise<void> = Promise.resolve();
-
-  const requestOptionalWorldSite = (site: OptionalWorldSite, forced = false): Promise<void> => {
-    site.forced ||= forced;
-    if (site.state === "ready" || site.state === "failed") return site.promise ?? Promise.resolve();
-    if (site.promise) return site.promise;
-    site.state = "queued";
-    const controller = new AbortController();
-    site.controller = controller;
-    const { stage, waitStage } = optionalSiteStagesFor(site, controller.signal);
-    const run = optionalSiteQueue.then(async () => {
-      await revealedPromise;
-      if (controller.signal.aborted) throw controller.signal.reason ?? optionalSiteAbortError();
-      // Destination-lane sites start at once so their chunk fetch can overlap
-      // the travel cover; background sites wait for the quiet window and
-      // re-check residency here.
-      if (!site.priority) await stage();
-      if (!site.forced && !site.priority && site.available?.() === false) {
-        throw optionalSiteAbortError();
-      }
-      site.state = "loading";
-      console.info(`[lazy-site] ${site.label} loading…`);
-      await site.load({ stage, waitStage, signal: controller.signal });
-      site.state = "ready";
-      console.info(`[lazy-site] ${site.label} ready`);
-      applyOptionalSitePerfGate(site);
-    }).catch((error) => {
-      if (isAbortError(error) || controller.signal.aborted) {
-        site.state = "dormant";
-      } else {
-        site.state = "failed";
-        console.warn(`[lazy-site] ${site.label} unavailable:`, error);
-      }
-    });
-    site.promise = run.finally(() => {
-      if (site.controller === controller) site.controller = null;
-      site.priority = false;
-      if (site.state !== "ready") site.forced = false;
-      if (site.state === "dormant") {
-        site.promise = null;
-        site.eligibleSince = 0;
-      }
-    });
-    optionalSiteQueue = site.promise;
-    return site.promise;
-  };
-
-  const ensureOptionalWorldSite = (id: OptionalSiteId): Promise<void> => {
-    const site = optionalWorldSites.find((candidate) => candidate.id === id);
-    return site ? requestOptionalWorldSite(site, true) : Promise.resolve();
-  };
-
-  // Distance unload: every optional site owns a complete teardown, so leaving
-  // an exhibit's 1 km residency ring returns the world to its pre-approach
-  // state. A site the streaming panel force-loaded is pinned until its toggle
-  // releases it.
-  const OPTIONAL_SITE_UNLOADERS: Record<OptionalSiteId, () => void> = {
-    goldman: teardownGoldman,
-    "fort-mason-ensemble": () => {
-      fortMasonEnsemble?.dispose();
-      fortMasonEnsemble = null;
-      sky.invalidateStaticShadows();
-      refreshOptionalSiteDebug();
-    },
-    palace: () => {
-      optionalSiteGateRegistrations.palace?.dispose();
-      delete optionalSiteGateRegistrations.palace;
-      palaceReverie?.dispose();
-      palaceReverie = null;
-      refreshOptionalSiteDebug();
-    },
-    afterlight: () => {
-      optionalSiteGateRegistrations.afterlight?.dispose();
-      delete optionalSiteGateRegistrations.afterlight;
-      if (afterlight) {
-        afterlight.root.removeFromParent();
-        afterlight.dispose();
-        afterlight = null;
-      }
-      refreshOptionalSiteDebug();
-    },
-    archery: () => {
-      optionalSiteGateRegistrations.archery?.dispose();
-      delete optionalSiteGateRegistrations.archery;
-      archery?.dispose();
-      archery = null;
-      refreshOptionalSiteDebug();
-    },
-    pup: () => {
-      optionalSiteGateRegistrations.pup?.dispose();
-      delete optionalSiteGateRegistrations.pup;
-      pup?.dispose();
-      pup = null;
-      refreshOptionalSiteDebug();
-    },
-    corona: () => {
-      coronaHeights?.dispose();
-      coronaHeights = null;
-      sky.invalidateStaticShadows();
-      refreshOptionalSiteDebug();
-    },
-    "lands-end": () => {
-      landsEnd?.dispose();
-      landsEnd = null;
-      sky.invalidateStaticShadows();
-      refreshOptionalSiteDebug();
-    },
-    "wave-organ": () => {
-      waveOrgan?.dispose();
-      waveOrgan = null;
-      sky.invalidateStaticShadows();
-      refreshOptionalSiteDebug();
-    },
-    "beach-pianist": () => {
-      beachPianist?.dispose();
-      beachPianist = null;
-      sky.invalidateStaticShadows();
-      refreshOptionalSiteDebug();
-    },
-    "sutro-baths": () => {
-      sutroBaths?.dispose();
-      sutroBaths = null;
-      refreshOptionalSiteDebug();
-    }
-  };
-
-  const unloadOptionalWorldSite = (site: OptionalWorldSite): void => {
-    const unloader = OPTIONAL_SITE_UNLOADERS[site.id];
-    if (!unloader || site.state !== "ready") return;
-    unloader();
-    site.state = "dormant";
-    site.promise = null;
-    site.priority = false;
-    site.eligibleSince = 0;
-    console.info(`[lazy-site] ${site.label} unloaded (left residency)`);
-  };
-
-  /** Arrival participant (fire-and-forget): retire in-flight sites the new
-   * destination makes irrelevant and put the destination's own exhibit on the
-   * priority lane. Never awaited — the travel cover must not wait on it. */
-  const reprioritizeOptionalSitesForArrival = (
-    destination: Readonly<{ x: number; z: number }>
-  ): void => {
-    for (const site of optionalWorldSites) {
-      const destDistance = Math.hypot(destination.x - site.x, destination.z - site.z);
-      const inFlight = site.state === "queued" || site.state === "loading";
-      if (inFlight && !site.forced && destDistance > OPTIONAL_SITE_RECHECK_RADIUS) {
-        site.controller?.abort(optionalSiteAbortError());
-      }
-    }
-    let nearest: OptionalWorldSite | null = null;
-    let nearestDistance = OPTIONAL_SITE_APPROACH_RADIUS;
-    for (const site of optionalWorldSites) {
-      if (site.state === "ready" || site.state === "failed") continue;
-      if (!optionalSitePerfAllowed(site.id)) continue;
-      if (site.available?.() === false) continue;
-      const destDistance = Math.hypot(destination.x - site.x, destination.z - site.z);
-      if (destDistance <= nearestDistance) {
-        nearest = site;
-        nearestDistance = destDistance;
-      }
-    }
-    if (nearest) {
-      nearest.priority = true;
-      void requestOptionalWorldSite(nearest);
-    }
-  };
-
-  const updateOptionalWorldSites = (): void => {
-    if (!revealed || worldArrival.active) return;
-    const now = performance.now();
-    for (const site of optionalWorldSites) {
-      const distance = optionalSiteDistance(site);
-      // Ordinary travel out of residency: retire a ready site with a teardown
-      // (hysteresis: load ≤ 500 m, unload ≥ 1 km) and abort an in-flight build
-      // the player has clearly walked away from.
-      if (site.state === "ready" && !site.forced && distance >= OPTIONAL_SITE_UNLOAD_RADIUS) {
-        const runtime = optionalSiteRuntimeState(site).runtime;
-        const busy = runtime === "ACTIVE" || runtime === "DETAIL" ||
-          (site.id === "goldman" && (pickleballController?.playing ?? false));
-        if (!busy) unloadOptionalWorldSite(site);
-      } else if (
-        (site.state === "queued" || site.state === "loading") &&
-        !site.forced && !site.priority &&
-        distance > OPTIONAL_SITE_RECHECK_RADIUS
-      ) {
-        site.controller?.abort(optionalSiteAbortError());
-      } else if (site.state === "dormant") {
-        // Starvation cap anchor: first moment the player is inside the
-        // approach radius. Cleared when they wander back out.
-        if (distance <= OPTIONAL_SITE_APPROACH_RADIUS) {
-          if (site.eligibleSince === 0) site.eligibleSince = now;
-        } else {
-          site.eligibleSince = 0;
-        }
-      }
-    }
-    // Sutro owns an internal, closer GPU gate whose promise is intentionally
-    // private. Treat its observable warmup as render-busy before admitting the
-    // neighboring Lands End site to this serialized scheduler.
-    if (sutroBaths?.debugState().nearEffectsLoading) return;
-    if (optionalWorldSites.some((site) => site.state === "queued" || site.state === "loading")) return;
-    let nearest: OptionalWorldSite | null = null;
-    let nearestDistanceSq = OPTIONAL_SITE_APPROACH_RADIUS * OPTIONAL_SITE_APPROACH_RADIUS;
-    for (const site of optionalWorldSites) {
-      if (site.state !== "dormant") continue;
-      if (!optionalSitePerfAllowed(site.id)) continue;
-      if (site.available?.() === false) continue;
-      const dx = player.position.x - site.x;
-      const dz = player.position.z - site.z;
-      const distanceSq = dx * dx + dz * dz;
-      if (distanceSq <= nearestDistanceSq) {
-        nearest = site;
-        nearestDistanceSq = distanceSq;
-      }
-    }
-    if (nearest) void requestOptionalWorldSite(nearest);
-  };
-
-  // Boot arrivals bypass the WorldArrivalCoordinator (they own the
-  // "boot-arrival" hold), so give the spawn landmark's exhibit the same
-  // priority lane the moment the world reveals.
-  void revealedPromise.then(() => {
-    reprioritizeOptionalSitesForArrival({ x: player.position.x, z: player.position.z });
-  });
+  siteFoliage = sites.siteFoliage;
 
   const touchesBounds = (
     x: number,
@@ -4006,7 +2885,7 @@ async function boot() {
 
   })()
     .catch((err) => {
-      if (!japaneseTeaGarden) restoreTeaGardenBuildings();
+      if (!teaGarden.current()) teaGarden.restoreBuildings();
       console.warn("[sf] deferred module load failed:", err);
     });
 
@@ -4283,7 +3162,7 @@ async function boot() {
       embodiments.passengerSeat,
       // a held-rake wire row has no rideSeat slot, so while riding shotgun the
       // plain ride row wins — viewers would otherwise collapse us onto seat 1
-      embodiments.passengerOf === null ? localGardenRakeMotion : null
+      embodiments.passengerOf === null ? teaGarden.rakeMotion() : null
     );
   };
   const sendPickleballNetwork = () => pickleballController?.sendNetwork();
@@ -4461,8 +3340,8 @@ async function boot() {
     // Crossing the generic approach radius requests at most one authored site;
     // the queue rechecks after the arrival-quiet window before importing it.
     afterlight?.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
-    updateOptionalWorldSites();
-    if (optionalSitePerfGating) applyAllOptionalSitePerfGates();
+    sites.update();
+    sites.applyPerfGates();
     // One wake/sleep pass over every registered minigame site (pickleball,
     // golf, …): a contains() test per site, setAwake only on transitions.
     if (!worldArrival.active) siteGate.update(player.position.x, player.position.z);
@@ -4471,12 +3350,12 @@ async function boot() {
     // paused, so a remote opponent never loses the match when authority opens
     // photo/pause controls.
     const pickleballEConsumed =
-      worldArrival.active || !optionalSitePerfAllowed("goldman")
+      worldArrival.active || !sites.perfAllowed("goldman")
         ? false
         : updatePickleballGameplay(frameDt);
     const playingPickleball = pickleballController?.playing ?? false;
     const playingFortMasonEnsemble =
-      !worldArrival.active && optionalSitePerfAllowed("fort-mason-ensemble")
+      !worldArrival.active && sites.perfAllowed("fort-mason-ensemble")
         ? fortMasonEnsemble?.update(frameDt, elapsed, player.renderPosition, camera) ?? false
         : false;
     applyPickleballPlayerPose();
@@ -4577,7 +3456,7 @@ async function boot() {
       // stuck in the previous indoor/outdoor mode.
       if (!worldArrival.active) {
         citygenRing.current?.update(player.position, frameDt);
-        if (optionalSitePerfAllowed("sutro-baths")) {
+        if (sites.perfAllowed("sutro-baths")) {
           sutroBaths?.update(0, elapsed, player.renderPosition, camera, windGustValue());
         }
       }
@@ -4648,11 +3527,7 @@ async function boot() {
       if (playingPickleball || playingFortMasonEnsemble) break;
       if (golf?.capturesDigits) break; // golf swing UI owns the number row (club picks)
       if (ctrlNumberPress(i)) {
-        const nextTool = TOOL_ORDER[i - 1];
-        if (nextTool) {
-          toolbar.focusTools();
-          setTool(nextTool);
-        }
+        toolCycle.pickByIndex(i - 1);
         continue;
       }
       // Snapshot Shift from the digit's keydown event; a stale held-key entry
@@ -4708,10 +3583,10 @@ async function boot() {
     // Use the same position the tea-garden prompt distance is measured against
     // (renderPosition), so a visible "Talk" prompt always accepts the matching E.
     let teaGardenEConsumed = interactPressed
-      && (japaneseTeaGarden?.interact(player.renderPosition, player.mode) ?? false);
+      && teaGarden.interact(player.renderPosition, player.mode);
     const exitedToWalk = interactPressed && !teaGardenEConsumed && exitToWalk();
     if (exitedToWalk) {
-      teaGardenEConsumed = japaneseTeaGarden?.interact(player.renderPosition, player.mode) ?? false;
+      teaGardenEConsumed = teaGarden.interact(player.renderPosition, player.mode);
     }
     if (
       !pickleballEConsumed &&
@@ -4953,7 +3828,7 @@ async function boot() {
         chase.viewOrigin(rayOrigin, player);
         forest?.fireGummy(rayOrigin, aim, player.velocity);
       }
-    } else if (tool === "ball") {
+    } else if (toolCycle.tool === "ball") {
       // Hold to wind up overhand (meter fills); release after 1s to throw,
       // earlier stows. Hands empty afterward — pick balls back up with E.
       if (fetchBall) {
@@ -4965,7 +3840,7 @@ async function boot() {
     } else if (input.firing) {
       chase.interactionDir(aim, player);
       chase.viewOrigin(rayOrigin, player);
-      if (tool === "spray" && fireCooldown <= 0) {
+      if (toolCycle.tool === "spray" && fireCooldown <= 0) {
         // paintballs: visible ballistic shots that splat wherever they land —
         // walls via graffiti.burst, vehicles/players via paintSkins. The shot
         // is broadcast (origin+velocity+color) so everyone sees it fly.
@@ -4998,7 +3873,7 @@ async function boot() {
         paintMuzzle.copy(rayOrigin).addScaledVector(shotDir, fromNose ? 3.5 : 1.1);
         paintballs.spawn(paintMuzzle.x, paintMuzzle.y, paintMuzzle.z, paintVel.x, paintVel.y, paintVel.z, col, net.selfId);
         net.sendPaint(paintMuzzle, paintVel, col.getHex());
-      } else if (tool === "bubbles" && fireCooldown <= 0) {
+      } else if (toolCycle.tool === "bubbles" && fireCooldown <= 0) {
         fireCooldown = 0.14;
         bubbles.blow(rayOrigin, aim, player.velocity);
         if (bubbleAudio) {
@@ -5115,18 +3990,7 @@ async function boot() {
       wakeDeferredGarden = null;
       wake();
     }
-    if (
-      !worldArrival.active &&
-      wakeDeferredTeaGarden &&
-      Math.hypot(
-        player.position.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
-        player.position.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
-      ) < 700
-    ) {
-      const wake = wakeDeferredTeaGarden;
-      wakeDeferredTeaGarden = null;
-      wake();
-    }
+    if (!worldArrival.active) teaGarden.maybeWakeDeferred(player.position);
     if (
       !worldArrival.active &&
       wakeDeferredBuenaVistaTrees &&
@@ -5175,12 +4039,12 @@ async function boot() {
     // fine; elevation only moves with the clock.
     syncBallGlowNight(sky.sunElevation);
     if (!worldArrival.active) {
-      if (optionalSitePerfAllowed("corona")) {
+      if (sites.perfAllowed("corona")) {
         coronaHeights?.update(frameDt, elapsed, camera.position);
       } else if (coronaHeights) {
         coronaHeights.group.visible = false;
       }
-      if (optionalSitePerfAllowed("lands-end")) {
+      if (sites.perfAllowed("lands-end")) {
         landsEnd?.update(frameDt, elapsed, player.position, camera, windGustValue());
         if (landsEnd && player.mode === "walk") {
           landsEnd.keeper.updatePrompt(player.position.x, player.position.z, hud);
@@ -5188,13 +4052,13 @@ async function boot() {
       } else if (landsEnd) {
         landsEnd.group.visible = false;
       }
-      if (optionalSitePerfAllowed("wave-organ")) {
+      if (sites.perfAllowed("wave-organ")) {
         // hud only while on foot — walking is how you put an ear to a pipe.
         waveOrgan?.update(frameDt, elapsed, player.position, player.mode === "walk" ? hud : null);
       } else if (waveOrgan) {
         waveOrgan.group.visible = false;
       }
-      if (optionalSitePerfAllowed("beach-pianist")) {
+      if (sites.perfAllowed("beach-pianist")) {
         beachPianist?.update(frameDt, elapsed, player.position, camera, windGustValue());
       } else if (beachPianist) {
         beachPianist.group.visible = false;
@@ -5210,7 +4074,7 @@ async function boot() {
       ? (player.meshes.scooter.userData.petSeat as THREE.Object3D | undefined) ?? null
       : null;
     if (!worldArrival.active) fetchBall?.update(frameDt, elapsed, player.position, petSeat);
-    if (tool === "ball" && fetchBall) hud.setToolVerb(fetchBall.verb());
+    if (toolCycle.tool === "ball" && fetchBall) hud.setToolVerb(fetchBall.verb());
     // brief over-the-shoulder pull-in during a throw, then ease back. Set before
     // chase.update (below) so it reads this zoom; gated to walk so the wheel-zoom
     // (walk+outdoor) never fights it, and restored the moment the throw settles.
@@ -5231,10 +4095,10 @@ async function boot() {
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
     buskerTalk.update(player.renderPosition);
     if (!worldArrival.active) {
-      if (optionalSitePerfAllowed("sutro-baths")) {
+      if (sites.perfAllowed("sutro-baths")) {
         sutroBaths?.update(frameDt, elapsed, player.renderPosition, camera, windGustValue());
       }
-      japaneseTeaGarden?.update(
+      teaGarden.update(
         frameDt,
         elapsed,
         player.renderPosition,
@@ -5242,10 +4106,6 @@ async function boot() {
         player.mode,
         player.velocity
       );
-      if (
-        japaneseTeaGarden?.group.parent === scene &&
-        japaneseTeaGarden.debugState().awake
-      ) claimTeaGardenBuildings();
     }
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its
@@ -5288,26 +4148,26 @@ async function boot() {
     if (!worldArrival.active) citygenRing.current?.update(player.position, frameDt);
     if (!worldArrival.active && !highUp) hunt.update(frameDt, elapsed, player.position);
     if (!worldArrival.active) golf?.update(frameDt, elapsed, { player, input, hud, chase, camera });
-    if (!worldArrival.active && optionalSitePerfAllowed("palace")) {
+    if (!worldArrival.active && sites.perfAllowed("palace")) {
       palaceReverie?.update(frameDt, elapsed, player.position, hud);
       const welcome = palaceReverie?.takeWelcome();
       if (welcome) hud.message(welcome, 6.2);
     }
     // Archery: site-gated, one boolean early-return when asleep with nothing live
-    if (!worldArrival.active && optionalSitePerfAllowed("archery")) {
+    if (!worldArrival.active && sites.perfAllowed("archery")) {
       archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
     }
     // Biscuit the RL pup: site-gated, one boolean early-return when asleep
-    if (!worldArrival.active && optionalSitePerfAllowed("pup")) {
+    if (!worldArrival.active && sites.perfAllowed("pup")) {
       pup?.update(frameDt, camera);
     }
     // Afterlight: proximity collectibles, return flights, quest clock and the
     // completed sky performance; site-gated to a single asleep early return.
-    if (!worldArrival.active && optionalSitePerfAllowed("afterlight")) {
+    if (!worldArrival.active && sites.perfAllowed("afterlight")) {
       afterlight?.update(frameDt, elapsed, player, hud);
     }
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
-    if (!worldArrival.active && optionalSitePerfAllowed("goldman")) {
+    if (!worldArrival.active && sites.perfAllowed("goldman")) {
       goldenGateTennis?.update(frameDt, elapsed, player.position);
     }
     // Mission Dolores: dynamic code gate first, then shell/art proximity gates.
@@ -5412,7 +4272,7 @@ async function boot() {
     // World-anchored dialogue must project after the chase/orbit/cinematic has
     // committed this frame's final camera pose; projecting during simulation
     // left Hiro's card one camera frame behind and visibly jittering.
-    japaneseTeaGarden?.project(camera);
+    teaGarden.project(camera);
     buskerTalk.project(camera);
     sky.update(elapsed, camera.position, player.renderPosition);
     // Surf contact/camera use Player's fixed-step simulation clock. Feed that
@@ -5727,18 +4587,16 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, beachPianist, afterlight, optionalWorldSites, ensureOptionalWorldSite, siteFoliage,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden: teaGarden.current(), pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, beachPianist, afterlight, optionalWorldSites: sites.list, ensureOptionalWorldSite: sites.ensure, siteFoliage,
         TSL,
-        renderIdle: () => modulesReady && !optionalWorldSites.some(
-          (site) => site.state === "queued" || site.state === "loading"
-        ) && !(sutroBaths?.debugState().nearEffectsLoading ?? false) }
+        renderIdle: () => modulesReady && sites.streamingIdle() }
     });
     const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
     if (hooks) {
       Object.assign(hooks, {
         worldArrival,
         lazyRegionTimings,
-        teaGardenBuildingSwapState,
+        teaGardenBuildingSwapState: teaGarden.buildingSwapState,
         oceanBeachKite: oceanKite.current(),
         ensureOceanBeachKite: oceanKite.ensure,
         oceanKiteSite: oceanKite.site
@@ -5800,7 +4658,7 @@ async function boot() {
         name === "palace" || name === "palace-reverie" || name === "phoenix-palace-flyby" ? "palace" :
         name === "landsend" ? "lands-end" :
         null;
-      if (site) await ensureOptionalWorldSite(site);
+      if (site) await sites.ensure(site);
     };
     const runDevDemo = async (name: string): Promise<void> => {
       await ensureDemoSite(name);
