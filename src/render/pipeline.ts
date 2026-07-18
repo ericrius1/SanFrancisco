@@ -19,14 +19,14 @@ import {
   createPostFx,
   applyPostFxParams,
   getPostFxVariantMask,
-  getRadialLightParams,
+  getPianoGodRaysParams,
   POSTFX_TUNING,
   POSTFX_VARIANT_MASKS
 } from "./postfx";
 import { createContactShadowComplement } from "./contactShadows";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
 import { yieldToFrame } from "../core/cooperativeWork";
-import type { RadialLightParams, RadialLightSource } from "./radialLightTypes";
+import type { PianoGodRaysParams } from "./pianoGodRaysTypes";
 import type { ProjectedSurfaceLightSource } from "./projectedSurfaceLightTypes";
 
 type SceneSamples = 0 | 4;
@@ -41,11 +41,10 @@ type WarmableRenderPipeline = THREE.RenderPipeline & {
 type QueueBackedRenderer = THREE.WebGPURenderer & {
   backend: { device?: { queue: { onSubmittedWorkDone(): Promise<unknown> } } };
 };
-type RadialLightRuntime = {
-  compose(key: number, baseNode: any): any;
-  clearCompositions(): void;
-  configure(params: RadialLightParams): void;
-  update(): void;
+type PianoGodRaysRuntime = {
+  sceneTexture: any;
+  configure(params: PianoGodRaysParams): void;
+  update(center: THREE.Vector3): void;
   dispose(): void;
 };
 type ProjectedSurfaceLightRuntime = {
@@ -237,44 +236,42 @@ export function createRenderPipeline(
     return variant;
   };
 
-  // The expensive radial helper and its stained-glass-only passes are a nested lazy
-  // feature. Nothing below imports/builds them until a source crosses an
-  // interior gate; outside, activePipeline is always one of the base variants.
-  let radialSource: RadialLightSource | null = null;
-  let radialRuntime: RadialLightRuntime | null = null;
-  let radialRuntimeSource: RadialLightSource | null = null;
-  let radialModulePromise: Promise<typeof import("./radialLightShafts")> | null = null;
-  let radialBuildPending: { source: RadialLightSource; epoch: number } | null = null;
-  let radialEpoch = 0;
-  let radialActive = false;
-  let radialRenderedFrames = 0;
-  const radialVariants = new Map<number, THREE.RenderPipeline>();
+  // The official raymarched GodraysNode stack is a piano-only nested lazy
+  // feature. Its module, dedicated shadow light and render targets do not exist
+  // until the player enters the grove gate; leaving disposes all GPU ownership.
+  let pianoGodRaysRequested = false;
+  const pianoGodRaysCenter = new THREE.Vector3();
+  let pianoGodRaysRuntime: PianoGodRaysRuntime | null = null;
+  let pianoGodRaysModulePromise: Promise<typeof import("./pianoGodRays")> | null = null;
+  let pianoGodRaysBuildPending: { epoch: number } | null = null;
+  let pianoGodRaysEpoch = 0;
+  let pianoGodRaysActive = false;
+  let pianoGodRaysRenderedFrames = 0;
+  const pianoGodRaysVariants = new Map<number, THREE.RenderPipeline>();
 
-  const radialEnabled = () => Boolean(
-    POSTFX_TUNING.values.museumRays || POSTFX_TUNING.values.pianistRays
+  const pianoGodRaysEnabled = () => Boolean(
+    pianoGodRaysRequested && POSTFX_TUNING.values.pianistRays && directionalLight
   );
-  const activeRadialParams = (source: RadialLightSource | null = radialSource): RadialLightParams => {
-    const sourceParams = typeof source?.params === "function" ? source.params() : source?.params;
-    return {
-      ...getRadialLightParams(),
-      ...sourceParams
-    };
-  };
 
-  const getRadialVariantPipeline = (
+  const getPianoGodRaysVariantPipeline = (
     requestedMask: number,
-    baseNode: any,
     includesProjectedLights: boolean
   ) => {
-    if (!radialRuntime) return null;
+    if (!pianoGodRaysRuntime) return null;
     const mask = requestedMask & 7;
     const key = mask | (includesProjectedLights ? 8 : 0);
-    let variant = radialVariants.get(key);
+    let variant = pianoGodRaysVariants.get(key);
     if (variant !== undefined) return variant;
     variant = new THREE.RenderPipeline(renderer);
     variant.outputColorTransform = false;
-    variant.outputNode = radialRuntime.compose(key, baseNode);
-    radialVariants.set(key, variant);
+    variant.outputNode = postfx.getWithSceneTexture(
+      mask,
+      pianoGodRaysRuntime.sceneTexture,
+      includesProjectedLights
+        ? (sampleUv) => projectedRuntime!.sample(sampleUv)
+        : undefined
+    );
+    pianoGodRaysVariants.set(key, variant);
     return variant;
   };
 
@@ -289,27 +286,22 @@ export function createRenderPipeline(
     const basePipeline = wantsProjected
       ? getProjectedVariantPipeline(activeVariantMask)
       : getVariantPipeline(activeVariantMask);
-    const baseNode = basePipeline?.outputNode ?? postfx.get(activeVariantMask);
-
     if (
-      radialEnabled() &&
-      radialSource !== null &&
-      radialRuntime !== null &&
-      radialRuntimeSource === radialSource
+      pianoGodRaysEnabled() &&
+      pianoGodRaysRuntime !== null
     ) {
-      const variant = getRadialVariantPipeline(
+      const variant = getPianoGodRaysVariantPipeline(
         activeVariantMask,
-        baseNode,
         wantsProjected
       );
       if (variant) {
         activePipeline = variant;
-        radialActive = true;
+        pianoGodRaysActive = true;
         return;
       }
     }
     activePipeline = basePipeline ?? getVariantPipeline(activeVariantMask);
-    radialActive = false;
+    pianoGodRaysActive = false;
   };
 
   const disposeProjectedRuntime = () => {
@@ -317,11 +309,10 @@ export function createRenderPipeline(
     projectedActive = false;
     for (const variant of projectedVariants.values()) variant.dispose();
     projectedVariants.clear();
-    // Radial variants can wrap a projected base node, so invalidate only their
-    // retained compositions when that base graph changes.
-    for (const variant of radialVariants.values()) variant.dispose();
-    radialVariants.clear();
-    radialRuntime?.clearCompositions();
+    // God-ray variants may include the projected-light sampler, so rebuild
+    // those retained graphs when projected ownership changes.
+    for (const variant of pianoGodRaysVariants.values()) variant.dispose();
+    pianoGodRaysVariants.clear();
     projectedRuntime?.dispose();
     projectedRuntime = null;
     projectedRuntimeSource = null;
@@ -389,78 +380,80 @@ export function createRenderPipeline(
     else selectActivePipeline();
   };
 
-  const disposeRadialRuntime = () => {
-    radialActive = false;
-    for (const variant of radialVariants.values()) variant.dispose();
-    radialVariants.clear();
-    radialRuntime?.dispose();
-    radialRuntime = null;
-    radialRuntimeSource = null;
+  const disposePianoGodRaysRuntime = () => {
+    pianoGodRaysActive = false;
+    for (const variant of pianoGodRaysVariants.values()) variant.dispose();
+    pianoGodRaysVariants.clear();
+    pianoGodRaysRuntime?.dispose();
+    pianoGodRaysRuntime = null;
     selectActivePipeline();
   };
 
-  const loadRadialModule = () => {
-    if (!radialModulePromise) {
-      radialModulePromise = import("./radialLightShafts").catch((err) => {
-        radialModulePromise = null;
+  const loadPianoGodRaysModule = () => {
+    if (!pianoGodRaysModulePromise) {
+      pianoGodRaysModulePromise = import("./pianoGodRays").catch((err) => {
+        pianoGodRaysModulePromise = null;
         throw err;
       });
     }
-    return radialModulePromise;
+    return pianoGodRaysModulePromise;
   };
 
-  const ensureRadialRuntime = () => {
-    const requestedSource = radialSource;
-    if (!requestedSource || !radialEnabled()) {
+  const ensurePianoGodRaysRuntime = () => {
+    if (!pianoGodRaysEnabled() || !directionalLight) {
       selectActivePipeline();
       return;
     }
-    if (radialRuntime && radialRuntimeSource === requestedSource) {
-      radialRuntime.configure(activeRadialParams(requestedSource));
+    if (pianoGodRaysRuntime) {
+      pianoGodRaysRuntime.configure(getPianoGodRaysParams());
       selectActivePipeline();
       return;
     }
 
-    const epoch = radialEpoch;
-    if (radialBuildPending?.source === requestedSource && radialBuildPending.epoch === epoch) return;
-    radialBuildPending = { source: requestedSource, epoch };
-    void loadRadialModule()
-      .then(({ createRadialLightShafts }) => {
-        if (radialEpoch !== epoch || radialSource !== requestedSource || !radialEnabled()) return;
-        disposeRadialRuntime();
-        radialRuntime = createRadialLightShafts({
+    const epoch = pianoGodRaysEpoch;
+    if (pianoGodRaysBuildPending?.epoch === epoch) return;
+    pianoGodRaysBuildPending = { epoch };
+    void loadPianoGodRaysModule()
+      .then(({ createPianoGodRays }) => {
+        if (pianoGodRaysEpoch !== epoch || !pianoGodRaysEnabled() || !directionalLight) return;
+        disposePianoGodRaysRuntime();
+        pianoGodRaysRuntime = createPianoGodRays({
+          scene,
           camera,
+          sceneColor,
           sceneDepth,
-          source: requestedSource,
-          params: activeRadialParams(requestedSource)
+          sourceLight: directionalLight,
+          center: pianoGodRaysCenter,
+          params: getPianoGodRaysParams()
         });
-        radialRuntimeSource = requestedSource;
         selectActivePipeline();
       })
-      .catch((err) => console.warn("[render] radial stained-glass light unavailable:", err))
+      .catch((err) => console.warn("[render] piano god rays unavailable:", err))
       .finally(() => {
-        if (radialBuildPending?.source === requestedSource && radialBuildPending.epoch === epoch) {
-          radialBuildPending = null;
-        }
+        if (pianoGodRaysBuildPending?.epoch === epoch) pianoGodRaysBuildPending = null;
       });
   };
 
-  const setRadialLightSource = (source: RadialLightSource | null) => {
-    if (source === radialSource) return;
-    radialEpoch += 1;
-    radialBuildPending = null;
-    radialSource = source;
-    if (radialRuntimeSource !== source) disposeRadialRuntime();
-    if (source) ensureRadialRuntime();
-    else selectActivePipeline();
+  const setPianoGodRaysArea = (active: boolean, center?: THREE.Vector3) => {
+    if (center) pianoGodRaysCenter.copy(center);
+    if (active === pianoGodRaysRequested) return;
+    pianoGodRaysRequested = active;
+    pianoGodRaysEpoch += 1;
+    pianoGodRaysBuildPending = null;
+    if (active) ensurePianoGodRaysRuntime();
+    else disposePianoGodRaysRuntime();
   };
 
-  const applyRadialLightFx = () => {
-    radialEpoch += 1; // invalidates an in-flight activation after a toggle-off
-    radialBuildPending = null;
-    radialRuntime?.configure(activeRadialParams());
+  const applyPianoGodRaysFx = () => {
+    if (!pianoGodRaysEnabled()) {
+      pianoGodRaysEpoch += 1; // invalidate an in-flight activation after toggle-off
+      pianoGodRaysBuildPending = null;
+      disposePianoGodRaysRuntime();
+      return;
+    }
+    pianoGodRaysRuntime?.configure(getPianoGodRaysParams());
     selectActivePipeline();
-    if (radialEnabled() && radialSource) ensureRadialRuntime();
+    if (!pianoGodRaysRuntime) ensurePianoGodRaysRuntime();
   };
 
   const fastCaptureEnabled = new URLSearchParams(location.search).has("fastcapture");
@@ -546,7 +539,7 @@ export function createRenderPipeline(
     }
     const mask = getPostFxVariantMask();
     if (mask !== activeVariantMask) activeVariantMask = mask;
-    applyRadialLightFx();
+    applyPianoGodRaysFx();
   };
 
   // compileAsync mutates shared renderer state (tone mapping, color space, …)
@@ -791,9 +784,9 @@ export function createRenderPipeline(
       projectedRuntime?.update();
       projectedRenderedFrames += 1;
     }
-    if (radialActive) {
-      radialRuntime?.update();
-      radialRenderedFrames += 1;
+    if (pianoGodRaysActive) {
+      pianoGodRaysRuntime?.update(pianoGodRaysCenter);
+      pianoGodRaysRenderedFrames += 1;
     }
     const fxaaActive = fxaaRequested && fxaaRuntime !== null;
     if (!fastCaptureTarget && !fxaaActive) {
@@ -925,7 +918,7 @@ export function createRenderPipeline(
     if (projectedSource?.active) ensureProjectedRuntime();
     else if (projectedActive) selectActivePipeline();
     if (projectedActive) projectedRuntime?.update();
-    if (radialActive) radialRuntime?.update();
+    if (pianoGodRaysActive) pianoGodRaysRuntime?.update(pianoGodRaysCenter);
 
     const previousTarget = renderer.getRenderTarget();
     const previousCubeFace = renderer.getActiveCubeFace();
@@ -989,18 +982,19 @@ export function createRenderPipeline(
         active: fxaaRequested && fxaaRuntime !== null
       };
     },
-    /** Attach/detach an optional interior-only radial-light source. */
-    setRadialLightSource,
+    /** Enter/leave the only area allowed to allocate and render god rays. */
+    setPianoGodRaysArea,
     /** Attach/detach a bounded, lazy close-range surface-light source. */
     setProjectedSurfaceLightSource,
-    /** Push radial-light controls without adding them to the global style mask. */
-    applyRadialLightFx,
+    /** Push piano god-ray controls without changing the global style mask. */
+    applyPianoGodRaysFx,
     /** Probe-facing state; read-only and allocation-free until requested. */
-    get radialLightState() {
+    get pianoGodRaysState() {
       return {
-        active: radialActive,
-        loaded: radialRuntime !== null,
-        renderedFrames: radialRenderedFrames
+        requested: pianoGodRaysRequested,
+        active: pianoGodRaysActive,
+        loaded: pianoGodRaysRuntime !== null,
+        renderedFrames: pianoGodRaysRenderedFrames
       };
     },
     /** Probe-facing projected-light state. */

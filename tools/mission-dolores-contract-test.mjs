@@ -40,46 +40,47 @@ const nearSideWall = mdToWorldXZ(WALL_INNER_FACE_X - 0.1, 0);
 const wallBand = mdToWorldXZ(WALL_INNER_FACE_X + 0.1, 0);
 const apseInterior = mdToWorldXZ(0, Z_APSE + APSE_RADIUS * 0.5);
 const apseExterior = mdToWorldXZ(0, Z_APSE + APSE_RADIUS + 0.1);
-assert.equal(mdInsideInterior(insideDoor.x, insideDoor.z), true, "stained-glass rays should begin after the doorway");
-assert.equal(mdInsideInterior(outsideDoor.x, outsideDoor.z), false, "stained-glass rays must stay off outside the entrance");
+assert.equal(mdInsideInterior(insideDoor.x, insideDoor.z), true, "museum interior should begin after the doorway");
+assert.equal(mdInsideInterior(outsideDoor.x, outsideDoor.z), false, "forecourt must stay outside the museum interior");
 assert.equal(mdInsideInterior(nearSideWall.x, nearSideWall.z), true, "the walkable aisle beside the paintings is interior");
 assert.equal(mdInsideInterior(wallBand.x, wallBand.z), false, "exterior wall band is not visitor interior");
 assert.equal(mdInsideInterior(apseInterior.x, apseInterior.z), true, "the sanctuary apse belongs to the interior");
-assert.equal(mdInsideInterior(apseExterior.x, apseExterior.z), false, "the effect must stop beyond the apse wall");
+assert.equal(mdInsideInterior(apseExterior.x, apseExterior.z), false, "museum interior must stop beyond the apse wall");
 
 const pipelineSource = readFileSync(path.join(ROOT, "src", "render", "pipeline.ts"), "utf8");
-const radialSource = readFileSync(path.join(ROOT, "src", "render", "radialLightShafts.ts"), "utf8");
-const museumCtxSource = readFileSync(path.join(ROOT, "src", "world", "missionDolores", "ctx.ts"), "utf8");
-const museumShellSource = readFileSync(path.join(ROOT, "src", "world", "missionDolores", "shell.ts"), "utf8");
-const museumApseSource = readFileSync(path.join(ROOT, "src", "world", "missionDolores", "exhibits", "apse.ts"), "utf8");
+const pianoGodRaysSource = readFileSync(path.join(ROOT, "src", "render", "pianoGodRays.ts"), "utf8");
 const museumIndexSource = readFileSync(path.join(ROOT, "src", "world", "missionDolores", "index.ts"), "utf8");
 const mainSource = readFileSync(path.join(ROOT, "src", "main.ts"), "utf8");
+const minimapLandmarksSource = readFileSync(path.join(ROOT, "src", "app", "compose", "minimapLandmarks.ts"), "utf8");
 const playerSource = readFileSync(path.join(ROOT, "src", "player", "player.ts"), "utf8");
 assert.match(
   pipelineSource,
+  /import\("\.\/pianoGodRays"\)/,
+  "the piano god-ray stack must remain behind a nested dynamic-import boundary"
+);
+assert.doesNotMatch(
+  pipelineSource,
   /import\("\.\/radialLightShafts"\)/,
-  "the radial helper must remain behind a nested dynamic-import boundary"
-);
-assert.match(radialSource, /three\/addons\/tsl\/display\/radialBlur\.js/, "effect must use Three's radialBlur helper");
-const plaqueBlock = museumCtxSource.slice(
-  museumCtxSource.indexOf("makePlaque(opts"),
-  museumCtxSource.indexOf("#wrapText(")
-);
-assert.doesNotMatch(plaqueBlock, /radialRays/, "paintings must not seed the radial source");
-assert.match(museumCtxSource, /registerRadialSurface\(/, "the museum needs a generic stained-glass source registry");
-assert.match(
-  museumApseSource,
-  /"glass-rose"[\s\S]*?radialRays: true/,
-  "the authored apse rose window must seed the radial source"
+  "the superseded radial-blur system must not be selectable by the render pipeline"
 );
 assert.match(
-  museumApseSource,
-  /const artName = xSign < 0 \? "glass-birds" : "glass-wolf";[\s\S]*?radialRays: true/,
-  "both authored apse lancets must seed the radial source"
+  pianoGodRaysSource,
+  /three\/addons\/tsl\/display\/GodraysNode\.js/,
+  "piano effect must use Three's official WebGPU GodraysNode"
 );
-assert.match(museumShellSource, /kind: "amber", radialRays: true/, "interior aisle panes must seed the radial source");
-assert.match(museumShellSource, /kind: "rose", radialRays: true/, "the entrance rose must seed the radial source");
-assert.match(museumShellSource, /kind: "amber", radialRays: false/, "exterior tower panes must stay out of the source cluster");
+assert.match(
+  pianoGodRaysSource,
+  /three\/addons\/tsl\/display\/BilateralBlurNode\.js/,
+  "piano effect must use the official bilateral cleanup pass"
+);
+assert.match(
+  pianoGodRaysSource,
+  /three\/addons\/tsl\/display\/depthAwareBlend\.js/,
+  "piano effect must use the official depth-aware composite"
+);
+assert.doesNotMatch(mainSource, /museumRays/, "Mission Dolores must not be able to enable god rays");
+assert.doesNotMatch(mainSource, /missionDolores\?\.radialLightSource/, "museum source must remain detached from rendering");
+assert.match(mainSource, /setPianoGodRaysArea\(/, "only the piano area gate may select the god-ray graph");
 
 const floor = createMuseumFloorCollisionMesh();
 assert.equal(floor.indices.length, 6 + 24 * 3, "floor collision must include the nave and 24-segment apse fan");
@@ -98,9 +99,9 @@ assert.equal(floor.vertices[2], Z_ENTRANCE, "nave collision must begin at the po
 assert.match(museumIndexSource, /createStaticMesh\(/, "the authored floor must own an exact stepped-world collider");
 assert.match(museumIndexSource, /takeFloorHandoffHeight/, "lazy floor activation must expose a one-shot body handoff");
 assert.match(playerSource, /recoverOntoWalkSurface/, "the player must resynchronize after a late floor handoff");
-assert.match(mainSource, /const missionDoloresSpawn = SPAWN_POINTS\.missionDolores/, "the map pin must use the safe forecourt spawn");
+assert.match(minimapLandmarksSource, /const missionDoloresSpawn = SPAWN_POINTS\.missionDolores/, "the map pin must use the safe forecourt spawn");
 assert.doesNotMatch(
-  mainSource,
+  minimapLandmarksSource,
   /addLandmark\(MISSION_DOLORES_CENTER\.x, MISSION_DOLORES_CENTER\.z, "Mission Dolores/,
   "the safe Mission pin must never be overwritten with the unsupported interior center"
 );
@@ -120,5 +121,5 @@ for (const file of ktxFiles) {
 }
 
 console.log(
-  `mission dolores contract: ok (${segments.length} wall segments, ${floor.indices.length / 3} floor triangles, ${ktxFiles.length} upright KTX2 assets, stained-glass-only radial chunk)`
+  `mission dolores contract: ok (${segments.length} wall segments, ${floor.indices.length / 3} floor triangles, ${ktxFiles.length} upright KTX2 assets, god rays hard-disabled)`
 );

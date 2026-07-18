@@ -83,9 +83,9 @@ function createBirdGeometry(): THREE.BufferGeometry {
   triangle(beakRight, beakTop, beakTip);
   triangle(beakLeft, beakRight, beakTip);
 
-  // Broad swept wings are single, double-sided feather planes. Root-to-tip
-  // weights feed the GPU deformation while the three panels preserve a subtle
-  // articulated leading/trailing edge instead of a cartoon chevron.
+  // Broad swept wings are single, double-sided feather planes. The side marker
+  // lets the GPU rotate each complete wing rigidly around its root; the retained
+  // root-to-tip value is used only for a restrained feather value break.
   for (const side of [-1, 1] as const) {
     const rootFront = { x: side * 0.045, y: 0.018, z: 0.13, wingSide: side, wingWeight: 0 };
     const rootRear = { x: side * 0.055, y: -0.002, z: -0.12, wingSide: side, wingWeight: 0 };
