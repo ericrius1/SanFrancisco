@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { NpcConversation } from "../../gameplay/agents/conversation";
 import { DialogueGraphProvider, type DialogueSpeaker } from "../../gameplay/agents/dialogue";
+import { SONGS } from "./songs";
 
 export const BEACH_PIANIST_SPEAKER: DialogueSpeaker = {
   id: "marshalls-beach-pianist",
@@ -12,12 +13,12 @@ export type BeachPianistConversationHost = {
   readonly group: THREE.Object3D;
   readonly anchor: THREE.Object3D;
   readonly awaitingRequest: () => boolean;
-  readonly requestPerformance: () => boolean;
+  readonly requestPerformance: (songIndex: number) => boolean;
 };
 
-/** The pianist asks permission every time. A confirmed Yes starts exactly one
- * performance; both replies end the conversation immediately so the dialogue
- * card gets out of the way of the music. */
+/** The pianist asks for a song every time. The first reply is the default/new
+ * recording; arrowing down reaches the original. Confirming either starts one
+ * performance and closes the card so it gets out of the way of the music. */
 export function createBeachPianistConversation(
   host: BeachPianistConversationHost
 ): NpcConversation {
@@ -33,9 +34,14 @@ export function createBeachPianistConversation(
         nodes: [
           {
             id: "offer",
-            text: "Do you want to hear a song?",
+            text: "Which song would you like to hear?",
             choices: [
-              { id: "yes", label: "Yes.", action: "play", to: null },
+              ...SONGS.map((song, songIndex) => ({
+                id: song.id,
+                label: song.choiceLabel,
+                action: `play:${songIndex}`,
+                to: null
+              })),
               { id: "not-now", label: "Not right now.", to: null }
             ]
           }
@@ -48,7 +54,9 @@ export function createBeachPianistConversation(
       defaultTopic: "Marshall's Beach"
     },
     onAction: (action) => {
-      if (action === "play") host.requestPerformance();
+      if (!action.startsWith("play:")) return;
+      const songIndex = Number.parseInt(action.slice(5), 10);
+      if (Number.isInteger(songIndex)) host.requestPerformance(songIndex);
     }
   });
 }

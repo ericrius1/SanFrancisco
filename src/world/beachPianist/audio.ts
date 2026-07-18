@@ -4,10 +4,11 @@
 // truth — no private AudioContext. Routing through the music group is what ties
 // the performance to the Music slider rather than the World/soundscape one.
 //
-// Lazy: nothing is fetched at construction. arm() (called on first approach)
-// downloads the AAC bytes; the AudioBuffer is decoded once the shared context
-// exists. Once requested, the transport is authoritative — the source is
-// (re)started at the song offset and resynced if it drifts past RESYNC_DRIFT.
+// Lazy: nothing is fetched at construction. arm(songIndex) downloads only the
+// selected AAC bytes; the AudioBuffer is decoded once the shared context exists.
+// Decoded selections stay cached for later requests. Once requested, the
+// transport is authoritative — the source is (re)started at the song offset and
+// resynced if it drifts past RESYNC_DRIFT.
 
 import { audioEngine } from "../../audio/engine";
 
@@ -30,21 +31,27 @@ const AUDIO = {
 export type TransportAudioState = {
   /** True while the requested one-shot performance is in progress. */
   playing: boolean;
+  /** Playlist entry the transport is currently performing. */
+  songIndex: number;
   /** Current song offset in seconds. */
   songTimeSec: number;
 };
 
+type AudioAssetState = {
+  readonly url: string;
+  armed: boolean;
+  encoded: ArrayBuffer | null;
+  buffer: AudioBuffer | null;
+  decoding: boolean;
+  error: string | null;
+};
+
 export class BeachPianistAudio {
-  #audioUrl: string;
+  #assets: AudioAssetState[];
+  #songIndex = 0;
   #ctx: AudioContext | null = null;
 
-  // lazy asset state
-  #armed = false;
-  #encoded: ArrayBuffer | null = null;
-  #buffer: AudioBuffer | null = null;
-  #decoding = false;
   #disposed = false;
-  #fetchError: string | null = null;
 
   // graph
   #master: GainNode | null = null;
@@ -60,12 +67,20 @@ export class BeachPianistAudio {
   #vy = 0;
   #vz = 0;
 
-  constructor(audioUrl: string) {
-    this.#audioUrl = audioUrl;
+  constructor(audioUrls: readonly string[]) {
+    if (audioUrls.length === 0) throw new Error("BeachPianistAudio needs at least one song");
+    this.#assets = audioUrls.map((url) => ({
+      url,
+      armed: false,
+      encoded: null,
+      buffer: null,
+      decoding: false,
+      error: null
+    }));
   }
 
   get ready(): boolean {
-    return this.#buffer != null;
+    return this.#activeAsset().buffer != null;
   }
 
   get playing(): boolean {
@@ -77,7 +92,7 @@ export class BeachPianistAudio {
   }
 
   get error(): string | null {
-    return this.#fetchError;
+    return this.#activeAsset().error;
   }
 
   /** Seconds of the recording currently sounding, or null when silent. */
@@ -87,35 +102,44 @@ export class BeachPianistAudio {
   }
 
   debugState() {
+    const active = this.#activeAsset();
     return {
-      armed: this.#armed,
+      songIndex: this.#songIndex,
+      armed: active.armed,
       ready: this.ready,
       playing: this.#playing,
       ctx: this.contextState,
       hasPanner: this.#panner != null,
       awake: this.#awake,
       audioTime: this.audioSongTime(),
-      error: this.#fetchError
+      error: active.error,
+      songs: this.#assets.map((asset) => ({
+        armed: asset.armed,
+        ready: asset.buffer != null,
+        decoding: asset.decoding,
+        error: asset.error
+      }))
     };
   }
 
-  /** First-approach gate: download the recording bytes (idempotent, abortable
-   * by disposal). Decode waits for the shared context. */
-  arm(): void {
-    if (this.#armed || this.#disposed) return;
-    this.#armed = true;
-    void fetch(this.#audioUrl)
+  /** Selection/first-approach gate: download one recording (idempotent,
+   * abortable by disposal). Decode waits for the shared context. */
+  arm(songIndex = 0): void {
+    const asset = this.#assets[songIndex];
+    if (!asset || asset.armed || this.#disposed) return;
+    asset.armed = true;
+    void fetch(asset.url)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.arrayBuffer();
       })
       .then((buf) => {
         if (this.#disposed) return;
-        this.#encoded = buf;
+        asset.encoded = buf;
       })
       .catch((error) => {
-        this.#fetchError = String(error).slice(0, 120);
-        console.warn("[beachPianist] audio fetch failed:", error);
+        asset.error = String(error).slice(0, 120);
+        console.warn(`[beachPianist] song ${songIndex} audio fetch failed:`, error);
       });
   }
 
@@ -128,6 +152,7 @@ export class BeachPianistAudio {
 
   update(dist: number, transport: TransportAudioState): void {
     if (this.#disposed) return;
+    this.#selectSong(transport.songIndex);
 
     // Hold the shared engine context alive while audibly near (hysteresis), so
     // the idle-suspend policy can't park it mid-performance. Released past
@@ -152,12 +177,13 @@ export class BeachPianistAudio {
     this.#ctx = ctx;
 
     this.#ensureGraph(ctx, bus.input);
-    if (this.#encoded && !this.#buffer && !this.#decoding) this.#decode(ctx);
+    const asset = this.#activeAsset();
+    if (asset.encoded && !asset.buffer && !asset.decoding) this.#decode(ctx, asset);
     if (this.#panner) movePanner(this.#panner, ctx, this.#vx, this.#vy, this.#vz);
 
     // hysteretic audible window: only run the source when close enough to hear
     const wantAudible =
-      this.#buffer != null &&
+      asset.buffer != null &&
       ctx.state === "running" &&
       transport.playing &&
       (this.#playing ? dist < AUDIO.audibleOff : dist < AUDIO.audibleOn);
@@ -179,6 +205,16 @@ export class BeachPianistAudio {
     }
   }
 
+  #activeAsset(): AudioAssetState {
+    return this.#assets[this.#songIndex];
+  }
+
+  #selectSong(songIndex: number): void {
+    if (!this.#assets[songIndex] || songIndex === this.#songIndex) return;
+    if (this.#playing && this.#ctx) this.#stopSource(this.#ctx);
+    this.#songIndex = songIndex;
+  }
+
   #ensureGraph(ctx: AudioContext, busInput: GainNode): void {
     if (this.#master) return;
     const master = ctx.createGain();
@@ -196,28 +232,28 @@ export class BeachPianistAudio {
     this.#panner = panner;
   }
 
-  #decode(ctx: AudioContext): void {
-    const encoded = this.#encoded;
+  #decode(ctx: AudioContext, asset: AudioAssetState): void {
+    const encoded = asset.encoded;
     if (!encoded) return;
-    this.#decoding = true;
+    asset.decoding = true;
     // decodeAudioData detaches the buffer; we no longer need the bytes after.
     ctx.decodeAudioData(encoded)
       .then((buffer) => {
         if (this.#disposed) return;
-        this.#buffer = buffer;
-        this.#encoded = null;
+        asset.buffer = buffer;
+        asset.encoded = null;
       })
       .catch((error) => {
-        this.#fetchError = String(error).slice(0, 120);
+        asset.error = String(error).slice(0, 120);
         console.warn("[beachPianist] audio decode failed:", error);
       })
       .finally(() => {
-        this.#decoding = false;
+        asset.decoding = false;
       });
   }
 
   #startSource(ctx: AudioContext, offsetSec: number): void {
-    const buffer = this.#buffer;
+    const buffer = this.#activeAsset().buffer;
     const master = this.#master;
     if (!buffer || !master) return;
     const source = ctx.createBufferSource();
@@ -285,8 +321,10 @@ export class BeachPianistAudio {
     this.#master?.disconnect();
     this.#master = null;
     this.#panner = null;
-    this.#buffer = null;
-    this.#encoded = null;
+    for (const asset of this.#assets) {
+      asset.buffer = null;
+      asset.encoded = null;
+    }
     this.#playing = false;
   }
 }

@@ -1,7 +1,7 @@
-// Baked note timeline: the transcribed notes of a recording, decoded from
-// public/audio/pianist/song-1.notes.json into flat typed arrays so the per-frame
-// hand/finger tracking never allocates. The file is trusted (see the feature
-// spec); we only clamp and sort-guard on ingest.
+// Baked note timeline: the transcribed notes of a recording, decoded from a
+// public/audio/pianist/song-*.notes.json file into flat typed arrays so the
+// per-frame hand/finger tracking never allocates. The file is trusted (see the
+// feature spec); we only clamp and sort-guard on ingest.
 //
 //   file: { v, durationMs, notes: [[startMs, durMs, midi, vel, hand], ...] }
 

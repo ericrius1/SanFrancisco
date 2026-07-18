@@ -1,8 +1,8 @@
 // Beach Pianist — a lazy optional world site. A bearded voxel man waits beside
 // a dark voxel grand piano on the sand at Baker Beach, the Golden Gate Bridge
-// spanning the NE horizon behind him. Talk to him and accept his offer to hear
-// the real 42.5 s recording once; his hands and fingers track its transcribed
-// note timeline, then he waits until the player asks again.
+// spanning the NE horizon behind him. Talk to him and choose one of two real
+// recordings; his hands and fingers track the selected song's transcribed note
+// timeline, then he waits until the player asks again.
 //
 // Loading policy (docs/LAZY_LOADING.md): construction is procedural and
 // network-free — a group of voxel boxes. The recording and its note timeline
@@ -40,7 +40,7 @@ const PRIME_RADIUS = 520; // detached pipeline warmup
 const SHOW_RADIUS = 260;
 const HIDE_RADIUS = 300;
 const ANIM_RADIUS = 210; // beyond this the pose/key work is skipped
-const AUDIO_FETCH_RADIUS = 320; // first fetch of the recording + note timeline
+const AUDIO_FETCH_RADIUS = 320; // first fetch of the default recording + note timeline
 export const BEACH_PIANIST_GOD_RAY_RADIUS = 30;
 
 // Voice point: above the soundboard, in stage-local space.
@@ -68,14 +68,16 @@ export class BeachPianist {
   #radialSource: BeachPianistRadialSource | null = null;
   #perfSuppressed = false;
 
-  // lazy note timeline (drives the visual performance)
-  #timeline: NoteTimeline | null = null;
-  #notesArmed = false;
-  #notesError: string | null = null;
+  // Lazy per-song note timelines (drive the visual performance). Song zero is
+  // armed on approach; alternates remain network-cold until chosen.
+  #timelines: Array<NoteTimeline | null> = SONGS.map(() => null);
+  #notesArmed = SONGS.map(() => false);
+  #notesErrors: Array<string | null> = SONGS.map(() => null);
   #disposed = false;
 
   // One-shot transport (authoritative wall-clock once the player requests it).
   #performanceStartMs: number | null = null;
+  #performanceSongIndex = 0;
   #perform = 0; // eased playing intensity
   #lastSongTimeMs = 0;
 
@@ -142,14 +144,14 @@ export class BeachPianist {
     this.group.updateMatrixWorld(true);
 
     // Spatial voice at the soundboard.
-    this.#audio = new BeachPianistAudio(SONGS[0].audio);
+    this.#audio = new BeachPianistAudio(SONGS.map((song) => song.audio));
     this.#stage.localToWorld(this.#tmp.copy(VOICE_LOCAL));
     this.#audio.setVoicePosition(this.#tmp.x, this.#tmp.y, this.#tmp.z);
     this.#conversation = createBeachPianistConversation({
       group: this.group,
       anchor: this.#pianist.rig.head,
       awaitingRequest: () => this.awaitingRequest,
-      requestPerformance: () => this.requestPerformance()
+      requestPerformance: (songIndex) => this.requestPerformance(songIndex)
     });
 
     // Only chunky parts cast; keep them in the every-frame hero shadow domain.
@@ -169,25 +171,26 @@ export class BeachPianist {
     const start = this.#performanceStartMs;
     if (start === null) {
       out.playing = false;
-      out.songIndex = 0;
+      out.songIndex = this.#performanceSongIndex;
       out.songTimeMs = 0;
       return out;
     }
 
+    const song = SONGS[this.#performanceSongIndex];
     const songTimeMs = Math.max(0, nowMs - start);
-    if (songTimeMs < SONGS[0].durationMs) {
+    if (songTimeMs < song.durationMs) {
       out.playing = true;
-      out.songIndex = 0;
+      out.songIndex = this.#performanceSongIndex;
       out.songTimeMs = songTimeMs;
       return out;
     }
 
     // Completion returns to the requestable idle state. Nothing schedules a
-    // replay; only the conversation's Yes action can set a new start time.
+    // replay; only a conversation song choice can set a new start time.
     this.#performanceStartMs = null;
     out.playing = false;
-    out.songIndex = 0;
-    out.songTimeMs = SONGS[0].durationMs;
+    out.songIndex = this.#performanceSongIndex;
+    out.songTimeMs = song.durationMs;
     return out;
   }
 
@@ -197,9 +200,10 @@ export class BeachPianist {
 
   /** Starts one song from the beginning. No-op until the previous request has
    * completed, which keeps repeated input from restarting it mid-performance. */
-  requestPerformance(): boolean {
-    if (this.#disposed || !this.awaitingRequest) return false;
-    this.#armAssets();
+  requestPerformance(songIndex = 0): boolean {
+    if (this.#disposed || !this.awaitingRequest || !SONGS[songIndex]) return false;
+    this.#performanceSongIndex = songIndex;
+    this.#armAssets(songIndex);
     this.#performanceStartMs = performance.now();
     this.#lastSongTimeMs = 0;
     this.#hi = 0;
@@ -237,22 +241,24 @@ export class BeachPianist {
     this.#conversation.project(camera);
   }
 
-  #armAssets(): void {
-    if (this.#notesArmed) return;
-    this.#notesArmed = true;
-    this.#audio.arm();
-    void fetch(SONGS[0].notes)
+  #armAssets(songIndex = 0): void {
+    const song = SONGS[songIndex];
+    if (!song) return;
+    this.#audio.arm(songIndex);
+    if (this.#notesArmed[songIndex]) return;
+    this.#notesArmed[songIndex] = true;
+    void fetch(song.notes)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
       .then((raw) => {
         if (this.#disposed) return;
-        this.#timeline = parseNoteTimeline(raw, SONGS[0].durationMs);
+        this.#timelines[songIndex] = parseNoteTimeline(raw, song.durationMs);
       })
       .catch((error) => {
-        this.#notesError = String(error).slice(0, 120);
-        console.warn("[beachPianist] notes fetch failed:", error);
+        this.#notesErrors[songIndex] = String(error).slice(0, 120);
+        console.warn(`[beachPianist] song ${songIndex} notes fetch failed:`, error);
       });
   }
 
@@ -281,7 +287,11 @@ export class BeachPianist {
     const songTimeMs = tp.playing ? tp.songTimeMs : 0;
 
     // ---- audio (joins when unlocked + near; resyncs to the transport) ----
-    this.#audio.update(dist, { playing: tp.playing, songTimeSec: songTimeMs * 0.001 });
+    this.#audio.update(dist, {
+      playing: tp.playing,
+      songIndex: tp.songIndex,
+      songTimeSec: songTimeMs * 0.001
+    });
 
     // ---- render gate (hysteresis) + warmup ----
     if (this.#renderWarm === "cold" && dist < PRIME_RADIUS) this.#kickRenderWarm();
@@ -309,7 +319,7 @@ export class BeachPianist {
   #buildDrive(tp: Transport, songTimeMs: number, dt: number): void {
     const drive = this.#drive;
     drive.perform = this.#perform;
-    const tl = this.#timeline;
+    const tl = this.#timelines[tp.songIndex];
     drive.left.fingerMidi.fill(-1);
     drive.right.fingerMidi.fill(-1);
     drive.left.fingerPress.fill(0);
@@ -488,8 +498,11 @@ export class BeachPianist {
 
   /** Test hook: warp a requested performance to `songMs`; values at or beyond
    * the duration put the pianist back into the requestable idle state. */
-  debugWarp(songMs: number): void {
-    this.#performanceStartMs = songMs < SONGS[0].durationMs
+  debugWarp(songMs: number, songIndex = 0): void {
+    if (!SONGS[songIndex]) return;
+    this.#performanceSongIndex = songIndex;
+    this.#armAssets(songIndex);
+    this.#performanceStartMs = songMs < SONGS[songIndex].durationMs
       ? performance.now() - Math.max(0, songMs)
       : null;
     this.#lastSongTimeMs = 0;
@@ -543,6 +556,7 @@ export class BeachPianist {
 
   get debugState() {
     const tp = this.#transport(performance.now());
+    const song = SONGS[tp.songIndex];
     this.group.updateMatrixWorld(true);
     this.#pianist.handWorldX(this.#handX);
     // expected key world X for each hand (target key centre transformed to world)
@@ -555,13 +569,23 @@ export class BeachPianist {
       groundY: this.group.position.y,
       visible: this.group.visible,
       renderWarm: this.#renderWarm,
-      notesArmed: this.#notesArmed,
-      notesReady: this.#timeline != null,
-      notesError: this.#notesError,
+      notesArmed: this.#notesArmed[tp.songIndex],
+      notesReady: this.#timelines[tp.songIndex] != null,
+      notesError: this.#notesErrors[tp.songIndex],
+      songs: SONGS.map((entry, songIndex) => ({
+        id: entry.id,
+        title: entry.title,
+        durationMs: entry.durationMs,
+        notesArmed: this.#notesArmed[songIndex],
+        notesReady: this.#timelines[songIndex] != null,
+        notesError: this.#notesErrors[songIndex]
+      })),
       awaitingRequest: this.awaitingRequest,
       conversationActive: this.active,
       phase: tp.playing ? "playing" : "rest",
       songIndex: tp.songIndex,
+      songId: song.id,
+      songTitle: song.title,
       songTimeMs: tp.songTimeMs,
       perform: this.#perform,
       godRayRadius: BEACH_PIANIST_GOD_RAY_RADIUS,
