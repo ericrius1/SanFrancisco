@@ -17,6 +17,7 @@ import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import type { WorldMap } from "../heightmap";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { BeachPianistAudio } from "./audio";
+import { PianoGroveBirds } from "./birds";
 import { buildGrandPiano, KEY_CONTACT } from "./piano";
 import { PIANO_FINGER_KEY_OFFSETS, buildPianist, type PianistDrive } from "./pianist";
 import { BLACK_MIDIS, KEY_IS_BLACK, KEY_SLOT, WHITE_MIDIS, keyCenterX } from "./keys";
@@ -63,6 +64,7 @@ export class BeachPianist {
   #piano: ReturnType<typeof buildGrandPiano>;
   #pianist: ReturnType<typeof buildPianist>;
   #shoreline: PianistShoreline;
+  #birds: PianoGroveBirds;
   #audio: BeachPianistAudio;
   #conversation: ReturnType<typeof createBeachPianistConversation>;
   #radialSource: BeachPianistRadialSource | null = null;
@@ -138,7 +140,8 @@ export class BeachPianist {
     this.group.position.set(BEACH_PIANIST_SITE.x, y, BEACH_PIANIST_SITE.z);
     this.group.rotation.y = BEACH_PIANIST_SITE.yaw;
     this.#shoreline = new PianistShoreline(this.#map, -y);
-    this.group.add(this.#shoreline.group, this.#stage);
+    this.#birds = new PianoGroveBirds();
+    this.group.add(this.#shoreline.group, this.#birds.group, this.#stage);
     this.group.updateMatrixWorld(true);
 
     // Spatial voice at the soundboard.
@@ -294,6 +297,7 @@ export class BeachPianist {
     this.#conversation.update({ x: playerPos.x, y: 0, z: playerPos.z });
     const shorelineActive = !this.#perfSuppressed && this.group.visible && dist < ANIM_RADIUS;
     this.#shoreline.update(_elapsed, shorelineActive);
+    this.#birds.update(dt, dist, _gust, shorelineActive);
     if (!this.group.visible || dist > ANIM_RADIUS) {
       this.#lastSongTimeMs = songTimeMs;
       return;
@@ -523,6 +527,7 @@ export class BeachPianist {
 
   setPerfSuppressed(suppressed: boolean): void {
     this.#perfSuppressed = suppressed;
+    this.#birds.setEnabled(!suppressed);
     this.#conversation.setWorldVisible(!suppressed && this.group.visible);
     if (suppressed) {
       this.#conversation.close();
@@ -577,6 +582,7 @@ export class BeachPianist {
       leftFingerPress: Array.from(this.#drive.left.fingerPress),
       rightFingerPress: Array.from(this.#drive.right.fingerPress),
       shoreline: this.#shoreline.debugState,
+      birds: this.#birds.debugState,
       audio: this.#audio.debugState()
     };
   }
@@ -586,6 +592,7 @@ export class BeachPianist {
     this.#disposed = true;
     this.#conversation.dispose();
     this.#audio.dispose();
+    this.#birds.dispose();
     this.releaseRadialLightSource();
     this.#shoreline.dispose();
     this.#pianist.dispose();
