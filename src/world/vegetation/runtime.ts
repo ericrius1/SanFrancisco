@@ -8,7 +8,7 @@ import { applyVegetationTuning } from "./tuning";
 import { updateWindGusts, windGustValue } from "./wind";
 
 const NO_DISPLACERS: readonly GroundDisplacer[] = [];
-applyVegetationTuning();
+applyVegetationTuning(true);
 
 /** Advance shared vegetation state exactly once per live world frame. */
 export function updateVegetationEnvironment(
