@@ -88,15 +88,12 @@ export const SURF_TUNING = tunables("movement.surf", {
   ollieSpeedLift: { v: 0.06, min: 0, max: 0.3, step: 0.01, label: "ollie speed lift" },
   ollieCooldown: { v: 0.5, min: 0.2, max: 2, step: 0.05, label: "ollie cooldown" },
   gravity: { v: 15.5, min: 6, max: 30, step: 0.25, label: "air gravity" },
-  airYawStyle: { v: 3.45, min: 0, max: 4.5, step: 0.05, label: "air yaw style" },
-  airRollStyle: { v: 0.85, min: 0, max: 1.5, step: 0.02, label: "air roll style" },
-  airAlignResponse: { v: 7.5, min: 2, max: 18, step: 0.25, label: "air auto-align" },
-  // Air tricks: W/S flip, Shift/B grab slows rotation for control + style.
-  airFlipStyle: { v: 4.4, min: 0, max: 8, step: 0.1, label: "air flip rate" },
-  grabRotationScale: { v: 0.55, min: 0.2, max: 1, step: 0.05, label: "grab rotation scale" },
-  // Landing forgiveness for rotation: within this pitch error the flip snaps
-  // level; beyond it the invisible recovery absorbs the slam.
-  flipSnapTolerance: { v: 0.75, min: 0.2, max: 1.6, step: 0.05, label: "flip snap tolerance" },
+  // Aerials are natural surf pops, not trick rotations. Vertical speed raises
+  // the nose on ascent and lowers it on descent while roll settles back toward
+  // level for a readable, feet-planted landing.
+  airPitchScale: { v: 0.024, min: 0.005, max: 0.06, step: 0.001, label: "air pitch from lift" },
+  airPitchLimit: { v: 0.48, min: 0.12, max: 0.8, step: 0.01, label: "air pitch limit" },
+  airAlignResponse: { v: 7.5, min: 2, max: 18, step: 0.25, label: "air pose settle" },
 
   // forgiving magnetic landing + on-surface recovery
   landingMagnet: { v: 1.05, min: 0.2, max: 2.5, step: 0.05, label: "landing magnet" },

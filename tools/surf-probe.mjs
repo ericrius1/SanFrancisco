@@ -724,8 +724,8 @@ async function main() {
     );
 
     // Real-control lip launch: pump the face with W bursts (the KSPS rhythm),
-    // keep steering through one unwrapped aerial rotation, release to let the
-    // landing assist align, then prove the five-point hull returns to
+    // keep steering held through the aerial to prove takeoff input cannot turn
+    // into a trick rotation, then prove the five-point hull returns to
     // supported ride contact.
     await pressEUntilMode(cdp, "walk", 25, "pre-aerial beach reset");
     await pressEUntilMode(cdp, "surf", 25, "pre-aerial surf reset");
@@ -750,19 +750,25 @@ async function main() {
         crest:t.crestDistance,airTime:t.airTime,clearance:t.clearance,minFoot,maxFoot};})()`);
     const spin = await evaluate(cdp, `(()=>{const s=window.__sf;
       s.input.keys.add('KeyA');
+      const takeoffQ=s.player.quaternion.clone(),lastQ=takeoffQ.clone();
       let frames=0,maxSpin=0,maxClearance=0,minFoot=Infinity,maxFoot=-Infinity;
+      let rotationPath=0,maxRotationFromTakeoff=0;
       for(;frames<210;frames++){
         s.tick(${DT});const t=s.player.surfTelemetry;
+        const q=s.player.quaternion;
+        rotationPath+=2*Math.acos(Math.min(1,Math.abs(lastQ.dot(q))));
+        maxRotationFromTakeoff=Math.max(maxRotationFromTakeoff,2*Math.acos(Math.min(1,Math.abs(takeoffQ.dot(q)))));
+        lastQ.copy(q);
         const f=s.player.surfFootDeckClearance;
         maxSpin=Math.max(maxSpin,Math.abs(t.airSpin));
         maxClearance=Math.max(maxClearance,t.clearance);
         minFoot=Math.min(minFoot,f.left,f.right);maxFoot=Math.max(maxFoot,f.left,f.right);
-        if(Math.abs(t.airSpin)>=5.72||t.phase!=='air')break;
+        if(t.phase!=='air')break;
       }
       s.input.keys.delete('KeyA');
       const t=s.player.surfTelemetry;
       return {frames,maxSpin,maxClearance,phase:t.phase,airSpin:t.airSpin,
-        airTime:t.airTime,crest:t.crestDistance,minFoot,maxFoot};})()`);
+        airTime:t.airTime,crest:t.crestDistance,minFoot,maxFoot,rotationPath,maxRotationFromTakeoff};})()`);
     const landing = await evaluate(cdp, `(()=>{const s=window.__sf;
       let frames=0,minGroundHull=Infinity,maxAirClearance=0,maxCompression=0,maxImpactStreaks=0,impactSpawnSerial=0,minFoot=Infinity,maxFoot=-Infinity,phases=[];let prior='';
       for(;frames<300;frames++){
@@ -795,13 +801,14 @@ async function main() {
       { aerialStart, takeoff }
     );
     check(
-      spin.maxSpin >= 5.7 && spin.maxClearance > 1.2,
-      "held aerial carve produces a visible near-360 twirl above the lip",
+      spin.maxSpin < 0.01 && spin.maxClearance > 1.2 &&
+        spin.rotationPath < 3 && spin.maxRotationFromTakeoff < 1.4,
+      "held takeoff carve stays on one natural, rotation-free jump arc",
       spin
     );
     check(
       landing.landing === aerialStart.landing + 1 && landing.phase === "ride" &&
-        Math.abs(landing.landedSpin) >= 5.5 && landing.minGroundHull >= -0.001 &&
+        Math.abs(landing.landedSpin) < 0.01 && landing.minGroundHull >= -0.001 &&
         landing.railContact && landing.maxCompression >= 0.5 &&
         landing.maxImpactStreaks >= 14 && landing.impactSpawnSerial === landing.landing,
       "release aligns one clean, compressed landing back onto five-point rail contact",
@@ -810,7 +817,7 @@ async function main() {
     check(
       Math.min(takeoff.minFoot, spin.minFoot, landing.minFoot) >= 0.002 &&
         Math.max(takeoff.maxFoot, spin.maxFoot, landing.maxFoot) <= 0.015,
-      "both soles stay planted above the deck through approach, spin, and landing",
+      "both soles stay planted above the deck through approach, jump, and landing",
       { takeoff: [takeoff.minFoot, takeoff.maxFoot], spin: [spin.minFoot, spin.maxFoot], landing: [landing.minFoot, landing.maxFoot] }
     );
     check(
@@ -819,9 +826,8 @@ async function main() {
       aerialShot
     );
 
-    // Second aerial: W/S flips + a brief grab. Launch with a W pump, then in
-    // the air hold S for a backflip with Shift grabbed for the first ~0.4 s;
-    // the auto-complete assist finishes the rotation for a clean landing.
+    // Second aerial: hold the retired flip/grab inputs through the jump and
+    // prove they no longer rotate the board away from its natural arc.
     const flipStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
       return {launch:t.launchSerial,landing:t.landingSerial};})()`);
     climbKey = await pickClimbKey();
@@ -849,9 +855,9 @@ async function main() {
         landedFlip:t.landedFlip,landedGrab:t.landedGrab,quality:t.landingQuality,phase:t.phase};})()`);
     check(
       flipAir.launched === true && flipAir.landing === flipStart.landing + 1 &&
-        Math.abs(flipAir.landedFlip) >= 4.5 && flipAir.landedGrab >= 0.3 &&
+        flipAir.maxFlip < 0.01 && Math.abs(flipAir.landedFlip) < 0.01 &&
         flipAir.phase !== "air",
-      "S in the air lands a grabbed backflip with rotation assist",
+      "retired flip/grab inputs still land one stable natural jump",
       { flipStart, flipAir }
     );
 

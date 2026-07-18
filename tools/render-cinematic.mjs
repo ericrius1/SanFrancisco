@@ -181,7 +181,6 @@ function assertCinematicAcceptance(production, capture) {
   if (!surf?.complete) failures.push("controller did not complete the authored aerial");
   if ((surf?.launchSerial ?? 0) < 1) failures.push("no real lip launch");
   if ((surf?.landingSerial ?? 0) < 1) failures.push("no real landing");
-  if (Math.abs(surf?.landedSpin ?? 0) < 6.15) failures.push("spin stayed below 6.15 radians");
   if ((surf?.landingQuality ?? 0) < 0.55) failures.push("landing quality stayed below 0.55");
   if ((surf?.maxLandingCompression ?? 0) < 0.5) failures.push("landing never compressed the rider");
   if ((surf?.minHullClearance ?? -Infinity) < -1e-4) failures.push("board hull penetrated the wave");

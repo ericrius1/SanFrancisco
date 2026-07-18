@@ -447,12 +447,6 @@ export class Input {
           held.add(code);
           if (!this.#padPrev[i]) this.#justPressed.add(code);
         }
-      } else if (i === 1 && this.#mode === "surf") {
-        // B in surf: grab (mirrors keyboard Shift — slows air rotation, style)
-        if (on) {
-          held.add("ShiftLeft");
-          if (!this.#padPrev[i]) this.#justPressed.add("ShiftLeft");
-        }
       } else if (i === 2 && this.#mode === "surf") {
         // X in surf: Flow (mirrors keyboard X — Space/A is always the jump)
         if (on) {

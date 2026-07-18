@@ -77,9 +77,7 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Locked"], label: "camera frames the shore" },
     { c: ["A", "D"], label: "carve — wave side climbs, beach side speeds" },
     { c: ["A", "A"], label: "double-tap = cutback" },
-    { c: ["Space"], label: "jump · big off the lip" },
-    { c: ["W", "S"], label: "flip in the air" },
-    { c: ["Shift"], label: "grab — style + control" },
+    { c: ["Space"], label: "jump · natural air off the lip" },
     { c: ["X"], label: "flow when ready" },
     { c: ["E"], label: "exit to beach" }
   ],
@@ -171,9 +169,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["Locked"], label: "camera frames the shore" },
     { c: ["LS"], label: "carve — wave side climbs, beach side speeds" },
     { c: ["LS"], label: "double-flick = cutback" },
-    { c: ["A"], label: "jump · big off the lip" },
-    { c: ["RT", "LT"], label: "flip in the air" },
-    { c: ["B"], label: "grab — style + control" },
+    { c: ["A"], label: "jump · natural air off the lip" },
     { c: ["X"], label: "flow when ready" },
     { c: ["Y"], label: "exit to beach" }
   ],

@@ -101,13 +101,11 @@ export type SurfTelemetry = {
   relativeFaceSpeed: number;
   carveInput: number;
 
-  /** Signed, unwrapped yaw accumulated during the current / last aerial. */
+  /** Natural-air diagnostics stay at zero; retained for capture telemetry. */
   airSpin: number;
   landedSpin: number;
-  /** Signed, unwrapped pitch (W/S flips) during the current / last aerial. */
   airFlip: number;
   landedFlip: number;
-  /** Seconds of grab (Shift / pad B) held during the current / last aerial. */
   grabTime: number;
   landedGrab: number;
   /** Barrel envelope strength ~55 m ahead down-line (0..1) — HUD telegraph. */
@@ -137,8 +135,9 @@ export type SurfTelemetry = {
  *    position: steer toward the wave to climb, toward the beach to drop, and
  *    the drop pays speed while the climb spends it (A/D alone is the pump).
  *    DOUBLE-TAP a side to commit a roundhouse cutback.
- *  - Space/pad-A always jumps (big off the lip); in the air A/D spins, W/S
- *    flips, Shift / pad-B grabs; X spends Flow. Camera never orbits.
+ *  - Space/pad-A always jumps (big off the lip). Airborne orientation holds
+ *    the takeoff heading through one natural nose-up/nose-down pop; the ride
+ *    smoothly resumes its line after landing. X spends Flow.
  */
 export class SurfController implements ModeController {
   readonly spawnLift = 0;
@@ -226,9 +225,6 @@ export class SurfController implements ModeController {
   #entryAssist = 0;
   #airVy = 0;
   #airTime = 0;
-  #airSpin = 0;
-  #airFlip = 0;
-  #grabTime = 0;
   /** Flow's velocity scale is applied once per air, not per step. */
   #airFlowApplied = false;
   #landingCompression = 0;
@@ -314,9 +310,6 @@ export class SurfController implements ModeController {
     this.#entryAssist = SURF_TUNING.values.entryAssistDuration;
     this.#airVy = 0;
     this.#airTime = 0;
-    this.#airSpin = 0;
-    this.#airFlip = 0;
-    this.#grabTime = 0;
     this.#landingCompression = 0;
     this.#launchCharge = 0;
     this.#launchCooldown = 0;
@@ -363,10 +356,9 @@ export class SurfController implements ModeController {
   }
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {
-    const throttle = input.axis("KeyS", "KeyW");
     // Board-relative carve: A / stick-left always turns left of the nose, D
     // right — independent of north vs south peel. Chase cam sits behind so
-    // screen-left matches board-left. Lean/spin share this `steer` sign.
+    // screen-left matches board-left.
     const steer = input.axis("KeyD", "KeyA");
     this.#launchCooldown = Math.max(0, this.#launchCooldown - dt);
     this.#popRequest = Math.max(0, this.#popRequest - dt);
@@ -392,10 +384,9 @@ export class SurfController implements ModeController {
     this.#entryAssist = Math.max(0, this.#entryAssist - dt);
     this.#landingCompression *= Math.exp(-Math.max(0, dt) * 5.2);
 
-    const grab = !input.suspended && input.held("ShiftLeft");
-    if (this.#phase === "air") this.#updateAir(ctx, dt, motionDt, throttle, steer, grab, frame, riderRate);
+    if (this.#phase === "air") this.#updateAir(ctx, dt, motionDt, frame, riderRate);
     else if (this.#phase === "recover") this.#updateRecovery(ctx, dt, motionDt, steer, frame, riderRate);
-    else this.#updateRide(ctx, dt, motionDt, throttle, steer, frame, riderRate);
+    else this.#updateRide(ctx, dt, motionDt, steer, frame, riderRate);
     this.#updateTubeState(dt);
   }
 
@@ -405,7 +396,6 @@ export class SurfController implements ModeController {
     ctx: PlayerCtx,
     dt: number,
     motionDt: number,
-    throttle: number,
     steer: number,
     frame: ModeFrame,
     riderRate: number
@@ -668,9 +658,6 @@ export class SurfController implements ModeController {
     this.grounded = false;
     this.#resetTapState();
     this.#airTime = 0;
-    this.#airSpin = 0;
-    this.#airFlip = 0;
-    this.#grabTime = 0;
     this.#landingCompression = 0;
     this.#airVy = (tb.ollieVelocity + speed * tb.ollieSpeedLift) * shape.launch;
     // Launching during Flow: the ride commit already carried the scaled speed.
@@ -691,9 +678,6 @@ export class SurfController implements ModeController {
     this.grounded = false;
     this.#resetTapState();
     this.#airTime = 0;
-    this.#airSpin = 0;
-    this.#airFlip = 0;
-    this.#grabTime = 0;
     this.#landingCompression = 0;
     this.#airVy =
       (tb.launchVelocity +
@@ -714,9 +698,6 @@ export class SurfController implements ModeController {
     ctx: PlayerCtx,
     dt: number,
     motionDt: number,
-    throttle: number,
-    steer: number,
-    grab: boolean,
     frame: ModeFrame,
     riderRate: number
   ) {
@@ -763,44 +744,20 @@ export class SurfController implements ModeController {
       vx = crestVx + THREE.MathUtils.lerp(relativeVx, targetRelativeVx, Math.min(1, dt * 1.7));
     }
     const vy = this.#airVy * riderRate;
-    // Air A/D stays screen-relative with the same fixed sign as ride. A held
-    // grab (Shift / pad B) slows every rotation for style + control.
-    const grabScale = grab ? tb.grabRotationScale : 1;
-    if (grab) this.#grabTime += dt;
-    // Same sign convention as the grounded carve (A increases yaw).
-    const spinStep = steer * tb.airYawStyle * shape.carve * grabScale * motionDt;
-    this.yaw += spinStep;
-    this.#airSpin += spinStep;
-    // W/S = front / back flip. Once a flip has begun, pitch free-runs (the
-    // vy-based glide pose below would fight the rotation).
-    const flipStep =
-      Math.abs(throttle) > 0.25
-        ? -throttle * tb.airFlipStyle * grabScale * motionDt
-        : 0;
-    this.pitch += flipStep;
-    this.#airFlip += flipStep;
-    const targetLean = steer * tb.airRollStyle;
-    this.lean +=
-      (targetLean - this.lean) *
-      (1 - Math.exp(-motionDt * tb.airAlignResponse * 0.72));
-
-    // Keep a soft travel align so landings stay recoverable.
+    // A normal surfer's pop: hold the takeoff heading with no axial trick
+    // rotation, shed the takeoff rail angle, raise the nose while climbing and
+    // lower it on descent. Grounded carving smoothly resumes the travel line
+    // after touchdown; forcing that alignment in midair made an ordinary lip
+    // launch look like an unwanted 120-degree spin.
     const travelYaw = Math.atan2(-vx, -vz);
-    if (Math.abs(steer) < 0.15) {
-      this.yaw +=
-        shortestAngle(travelYaw, this.yaw) *
-        (1 - Math.exp(-motionDt * tb.airAlignResponse * 0.35));
-    }
-    // Auto-complete assist: with W/S released mid-flip, ease pitch toward the
-    // nearest level revolution so near-complete flips land clean.
-    if (Math.abs(throttle) <= 0.25 && Math.abs(this.#airFlip) > 0.3) {
-      const level = Math.round(this.pitch / (Math.PI * 2)) * Math.PI * 2;
-      const step =
-        shortestAngle(level, this.pitch) *
-        (1 - Math.exp(-motionDt * tb.airAlignResponse * 0.5));
-      this.pitch += step;
-      this.#airFlip += step;
-    }
+    const airAlign = 1 - Math.exp(-motionDt * tb.airAlignResponse);
+    this.lean += (0 - this.lean) * airAlign;
+    const pitchTarget = THREE.MathUtils.clamp(
+      this.#airVy * tb.airPitchScale,
+      -tb.airPitchLimit,
+      tb.airPitchLimit
+    );
+    this.pitch += (pitchTarget - this.pitch) * airAlign;
 
     let y = this.#safeY(ctx, tb.railHeight);
     const nx = p.x + vx * dt;
@@ -812,22 +769,18 @@ export class SurfController implements ModeController {
 
     if (descending && predictedY <= landingFloor + magnet) {
       const alignment = Math.abs(shortestAngle(this.yaw, travelYaw));
-      // Unfinished flip rotation counts against the landing like yaw misalign.
-      const level = Math.round(this.pitch / (Math.PI * 2)) * Math.PI * 2;
-      const flipError = Math.abs(shortestAngle(level, this.pitch));
       const impact = Math.abs(this.#airVy);
       const quality = THREE.MathUtils.clamp(
         1 -
           alignment / Math.PI * 0.7 -
-          flipError / Math.PI * 0.55 -
           Math.max(0, impact - tb.softLandingSpeed) / tb.hardLandingRange,
         0,
         1
       );
       this.telemetry.landedAirTime = this.#airTime;
-      this.telemetry.landedSpin = this.#airSpin;
-      this.telemetry.landedFlip = this.#airFlip;
-      this.telemetry.landedGrab = this.#grabTime;
+      this.telemetry.landedSpin = 0;
+      this.telemetry.landedFlip = 0;
+      this.telemetry.landedGrab = 0;
       this.telemetry.landingQuality = quality;
       this.#landingCompression = THREE.MathUtils.clamp(0.48 + impact / 22, 0.55, 1);
       this.telemetry.landingSerial++;
@@ -842,38 +795,22 @@ export class SurfController implements ModeController {
       );
       this.#airVy = 0;
       this.#airTime = 0;
-      this.#airSpin = 0;
-      this.#airFlip = 0;
-      this.#grabTime = 0;
       this.grounded = true;
       if (quality < tb.recoveryQuality) this.#beginRecovery(1 - quality);
       else this.#phase = "ride";
-      this.yaw += shortestAngle(travelYaw, this.yaw) * 0.75;
       // Re-seat travel + face placement from the actual landing direction so
       // the grounded model resumes on a clean line.
       this.#lineDirection = vz >= 0 ? 1 : -1;
       this.#steerSwing = 0;
       this.#resetTapState();
       this.lean *= 0.35;
-      // Snap to the WRAPPED residual, never the absolute revolution count: a
-      // landed 360 must resume at pitch 0, not ease 2π back through the board
-      // (which read as a slow reverse flip + a 2 m contact-floor pop).
-      this.pitch =
-        flipError <= tb.flipSnapTolerance
-          ? 0
-          : shortestAngle(this.pitch, level) * 0.5;
+      this.pitch = 0;
       this.#commit(ctx, y, vx, trackVy, vz);
       this.#syncTelemetry(ctx, frame, sample, Math.hypot(vx, vz), y, riderRate);
       return;
     }
 
     this.grounded = false;
-    // The vy-based glide pose only applies when no flip is being ridden.
-    if (Math.abs(throttle) <= 0.25 && Math.abs(this.#airFlip) < 0.3) {
-      const pitchTarget = THREE.MathUtils.clamp(this.#airVy * 0.024, -0.48, 0.52);
-      this.pitch += (pitchTarget - this.pitch) * Math.min(1, motionDt * 4.5);
-    }
-    this.lean = THREE.MathUtils.clamp(this.lean, -1.45, 1.45);
     this.#commit(ctx, y, vx, vy, vz);
     this.#syncTelemetry(ctx, frame, sample, Math.hypot(vx, vz), y, riderRate);
   }
@@ -1227,9 +1164,6 @@ export class SurfController implements ModeController {
     this.#phase = "ride";
     this.#airVy = 0;
     this.#airTime = 0;
-    this.#airSpin = 0;
-    this.#airFlip = 0;
-    this.#grabTime = 0;
     this.#landingCompression = 0;
     this.#launchCharge = 0;
     this.#launchCooldown = Math.max(this.#launchCooldown, nextWave ? 0.45 : 0);
@@ -1355,9 +1289,9 @@ export class SurfController implements ModeController {
       sample.crestDistance <= SURF_TUNING.values.faceCorridorMax + 0.05;
     tm.relativeFaceSpeed = this.#relativeFaceSpeed;
     tm.carveInput = this.#carve;
-    tm.airSpin = this.#airSpin;
-    tm.airFlip = this.#airFlip;
-    tm.grabTime = this.#grabTime;
+    tm.airSpin = 0;
+    tm.airFlip = 0;
+    tm.grabTime = 0;
     tm.landingCompression = this.#landingCompression;
     // Barrel telegraph: envelope strength ~55 m ahead down the line.
     tm.barrelAhead =
