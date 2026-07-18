@@ -188,6 +188,7 @@ import { createTeaGardenController } from "./app/compose/teaGarden";
 import { createOptionalSites, type OptionalSiteId } from "./app/compose/optionalSites";
 import { NavigationController } from "./app/navigation";
 import { WorldArrivalCoordinator } from "./app/worldArrival";
+import { DebugRegistry } from "./app/debugRegistry";
 import { writeDevReloadSnapshot } from "./app/hmr/devReloadSnapshot";
 import { RendererDiagnostics } from "./app/diagnostics";
 import type { PickleballController } from "./app/systems/pickleball";
@@ -4688,26 +4689,83 @@ async function boot() {
   const dynRes = adaptiveRes;
 
   const exposeDebugHooks = () => {
-    Object.assign(window as never, {
+    // The `__sf` debug surface now derives from a typed DebugRegistry
+    // (docs/MAIN_DECOMPOSITION.md, step 4) instead of a hand-maintained object
+    // literal. `refs` are stable handles captured once — `const`s and any value
+    // that IS a function (a getter/opener stored as-is for consumers to call).
+    // `getters` are thunks evaluated by build(): every mutable `let` alias and
+    // computed read, so this single build reflects the live binding exactly as
+    // the old literal's shorthand did at this same point in boot. Live updates
+    // continue to flow through the existing Object.assign refresh paths
+    // (onSitesChanged, the late region-load callbacks) — untouched.
+    const registry = new DebugRegistry();
+    registry.refs({
+      scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline,
+      dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING,
+      RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks,
+      graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG,
+      THREE, tick, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
+      audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
+      doorAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice,
+      minimap, playerLocator, boardWake, abandonedMounts, ghostShipBeacon,
+      embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl,
+      tutorial, teleportToTarget, citygenRing, worldCursor, worldQueries,
+      buildingRayRefiner, underwater, water, ensureSurfRuntime, debugOverlays,
+      calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING,
+      setFoliageVisible, buskers, buskerTalk, ensureCarCustomizer, siteGate,
+      siteFoliage, TSL, worldArrival, lazyRegionTimings,
+      getPaintAudio: () => paintAudio,
+      getBubbleAudio: () => bubbleAudio,
+      boardSelector: board,
+      getBoardSelector: () => board.get(),
+      getCarSelector: () => car.get(),
+      getCarConfig: () => ({ ...carConfig }),
+      getSurfboardConfig: () => ({ ...surfboardConfig }),
+      optionalWorldSites: sites.list,
+      ensureOptionalWorldSite: sites.ensure,
+      teaGardenBuildingSwapState: teaGarden.buildingSwapState,
+      ensureOceanBeachKite: oceanKite.ensure,
+      oceanKiteSite: oceanKite.site,
       // renderIdle: probes MUST wait for this before capture phases — while the
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden: teaGarden.current(), pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector: board, getBoardSelector: () => board.get(), ensureCarCustomizer, getCarSelector: () => car.get(), getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, beachPianist, afterlight, optionalWorldSites: sites.list, ensureOptionalWorldSite: sites.ensure, siteFoliage,
-        TSL,
-        renderIdle: () => modulesReady && sites.streamingIdle() }
+      renderIdle: () => modulesReady && sites.streamingIdle()
     });
-    const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-    if (hooks) {
-      Object.assign(hooks, {
-        worldArrival,
-        lazyRegionTimings,
-        teaGardenBuildingSwapState: teaGarden.buildingSwapState,
-        oceanBeachKite: oceanKite.current(),
-        ensureOceanBeachKite: oceanKite.ensure,
-        oceanKiteSite: oceanKite.site
-      });
-    }
+    registry.getters({
+      creatures: () => creatures,
+      forest: () => forest,
+      garden: () => garden,
+      wildlands: () => wildlands,
+      buenaVistaTrees: () => buenaVistaTrees,
+      goldenGateTennis: () => goldenGateTennis,
+      japaneseTeaGarden: () => teaGarden.current(),
+      pickleball: () => pickleballController?.game ?? null,
+      pickleballAmbient: () => pickleballController?.ambient ?? null,
+      pickleballAudio: () => pickleballController?.audio ?? null,
+      pickleballUI: () => pickleballController?.ui ?? null,
+      pickleballController: () => pickleballController,
+      coronaHeights: () => coronaHeights,
+      missionDolores: () => missionDolores,
+      sutroBaths: () => sutroBaths,
+      ghostShip: () => ghostShip,
+      ensureGhostShipDetail: () => ensureGhostShipDetail,
+      fetchBall: () => fetchBall,
+      goldenGateLights: () => goldenGateLights,
+      trafficLights: () => trafficLights,
+      streetLamps: () => streetLamps,
+      citygen: () => citygen,
+      oceanBeachWaves: () => oceanBeachWaves,
+      surfExperience: () => surfExperience,
+      roadMarkings: () => roadMarkings,
+      ensureSurfboardCustomizer: () => ensureSurfboardCustomizer,
+      palaceReverie: () => palaceReverie,
+      landsEnd: () => landsEnd,
+      beachPianist: () => beachPianist,
+      afterlight: () => afterlight,
+      oceanBeachKite: () => oceanKite.current()
+    });
+    Object.assign(window as never, { __sf: registry.build() });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
     exposeDebugHooks();
