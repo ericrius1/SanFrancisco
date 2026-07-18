@@ -8,10 +8,6 @@ import { cleanPlate } from "./shared";
 
 export const SURF_AERIAL_SECONDS = 10;
 
-// Release only after the board has visually closed the full turn. The earlier
-// 5.7-radian threshold was mechanically a near-360, but its remaining ~32°
-// made the final descent read tail-first in a frozen portrait frame.
-const SPIN_RELEASE_RADIANS = 6.2;
 const HIGH_LINE_START_SECONDS = 0.85;
 const LANDING_CARVE_SECONDS = 1.35;
 const DRIVEN_KEYS = ["KeyW", "KeyA", "KeyD", "KeyS", "ShiftLeft", "Space", "KeyX"] as const;
@@ -57,7 +53,7 @@ type SurfAerialWindow = Window &
 /**
  * One continuous, seven-second portrait-friendly surf take. The camera is the
  * only cinematic authority: board/rider motion is produced entirely by the
- * normal fixed-step SurfController and its real W/A/D inputs.
+ * normal fixed-step SurfController and its real carve/jump arc.
  */
 export const surfAerialCinematic: Demo = {
   name: "surf-aerial",
@@ -307,14 +303,12 @@ export const surfAerialCinematic: Demo = {
           if (time < HIGH_LINE_START_SECONDS) hold("KeyW");
           else hold("KeyW", "KeyA");
         } else if (telemetry.phase === "air") {
-          if (spinReleasedAt === null && Math.abs(telemetry.airSpin) < SPIN_RELEASE_RADIANS) {
-            stage = "spin";
-            hold("KeyA");
-          } else {
-            if (spinReleasedAt === null) spinReleasedAt = time;
-            stage = "align";
-            hold();
-          }
+          // The production now captures the same restrained natural pop as
+          // live play. Release the takeoff carve immediately so no cinematic
+          // input asks the controller for an obsolete trick rotation.
+          if (spinReleasedAt === null) spinReleasedAt = time;
+          stage = "align";
+          hold();
         } else {
           if (landedAt === null && telemetry.landingSerial > baseLandingSerial) landedAt = time;
           if (landedAt !== null && time - landedAt < LANDING_CARVE_SECONDS) {
@@ -355,7 +349,6 @@ export const surfAerialCinematic: Demo = {
         captureState.resetCount = resetCount;
         captureState.complete =
           landedAt !== null &&
-          maxAbsAirSpin >= SPIN_RELEASE_RADIANS &&
           telemetry.landingSerial > baseLandingSerial;
         captureState.position[0] = ctx.player.position.x;
         captureState.position[1] = ctx.player.position.y;

@@ -113,29 +113,10 @@ export class SurfExperience {
     if (surf.landingSerial !== this.#landingSerial) {
       this.#landingSerial = surf.landingSerial;
       if (surf.landedAirTime > 0.24) {
-        // Named trick from the landed rotation: spins in 180s, W/S flips, grab.
-        const spinDeg = Math.round(Math.abs(surf.landedSpin) / Math.PI) * 180;
-        const flips = Math.round(Math.abs(surf.landedFlip) / (Math.PI * 2));
-        const grabbed = surf.landedGrab > 0.35;
-        const parts: string[] = [];
-        if (flips > 0) {
-          parts.push(
-            `${flips > 1 ? `${flips}x ` : ""}${surf.landedFlip < 0 ? "FRONTFLIP" : "BACKFLIP"}`
-          );
-        }
-        if (spinDeg >= 180) parts.push(`${spinDeg}`);
-        if (grabbed) parts.push("GRAB");
-        const label = parts.length
-          ? parts.join(" + ")
-          : surf.landedAirTime > 0.85
-            ? "BIG AIR"
-            : "CLEAN LANDING";
+        const label = surf.landedAirTime > 0.85 ? "BIG AIR" : "CLEAN LANDING";
         const points = Math.round(
           (180 +
-            surf.landedAirTime * 420 +
-            spinDeg * 1.3 +
-            flips * 420 +
-            (grabbed ? 160 : 0)) *
+            surf.landedAirTime * 420) *
             (0.55 + surf.landingQuality * 0.45)
         );
         this.#award(points, label, "landing");

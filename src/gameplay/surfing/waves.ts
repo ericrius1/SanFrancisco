@@ -277,7 +277,11 @@ export class OceanBeachWaves {
       roughness: 0.5,
       metalness: 0,
       transparent: true,
-      depthWrite: false
+      // The steep heightfield overlaps itself in screen space from the low surf
+      // camera. Without depth writes, distant rows can paint a sea-level stripe
+      // over the nearer wall because transparent triangles are not depth-sorted.
+      depthWrite: true,
+      alphaTest: 0.02
     });
     const t = this.#uTime;
     // positionGeometry is the immutable grid attribute. positionLocal is
@@ -381,33 +385,19 @@ export class OceanBeachWaves {
     const chop = mx_noise_float(vec3(wx.mul(0.22), wz.mul(0.22), t.mul(0.6))).mul(0.08);
     mat.normalNode = bumpNormal(contactHeight.add(chop));
 
-    // This is a wave, not a second ocean sheet. Alpha follows semantic face,
-    // lip and whitewater bands so the large graded patch disappears completely
-    // between sets instead of laying a pale polygon over the rider and horizon.
+    // This sheet replaces the base ocean only where an actual wave stands up.
+    // Keeping the whole 116 x 1080 m contact patch opaque turns its flat troughs
+    // into a giant polygon at grazing camera angles; leaving the raised body
+    // translucent lets the flat base-ocean horizon show through it. The base
+    // water uses this same semantic/height envelope for its complementary cut.
     const presence = smoothstep(
       0.035,
       0.38,
       max(max(f.face, f.lip), f.white)
     ).toVar();
-    const alpha = mix(float(0.88), float(1.0), smoothstep(0.12, 0.62, max(f.face, f.lip)));
-    const replacementCore = smoothstep(
-      0.12,
-      0.38,
-      max(max(f.face, f.lip), f.white)
-    ).mul(zRim);
-    // The whole raised swell is opaque, not just the thin bright face band. The
-    // old alpha faded out across the crest, shoulder and back, so you saw the
-    // flat ocean and sky straight through the wave. Anywhere the wave stands up
-    // more than ~0.6 m it now fully occludes what is behind it.
-    // Anything standing more than ~0.3 m is fully opaque — a translucent
-    // mid-face let the horizon/base sheets read straight through the wall.
     const waveBody = smoothstep(float(0.3), float(1.4), f.height);
-    // Whitewater wash is opaque foam (it must fully replace the base sheet it
-    // cut out), not a translucent dark film over the bright bay water.
-    mat.opacityNode = max(
-      max(mix(alpha, float(1), replacementCore).mul(presence), waveBody),
-      wash.mul(0.92)
-    )
+    const waveOpacity = max(presence, max(waveBody, wash.mul(0.92)));
+    mat.opacityNode = waveOpacity
       .mul(contactEdge)
       .mul(stripFade)
       .mul(zRim);
@@ -508,7 +498,10 @@ export class OceanBeachWaves {
       roughness: 0.55,
       metalness: 0,
       transparent: true,
-      depthWrite: false
+      // Repeated sets overlap at grazing angles; keep the closest displaced
+      // surface in the depth buffer instead of compositing rows in index order.
+      depthWrite: true,
+      alphaTest: 0.02
     });
     const t = this.#uTime;
     const wx = positionGeometry.x.add(this.#uMidOrigin.x);

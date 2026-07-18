@@ -63,17 +63,40 @@ try{
   const toggles=[
     ["ocean_beach_surf_face","face-off"],
     ["ocean_beach_barrel_roof","barrel-off"],
+    ["ocean_beach_mid_swell","mid-off"],
+    ["water_echo_shadows","echo-shadows-off"],
+    ["water_echo_lights","echo-lights-off"],
   ];
   for(const [name,label] of toggles){
-    await ev(cdp,`(()=>{let f=null;window.__sf.scene.traverse(o=>{if(o.name==='${name}')f=o;});if(f)f.visible=false;return Boolean(f);})()`);
+    await ev(cdp,`(()=>{let f=null;window.__sf.scene.traverse(o=>{if(o.name==='${name}')f=o;});if(f)f.material.visible=false;return Boolean(f);})()`);
     await shot(cdp,`1-${label}.png`);
-    await ev(cdp,`(()=>{let f=null;window.__sf.scene.traverse(o=>{if(o.name==='${name}')f=o;});if(f)f.visible=true;return Boolean(f);})()`);
+    await ev(cdp,`(()=>{let f=null;window.__sf.scene.traverse(o=>{if(o.name==='${name}')f=o;});if(f)f.material.visible=true;return Boolean(f);})()`);
   }
+  const comboShot=async(name,{face=false,mid=false,near=false,far=false})=>{
+    await ev(cdp,`(()=>{const vis=${JSON.stringify({face,mid})};
+      window.__sf.scene.traverse(o=>{
+        if(o.name==='ocean_beach_surf_face')o.material.visible=vis.face;
+        if(o.name==='ocean_beach_mid_swell')o.material.visible=vis.mid;
+        if(o.name==='ocean_beach_barrel_roof'||o.name==='water_echo_shadows'||o.name==='water_echo_lights')o.material.visible=false;
+      });
+      window.__sf.water.near.material.visible=${near};window.__sf.water.far.material.visible=${far};return true;})()`);
+    await shot(cdp,name);
+  };
+  await comboShot("1-combo-face-only.png",{face:true});
+  await comboShot("1-combo-mid-only.png",{mid:true});
+  await comboShot("1-combo-near-only.png",{near:true});
+  await comboShot("1-combo-far-only.png",{far:true});
+  await comboShot("1-combo-face-near.png",{face:true,near:true});
+  await comboShot("1-combo-face-far.png",{face:true,far:true});
+  await comboShot("1-combo-all.png",{face:true,mid:true,near:true,far:true});
+  await ev(cdp,`(()=>{window.__sf.scene.traverse(o=>{
+    if(o.name==='ocean_beach_barrel_roof'||o.name==='water_echo_shadows'||o.name==='water_echo_lights')o.material.visible=true;
+  });return true;})()`);
   // toggle the unnamed base sheets directly
   for(const key of ["far","near"]){
-    await ev(cdp,`(()=>{window.__sf.water.${key}.visible=false;return true;})()`);
+    await ev(cdp,`(()=>{window.__sf.water.${key}.material.visible=false;return true;})()`);
     await shot(cdp,`2-water-${key}-off.png`);
-    await ev(cdp,`(()=>{window.__sf.water.${key}.visible=true;return true;})()`);
+    await ev(cdp,`(()=>{window.__sf.water.${key}.material.visible=true;return true;})()`);
   }
   // open face: carve away from the tube (A drops shoreward for north travel,
   // then neutral re-trims), advance, re-shoot
@@ -85,15 +108,15 @@ try{
     return s.player.surfTelemetry.tubeState;})()`).then(st=>console.log("tubeState:",st));
   await shot(cdp,"3-openface.png");
   for(const key of ["far","near"]){
-    await ev(cdp,`(()=>{window.__sf.water.${key}.visible=false;return true;})()`);
+    await ev(cdp,`(()=>{window.__sf.water.${key}.material.visible=false;return true;})()`);
     await shot(cdp,`3-openface-water-${key}-off.png`);
-    await ev(cdp,`(()=>{window.__sf.water.${key}.visible=true;return true;})()`);
+    await ev(cdp,`(()=>{window.__sf.water.${key}.material.visible=true;return true;})()`);
   }
-  await ev(cdp,`(()=>{let f=null;window.__sf.scene.traverse(o=>{if(o.name==='ocean_beach_surf_face')f=o;});if(f)f.visible=false;return Boolean(f);})()`);
+  await ev(cdp,`(()=>{let f=null;window.__sf.scene.traverse(o=>{if(o.name==='ocean_beach_surf_face')f=o;});if(f)f.material.visible=false;return Boolean(f);})()`);
   await shot(cdp,"3-openface-face-off.png");
   cdp.close();
 }finally{
   chrome.kill("SIGTERM");
   await sleep(300);
-  rmSync(PROFILE,{recursive:true,force:true});
+  rmSync(PROFILE,{recursive:true,force:true,maxRetries:5,retryDelay:100});
 }

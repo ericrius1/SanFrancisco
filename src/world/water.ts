@@ -93,7 +93,11 @@ export class Water {
         roughness: 0.48,
         metalness: 0,
         transparent: true,
-        depthWrite: false
+        // The displaced near sheet can fold over itself in screen space from a
+        // surfer-height camera. Let its closest triangles occlude distant rows;
+        // the map-wide flat sheet remains a non-writing backdrop.
+        depthWrite: displace > 0,
+        alphaTest: displace > 0 ? 0.02 : 0
       });
 
       const t = this.#uTime;
@@ -279,7 +283,7 @@ export class Water {
       // The lazy high-resolution face follows the player in a 1080 m down-line
       // window — wider than this whole 560 m near patch — so whenever the surf
       // overlay is live the base near sheet yields everywhere its semantic surf
-      // water is strong, preventing two transparent copies of the same wall.
+      // water is strong, preventing two copies of the same wall.
       const surfReplacement = displace > 0
         ? smoothstep(0.12, 0.38, surfPresence).mul(this.#uSurfing)
         : float(0);

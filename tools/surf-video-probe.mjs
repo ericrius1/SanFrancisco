@@ -50,7 +50,7 @@ try {
   await sleep(1200);
 
   // Scripted run driven in wall time against the LIVE loop:
-  // neutral → drop carve → climb to launch → air spin → land → pocket.
+  // neutral → drop carve → climb to launch → natural air → land → pocket.
   const script = await ev(cdp, `(()=>{
     const s=window.__sf;
     const dir=s.player.surfTelemetry.lineDirection;
@@ -60,8 +60,8 @@ try {
       {t:0.0, keys:[]},
       {t:1.2, keys:[drop]},
       {t:2.6, keys:[climb]},
-      {t:5.2, keys:[climb]},        // hold through launch; spins in air
-      {t:6.6, keys:[]},             // release for landing assist
+      {t:5.2, keys:[climb]},        // held takeoff input stays rotation-free
+      {t:6.6, keys:[]},             // coast through the landing
       {t:8.4, keys:[]}
     ];
     window.__filmScript={steps,started:performance.now()/1000};
