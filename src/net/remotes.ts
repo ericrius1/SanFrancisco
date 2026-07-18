@@ -62,6 +62,15 @@ import { CANVAS_FONT_FAMILY } from "../core/typography";
 
 const INTERP_DELAY_MS = 150;
 const BUFFER_KEEP_MS = 1200;
+// A remote player kilometres away is a couple of jittering pixels (their car
+// bobbing on their own client reads as a sky artifact here) while still paying
+// full draw + rig-pose cost. Same policy as abandoned persistent mounts: hide
+// the mesh far out, keep interpolating the pose so the minimap, HUD locator,
+// and teleport-to-player still track them. Hysteresis so the edge never pops.
+const FAR_HIDE_DISTANCE = 1250;
+const FAR_SHOW_DISTANCE = 1150;
+const FAR_HIDE_SQ = FAR_HIDE_DISTANCE * FAR_HIDE_DISTANCE;
+const FAR_SHOW_SQ = FAR_SHOW_DISTANCE * FAR_SHOW_DISTANCE;
 
 // name tags: one canvas texture per player, drawn once (and on rename)
 function makeTag(name: string, hue: number): THREE.Sprite {
@@ -127,6 +136,8 @@ type Avatar = {
   vy: number; // vertical velocity estimate (air poses)
   ride: number; // driver id while riding shotgun (0 = not riding)
   rideSeat: number; // one-based passenger anchor on that vehicle
+  placed: boolean; // has a snapshot pose (root.visible alone can't tell — far-hide clears it)
+  farHidden: boolean; // beyond FAR_HIDE_DISTANCE: mesh hidden, pose still interpolated
   avatar: AvatarTraits;
   avatarKey: string;
   board: BoardConfig;
@@ -280,7 +291,7 @@ export class RemotePlayers {
   locatorTargets(): { id: number; name: string; hue: number; x: number; y: number; z: number; mode: PlayerMode }[] {
     const out = [];
     for (const a of this.avatars.values()) {
-      if (!a.mode || !a.root.visible) continue;
+      if (!a.mode || !a.placed) continue;
       const p = a.root.position;
       out.push({ id: a.info.id, name: a.info.name, hue: a.info.hue, x: p.x, y: p.y, z: p.z, mode: a.mode });
     }
@@ -296,7 +307,7 @@ export class RemotePlayers {
   /** Live pose + mode of one player — teleport matches their altitude and embodiment. */
   stateOf(id: number): { x: number; y: number; z: number; mode: PlayerMode } | null {
     const a = this.avatars.get(id);
-    if (!a?.mode || !a.root.visible) return null;
+    if (!a?.mode || !a.placed) return null;
     const p = a.root.position;
     return { x: p.x, y: p.y, z: p.z, mode: a.mode };
   }
@@ -466,6 +477,8 @@ export class RemotePlayers {
       vy: 0,
       ride: 0,
       rideSeat: 0,
+      placed: false,
+      farHidden: false,
       avatar: av,
       avatarKey: avatarKey(av),
       board: bd,
@@ -786,7 +799,27 @@ export class RemotePlayers {
       a.ride = b.ride ?? 0;
       a.rideSeat = b.rideSeat ?? (a.ride ? 1 : 0);
       if (a.ride) this.#riders.push(a);
-      a.root.visible = true;
+      a.placed = true;
+
+      // Far players: pose keeps interpolating (minimap/locator/teleport), but
+      // the mesh neither draws nor animates until they come back inside range.
+      const localPos = this.localPlayerPosition();
+      if (localPos) {
+        const d2 = a.root.position.distanceToSquared(localPos);
+        if (a.farHidden) {
+          if (d2 < FAR_SHOW_SQ) a.farHidden = false;
+        } else if (d2 > FAR_HIDE_SQ) {
+          a.farHidden = true;
+        }
+      } else {
+        a.farHidden = false;
+      }
+      a.root.visible = !a.farHidden;
+      if (a.farHidden) {
+        a.rakeMotion = null;
+        a.rakePose?.hide(a.rig);
+        continue;
+      }
 
       const rake = b.mode === "walk" ? b.rake : undefined;
       if (rake) {
