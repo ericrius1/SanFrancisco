@@ -1,16 +1,16 @@
-// Beach Pianist — a lazy optional world site. A bearded voxel man plays a real
-// 42.5 s recording on a dark voxel grand piano on the sand at Baker Beach, the
-// Golden Gate Bridge spanning the NE horizon behind him. His hands and fingers
-// track the transcribed notes of the recording (a baked timeline); after the
-// song he rests 20 s, then plays it again, forever.
+// Beach Pianist — a lazy optional world site. A bearded voxel man waits beside
+// a dark voxel grand piano on the sand at Baker Beach, the Golden Gate Bridge
+// spanning the NE horizon behind him. Talk to him and accept his offer to hear
+// the real 42.5 s recording once; his hands and fingers track its transcribed
+// note timeline, then he waits until the player asks again.
 //
 // Loading policy (docs/LAZY_LOADING.md): construction is procedural and
 // network-free — a group of voxel boxes. The recording and its note timeline
 // are fetched only on first approach (AUDIO_FETCH_RADIUS); the audio graph rides
 // the shared AudioEngine music group and joins whenever it is unlocked and near.
-// The transport is authoritative wall-clock, so the performance keeps running
-// (visually) even before audio unlock or while out of earshot — audio resyncs to
-// the body language whenever the player wanders back (busker idiom).
+// Once requested, the transport is authoritative wall-clock, so that one
+// performance keeps running (visually) even before audio unlock or while out of
+// earshot — audio resyncs to the body language whenever the player wanders back.
 
 import * as THREE from "three/webgpu";
 import type { DebugFeatureTuningRegistration } from "../../ui/debug";
@@ -21,7 +21,7 @@ import { buildGrandPiano, KEY_CONTACT } from "./piano";
 import { buildPianist, type PianistDrive } from "./pianist";
 import { BLACK_MIDIS, KEY_IS_BLACK, KEY_SLOT, WHITE_MIDIS, keyCenterX } from "./keys";
 import { PIANO_FINGER_COUNT, parseNoteTimeline, type NoteTimeline } from "./notes";
-import { REST_MS, SONGS } from "./songs";
+import { SONGS } from "./songs";
 import { BEACH_PIANIST_SITE } from "./meta";
 import {
   createBeachPianistRadialSource,
@@ -29,6 +29,7 @@ import {
 } from "./radialSource";
 import { PianistShoreline } from "./shoreline";
 import { bindBeachPianistShorelineTuning } from "./tuning";
+import { createBeachPianistConversation } from "./conversation";
 
 export { BEACH_PIANIST_SITE } from "./meta";
 
@@ -63,6 +64,7 @@ export class BeachPianist {
   #pianist: ReturnType<typeof buildPianist>;
   #shoreline: PianistShoreline;
   #audio: BeachPianistAudio;
+  #conversation: ReturnType<typeof createBeachPianistConversation>;
   #radialSource: BeachPianistRadialSource | null = null;
   #perfSuppressed = false;
 
@@ -72,9 +74,8 @@ export class BeachPianist {
   #notesError: string | null = null;
   #disposed = false;
 
-  // transport (authoritative wall-clock)
-  #base = performance.now();
-  #cycleTotalMs: number;
+  // One-shot transport (authoritative wall-clock once the player requests it).
+  #performanceStartMs: number | null = null;
   #perform = 0; // eased playing intensity
   #lastSongTimeMs = 0;
 
@@ -124,7 +125,6 @@ export class BeachPianist {
     this.#prepareRender = opts.prepareRender ?? null;
     this.#renderWarm = this.#prepareRender ? "cold" : "ready";
     this.group.name = "beachPianist";
-    this.#cycleTotalMs = SONGS.reduce((sum, s) => sum + s.durationMs + REST_MS, 0);
 
     // Build at stage-local origin so the IK solve happens in a stable frame; the
     // whole stage is then rigidly positioned in the world (local arm rotations
@@ -145,6 +145,12 @@ export class BeachPianist {
     this.#audio = new BeachPianistAudio(SONGS[0].audio);
     this.#stage.localToWorld(this.#tmp.copy(VOICE_LOCAL));
     this.#audio.setVoicePosition(this.#tmp.x, this.#tmp.y, this.#tmp.z);
+    this.#conversation = createBeachPianistConversation({
+      group: this.group,
+      anchor: this.#pianist.rig.head,
+      awaitingRequest: () => this.awaitingRequest,
+      requestPerformance: () => this.requestPerformance()
+    });
 
     // Only chunky parts cast; keep them in the every-frame hero shadow domain.
     this.group.traverse((o) => {
@@ -156,32 +162,79 @@ export class BeachPianist {
     if (this.#prepareRender) this.group.visible = false;
   }
 
-  /** Feed the transport (authoritative wall-clock) at time `nowMs`. Writes into
-   * a reused object (no per-frame allocation). */
+  /** Feed the requested one-shot transport at time `nowMs`. Writes into a
+   * reused object (no per-frame allocation). */
   #transport(nowMs: number): Transport {
     const out = this.#tp;
-    let t = (((nowMs - this.#base) % this.#cycleTotalMs) + this.#cycleTotalMs) % this.#cycleTotalMs;
-    for (let i = 0; i < SONGS.length; i++) {
-      const dur = SONGS[i].durationMs;
-      if (t < dur) {
-        out.playing = true;
-        out.songIndex = i;
-        out.songTimeMs = t;
-        return out;
-      }
-      t -= dur;
-      if (t < REST_MS) {
-        out.playing = false;
-        out.songIndex = i;
-        out.songTimeMs = dur;
-        return out;
-      }
-      t -= REST_MS;
+    const start = this.#performanceStartMs;
+    if (start === null) {
+      out.playing = false;
+      out.songIndex = 0;
+      out.songTimeMs = 0;
+      return out;
     }
+
+    const songTimeMs = Math.max(0, nowMs - start);
+    if (songTimeMs < SONGS[0].durationMs) {
+      out.playing = true;
+      out.songIndex = 0;
+      out.songTimeMs = songTimeMs;
+      return out;
+    }
+
+    // Completion returns to the requestable idle state. Nothing schedules a
+    // replay; only the conversation's Yes action can set a new start time.
+    this.#performanceStartMs = null;
     out.playing = false;
     out.songIndex = 0;
-    out.songTimeMs = 0;
+    out.songTimeMs = SONGS[0].durationMs;
     return out;
+  }
+
+  get awaitingRequest(): boolean {
+    return this.#performanceStartMs === null;
+  }
+
+  /** Starts one song from the beginning. No-op until the previous request has
+   * completed, which keeps repeated input from restarting it mid-performance. */
+  requestPerformance(): boolean {
+    if (this.#disposed || !this.awaitingRequest) return false;
+    this.#armAssets();
+    this.#performanceStartMs = performance.now();
+    this.#lastSongTimeMs = 0;
+    this.#hi = 0;
+    this.#onset = 0;
+    this.#whitePress.fill(0);
+    this.#blackPress.fill(0);
+    return true;
+  }
+
+  get active(): boolean {
+    return this.#conversation.active;
+  }
+
+  get choosing(): boolean {
+    return this.#conversation.choosing;
+  }
+
+  tryInteract(player: { x: number; y?: number; z: number }, mode: string): boolean {
+    return this.#conversation.tryInteract({ x: player.x, y: player.y ?? 0, z: player.z }, mode);
+  }
+
+  confirm(): boolean {
+    return this.#conversation.confirm();
+  }
+
+  close(): boolean {
+    return this.#conversation.close();
+  }
+
+  navigate(dy: number): boolean {
+    return this.#conversation.navigate(dy);
+  }
+
+  project(camera: THREE.Camera): void {
+    this.#conversation.project(camera);
   }
 
   #armAssets(): void {
@@ -237,6 +290,8 @@ export class BeachPianist {
     } else if (!this.#perfSuppressed && dist < SHOW_RADIUS && this.#renderWarm === "ready") {
       this.group.visible = true;
     }
+    this.#conversation.setWorldVisible(!this.#perfSuppressed && this.group.visible);
+    this.#conversation.update({ x: playerPos.x, y: 0, z: playerPos.z });
     const shorelineActive = !this.#perfSuppressed && this.group.visible && dist < ANIM_RADIUS;
     this.#shoreline.update(_elapsed, shorelineActive);
     if (!this.group.visible || dist > ANIM_RADIUS) {
@@ -429,9 +484,12 @@ export class BeachPianist {
     this.#keysActive = anyPress;
   }
 
-  /** Test hook: warp the transport so `now` maps to `cycleMs` into the loop. */
-  debugWarp(cycleMs: number): void {
-    this.#base = performance.now() - cycleMs;
+  /** Test hook: warp a requested performance to `songMs`; values at or beyond
+   * the duration put the pianist back into the requestable idle state. */
+  debugWarp(songMs: number): void {
+    this.#performanceStartMs = songMs < SONGS[0].durationMs
+      ? performance.now() - Math.max(0, songMs)
+      : null;
     this.#lastSongTimeMs = 0;
     this.#hi = 0;
     this.#onset = 0;
@@ -463,7 +521,9 @@ export class BeachPianist {
 
   setPerfSuppressed(suppressed: boolean): void {
     this.#perfSuppressed = suppressed;
+    this.#conversation.setWorldVisible(!suppressed && this.group.visible);
     if (suppressed) {
+      this.#conversation.close();
       this.group.visible = false;
       this.#shoreline.update(0, false);
     }
@@ -496,6 +556,8 @@ export class BeachPianist {
       notesArmed: this.#notesArmed,
       notesReady: this.#timeline != null,
       notesError: this.#notesError,
+      awaitingRequest: this.awaitingRequest,
+      conversationActive: this.active,
       phase: tp.playing ? "playing" : "rest",
       songIndex: tp.songIndex,
       songTimeMs: tp.songTimeMs,
@@ -520,6 +582,7 @@ export class BeachPianist {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#conversation.dispose();
     this.#audio.dispose();
     this.releaseRadialLightSource();
     this.#shoreline.dispose();

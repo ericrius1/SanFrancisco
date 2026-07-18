@@ -6,8 +6,8 @@
 //
 // Lazy: nothing is fetched at construction. arm() (called on first approach)
 // downloads the AAC bytes; the AudioBuffer is decoded once the shared context
-// exists. The transport is authoritative — the source is (re)started at the
-// transport's song offset, and resynced if it drifts past RESYNC_DRIFT.
+// exists. Once requested, the transport is authoritative — the source is
+// (re)started at the song offset and resynced if it drifts past RESYNC_DRIFT.
 
 import { audioEngine } from "../../audio/engine";
 
@@ -28,7 +28,7 @@ const AUDIO = {
 } as const;
 
 export type TransportAudioState = {
-  /** True while the transport is inside a song (not the rest gap). */
+  /** True while the requested one-shot performance is in progress. */
   playing: boolean;
   /** Current song offset in seconds. */
   songTimeSec: number;
@@ -130,8 +130,8 @@ export class BeachPianistAudio {
     if (this.#disposed) return;
 
     // Hold the shared engine context alive while audibly near (hysteresis), so
-    // the idle-suspend policy can't park it mid-performance or during the rest
-    // gap. Released past awakeOff so it costs nothing away from the beach.
+    // the idle-suspend policy can't park it mid-performance. Released past
+    // awakeOff so it costs nothing away from the beach.
     if (dist < AUDIO.awakeOn) {
       if (!this.#awake) {
         this.#awake = true;

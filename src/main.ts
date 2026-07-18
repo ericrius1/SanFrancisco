@@ -2026,7 +2026,7 @@ async function boot() {
     input,
     minimap,
     chat,
-    closeConversation: () => buskerTalk.close(),
+    closeConversation: () => beachPianist?.close() || buskerTalk.close(),
     getMissionDolores: () => missionDolores,
     markChatEscapeBlur: () => { skipChatRelock = true; }
   });
@@ -4775,8 +4775,13 @@ async function boot() {
         (input.pressed("PadNavUp") ? 1 : 0);
       // An open dialogue choice list owns the nav keys; the toolbar resumes
       // the moment the decision is made.
-      if (buskerTalk.choosing) {
-        if (dy) buskerTalk.navigate(dy);
+      const choosingTalk = beachPianist?.choosing
+        ? beachPianist
+        : buskerTalk.choosing
+          ? buskerTalk
+          : null;
+      if (choosingTalk) {
+        if (dy) choosingTalk.navigate(dy);
       } else if (dx || dy) {
         toolbar.navigate(dx, dy);
       }
@@ -4787,8 +4792,13 @@ async function boot() {
     // Enter is the primary "select" gesture inside an open conversation (E and
     // pad Y confirm too, via the interact chain below). Gated on an active
     // conversation so Enter keeps its other jobs (chat/minimap) everywhere else.
-    if (buskerTalk.active && (input.pressed("Enter") || input.pressed("NumpadEnter"))) {
-      buskerTalk.confirm();
+    const activeTalk = beachPianist?.active
+      ? beachPianist
+      : buskerTalk.active
+        ? buskerTalk
+        : null;
+    if (activeTalk && (input.pressed("Enter") || input.pressed("NumpadEnter"))) {
+      activeTalk.confirm();
     }
 
     // E / pad Y: nearby conversations get first refusal. When the prompt was
@@ -4809,6 +4819,7 @@ async function boot() {
       !teaGardenEConsumed &&
       interactPressed &&
       !exitedToWalk &&
+      !(beachPianist?.tryInteract(player.renderPosition, player.mode) ?? false) &&
       !buskerTalk.tryInteract(player.renderPosition, player.mode) &&
       !golf?.tryStartAtTee(player, hud) &&
       !archery?.tryInteract(player, hud, chase) &&
@@ -5506,6 +5517,7 @@ async function boot() {
     // left Hiro's card one camera frame behind and visibly jittering.
     japaneseTeaGarden?.project(camera);
     buskerTalk.project(camera);
+    beachPianist?.project(camera);
     sky.update(elapsed, camera.position, player.renderPosition);
     // Surf contact/camera use Player's fixed-step simulation clock. Feed that
     // exact clock to the displaced ocean and lazy face/roof too; using render

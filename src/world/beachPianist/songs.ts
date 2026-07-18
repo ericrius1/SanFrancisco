@@ -18,6 +18,3 @@ export const SONGS: readonly PianistSong[] = [
     durationMs: 42538
   }
 ];
-
-/** Wall-clock rest he takes between the end of one performance and the next. */
-export const REST_MS = 20000;
