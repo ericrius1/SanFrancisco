@@ -59,8 +59,10 @@ const costumeSource = readFileSync(new URL("../src/world/japaneseTeaGarden/hiroC
 const guideSource = readFileSync(new URL("../src/world/japaneseTeaGarden/guide.ts", import.meta.url), "utf8");
 const teaMasterSource = readFileSync(new URL("../src/world/japaneseTeaGarden/teaMaster.ts", import.meta.url), "utf8");
 const teaGardenSources = [mainSource, tourSource, architectureSource, costumeSource, guideSource, teaMasterSource].join("\n");
+// Comments inside the excludeBuilding closure must not defeat the proximity
+// window, so the wiring check runs against a comment-stripped copy.
 assert.match(
-  mainSource,
+  mainSource.replace(/^[ \t]*\/\/.*$/gm, ""),
   /excludeBuilding:[\s\S]{0,240}isTeaGardenBuilding\(key, index\)/,
   "CityGen is not excluding authored Tea Garden buildings"
 );
@@ -115,10 +117,12 @@ for (const stem of [
   }
 }
 assert.equal(architectureSource.includes("tea_house_core"), false, "sealed Tea House core collider returned");
-for (const art of ["misty-pines.webp", "drum-bridge-moon.webp", "koi-ginkgo.webp", "four-seasons.webp"]) {
-  const file = new URL(`../public/art/tea-house/${art}`, import.meta.url);
-  assert.ok(statSync(file).size > 100_000, `Tea House artwork is missing or unexpectedly tiny: ${art}`);
+for (const art of ["misty-pines", "drum-bridge-moon", "koi-ginkgo", "four-seasons"]) {
   assert.ok(architectureSource.includes(`/art/tea-house/${art}`), `Tea House does not mount artwork: ${art}`);
+  for (const extension of ["ktx2", "webp"]) {
+    const file = new URL(`../public/art/tea-house/${art}.${extension}`, import.meta.url);
+    assert.ok(statSync(file).size > 100_000, `Tea House artwork is missing or unexpectedly tiny: ${art}.${extension}`);
+  }
 }
 
 // Dry-landscape activity contract: the granular compute field follows terrain,
@@ -275,7 +279,8 @@ assert.match(mainSource, /player\.mode,\s*player\.velocity/s, "Tea Garden does n
 for (const seam of [
   "voiceBus()",
   "alwaysBus",
-  "reverbSend",
+  "worldReverbSend",
+  "effectsReverbSend",
   "TEA_GARDEN_STREAM_AUDIO_ANCHORS",
   "MAX_ACTIVE_EDDIES = 2",
   "targetDistanceGain",
