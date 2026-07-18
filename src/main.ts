@@ -2334,9 +2334,6 @@ async function boot() {
   };
 
   let fireCooldown = 0;
-  // pre-throw chase zoom, captured while the ball windup pulls the boom in over
-  // the shoulder so it can be restored afterward (−1 = not pulled in).
-  let throwZoomBase = -1;
 
   // Warm only the render path the first frame actually uses. Optional modes,
   // debug overlays, tools, particles, underwater rendering, and audio remain
@@ -5314,19 +5311,6 @@ async function boot() {
       : null;
     if (!worldArrival.active) fetchBall?.update(frameDt, elapsed, player.position, petSeat);
     if (tool === "ball" && fetchBall) hud.setToolVerb(fetchBall.verb());
-    // brief over-the-shoulder pull-in during a throw, then ease back. Set before
-    // chase.update (below) so it reads this zoom; gated to walk so the wheel-zoom
-    // (walk+outdoor) never fights it, and restored the moment the throw settles.
-    if (player.mode === "walk" && fetchBall && fetchBall.throwProgress() >= 0) {
-      if (throwZoomBase < 0) throwZoomBase = chase.zoom;
-      chase.zoom = THREE.MathUtils.lerp(chase.zoom, 0.55, 0.15);
-    } else if (throwZoomBase >= 0) {
-      chase.zoom = THREE.MathUtils.lerp(chase.zoom, throwZoomBase, 0.2);
-      if (Math.abs(chase.zoom - throwZoomBase) < 0.02) {
-        chase.zoom = throwZoomBase;
-        throwZoomBase = -1;
-      }
-    }
     gardenDisplacer.x = player.renderPosition.x;
     gardenDisplacer.z = player.renderPosition.z;
     updateVegetationEnvironment(frameDt, foliageOn ? gardenDisplacers : undefined);

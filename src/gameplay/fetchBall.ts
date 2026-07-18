@@ -420,15 +420,6 @@ export class FetchBall {
     return this.#nearestPickupBall(this.#lastPlayer) !== null;
   }
 
-  /** 0..1 while winding up / releasing (for chase zoom); −1 when idle. */
-  throwProgress(): number {
-    if (this.#throwPhase === "charging") return this.#meterProgress;
-    if (this.#throwPhase === "releasing") {
-      return Math.min(1, this.#releaseElapsed / RELEASE_DURATION);
-    }
-    return -1;
-  }
-
   /**
    * Deterministic authored launch used by cinematics and gameplay probes. The
    * normal hold/windup interaction remains the player-facing path; this seam
