@@ -1,8 +1,9 @@
 import * as THREE from "three/webgpu";
-import { buildRig, setRigClasp, type Rig } from "../../player/rig";
+import { buildRig, type Rig } from "../../player/rig";
 import { applyArmPose, mixArmPose, solveArmPose, type ArmPose } from "../../gameplay/buskers/armIk";
-import { KEY_CONTACT } from "./piano";
+import { KEY_CONTACT, writeKeyStrikeTarget } from "./piano";
 import { keyCenterX } from "./keys";
+import { PIANO_FINGER_COUNT } from "./notes";
 
 /**
  * The bearded voxel pianist: light skin, a dark-brown side/back cut covering the
@@ -46,6 +47,10 @@ export type HandDrive = {
   clasp: number;
   /** True while the hand has notes to play right now. */
   active: boolean;
+  /** Assigned MIDI note per digit: thumb, index, middle, ring, pinky. */
+  fingerMidi: Int16Array;
+  /** 0 = hovering over the key, 1 = fully struck. */
+  fingerPress: Float32Array;
 };
 
 export type PianistDrive = {
@@ -66,6 +71,33 @@ export type Pianist = {
   handWorldX: (out: { l: number; r: number }) => void;
   dispose: () => void;
 };
+
+type PianoFinger = {
+  root: THREE.Group;
+  distal: THREE.Group;
+  tip: THREE.Object3D;
+  proximalLength: number;
+  distalLength: number;
+  rest: THREE.Quaternion;
+};
+
+type PianoHand = {
+  hand: THREE.Group;
+  side: 1 | -1;
+  fingers: PianoFinger[];
+};
+
+const FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"] as const;
+const FINGER_PROXIMAL = [0.046, 0.057, 0.062, 0.057, 0.049] as const;
+const FINGER_DISTAL = [0.036, 0.045, 0.049, 0.046, 0.039] as const;
+const FINGER_WIDTH = [0.022, 0.019, 0.02, 0.019, 0.017] as const;
+const FINGER_ROOT_X = [0.047, 0.027, 0.008, -0.012, -0.032] as const;
+// Keyboard-space relaxed fan around the wrist. Left thumb points toward the
+// higher notes (-X); right thumb points toward the lower notes (+X).
+const LEFT_HOVER_X = [-0.042, -0.021, 0, 0.021, 0.042] as const;
+const RIGHT_HOVER_X = [0.042, 0.021, 0, -0.021, -0.042] as const;
+const FINGER_FORWARD = new THREE.Vector3(0, 0, -1);
+const FINGER_BEND_AXIS = new THREE.Vector3(1, 0, 0);
 
 function sampleStations(stations: ArmPose[], amount: number, out: ArmPose): ArmPose {
   const u = clamp(amount, 0, 1) * (stations.length - 1);
@@ -128,6 +160,56 @@ export function buildPianist(stage: THREE.Group): Pianist {
     parent.add(mesh);
     return mesh;
   };
+
+  // The shared avatar hand is intentionally a low-cost articulated mitt. This
+  // hero musician replaces its fused digit blocks with ten separate two-bone
+  // chains while retaining the stock palm and wrist.
+  rig.fingersL.visible = false;
+  rig.fingersR.visible = false;
+  rig.indexL.visible = false;
+  rig.indexR.visible = false;
+  rig.thumbL.visible = false;
+  rig.thumbR.visible = false;
+
+  const buildPianoHand = (hand: THREE.Group, side: 1 | -1): PianoHand => {
+    const fingers: PianoFinger[] = [];
+    for (let index = 0; index < PIANO_FINGER_COUNT; index++) {
+      const proximalLength = FINGER_PROXIMAL[index];
+      const distalLength = FINGER_DISTAL[index];
+      const width = FINGER_WIDTH[index];
+      const root = new THREE.Group();
+      root.name = `piano-${side === 1 ? "L" : "R"}-${FINGER_NAMES[index]}-proximal`;
+      root.position.set(
+        side * FINGER_ROOT_X[index],
+        index === 0 ? -0.018 : -0.038,
+        index === 0 ? -0.025 : -0.046
+      );
+      hand.add(root);
+      box(root, m.skin, width, width * 0.92, proximalLength, 0, 0, -proximalLength * 0.5);
+
+      const distal = new THREE.Group();
+      distal.name = `piano-${side === 1 ? "L" : "R"}-${FINGER_NAMES[index]}-distal`;
+      distal.position.z = -proximalLength;
+      root.add(distal);
+      box(distal, m.skin, width * 0.9, width * 0.84, distalLength, 0, 0, -distalLength * 0.5);
+
+      const tip = new THREE.Object3D();
+      tip.name = `piano-${side === 1 ? "L" : "R"}-${FINGER_NAMES[index]}-tip`;
+      tip.position.z = -distalLength;
+      distal.add(tip);
+
+      const rest = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(-0.24 - index * 0.018, side * (index - 2) * 0.045, 0)
+      );
+      root.quaternion.copy(rest);
+      distal.rotation.x = -0.38;
+      fingers.push({ root, distal, tip, proximalLength, distalLength, rest });
+    }
+    return { hand, side, fingers };
+  };
+
+  const pianoLeft = buildPianoHand(rig.handL, 1);
+  const pianoRight = buildPianoHand(rig.handR, -1);
 
   // Black sunglasses over the stock visor slot (MeshBasic so the fill can't lift
   // them to grey — busker idiom).
@@ -227,6 +309,66 @@ export function buildPianist(stage: THREE.Group): Pianist {
   let rightDip = 0;
   const baseHandY = rig.handL.position.y; // same for both
 
+  // Reused ten-finger IK scratch. Stage targets are transformed into each
+  // moving palm once per hand, then every two-bone chain reaches its own key.
+  const leftStageToHand = new THREE.Matrix4();
+  const rightStageToHand = new THREE.Matrix4();
+  const target = new THREE.Vector3();
+  const targetLocal = new THREE.Vector3();
+  const direction = new THREE.Vector3();
+  const aim = new THREE.Quaternion();
+  const bend = new THREE.Quaternion();
+  const desired = new THREE.Quaternion();
+
+  const animatePianoHand = (
+    pianoHand: PianoHand,
+    drive: HandDrive,
+    stageToHand: THREE.Matrix4,
+    dt: number,
+    perform: number
+  ) => {
+    const hoverOffsets = pianoHand.side === 1 ? LEFT_HOVER_X : RIGHT_HOVER_X;
+    for (let index = 0; index < pianoHand.fingers.length; index++) {
+      const finger = pianoHand.fingers[index];
+      if (perform < 0.035) {
+        finger.root.quaternion.slerp(finger.rest, 1 - Math.exp(-dt * 10));
+        finger.distal.rotation.x = damp(finger.distal.rotation.x, -0.38, 12, dt);
+        continue;
+      }
+
+      const midi = drive.fingerMidi[index];
+      const press = drive.fingerPress[index];
+      if (midi >= 0) {
+        writeKeyStrikeTarget(midi, press, target);
+        // A prepared finger hovers above its exact key, then drops through the
+        // attack. It is never represented by a generic whole-hand clasp.
+        target.y += (1 - press) * 0.02;
+      } else {
+        target.set(
+          drive.targetX + hoverOffsets[index],
+          KEY_CONTACT.top + 0.052,
+          KEY_CONTACT.z - 0.062
+        );
+      }
+      targetLocal.copy(target).applyMatrix4(stageToHand);
+      direction.copy(targetLocal).sub(finger.root.position);
+      const a = finger.proximalLength;
+      const b = finger.distalLength;
+      const distance = clamp(direction.length(), Math.abs(a - b) + 0.001, a + b - 0.001);
+      if (direction.lengthSq() < 1e-8) direction.copy(FINGER_FORWARD);
+      else direction.normalize();
+
+      const elbow = Math.acos(clamp((distance * distance - a * a - b * b) / (2 * a * b), -1, 1));
+      const shoulder = Math.atan2(b * Math.sin(elbow), a + b * Math.cos(elbow));
+      aim.setFromUnitVectors(FINGER_FORWARD, direction);
+      bend.setFromAxisAngle(FINGER_BEND_AXIS, shoulder);
+      desired.copy(aim).multiply(bend);
+      const response = press > 0 ? 34 : 18;
+      finger.root.quaternion.slerp(desired, 1 - Math.exp(-dt * response));
+      finger.distal.rotation.x = damp(finger.distal.rotation.x, -elbow, response, dt);
+    }
+  };
+
   const update = (dt: number, elapsed: number, drive: PianistDrive) => {
     const perform = drive.perform;
     const breathe = Math.sin(elapsed * 1.4);
@@ -249,8 +391,13 @@ export function buildPianist(stage: THREE.Group): Pianist {
     // press dip: nudge the hand down along the forearm on each onset
     rig.handL.position.y = baseHandY - leftDip * 0.02 * perform;
     rig.handR.position.y = baseHandY - rightDip * 0.02 * perform;
-    setRigClasp(rig, "L", lerp(0.28, 0.5 + 0.4 * drive.left.clasp, perform));
-    setRigClasp(rig, "R", lerp(0.28, 0.5 + 0.4 * drive.right.clasp, perform));
+    stage.updateWorldMatrix(true, false);
+    pianoLeft.hand.updateWorldMatrix(true, false);
+    pianoRight.hand.updateWorldMatrix(true, false);
+    leftStageToHand.copy(pianoLeft.hand.matrixWorld).invert().multiply(stage.matrixWorld);
+    rightStageToHand.copy(pianoRight.hand.matrixWorld).invert().multiply(stage.matrixWorld);
+    animatePianoHand(pianoLeft, drive.left, leftStageToHand, dt, perform);
+    animatePianoHand(pianoRight, drive.right, rightStageToHand, dt, perform);
 
     // ---- torso lean into loud passages + head nod on onsets; rest gaze ----
     const nod = Math.max(leftDip, rightDip);

@@ -36,7 +36,7 @@ export type AuthoredTreePatchOptions = Omit<NativeTreeForestOptions, "name"> & {
 export type AuthoredTreePatch = {
   group: THREE.Group;
   ready: Promise<void>;
-  update(focus: { x: number; z: number }): void;
+  update(focus: { x: number; z: number }, force?: boolean): void;
   dispose(): void;
   stats: {
     archetypes: number;

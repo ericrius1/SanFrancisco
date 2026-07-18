@@ -17,9 +17,9 @@ import type { WorldMap } from "../heightmap";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { BeachPianistAudio } from "./audio";
 import { buildGrandPiano, KEY_CONTACT } from "./piano";
-import { buildPianist } from "./pianist";
+import { buildPianist, type PianistDrive } from "./pianist";
 import { BLACK_MIDIS, KEY_IS_BLACK, KEY_SLOT, WHITE_MIDIS, keyCenterX } from "./keys";
-import { parseNoteTimeline, type NoteTimeline } from "./notes";
+import { PIANO_FINGER_COUNT, parseNoteTimeline, type NoteTimeline } from "./notes";
 import { REST_MS, SONGS } from "./songs";
 import { BEACH_PIANIST_SITE } from "./meta";
 import {
@@ -45,6 +45,7 @@ const VOICE_LOCAL = new THREE.Vector3(0, KEY_CONTACT.top + 0.22, KEY_CONTACT.z -
 
 const IMMINENT_MS = 180; // notes this soon count toward the hand target
 const ONSET_DIP_MS = 130; // only recent onsets pulse a hand dip
+const FINGER_CONTACT_MS = 190; // release sustained notes so a digit can travel onward
 
 type Transport = { playing: boolean; songIndex: number; songTimeMs: number };
 
@@ -87,11 +88,25 @@ export class BeachPianist {
   #keysActive = false;
 
   // reusable drive + scratch (allocation-free hot path)
-  #drive = {
+  #drive: PianistDrive = {
     perform: 0,
     loud: 0,
-    left: { targetX: keyCenterX(48), dip: 0, clasp: 0, active: false },
-    right: { targetX: keyCenterX(72), dip: 0, clasp: 0, active: false }
+    left: {
+      targetX: keyCenterX(48),
+      dip: 0,
+      clasp: 0,
+      active: false,
+      fingerMidi: new Int16Array(PIANO_FINGER_COUNT).fill(-1),
+      fingerPress: new Float32Array(PIANO_FINGER_COUNT)
+    },
+    right: {
+      targetX: keyCenterX(72),
+      dip: 0,
+      clasp: 0,
+      active: false,
+      fingerMidi: new Int16Array(PIANO_FINGER_COUNT).fill(-1),
+      fingerPress: new Float32Array(PIANO_FINGER_COUNT)
+    }
   };
   #tmp = new THREE.Vector3();
   #tp: Transport = { playing: false, songIndex: 0, songTimeMs: 0 };
@@ -238,6 +253,10 @@ export class BeachPianist {
     const drive = this.#drive;
     drive.perform = this.#perform;
     const tl = this.#timeline;
+    drive.left.fingerMidi.fill(-1);
+    drive.right.fingerMidi.fill(-1);
+    drive.left.fingerPress.fill(0);
+    drive.right.fingerPress.fill(0);
 
     // wrap detection (rest→replay resets the song to 0)
     if (songTimeMs < this.#lastSongTimeMs - 1) {
@@ -311,22 +330,51 @@ export class BeachPianist {
       if (!active && !imminent) continue;
       const x = keyCenterX(tl.midi[i]);
       const vel = tl.vel[i];
+      const tracking = imminent || (active && songTimeMs - start <= FINGER_CONTACT_MS);
       const weight = active ? vel : vel * 0.4;
       if (tl.hand[i] === 0) {
-        lSumX += x * weight;
-        lW += weight;
-        if (active) {
+        if (tracking) {
+          lSumX += x * weight;
+          lW += weight;
           lActive = true;
+        }
+        if (active && tracking) {
           lCount++;
           if (vel > lMaxVel) lMaxVel = vel;
         }
       } else {
-        rSumX += x * weight;
-        rW += weight;
-        if (active) {
+        if (tracking) {
+          rSumX += x * weight;
+          rW += weight;
           rActive = true;
+        }
+        if (active && tracking) {
           rCount++;
           if (vel > rMaxVel) rMaxVel = vel;
+        }
+      }
+
+      // Fingers pre-position inside the imminent window, strike their exact
+      // assigned key, then release after the physical contact window even when
+      // the recording's resonance keeps the note/key visually sustained.
+      if (tracking) {
+        const handDrive = tl.hand[i] === 0 ? drive.left : drive.right;
+        const finger = tl.finger[i];
+        if (finger < PIANO_FINGER_COUNT) {
+          if (active) {
+            const attack = clamp((songTimeMs - start) / 22, 0, 1);
+            if (handDrive.fingerMidi[finger] < 0 || attack >= handDrive.fingerPress[finger]) {
+              handDrive.fingerMidi[finger] = tl.midi[i];
+              handDrive.fingerPress[finger] = attack;
+            }
+          } else if (
+            handDrive.fingerMidi[finger] < 0 &&
+            !handDrive.fingerMidi.includes(tl.midi[i])
+          ) {
+            // Do not pre-hover a second digit over a repeated key while the
+            // currently assigned finger is still completing its strike.
+            handDrive.fingerMidi[finger] = tl.midi[i];
+          }
         }
       }
       if (active) {
@@ -448,6 +496,10 @@ export class BeachPianist {
       expectRXWorld: expectR,
       leftTargetX: this.#lastLeftTargetX,
       rightTargetX: this.#lastRightTargetX,
+      leftFingerMidi: Array.from(this.#drive.left.fingerMidi),
+      rightFingerMidi: Array.from(this.#drive.right.fingerMidi),
+      leftFingerPress: Array.from(this.#drive.left.fingerPress),
+      rightFingerPress: Array.from(this.#drive.right.fingerPress),
       shoreline: this.#shoreline.debugState,
       audio: this.#audio.debugState()
     };
