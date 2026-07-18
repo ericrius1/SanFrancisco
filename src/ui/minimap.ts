@@ -250,6 +250,9 @@ export class Minimap {
   #roadPaths: RoadPaintGroup[] = [];
   #historicalOverview: HTMLCanvasElement | null = null;
   #historicalOverviewStarted = false;
+  // minimap repaint gate (30 Hz cap + idle-signature skip; see update())
+  #lastMiniDrawAt = 0;
+  #lastMiniSig = 0;
   #historicalRegions = new Map<string, HTMLCanvasElement>();
   #historicalRegionsStarted = new Set<string>();
   #historicalDetail: HTMLCanvasElement | null = null;
@@ -421,7 +424,7 @@ export class Minimap {
     } else {
       this.#landmarks.push({ x, z, name });
     }
-    this.update();
+    this.update(true);
   }
 
   /** Move a named landmark without forcing an immediate redraw (next update picks it up). */
@@ -501,7 +504,7 @@ export class Minimap {
     });
 
     this.#roadPaths = [...paths.values()];
-    this.update();
+    this.update(true);
   }
 
   #loadHistoricalOverview() {
@@ -513,7 +516,7 @@ export class Minimap {
       "load",
       () => {
         this.#historicalOverview = this.#featherHistoricalImage(image, 0.012);
-        this.update();
+        this.update(true);
       },
       { once: true }
     );
@@ -529,7 +532,7 @@ export class Minimap {
       "load",
       () => {
         this.#historicalRegions.set(tile.id, this.#featherHistoricalImage(image, 0.055));
-        this.update();
+        this.update(true);
       },
       { once: true }
     );
@@ -545,7 +548,7 @@ export class Minimap {
       "load",
       () => {
         this.#historicalDetail = this.#featherHistoricalImage(image, 0.035);
-        this.update();
+        this.update(true);
       },
       { once: true }
     );
@@ -741,7 +744,7 @@ export class Minimap {
         this.#selectedPlaceId = null;
       }
     }
-    this.update();
+    this.update(true);
     if (this.expanded) this.#drawBig();
   }
 
@@ -889,7 +892,7 @@ export class Minimap {
         layer.enabled = !layer.enabled;
         if (!layer.enabled && layer.points.some((p) => p.id === this.#selectedPlaceId)) this.#selectedPlaceId = null;
         this.#syncLayerButton(layer);
-        this.update();
+        this.update(true);
       });
       layers.appendChild(button);
       this.#layerButtons.set(layer.id, button);
@@ -1129,15 +1132,30 @@ export class Minimap {
   }
 
   /** Per-frame redraw (2D canvas, sub-ms at this size). */
-  update() {
+  update(force = false) {
     const remotes = this.#getRemotes();
     const n = remotes.length;
+
+    // The minimap is a 2D side-channel: 30 Hz is visually indistinguishable
+    // for dots/viewport motion, and a fully idle scene (nobody moved a
+    // quantized step) needs no repaint at all. This halves the steady
+    // main-thread canvas cost without an OffscreenCanvas worker.
+    const now = performance.now();
+    const self = this.#getSelf();
+    let sig = n * 31 + ((Math.round(self.x * 2) * 73856093) ^ (Math.round(self.z * 2) * 19349663) ^ (Math.round(self.fx * 8) * 83492791) ^ Math.round(self.fz * 8));
+    for (let i = 0; i < n; i++) {
+      const r = remotes[i];
+      sig = (sig ^ (Math.round(r.x * 2) * 2654435761) ^ Math.round(r.z * 2)) | 0;
+    }
+    if (!force && (now - this.#lastMiniDrawAt < 33 || (sig === this.#lastMiniSig && now - this.#lastMiniDrawAt < 500))) return;
+    this.#lastMiniDrawAt = now;
+    this.#lastMiniSig = sig;
+
     this.#count.textContent = n === 0 ? "solo" : `${n + 1} online`;
 
     const ctx = this.#mini.getContext("2d")!;
     const dpr = this.#dpr;
     const size = MINI_SIZE * dpr;
-    const self = this.#getSelf();
     const center = this.#miniViewCenter(self);
     const pxPerM = size / this.#miniSpan;
     ctx.clearRect(0, 0, size, size);
@@ -1650,7 +1668,7 @@ export class Minimap {
     if (best) {
       this.#selectedPlaceId = null;
       this.#selected = best;
-      this.update();
+      this.update(true);
       return;
     }
 
@@ -1660,7 +1678,7 @@ export class Minimap {
         this.#selectedPlaceId = place.id;
         this.#selected = { kind: "fixed", x: place.x, z: place.z, name: place.title, toName: place.title };
         this.onPlaceClick(place);
-        this.update();
+        this.update(true);
         return;
       }
     }
@@ -1683,7 +1701,7 @@ export class Minimap {
   #clearSelection() {
     this.#selected = null;
     this.#selectedPlaceId = null;
-    this.update();
+    this.update(true);
   }
 
   /** Reflect the resolved selection into the minimap teleport bar (idempotent per frame). */
@@ -1828,7 +1846,7 @@ export class Minimap {
       this.#selected = { kind: "fixed", x: next.x, z: next.z, name: next.name, toName: next.name };
     }
     this.#nudgeCursorToWorld(next.x, next.z);
-    this.update();
+    this.update(true);
   }
 
   #cyclePins(): Array<
@@ -2077,7 +2095,7 @@ export class Minimap {
     if (bestPlayer) {
       this.#selectedPlaceId = null;
       this.#selected = { kind: "player", id: bestPlayer.id, name: bestPlayer.name };
-      this.update();
+      this.update(true);
       return;
     }
 
@@ -2099,7 +2117,7 @@ export class Minimap {
         name: bestLandmark.name,
         toName: bestLandmark.name
       };
-      this.update();
+      this.update(true);
       return;
     }
 
@@ -2109,7 +2127,7 @@ export class Minimap {
         this.#selectedPlaceId = place.id;
         this.#selected = { kind: "fixed", x: place.x, z: place.z, name: place.title, toName: place.title };
         this.onPlaceClick(place);
-        this.update();
+        this.update(true);
         return;
       }
     }
@@ -2123,7 +2141,7 @@ export class Minimap {
     if (pos.x < grid.minX || pos.x > maxX || pos.z < grid.minZ || pos.z > maxZ) return;
     this.#selectedPlaceId = null;
     this.#selected = { kind: "fixed", x: pos.x, z: pos.z, name: GROUND_TARGET_NAME };
-    this.update();
+    this.update(true);
   }
 
   #drawBig() {

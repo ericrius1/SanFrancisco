@@ -38,6 +38,18 @@ camera, input.
   Fallback: postMessage transferable Float32Array ping-pong when SAB is
   unavailable (identical API, one frame more latency).
 
+## Payload audit (wave 4, 2026-07-17)
+
+Measured per-frame sim costs on merged main: every worker-eligible system is
+under 0.3 ms (minimap canvas 0.2-0.3 ms was the largest; traffic/AI/net all
+≤0.1 ms). The frame is render-encode-bound, which cannot move off-thread.
+Verdict: the worker carries no measurement-justified payload TODAY — shipping
+the plumbing now would be dead weight. Landed instead: the minimap repaint
+gate (30 Hz cap + idle-signature skip + force flag for event repaints), which
+captures most of the OffscreenCanvas win in 20 lines. The worker design below
+stays the blueprint for when a payload crosses ~1 ms — the first real
+candidate is remote-player interpolation at 20+ player rooms.
+
 ## Migration order (each step independently shippable)
 
 1. Plumbing: worker + SAB ring + registry hook, with ONE system (traffic light
