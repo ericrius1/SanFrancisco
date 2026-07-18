@@ -82,6 +82,7 @@
     "test:avatar": "node tools/bathing-costume-zfight-test.mjs && node tools/avatar-zfight-probe.mjs",
     "test:transport-avatar": "node tools/transport-avatar-probe.mjs",
     "test:groundcover": "node --experimental-strip-types tools/grounding-fit-probe.mjs && node tools/groundcover-anchor-fade-probe.mjs",
+    "test:vegetation-wind": "node --experimental-strip-types tools/vegetation-wind-contract-test.mjs",
     "fetch:osm": "node tools/fetch-osm.mjs",
     "fetch:terrain": "node tools/fetch-terrain.mjs",
     "prepare:city": "node tools/prepare-city.mjs",

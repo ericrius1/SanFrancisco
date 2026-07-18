@@ -3,7 +3,7 @@
 
 import { tunables } from "../../core/persist";
 import { foliageBrightness } from "./appearance";
-import { windSpeed, windStrength } from "./wind";
+import { setWindTargets } from "./wind";
 
 export const VEGETATION_TUNING = tunables("vegetation", {
   windStrength: { v: 0.42, min: 0, max: 1, step: 0.01, label: "wind strength" },
@@ -11,9 +11,8 @@ export const VEGETATION_TUNING = tunables("vegetation", {
   leafBrightness: { v: 1.05, min: 0.3, max: 1.6, step: 0.01, label: "tree leaf brightness" }
 });
 
-export function applyVegetationTuning() {
+export function applyVegetationTuning(immediate = false) {
   const values = VEGETATION_TUNING.values;
-  windStrength.value = values.windStrength;
-  windSpeed.value = values.windSpeed;
+  setWindTargets(values.windStrength, values.windSpeed, immediate);
   foliageBrightness.value = values.leafBrightness;
 }
