@@ -18,7 +18,7 @@ import type { WorldMap } from "../heightmap";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { BeachPianistAudio } from "./audio";
 import { buildGrandPiano, KEY_CONTACT } from "./piano";
-import { buildPianist, type PianistDrive } from "./pianist";
+import { PIANO_FINGER_KEY_OFFSETS, buildPianist, type PianistDrive } from "./pianist";
 import { BLACK_MIDIS, KEY_IS_BLACK, KEY_SLOT, WHITE_MIDIS, keyCenterX } from "./keys";
 import { PIANO_FINGER_COUNT, parseNoteTimeline, type NoteTimeline } from "./notes";
 import { REST_MS, SONGS } from "./songs";
@@ -332,11 +332,14 @@ export class BeachPianist {
       if (!active && !imminent) continue;
       const x = keyCenterX(tl.midi[i]);
       const vel = tl.vel[i];
+      const finger = tl.finger[i];
+      const wristX =
+        x - (finger < PIANO_FINGER_COUNT ? PIANO_FINGER_KEY_OFFSETS[tl.hand[i]][finger] : 0);
       const tracking = imminent || (active && songTimeMs - start <= FINGER_CONTACT_MS);
       const weight = active ? vel : vel * 0.4;
       if (tl.hand[i] === 0) {
         if (tracking) {
-          lSumX += x * weight;
+          lSumX += wristX * weight;
           lW += weight;
           lActive = true;
         }
@@ -346,7 +349,7 @@ export class BeachPianist {
         }
       } else {
         if (tracking) {
-          rSumX += x * weight;
+          rSumX += wristX * weight;
           rW += weight;
           rActive = true;
         }
@@ -361,7 +364,6 @@ export class BeachPianist {
       // the recording's resonance keeps the note/key visually sustained.
       if (tracking) {
         const handDrive = tl.hand[i] === 0 ? drive.left : drive.right;
-        const finger = tl.finger[i];
         if (finger < PIANO_FINGER_COUNT) {
           if (active) {
             const attack = clamp((songTimeMs - start) / 22, 0, 1);
