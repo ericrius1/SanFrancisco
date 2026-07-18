@@ -5,7 +5,9 @@ import {
   KEY_CENTER_X,
   KEYBOARD,
   WHITE_MIDIS,
-  WHITE_WIDTH
+  WHITE_WIDTH,
+  isBlackMidi,
+  keyCenterX
 } from "./keys";
 
 /**
@@ -26,6 +28,21 @@ import {
 export const KEY_CONTACT = { z: -0.34, top: 0.72 } as const;
 
 const KEYBED_Z = KEY_CONTACT.z - KEYBOARD.whiteDepth * 0.5; // centre of the key row
+const WHITE_STRIKE_Z = KEY_CONTACT.z - KEYBOARD.whiteDepth * 0.42;
+const BLACK_STRIKE_Z = KEYBED_Z - KEYBOARD.whiteDepth * 0.5 +
+  KEYBOARD.whiteDepth * KEYBOARD.blackDepthFrac * 0.5;
+
+/** Exact keyboard-local point an articulated fingertip should strike. */
+export function writeKeyStrikeTarget(midi: number, press: number, out: THREE.Vector3): THREE.Vector3 {
+  const black = isBlackMidi(midi);
+  const keyHeight = black ? KEYBOARD.blackHeight : KEYBOARD.whiteHeight;
+  const baseY = KEY_CONTACT.top + (black ? KEYBOARD.blackRise : 0);
+  return out.set(
+    keyCenterX(midi),
+    baseY + keyHeight * 0.5 - THREE.MathUtils.clamp(press, 0, 1) * 0.012,
+    black ? BLACK_STRIKE_Z : WHITE_STRIKE_Z
+  );
+}
 
 type OwnedPiano = {
   group: THREE.Group;
@@ -150,7 +167,10 @@ export function buildGrandPiano(): OwnedPiano {
 
   const whiteTopY = RIM_TOP;
   const blackTopY = RIM_TOP + KEYBOARD.blackRise;
-  const blackZ = KEYBED_Z + KEYBOARD.whiteDepth * 0.5 - (KEYBOARD.whiteDepth * KEYBOARD.blackDepthFrac) * 0.5;
+  // Black keys occupy the back of the keybed, away from the pianist. Keeping
+  // their former front-aligned placement made both the keyboard and fingering
+  // read incorrectly from the side.
+  const blackZ = BLACK_STRIKE_Z;
 
   // Base (rest) transform per key, and its pressed pivot. Pressed keys sink and
   // tip their front (player) edge down; we rotate about the back edge.

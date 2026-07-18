@@ -25,7 +25,7 @@ import { BEACH_PIANIST_BRIDGE_AIM, BEACH_PIANIST_SITE } from "./meta";
 export type BeachPianistFoliage = {
   group: THREE.Group;
   ready: Promise<void>;
-  update(focus: { x: number; z: number }): void;
+  update(focus: { x: number; z: number }, force?: boolean): void;
   dispose(): void;
   stats: { trees: number; flowerClumps: number; flowerHeads: number; grassClusters: number; grassBlades: number };
 };
@@ -82,6 +82,7 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
 ] as const;
 
 const FLOWER_SPECIES = ["lupine", "poppy", "yarrow", "goldfield"] as const;
+const TREE_LIMIT = 24;
 const SITE_X = BEACH_PIANIST_SITE.x;
 const SITE_Z = BEACH_PIANIST_SITE.z;
 const BRIDGE_DX = BEACH_PIANIST_BRIDGE_AIM.x - SITE_X;
@@ -125,7 +126,7 @@ function collectTrees(map: WorldMap): AuthoredTreePlacement[] {
   // shoreline naturally rejects seaward candidates while retaining a grove on
   // every dry side of the performance. A clear axial aisle preserves the
   // authored arrival shot from the player through the piano to the bridge.
-  for (let sector = 0; sector < 38 && placements.length < 24; sector++) {
+  for (let sector = 0; sector < 38 && placements.length < TREE_LIMIT; sector++) {
     for (let attempt = 0; attempt < 5; attempt++) {
       const angle = sector * GOLDEN_ANGLE + (hash(sector, 17 + attempt) - 0.5) * 0.34;
       const radius = 9.5 + hash(sector, 31 + attempt) * 20.5 + attempt * 0.55;
@@ -238,7 +239,10 @@ export function createBeachPianistFoliage(map: WorldMap): BeachPianistFoliage {
     visibleDistance: 850,
     nearRadius: 76,
     nearExitRadius: 94,
-    nearMax: 18
+    // Every tree in this compact 30 m grove can be overhead at once. Letting
+    // six of the 24 lose the close pool exposed the opaque landscape needle
+    // cards as tan/blocky leaves when the camera looked upward beneath them.
+    nearMax: TREE_LIMIT
   });
   const flowers = createAuthoredFlowerPatch(flowerPlacements, {
     name: "beach_pianist_flowers",
@@ -277,8 +281,8 @@ export function createBeachPianistFoliage(map: WorldMap): BeachPianistFoliage {
   return {
     group,
     ready: trees.ready,
-    update(focus) {
-      if (!disposed) trees.update(focus);
+    update(focus, force = false) {
+      if (!disposed) trees.update(focus, force);
     },
     dispose() {
       if (disposed) return;

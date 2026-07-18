@@ -19,7 +19,7 @@ import * as THREE from "three/webgpu";
 export type SiteFoliagePatch = {
   group: THREE.Group;
   ready: Promise<void>;
-  update(focus: { x: number; z: number }): void;
+  update(focus: { x: number; z: number }, force?: boolean): void;
   dispose(): void;
 };
 
@@ -165,6 +165,13 @@ export class SiteFoliageStreamer {
         await patch.ready;
         patch.update(this.#focus);
         await this.#options.prepare(`site-foliage:${registration.id}`, patch.group);
+        // Detached root preparation temporarily exposes every descendant and
+        // restores its captured visibility afterward. Close tree materials can
+        // finish loading during that await, so the captured false state may be
+        // stale by the time it is restored. Force one authoritative LOD publish
+        // before attachment; otherwise populated close batches stay hidden and
+        // their opaque landscape-card fallbacks remain overhead indefinitely.
+        patch.update(this.#focus, true);
         const distance = Math.hypot(
           this.#focus.x - registration.x,
           this.#focus.z - registration.z

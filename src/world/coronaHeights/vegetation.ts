@@ -23,7 +23,7 @@ import {
 export type CoronaHeightsFoliage = {
   group: THREE.Group;
   ready: Promise<void>;
-  update(focus: { x: number; z: number }): void;
+  update(focus: { x: number; z: number }, force?: boolean): void;
   dispose(): void;
   stats: {
     grassClusters: number;
@@ -131,8 +131,8 @@ export function createCoronaHeightsFoliage(
   return {
     group,
     ready: trees?.ready ?? Promise.resolve(),
-    update(focus) {
-      trees?.update(focus);
+    update(focus, force = false) {
+      trees?.update(focus, force);
     },
     dispose() {
       if (disposed) return;

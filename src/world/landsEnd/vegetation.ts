@@ -19,7 +19,7 @@ import { LABYRINTH } from "./layout";
 export type LandsEndFoliage = {
   group: THREE.Group;
   ready: Promise<void>;
-  update(focus: { x: number; z: number }): void;
+  update(focus: { x: number; z: number }, force?: boolean): void;
   dispose(): void;
   stats: { trees: number };
 };
@@ -114,8 +114,8 @@ export function createLandsEndFoliage(map: WorldMap): LandsEndFoliage {
   return {
     group,
     ready: trees.ready,
-    update(focus) {
-      if (!disposed) trees.update(focus);
+    update(focus, force = false) {
+      if (!disposed) trees.update(focus, force);
     },
     dispose() {
       if (disposed) return;

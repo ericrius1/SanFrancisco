@@ -14,7 +14,7 @@ import { SUTRO_BATHS, sutroLocalToWorld } from "./layout";
 export type SutroBathsVegetation = {
   group: THREE.Group;
   ready: Promise<void>;
-  update(focus: { x: number; z: number }): void;
+  update(focus: { x: number; z: number }, force?: boolean): void;
   setVisible(visible: boolean): void;
   dispose(): void;
   stats: { trees: number; shrubs: number; planters: number };
@@ -182,8 +182,8 @@ export function createSutroBathsVegetation(): SutroBathsVegetation {
   return {
     group,
     ready: trees.ready,
-    update(focus) {
-      if (!disposed && visible) trees.update(focus);
+    update(focus, force = false) {
+      if (!disposed && visible) trees.update(focus, force);
     },
     setVisible(next) {
       visible = next;

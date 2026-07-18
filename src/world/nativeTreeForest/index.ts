@@ -78,8 +78,9 @@ export type NativeTreeForest = {
   group: THREE.Group;
   /** Resolves after prototypes, material packs and the initial local residency exist. */
   ready: Promise<void>;
-  /** Call every frame with the player/view position. */
-  update(focus: { x: number; z: number }): void;
+  /** Call every frame with the player/view position. `force` re-publishes the
+   * current LOD assignment after an external detached-root warmup. */
+  update(focus: { x: number; z: number }, force?: boolean): void;
   /**
    * Latest-wins destination prime for boot/teleport transactions. It records
    * `focus`, materializes only that local residency ring, and waits until all
@@ -1737,7 +1738,7 @@ export function createNativeTreeForest(
   return {
     group,
     ready,
-    update(focus) {
+    update(focus, force = false) {
       if (disposed) return;
       const finiteFocus =
         Number.isFinite(focus.x) &&
@@ -1762,7 +1763,7 @@ export function createNativeTreeForest(
         }
         requestHorizonPrefetchPreparation();
       }
-      rebin(focus.x, focus.z);
+      rebin(focus.x, focus.z, force);
     },
     async prepareAt(focus, prepare, signal) {
       if (
