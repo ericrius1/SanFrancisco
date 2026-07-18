@@ -3,7 +3,6 @@ import type { Rig } from "../player/rig";
 import { LM, type PoseLandmark } from "./landmarks";
 
 type JointName =
-  | "hips"
   | "torso"
   | "head"
   | "armL"
@@ -18,7 +17,7 @@ type JointName =
 type JointTarget = { quaternion: THREE.Quaternion; visible: boolean; blend: number };
 
 const JOINTS: JointName[] = [
-  "hips", "torso", "head", "armL", "armR", "foreL", "foreR", "legL", "legR", "shinL", "shinR"
+  "torso", "head", "armL", "armR", "foreL", "foreR", "legL", "legR", "shinL", "shinR"
 ];
 const DOWN = new THREE.Vector3(0, -1, 0);
 
@@ -92,7 +91,11 @@ export class AvatarRetargeter {
       LM.NECK,
       this.#hipsWorld
     );
-    this.#set("hips", this.#hipsWorld, hipsValid);
+    // The pelvis basis belongs to webcam camera space. It is useful as the
+    // normalization frame for every child joint, but applying it to rig.hips
+    // also transfers camera roll (or a tilted/cropped estimate) to the whole
+    // avatar and can lay the player on their side. Locomotion owns the root;
+    // mocap drives the articulated pose relative to this stable upright frame.
 
     const chestValid = torsoVisible && this.#basis(
       LM.LEFT_SHOULDER,
@@ -196,10 +199,5 @@ export class AvatarRetargeter {
   #visible(indices: number[], threshold: number): boolean {
     const landmarks = this.#landmarks!;
     return indices.every((index) => landmarks[index].visibility >= threshold);
-  }
-
-  #set(joint: JointName, quaternion: THREE.Quaternion, visible: boolean): void {
-    this.#targets[joint].quaternion.copy(quaternion);
-    this.#targets[joint].visible = visible;
   }
 }
