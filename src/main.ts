@@ -9,7 +9,6 @@ import { Input, formatInteractPrompt, localizeInteractText } from "./core/input"
 import { tracer } from "./core/hitchTracer";
 import { bootMarkStart, bootMark, bootMarkSummary, persistBootHistory } from "./core/bootMarks";
 import { createFrameScheduler } from "./core/frameBudget";
-import { WorldMap } from "./world/heightmap";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "./world/oceanBeachWaves";
 import { createSurfShack, type SurfShack } from "./gameplay/surfing/shack";
 import { Sky, SKY_TUNING } from "./world/sky";
@@ -24,13 +23,11 @@ import { Water } from "./world/water";
 import { emitEmbodimentWaterEcho } from "./world/waterEchoes";
 import { UnderwaterOverlay } from "./fx/underwater";
 import { syncBallGlowNight } from "./fx/ballGlow";
-import { TileStreamer } from "./world/tiles";
 import { FarOcclusionField } from "./world/shadows/farOcclusionField";
 import { createRoadMarkings } from "./world/roadMarkings";
 import { RoadGraph } from "./world/traffic/roadGraph";
 import { TrafficLightView } from "./world/traffic/trafficLights";
 import { StreetLamps } from "./world/streetLamps";
-import { Physics } from "./core/physics";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/bayLights";
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
@@ -40,11 +37,8 @@ import {
   JAPANESE_TEA_GARDEN_ENTRANCE,
   isTeaGardenBuilding
 } from "./world/japaneseTeaGarden/layout";
-import { AuthoredRegionStreamer } from "./world/authoredRegions";
-import { warmStaticRegion } from "./render/warmStaticRegion";
 import { warmHiddenRoot } from "./render/warmHiddenRoot";
 import type { CoronaHeightsPark } from "./world/coronaHeights";
-import { prepareCoronaHeightsGround } from "./world/coronaHeights/ground";
 import type { MissionDoloresMuseum } from "./world/missionDolores";
 import { MD_CENTER as MISSION_DOLORES_CENTER } from "./world/missionDolores/layout";
 import {
@@ -161,8 +155,6 @@ import {
 } from "./vehicles/surf";
 import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 import { BootScreen } from "./app/bootScreen";
-import { createRenderCore } from "./app/renderCore";
-import { initTextures } from "./render/textures";
 import { createBuskersSystem } from "./app/systems/buskers";
 import { createBuskerConversation } from "./gameplay/buskers/conversation";
 import { createSessionPersistence } from "./app/sessionPersistence";
@@ -188,6 +180,11 @@ import { createTeaGardenController } from "./app/compose/teaGarden";
 import { createOptionalSites, type OptionalSiteId } from "./app/compose/optionalSites";
 import { NavigationController } from "./app/navigation";
 import { WorldArrivalCoordinator } from "./app/worldArrival";
+import { DebugRegistry } from "./app/debugRegistry";
+import { bootMap } from "./app/boot/bootMap";
+import { bootGpu } from "./app/boot/bootGpu";
+import { bootTiles } from "./app/boot/bootTiles";
+import { bootPhysics } from "./app/boot/bootPhysics";
 import { writeDevReloadSnapshot } from "./app/hmr/devReloadSnapshot";
 import { RendererDiagnostics } from "./app/diagnostics";
 import type { PickleballController } from "./app/systems/pickleball";
@@ -212,13 +209,13 @@ async function boot() {
   }
   bootMarkStart();
   progress(8, "reading the map");
-  const map = await WorldMap.load();
-  prepareCoronaHeightsGround(map);
+  // Boot stages are extracted into app/boot/* (docs/MAIN_DECOMPOSITION.md step
+  // 5). Each bootMark stays here, in the same name/order, right after its stage.
+  const { map } = await bootMap();
   bootMark("map");
 
   progress(18, "waking the gpu");
-  const { renderer, scene, camera } = await createRenderCore(app);
-  initTextures(renderer); // wire the KTX2 transcoder now that the renderer is initialized
+  const { renderer, scene, camera } = await bootGpu(app);
   bootMark("gpu");
 
   const farOcclusion = new FarOcclusionField(map);
@@ -231,36 +228,7 @@ async function boot() {
   const underwater = new UnderwaterOverlay(app, map);
 
   progress(40, "streaming the city");
-  const tiles = new TileStreamer(scene);
-  tiles.onShadowCastersChanged = (scope) => sky.invalidateStaticShadows(scope);
-  // Tile batches (buildings/roads/parks) are created lazily on first fold-in;
-  // compile their pipelines on the parallel async path the moment they exist so
-  // the first live frame that draws them never pays a serial compile (this was
-  // a measured ~0.8s of covered settle when left to the sync path).
-  tiles.onBatchCreated = (mesh) => {
-    void renderer.compileAsync(mesh, camera, scene).catch(() => {});
-  };
-  await tiles.init(map);
-  const authoredRegions = new AuthoredRegionStreamer({
-    scene,
-    map,
-    tiles,
-    prepareRoot: async (label, root) => {
-      try {
-        const warmup = await warmStaticRegion(renderer, camera, scene, root);
-        console.info(
-          `[authored-region] ${label} warmed ${warmup.representatives}/${warmup.meshes} meshes ` +
-          `(${warmup.renderSignatures} render paths) in ${(warmup.durationMs / 1000).toFixed(2)}s`
-        );
-      } catch (error) {
-        // Compilation is a covered presentation optimization. The parsed
-        // Blender visual remains valid and can compile on its first live frame.
-        console.warn(`[authored-region] ${label} covered compile failed`, error);
-      }
-    }
-  });
-  await authoredRegions.init();
-  import.meta.hot?.dispose(() => authoredRegions.dispose());
+  const { tiles, authoredRegions } = await bootTiles({ scene, camera, renderer, map, sky });
   bootMark("tiles");
 
   // Resolve the real initial destination and start its fixed-quality local tile
@@ -313,10 +281,12 @@ async function boot() {
     .catch((err) => console.warn("[roads] lane markings unavailable", err))
     .finally(() => auxPending--);
 
-  const [physics, initialArrival] = await Promise.all([
-    Physics.create(map, tiles),
-    initialArrivalPromise
-  ]);
+  // Physics comes online in parallel with initial-arrival resolution and chains
+  // the far-occlusion field onto its tile-collider callbacks (extracted to
+  // app/boot/bootPhysics.ts — docs/MAIN_DECOMPOSITION.md step 5).
+  const { physics, initialArrival } = await bootPhysics({
+    map, tiles, farOcclusion, initialArrivalPromise
+  });
   const {
     autoStartHiroTour,
     invite,
@@ -326,38 +296,6 @@ async function boot() {
     spawn,
     fullTileRadius
   } = initialArrival;
-  // Physics owns the primary tile callbacks. Chain the far field after it so
-  // streamed collider massing feeds both systems without changing ownership.
-  const syncFarTile = (key: string, colliders = tiles.loaded.get(key)?.colliders) => {
-    if (!colliders) return;
-    farOcclusion.setBoxOccluders(
-      `tile:${key}`,
-      colliders.filter((collider) => tiles.isAlive(key, collider.i))
-    );
-  };
-  const physicsTileColliders = tiles.onTileColliders;
-  tiles.onTileColliders = (key, colliders) => {
-    physicsTileColliders(key, colliders);
-    syncFarTile(key, colliders);
-  };
-  const physicsTileUnload = tiles.onTileUnload;
-  tiles.onTileUnload = (key) => {
-    physicsTileUnload(key);
-    farOcclusion.deleteOccluders(`tile:${key}`);
-  };
-  const physicsBuildingAlive = tiles.onBuildingAlive;
-  tiles.onBuildingAlive = (key, index, alive) => {
-    physicsBuildingAlive(key, index, alive);
-    // Mesh-only CityGen swaps remain alive and retain canonical massing. Full
-    // authored suppression/revival refreshes the atlas without ghost blockers.
-    syncFarTile(key);
-  };
-  // Open-water bridge spans and landmark boxes do not belong to streamed
-  // visual tiles. Feed their existing physics proxy set into the same field.
-  void fetch("/data/landmark-colliders.json")
-    .then((response) => response.ok ? response.json() : [])
-    .then((colliders) => farOcclusion.setBoxOccluders("landmarks", colliders))
-    .catch(() => {});
   bootMark("physics");
 
   progress(62, "waking up san francisco");
@@ -4684,26 +4622,83 @@ async function boot() {
   const dynRes = adaptiveRes;
 
   const exposeDebugHooks = () => {
-    Object.assign(window as never, {
+    // The `__sf` debug surface now derives from a typed DebugRegistry
+    // (docs/MAIN_DECOMPOSITION.md, step 4) instead of a hand-maintained object
+    // literal. `refs` are stable handles captured once — `const`s and any value
+    // that IS a function (a getter/opener stored as-is for consumers to call).
+    // `getters` are thunks evaluated by build(): every mutable `let` alias and
+    // computed read, so this single build reflects the live binding exactly as
+    // the old literal's shorthand did at this same point in boot. Live updates
+    // continue to flow through the existing Object.assign refresh paths
+    // (onSitesChanged, the late region-load callbacks) — untouched.
+    const registry = new DebugRegistry();
+    registry.refs({
+      scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline,
+      dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING,
+      RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks,
+      graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG,
+      THREE, tick, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
+      audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
+      doorAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice,
+      minimap, playerLocator, boardWake, abandonedMounts, ghostShipBeacon,
+      embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl,
+      tutorial, teleportToTarget, citygenRing, worldCursor, worldQueries,
+      buildingRayRefiner, underwater, water, ensureSurfRuntime, debugOverlays,
+      calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING,
+      setFoliageVisible, buskers, buskerTalk, ensureCarCustomizer, siteGate,
+      siteFoliage, TSL, worldArrival, lazyRegionTimings,
+      getPaintAudio: () => paintAudio,
+      getBubbleAudio: () => bubbleAudio,
+      boardSelector: board,
+      getBoardSelector: () => board.get(),
+      getCarSelector: () => car.get(),
+      getCarConfig: () => ({ ...carConfig }),
+      getSurfboardConfig: () => ({ ...surfboardConfig }),
+      optionalWorldSites: sites.list,
+      ensureOptionalWorldSite: sites.ensure,
+      teaGardenBuildingSwapState: teaGarden.buildingSwapState,
+      ensureOceanBeachKite: oceanKite.ensure,
+      oceanKiteSite: oceanKite.site,
       // renderIdle: probes MUST wait for this before capture phases — while the
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden: teaGarden.current(), pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, ghostShip, ghostShipBeacon, ensureGhostShipDetail, embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING, setFoliageVisible, buskers, buskerTalk, boardSelector: board, getBoardSelector: () => board.get(), ensureCarCustomizer, getCarSelector: () => car.get(), getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, beachPianist, afterlight, optionalWorldSites: sites.list, ensureOptionalWorldSite: sites.ensure, siteFoliage,
-        TSL,
-        renderIdle: () => modulesReady && sites.streamingIdle() }
+      renderIdle: () => modulesReady && sites.streamingIdle()
     });
-    const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-    if (hooks) {
-      Object.assign(hooks, {
-        worldArrival,
-        lazyRegionTimings,
-        teaGardenBuildingSwapState: teaGarden.buildingSwapState,
-        oceanBeachKite: oceanKite.current(),
-        ensureOceanBeachKite: oceanKite.ensure,
-        oceanKiteSite: oceanKite.site
-      });
-    }
+    registry.getters({
+      creatures: () => creatures,
+      forest: () => forest,
+      garden: () => garden,
+      wildlands: () => wildlands,
+      buenaVistaTrees: () => buenaVistaTrees,
+      goldenGateTennis: () => goldenGateTennis,
+      japaneseTeaGarden: () => teaGarden.current(),
+      pickleball: () => pickleballController?.game ?? null,
+      pickleballAmbient: () => pickleballController?.ambient ?? null,
+      pickleballAudio: () => pickleballController?.audio ?? null,
+      pickleballUI: () => pickleballController?.ui ?? null,
+      pickleballController: () => pickleballController,
+      coronaHeights: () => coronaHeights,
+      missionDolores: () => missionDolores,
+      sutroBaths: () => sutroBaths,
+      ghostShip: () => ghostShip,
+      ensureGhostShipDetail: () => ensureGhostShipDetail,
+      fetchBall: () => fetchBall,
+      goldenGateLights: () => goldenGateLights,
+      trafficLights: () => trafficLights,
+      streetLamps: () => streetLamps,
+      citygen: () => citygen,
+      oceanBeachWaves: () => oceanBeachWaves,
+      surfExperience: () => surfExperience,
+      roadMarkings: () => roadMarkings,
+      ensureSurfboardCustomizer: () => ensureSurfboardCustomizer,
+      palaceReverie: () => palaceReverie,
+      landsEnd: () => landsEnd,
+      beachPianist: () => beachPianist,
+      afterlight: () => afterlight,
+      oceanBeachKite: () => oceanKite.current()
+    });
+    Object.assign(window as never, { __sf: registry.build() });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
     exposeDebugHooks();
