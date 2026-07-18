@@ -21,6 +21,12 @@ import {
   abs,
   hash,
   texture,
+  textureLoad,
+  textureSize,
+  instanceIndex,
+  drawIndex,
+  ivec2,
+  int,
   uniform,
   uint,
   select,
@@ -404,6 +410,88 @@ function facadeSurface(opts: {
 /* ------------------------------------------------------------------ materials */
 
 /**
+ * Wire the skyscraper-facade node graph onto `mat`, given the per-building alive
+ * lookup `info` (RGBA: R alive flag, G/B 16-bit base height, A roof height) and
+ * the per-building id `bid`. Shared by the per-tile material (1-row DataTexture
+ * sampled by bid) and the batch-aware material (shared atlas addressed by the
+ * batch's per-instance row + bid column).
+ *
+ * `batched` selects the position path: an ordinary tile mesh keeps its positions
+ * normalized to [-1,1] with the dequantization scale in `modelScale`, so a metre
+ * offset must be divided by that scale; a BatchedMesh instance has already been
+ * transformed to world space by three's `batch()` node (the per-instance dequant
+ * matrix) under an identity object matrix, so the metre offset is added directly.
+ */
+function assignFacadeNodes(
+  mat: THREE.MeshStandardNodeMaterial,
+  info: N,
+  bid: N,
+  vColor: N,
+  opts: { detail: boolean; batched: boolean }
+): void {
+  // Suppressed buildings used to be hidden by moving their vertices 900 m down.
+  // That left a complete second city under the playable world, still inside the
+  // camera's 24 km far plane. A material mask removes those fragments (including
+  // from shadow passes). Both R=0 (mesh and collider off) and R=1/255 (mesh off,
+  // collider kept) stay below this threshold.
+  mat.maskNode = info.r.greaterThan(0.5).and(cameraCutawayMask());
+
+  // Deterministic per-building nudge (±3cm in XZ): raw OSM leaves duplicate
+  // footprints (way + multipolygon twins) and shared party walls exactly
+  // coplanar, and two coincident facades with different _bid z-fight as a
+  // flickering patchwork of each other's windows — the nudge gives every
+  // building its own plane
+  const nudge = vec3(hash(bid.add(311)).sub(0.5).mul(0.06), 0, hash(bid.add(577)).sub(0.5).mul(0.06));
+  // The mask is the visibility source of truth. Also move suppressed vertices
+  // far beyond the camera range so the rasterizer rejects their triangles before
+  // fragment work; unlike the old 900 m sink, this can never form a visible city.
+  const suppressed = step(info.r, 0.5);
+  const offsetMeters = nudge.sub(vec3(0, suppressed.mul(1_000_000), 0));
+  // In a batch `positionLocal` is already world-space (three's batch() applied
+  // the per-instance dequant matrix) under an identity object matrix, so the
+  // metre offset is added directly and stays in world units. On a per-tile mesh
+  // positions are normalized [-1,1] with the dequant scale in `modelScale`, so a
+  // local-space add would be amplified by that scale (~420x) — divide it out.
+  mat.positionNode = opts.batched
+    ? positionLocal.add(offsetMeters)
+    : positionLocal.add(offsetMeters.div(modelScale));
+
+  // the XZ nudge has a directional blind spot: when a pair's nudge delta runs
+  // parallel to the shared wall (or the shared face is a roof/floor), the two
+  // shells stay coplanar and z-fight. Pull each building toward the camera by
+  // a per-bid relative hair — along the view ray, so screen position is
+  // unchanged and only depth separates. ~2e-4 ≈ 2cm at 100m, ~3000x the f32
+  // reversed-z depth precision at any distance. This is a unitless relative
+  // scale on the view-space position, so it stays correct in a batch (identity
+  // object matrix) without any modelScale amplification.
+  mat.vertexNode = cameraProjectionMatrix.mul(
+    positionView.mul(hash(bid.add(911)).mul(-2e-4).add(1))
+  );
+
+  // per-building base height, 16-bit fixed point in G/B
+  const baseY = info.g.mul(255).round().mul(256).add(info.b.mul(255).round()).div(BASEY_SCALE).sub(BASEY_OFFSET);
+  // roof height above base, 8-bit in A (255 = unknown → mask never triggers)
+  const topRel = info.a.mul(255).round().mul(TOPH_SCALE);
+
+  // per-building masonry tone: bake palette vertex colour pulled toward the
+  // reference masonry palette, with per-building brightness (per-vertex varying)
+  let palette: N = color(MASONRY_HEX[0]);
+  const pick = hash(bid.add(101));
+  for (let i = 1; i < MASONRY_HEX.length; i++) {
+    palette = mix(palette, color(MASONRY_HEX[i]), step(i / MASONRY_HEX.length, pick));
+  }
+  const baseTone = varying(mix(vColor, palette, 0.72).mul(hash(bid.add(223)).mul(0.16).add(0.9)) as N) as N;
+
+  const nodes = facadeSurface({ baseTone, bid, baseY, topRel, litWindows: true, detail: opts.detail });
+  mat.colorNode = nodes.colorNode;
+  mat.roughnessNode = nodes.roughnessNode;
+  mat.metalnessNode = nodes.metalnessNode;
+  mat.emissiveNode = nodes.emissiveNode;
+  mat.normalNode = nodes.normalNode;
+  mat.envMapIntensity = 1.0;
+}
+
+/**
  * The shared skyscraper-facade material for a tile's buildings. Storeys and window
  * columns grow procedurally from world position; each building's base height (from
  * the alive texture) anchors its storefront and floor lines to its own street level.
@@ -425,61 +513,58 @@ export function createFacadeMaterial(
   const vColor = attribute("color", "vec3") as unknown as N;
   const uAliveW = uniform(texWidth);
 
+  // per-tile 1-row alive texture, sampled at the building's column (bid)
   const info = texture(aliveTex, vec2(bid.add(0.5).div(uAliveW), 0.5));
 
-  // Suppressed buildings used to be hidden by moving their vertices 900 m down.
-  // That left a complete second city under the playable world, still inside the
-  // camera's 24 km far plane. A material mask removes those fragments (including
-  // from shadow passes). Both R=0 (mesh and collider off) and R=1/255 (mesh off,
-  // collider kept) stay below this threshold.
-  mat.maskNode = info.r.greaterThan(0.5).and(cameraCutawayMask());
-
-  // Deterministic per-building nudge (±3cm in XZ): raw OSM leaves duplicate
-  // footprints (way + multipolygon twins) and shared party walls exactly
-  // coplanar, and two coincident facades with different _bid z-fight as a
-  // flickering patchwork of each other's windows — the nudge gives every
-  // building its own plane
-  const nudge = vec3(hash(bid.add(311)).sub(0.5).mul(0.06), 0, hash(bid.add(577)).sub(0.5).mul(0.06));
-  // The mask is the visibility source of truth. Also move suppressed vertices
-  // far beyond the camera range so the rasterizer rejects their triangles before
-  // fragment work; unlike the old 900 m sink, this can never form a visible city.
-  const suppressed = step(info.r, 0.5);
-  // The offset is in meters, but quantized tiles store positions normalized to
-  // [-1,1] with the dequantization scale baked into the node transform — a
-  // local-space add would be amplified by that scale (~420x), so divide it out
-  const offsetMeters = nudge.sub(vec3(0, suppressed.mul(1_000_000), 0));
-  mat.positionNode = positionLocal.add(offsetMeters.div(modelScale));
-
-  // the XZ nudge has a directional blind spot: when a pair's nudge delta runs
-  // parallel to the shared wall (or the shared face is a roof/floor), the two
-  // shells stay coplanar and z-fight. Pull each building toward the camera by
-  // a per-bid relative hair — along the view ray, so screen position is
-  // unchanged and only depth separates. ~2e-4 ≈ 2cm at 100m, ~3000x the f32
-  // reversed-z depth precision at any distance.
-  mat.vertexNode = cameraProjectionMatrix.mul(
-    positionView.mul(hash(bid.add(911)).mul(-2e-4).add(1))
-  );
-
-  // per-building base height, 16-bit fixed point in G/B
-  const baseY = info.g.mul(255).round().mul(256).add(info.b.mul(255).round()).div(BASEY_SCALE).sub(BASEY_OFFSET);
-  // roof height above base, 8-bit in A (255 = unknown → mask never triggers)
-  const topRel = info.a.mul(255).round().mul(TOPH_SCALE);
-
-  // per-building masonry tone: bake palette vertex colour pulled toward the
-  // reference masonry palette, with per-building brightness (per-vertex varying)
-  let palette: N = color(MASONRY_HEX[0]);
-  const pick = hash(bid.add(101));
-  for (let i = 1; i < MASONRY_HEX.length; i++) {
-    palette = mix(palette, color(MASONRY_HEX[i]), step(i / MASONRY_HEX.length, pick));
-  }
-  const baseTone = varying(mix(vColor, palette, 0.72).mul(hash(bid.add(223)).mul(0.16).add(0.9)) as N) as N;
-
-  const nodes = facadeSurface({ baseTone, bid, baseY, topRel, litWindows: true, detail });
-  mat.colorNode = nodes.colorNode;
-  mat.roughnessNode = nodes.roughnessNode;
-  mat.metalnessNode = nodes.metalnessNode;
-  mat.emissiveNode = nodes.emissiveNode;
-  mat.normalNode = nodes.normalNode;
-  mat.envMapIntensity = 1.0;
+  assignFacadeNodes(mat, info, bid, vColor, { detail, batched: false });
   return mat;
+}
+
+/**
+ * Wire the batch-aware facade node graph onto `mat`, the single material shared by
+ * every resident building tile folded into one THREE.BatchedMesh (see
+ * world/tiles.ts). This CONFIGURES an existing material rather than creating one
+ * because the material needs the mesh's `_indirectTexture`, and the mesh needs a
+ * material at (or after) construction — the caller creates the shell material,
+ * builds the batch with it, then calls this with the constructed mesh.
+ *
+ * All tiles' alive data lives in ONE atlas texture — one row per batch instance,
+ * `aliveW` columns per row. Per fragment/vertex the tile's row is the batch's own
+ * per-instance index (three maps draw/instance id → the matrix row through
+ * `_indirectTexture`; we read the SAME row so the alive data lines up exactly with
+ * the per-instance dequant matrix), and the column is the building id.
+ * `textureLoad` is an exact texel fetch — no filtering, so roof-height alpha and
+ * rowFits masks never bleed between adjacent tile rows.
+ *
+ * Always the `detail` graph: a single BatchedMesh owns one material, so there is
+ * no per-tile near/far swap; the detail graph already cross-fades its brick and
+ * weather noise to flat over 240→300 m, matching the far material beyond 300 m.
+ */
+export function configureFacadeBatchMaterial(
+  mat: THREE.MeshStandardNodeMaterial,
+  atlasTex: THREE.DataTexture,
+  batchMesh: THREE.BatchedMesh
+): void {
+  const bid = attribute("_bid", "float") as unknown as N;
+  const vColor = attribute("color", "vec3") as unknown as N;
+
+  // Per-instance atlas ROW via the batch's indirect index. This mirrors three's
+  // own Batch.js: batching id is gl_DrawID under multi-draw (else instanceIndex),
+  // and `_indirectTexture` remaps it to the live instance/matrix row. In the
+  // fragment stage three auto-promotes the index to a flat varying (IndexNode),
+  // so the same lookup is valid in both stages.
+  const indirect = batchMesh as unknown as { _indirectTexture: THREE.Texture };
+  const idTex = indirect._indirectTexture as N;
+  const texLoad = textureLoad as unknown as (t: N, coord?: N) => N;
+  const texSize = textureSize as unknown as (t: N, level: N) => N;
+  const row = (Fn((_: N[], builder: N) => {
+    const batchingId: N = builder.getDrawIndex() === null ? instanceIndex : drawIndex;
+    const size: N = int(texSize(texLoad(idTex), int(0)).x);
+    const x: N = int(batchingId).mod(size);
+    const y: N = int(batchingId).div(size);
+    return int(texLoad(idTex, ivec2(x, y)).x);
+  }) as N)();
+  const info: N = texLoad(atlasTex, ivec2(int(bid), row));
+
+  assignFacadeNodes(mat, info, bid, vColor, { detail: true, batched: true });
 }
