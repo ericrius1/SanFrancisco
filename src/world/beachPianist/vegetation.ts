@@ -90,7 +90,19 @@ const BRIDGE_DZ = BEACH_PIANIST_BRIDGE_AIM.z - SITE_Z;
 const BRIDGE_INV_LENGTH = 1 / Math.hypot(BRIDGE_DX, BRIDGE_DZ);
 const SIGHT_X = BRIDGE_DX * BRIDGE_INV_LENGTH;
 const SIGHT_Z = BRIDGE_DZ * BRIDGE_INV_LENGTH;
+const SITE_COSINE = Math.cos(BEACH_PIANIST_SITE.yaw);
+const SITE_SINE = Math.sin(BEACH_PIANIST_SITE.yaw);
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+// The former 4+ metre circular performance clearing read as a bare pad around
+// the whole exhibit. Keep only roots that would visibly pierce the solid piano
+// case out of the scatter; grass and flowers may otherwise grow right up to it.
+// Bounds are in the stage-local frame documented by piano.ts.
+const PIANO_ROOT_CLEARANCE = {
+  minX: -0.9,
+  maxX: 0.9,
+  minZ: -2.42,
+  maxZ: -0.14
+} as const;
 
 function hash(index: number, salt: number): number {
   const value = Math.sin(index * 127.1 + salt * 311.7) * 43758.5453;
@@ -101,6 +113,17 @@ function distanceFromBridgeSightline(x: number, z: number): number {
   const dx = x - SITE_X;
   const dz = z - SITE_Z;
   return Math.abs(dx * SIGHT_Z - dz * SIGHT_X);
+}
+
+function rootIntersectsPiano(x: number, z: number, margin: number): boolean {
+  const dx = x - SITE_X;
+  const dz = z - SITE_Z;
+  const localX = SITE_COSINE * dx - SITE_SINE * dz;
+  const localZ = SITE_SINE * dx + SITE_COSINE * dz;
+  return localX >= PIANO_ROOT_CLEARANCE.minX - margin &&
+    localX <= PIANO_ROOT_CLEARANCE.maxX + margin &&
+    localZ >= PIANO_ROOT_CLEARANCE.minZ - margin &&
+    localZ <= PIANO_ROOT_CLEARANCE.maxZ + margin;
 }
 
 function dryRoot(map: WorldMap, x: number, z: number, radius: number): number | null {
@@ -160,10 +183,7 @@ function collectFlowers(map: WorldMap): AuthoredFlowerPlacement[] {
   for (let i = 0; i < 2_200 && placements.length < 520; i++) {
     const x = SITE_X + (hash(i, 83) - 0.5) * 64;
     const z = SITE_Z + (hash(i, 89) - 0.5) * 64;
-    const radius = Math.hypot(x - SITE_X, z - SITE_Z);
-    if (radius < 4.6) continue;
-    // Keep the central performance pad and bridge-facing footpath legible.
-    if (distanceFromBridgeSightline(x, z) < 1.55 && radius < 20) continue;
+    if (rootIntersectsPiano(x, z, 0.3)) continue;
     const y = dryRoot(map, x, z, 0.38);
     if (y === null) continue;
     const speciesIndex = Math.floor(hash(i, 97) * FLOWER_SPECIES.length) % FLOWER_SPECIES.length;
@@ -202,21 +222,18 @@ function collectGrass(map: WorldMap): GrassEntry[] {
       // coverage all the way to the water and onto the lower bluff.
       const x = SITE_X + dx + (hash(i, 127) - 0.5) * spacing * 0.72;
       const z = SITE_Z + dz + (hash(i, 131) - 0.5) * spacing * 0.72;
-      const radius = Math.hypot(x - SITE_X, z - SITE_Z);
-      if (radius < 4.15 || hash(i, 137) < 0.08) continue;
+      if (rootIntersectsPiano(x, z, 0.12) || hash(i, 137) < 0.08) continue;
       const y = dryRoot(map, x, z, 0.32);
       if (y === null) continue;
       map.normal(x, z, normal, 0.65);
       if (normal.y < 0.52) continue;
 
-      const inArrivalAisle = distanceFromBridgeSightline(x, z) < 1.7 && radius < 22;
-      const heightScale = inArrivalAisle ? 0.48 : 1;
       placements.push({
         x,
         y: y - 0.025,
         z,
         yaw: hash(i, 139) * Math.PI * 2,
-        height: (0.48 + hash(i, 149) * 0.62) * heightScale,
+        height: 0.48 + hash(i, 149) * 0.62,
         spread: 0.72 + hash(i, 151) * 0.3,
         color: GRASS_COLORS[Math.floor(hash(i, 157) * GRASS_COLORS.length) % GRASS_COLORS.length],
         windAmp: 0.7 + hash(i, 163) * 0.46
