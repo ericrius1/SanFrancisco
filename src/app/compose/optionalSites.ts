@@ -713,6 +713,15 @@ export function createOptionalSites({
     unloadDistance: 2000,
     build: async () => (await import("../../world/landsEnd/vegetation")).createLandsEndFoliage(map)
   });
+  siteFoliage.register({
+    id: "beach-pianist-grove",
+    x: BEACH_PIANIST_CENTER.x,
+    z: BEACH_PIANIST_CENTER.z,
+    loadDistance: 950,
+    unloadDistance: 1250,
+    build: async () =>
+      (await import("../../world/beachPianist/vegetation")).createBeachPianistFoliage(map)
+  });
   const coronaFoliageRules = {
     hash: coronaHash2,
     inDogPark: (x: number, z: number) => coronaPointInPolygon(x, z, CORONA_DOG_PARK),
