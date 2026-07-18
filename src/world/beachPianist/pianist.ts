@@ -5,13 +5,13 @@ import { KEY_CONTACT } from "./piano";
 import { keyCenterX } from "./keys";
 
 /**
- * The bearded voxel pianist: light skin, a dark-brown side/back cut with an
- * open crown and forehead, a black long-sleeve tee, black pants, white shoes, a
- * full dark beard and black sunglasses. He sits at the bench, thighs level,
- * shins down, feet at the pedals, and plays the keyboard with build-time IK arm
- * stations blended at runtime toward the current notes' key positions. Between
- * phrases his hands hover; during the rest he drops them to his lap and gazes
- * out to sea.
+ * The bearded voxel pianist: light skin, a dark-brown side/back cut covering the
+ * rear fifth of his crown while leaving the forehead open, a black long-sleeve
+ * tee, black pants, white shoes, a full dark beard and black sunglasses. He sits
+ * at the bench, thighs level, shins down, feet at the pedals, and plays the
+ * keyboard with build-time IK arm stations blended at runtime toward the current
+ * notes' key positions. Between phrases his hands hover; during the rest he
+ * drops them to his lap and gazes out to sea.
  *
  * Local frame matches the piano: he faces -Z (the keyboard), bass at +X, so his
  * left hand (rig "L", the +X shoulder) naturally covers the low half.
@@ -138,16 +138,18 @@ export function buildPianist(stage: THREE.Group): Pianist {
   );
   if (stockShades instanceof THREE.Mesh) stockShades.material = shades;
 
-  // Replace the stock buzz crown with a close side/back wrap. The thin panels
-  // meet the scalp without covering the face, forehead, or crown, while the
-  // broad occipital panel makes the haircut read clearly from behind.
+  // Replace the stock buzz crown with a close side/back wrap. The occipital
+  // panel rises to the scalp and joins a shallow rear-crown slab: its 0.055 m
+  // overlap on the 0.26 m-deep head covers roughly the back 20% of the top
+  // without reaching the forehead or face.
   for (const crown of rig.avatar.hair.buzz) crown.visible = false;
   const hairWrap = new THREE.Group();
   hairWrap.name = "beachPianist.sideBackHair";
   rig.head.add(hairWrap);
-  box(hairWrap, m.hair, 0.27, 0.2, 0.04, 0, 0.2, 0.15); // back/occipital hair
+  box(hairWrap, m.hair, 0.27, 0.24, 0.04, 0, 0.22, 0.15); // raised back/occipital hair
   box(hairWrap, m.hair, 0.035, 0.2, 0.18, -0.1475, 0.2, 0.06); // left side
   box(hairWrap, m.hair, 0.035, 0.2, 0.18, 0.1475, 0.2, 0.06); // right side
+  box(hairWrap, m.hair, 0.27, 0.03, 0.095, 0, 0.345, 0.1225); // rear 20% of crown
 
   // Fuller dark beard than the ukulelist: chin slab, jaw frames, upper cheeks.
   const beard = mat(BEARD);
