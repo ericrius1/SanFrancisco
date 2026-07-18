@@ -22,6 +22,10 @@ import { BLACK_MIDIS, KEY_IS_BLACK, KEY_SLOT, WHITE_MIDIS, keyCenterX } from "./
 import { parseNoteTimeline, type NoteTimeline } from "./notes";
 import { REST_MS, SONGS } from "./songs";
 import { BEACH_PIANIST_SITE } from "./meta";
+import {
+  createBeachPianistRadialSource,
+  type BeachPianistRadialSource
+} from "./radialSource";
 
 export { BEACH_PIANIST_SITE } from "./meta";
 
@@ -33,6 +37,7 @@ const SHOW_RADIUS = 260;
 const HIDE_RADIUS = 300;
 const ANIM_RADIUS = 210; // beyond this the pose/key work is skipped
 const AUDIO_FETCH_RADIUS = 320; // first fetch of the recording + note timeline
+export const BEACH_PIANIST_GOD_RAY_RADIUS = 30;
 
 // Voice point: above the soundboard, in stage-local space.
 const VOICE_LOCAL = new THREE.Vector3(0, KEY_CONTACT.top + 0.22, KEY_CONTACT.z - 0.9);
@@ -53,6 +58,7 @@ export class BeachPianist {
   #piano: ReturnType<typeof buildGrandPiano>;
   #pianist: ReturnType<typeof buildPianist>;
   #audio: BeachPianistAudio;
+  #radialSource: BeachPianistRadialSource | null = null;
 
   // lazy note timeline (drives the visual performance)
   #timeline: NoteTimeline | null = null;
@@ -375,6 +381,30 @@ export class BeachPianist {
     this.#onset = 0;
   }
 
+  isPlayerInGodRayArea(playerPos: { x: number; z: number }): boolean {
+    const dx = playerPos.x - BEACH_PIANIST_SITE.x;
+    const dz = playerPos.z - BEACH_PIANIST_SITE.z;
+    return dx * dx + dz * dz <= BEACH_PIANIST_GOD_RAY_RADIUS * BEACH_PIANIST_GOD_RAY_RADIUS;
+  }
+
+  /** Allocate only after the player has crossed the 30 m gate. The expensive
+   * radial render graph remains a separate dynamic import owned by pipeline.ts. */
+  get radialLightSource() {
+    if (!this.#radialSource) {
+      this.#radialSource = createBeachPianistRadialSource({
+        x: BEACH_PIANIST_SITE.x,
+        y: this.group.position.y,
+        z: BEACH_PIANIST_SITE.z
+      });
+    }
+    return this.#radialSource.source;
+  }
+
+  releaseRadialLightSource(): void {
+    this.#radialSource?.dispose();
+    this.#radialSource = null;
+  }
+
   get debugState() {
     const tp = this.#transport(performance.now());
     this.group.updateMatrixWorld(true);
@@ -396,6 +426,8 @@ export class BeachPianist {
       songIndex: tp.songIndex,
       songTimeMs: tp.songTimeMs,
       perform: this.#perform,
+      godRayRadius: BEACH_PIANIST_GOD_RAY_RADIUS,
+      godRaySourceAllocated: this.#radialSource !== null,
       handLXWorld: this.#handX.l,
       handRXWorld: this.#handX.r,
       expectLXWorld: expectL,
@@ -410,6 +442,7 @@ export class BeachPianist {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#audio.dispose();
+    this.releaseRadialLightSource();
     this.#pianist.dispose();
     this.#piano.dispose();
     this.group.parent?.remove(this.group);

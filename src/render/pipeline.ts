@@ -250,7 +250,16 @@ export function createRenderPipeline(
   let radialRenderedFrames = 0;
   const radialVariants = new Map<number, THREE.RenderPipeline>();
 
-  const radialEnabled = () => Boolean(POSTFX_TUNING.values.museumRays);
+  const radialEnabled = () => Boolean(
+    POSTFX_TUNING.values.museumRays || POSTFX_TUNING.values.pianistRays
+  );
+  const activeRadialParams = (source: RadialLightSource | null = radialSource): RadialLightParams => {
+    const sourceParams = typeof source?.params === "function" ? source.params() : source?.params;
+    return {
+      ...getRadialLightParams(),
+      ...sourceParams
+    };
+  };
 
   const getRadialVariantPipeline = (
     requestedMask: number,
@@ -407,7 +416,7 @@ export function createRenderPipeline(
       return;
     }
     if (radialRuntime && radialRuntimeSource === requestedSource) {
-      radialRuntime.configure(getRadialLightParams());
+      radialRuntime.configure(activeRadialParams(requestedSource));
       selectActivePipeline();
       return;
     }
@@ -423,7 +432,7 @@ export function createRenderPipeline(
           camera,
           sceneDepth,
           source: requestedSource,
-          params: getRadialLightParams()
+          params: activeRadialParams(requestedSource)
         });
         radialRuntimeSource = requestedSource;
         selectActivePipeline();
@@ -449,7 +458,7 @@ export function createRenderPipeline(
   const applyRadialLightFx = () => {
     radialEpoch += 1; // invalidates an in-flight activation after a toggle-off
     radialBuildPending = null;
-    radialRuntime?.configure(getRadialLightParams());
+    radialRuntime?.configure(activeRadialParams());
     selectActivePipeline();
     if (radialEnabled() && radialSource) ensureRadialRuntime();
   };
