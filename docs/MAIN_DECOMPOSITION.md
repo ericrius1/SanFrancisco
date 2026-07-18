@@ -147,10 +147,78 @@ park (≈5 lines each — a module would be more wiring than content); buskers
 (firing is interleaved in the tool-fire block; its water hooks already route
 through `teaGarden`).
 
+## Step 4 landed — `src/app/debugRegistry.ts` (`__sf` from a registry)
+
+The hand-maintained ~130-entry `__sf` object literal is gone; `exposeDebugHooks`
+now builds `window.__sf` from a typed `DebugRegistry`. The registry has two entry
+kinds, which make explicit the two value semantics the old literal expressed
+implicitly (and error-prone-ly):
+
+- `ref(key, value)` / `refs({…})` — a stable handle captured once. Used for every
+  `const` **and** for values that ARE functions (an opener/getter stored as-is so
+  a consumer calls `__sf.getPaintAudio()`; the function is the value, not
+  something the registry invokes).
+- `getter(key, () => value)` / `getters({…})` — a thunk evaluated by `build()`.
+  Used for every mutable `let` alias (`coronaHeights`, `palaceReverie`,
+  `fetchBall`, `ghostShip`, `citygen`, …) and every computed read
+  (`teaGarden.current()`, `pickleballController?.game ?? null`).
+
+**Byte-compatible with the prior literal.** All 127 keys preserved with identical
+value semantics (verified by extracting both key sets and diffing — zero missing,
+zero extra). This holds because `exposeDebugHooks` runs exactly once, during boot
+before reveal, where every lazy `let` is still `null` — so a getter reading the
+live binding there produces the same snapshot the literal's shorthand did. Live
+updates continue to flow through the **untouched** `Object.assign` refresh paths
+(`onSitesChanged` and the late region-load callbacks that add `garden`,
+`wildlands`, `buenaVistaTrees`, `golf`, `oceanBeachWaves`, `surfExperience`, …).
+Every `__sf.` key grepped from `tools/*.mjs` was hand-verified to survive. tsc
+green; boot-probe reveal + `errors: []`; `perf-baseline` all stops; `test:lazy-
+sites` 32/0; `perf-shot tea` debugState payload + PNG.
+
+Registrations currently live at the exposure site (not yet at each construction
+site) because the world-systems block still lives in `main.ts`; the mechanism is
+in place for future `ctx`-threaded `create*()` to self-register. This step
+slightly *grows* `main.ts` (the dense one-line literal became readable, classified
+registration calls) — line count was not the goal; killing the monolithic literal
+and making the ref/getter distinction typed and explicit was.
+
+## Step 5 landed — `src/app/boot/*` (boot stages)
+
+The four boot phases are extracted into modules with explicit typed inputs/outputs:
+
+- `bootMap.ts` → `{ map }` — `WorldMap.load()` + `prepareCoronaHeightsGround`.
+- `bootGpu.ts(app)` → `RenderCore` — `createRenderCore` + `initTextures`.
+- `bootTiles.ts({ scene, camera, renderer, map, sky })` → `{ tiles,
+  authoredRegions }` — `TileStreamer` (with `onShadowCastersChanged` +
+  `onBatchCreated` parallel-compile wiring), `AuthoredRegionStreamer` (with the
+  `warmStaticRegion` `prepareRoot`), both inits awaited, hot-dispose registered.
+- `bootPhysics.ts({ map, tiles, farOcclusion, initialArrivalPromise })` →
+  `{ physics, initialArrival }` — `Physics.create` **in the same `Promise.all`**
+  as arrival resolution (the overlap is a boot-timing optimization, preserved by
+  threading `initialArrivalPromise` in) + the far-occlusion tile-callback chaining
+  (`syncFarTile`, the `onTileColliders`/`onTileUnload`/`onBuildingAlive` wrap, the
+  landmark-colliders fetch).
+
+`main.ts`'s `boot()` now calls each stage in order and keeps every `bootMark`
+inline immediately after its stage — **same mark names, same order** (`map · gpu ·
+tiles · physics · world · warmup · reveal`), which `boot-probe` parses. The
+`progress(...)` cover updates stay in `main` around the stage calls. The huge
+synchronous world-systems block stays in `main` by design (per the plan). Removed
+eight now-unused imports from `main.ts` (`noUnusedLocals`). tsc green; boot-probe
+reveal + `errors: []` with the phase line intact; production `build` succeeds.
+
+`main.ts` line count across steps 4+5: 4791 → 4850 (step 4, literal → registry) →
+4787 (step 5, boot phases out). Net roughly flat — the step-4 literal was a single
+~5000-char line, so line count understates the change; the readable-registry and
+four testable boot modules are the win.
+
 ## Rules going forward
 
 - No new system constructions inside `main.ts` — new features ship as
   `app/compose/<feature>.ts` (or a lazy module) and register themselves.
+- New `__sf` debug handles register on the `DebugRegistry` (ref for stable
+  values/functions, getter for mutable `let`s and computed reads) — never by
+  hand-editing an object literal.
 - A system's per-frame work must be registered with a tracer phase name so
   hitch attribution keeps working.
 - Anything optional obeys the massive-app loading policy (no eager asset or
