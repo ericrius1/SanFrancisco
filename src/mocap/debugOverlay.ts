@@ -4,11 +4,20 @@ export type DebugRoi = { centerX: number; centerY: number; size: number };
 
 // Raw (pre-mirror) BlazePose indices for the joints the retargeter consumes.
 const EDGES: Array<[number, number]> = [
+  [0, 2], [0, 5], [2, 7], [5, 8], [9, 10],
   [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+  [15, 17], [15, 19], [15, 21], [17, 19],
+  [16, 18], [16, 20], [16, 22], [18, 20],
   [11, 23], [12, 24], [23, 24],
   [23, 25], [25, 27], [24, 26], [26, 28]
 ];
-const POINTS = [0, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+const POINTS = [
+  0, 2, 5, 7, 8, 9, 10,
+  11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+  23, 24, 25, 26, 27, 28
+];
+
+const confidence = (point: PoseLandmark) => Math.min(point.visibility, point.presence);
 
 function visibilityColor(visibility: number): string {
   if (visibility >= 0.5) return "#6ff7a0";
@@ -19,7 +28,7 @@ function visibilityColor(visibility: number): string {
 /**
  * Draws the raw tracked joints over the (mirrored, object-fit: cover) webcam
  * preview so input quality and retargeting quality can be judged separately.
- * Joint color = model visibility vs the retargeter's thresholds:
+ * Joint color = observed confidence (visibility + in-frame presence) vs the retargeter's thresholds:
  * green ≥ 0.5, amber ≥ 0.35 (arm gate), red below. Blue box = tracking crop.
  */
 export function drawPoseDebug(
@@ -27,7 +36,8 @@ export function drawPoseDebug(
   screen: PoseLandmark[] | null,
   roi: DebugRoi | null,
   videoWidth: number,
-  videoHeight: number
+  videoHeight: number,
+  trackingMode: "full-body" | "upper-body" | null = null
 ): void {
   const context = canvas.getContext("2d");
   if (!context) return;
@@ -61,9 +71,11 @@ export function drawPoseDebug(
   context.lineWidth = 2;
   context.lineCap = "round";
   for (const [a, b] of EDGES) {
+    if (trackingMode === "upper-body" && (a >= 23 || b >= 23)) continue;
     const pa = screen[a];
     const pb = screen[b];
-    const visibility = Math.min(pa.visibility, pb.visibility);
+    const visibility = Math.min(confidence(pa), confidence(pb));
+    if (visibility < 0.2) continue;
     context.strokeStyle = visibilityColor(visibility);
     context.globalAlpha = 0.35 + 0.55 * Math.min(1, visibility);
     context.beginPath();
@@ -73,8 +85,11 @@ export function drawPoseDebug(
   }
   context.globalAlpha = 1;
   for (const index of POINTS) {
+    if (trackingMode === "upper-body" && index >= 23) continue;
     const point = screen[index];
-    context.fillStyle = visibilityColor(point.visibility);
+    const pointConfidence = confidence(point);
+    if (pointConfidence < 0.2) continue;
+    context.fillStyle = visibilityColor(pointConfidence);
     context.beginPath();
     context.arc(px(point.x), py(point.y), index === 15 || index === 16 ? 3.5 : 2.5, 0, Math.PI * 2);
     context.fill();
@@ -83,8 +98,8 @@ export function drawPoseDebug(
   // on the same side as the player's actual hands).
   context.font = "700 9px system-ui, sans-serif";
   context.fillStyle = "#eaf6ff";
-  context.fillText("L", px(screen[15].x) + 5, py(screen[15].y) - 5);
-  context.fillText("R", px(screen[16].x) + 5, py(screen[16].y) - 5);
+  if (confidence(screen[15]) >= 0.2) context.fillText("L", px(screen[15].x) + 5, py(screen[15].y) - 5);
+  if (confidence(screen[16]) >= 0.2) context.fillText("R", px(screen[16].x) + 5, py(screen[16].y) - 5);
 }
 
 export function clearPoseDebug(canvas: HTMLCanvasElement): void {

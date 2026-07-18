@@ -3,17 +3,29 @@ export type PoseLandmark = {
   y: number;
   z: number;
   visibility: number;
+  presence: number;
 };
 
 export const LM = {
+  NOSE: 0,
+  LEFT_EYE: 2,
+  RIGHT_EYE: 5,
   LEFT_EAR: 7,
   RIGHT_EAR: 8,
+  MOUTH_LEFT: 9,
+  MOUTH_RIGHT: 10,
   LEFT_SHOULDER: 11,
   RIGHT_SHOULDER: 12,
   LEFT_ELBOW: 13,
   RIGHT_ELBOW: 14,
   LEFT_WRIST: 15,
   RIGHT_WRIST: 16,
+  LEFT_PINKY: 17,
+  RIGHT_PINKY: 18,
+  LEFT_INDEX: 19,
+  RIGHT_INDEX: 20,
+  LEFT_THUMB: 21,
+  RIGHT_THUMB: 22,
   LEFT_HIP: 23,
   RIGHT_HIP: 24,
   LEFT_KNEE: 25,
@@ -38,7 +50,8 @@ function midpoint(a: PoseLandmark, b: PoseLandmark): PoseLandmark {
     x: (a.x + b.x) * 0.5,
     y: (a.y + b.y) * 0.5,
     z: (a.z + b.z) * 0.5,
-    visibility: Math.min(a.visibility, b.visibility)
+    visibility: Math.min(a.visibility, b.visibility),
+    presence: Math.min(a.presence, b.presence)
   };
 }
 

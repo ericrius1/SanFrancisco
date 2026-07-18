@@ -24,7 +24,10 @@ export class PoseMocapSession {
   #onFatal: SessionOptions["onFatal"];
   #detector: PoseDetector | null = null;
   #stream: MediaStream | null = null;
-  #smoother = new LandmarkSmoother(LANDMARK_COUNT);
+  // Keep independent filters as in LiteRT.js-Mocap: screen coordinates feed
+  // the diagnostic overlay, while world coordinates feed retargeting.
+  #screenSmoother = new LandmarkSmoother(LANDMARK_COUNT, { minCutoff: 1.5, beta: 0.06 });
+  #worldSmoother = new LandmarkSmoother(LANDMARK_COUNT, { minCutoff: 1, beta: 0.05 });
   #retargeter = new AvatarRetargeter();
   #running = false;
   #frameCallback = 0;
@@ -35,6 +38,7 @@ export class PoseMocapSession {
   #disposePending = false;
   #inferenceMsEma = 0;
   #lastStatusAt = 0;
+  #trackingMode = "";
 
   constructor(options: SessionOptions) {
     this.#video = options.video;
@@ -145,25 +149,29 @@ export class PoseMocapSession {
       if (this.#debugCanvas) {
         drawPoseDebug(
           this.#debugCanvas,
-          detection?.screen ?? null,
+          detection ? this.#screenSmoother.apply(detection.screen, dt) : null,
           this.#detector?.roi ?? null,
           this.#video.videoWidth,
-          this.#video.videoHeight
+          this.#video.videoHeight,
+          detection?.trackingMode ?? null
         );
       }
       if (detection) {
-        const smooth = this.#smoother.apply(detection.world, dt);
+        const smooth = this.#worldSmoother.apply(detection.world, dt);
         this.#retargeter.update(mirrorAndExtendLandmarks(smooth), true);
         this.#lastPoseAt = now;
         const ms = detection.inferenceMs;
         this.#inferenceMsEma = this.#inferenceMsEma ? this.#inferenceMsEma * 0.8 + ms * 0.2 : ms;
+        const modeLabel = detection.trackingMode === "upper-body" ? "Upper body" : "Full body";
         if (!this.#tracking) {
           this.#tracking = true;
           this.#lastStatusAt = now;
-          this.#onState("tracking", `Tracking · ${Math.max(1, Math.round(this.#inferenceMsEma))} ms`);
-        } else if (now - this.#lastStatusAt >= 500) {
+          this.#trackingMode = detection.trackingMode;
+          this.#onState("tracking", `${modeLabel} · ${Math.max(1, Math.round(this.#inferenceMsEma))} ms`);
+        } else if (now - this.#lastStatusAt >= 500 || this.#trackingMode !== detection.trackingMode) {
           this.#lastStatusAt = now;
-          this.#onState("tracking", `Tracking · ${Math.max(1, Math.round(this.#inferenceMsEma))} ms`);
+          this.#trackingMode = detection.trackingMode;
+          this.#onState("tracking", `${modeLabel} · ${Math.max(1, Math.round(this.#inferenceMsEma))} ms`);
         }
       } else if (now - this.#lastPoseAt > 500) {
         this.#retargeter.setFresh(false);
