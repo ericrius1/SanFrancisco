@@ -26,6 +26,7 @@ import {
   createBeachPianistRadialSource,
   type BeachPianistRadialSource
 } from "./radialSource";
+import { PianistShoreline } from "./shoreline";
 
 export { BEACH_PIANIST_SITE } from "./meta";
 
@@ -57,8 +58,10 @@ export class BeachPianist {
   #stage = new THREE.Group();
   #piano: ReturnType<typeof buildGrandPiano>;
   #pianist: ReturnType<typeof buildPianist>;
+  #shoreline: PianistShoreline;
   #audio: BeachPianistAudio;
   #radialSource: BeachPianistRadialSource | null = null;
+  #perfSuppressed = false;
 
   // lazy note timeline (drives the visual performance)
   #timeline: NoteTimeline | null = null;
@@ -113,11 +116,12 @@ export class BeachPianist {
     this.#piano = buildGrandPiano();
     this.#stage.add(this.#piano.group);
     this.#pianist = buildPianist(this.#stage);
-    this.group.add(this.#stage);
 
     const y = this.#map.groundTop(BEACH_PIANIST_SITE.x, BEACH_PIANIST_SITE.z);
     this.group.position.set(BEACH_PIANIST_SITE.x, y, BEACH_PIANIST_SITE.z);
     this.group.rotation.y = BEACH_PIANIST_SITE.yaw;
+    this.#shoreline = new PianistShoreline(this.#map, -y);
+    this.group.add(this.#shoreline.group, this.#stage);
     this.group.updateMatrixWorld(true);
 
     // Spatial voice at the soundboard.
@@ -213,9 +217,11 @@ export class BeachPianist {
     if (this.#renderWarm === "cold" && dist < PRIME_RADIUS) this.#kickRenderWarm();
     if (this.group.visible) {
       if (dist > HIDE_RADIUS) this.group.visible = false;
-    } else if (dist < SHOW_RADIUS && this.#renderWarm === "ready") {
+    } else if (!this.#perfSuppressed && dist < SHOW_RADIUS && this.#renderWarm === "ready") {
       this.group.visible = true;
     }
+    const shorelineActive = !this.#perfSuppressed && this.group.visible && dist < ANIM_RADIUS;
+    this.#shoreline.update(_elapsed, shorelineActive);
     if (!this.group.visible || dist > ANIM_RADIUS) {
       this.#lastSongTimeMs = songTimeMs;
       return;
@@ -405,6 +411,14 @@ export class BeachPianist {
     this.#radialSource = null;
   }
 
+  setPerfSuppressed(suppressed: boolean): void {
+    this.#perfSuppressed = suppressed;
+    if (suppressed) {
+      this.group.visible = false;
+      this.#shoreline.update(0, false);
+    }
+  }
+
   get debugState() {
     const tp = this.#transport(performance.now());
     this.group.updateMatrixWorld(true);
@@ -434,6 +448,7 @@ export class BeachPianist {
       expectRXWorld: expectR,
       leftTargetX: this.#lastLeftTargetX,
       rightTargetX: this.#lastRightTargetX,
+      shoreline: this.#shoreline.debugState,
       audio: this.#audio.debugState()
     };
   }
@@ -443,6 +458,7 @@ export class BeachPianist {
     this.#disposed = true;
     this.#audio.dispose();
     this.releaseRadialLightSource();
+    this.#shoreline.dispose();
     this.#pianist.dispose();
     this.#piano.dispose();
     this.group.parent?.remove(this.group);

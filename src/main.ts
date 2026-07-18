@@ -3372,7 +3372,7 @@ async function boot() {
         if (!on && waveOrgan) waveOrgan.group.visible = false;
         break;
       case "beach-pianist":
-        if (!on && beachPianist) beachPianist.group.visible = false;
+        beachPianist?.setPerfSuppressed(!on);
         break;
       case "sutro-baths":
         sutroBaths?.setPerfSuppressed(!on);
@@ -5231,9 +5231,10 @@ async function boot() {
         waveOrgan.group.visible = false;
       }
       if (optionalSitePerfAllowed("beach-pianist")) {
+        beachPianist?.setPerfSuppressed(false);
         beachPianist?.update(frameDt, elapsed, player.position, camera, windGustValue());
       } else if (beachPianist) {
-        beachPianist.group.visible = false;
+        beachPianist.setPerfSuppressed(true);
       }
       // Landscape vegetation rings (internally gated on the master foliage
       // toggle; a few hypot tests per frame when idle).
