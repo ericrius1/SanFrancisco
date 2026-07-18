@@ -48,7 +48,10 @@ export class AvatarRetargeter {
   #inverse = new THREE.Quaternion();
   #hipsWorld = new THREE.Quaternion();
   #chestWorld = new THREE.Quaternion();
+  #faceWorld = new THREE.Quaternion();
   #parentWorld = new THREE.Quaternion();
+  #faceTop = new THREE.Vector3();
+  #faceBottom = new THREE.Vector3();
   #hipsSeen = false;
   #chestSeen = false;
 
@@ -156,11 +159,22 @@ export class AvatarRetargeter {
       this.#targets.torso.visible = false;
     }
 
-    const headVisible = chestValid && this.#visible([LM.LEFT_EAR, LM.RIGHT_EAR, LM.NECK], 0.3, this.#targets.head.visible);
-    if (headVisible && this.#basis(LM.LEFT_EAR, LM.RIGHT_EAR, LM.NECK, LM.HEAD_CENTER, this.#parentWorld)) {
-      this.#targets.head.quaternion
-        .copy(this.#inverse.copy(this.#chestWorld).invert())
-        .multiply(this.#parentWorld);
+    // Face landmarks can drive the head independently of shoulders. This is
+    // the important seated/close-camera path: a valid face must not be thrown
+    // away merely because the torso is outside the webcam frame.
+    const faceVisible = this.#visible(
+      [LM.LEFT_EYE, LM.RIGHT_EYE, LM.MOUTH_LEFT, LM.MOUTH_RIGHT],
+      0.4,
+      this.#targets.head.visible
+    );
+    if (faceVisible && this.#faceBasis(this.#faceWorld)) {
+      if (chestValid) {
+        this.#targets.head.quaternion
+          .copy(this.#inverse.copy(this.#chestWorld).invert())
+          .multiply(this.#faceWorld);
+      } else {
+        this.#targets.head.quaternion.copy(this.#faceWorld);
+      }
       this.#targets.head.visible = true;
     } else {
       this.#targets.head.visible = false;
@@ -168,8 +182,8 @@ export class AvatarRetargeter {
 
     if (chestValid || hipsValid) {
       const armParent = chestValid ? this.#chestWorld : this.#hipsWorld;
-      this.#solveChain("armL", "foreL", LM.LEFT_SHOULDER, LM.LEFT_ELBOW, LM.LEFT_WRIST, armParent, 0.35, 1);
-      this.#solveChain("armR", "foreR", LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST, armParent, 0.35, 1);
+      this.#solveChain("armL", "foreL", LM.LEFT_SHOULDER, LM.LEFT_ELBOW, LM.LEFT_WRIST, armParent, 0.35, 1, true);
+      this.#solveChain("armR", "foreR", LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST, armParent, 0.35, 1, true);
     } else {
       this.#hideChain("armL", "foreL");
       this.#hideChain("armR", "foreR");
@@ -191,11 +205,27 @@ export class AvatarRetargeter {
     end: number,
     parentWorld: THREE.Quaternion,
     visibilityThreshold: number,
-    hingeSign: 1 | -1
+    hingeSign: 1 | -1,
+    allowEndFallback = false
   ): void {
     const upperTarget = this.#targets[upper];
     const lowerTarget = this.#targets[lower];
     const upperVisible = this.#visible([root, middle], visibilityThreshold, upperTarget.visible);
+    if (!upperVisible && allowEndFallback && this.#visible([root, end], visibilityThreshold, upperTarget.visible)) {
+      // If a close hand and its shoulder are visible but the elbow falls just
+      // outside frame, aim a straight two-segment arm at the hand instead of
+      // dropping the complete arm back to idle.
+      this.#upperDir.copy(this.#points[end]).sub(this.#points[root]);
+      if (this.#upperDir.lengthSq() >= 1e-8) {
+        this.#inverse.copy(parentWorld).invert();
+        this.#upperDir.normalize().applyQuaternion(this.#inverse);
+        this.#limbBasis(this.#upperDir, null, hingeSign, upperTarget.quaternion);
+        upperTarget.visible = true;
+        lowerTarget.quaternion.identity();
+        lowerTarget.visible = true;
+        return;
+      }
+    }
     this.#upperDir.copy(this.#points[middle]).sub(this.#points[root]);
     if (!upperVisible || this.#upperDir.lengthSq() < 1e-8) {
       this.#hideChain(upper, lower);
@@ -204,16 +234,16 @@ export class AvatarRetargeter {
     this.#inverse.copy(parentWorld).invert();
     this.#upperDir.normalize().applyQuaternion(this.#inverse);
     this.#lowerDir.copy(this.#points[end]).sub(this.#points[middle]);
-    const hasLower = this.#lowerDir.lengthSq() > 1e-8;
+    const lowerVisible = this.#visible([middle, end], visibilityThreshold, lowerTarget.visible);
+    const hasLower = lowerVisible && this.#lowerDir.lengthSq() > 1e-8;
     if (hasLower) this.#lowerDir.normalize().applyQuaternion(this.#inverse);
 
     this.#limbBasis(this.#upperDir, hasLower ? this.#lowerDir : null, hingeSign, upperTarget.quaternion);
     upperTarget.visible = true;
 
-    const lowerVisible = hasLower && this.#visible([middle, end], visibilityThreshold, lowerTarget.visible);
     this.#parentWorld.copy(parentWorld).multiply(upperTarget.quaternion);
     lowerTarget.visible =
-      lowerVisible && this.#directionFrom(middle, end, this.#parentWorld, lowerTarget.quaternion, DOWN);
+      hasLower && this.#directionFrom(middle, end, this.#parentWorld, lowerTarget.quaternion, DOWN);
   }
 
   #hideChain(upper: JointName, lower: JointName): void {
@@ -311,9 +341,28 @@ export class AvatarRetargeter {
     return true;
   }
 
+  /** Camera-space face orientation, independent of the torso/hips. */
+  #faceBasis(output: THREE.Quaternion): boolean {
+    this.#x.copy(this.#points[LM.LEFT_EYE]).sub(this.#points[LM.RIGHT_EYE]);
+    this.#faceTop.copy(this.#points[LM.LEFT_EYE]).add(this.#points[LM.RIGHT_EYE]).multiplyScalar(0.5);
+    this.#faceBottom.copy(this.#points[LM.MOUTH_LEFT]).add(this.#points[LM.MOUTH_RIGHT]).multiplyScalar(0.5);
+    this.#y.copy(this.#faceTop).sub(this.#faceBottom);
+    if (this.#x.lengthSq() < 1e-8 || this.#y.lengthSq() < 1e-8) return false;
+    this.#x.normalize();
+    this.#y.normalize();
+    this.#z.crossVectors(this.#x, this.#y);
+    if (this.#z.lengthSq() < 1e-8) return false;
+    this.#z.normalize();
+    this.#x.crossVectors(this.#y, this.#z).normalize();
+    output.setFromRotationMatrix(this.#matrix.makeBasis(this.#x, this.#y, this.#z));
+    return true;
+  }
+
   #visible(indices: number[], threshold: number, wasVisible = false): boolean {
     const landmarks = this.#landmarks!;
     const floor = wasVisible ? threshold * 0.55 : threshold;
-    return indices.every((index) => landmarks[index].visibility >= floor);
+    return indices.every((index) =>
+      Math.min(landmarks[index].visibility, landmarks[index].presence) >= floor
+    );
   }
 }

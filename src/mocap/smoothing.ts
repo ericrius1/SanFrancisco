@@ -22,7 +22,7 @@ class OneEuro {
 
   constructor(
     readonly minCutoff = 1.2,
-    readonly beta = 0.3,
+    readonly beta = 0.05,
     readonly derivativeCutoff = 1
   ) {}
 
@@ -42,11 +42,11 @@ class OneEuro {
 export class LandmarkSmoother {
   #filters: Array<{ x: OneEuro; y: OneEuro; z: OneEuro }>;
 
-  constructor(count: number) {
+  constructor(count: number, options: { minCutoff?: number; beta?: number } = {}) {
     this.#filters = Array.from({ length: count }, () => ({
-      x: new OneEuro(),
-      y: new OneEuro(),
-      z: new OneEuro()
+      x: new OneEuro(options.minCutoff, options.beta),
+      y: new OneEuro(options.minCutoff, options.beta),
+      z: new OneEuro(options.minCutoff, options.beta)
     }));
   }
 
@@ -57,7 +57,8 @@ export class LandmarkSmoother {
         x: filter.x.filter(point.x, dt),
         y: filter.y.filter(point.y, dt),
         z: filter.z.filter(point.z, dt),
-        visibility: point.visibility
+        visibility: point.visibility,
+        presence: point.presence
       };
     });
   }
