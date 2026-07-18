@@ -571,6 +571,15 @@ export class DebugPanel {
     // subfolders) starts collapsed — open only what you need.
     const meta = pane.addFolder({ title: "metta", expanded: true });
 
+    // MASTER shadow switch — detail knobs live in the top-level shadows folder.
+    SHADOW_TUNING.bind(meta, {
+      keys: ["enabled"],
+      onChange: () => {
+        if (this.#syncingPane) return;
+        this.#applyShadowTuning();
+      }
+    });
+
     // MASTER foliage switch. One checkbox hides AND stops per-frame work for
     // the ENTIRE vegetation system (all trees, grass, flowers, shrubs).
     FOLIAGE_TUNING.bind(meta, {
@@ -879,10 +888,10 @@ export class DebugPanel {
     this.#applyOverlayContext();
 
     // Strength + contact essentials only. Bias / fade minutiae stay off the pane.
+    // Master on/off lives in the metta folder above.
     const shadows = pane.addFolder({ title: "shadows", expanded: false });
     SHADOW_TUNING.bind(shadows, {
       keys: [
-        "enabled",
         "heroStrength",
         "localStrength",
         "farStrength",
