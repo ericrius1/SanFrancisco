@@ -120,7 +120,6 @@ import {
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
 import { POSTFX_TUNING, setFlowPostFx } from "./render/postfx";
-import type { RadialLightSource } from "./render/radialLightTypes";
 import { DebugPanel } from "./ui/debug";
 import { DebugOverlays } from "./ui/overlays";
 import { OVERLAY_TUNING } from "./ui/overlays/tuning";
@@ -845,10 +844,7 @@ async function boot() {
   let missionDolores: MissionDoloresMuseum | null = null;
   let missionDoloresLoading: Promise<void> | null = null;
   let sutroBaths: import("./world/sutroBaths").SutroBaths | null = null;
-  let activeRadialLight: {
-    owner: "mission-dolores" | "beach-pianist";
-    source: RadialLightSource;
-  } | null = null;
+  let pianoGodRaysActive = false;
   let museumBookOpen = false;
   const ensureMissionDolores = (playerPos: THREE.Vector3): void => {
     if (missionDolores || missionDoloresLoading) return;
@@ -875,44 +871,22 @@ async function boot() {
         console.warn("[boot] Mission Dolores museum unavailable:", err);
       });
   };
-  const releaseActiveRadialLight = () => {
-    if (!activeRadialLight) return;
-    // Detach and dispose the render graph before releasing the proxy scene it
-    // reads. Outside a bounded owner, the base post-FX pipeline is selected.
-    pipeline.setRadialLightSource(null);
-    if (activeRadialLight.owner === "mission-dolores") {
-      missionDolores?.releaseRadialLightSource();
-    } else {
-      beachPianist?.releaseRadialLightSource();
-    }
-    activeRadialLight = null;
+  const releasePianoGodRays = () => {
+    if (!pianoGodRaysActive) return;
+    pianoGodRaysActive = false;
+    pipeline.setPianoGodRaysArea(false);
   };
   const renderFrame = () => {
-    const wantsMuseumRays =
-      Boolean(POSTFX_TUNING.values.museumRays) &&
-      missionDolores?.isPlayerInInterior(player.position) === true;
-    const wantsBeachPianistRays =
+    // God rays are intentionally hard-scoped to the piano grove. Mission
+    // Dolores and every other region stay on the base post-processing graph.
+    const wantsPianoGodRays =
       Boolean(POSTFX_TUNING.values.pianistRays) &&
       foliageOn &&
       siteFoliage?.isReady("beach-pianist-grove") === true &&
-      beachPianist?.isPlayerInGodRayArea(player.position) === true;
-    const nextOwner = wantsMuseumRays
-      ? "mission-dolores"
-      : wantsBeachPianistRays
-        ? "beach-pianist"
-        : null;
-
-    if (activeRadialLight?.owner !== nextOwner) {
-      releaseActiveRadialLight();
-      const nextSource = nextOwner === "mission-dolores"
-        ? missionDolores?.radialLightSource ?? null
-        : nextOwner === "beach-pianist"
-          ? beachPianist?.radialLightSource ?? null
-          : null;
-      if (nextOwner && nextSource) {
-        activeRadialLight = { owner: nextOwner, source: nextSource };
-        pipeline.setRadialLightSource(nextSource);
-      }
+      beachPianist?.isPlayerInGodRayArea(player.position, pianoGodRaysActive) === true;
+    if (wantsPianoGodRays !== pianoGodRaysActive) {
+      pianoGodRaysActive = wantsPianoGodRays;
+      pipeline.setPianoGodRaysArea(wantsPianoGodRays, beachPianist?.group.position);
     }
     pipeline.render();
   };
@@ -2553,8 +2527,8 @@ async function boot() {
       landsEnd = r.landsEnd;
       waveOrgan = r.waveOrgan;
       // Beach Pianist keeps two concerns in main (they read main-local state the
-      // controller can't see): its debug tuning folder and the god-ray radial-
-      // light ownership. HEAD ran these inside loadBeachPianist / its unloader;
+      // controller can't see): its debug tuning folder and piano-only god-ray
+      // ownership. HEAD ran these inside loadBeachPianist / its unloader;
       // in the extracted model they ride the alias transition here. onSitesChanged
       // fires for every site change, so guard on the pianist ref actually flipping.
       if (r.beachPianist !== beachPianist) {
@@ -2562,7 +2536,7 @@ async function boot() {
           unregisterBeachPianistTuning?.();
           unregisterBeachPianistTuning = debugPanel.registerFeatureTuning(r.beachPianist.tuningDescriptor());
         } else {
-          if (activeRadialLight?.owner === "beach-pianist") releaseActiveRadialLight();
+          releasePianoGodRays();
           unregisterBeachPianistTuning?.();
           unregisterBeachPianistTuning = null;
         }

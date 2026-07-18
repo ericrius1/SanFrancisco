@@ -21,7 +21,7 @@ import { STREET_LIGHT_TUNING } from "../world/streetLightTuning";
 import {
   POSTFX_TUNING,
   POSTFX_TOGGLES,
-  POSTFX_RADIAL_LIGHT_KEYS,
+  POSTFX_PIANO_GOD_RAY_KEYS,
   applyPostFxParams
 } from "../render/postfx";
 import { VOICE_TUNING } from "../net/voice";
@@ -43,7 +43,7 @@ import { PROCEDURAL_LAMP_TUNING } from "../world/citygen/interior/lampTuning";
 
 type DebugRenderPipeline = {
   applyPostFx: () => void;
-  applyRadialLightFx: () => void;
+  applyPianoGodRaysFx: () => void;
   setWireframe: (on: boolean) => void;
   setWireframeLodGradient: (on: boolean) => void;
   warmupPostFx?: () => Promise<void>;
@@ -838,8 +838,8 @@ export class DebugPanel {
       onChange: (key, _value, last) => {
         if (this.#syncingPane) return;
         if ((POSTFX_TOGGLES as readonly string[]).includes(key)) this.#postfx?.applyPostFx();
-        else if ((POSTFX_RADIAL_LIGHT_KEYS as readonly string[]).includes(key)) {
-          if (!key.endsWith("RaysResolution") || last) this.#postfx?.applyRadialLightFx();
+        else if ((POSTFX_PIANO_GOD_RAY_KEYS as readonly string[]).includes(key)) {
+          if (key !== "pianistRaysResolution" || last) this.#postfx?.applyPianoGodRaysFx();
         } else applyPostFxParams();
       }
     });

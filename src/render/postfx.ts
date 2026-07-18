@@ -20,7 +20,7 @@ import {
   renderOutput
 } from "three/tsl";
 import { tunables } from "../core/persist";
-import type { RadialLightParams } from "./radialLightTypes";
+import type { PianoGodRaysParams } from "./pianoGodRaysTypes";
 
 /**
  * Stylized post effects, all OFF by default, toggled in the "/" panel's
@@ -61,72 +61,43 @@ export const POSTFX_TUNING = tunables("postfx", {
   retroPixel: { v: 3, min: 1, max: 8, step: 1, label: "· pixel size" },
   retroLevels: { v: 6, min: 2, max: 10, step: 1, label: "· color steps" },
   retroScan: { v: 0.35, min: 0, max: 1, step: 0.05, label: "· scanlines" },
-  museumRays: { v: true, label: "museum · stained-glass rays" },
-  museumRaysIntensity: { v: 0.62, min: 0, max: 1.5, step: 0.02, label: "museum · ray strength" },
-  museumRaysWeight: { v: 0.9, min: 0, max: 1, step: 0.01, label: "museum · sample weight" },
-  museumRaysDecay: { v: 0.96, min: 0.85, max: 1, step: 0.005, label: "museum · decay" },
-  museumRaysSamples: { v: 32, min: 16, max: 48, step: 1, label: "museum · samples" },
-  museumRaysExposure: { v: 5.5, min: 1, max: 10, step: 0.1, label: "museum · exposure" },
-  museumRaysResolution: {
-    v: 0.5,
-    options: { "⅓ resolution": 0.35, "½ resolution": 0.5, "¾ resolution": 0.75 },
-    label: "museum · source quality"
-  },
   pianistRays: { v: true, label: "pianist · god rays" },
-  pianistRaysIntensity: { v: 0.5, min: 0, max: 1.5, step: 0.02, label: "pianist · brightness" },
-  pianistRaysFeather: { v: 0.6, min: 0.15, max: 0.9, step: 0.01, label: "pianist · edge feather" },
-  pianistRaysWeight: { v: 0.9, min: 0, max: 1, step: 0.01, label: "pianist · spread" },
-  pianistRaysDecay: { v: 0.96, min: 0.85, max: 1, step: 0.005, label: "pianist · trail decay" },
-  pianistRaysSamples: { v: 30, min: 16, max: 48, step: 1, label: "pianist · samples" },
-  pianistRaysExposure: { v: 5.3, min: 1, max: 10, step: 0.1, label: "pianist · source exposure" },
+  pianistRaysSteps: { v: 48, min: 24, max: 96, step: 1, label: "pianist · raymarch steps" },
+  pianistRaysDensity: { v: 0.12, min: 0.02, max: 0.8, step: 0.01, label: "pianist · air density" },
+  pianistRaysMaxDensity: { v: 0.16, min: 0.02, max: 0.5, step: 0.01, label: "pianist · max brightness" },
+  pianistRaysAttenuation: { v: 2.2, min: 0, max: 4, step: 0.05, label: "pianist · distance falloff" },
   pianistRaysResolution: {
     v: 0.5,
     options: { "⅓ resolution": 0.35, "½ resolution": 0.5, "¾ resolution": 0.75 },
-    label: "pianist · source quality"
-  }
+    label: "pianist · ray quality"
+  },
+  pianistRaysEdgeRadius: { v: 2, min: 0, max: 5, step: 1, label: "pianist · edge radius" },
+  pianistRaysEdgeStrength: { v: 1.5, min: 0, max: 5, step: 0.1, label: "pianist · edge protection" }
 });
 
 /** Toggles that require a pipeline selection/update (everything else is a live uniform). */
 export const POSTFX_TOGGLES = ["fxaa", "ink", "ukiyo", "dream", "retro"] as const;
-export const POSTFX_RADIAL_LIGHT_KEYS = [
-  "museumRays",
-  "museumRaysIntensity",
-  "museumRaysWeight",
-  "museumRaysDecay",
-  "museumRaysSamples",
-  "museumRaysExposure",
-  "museumRaysResolution",
+export const POSTFX_PIANO_GOD_RAY_KEYS = [
   "pianistRays",
-  "pianistRaysIntensity",
-  "pianistRaysFeather",
-  "pianistRaysWeight",
-  "pianistRaysDecay",
-  "pianistRaysSamples",
-  "pianistRaysExposure",
-  "pianistRaysResolution"
+  "pianistRaysSteps",
+  "pianistRaysDensity",
+  "pianistRaysMaxDensity",
+  "pianistRaysAttenuation",
+  "pianistRaysResolution",
+  "pianistRaysEdgeRadius",
+  "pianistRaysEdgeStrength"
 ] as const;
 
-export function getRadialLightParams(): RadialLightParams {
+export function getPianoGodRaysParams(): PianoGodRaysParams {
   const v = POSTFX_TUNING.values;
   return {
-    intensity: v.museumRaysIntensity,
-    weight: v.museumRaysWeight,
-    decay: v.museumRaysDecay,
-    sampleCount: v.museumRaysSamples,
-    exposure: v.museumRaysExposure,
-    resolutionScale: v.museumRaysResolution
-  };
-}
-
-export function getBeachPianistRadialLightParams(): RadialLightParams {
-  const v = POSTFX_TUNING.values;
-  return {
-    intensity: v.pianistRaysIntensity,
-    weight: v.pianistRaysWeight,
-    decay: v.pianistRaysDecay,
-    sampleCount: v.pianistRaysSamples,
-    exposure: v.pianistRaysExposure,
-    resolutionScale: v.pianistRaysResolution
+    raymarchSteps: v.pianistRaysSteps,
+    density: v.pianistRaysDensity,
+    maxDensity: v.pianistRaysMaxDensity,
+    distanceAttenuation: v.pianistRaysAttenuation,
+    resolutionScale: v.pianistRaysResolution,
+    edgeRadius: v.pianistRaysEdgeRadius,
+    edgeStrength: v.pianistRaysEdgeStrength
   };
 }
 
@@ -234,7 +205,11 @@ export function createPostFx(deps: {
   const variants = new Map<number, any>();
 
   /** Build one immutable specialization. The public getter retains the result. */
-  const build = (mask: number, surfaceLightAt?: (uv: any) => any) => {
+  const build = (
+    mask: number,
+    surfaceLightAt?: (uv: any) => any,
+    sourceTexture: any = sceneTex
+  ) => {
     const ink = (mask & POSTFX_INK) !== 0;
     const dream = (mask & POSTFX_DREAM) !== 0;
     const retro = (mask & POSTFX_RETRO) !== 0;
@@ -267,19 +242,23 @@ export function createPostFx(deps: {
       if (dream) {
         // radial color fringe: R/B pulled apart along the from-center axis
         const off = screenUV.sub(0.5).mul(U.dreamFringe.mul(0.0035));
-        const center = sceneTex.sample(sampleUv);
-        const ca = vec3(sceneTex.sample(sampleUv.add(off)).r, center.g, sceneTex.sample(sampleUv.sub(off)).b);
+        const center = sourceTexture.sample(sampleUv);
+        const ca = vec3(
+          sourceTexture.sample(sampleUv.add(off)).r,
+          center.g,
+          sourceTexture.sample(sampleUv.sub(off)).b
+        );
         // 4-tap diagonal halation, blended in linear light so highlights glow
         const d = vec2(2.5).div(screenSize);
-        const blur = sceneTex
+        const blur = sourceTexture
           .sample(sampleUv.add(d))
-          .rgb.add(sceneTex.sample(sampleUv.sub(d)).rgb)
-          .add(sceneTex.sample(sampleUv.add(vec2(d.x, d.y.negate()))).rgb)
-          .add(sceneTex.sample(sampleUv.add(vec2(d.x.negate(), d.y))).rgb)
+          .rgb.add(sourceTexture.sample(sampleUv.sub(d)).rgb)
+          .add(sourceTexture.sample(sampleUv.add(vec2(d.x, d.y.negate()))).rgb)
+          .add(sourceTexture.sample(sampleUv.add(vec2(d.x.negate(), d.y))).rgb)
           .mul(0.25);
         lin = mix(ca, blur, U.dreamAmount.mul(0.5));
       } else {
-        lin = sceneTex.sample(sampleUv).rgb;
+        lin = sourceTexture.sample(sampleUv).rgb;
       }
       if (contactFactorAt) lin = lin.mul(contactFactorAt(uv));
       // Optional close-range surface lighting is still linear HDR here. Add it
@@ -454,5 +433,12 @@ export function createPostFx(deps: {
     surfaceLightAt: (uv: any) => any
   ) => build(requestedMask & POSTFX_ALL, surfaceLightAt);
 
-  return { get, getWithSurfaceLight };
+  /** Build a specialization over a lazy pre-composited scene texture (god rays). */
+  const getWithSceneTexture = (
+    requestedMask: number,
+    sourceTexture: any,
+    surfaceLightAt?: (uv: any) => any
+  ) => build(requestedMask & POSTFX_ALL, surfaceLightAt, sourceTexture);
+
+  return { get, getWithSurfaceLight, getWithSceneTexture };
 }
