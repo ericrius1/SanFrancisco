@@ -14,7 +14,8 @@ import {
   transformNormalToView,
   uniform,
   vec2,
-  vec3
+  vec3,
+  vec4
 } from "three/tsl";
 import { instanceAnchorWorld, worldOffsetToModelLocal } from "../groundcover/instanceDeform";
 import { groundSway, groundSwayLite, WIND_DIR } from "../groundcover/sway";
@@ -327,13 +328,19 @@ function texturedFoliageMaterial(
   const colorSample: N = texture(assets.leafColor);
   const surfaceSample: N = texture(assets.leafSurface);
   const leafColor = foliageColorNode(styleNodes, colorSample);
-  material.colorNode = leafColor;
+  // Leaf alpha rides in colorNode rather than opacityNode: conventional
+  // shadow passes derive their coverage from colorNode.a and never read
+  // opacityNode, and the beauty result is identical either way. Without this,
+  // god-ray casters would shadow as solid quads instead of perforated crowns.
+  material.colorNode = vec4(leafColor, colorSample.a);
   material.emissiveNode = leafColor.mul(gradeIndex === 0 ? 0.035 : 0.024);
-  material.opacityNode = colorSample.a;
   // Texture generation preserves coverage through every mip at this exact
   // cutoff. Raising it at runtime would throw that coverage away and make
   // mid-distance crowns dissolve into isolated pixels.
   material.alphaTestNode = float(assets.leafStyle.alphaCutoff);
+  // Scalar twin of alphaTestNode: shadow override materials copy only the
+  // scalar property, which turns the cutoff on in conventional shadow passes.
+  material.alphaTest = assets.leafStyle.alphaCutoff;
   material.normalNode = packedNormalNode(surfaceSample, gradeIndex === 0 ? 0.72 : 0.46);
   material.roughnessNode = surfaceSample.b.clamp(0.34, 1);
   material.metalnessNode = float(0);

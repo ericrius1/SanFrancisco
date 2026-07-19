@@ -4,7 +4,10 @@
 // This runtime instances those whole-tree prototypes per chunk, shares immutable
 // vertex/index buffers across every chunk and batches close trees by design+LOD.
 // All distance grades share this whole-tree batching path and its compact
-// instance storage. Vegetation is excluded from both shadow casting and sampling.
+// instance storage. Vegetation is excluded from both shadow casting and
+// sampling by default; `conventionalShadowCasting` opts a forest's close-pool
+// batches into conventional shadow-mapped lights only (never the sun's
+// clipmap cameras).
 
 import * as THREE from "three/webgpu";
 import { createFrameBudgetCheckpoint, yieldToFrame } from "../../core/cooperativeWork";
@@ -61,6 +64,17 @@ export type NativeTreeForestOptions = {
   nearExitRadius?: number;
   /** Maximum close trees across this whole forest. */
   nearMax?: number;
+  /**
+   * Marks the close-pool (canopy/grove LOD) batch meshes as conventional
+   * shadow casters (default false). The sun's clipmap shadow cameras render
+   * only the dedicated shadow layers, so this never feeds the world sun — it
+   * exists for localized effects that own a conventional shadow-mapped light,
+   * e.g. the piano grove god rays, whose raymarch needs real tree occluders in
+   * that light's shadow map. Chunk (landscape/horizon) batches never cast:
+   * their shared far materials drive colors through materialReference nodes,
+   * which cannot resolve against the conventional shadow override material.
+   */
+  conventionalShadowCasting?: boolean;
 };
 
 export type NativeTreePrepareUnit = (unit: THREE.Object3D) => Promise<void>;
@@ -380,7 +394,8 @@ function createBatch(
   sphere: THREE.Sphere | null,
   parent: THREE.Group,
   ownMaterials = false,
-  dynamicInstances = false
+  dynamicInstances = false,
+  castShadow = false
 ): TreeBatch {
   if (capacity < 1) throw new Error(`${name} needs a positive capacity`);
   const variants: BatchVariant[] = [];
@@ -423,6 +438,8 @@ function createBatch(
   );
   branch.name = `${name}_branch`;
   foliage.name = `${name}_foliage`;
+  branch.castShadow = castShadow;
+  foliage.castShadow = castShadow;
   branch.frustumCulled = sphere !== null;
   foliage.frustumCulled = sphere !== null;
   for (const variant of variants) {
@@ -532,6 +549,7 @@ export function createNativeTreeForest(
   const nearRadius = options.nearRadius ?? 58;
   const nearExit = Math.max(nearRadius, options.nearExitRadius ?? 66);
   const nearMax = Math.max(0, Math.floor(options.nearMax ?? 24));
+  const conventionalShadowCasting = options.conventionalShadowCasting === true;
   const canopyRadius = nearRadius * 0.52;
   const prefetchDistance = visibleDistance + chunkSize * PREFETCH_CHUNK_RINGS;
   const retireDistance = visibleDistance + chunkSize * RETIRE_CHUNK_RINGS;
@@ -1595,7 +1613,10 @@ export function createNativeTreeForest(
           nearMax,
           `${options.name}_${designs[design].species}_canopy`,
           null,
-          group
+          group,
+          false,
+          false,
+          conventionalShadowCasting
         );
         const grove = createBatch(
           template,
@@ -1604,7 +1625,10 @@ export function createNativeTreeForest(
           nearMax,
           `${options.name}_${designs[design].species}_grove`,
           null,
-          group
+          group,
+          false,
+          false,
+          conventionalShadowCasting
         );
         finishBatchWrite(canopy, 0, false);
         finishBatchWrite(grove, 0, false);

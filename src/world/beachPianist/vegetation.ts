@@ -259,7 +259,11 @@ export function createBeachPianistFoliage(map: WorldMap): BeachPianistFoliage {
     // Every tree in this compact 30 m grove can be overhead at once. Letting
     // six of the 24 lose the close pool exposed the opaque landscape needle
     // cards as tan/blocky leaves when the camera looked upward beneath them.
-    nearMax: TREE_LIMIT
+    nearMax: TREE_LIMIT,
+    // The god-ray raymarch samples its dedicated light's shadow map; without
+    // the grove in that map there are no shafts through the canopy, only a
+    // uniform veil. The sun's clipmap cameras never see these casters.
+    conventionalShadowCasting: true
   });
   const flowers = createAuthoredFlowerPatch(flowerPlacements, {
     name: "beach_pianist_flowers",
