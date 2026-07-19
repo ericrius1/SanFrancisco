@@ -66,8 +66,11 @@ export class WaveAudio {
   #out: GainNode | null = null;
 
   // continuous wash
+  #washSource: AudioBufferSourceNode | null = null;
   #washGain: GainNode | null = null;
   #washFilter: BiquadFilterNode | null = null;
+  #releaseNatureHold: (() => void) | null = null;
+  #silentSeconds = 0;
 
   // breaking-crash scheduler
   #noise: AudioBuffer | null = null;
@@ -85,7 +88,9 @@ export class WaveAudio {
       ready: this.#ready,
       level: this.#level,
       breaking: this.#breaking,
-      washGain: this.#washGain?.gain.value ?? 0
+      washGain: this.#washGain?.gain.value ?? 0,
+      washRunning: this.#washSource !== null,
+      holdingContext: this.#releaseNatureHold !== null
     };
   }
 
@@ -104,20 +109,16 @@ export class WaveAudio {
     out.connect(worldBus);
     this.#out = out;
 
-    // continuous wash: looped noise through a gentle low/band shelf
-    const src = ctx.createBufferSource();
-    src.buffer = noise;
-    src.loop = true;
+    // continuous wash graph; its source is started only while water is audible
+    // and stopped after the crash tail clears.
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
     filter.frequency.value = 900;
     filter.Q.value = 0.4;
     const wg = ctx.createGain();
     wg.gain.value = 0;
-    src.connect(filter);
     filter.connect(wg);
     wg.connect(out);
-    src.start();
     this.#washGain = wg;
     this.#washFilter = filter;
 
@@ -128,15 +129,25 @@ export class WaveAudio {
   /** Per frame. `energy` is the local wave energy (see oceanWaveEnergyAt). */
   update(dt: number, energy: WaveEnergy) {
     const target = energy.level;
-    // keep the shared context alive while there's meaningful sea near us
-    this.#nature.setExternalAwake(target > 0.02);
-    if (target <= 0.001 && this.#level <= 0.002) {
-      if (this.#washGain && this.#ctx) this.#washGain.gain.setTargetAtTime(0, this.#ctx.currentTime, 0.2);
-      this.#level = 0;
+    if (target > 0.02) {
+      this.#releaseNatureHold ??= this.#nature.acquireExternalHold("ocean-waves");
+      this.#silentSeconds = 0;
+    } else if (this.#releaseNatureHold) {
+      // A breaker can ring for almost four seconds after local energy vanishes.
+      // Keep the lease through that tail, then park the source and context.
+      this.#silentSeconds += Math.max(0, dt);
+      if (this.#silentSeconds >= 4.2) {
+        this.#releaseNatureHold();
+        this.#releaseNatureHold = null;
+        this.#stopWash();
+      }
+    }
+    if (target <= 0.001 && this.#level <= 0.002 && !this.#ctx) {
       return;
     }
     const ctx = this.#init();
     if (!ctx || !this.#washGain) return;
+    if (target > 0.02) this.#startWash(ctx);
     if (ctx.state === "suspended") return; // waits for the first user gesture
 
     // smooth the energy so walking in/out of range doesn't click
@@ -149,6 +160,12 @@ export class WaveAudio {
     this.#washGain.gain.setTargetAtTime(this.#level * (0.05 + this.#level * 0.22), now, 0.1);
     if (this.#washFilter) this.#washFilter.frequency.setTargetAtTime(650 + this.#level * 1500, now, 0.1);
 
+    if (target <= 0.001 && this.#level <= 0.002) {
+      this.#level = 0;
+      this.#breaking = 0;
+      return;
+    }
+
     // schedule breaking crashes — cadence tightens with energy, weighted by the
     // breaking share (gentle shores wash but rarely "crash")
     this.#crashTimer -= dt;
@@ -157,6 +174,40 @@ export class WaveAudio {
       if (heavy > 0.06) this.#crash(ctx, heavy);
       // 2.2–5.5 s between sets, faster when the surf is up
       this.#crashTimer = 2.2 + (1 - this.#level) * 3.3 + Math.random() * 1.4;
+    }
+  }
+
+  dispose(): void {
+    this.#releaseNatureHold?.();
+    this.#releaseNatureHold = null;
+    this.#stopWash();
+    this.#washGain?.disconnect();
+    this.#washFilter?.disconnect();
+    this.#out?.disconnect();
+    this.#washGain = null;
+    this.#washFilter = null;
+    this.#out = null;
+    this.#ctx = null;
+    this.#ready = false;
+  }
+
+  #startWash(ctx: AudioContext): void {
+    if (this.#washSource || !this.#noise || !this.#washFilter) return;
+    const src = ctx.createBufferSource();
+    src.buffer = this.#noise;
+    src.loop = true;
+    src.connect(this.#washFilter);
+    src.start(0, Math.random() * Math.max(0.01, this.#noise.duration));
+    this.#washSource = src;
+  }
+
+  #stopWash(): void {
+    try { this.#washSource?.stop(); } catch { /* already stopped */ }
+    this.#washSource?.disconnect();
+    this.#washSource = null;
+    if (this.#washGain && this.#ctx) {
+      this.#washGain.gain.cancelScheduledValues(this.#ctx.currentTime);
+      this.#washGain.gain.value = 0;
     }
   }
 
@@ -187,5 +238,10 @@ export class WaveAudio {
     if (this.#reverb) g.connect(this.#reverb);
     src.start(now, Math.random() * 1.5, 2.8 + w);
     src.stop(now + 2.8 + w);
+    src.onended = () => {
+      for (const node of [src, lp, g, pan]) {
+        try { node.disconnect(); } catch { /* already disconnected */ }
+      }
+    };
   }
 }

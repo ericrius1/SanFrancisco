@@ -982,10 +982,8 @@ async function boot() {
   const skidMarks = new SkidMarks(scene, map);
   const splashes = new WaterSplashes(scene, wake, map);
   const fireworks = new Fireworks(renderer, scene, map);
-  // Building four audio graphs on the first movement key caused a visible cold
-  // input hitch. Fireworks owns the first shared browser audio-device startup,
-  // so perform its existing no-network prewarm under the loading cover; later
-  // gesture handlers only resume the already-built suspended context.
+  // Compile the optional firework renderer under the loading cover. Its audio
+  // graph now warms after the first launch, during the rocket's flight time.
   fireworks.prewarm();
   // Fundamental player/interaction foley shares one small procedural graph.
   // Prewarming here avoids synthesizing its noise/room buffers on the first W.

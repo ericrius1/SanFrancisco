@@ -58,6 +58,7 @@ export class WaveOrganAudio {
   #layer: GainNode | null = null;
   #voices: PipeVoice[] = [];
   #awake = false;
+  #releaseNatureHold: (() => void) | null = null;
   #hymn = false;
   #hymnT = 0;
   #t = 0;
@@ -108,7 +109,7 @@ export class WaveOrganAudio {
 
     // The jetty tip sits outside every nature region; hold the shared context
     // awake while the organ is audibly near (dog-park / wave-audio idiom).
-    this.#nature.setExternalAwake(true);
+    this.#releaseNatureHold ??= this.#nature.acquireExternalHold("wave-organ");
     const io = (this.#io ??= this.#nature.voiceBus());
     if (!io || io.ctx.state !== "running") return;
     this.#wake(io, pipes);
@@ -236,9 +237,10 @@ export class WaveOrganAudio {
   }
 
   #sleep(): void {
+    this.#releaseNatureHold?.();
+    this.#releaseNatureHold = null;
     if (!this.#awake) return;
     this.#awake = false;
-    this.#nature.setExternalAwake(false);
     const io = this.#io;
     if (!io || !this.#layer) return;
     this.#layer.gain.setTargetAtTime(0, io.ctx.currentTime, 0.3);

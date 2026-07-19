@@ -166,6 +166,7 @@ export class VehicleAudio {
   #master!: GainNode;
   #noise!: AudioBuffer;
   #voices: Voice[] = [];
+  #voiceKeys = new Set<string>();
   #boardStyle: BoardVoiceStyle = {
     hum: "hum",
     pitch: 0,
@@ -382,8 +383,30 @@ export class VehicleAudio {
         }
       }
     }
+    const wantsVoice = !!sig && (
+      sig.mode === "board" || sig.mode === "surf" || sig.mode === "drive" ||
+      sig.mode === "plane" || sig.mode === "boat" || sig.mode === "drone" || sig.mode === "bird"
+    );
+    const wantsSkid = !!sig &&
+      (sig.mode === "drive" || sig.mode === "scooter") &&
+      (sig.driveSlide ?? 0) > 0.02;
+    // Unlocking audio while walking used to build and start every vehicle voice
+    // (dozens of oscillators, noise loops and LFOs). No graph is needed until a
+    // supported mode, a real skid, a preview, or a one-shot asks for it.
+    if (!this.#ctx && !wantsVoice && !wantsSkid && !previewing) return;
     const ctx = this.#ctx ?? this.#ensure();
     if (!ctx) return; // engine bus null until the first gesture
+    if (sig) this.#ensureVoiceFor(ctx, sig);
+    if (previewing) {
+      this.#ensureVoiceFor(ctx, {
+        mode: "board",
+        speed: 0,
+        vspeed: 0,
+        boost: false,
+        grounded: true
+      });
+    }
+    if (wantsSkid) this.#ensureSkid(ctx);
 
     // Continuous voice: while a vehicle is being voiced (or auditioned) and the
     // mix isn't muted, keep the shared ctx alive; the engine idle-suspends once
@@ -447,26 +470,47 @@ export class VehicleAudio {
     const n = this.#noise.getChannelData(0);
     for (let i = 0; i < n.length; i++) n[i] = Math.random() * 2 - 1;
 
-    // Brown-ish bed for tire scrub — integrated noise, warmer than white.
-    const brownBuf = ctx.createBuffer(1, sr * 2, sr);
+    return ctx;
+  }
+
+  #ensureVoiceFor(ctx: AudioContext, sig: VehicleSignals): void {
+    let key: string | null = null;
+    let build: (() => Voice) | null = null;
+    switch (sig.mode) {
+      case "board": key = "board"; build = () => this.#buildBoard(ctx); break;
+      case "surf": key = "surf"; build = () => this.#buildSurf(ctx); break;
+      case "drive":
+        if (sig.driveVoice === "electric") {
+          key = "drive-electric";
+          build = () => this.#buildElectricCart(ctx);
+        } else {
+          key = "drive-engine";
+          build = () => this.#buildCar(ctx);
+        }
+        break;
+      case "plane": key = "plane"; build = () => this.#buildPlane(ctx); break;
+      case "boat": key = "boat"; build = () => this.#buildBoat(ctx); break;
+      case "drone": key = "drone"; build = () => this.#buildDrone(ctx); break;
+      case "bird": key = "bird"; build = () => this.#buildBird(ctx); break;
+      default: break;
+    }
+    if (!key || !build || this.#voiceKeys.has(key)) return;
+    const voice = build();
+    voice.gain.connect(this.#master);
+    this.#voices.push(voice);
+    this.#voiceKeys.add(key);
+  }
+
+  #ensureSkid(ctx: AudioContext): void {
+    if (this.#skidGain) return;
+    // Brown-ish bed for tire scrub — generated only on the first actual slide.
+    const brownBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
     const b = brownBuf.getChannelData(0);
     let last = 0;
     for (let i = 0; i < b.length; i++) {
       last = (last + (Math.random() * 2 - 1) * 0.02) * 0.996;
       b[i] = last * 3.5;
     }
-
-    this.#voices = [
-      this.#buildBoard(ctx),
-      this.#buildSurf(ctx),
-      this.#buildCar(ctx),
-      this.#buildElectricCart(ctx),
-      this.#buildPlane(ctx),
-      this.#buildBoat(ctx),
-      this.#buildDrone(ctx),
-      this.#buildBird(ctx)
-    ];
-    for (const v of this.#voices) v.gain.connect(this.#master);
 
     // Lo-fi skid: brown noise → soft lowpass → quiet gain. Lives beside voices
     // so both combustion and EV (and scooter) share the same chill scrub.
@@ -490,8 +534,6 @@ export class VehicleAudio {
     skidSrc.start(0, Math.random() * 1.5);
     this.#skidFilter = skidLp;
     this.#skidGain = skidGain;
-
-    return ctx;
   }
 
   /** Surfboard: two filtered-noise bands — rail hiss from speed and a deeper

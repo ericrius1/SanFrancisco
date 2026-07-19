@@ -225,7 +225,7 @@ export class JapaneseTeaGardenStreamAudio {
   #lastRippleHue = 0;
   #lastKoiMotion = 0;
   #lastKoiRippleDuration = 0;
-  #externalAwake = false;
+  #releaseNatureHold: (() => void) | null = null;
   #disposed = false;
 
   constructor(nature: NatureSoundscape, options: TeaGardenStreamAudioOptions = {}) {
@@ -880,19 +880,18 @@ export class JapaneseTeaGardenStreamAudio {
   }
 
   #requestSharedContext(): void {
-    this.#nature.setExternalAwake(true);
-    this.#externalAwake = true;
+    this.#releaseNatureHold ??= this.#nature.acquireExternalHold("tea-garden-stream");
   }
 
   #releaseSharedContextIfIdle(): void {
     if (
-      this.#externalAwake &&
+      this.#releaseNatureHold &&
       !this.#bridge &&
       this.#impactAwakeHold <= 0 &&
       this.#rippleImpacts.length === 0
     ) {
-      this.#nature.setExternalAwake(false);
-      this.#externalAwake = false;
+      this.#releaseNatureHold();
+      this.#releaseNatureHold = null;
     }
   }
 }

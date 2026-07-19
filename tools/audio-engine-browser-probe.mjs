@@ -7,8 +7,10 @@
 //     every `new AudioContext()` anywhere in the app is tallied,
 //   - OfflineAudioContext is wrapped separately (allowed, but 0 in normal play),
 //   - exactly ONE ctx exists at boot and it sits SUSPENDED (no gesture yet),
-//   - a real (trusted) CDP key gesture + a short walk unlocks it to RUNNING with
-//     the effects group climbing above zero, still exactly one ctx,
+//   - a no-op unlock does not instantiate vehicle/swim/firework graphs and the
+//     context returns to SUSPENDED when its explicit activity hold expires,
+//   - a short walk unlocks it to RUNNING with the effects group above zero,
+//   - overlapping external nature leases release independently,
 //   - muting via the HUD creates no new ctx,
 //   - final tally is still exactly 1 AudioContext, 0 OfflineAudioContexts.
 //
@@ -180,6 +182,13 @@ async function main() {
 
   let cdp = null;
   const errors = [];
+  const webAudio = {
+    nodes: new Set(),
+    params: new Set(),
+    peakNodes: 0,
+    peakParams: 0,
+    contextStates: []
+  };
   try {
     await waitHttp(serverUrl, 60_000, "vite");
 
@@ -202,15 +211,28 @@ async function main() {
       } else if (m.method === "Runtime.exceptionThrown") {
         const d = m.params.exceptionDetails;
         errors.push(((d.exception && (d.exception.description || d.exception.value)) || d.text || "").slice(0, 300));
+      } else if (m.method === "WebAudio.audioNodeCreated") {
+        webAudio.nodes.add(m.params.node.nodeId);
+        webAudio.peakNodes = Math.max(webAudio.peakNodes, webAudio.nodes.size);
+      } else if (m.method === "WebAudio.audioNodeWillBeDestroyed") {
+        webAudio.nodes.delete(m.params.nodeId);
+      } else if (m.method === "WebAudio.audioParamCreated") {
+        webAudio.params.add(m.params.param.paramId);
+        webAudio.peakParams = Math.max(webAudio.peakParams, webAudio.params.size);
+      } else if (m.method === "WebAudio.audioParamWillBeDestroyed") {
+        webAudio.params.delete(m.params.paramId);
+      } else if (m.method === "WebAudio.contextCreated" || m.method === "WebAudio.contextChanged") {
+        webAudio.contextStates.push(m.params.context.contextState);
       }
     };
     await cdp.open();
     await cdp.send("Page.enable");
     await cdp.send("Runtime.enable");
+    await cdp.send("WebAudio.enable");
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
     // Wrap the constructors before the very first document script runs.
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PROBE_INIT });
-    await cdp.send("Page.navigate", { url: `${serverUrl}/?autostart=1` });
+    await cdp.send("Page.navigate", { url: `${serverUrl}/?autostart=1&spawn=transamerica` });
 
     // ---- world-ready wait (mirrors the player-audio browser probe) ----
     const t0 = Date.now();
@@ -230,7 +252,12 @@ async function main() {
       count: window.__audioCtxProbe?.count ?? -1,
       states: window.__audioCtxProbe?.states?.() ?? [],
       offline: window.__offlineAudioCtxProbe?.count ?? -1,
-      debug: window.__sf?.audioEngine?.debugState ?? null
+      debug: window.__sf?.audioEngine?.debugState ?? null,
+      featureGraphs: {
+        vehicle: window.__sf?.vehicleAudio?.debugState?.ctx ?? "missing",
+        swim: window.__sf?.swimAudio?.debugState?.ctx ?? "missing",
+        fireworks: window.__sf?.fireworks?.audio?.debugState?.ctx ?? "missing"
+      }
     }))()`);
     const bootErrors = errors.filter((e) => /audio\s*context|audiocontext|\baudio\b/i.test(e));
 
@@ -238,15 +265,69 @@ async function main() {
     assert.equal(boot.states[0], "suspended", `boot ctx should be suspended before any gesture, got ${boot.states[0]}`);
     assert.equal(boot.offline, 0, `no OfflineAudioContext expected at boot, got ${boot.offline}`);
     assert.equal(boot.debug?.unlocked, false, `engine should report locked before gesture, got ${JSON.stringify(boot.debug)}`);
+    assert.deepEqual(
+      boot.featureGraphs,
+      { vehicle: "none", swim: "none", fireworks: "none" },
+      `optional continuous graphs were built at clean boot: ${JSON.stringify(boot.featureGraphs)}`
+    );
     assert.deepEqual(bootErrors, [], `audio-related console errors at boot:\n${bootErrors.join("\n")}`);
+    const bootNodes = webAudio.nodes.size;
+    const bootParams = webAudio.params.size;
 
-    // ---- 4) real gesture + short walk unlocks the single ctx ----
+    // ---- 4) no-op gesture: resume only for a real hold, then idle-suspend ----
+    await setKey(cdp, true, "Slash", "/", 191);
+    await setKey(cdp, false, "Slash", "/", 191);
+    await ev(cdp, "window.__sf.audioEngine.touch(0.4)");
+    await sleep(120);
+    const held = await ev(cdp, `(() => ({
+      state: window.__audioCtxProbe.states()[0],
+      debug: window.__sf.audioEngine.debugState,
+      featureGraphs: {
+        vehicle: window.__sf.vehicleAudio.debugState.ctx,
+        swim: window.__sf.swimAudio.debugState.ctx,
+        fireworks: window.__sf.fireworks.audio.debugState.ctx
+      }
+    }))()`);
+    assert.equal(held.state, "running", `explicit hold did not resume ctx: ${JSON.stringify(held)}`);
+    assert.deepEqual(
+      held.featureGraphs,
+      { vehicle: "none", swim: "none", fireworks: "none" },
+      `no-op unlock constructed optional graphs: ${JSON.stringify(held.featureGraphs)}`
+    );
+    assert.equal(webAudio.nodes.size, bootNodes, `no-op unlock added WebAudio nodes (${bootNodes} -> ${webAudio.nodes.size})`);
+    assert.equal(webAudio.params.size, bootParams, `no-op unlock added AudioParams (${bootParams} -> ${webAudio.params.size})`);
+    await sleep(1000);
+    const idle = await ev(cdp, `(() => ({
+      state: window.__audioCtxProbe.states()[0],
+      debug: window.__sf.audioEngine.debugState
+    }))()`);
+    assert.equal(idle.debug.hold, 0, `timed hold did not expire: ${JSON.stringify(idle)}`);
+    assert.equal(idle.debug.persistent, 0, `unexpected persistent hold: ${JSON.stringify(idle)}`);
+    assert.equal(idle.state, "suspended", `idle ctx stayed on with no activity: ${JSON.stringify(idle)}`);
+
+    // Leases are token-owned: releasing A must not cancel B.
+    const leases = await ev(cdp, `(() => {
+      const a = window.__sf.nature.acquireExternalHold("probe-a");
+      const b = window.__sf.nature.acquireExternalHold("probe-b");
+      const both = window.__sf.nature.debugState.externalHolds;
+      a();
+      const one = window.__sf.nature.debugState.externalHolds;
+      a();
+      const idempotent = window.__sf.nature.debugState.externalHolds;
+      b();
+      const zero = window.__sf.nature.debugState.externalHolds;
+      return { both, one, idempotent, zero };
+    })()`);
+    assert.equal(leases.both.count, 2);
+    assert.equal(leases.one.count, 1);
+    assert.equal(leases.idempotent.count, 1);
+    assert.equal(leases.zero.count, 0);
+
+    // ---- 5) real movement + short walk uses the fundamental SFX graph ----
     // A CDP key event is trusted, so it satisfies the browser's user-activation
     // gate exactly like a human keypress. Hold W to actually walk a moment.
     await setKey(cdp, true, "KeyW", "w", 87);
     await sleep(2000);
-    await setKey(cdp, false, "KeyW", "w", 87);
-    await sleep(400);
 
     const live = await ev(cdp, `(() => ({
       count: window.__audioCtxProbe?.count ?? -1,
@@ -254,13 +335,86 @@ async function main() {
       offline: window.__offlineAudioCtxProbe?.count ?? -1,
       debug: window.__sf?.audioEngine?.debugState ?? null
     }))()`);
+    await setKey(cdp, false, "KeyW", "w", 87);
+    await sleep(400);
 
     assert.equal(live.count, 1, `still exactly 1 AudioContext after gesture, got ${live.count} (states ${JSON.stringify(live.states)})`);
     assert.equal(live.states[0], "running", `ctx should be running after gesture, got ${live.states[0]}`);
     assert.equal(live.debug?.unlocked, true, `engine should report unlocked after gesture, got ${JSON.stringify(live.debug)}`);
     assert(live.debug?.levels?.effects > 0, `effects group level should climb above 0 after unlock, got ${live.debug?.levels?.effects}`);
 
-    // ---- 5) mute via the HUD mute button — a real exported path from window ----
+    // Walking must not create vehicle or swim graphs either.
+    const walkingGraphs = await ev(cdp, `({
+      vehicle: window.__sf.vehicleAudio.debugState.ctx,
+      swim: window.__sf.swimAudio.debugState.ctx,
+      fireworks: window.__sf.fireworks.audio.debugState.ctx
+    })`);
+    assert.deepEqual(walkingGraphs, { vehicle: "none", swim: "none", fireworks: "none" });
+
+    await sleep(1400);
+    const afterTail = await ev(cdp, `({
+      state: window.__audioCtxProbe.states()[0],
+      debug: window.__sf.audioEngine.debugState
+    })`);
+    assert.equal(afterTail.state, "suspended", `walk/foley tail did not idle-suspend: ${JSON.stringify(afterTail)}`);
+
+    // First-use construction is incremental: board activation must not build
+    // the seven other vehicle voices. Swim's continuous source must park after
+    // its release envelope instead of looping forever at zero gain.
+    const activation = await ev(cdp, `(() => {
+      const board = { mode: "board", speed: 12, vspeed: 0, boost: false, grounded: true };
+      window.__sf.vehicleAudio.update(1 / 60, board);
+      const vehicle = window.__sf.vehicleAudio.debugState;
+      window.__sf.swimAudio.update(1 / 60, { swimming: true, speed: 1.5, vspeed: -1 });
+      const swimActive = window.__sf.swimAudio.debugState;
+      for (let i = 0; i < 420; i++) {
+        window.__sf.swimAudio.update(1 / 60, { swimming: false, speed: 0, vspeed: 0 });
+      }
+      const swimParked = window.__sf.swimAudio.debugState;
+      return { vehicle, swimActive, swimParked };
+    })()`);
+    assert.deepEqual(
+      activation.vehicle.voices.map((voice) => voice.mode),
+      ["board"],
+      `board first-use built unrelated vehicle voices: ${JSON.stringify(activation.vehicle.voices)}`
+    );
+    assert.equal(activation.swimActive.ambienceRunning, true, "swim source did not start on first water entry");
+    assert.equal(activation.swimParked.ambienceRunning, false, `swim source did not park: ${JSON.stringify(activation.swimParked)}`);
+
+    // A maximum one-second firework volley used to leave hundreds of ended
+    // per-boom nodes connected forever. After the 2.9s direct tail and a GC,
+    // only the one reusable echo graph may remain.
+    await cdp.send("HeapProfiler.collectGarbage");
+    await sleep(120);
+    const fireworkNodesBefore = webAudio.nodes.size;
+    await ev(cdp, `(() => {
+      for (let i = 0; i < 18; i++) {
+        window.__sf.fireworks.audio.boom(10 + i * 0.1, 20, 0, 0, 0, 0, 0, 1);
+      }
+      return window.__sf.fireworks.audio.debugState;
+    })()`);
+    await sleep(180);
+    const fireworkNodesPeak = webAudio.nodes.size;
+    assert(
+      fireworkNodesPeak >= fireworkNodesBefore + 200,
+      `firework stress did not instantiate the expected transient graph (${fireworkNodesBefore} -> ${fireworkNodesPeak})`
+    );
+    await sleep(3700);
+    await cdp.send("HeapProfiler.collectGarbage");
+    await sleep(180);
+    const fireworkNodesAfter = webAudio.nodes.size;
+    assert(
+      fireworkNodesAfter <= fireworkNodesBefore + 16,
+      `firework voices accumulated after their tails (${fireworkNodesBefore} -> peak ${fireworkNodesPeak} -> ${fireworkNodesAfter})`
+    );
+    const fireworkCleanup = {
+      before: fireworkNodesBefore,
+      peak: fireworkNodesPeak,
+      after: fireworkNodesAfter,
+      retainedReusableGraph: fireworkNodesAfter - fireworkNodesBefore
+    };
+
+    // ---- 6) mute via the HUD mute button — a real exported path from window ----
     // AudioControls appends `#hud .mute-btn`; clicking it flips AUDIO_PREFS.enabled.
     const muteInfo = await ev(cdp, `(() => {
       const btn = document.querySelector('#hud .mute-btn');
@@ -276,7 +430,7 @@ async function main() {
       console.warn("[probe] mute button not found; skipping mute assertion (no clean window path)");
     }
 
-    // ---- 6) final tally: still exactly one ctx, zero offline ----
+    // ---- 7) final tally: still exactly one ctx, zero offline ----
     const end = await ev(cdp, `(() => ({
       count: window.__audioCtxProbe?.count ?? -1,
       states: window.__audioCtxProbe?.states?.() ?? [],
@@ -292,10 +446,18 @@ async function main() {
 
     console.log("\naudio engine browser probe: PASS");
     console.log(JSON.stringify({
-      boot: { count: boot.count, states: boot.states, offline: boot.offline, debug: boot.debug },
+      boot: { count: boot.count, states: boot.states, offline: boot.offline, debug: boot.debug, featureGraphs: boot.featureGraphs, nodes: bootNodes, params: bootParams },
+      noOpHeld: held,
+      idleAfterNoOp: idle,
+      leases,
       afterGesture: { count: live.count, states: live.states, offline: live.offline, debug: live.debug },
+      walkingGraphs,
+      idleAfterWalkTail: afterTail,
+      firstUseActivation: activation,
+      fireworkCleanup,
       afterMute: { clicked: muteInfo.clicked, debug: mutedDebug },
       final: { count: end.count, states: end.states, offline: end.offline, debug: end.debug },
+      webAudio: { liveNodes: webAudio.nodes.size, liveParams: webAudio.params.size, peakNodes: webAudio.peakNodes, peakParams: webAudio.peakParams, contextStates: webAudio.contextStates },
       totalConsoleErrors: errors.length
     }, null, 2));
   } finally {

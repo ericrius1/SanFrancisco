@@ -18,6 +18,7 @@ export class ArcheryAudio {
   #io: NatureVoiceIO | null = null;
   #layer: GainNode | null = null;
   #awake = false;
+  #releaseNatureHold: (() => void) | null = null;
 
   constructor(nature: NatureSoundscape) {
     this.#nature = nature;
@@ -28,7 +29,11 @@ export class ArcheryAudio {
   setAwake(on: boolean): void {
     if (this.#awake === on) return;
     this.#awake = on;
-    this.#nature.setExternalAwake(on);
+    if (on) this.#releaseNatureHold ??= this.#nature.acquireExternalHold("archery");
+    else {
+      this.#releaseNatureHold?.();
+      this.#releaseNatureHold = null;
+    }
     const io = this.#io;
     if (!on && io && this.#layer) this.#layer.gain.setTargetAtTime(0, io.ctx.currentTime, 0.15);
   }
