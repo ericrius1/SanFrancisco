@@ -165,7 +165,7 @@ function buildBarrelGeometry(): THREE.BufferGeometry {
 }
 
 /**
- * Kelly-Slater-style breaking swell for Ocean Beach: a translucent emerald wall
+ * Kelly-Slater-style breaking swell for Ocean Beach: an opaque emerald wall
  * with a pitching white lip and spent whitewater, rendered from the same
  * analytic crest the surf controller rides (oceanBeachSurfField). A localized
  * crest-spray layer sits on top for the breaking silhouette.
@@ -276,13 +276,12 @@ export class OceanBeachWaves {
     const mat = new THREE.MeshStandardNodeMaterial({
       roughness: 0.5,
       metalness: 0,
-      transparent: true,
-      // The steep heightfield overlaps itself in screen space from the low surf
-      // camera. Without depth writes, distant rows can paint a sea-level stripe
-      // over the nearer wall because transparent triangles are not depth-sorted.
-      depthWrite: true,
-      alphaTest: 0.02
+      transparent: false,
+      depthWrite: true
     });
+    // The wave body renders in the opaque pass. Coverage is a hard ownership
+    // threshold, so the standing wall never transmits or stipples scenery.
+    mat.alphaTestNode = float(0.5);
     const t = this.#uTime;
     // positionGeometry is the immutable grid attribute. positionLocal is
     // overwritten by positionNode in NodeMaterial, so reusing it below would
@@ -386,10 +385,10 @@ export class OceanBeachWaves {
     mat.normalNode = bumpNormal(contactHeight.add(chop));
 
     // This sheet replaces the base ocean only where an actual wave stands up.
-    // Keeping the whole 116 x 1080 m contact patch opaque turns its flat troughs
-    // into a giant polygon at grazing camera angles; leaving the raised body
-    // translucent lets the flat base-ocean horizon show through it. The base
-    // water uses this same semantic/height envelope for its complementary cut.
+    // Keeping the whole 116 x 1080 m contact patch visible turns its flat
+    // troughs into a giant polygon at grazing camera angles. Coverage therefore
+    // follows the raised body, with a solid handoff to the base ocean instead
+    // of translucent or screen-door water.
     const presence = smoothstep(
       0.035,
       0.38,
@@ -407,8 +406,8 @@ export class OceanBeachWaves {
     mesh.name = "ocean_beach_surf_face";
     // positionNode emits world coordinates directly; the object transform stays
     // identity while its origin uniform follows the active crest down the beach.
-    // Transparent renderOrder is ascending even with a reversed-depth buffer:
-    // base ocean 10/11 -> contact sheet 12 -> local hero 13 -> roof 14 -> foam.
+    // Retain the established order for diagnostics even though opaque depth now
+    // owns the body and makes correct occlusion independent of alpha sorting.
     mesh.renderOrder = 12;
     mesh.frustumCulled = false;
     return mesh;
@@ -420,10 +419,11 @@ export class OceanBeachWaves {
     // the bright sky environment relight it made the tunnel dissolve back into
     // the horizon. The base/face sheets still carry all PBR reflection.
     const mat = new THREE.MeshBasicNodeMaterial({
-      transparent: true,
-      depthWrite: false,
+      transparent: false,
+      depthWrite: true,
       side: THREE.DoubleSide
     });
+    mat.alphaTestNode = float(0.5);
     mat.fog = false;
     const t = this.#uTime;
     const wz = positionGeometry.z.add(this.#uBarrelOrigin.y);
@@ -468,18 +468,14 @@ export class OceanBeachWaves {
       waterNoise.mul(0.56).add(flowRib.mul(0.44))
     ).mul(crownLight).mul(lip.oneMinus());
     const litEmerald = mix(emerald, color(0x48aa84), sunVein.mul(0.2));
-    // Cool translucent lip, dark absorptive crown: from inside the bright
-    // aperture and the rider silhouette remain readable simultaneously.
+    // Cool lip and dark absorptive crown. The roof is solid water; only its
+    // section/window activation is thresholded during entry and exit.
     mat.colorNode = mix(litEmerald, color(0x83aaa5), lip.mul(0.68));
-    mat.opacityNode = clamp(
-      mix(float(0.9), float(0.985), crownLight).add(lip.mul(0.015)),
-      0,
-      1
-    ).mul(section).mul(this.#uTubeVisibility);
+    mat.opacityNode = section.mul(this.#uTubeVisibility);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = "ocean_beach_barrel_roof";
-    // Paint after the local hero, so the pitching roof can genuinely close
-    // overhead without making the rider unreadable through the base ocean.
+    // Keep the previous diagnostic ordering; depth now provides physical roof
+    // occlusion instead of relying on a translucent late draw.
     mesh.renderOrder = 14;
     mesh.frustumCulled = false;
     return mesh;
@@ -497,12 +493,10 @@ export class OceanBeachWaves {
     const mat = new THREE.MeshStandardNodeMaterial({
       roughness: 0.55,
       metalness: 0,
-      transparent: true,
-      // Repeated sets overlap at grazing angles; keep the closest displaced
-      // surface in the depth buffer instead of compositing rows in index order.
-      depthWrite: true,
-      alphaTest: 0.02
+      transparent: false,
+      depthWrite: true
     });
+    mat.alphaTestNode = float(0.5);
     const t = this.#uTime;
     const wx = positionGeometry.x.add(this.#uMidOrigin.x);
     const wz = positionGeometry.z.add(this.#uMidOrigin.y);
@@ -544,8 +538,9 @@ export class OceanBeachWaves {
       wx.sub(this.#uOrigin.x),
       wz.sub(this.#uOrigin.y)
     ).length();
-    // Reach full opacity while the near patch still carries ~70% alpha — two
-    // half-faded sheets let the flat far ocean read through the wave's back.
+    // Reach full coverage while the near patch still overlaps. The solid
+    // boundary hands ownership across without compositing the world through
+    // two partially transparent water sheets.
     const nearHole = smoothstep(float(180), float(240), playerDist);
     mat.opacityNode = smoothstep(0.45, 2.1, height).mul(nearHole).mul(edge);
     const mesh = new THREE.Mesh(geo, mat);
