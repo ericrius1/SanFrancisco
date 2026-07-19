@@ -117,6 +117,10 @@ export type NativeTreeForest = {
 };
 
 const REBIN_MS = 250;
+// Detail texture packs that come back degraded (offline dev server, network
+// blip) are retried on later rebins instead of freezing the species on its
+// opaque landscape cards for the whole session.
+const NEAR_DETAIL_RETRY_MS = 15_000;
 const REBIN_MOVE_SQ = 4;
 const RESIDENCY_MOVE = 24;
 const HORIZON_HYSTERESIS = 14;
@@ -606,6 +610,7 @@ export function createNativeTreeForest(
   const nearMaterials: (NativeTreeMaterials | null)[] = designs.map(() => null);
   const nearLoads: (Promise<void> | null)[] = designs.map(() => null);
   const nearLoadFailures = new Set<number>();
+  const nearDetailRetryAt: number[] = designs.map(() => 0);
   const wantedNearDesigns = new Set<number>();
   const chunks: Chunk[] = [];
   const chunkDescriptors: ChunkDescriptor[] = [];
@@ -634,6 +639,7 @@ export function createNativeTreeForest(
     if (disposed || nearMaterials[design] || nearLoadFailures.has(design)) {
       return Promise.resolve();
     }
+    if (performance.now() < nearDetailRetryAt[design]) return Promise.resolve();
     if (nearLoads[design]) return nearLoads[design];
     const template = templates[design];
     if (!template) return Promise.resolve();
@@ -644,6 +650,18 @@ export function createNativeTreeForest(
       });
       if (disposed) {
         releaseNativeTreeMaterialSet(detailAssets);
+        return;
+      }
+      if (detailAssets.fallback) {
+        // Without real leaf alpha maps the close cards render as solid
+        // triangles — worse than the landscape tier they would replace. Keep
+        // the landscape fallback on screen and retry the pack on a later rebin.
+        releaseNativeTreeMaterialSet(detailAssets);
+        nearDetailRetryAt[design] = performance.now() + NEAR_DETAIL_RETRY_MS;
+        console.warn(
+          `[native trees:${options.name}] close material textures unavailable for ` +
+          `${template.archetype.species}; keeping landscape LOD and retrying`
+        );
         return;
       }
       let detailMaterials: NativeTreeMaterials;
@@ -1382,7 +1400,11 @@ export function createNativeTreeForest(
       // loop once more so the newly populated near batches are compiled before
       // the destination is declared visually ready.
       const detailLoads = Array.from(wantedNearDesigns)
-        .filter((design) => !nearMaterials[design] && !nearLoadFailures.has(design))
+        .filter((design) =>
+          !nearMaterials[design] &&
+          !nearLoadFailures.has(design) &&
+          performance.now() >= nearDetailRetryAt[design]
+        )
         .map((design) => ensureNearMaterials(design));
       if (relevant.length === 0 && close.length === 0 && detailLoads.length === 0) return;
       for (const chunk of relevant) chunk.group.visible = false;
@@ -1512,6 +1534,9 @@ export function createNativeTreeForest(
       wantedDesigns: Array.from(wantedNearDesigns),
       loadingDesigns: nearLoads.flatMap((load, design) => load ? [design] : []),
       failedDesigns: Array.from(nearLoadFailures),
+      retryDesigns: nearDetailRetryAt.flatMap((at, design) =>
+        at > performance.now() ? [design] : []
+      ),
       active: entries.length,
       canopy: entries.filter((entry) => entry.lod === LOD_CANOPY).length,
       grove: entries.filter((entry) => entry.lod === LOD_GROVE).length,

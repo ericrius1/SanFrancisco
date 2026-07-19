@@ -200,8 +200,13 @@ export function createBeachPianistFoliage(map: WorldMap): BeachPianistFoliage {
     name: "beach_pianist_cypress",
     chunkSize: 52,
     visibleDistance: 850,
-    nearRadius: 76,
-    nearExitRadius: 94,
+    // This is a hero grove: the opaque landscape cards read as solid triangle
+    // leaves well past 100 m, and the player approaches along open sightlines
+    // (bluff trail above, shoreline, spawn aisle). Promote the whole grove to
+    // textured close LODs from far enough out that the cards are never
+    // discernible — the pool is only ever these 24 trees.
+    nearRadius: 170,
+    nearExitRadius: 200,
     // Every tree in this compact 30 m grove can be overhead at once. Letting
     // six of the 24 lose the close pool exposed the opaque landscape needle
     // cards as tan/blocky leaves when the camera looked upward beneath them.

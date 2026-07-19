@@ -232,6 +232,10 @@ function acquireTexture(uri: string, role: TextureRole, errors: string[]): Textu
         const detail = `${uri}: ${error instanceof Error ? error.message : String(error)}`;
         errors.push(detail);
         warnOnce(uri, `using ${role} fallback after KTX2 load failed (${detail})`);
+        // A failed fetch must not poison the session cache: current holders keep
+        // the 1x1 stand-in, but later acquisitions retry the real file.
+        if (textureCache.get(uri) === entry) textureCache.delete(uri);
+        entry.cached = false;
         return fallbackTextures[role];
       })
   };
@@ -433,6 +437,13 @@ export async function loadNativeTreeMaterialSet(
   } satisfies MaterialCacheEntry;
   entry.promise = createMaterialAssets(requestedId, options, entry).then((assets) => {
     assetOwners.set(assets, entry);
+    // Never retain a degraded pack (missing manifest/set or any failed KTX2 map)
+    // in the session cache — the next requester rebuilds it and retries the
+    // network instead of inheriting fallback textures for the rest of the run.
+    if (assets.errors.length > 0 && materialCache.get(key) === entry) {
+      materialCache.delete(key);
+      entry.cached = false;
+    }
     return assets;
   });
   if (cached) materialCache.set(key, entry);
