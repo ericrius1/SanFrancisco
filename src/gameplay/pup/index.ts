@@ -241,8 +241,18 @@ export class PupPen {
   #robust = 0;
   #scale = NEWBORN_SCALE;
   #pollTimer: ReturnType<typeof setInterval> | null = null;
+  #policyRequest: AbortController | null = null;
   #fetching = false;
   #disposed = false;
+  #onVisibilityChange = () => {
+    if (document.visibilityState === "hidden") {
+      this.#stopPolling();
+      this.#policyRequest?.abort("page suspended");
+      return;
+    }
+    void this.#loadPolicy(!this.#policy);
+    this.#syncPolling();
+  };
   // wander state
   #wanderYaw = Math.random() * Math.PI * 2;
   #wanderTimer = 2;
@@ -270,7 +280,8 @@ export class PupPen {
     this.#buildPen();
     this.root.visible = false;
     scene.add(this.root);
-    void this.#loadPolicy(true);
+    document.addEventListener("visibilitychange", this.#onVisibilityChange);
+    if (document.visibilityState === "visible") void this.#loadPolicy(true);
   }
 
   get center(): { x: number; z: number } {
@@ -319,10 +330,9 @@ export class PupPen {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    if (this.#pollTimer) {
-      clearInterval(this.#pollTimer);
-      this.#pollTimer = null;
-    }
+    this.#stopPolling();
+    this.#policyRequest?.abort("pup disposed");
+    document.removeEventListener("visibilitychange", this.#onVisibilityChange);
     this.#rag?.dispose();
     this.#rag = null;
     this.#brain = null;
@@ -346,12 +356,24 @@ export class PupPen {
     if (this.#awake === on) return;
     this.#awake = on;
     this.root.visible = on;
-    if (on) {
-      void this.#loadPolicy(false);
-      this.#pollTimer = setInterval(() => void this.#loadPolicy(false), POLL_MS);
-    } else if (this.#pollTimer) {
+    if (on && document.visibilityState === "visible") void this.#loadPolicy(false);
+    this.#syncPolling();
+  }
+
+  #stopPolling(): void {
+    if (this.#pollTimer) {
       clearInterval(this.#pollTimer);
       this.#pollTimer = null;
+    }
+  }
+
+  #syncPolling(): void {
+    if (!this.#awake || this.#disposed || document.visibilityState === "hidden") {
+      this.#stopPolling();
+      return;
+    }
+    if (!this.#pollTimer) {
+      this.#pollTimer = setInterval(() => void this.#loadPolicy(false), POLL_MS);
     }
   }
 
@@ -456,10 +478,15 @@ export class PupPen {
   }
 
   async #loadPolicy(allowNewborn: boolean): Promise<void> {
-    if (this.#fetching || this.#disposed) return;
+    if (this.#fetching || this.#disposed || document.visibilityState === "hidden") return;
     this.#fetching = true;
+    const controller = new AbortController();
+    this.#policyRequest = controller;
     try {
-      const res = await fetch(`/models/pup_policy.json?t=${Date.now()}`, { cache: "no-store" });
+      const res = await fetch(`/models/pup_policy.json?t=${Date.now()}`, {
+        cache: "no-store",
+        signal: controller.signal
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const def = (await res.json()) as PupPolicyFile;
       if (this.#disposed) return;
@@ -470,12 +497,20 @@ export class PupPen {
       this.#robust = def.meta?.robust ?? 0;
       this.#applyPolicy(def);
     } catch {
-      if (allowNewborn && !this.#policy) {
+      if (allowNewborn && !this.#policy && document.visibilityState === "visible") {
         this.#policy = this.#newbornDef();
         this.#applyPolicy(this.#policy);
       }
     } finally {
+      if (this.#policyRequest === controller) this.#policyRequest = null;
       this.#fetching = false;
+      if (
+        controller.signal.reason === "page suspended" &&
+        !this.#disposed &&
+        document.visibilityState === "visible"
+      ) {
+        void this.#loadPolicy(allowNewborn);
+      }
     }
   }
 

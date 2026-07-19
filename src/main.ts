@@ -855,7 +855,9 @@ async function boot() {
       playerPos: () => [player.position.x, player.position.y, player.position.z],
       revealed: () => revealed,
       constructionDone: () => constructionDoneFlag,
-      frontRadius: () => materializeField.frontRadius.value as number
+      frontRadius: () => materializeField.frontRadius.value as number,
+      frameDriver,
+      audioEngine
     };
   }
   if (skipGate) loading.classList.add("done");
@@ -4899,7 +4901,7 @@ async function boot() {
     // (onSitesChanged, the late region-load callbacks) — untouched.
     const registry = new DebugRegistry();
     registry.refs({
-      scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline,
+      scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, frameDriver,
       dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING,
       RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks,
       graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG,

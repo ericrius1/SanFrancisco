@@ -32,9 +32,10 @@ import type { Net } from "./net";
  * Deliberately non-spatial: intelligibility beats immersion for chat.
  *
  * The engine owns the ctx and its gesture unlock — a listen-only player's
- * first input opens it, no local resume plumbing needed. A background engine
- * hold (acquired while the mic is on or any peer is wired) keeps the ctx
- * running even while the tab is hidden — voice chat is a social feature.
+ * first input opens it, no local resume plumbing needed. Page suspension is a
+ * hard boundary: hidden tabs close peer audio links and release mic capture;
+ * both are restored on foreground without advancing any voice processing in
+ * the background.
  *
  * Privacy: mic off = track stopped and stream released (browser mic indicator
  * turns off), not just muted.
@@ -126,53 +127,57 @@ export class Voice {
   #posOf: (id: number) => THREE.Vector3 | null;
   #selfPos: () => THREE.Vector3;
   #peers = new Map<number, Peer>();
-  // One background engine hold, live while the mic is on OR ≥1 peer is wired.
+  // One engine hold, live while the mic is on OR ≥1 peer is wired. The audio
+  // engine's visibility gate still overrides it while the page is hidden.
   #hold: (() => void) | null = null;
   #micTrack: MediaStreamTrack | null = null;
+  #pageVisible = document.visibilityState === "visible";
+  #micRestoreToken = 0;
   #scanAt = 0;
   #retryAt = new Map<number, number>(); // failed peers wait out RETRY_MS
+
+  #onVisibilityChange = () => {
+    this.#pageVisible = document.visibilityState === "visible";
+    if (!this.#pageVisible) {
+      // A disabled track can still leave browser capture/AEC work alive. Stop
+      // it outright, then reacquire the already-authorized source on resume.
+      this.#micRestoreToken++;
+      this.#micTrack?.stop();
+      this.#micTrack = null;
+      for (const id of [...this.#peers.keys()]) this.drop(id);
+      return;
+    }
+    this.#scanAt = 0;
+    if (this.micOn) void this.#restoreMicAfterForeground();
+  };
 
   constructor(net: Net, posOf: (id: number) => THREE.Vector3 | null, selfPos: () => THREE.Vector3) {
     this.#net = net;
     this.#posOf = posOf;
     this.#selfPos = selfPos;
     net.onRtc = (from, payload) => void this.#handleSignal(from, payload as Signal);
+    document.addEventListener("visibilitychange", this.#onVisibilityChange);
   }
 
   /* ---------------------------------------------------------------- mic */
 
   /** Toggle the microphone. Resolves false if permission was denied. */
   async setMic(on: boolean): Promise<boolean> {
-    if (on === this.micOn) return true;
+    if (on === this.micOn) {
+      if (on && this.#pageVisible && !this.#micTrack) void this.#restoreMicAfterForeground();
+      return true;
+    }
     if (on) {
       // Toggling the mic IS a user gesture: open the engine gate even if this is
       // somehow the first interaction. getUserMedia below is itself gesture-gated.
       void audioEngine.unlock();
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: voiceCaptureConstraints()
-        });
-      } catch {
-        return false; // denied, no device, or the device cannot provide AEC
-      }
-      const track = stream.getAudioTracks()[0];
-      if (!track) {
-        for (const orphan of stream.getTracks()) orphan.stop();
-        return false;
-      }
-      track.contentHint = "speech";
-      await preferAllPlaybackEchoCancellation(track);
-      const echoCancellation = (track.getSettings() as MediaTrackSettings & {
-        echoCancellation?: EchoCancellationMode;
-      }).echoCancellation;
-      if (echoCancellation === false) {
-        for (const orphan of stream.getTracks()) orphan.stop();
-        return false;
-      }
-      this.#micTrack = track;
+      const track = await this.#requestMicTrack();
+      if (!track) return false; // denied, no device, or no usable AEC
       this.micOn = true;
+      if (this.#pageVisible) this.#micTrack = track;
+      else track.stop();
     } else {
+      this.#micRestoreToken++;
       this.#micTrack?.stop(); // releases the device (browser mic indicator off)
       this.#micTrack = null;
       this.micOn = false;
@@ -183,14 +188,57 @@ export class Voice {
     return true;
   }
 
+  async #requestMicTrack(): Promise<MediaStreamTrack | null> {
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: voiceCaptureConstraints()
+      });
+    } catch {
+      return null;
+    }
+    const track = stream.getAudioTracks()[0];
+    if (!track) {
+      for (const orphan of stream.getTracks()) orphan.stop();
+      return null;
+    }
+    track.contentHint = "speech";
+    await preferAllPlaybackEchoCancellation(track);
+    const echoCancellation = (track.getSettings() as MediaTrackSettings & {
+      echoCancellation?: EchoCancellationMode;
+    }).echoCancellation;
+    if (echoCancellation === false) {
+      for (const orphan of stream.getTracks()) orphan.stop();
+      return null;
+    }
+    return track;
+  }
+
+  async #restoreMicAfterForeground() {
+    const token = ++this.#micRestoreToken;
+    const track = await this.#requestMicTrack();
+    if (token !== this.#micRestoreToken || !this.#pageVisible || !this.micOn) {
+      track?.stop();
+      return;
+    }
+    if (!track) {
+      this.micOn = false;
+      this.#refreshHold();
+      this.onMicChange(false);
+      return;
+    }
+    this.#micTrack = track;
+    for (const peer of this.#peers.values()) this.#attachMic(peer);
+  }
+
   /**
-   * Hold the shared context alive (background: true → survives tab-hidden) while
-   * the mic is on or any peer is wired; release when both are gone. Edge-
+   * Hold the shared context alive while the mic is on or any peer is wired;
+   * release when both are gone. Page visibility still overrides it. Edge-
    * triggered from setMic and from peer add/drop — never per frame.
    */
   #refreshHold() {
     const want = this.micOn || this.#peers.size > 0;
-    if (want && !this.#hold) this.#hold = audioEngine.acquireHold({ background: true });
+    if (want && !this.#hold) this.#hold = audioEngine.acquireHold();
     else if (!want && this.#hold) {
       this.#hold();
       this.#hold = null;
@@ -252,6 +300,7 @@ export class Voice {
 
   /** Remote stream → hidden <audio> (Chrome quirk) → compressor → gain → voice group. */
   #wireAudio(p: Peer, stream: MediaStream) {
+    if (!this.#pageVisible || this.#peers.get(p.id) !== p) return;
     // prewarmBus (not bus()) so the receive graph builds even when a remote
     // track arrives before any local gesture — audibility stays gated by the
     // engine's voice group gain and the suspended ctx; the background hold
@@ -289,7 +338,7 @@ export class Voice {
   }
 
   async #handleSignal(from: number, sig: Signal) {
-    if (!sig || typeof sig !== "object") return;
+    if (!this.#pageVisible || !sig || typeof sig !== "object") return;
     // reactive path: the higher id builds its side when the offer arrives
     const p = this.#peers.get(from) ?? this.#createPeer(from, false);
     try {
@@ -330,6 +379,7 @@ export class Voice {
 
   /** Per rendered frame: gains, speaking indicator, roster scan. */
   update() {
+    if (!this.#pageVisible) return;
     const now = performance.now();
     if (now >= this.#scanAt) {
       this.#scanAt = now + SCAN_MS;
@@ -428,6 +478,8 @@ export class Voice {
     }) | undefined;
     return {
       mic: this.micOn,
+      pageVisible: this.#pageVisible,
+      capturing: this.#micTrack?.readyState === "live",
       micProcessing: micSettings ? {
         echoCancellation: micSettings.echoCancellation ?? "unknown",
         noiseSuppression: micSettings.noiseSuppression ?? "unknown",
@@ -449,6 +501,8 @@ export class Voice {
   }
 
   dispose() {
+    document.removeEventListener("visibilitychange", this.#onVisibilityChange);
+    this.#micRestoreToken++;
     void this.setMic(false);
     for (const id of [...this.#peers.keys()]) this.drop(id);
     // Release our hold but never close the shared engine ctx.
