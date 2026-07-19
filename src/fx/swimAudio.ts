@@ -38,30 +38,57 @@ export class SwimAudio {
   #strokePhase = 0;
   #wasSwimming = false;
   #entryCooldown = 0;
+  #ambSource: AudioBufferSourceNode | null = null;
+  #ambInput: AudioNode | null = null;
+  #ambLfo: OscillatorNode | null = null;
+  #ambLfoGain: GainNode | null = null;
+  #idleSeconds = 0;
+
+  get debugState() {
+    return {
+      ctx: this.#ctx?.state ?? "none",
+      presence: +this.#presence.toFixed(3),
+      ambienceRunning: this.#ambSource !== null,
+      idleSeconds: +this.#idleSeconds.toFixed(2)
+    };
+  }
 
   /** Per frame. Pass null (paused / frozen) to fade everything out. */
   update(dt: number, sig: SwimSignals | null) {
+    const swimming = !!sig?.swimming;
+    const audibleSwimming = swimming && effectsAudioLevel() > 0.0001;
+    // A normal post-gesture walking frame should remain graph-free. Muted
+    // swimming is tracked for edge semantics but also stays allocation-free.
+    if (!this.#ctx && !audibleSwimming) {
+      this.#wasSwimming = swimming;
+      return;
+    }
     const ctx = this.#ctx ?? this.#ensure();
     if (!ctx) return; // engine bus null until the first gesture
+    if (audibleSwimming) {
+      this.#idleSeconds = 0;
+      this.#startAmbience(ctx);
+    }
 
-    const swimming = !!sig?.swimming;
     // Cheap early-out: muted and already silent — synthesize nothing and let the
     // engine idle-suspend the shared ctx (no per-feature suspend anymore).
     if (effectsAudioLevel() <= 0.0001 && this.#presence <= 0.001) {
       this.#ambGain.gain.value = 0;
       this.#ambLevel = 0;
       this.#wasSwimming = swimming;
+      this.#idleSeconds += Math.max(0, dt);
+      if (this.#idleSeconds >= 3) this.#stopAmbience();
       return;
     }
 
-    const want = swimming ? 1 : 0;
-    this.#presence = approach(this.#presence, want, dt, swimming ? 3.5 : 5);
+    const want = audibleSwimming ? 1 : 0;
+    this.#presence = approach(this.#presence, want, dt, audibleSwimming ? 3.5 : 5);
     // Continuous voice: keep the shared ctx alive while anything is audible.
     if (this.#presence > 0.001) audioEngine.touch();
     this.#entryCooldown = Math.max(0, this.#entryCooldown - dt);
 
     // plunge on the rising edge of swimming
-    if (swimming && !this.#wasSwimming && this.#entryCooldown <= 0) {
+    if (audibleSwimming && !this.#wasSwimming && this.#entryCooldown <= 0) {
       this.#plunge(ctx, Math.max(0.35, Math.min(1.2, Math.abs(sig?.vspeed ?? 0) * 0.18 + 0.55)));
       this.#entryCooldown = 0.45;
       this.#strokePhase = 0;
@@ -71,6 +98,8 @@ export class SwimAudio {
     if (!sig || this.#presence < 0.001) {
       this.#ambGain.gain.value = 0;
       this.#ambLevel = 0;
+      this.#idleSeconds += Math.max(0, dt);
+      if (this.#idleSeconds >= 3) this.#stopAmbience();
       return;
     }
 
@@ -83,7 +112,7 @@ export class SwimAudio {
     this.#ambFilter.frequency.value = 420 + 380 * move;
 
     // stroke splashes only while actually paddling
-    if (swimming && move > 0.12) {
+    if (audibleSwimming && move > 0.12) {
       const rate = STROKE_RATE * (0.75 + move * 0.55);
       this.#strokePhase += dt * rate;
       while (this.#strokePhase >= STROKE_PHASE) {
@@ -134,10 +163,6 @@ export class SwimAudio {
 
   /** Soft surface lap / submerged hush — bandpassed noise with a slow breath. */
   #buildAmbience(ctx: AudioContext, dest: AudioNode) {
-    const src = ctx.createBufferSource();
-    src.buffer = this.#noise;
-    src.loop = true;
-
     const hp = ctx.createBiquadFilter();
     hp.type = "highpass";
     hp.frequency.value = 180;
@@ -153,11 +178,21 @@ export class SwimAudio {
     bp.frequency.value = 340;
     bp.Q.value = 0.55;
 
-    src.connect(hp);
     hp.connect(bp);
     bp.connect(this.#ambFilter);
     this.#ambFilter.connect(dest);
-    src.start();
+    this.#ambInput = hp;
+    this.#startAmbience(ctx);
+  }
+
+  #startAmbience(ctx: AudioContext) {
+    if (this.#ambSource || !this.#ambInput) return;
+    const src = ctx.createBufferSource();
+    src.buffer = this.#noise;
+    src.loop = true;
+    src.connect(this.#ambInput);
+    src.start(0, Math.random() * Math.max(0.01, this.#noise.duration));
+    this.#ambSource = src;
 
     // slow swell so the bed never feels static
     const lfo = ctx.createOscillator();
@@ -168,6 +203,19 @@ export class SwimAudio {
     lfo.connect(lfoG);
     lfoG.connect(this.#ambFilter.frequency);
     lfo.start();
+    this.#ambLfo = lfo;
+    this.#ambLfoGain = lfoG;
+  }
+
+  #stopAmbience() {
+    try { this.#ambSource?.stop(); } catch { /* already stopped */ }
+    try { this.#ambLfo?.stop(); } catch { /* already stopped */ }
+    this.#ambSource?.disconnect();
+    this.#ambLfo?.disconnect();
+    this.#ambLfoGain?.disconnect();
+    this.#ambSource = null;
+    this.#ambLfo = null;
+    this.#ambLfoGain = null;
   }
 
   /** One arm-pull splash: brief noise body + soft mid thump. */

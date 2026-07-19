@@ -85,6 +85,7 @@ export class DogParkAudio {
   #rigs = new Map<DogParkDog, DogRig>();
   #pendingCues = new WeakMap<DogParkDog, DogAudioCue>();
   #awake = false;
+  #releaseNatureHold: (() => void) | null = null;
   #paused = false;
   #globalVocalCooldown = 0;
   #ambientTimer = randomBetween(DOG_AUDIO.ambientFirstGapMin, DOG_AUDIO.ambientFirstGapMax);
@@ -166,7 +167,7 @@ export class DogParkAudio {
 
     // A nearby adopted pet can be outside every nature region. Ask the shared
     // soundscape to keep only its effects-scaled always bus awake.
-    this.#nature.setExternalAwake(true);
+    this.#releaseNatureHold ??= this.#nature.acquireExternalHold("dog-park");
     const io = (this.#io ??= this.#nature.voiceBus());
     if (!io || io.ctx.state !== "running") return;
     this.#wake(io, dogs);
@@ -359,7 +360,8 @@ export class DogParkAudio {
   }
 
   #sleep(): void {
-    this.#nature.setExternalAwake(false);
+    this.#releaseNatureHold?.();
+    this.#releaseNatureHold = null;
     this.#pendingCues = new WeakMap<DogParkDog, DogAudioCue>();
     for (const rig of this.#rigs.values()) rig.pendingCue = null;
     if (!this.#awake) return;

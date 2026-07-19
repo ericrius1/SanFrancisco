@@ -55,12 +55,17 @@ const BED_FILES: Record<BedId, string> = {
 };
 const BED_IDS = Object.keys(BED_FILES) as BedId[];
 const MAX_VOICES = 16;
+const BED_PARK_SECONDS = 4;
+const BED_BUFFER_UNLOAD_SECONDS = 60;
 
 type Bed = {
   source: AudioBufferSourceNode | null;
   filter: BiquadFilterNode;
   gain: GainNode;
   panLfo: OscillatorNode | null;
+  panLfoGain: GainNode | null;
+  panner: StereoPannerNode | null;
+  send: GainNode;
   level: number;
 };
 
@@ -73,7 +78,10 @@ export class NatureSoundscape {
   #alwaysBus!: GainNode; // foreground effects, never nature/presence-faded
   #worldComp!: DynamicsCompressorNode; // world side → engine world group
   #effectsComp!: DynamicsCompressorNode; // effects side → engine effects group
-  #externalAwake = false; // a sibling layer (pet at heel) needs the ctx kept alive
+  // Independent leases prevent one optional sibling from suspending the shared
+  // context while another is still active. Symbols also let repeated owner
+  // labels coexist safely (for example, two simultaneously loaded sites).
+  #externalHolds = new Map<symbol, string>();
   #regionalReverbSend!: GainNode;
   #worldReverbSend!: GainNode;
   #effectsReverbSend!: GainNode;
@@ -85,7 +93,11 @@ export class NatureSoundscape {
   #beds = new Map<BedId, Bed>();
   #bedBuffers = new Map<BedId, AudioBuffer>();
   #voices: ActiveVoice[] = [];
-  #loading = false;
+  #loadingBeds = new Map<BedId, number>();
+  #failedBeds = new Set<BedId>();
+  #bedLoadGeneration = 0;
+  #bedIdleSeconds = 0;
+  #bedsWanted = false;
   #bufferPreparation: Promise<void> | null = null;
   #buffersReady = false;
   #holdRelease: (() => void) | null = null; // engine hold while near a region / awake
@@ -105,7 +117,22 @@ export class NatureSoundscape {
       world: +(this.#worldBus?.gain.value ?? 0).toFixed(3),
       effects: +(this.#alwaysBus?.gain.value ?? 0).toFixed(3),
       presence: +this.#presence.toFixed(3),
-      beds: BED_IDS.map((id) => ({ id, level: +(this.#beds.get(id)?.level ?? 0).toFixed(3) })),
+      externalHolds: {
+        count: this.#externalHolds.size,
+        owners: [...this.#externalHolds.values()]
+      },
+      beds: BED_IDS.map((id) => ({
+        id,
+        level: +(this.#beds.get(id)?.level ?? 0).toFixed(3),
+        loaded: this.#bedBuffers.has(id),
+        running: Boolean(this.#beds.get(id)?.source)
+      })),
+      decodedBedMiB: +(
+        [...this.#bedBuffers.values()].reduce(
+          (bytes, buffer) => bytes + buffer.length * buffer.numberOfChannels * Float32Array.BYTES_PER_ELEMENT,
+          0
+        ) / (1024 * 1024)
+      ).toFixed(1),
       influence: NATURE_REGIONS.map((r, i) => ({ id: r.id, inf: +this.#inf[i].toFixed(3) })),
       activeVoices: this.#voices.length,
       voiceCount: this.#voiceCount,
@@ -161,13 +188,17 @@ export class NatureSoundscape {
     };
   }
 
-  /** Sibling layers (the dog park's adopted pet) that must stay audible while the
-   *  player is far from every nature region call this each frame: it stops the
-   *  out-of-region context suspend (and resumes if already suspended) so the
-   *  presence-independent #alwaysBus keeps flowing. Cleared when the pet layer
-   *  parks itself. */
-  setExternalAwake(on: boolean): void {
-    this.#externalAwake = on;
+  /** Keep the shared nature graph alive for an independently owned activity.
+   *  The returned release function is idempotent. */
+  acquireExternalHold(owner: string): () => void {
+    const token = Symbol(owner);
+    this.#externalHolds.set(token, owner);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#externalHolds.delete(token);
+    };
   }
 
   update(
@@ -183,6 +214,7 @@ export class NatureSoundscape {
     }
   ): void {
     const T = NATURE_AUDIO_TUNING.values;
+    const allowed = Boolean(T.enabled) && Number(T.master) > 0.001;
 
     // ---- region influences + blended character ---------------------------
     let presence = 0;
@@ -205,32 +237,47 @@ export class NatureSoundscape {
       fog /= infSum;
     }
     let ctx = this.#ctx;
-    if (!ctx && audioEngine.unlocked && (presence > 0.02 || this.#externalAwake)) {
+    const externallyAwake = this.#externalHolds.size > 0;
+    if (!ctx && audioEngine.unlocked && ((allowed && presence > 0.02) || externallyAwake)) {
       ctx = this.#ensure();
     }
     if (!ctx) return;
     // Sampled ambience is first-approach content. A city keydown unlocks the
     // graph and starts worker synthesis, but does not fetch/decode four nature
     // beds until the listener is actually close enough to hear them.
-    if (audioEngine.unlocked && presence > 0.02) {
+    if (audioEngine.unlocked && allowed && presence > 0.02 && Number(T.beds) > 0.001) {
+      this.#bedsWanted = true;
+      this.#bedIdleSeconds = 0;
       if (o.allowNewLoads !== false) void this.#loadBeds();
       this.#startBeds();
+    } else {
+      this.#bedsWanted = false;
+      this.#bedIdleSeconds += Math.max(0, dt);
+      if (this.#bedIdleSeconds >= BED_PARK_SECONDS) this.#stopBeds();
+      if (
+        this.#bedIdleSeconds >= BED_BUFFER_UNLOAD_SECONDS &&
+        (this.#bedBuffers.size > 0 || this.#loadingBeds.size > 0 || this.#failedBeds.size > 0)
+      ) {
+        this.#stopBeds(true);
+      }
     }
 
-    const allowed = Boolean(T.enabled) && Number(T.master) > 0.001;
     const targetPresence = allowed ? presence : 0;
     this.#presence = approach(this.#presence, targetPresence, dt, 1.6);
 
     // Keep the shared engine context running while we — or a sibling layer such
-    // as a pet at heel / nearby surf (#externalAwake) — need it. Edge-triggered
+    // as a pet at heel / nearby surf (external leases) — need it. Edge-triggered
     // so we never churn the hold per frame; released otherwise, and the engine
     // suspends once its groups fall quiet. The ctx.listener is the engine's job.
-    const wantHold = presence > 0.02 || this.#externalAwake;
+    const wantHold = (allowed && presence > 0.02) || externallyAwake;
     if (wantHold && !this.#holdRelease) this.#holdRelease = audioEngine.acquireHold();
     else if (!wantHold && this.#holdRelease) {
       this.#holdRelease();
       this.#holdRelease = null;
     }
+
+    const windRunning = allowed && Number(T.wind) > 0.001 && presence > 0.02;
+    this.#wind?.setRunning(windRunning);
 
     // The engine owns suspend/resume; until it has the context running there is
     // nothing to mix this frame (our hold makes it resume shortly).
@@ -277,8 +324,9 @@ export class NatureSoundscape {
     // ---- wind synth ------------------------------------------------------
     if (this.#wind) {
       const nearMix = presence; // deeper in a region = more leaf/grass rustle
-      this.#wind.setRunning(true);
-      this.#wind.update(gust, o.camera, Number(T.wind) * windBias * presence, nearMix);
+      if (windRunning) {
+        this.#wind.update(gust, o.camera, Number(T.wind) * windBias * presence, nearMix);
+      }
     }
 
     // ---- spatial voice scheduler ----------------------------------------
@@ -310,13 +358,17 @@ export class NatureSoundscape {
       }
     }
     this.#voices.length = 0;
+    this.#stopBeds(true);
     for (const bed of this.#beds.values()) {
-      bed.source?.stop();
-      bed.panLfo?.stop();
+      bed.filter.disconnect();
+      bed.gain.disconnect();
+      bed.send.disconnect();
     }
+    this.#beds.clear();
     this.#wind?.dispose();
     this.#holdRelease?.();
     this.#holdRelease = null;
+    this.#externalHolds.clear();
     // Disconnect our own graph from the engine groups; never close the shared
     // engine context (the engine owns it).
     this.#bus?.disconnect();
@@ -420,7 +472,16 @@ export class NatureSoundscape {
       const send = ctx.createGain();
       send.gain.value = 0.16;
       gain.connect(send).connect(this.#regionalReverbSend);
-      this.#beds.set(id, { source: null, filter, gain, panLfo: null, level: 0 });
+      this.#beds.set(id, {
+        source: null,
+        filter,
+        gain,
+        panLfo: null,
+        panLfoGain: null,
+        panner: null,
+        send,
+        level: 0
+      });
     }
     return ctx;
   }
@@ -470,26 +531,36 @@ export class NatureSoundscape {
   }
 
   async #loadBeds(): Promise<void> {
-    if (this.#loading || !this.#ctx) return;
-    this.#loading = true;
-    await Promise.all(
-      BED_IDS.map(async (id) => {
+    const ctx = this.#ctx;
+    if (!ctx) return;
+    const generation = this.#bedLoadGeneration;
+    const tasks = BED_IDS.map(async (id) => {
+      if (this.#bedBuffers.has(id) || this.#loadingBeds.has(id) || this.#failedBeds.has(id)) return;
+      this.#loadingBeds.set(id, generation);
+      try {
         try {
           const res = await fetch(BED_FILES[id]);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const arr = await res.arrayBuffer();
-          const buf = await this.#ctx!.decodeAudioData(arr);
-          this.#bedBuffers.set(id, buf);
+          const buf = await ctx.decodeAudioData(arr);
+          if (this.#ctx === ctx && this.#bedLoadGeneration === generation) {
+            this.#bedBuffers.set(id, buf);
+          }
         } catch (err) {
+          if (this.#bedLoadGeneration === generation) this.#failedBeds.add(id);
           console.warn(`[nature-audio] bed failed: ${id}`, err);
         }
-      })
-    );
-    if (audioEngine.unlocked) this.#startBeds();
+      } finally {
+        if (this.#loadingBeds.get(id) === generation) this.#loadingBeds.delete(id);
+      }
+    });
+    await Promise.all(tasks);
+    if (audioEngine.unlocked && this.#bedsWanted) this.#startBeds();
   }
 
   #startBeds(): void {
     const ctx = this.#ctx;
-    if (!ctx || !audioEngine.unlocked) return;
+    if (!ctx || !audioEngine.unlocked || !this.#bedsWanted) return;
     for (const id of BED_IDS) {
       const bed = this.#beds.get(id);
       const buf = this.#bedBuffers.get(id);
@@ -511,7 +582,34 @@ export class NatureSoundscape {
       lfo.start();
       bed.source = src;
       bed.panLfo = lfo;
+      bed.panLfoGain = lg;
+      bed.panner = panner;
     }
+  }
+
+  #stopBeds(releaseBuffers = false): void {
+    if (!releaseBuffers && ![...this.#beds.values()].some((bed) => bed.source || bed.panLfo)) return;
+    const now = this.#ctx?.currentTime ?? 0;
+    for (const bed of this.#beds.values()) {
+      try { bed.source?.stop(); } catch { /* already stopped */ }
+      try { bed.panLfo?.stop(); } catch { /* already stopped */ }
+      bed.source?.disconnect();
+      bed.panLfo?.disconnect();
+      bed.panLfoGain?.disconnect();
+      bed.panner?.disconnect();
+      bed.source = null;
+      bed.panLfo = null;
+      bed.panLfoGain = null;
+      bed.panner = null;
+      bed.level = 0;
+      bed.gain.gain.cancelScheduledValues(now);
+      bed.gain.gain.setValueAtTime(0, now);
+    }
+    if (!releaseBuffers) return;
+    this.#bedLoadGeneration++;
+    this.#loadingBeds.clear();
+    this.#failedBeds.clear();
+    this.#bedBuffers.clear();
   }
 
   #reapVoices(now: number): void {

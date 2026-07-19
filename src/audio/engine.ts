@@ -164,17 +164,20 @@ export class AudioEngine {
     };
 
     const running = ctx.state === "running";
-    let allQuiet = true;
     for (const g of GROUPS) {
       const target = targets[g];
       const level = approach(this.#levels[g], target, dt, target > 0 ? 8 : 14);
       this.#levels[g] = level;
       if (running) this.#groups[g].gain.setTargetAtTime(level, ctx.currentTime, 0.025);
-      if (level > 0.001) allQuiet = false;
     }
 
     if (running) {
-      if (this.#unlocked && !wantRunning && allQuiet) void ctx.suspend();
+      // Mixer levels express how loud a group should be when it has content;
+      // they are not evidence that any source is active. Using them as the idle
+      // test kept the render thread alive forever whenever a slider was nonzero.
+      // Scheduled tails call touch(), and sustained layers own a persistent
+      // hold, so those two signals are the authoritative activity contract.
+      if (this.#unlocked && !wantRunning) void ctx.suspend();
     } else if (this.#unlocked && wantRunning) {
       void ctx.resume();
     }

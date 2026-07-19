@@ -36,11 +36,12 @@ export class FireworksAudio {
   #crackle!: AudioBuffer;
   #recent: number[] = [];
 
-  /** Prewarm the shared audio device early (its startup was fireworks' job), then
-   *  build the echo bus and ~250k samples of noise/crackle synthesis on the shared
-   *  ctx. Uses the engine's prewarm bus so the full graph + buffers build under the
-   *  loading cover pre-gesture (the group gain sits at 0 / ctx suspended, so nothing
-   *  can sound); the engine ctx creation itself (the device startup) happens too. */
+  get debugState() {
+    return { ctx: this.#ctx?.state ?? "none", ready: this.#ctx !== null };
+  }
+
+  /** Build the echo bus and reusable noise/crackle buffers during a shell's
+   *  flight, after the optional feature is first used but before its burst. */
   prewarm(): void {
     audioEngine.prewarm();
     this.#ensure();
@@ -231,6 +232,10 @@ export class FireworksAudio {
 
     // crack transient: only survives up close (att² falloff)
     const crackGain = 0.5 * g * att;
+    const voiceNodes: AudioNode[] = [
+      out, panner, sub, subG, thump, thumpG, rum, rumLp, rumG,
+      body, bodyLp, bodyG
+    ];
     if (crackGain > 0.01) {
       const crack = ctx.createBufferSource();
       crack.buffer = this.#noise;
@@ -244,6 +249,7 @@ export class FireworksAudio {
       hp.connect(cg);
       cg.connect(out);
       crack.start(t0, Math.random() * 0.4, 0.12);
+      voiceNodes.push(crack, hp, cg);
     }
 
     // crackle tail trailing the report, like the strobe sparks overhead
@@ -259,5 +265,15 @@ export class FireworksAudio {
     bp.connect(tg);
     tg.connect(out);
     tail.start(t0 + 0.1 + Math.random() * 0.1);
+    voiceNodes.push(tail, bp, tg);
+
+    // The rumble is the final direct voice to end. Explicitly sever the entire
+    // per-boom subgraph then; otherwise repeated volleys leave hundreds of
+    // zero-output nodes connected to the persistent master/echo buses.
+    rum.onended = () => {
+      for (const node of voiceNodes) {
+        try { node.disconnect(); } catch { /* already disconnected */ }
+      }
+    };
   }
 }
