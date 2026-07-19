@@ -21,14 +21,14 @@ export const OCEAN_BEACH_SURF = {
   // up head-high-plus on the shoreward face.
   spacing: 150,
   speed: 9.2,
-  amplitude: 12,
+  amplitude: 7.2,
   offshoreCrest: -6310,
   // Shoaling profile widths (metres): a broad offshore shoulder feeds a steep,
   // narrow shoreward face. Shared by the CPU sampler AND the GPU twin
   // (tslUtil.oceanBeachSurfField) — change here, both follow. Narrow face =
   // a steep, near-vertical wall that towers over a rider set in the pocket.
-  shoulderWidth: 30,
-  faceWidth: 5.0,
+  shoulderWidth: 36,
+  faceWidth: 7.5,
 
   // Parametric barrel shared by CPU contact/camera queries and the lazy TSL
   // roof shell. X is signed shoreward distance from the live crest. The roof

@@ -63,7 +63,7 @@ export class BallImpactAudio {
 
   #ready = false;
   #awakeHold = 0;
-  #externalAwake = false;
+  #releaseNatureHold: (() => void) | null = null;
   #lastGroundAt = -Infinity;
   #groundCount = 0;
   #waterCount = 0;
@@ -209,23 +209,17 @@ export class BallImpactAudio {
   update(dt: number): void {
     if (this.#awakeHold > 0) {
       this.#awakeHold = Math.max(0, this.#awakeHold - Math.max(0, dt));
-      // Reassert every frame: NatureSoundscape exposes one shared awake bit and
-      // a sibling layer may have cleared it earlier this frame.
-      this.#nature.setExternalAwake(true);
-      this.#externalAwake = true;
-      if (this.#awakeHold <= 0 && this.#externalAwake) {
-        this.#nature.setExternalAwake(false);
-        this.#externalAwake = false;
+      if (this.#awakeHold <= 0 && this.#releaseNatureHold) {
+        this.#releaseNatureHold();
+        this.#releaseNatureHold = null;
       }
     }
     if (this.#ready) this.#syncEcho();
   }
 
   dispose(): void {
-    if (this.#externalAwake) {
-      this.#nature.setExternalAwake(false);
-      this.#externalAwake = false;
-    }
+    this.#releaseNatureHold?.();
+    this.#releaseNatureHold = null;
     this.#echoLfo?.stop();
     for (const node of [
       this.#groundOut,
@@ -345,8 +339,7 @@ export class BallImpactAudio {
 
   #keepAwake(): void {
     this.#awakeHold = AWAKE_TAIL;
-    this.#nature.setExternalAwake(true);
-    this.#externalAwake = true;
+    this.#releaseNatureHold ??= this.#nature.acquireExternalHold("ball-impact-tail");
   }
 }
 

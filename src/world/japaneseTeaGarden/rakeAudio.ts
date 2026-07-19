@@ -86,7 +86,7 @@ export class TeaGardenRakeAudio {
   #env = 0; // smoothed 0..1 stroke energy
   #idle = 0; // seconds silent while not holding, for teardown
   #graphBuilds = 0;
-  #externalAwake = false;
+  #releaseNatureHold: (() => void) | null = null;
   #disposed = false;
 
   constructor(nature: NatureSoundscape) {
@@ -322,15 +322,12 @@ export class TeaGardenRakeAudio {
     this.#panner = null;
     this.#dry = null;
     this.#wet = null;
-    if (this.#externalAwake) {
-      this.#nature.setExternalAwake(false);
-      this.#externalAwake = false;
-    }
+    this.#releaseNatureHold?.();
+    this.#releaseNatureHold = null;
   }
 
   #requestSharedContext(): void {
-    this.#nature.setExternalAwake(true);
-    this.#externalAwake = true;
+    this.#releaseNatureHold ??= this.#nature.acquireExternalHold("tea-garden-rake");
   }
 }
 

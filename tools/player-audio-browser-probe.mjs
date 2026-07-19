@@ -74,10 +74,15 @@ try {
   }
   await mixerButton.click();
   assert.equal(await mixerPanel.isVisible(), false, "sound mixer did not collapse");
-  const foregroundMix = await page.evaluate(() => {
+  await page.evaluate(() => {
     window.__sf.gameplaySfxBus.voiceBus(0.5);
-    return window.__sf.gameplaySfxBus.debugState;
   });
+  await page.waitForFunction(
+    () => window.__sf.gameplaySfxBus.debugState.level > 0.63,
+    null,
+    { timeout: 2_000 }
+  );
+  const foregroundMix = await page.evaluate(() => window.__sf.gameplaySfxBus.debugState);
   assert(
     foregroundMix.level > 0.63,
     `foreground FX slider did not reach gameplay bus (${foregroundMix.level})`

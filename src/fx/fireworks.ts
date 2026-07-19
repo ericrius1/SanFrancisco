@@ -151,13 +151,13 @@ export class Fireworks {
 
   audio = new FireworksAudio();
   #warmFrames = 0;
+  #audioWarmTimer: number | null = null;
+  #audioWarmed = false;
 
-  /** Boot warmup: force the sprite pool to draw (empty) for the next couple of
-   *  frames so its WebGPU pipeline compiles before the first real launch, and
-   *  build the boom-synth audio buffers off the first-gesture path. */
+  /** Boot warmup is visual-only. Optional firework audio stays graph-free until
+   *  a launch is actually queued. */
   prewarm(): void {
     this.#warmFrames = 2;
-    this.audio.prewarm();
   }
 
   /** Every locally launched rocket this frame, as wire rows
@@ -495,6 +495,16 @@ export class Fireworks {
     size: number,
     broadcast = true
   ) {
+    // The shortest authored flight is 0.5s, so a background task has ample time
+    // to build the reusable boom graph before the shell bursts. This removes
+    // optional echo nodes/buffers from clean boot and keeps launch input crisp.
+    if (!this.#audioWarmed && this.#audioWarmTimer === null && typeof window !== "undefined") {
+      this.#audioWarmTimer = window.setTimeout(() => {
+        this.#audioWarmTimer = null;
+        this.audio.prewarm();
+        this.#audioWarmed = true;
+      }, 0);
+    }
     const [color, accent] = PALETTES[palette];
     // solve the launch velocity so the arc reaches the target after flightTime
     const gR = this.params.gravity * 0.35;

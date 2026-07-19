@@ -110,6 +110,7 @@ export class AfterlightAudio {
   #shots = new Set<ActiveShot>();
   #parkTimer: number | null = null;
   #awake = false;
+  #releaseNatureHold: (() => void) | null = null;
   #disposed = false;
 
   constructor(nature: NatureSoundscape, center: AfterlightAudioPosition) {
@@ -139,7 +140,11 @@ export class AfterlightAudio {
   setAwake(on: boolean): void {
     if (this.#disposed || this.#awake === on) return;
     this.#awake = on;
-    this.#nature.setExternalAwake(on);
+    if (on) this.#releaseNatureHold ??= this.#nature.acquireExternalHold("afterlight");
+    else {
+      this.#releaseNatureHold?.();
+      this.#releaseNatureHold = null;
+    }
     if (on) {
       if (this.#parkTimer !== null) window.clearTimeout(this.#parkTimer);
       this.#parkTimer = null;
@@ -175,10 +180,9 @@ export class AfterlightAudio {
     }
   }
 
-  /** Reassert shared-context ownership after other optional sibling layers. */
-  update(): void {
-    if (this.#awake && !this.#disposed) this.#nature.setExternalAwake(true);
-  }
+  /** Site update hook retained for the activity lifecycle. Ownership is leased,
+   *  so no per-frame shared-state reassertion is needed. */
+  update(): void {}
 
   /** Quest begins: fog breath, a low bronze fundamental, then its open fifth. */
   begin(): void {
@@ -313,7 +317,8 @@ export class AfterlightAudio {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#awake = false;
-    this.#nature.setExternalAwake(false);
+    this.#releaseNatureHold?.();
+    this.#releaseNatureHold = null;
     if (this.#parkTimer !== null) window.clearTimeout(this.#parkTimer);
     this.#parkTimer = null;
     for (const shot of [...this.#shots]) this.#cleanupShot(shot, true);
