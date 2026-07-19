@@ -3922,6 +3922,12 @@
         #hud .board-ui .board-panel {
           margin-right: -66px;
         }
+        /* Surf already owns the rightmost customizer slot while active. The
+           generic board offset pushed its wider shaping panel 58 px beyond a
+           phone viewport even though the toggle itself remained in bounds. */
+        #hud .avatar-ui.surfboard-ui .surfboard-panel {
+          margin-right: 0;
+        }
       }
       #loading {
         position: fixed;
