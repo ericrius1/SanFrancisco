@@ -8,6 +8,7 @@ import {
   createBladeClusterGeometry,
   createGrassMaterial,
   createMicroBladeClusterGeometry,
+  type GrassIndirectSource,
   type GrassMaterialState
 } from "../groundcover/bladeGrass";
 import {
@@ -20,7 +21,7 @@ import {
   type FoliageFieldBuildJob,
   type FoliageFieldStats
 } from "../groundcover/foliageField";
-import { requireRenderer, releaseRendererAttribute } from "../../app/rendererRegistry";
+import { requireRenderer } from "../../app/rendererRegistry";
 import type { GardenTerrain } from "../garden/layout";
 import { grassyGround, nearAnyWildRegion } from "./layout";
 import { GRASS_TUNING } from "../../config";
@@ -209,6 +210,8 @@ type GrassStreamingStats = {
 export type WildGrass = {
   group: THREE.Group;
   update(focus: { x: number; z: number }): void;
+  /** Per-frame GPU frustum cull against the render camera (cheap; no readback). */
+  cullFrame(camera: THREE.Camera): void;
   refresh(): void;
   whenSettled(): Promise<void>;
   whenCriticalReady(): Promise<void>;
@@ -259,18 +262,23 @@ export function createWildGrass(
   const inputs = LAYER_ORDER.map((name) => {
     const spec = WILD_GRASS_LAYER_SPECS[name];
     const geometry = createLayerGeometry(spec);
-    const material = createGrassMaterial({
-      wind: spec.wind,
-      interactionSlots: spec.interactionSlots,
-      fadeMode: "rank",
-      fadeBand: spec.fadeBand
-    });
     sourceGeometries.push(geometry);
-    materials.push(material);
     return {
       spec: { name, gridStride: spec.gridStride, visibleRadius: spec.visibleRadius, fadeBand: spec.fadeBand },
       geometry,
-      material,
+      // Materials read instance data through the per-frame frustum-culled
+      // visible-index indirection, so only surviving blades reach the vertex shader.
+      materialFor(source: GrassIndirectSource) {
+        const material = createGrassMaterial({
+          wind: spec.wind,
+          interactionSlots: spec.interactionSlots,
+          fadeMode: "rank",
+          fadeBand: spec.fadeBand,
+          indirectSource: source
+        });
+        materials.push(material);
+        return material;
+      },
       trianglesPerCluster: wildGrassLayerTriangles(spec)
     };
   });
@@ -315,8 +323,11 @@ export function createWildGrass(
   group.userData.grassStats = stats;
   group.userData.grassStreaming = streaming;
   group.userData.foliageField = field;
+  // QA surface: probes read the per-frame culled draw counts from this shared
+  // indirect buffer (renderer.getArrayBufferAsync) to verify GPU frustum culling.
+  group.userData.grassIndirect = gpu.indirect;
 
-  const publishStats = (commands: Uint32Array): void => {
+  const publishStats = (liveCounts: Uint32Array): void => {
     const layers = {} as Record<WildGrassLayerName, WildGrassLayerStats>;
     let count = 0;
     let draws = 0;
@@ -324,7 +335,7 @@ export function createWildGrass(
     for (let index = 0; index < gpu.layers.length; index++) {
       const layer = gpu.layers[index];
       const name = layer.spec.name as WildGrassLayerName;
-      const compacted = Math.min(layer.capacity, commands[index * 5 + 1] ?? 0);
+      const compacted = Math.min(layer.capacity, liveCounts[index] ?? 0);
       const triangles = compacted * layer.trianglesPerCluster;
       layer.mesh.userData.grassLastCount = compacted;
       layers[name] = {
@@ -382,7 +393,11 @@ export function createWildGrass(
       // Reset and all four compactors share one command encoder. Rendering can
       // therefore observe only the old complete field or the new complete field.
       await renderer.computeAsync([gpu.reset, ...gpu.layers.map((layer) => layer.compute)]);
-      const readback = await renderer.getArrayBufferAsync(gpu.indirect);
+      // The frame's frustum pass may already have run against the previous
+      // field; re-cull immediately so this frame draws a visibility set that
+      // matches the freshly compacted instance buffers.
+      renderer.compute(gpu.cullPasses);
+      const readback = await renderer.getArrayBufferAsync(gpu.liveCounts);
       if (disposed || id !== generation) {
         streaming.staleGenerations++;
         return;
@@ -428,6 +443,11 @@ export function createWildGrass(
       group.visible = true;
       requestGeneration(focus);
     },
+    cullFrame(camera) {
+      if (disposed || !group.visible) return;
+      gpu.updateCullCamera(camera);
+      renderer.compute(gpu.cullPasses);
+    },
     refresh() {
       if (lastFocus.x >= 1e8) return;
       if (!nearAnyWildRegion(lastFocus.x, lastFocus.z, WILD_GRASS_RING_RADIUS + 2)) return;
@@ -441,7 +461,6 @@ export function createWildGrass(
       generation++;
       field.dispose();
       gpu.dispose();
-      releaseRendererAttribute(gpu.indirect);
       for (const material of materials) material.material.dispose();
       group.removeFromParent();
       group.clear();

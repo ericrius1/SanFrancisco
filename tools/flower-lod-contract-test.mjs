@@ -77,14 +77,29 @@ assert(
   "far accent must stay below 15% of the cheapest hero clump"
 );
 assert.equal(stats.trianglesPerClumpByLod.far, 6, "far flowers should use the six-triangle crossed accent");
+// The default density rose 1 → 1.4 when per-frame GPU frustum culling landed:
+// `submittedTriangles` is now the LIVE envelope, of which the cull pass
+// rasterizes only the in-view fraction (~30-40%; tools/grass-cull-probe.mjs
+// verifies the real drawn counts). Guard the geometry ladder like-for-like at
+// density 1 below; here just bound the live envelope against the density knob.
+const defaultDensity = FLOWER_TUNING.values.density;
 assert(
-  stats.submittedTriangles <= LEGACY_DEFAULT_TRIANGLES,
-  `extended default ring should not exceed the former high-end triangle envelope (${stats.submittedTriangles} <= ${LEGACY_DEFAULT_TRIANGLES})`
+  stats.submittedTriangles <= LEGACY_DEFAULT_TRIANGLES * Math.max(1, defaultDensity),
+  `default ring live envelope exceeds density-scaled budget (${stats.submittedTriangles} <= ${LEGACY_DEFAULT_TRIANGLES} * ${defaultDensity})`
 );
 assert(
   stats.draws <= LEGACY_DEFAULT_DRAWS,
   `extended default ring should not add flower draws (${stats.draws} <= ${LEGACY_DEFAULT_DRAWS})`
 );
+const tunedDensity = FLOWER_TUNING.values.density;
+FLOWER_TUNING.values.density = 1;
+flowers.refresh();
+assert(
+  flowers.stats.submittedTriangles <= LEGACY_DEFAULT_TRIANGLES,
+  `density-1 ring must stay inside the former triangle envelope (${flowers.stats.submittedTriangles} <= ${LEGACY_DEFAULT_TRIANGLES})`
+);
+FLOWER_TUNING.values.density = tunedDensity;
+flowers.refresh();
 assert(
   stats.reservedInstanceBytes <= LEGACY_RESERVED_INSTANCE_BYTES,
   `extended default ring should not reserve more instance memory (${stats.reservedInstanceBytes} <= ${LEGACY_RESERVED_INSTANCE_BYTES})`
@@ -116,25 +131,41 @@ assert(
   `LOD buckets should reserve less instance memory (${stats.reservedInstanceBytes} < ${legacyReservedBytes})`
 );
 
-const populatedMeshes = flowers.group.children.filter((child) => child.isInstancedMesh && child.count > 0);
-assert(populatedMeshes.length > 4, "spatial flower sectors should produce more than the legacy four global meshes");
+// GPU per-instance frustum culling replaced the old CPU sector meshes: each
+// populated bucket submits one indirect draw whose count is written by the
+// per-frame cull compute, so CPU frustum culling stays off and the geometry
+// carries a conservative whole-ring bound.
+const populatedMeshes = flowers.group.children.filter(
+  (child) => child.isMesh && (child.userData.flowerCount ?? 0) > 0
+);
+assert(populatedMeshes.length >= 5, "hero species + mid + far buckets should populate the test meadow");
 for (const mesh of populatedMeshes) {
-  assert.equal(mesh.frustumCulled, true, `${mesh.name} must participate in frustum culling`);
-  assert(mesh.boundingSphere, `${mesh.name} must have an explicit instance bound`);
-  assert(Number.isFinite(mesh.boundingSphere.radius) && mesh.boundingSphere.radius > 0, `${mesh.name} bound must be finite`);
+  assert.equal(mesh.frustumCulled, false, `${mesh.name} visibility is owned by the GPU per-instance cull`);
+  assert(mesh.geometry.boundingSphere, `${mesh.name} must have an explicit conservative bound`);
+  assert(
+    Number.isFinite(mesh.geometry.boundingSphere.radius) && mesh.geometry.boundingSphere.radius > 0,
+    `${mesh.name} bound must be finite`
+  );
+  const indirect = mesh.geometry.getIndirect?.() ?? mesh.geometry.indirect ?? null;
+  assert(indirect, `${mesh.name} must draw through the shared indirect buffer`);
 }
 
 // The centre sample is never lower than the minimum of a sloped footprint. Every
 // hero anchor must therefore be at least ROOT_SINK below its centre ground; this
 // catches a regression back to map.groundHeight(px,pz) centre-only seating.
+// Anchors live in the shared packed data0 storage plane now.
+const flowerData0 = flowers.group.userData.flowerData0;
+assert(flowerData0, "flower ring must expose its packed data0 plane for contracts");
 const heroMeshes = flowers.group.children.filter((child) => child.name.startsWith("wildlands_flowers_hero_"));
 let groundedHeroAnchors = 0;
 for (const mesh of heroMeshes) {
-  const anchors = mesh.geometry.getAttribute("aFlowerAnchor");
-  for (let i = 0; i < mesh.count; i++) {
-    const x = anchors.getX(i);
-    const y = anchors.getY(i);
-    const z = anchors.getZ(i);
+  const base = mesh.userData.flowerBase ?? 0;
+  const liveRows = mesh.userData.flowerCount ?? 0;
+  for (let i = 0; i < liveRows; i++) {
+    const slot = (base + i) * 4;
+    const x = flowerData0[slot];
+    const y = flowerData0[slot + 1];
+    const z = flowerData0[slot + 2];
     assert(y <= groundHeight(x, z) - 0.034, `${mesh.name} anchor ${i} is not footprint-seated`);
     groundedHeroAnchors += 1;
   }

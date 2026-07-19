@@ -236,7 +236,10 @@ export const CITYGEN_TUNING = tunables("citygen", {
  *  · reach       — ring radius (m) the flowers fill around the player
  */
 export const FLOWER_TUNING = tunables("flowers", {
-  density: { v: 1, min: 0, max: 2.5, step: 0.05, label: "density" },
+  // Default raised from 1 → 1.4 after per-frame GPU frustum culling landed:
+  // only ~30% of the ring rasterizes per heading, so the denser meadow still
+  // draws fewer blooms per frame than the old uncelled default.
+  density: { v: 1.4, min: 0, max: 2.5, step: 0.05, label: "density" },
   clumpiness: { v: 0.6, min: 0, max: 1, step: 0.02, label: "clump ↔ scatter" },
   clumpSize: { v: 9, min: 2, max: 30, step: 0.5, label: "clump size (m)" },
   reach: { v: 110, min: 30, max: 110, step: 2, label: "reach (m)" }
@@ -252,7 +255,10 @@ export const FLOWER_TUNING = tunables("flowers", {
  *  · patchiness — 0 = even lawn, 0.5 = designed clumps/clearings, 1 = strong patches
  */
 export const GRASS_TUNING = tunables("grass", {
-  density: { v: 1, min: 0, max: 2.5, step: 0.05, label: "density" },
+  // Default raised from 1 → 1.6 after per-frame GPU frustum culling landed:
+  // ~60-70% of compacted blades are behind the camera and never reach the
+  // vertex shader, so the denser field still submits less work than before.
+  density: { v: 1.6, min: 0, max: 2.5, step: 0.05, label: "density" },
   patchiness: { v: 0.5, min: 0, max: 1, step: 0.02, label: "even ↔ patchy" }
 })
 

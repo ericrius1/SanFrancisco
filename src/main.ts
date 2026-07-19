@@ -1441,7 +1441,7 @@ async function boot() {
       prepare?: (unit: THREE.Object3D) => Promise<void>,
       signal?: AbortSignal
     ) => Promise<void>;
-    update: (pos: THREE.Vector3, cam: THREE.Vector3) => void;
+    update: (pos: THREE.Vector3, cam: THREE.Vector3, cullCamera?: THREE.Camera) => void;
   } | null = null;
   let buenaVistaTrees: {
     group: THREE.Group;
@@ -3779,6 +3779,12 @@ async function boot() {
       // The world clock stays frozen, but the player and camera can move in this
       // branch. Keep shadow coverage and the every-frame subject map current.
       sky.update(elapsed, camera.position, player.renderPosition);
+      // The GPU foliage frustum culls follow the render camera; without this
+      // the paused orbit would pan past a frozen visibility set and grass or
+      // blooms would pop out at the old frustum's edge.
+      if (foliageOn && !worldArrival.active) {
+        wildlands?.update(player.renderPosition, camera.position, camera);
+      }
       applyLightFrontRamps();
       input.endFrame();
       renderFrame();
@@ -4406,7 +4412,7 @@ async function boot() {
       // above) so they stay put when you just look around — the chase camera orbits
       // the player, and anchoring the rings to it slid the whole field around you.
       // Tree distance-culling still follows the camera so off-screen groves drop.
-      wildlands?.update(player.renderPosition, camera.position);
+      wildlands?.update(player.renderPosition, camera.position, camera);
       buenaVistaTrees?.update(camera.position);
     }
     // Nature soundscape rides the same root vegetation gust envelope,

@@ -20,6 +20,7 @@ import {
   cos,
   float,
   Fn,
+  instanceIndex,
   Loop,
   mix,
   modelNormalMatrix,
@@ -31,7 +32,8 @@ import {
   uniform,
   vec2,
   vec3,
-  vec4
+  vec4,
+  vertexStage
 } from "three/tsl";
 import { groundSwayFlow, groundSwayLite, WIND_DIR } from "./sway";
 import { terrainFieldNormal } from "./terrainFieldNormal";
@@ -57,6 +59,20 @@ export type GrassMaterialState = {
   focus: THREE.Vector2;
 };
 
+/** Storage-buffer handles for GPU-culled indirect draws. The vertex shader
+ *  resolves the real instance through `visibleIndices[instanceIndex]`, so a
+ *  per-frame cull compute decides which instances rasterize at all. */
+export type GrassIndirectSource = {
+  /** storage node — vec4 anchorXYZ + yaw per instance. */
+  transforms: TslNode;
+  /** storage node — vec4 spread, height, windAmp, fadeRadius. */
+  shapes: TslNode;
+  /** storage node — vec4 normalized tint RGB + fade rank. */
+  colors: TslNode;
+  /** storage node — uint compacted visible-instance indices. */
+  visibleIndices: TslNode;
+};
+
 export type GrassMaterialOptions = {
   /** Full layered noise nearby; one coherent sine for mid/far tiles. */
   wind?: "full" | "lite";
@@ -66,6 +82,11 @@ export type GrassMaterialOptions = {
   fadeMode?: "scale" | "rank";
   /** Absolute world-space width of a rank fade. Only used by `fadeMode: "rank"`. */
   fadeBand?: number;
+  /** Read instance data through a GPU-culled visible-index indirection instead
+   *  of instanced attributes. Fragment-stage consumers of instance data must go
+   *  through vertexStage(): storage reads keyed by instanceIndex are only valid
+   *  in the vertex stage. */
+  indirectSource?: GrassIndirectSource;
 };
 
 /**
@@ -251,9 +272,25 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
 
   const focus = new THREE.Vector2(1e6, 1e6);
   const focusU = uniform(focus);
-  const tint = attribute("aGrassColor", "vec4") as TslNode;
-  const transform = attribute("aGrassTransform", "vec4") as TslNode; // anchorXYZ, yaw
-  const shape = attribute("aGrassShape", "vec4") as TslNode; // spread, height, windAmp, fadeRadius
+  const indirect = options.indirectSource ?? null;
+  // Indirect mode: one storage fetch per vec4, hoisted into vars so reuse across
+  // the position/normal graphs doesn't re-emit buffer loads (TSL re-emits
+  // unhoisted element() reads at every use site).
+  const trueIndex = indirect
+    ? (indirect.visibleIndices.element(instanceIndex) as TslNode).toVar()
+    : null;
+  const tintVertex = indirect
+    ? (indirect.colors.element(trueIndex) as TslNode).toVar()
+    : (attribute("aGrassColor", "vec4") as TslNode);
+  // Fragment consumers (colorNode/opacityNode/thickness) read the vertex-stage
+  // varying; storage reads keyed by instanceIndex are vertex-stage-only.
+  const tint = indirect ? (vertexStage(tintVertex) as TslNode) : tintVertex;
+  const transform = indirect
+    ? (indirect.transforms.element(trueIndex) as TslNode).toVar()
+    : (attribute("aGrassTransform", "vec4") as TslNode); // anchorXYZ, yaw
+  const shape = indirect
+    ? (indirect.shapes.element(trueIndex) as TslNode).toVar()
+    : (attribute("aGrassShape", "vec4") as TslNode); // spread, height, windAmp, fadeRadius
   const bladeT = positionGeometry.y.clamp(0, 1);
   const rootAo = bladeT.smoothstep(0, 0.34).mul(0.46).add(0.54);
   const grassRoot = color(0x1f4f1c);
@@ -278,7 +315,8 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
   if (rankFade) {
     const authoredRank = attribute("aGrassBladeRank", "float") as TslNode;
     const stableRank = tint.w.mul(0.754877666).add(authoredRank).fract().mul(0.996).add(0.002);
-    mat.opacityNode = step(stableRank, fade);
+    const fragmentFade = indirect ? (vertexStage(fade) as TslNode) : fade;
+    mat.opacityNode = step(stableRank, fragmentFade);
     mat.alphaTestNode = float(0.5);
     deformationFade = float(1);
   }
@@ -362,7 +400,12 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
   if (fieldNormal) normalWorld = normalize(mix(normalWorld, fieldNormal, 0.55));
   const normalView = cameraViewMatrix.mul(vec4(normalWorld, 0)).xyz;
   const deformView = cameraViewMatrix.mul(vec4(bendWorld.add(trampleWorld), 0)).xyz;
-  mat.normalNode = normalize(normalView.sub(deformView.mul(bladeT.mul(0.3).add(0.08))));
+  const shadedNormal = normalView.sub(deformView.mul(bladeT.mul(0.3).add(0.08)));
+  // Indirect mode computes the lit normal per-vertex and interpolates — the
+  // storage-derived yaw/deform inputs cannot be evaluated in the fragment stage.
+  mat.normalNode = indirect
+    ? normalize(vertexStage(shadedNormal) as TslNode)
+    : normalize(shadedNormal);
   mat.thicknessColorNode = tint.y.mul(bladeT.mul(0.72).add(0.28)).mul(uniform(new THREE.Color(0.42, 0.68, 0.24)));
   mat.thicknessDistortionNode = uniform(0.38);
   mat.thicknessAmbientNode = uniform(0.08);

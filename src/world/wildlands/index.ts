@@ -52,7 +52,11 @@ export type Wildlands = {
    * (defaults to ringFocus) drives the tree distance-culling and legitimately
    * wants the camera so off-screen groves drop.
    */
-  update(ringFocus: { x: number; z: number }, cullFocus?: { x: number; z: number }): void;
+  update(
+    ringFocus: { x: number; z: number },
+    cullFocus?: { x: number; z: number },
+    cullCamera?: THREE.Camera
+  ): void;
   /** Release all GPU resources owned by this regional foliage bundle. */
   dispose(): void;
   stats: { trees: number; flowers: number; treeChunks: number };
@@ -380,10 +384,17 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
         signal?.removeEventListener("abort", onAbort);
       }
     },
-    update(ringFocus, cullFocus = ringFocus) {
+    update(ringFocus, cullFocus = ringFocus, cullCamera) {
       trees.update(cullFocus); // distance-cull to what the camera sees
       flowers.update(ringFocus); // rings stay centred on the player, not the camera
       grass.update(ringFocus);
+      if (cullCamera) {
+        // Per-frame GPU frustum culls follow the RENDER camera: only blades and
+        // blooms in view reach the vertex shader (indirect draw counts are
+        // written by compute, no CPU readback).
+        grass.cullFrame(cullCamera);
+        flowers.cullFrame(cullCamera);
+      }
       if (groundcoverPreparer) {
         for (const job of gateGroundcover()) {
           void job.catch((error) => console.warn("[wildlands] groundcover prepare failed", error));
