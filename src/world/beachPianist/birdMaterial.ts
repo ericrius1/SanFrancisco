@@ -1,13 +1,14 @@
 // One-draw WebGPU/TSL material for the Beach Pianist's small coastal birds.
-// Static instance data describes each orbit while the vertex stage owns the
-// path, heading and wing beat. The CPU therefore never uploads per-frame
-// matrices for this background life layer.
+// Static instance data describes each orbit AND its perch cycle while the
+// vertex stage owns the path, heading, wing beat and landings. The CPU
+// therefore never uploads per-frame matrices for this background life layer.
 
 import * as THREE from "three/webgpu";
 import {
   attribute,
   cos,
   float,
+  fract,
   instancedBufferAttribute,
   mix,
   positionLocal,
@@ -21,10 +22,20 @@ import {
 type N = any;
 
 export type PianoGroveBirdMaterialInputs = {
+  /** Orbit centre in site-local space. Deliberately an attribute, NOT the
+   *  instance matrix: r185's InstanceNode multiplies `positionLocal` by the
+   *  instance matrix BEFORE a custom positionNode runs, so a translation
+   *  stored there would be scaled/rotated by the flight frame below and
+   *  scatter every bird. Instance matrices must stay identity. */
+  center: THREE.InstancedBufferAttribute;
   /** radius x/z, angular speed, phase */
   motion: THREE.InstancedBufferAttribute;
   /** body scale, vertical wander, wing rate, wing amplitude */
   style: THREE.InstancedBufferAttribute;
+  /** 1/cyclePeriod, fly-fraction end (2 = never perch), cycle phase, blend width */
+  cycle: THREE.InstancedBufferAttribute;
+  /** landing point relative to the orbit centre, settled facing yaw */
+  perch: THREE.InstancedBufferAttribute;
   /** linear-space dusk silhouette tint */
   tint: THREE.InstancedBufferAttribute;
 };
@@ -39,21 +50,31 @@ export function createPianoGroveBirdMaterial(
     toneMapped: true
   });
 
+  const center = instancedBufferAttribute(inputs.center) as N;
   const motion = instancedBufferAttribute(inputs.motion) as N;
   const style = instancedBufferAttribute(inputs.style) as N;
+  const cycle = instancedBufferAttribute(inputs.cycle) as N;
+  const perch = instancedBufferAttribute(inputs.perch) as N;
   const wing = attribute("birdWing", "vec2") as N;
   // Clamp every instanced control before it reaches vertex position math. These
   // buffers are static, but a bad/partial attribute read must never be able to
   // turn one tiny background bird into a screen-spanning triangle.
   const radiusX = motion.x.clamp(0.001, 32);
   const radiusZ = motion.y.clamp(0.001, 32);
-  const angularSpeed = motion.z.clamp(0, 0.6);
+  const angularSpeed = motion.z.clamp(0, 1.0);
   const instancePhase = motion.w.clamp(0, Math.PI * 2);
   const flightMask = smoothstep(0.01, 0.06, angularSpeed) as N;
-  const clockPhase = (time as N).mul(angularSpeed).add(instancePhase);
   const verticalWander = style.y.clamp(0, 4.8);
+  const invPeriod = cycle.x.clamp(0.005, 1);
+  const flyEnd = cycle.y.clamp(0, 2);
+  const cyclePhase = cycle.z.clamp(0, 1);
+  const blendWidth = cycle.w.clamp(0.01, 0.25);
+  const perchX = perch.x.clamp(-64, 64);
+  const perchY = perch.y.clamp(-64, 64);
+  const perchZ = perch.z.clamp(-64, 64);
+  const perchYaw = perch.w;
 
-  // Layered incommensurate harmonics turn the old perfect ellipses into loose,
+  // Layered incommensurate harmonics turn perfect ellipses into loose,
   // asymmetric circuits. Warping the travel phase also eases each bird through
   // wide turns instead of moving at visibly constant angular speed. The
   // derivative of the warp remains positive, so a bird can never reverse.
@@ -81,12 +102,45 @@ export function createPianoGroveBirdMaterial(
     };
   };
 
-  // Two inexpensive look-ahead samples provide a true 3D flight frame and
-  // local curvature. Birds now pitch with climbs and bank into turns instead
-  // of sliding upright around a flat orbit. Local +Z remains beak-forward.
-  const path = sampleFlight(clockPhase);
-  const pathAhead = sampleFlight(clockPhase.add(0.04));
-  const pathFarAhead = sampleFlight(clockPhase.add(0.08));
+  // Perch weight over the cycle phase s ∈ [0,1): 0 while cruising, ramps to 1
+  // across the glide-in window before `flyEnd`, holds 1 while settled, and
+  // ramps back to 0 across the take-off window at the end of the cycle — so
+  // the weight is continuous through the phase wrap. Always-fly instances put
+  // `flyEnd` beyond the phase range and the first smoothstep never leaves 0.
+  const perchWeightAt = (dtSeconds: number) => {
+    const s = fract((time as N).add(dtSeconds).mul(invPeriod).add(cyclePhase)) as N;
+    return (smoothstep as N)(flyEnd.sub(blendWidth), flyEnd, s).mul(
+      float(1).sub((smoothstep as N)(float(1).sub(blendWidth), 1, s))
+    );
+  };
+
+  // The rendered path is the orbit blended toward the landing point by the
+  // perch weight; sampling the SAME composite at small time look-aheads gives
+  // a true 3D flight frame that swoops into the crown and climbs back out.
+  const compositeAt = (dtSeconds: number) => {
+    const clock = (time as N).add(dtSeconds).mul(angularSpeed).add(instancePhase);
+    const flight = sampleFlight(clock);
+    const weight = perchWeightAt(dtSeconds);
+    return {
+      x: (mix as N)(flight.x, perchX, weight),
+      y: (mix as N)(flight.y, perchY, weight),
+      z: (mix as N)(flight.z, perchZ, weight),
+      weight
+    };
+  };
+
+  const path = compositeAt(0);
+  const pathAhead = compositeAt(0.12);
+  const pathFarAhead = compositeAt(0.24);
+  const perchWeight = path.weight;
+  const airborne = float(1).sub(perchWeight);
+  // Settled birds keep an authored facing: the composite tangent collapses to
+  // zero length on the perch plateau, so the flight frame hands the heading to
+  // the perch yaw across the final approach instead of normalizing noise.
+  const settleBlend = (smoothstep as N)(0.7, 0.96, perchWeight);
+  const perchForwardX = sin(perchYaw);
+  const perchForwardZ = cos(perchYaw);
+
   const tangentX = pathAhead.x.sub(path.x);
   const tangentY = pathAhead.y.sub(path.y);
   const tangentZ = pathAhead.z.sub(path.z);
@@ -96,12 +150,21 @@ export function createPianoGroveBirdMaterial(
     .add(tangentZ.mul(tangentZ))
     .sqrt()
     .max(0.0001);
-  const forwardX = tangentX.div(tangentLength);
-  const forwardY = tangentY.div(tangentLength);
-  const forwardZ = tangentZ.div(tangentLength);
-  const horizontalLength = tangentX.mul(tangentX).add(tangentZ.mul(tangentZ)).sqrt().max(0.0001);
-  const headingX = tangentX.div(horizontalLength);
-  const headingZ = tangentZ.div(horizontalLength);
+  const mixedForwardX = (mix as N)(tangentX.div(tangentLength), perchForwardX, settleBlend);
+  const mixedForwardY = (mix as N)(tangentY.div(tangentLength), 0, settleBlend);
+  const mixedForwardZ = (mix as N)(tangentZ.div(tangentLength), perchForwardZ, settleBlend);
+  const mixedForwardLength = mixedForwardX
+    .mul(mixedForwardX)
+    .add(mixedForwardY.mul(mixedForwardY))
+    .add(mixedForwardZ.mul(mixedForwardZ))
+    .sqrt()
+    .max(0.0001);
+  const forwardX = mixedForwardX.div(mixedForwardLength);
+  const forwardY = mixedForwardY.div(mixedForwardLength);
+  const forwardZ = mixedForwardZ.div(mixedForwardLength);
+  const horizontalLength = forwardX.mul(forwardX).add(forwardZ.mul(forwardZ)).sqrt().max(0.0001);
+  const headingX = forwardX.div(horizontalLength);
+  const headingZ = forwardZ.div(horizontalLength);
 
   const aheadX = pathFarAhead.x.sub(pathAhead.x);
   const aheadZ = pathFarAhead.z.sub(pathAhead.z);
@@ -111,8 +174,9 @@ export function createPianoGroveBirdMaterial(
     .sub(headingZ.mul(aheadX.div(aheadLength)));
   const bankAngle = turn
     .mul(10)
-    .add(sin(clockPhase.mul(0.71).add(instancePhase.mul(2.31))).mul(0.075))
+    .add(sin((time as N).mul(angularSpeed).mul(0.71).add(instancePhase.mul(2.31))).mul(0.075))
     .mul(flightMask)
+    .mul(airborne)
     .clamp(-0.58, 0.58);
 
   const rightX = headingZ;
@@ -132,36 +196,51 @@ export function createPianoGroveBirdMaterial(
   const bankUpZ = upZ.mul(bankCos).sub(rightZ.mul(bankSin));
 
   // Rotate each complete wing as one rigid plane around its authored root.
-  // The previous root-to-tip Y displacement sheared individual triangles; at
-  // grazing angles that could read as the very long spikes seen above the
-  // grove. A bounded rotation preserves every triangle's edge lengths.
+  // A bounded rotation preserves every triangle's edge lengths, so grazing
+  // angles can never smear a wing into a screen-length spike.
   const wingSide = wing.x.clamp(-1, 1);
   const wingMask = wingSide.abs().clamp(0, 1);
   const flapRate = style.z.clamp(0, 32);
   const flapAmplitude = style.w.clamp(0, 0.85);
   const activity = flapAmplitude.sub(0.45).div(0.4).clamp(0, 1);
   const burstClock = (time as N)
-    .mul(float(0.34).add(angularSpeed.mul(0.72)))
+    .mul(float(0.4).add(angularSpeed.mul(0.75)))
     .add(instancePhase.mul(2.17));
   const burstWave = sin(burstClock).add(sin(burstClock.mul(0.47).add(instancePhase)).mul(0.32));
-  const burstThreshold = (mix as N)(0.28, -0.08, activity);
-  const flapGate = (smoothstep as N)(
+  const burstThreshold = (mix as N)(0.22, -0.14, activity);
+  const cruiseGate = (smoothstep as N)(
     burstThreshold.sub(0.2),
     burstThreshold.add(0.2),
     burstWave
-  ).mul(flightMask);
+  );
+  // Take-off and final approach always power-flap: the transition weight peaks
+  // mid-blend, exactly where a real bird brakes or climbs hardest.
+  const transitionFlap = perchWeight.mul(airborne).mul(4).clamp(0, 1);
+  const flapGate = cruiseGate.max(transitionFlap).mul(flightMask);
   const flapClock = (time as N).mul(flapRate).add(instancePhase.mul(2.73));
   const wingBeat = sin(flapClock)
     .mul(0.86)
     .add(sin(flapClock.mul(2).sub(0.6)).mul(0.14));
-  const glideDihedral = sin(clockPhase.mul(0.71).add(instancePhase))
+  const glideDihedral = sin((time as N).mul(angularSpeed).mul(0.71).add(instancePhase))
     .mul(0.025)
     .add(0.11);
-  const wingPose = (mix as N)(
+  const flightWingPose = (mix as N)(
     glideDihedral,
     wingBeat.mul(flapAmplitude).mul(0.72),
     flapGate
   ).mul(flightMask);
+  // Settled birds tuck their wings; a rare, tiny shuffle keeps them alive
+  // without reading as restlessness from the performance area below.
+  const shufflePulse = (smoothstep as N)(
+    0.985,
+    1,
+    sin((time as N).mul(0.31).add(instancePhase.mul(7)))
+  );
+  const perchedWingPose = float(0.32).add(
+    sin((time as N).mul(9).add(instancePhase.mul(17))).mul(shufflePulse).mul(0.06)
+  );
+  const foldBlend = (smoothstep as N)(0.6, 0.92, perchWeight);
+  const wingPose = (mix as N)(flightWingPose, perchedWingPose, foldBlend);
   const flapAngle = wingPose.mul(wingSide).clamp(-0.7, 0.7);
   const wingPivotX = wingSide.mul(0.05);
   const wingFromRootX = (positionLocal as N).x.sub(wingPivotX);
@@ -172,17 +251,20 @@ export function createPianoGroveBirdMaterial(
   const localZ = (positionLocal as N).z.mul(scale);
   const localY = (mix as N)((positionLocal as N).y, rigidWingY, wingMask).mul(scale);
 
-  const bodyHeave = cos(flapClock).mul(flapGate).mul(scale).mul(0.018);
+  const bodyHeave = cos(flapClock).mul(flapGate).mul(scale).mul(0.018).mul(airborne);
   const rotatedX = bankRightX.mul(localX).add(bankUpX.mul(localY)).add(forwardX.mul(localZ));
   const rotatedY = bankRightY
     .mul(localX)
     .add(bankUpY.mul(localY))
     .add(forwardY.mul(localZ));
   const rotatedZ = bankRightZ.mul(localX).add(bankUpZ.mul(localY)).add(forwardZ.mul(localZ));
+  const centerX = center.x.clamp(-160, 160);
+  const centerY = center.y.clamp(-160, 160);
+  const centerZ = center.z.clamp(-160, 160);
   material.positionNode = (vec3 as N)(
-    rotatedX.add(path.x),
-    rotatedY.add(path.y).add(bodyHeave),
-    rotatedZ.add(path.z)
+    rotatedX.add(path.x).add(centerX),
+    rotatedY.add(path.y).add(bodyHeave).add(centerY),
+    rotatedZ.add(path.z).add(centerZ)
   );
 
   // A restrained root-to-tip value break preserves feather-plane readability

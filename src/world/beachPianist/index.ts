@@ -24,6 +24,7 @@ import { BLACK_MIDIS, KEY_IS_BLACK, KEY_SLOT, WHITE_MIDIS, keyCenterX } from "./
 import { PIANO_FINGER_COUNT, parseNoteTimeline, type NoteTimeline } from "./notes";
 import { SONGS } from "./songs";
 import { BEACH_PIANIST_SITE } from "./meta";
+import { collectGrovePerches, collectGroveTrees } from "./groveLayout";
 import { PianistShoreline } from "./shoreline";
 import { bindBeachPianistShorelineTuning } from "./tuning";
 import { createBeachPianistConversation } from "./conversation";
@@ -31,6 +32,7 @@ import { createBeachPianistConversation } from "./conversation";
 export { BEACH_PIANIST_SITE } from "./meta";
 
 const { clamp, damp } = THREE.MathUtils;
+const _up = new THREE.Vector3(0, 1, 0);
 
 // Distance gates (m from the site centre), all with hysteresis where it matters.
 const PRIME_RADIUS = 520; // detached pipeline warmup
@@ -138,7 +140,17 @@ export class BeachPianist {
     this.group.position.set(BEACH_PIANIST_SITE.x, y, BEACH_PIANIST_SITE.z);
     this.group.rotation.y = BEACH_PIANIST_SITE.yaw;
     this.#shoreline = new PianistShoreline(this.#map, -y);
-    this.#birds = new PianoGroveBirds();
+    // The birds land on the same deterministic crowns the vegetation adapter
+    // will plant on first approach; transformed into this rotated site frame.
+    const perches = collectGrovePerches(collectGroveTrees(this.#map), 12).map((perchPoint) => ({
+      position: new THREE.Vector3(
+        perchPoint.x - BEACH_PIANIST_SITE.x,
+        perchPoint.y - y,
+        perchPoint.z - BEACH_PIANIST_SITE.z
+      ).applyAxisAngle(_up, -BEACH_PIANIST_SITE.yaw),
+      yaw: perchPoint.yaw - BEACH_PIANIST_SITE.yaw
+    }));
+    this.#birds = new PianoGroveBirds(perches);
     this.group.add(this.#shoreline.group, this.#birds.group, this.#stage);
     this.group.updateMatrixWorld(true);
 
@@ -531,6 +543,23 @@ export class BeachPianist {
       this.group.visible = false;
       this.#shoreline.update(0, false);
     }
+  }
+
+  /** Raw bird instance data (QA surface for headless probes). */
+  get birdInstanceData() {
+    return this.#birds.instanceData;
+  }
+
+  /** QA-only: see PianoGroveBirds.debugCloneSlot. */
+  debugCloneBirdSlot(source: number): void {
+    this.#birds.debugCloneSlot(source);
+  }
+
+  /** World-space crown landing points (QA surface for headless probes). */
+  birdPerchesWorld(): THREE.Vector3[] {
+    return this.#birds.perchPoints.map((perchPoint) =>
+      this.group.localToWorld(perchPoint.clone())
+    );
   }
 
   tuningDescriptor(): DebugFeatureTuningRegistration {
