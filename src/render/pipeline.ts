@@ -51,6 +51,7 @@ type PianoGodRaysRuntime = {
   sceneTexture: any;
   configure(params: PianoGodRaysParams): void;
   update(center: THREE.Vector3): void;
+  shadowMapReady(): boolean;
   dispose(): void;
 };
 type FxaaRuntime = {
@@ -255,7 +256,13 @@ export function createRenderPipeline(
 
   const selectActivePipeline = () => {
     const basePipeline = getVariantPipeline(activeVariantMask);
-    if (pianoGodRaysEnabled() && pianoGodRaysRuntime !== null) {
+    if (
+      pianoGodRaysEnabled() &&
+      pianoGodRaysRuntime !== null &&
+      // The god-ray graph dereferences the dedicated light's shadow map at
+      // setup; hold the base pipeline until the beauty pass has allocated it.
+      pianoGodRaysRuntime.shadowMapReady()
+    ) {
       const variant = getPianoGodRaysVariantPipeline(activeVariantMask);
       if (variant) {
         activePipeline = variant;
@@ -724,6 +731,16 @@ export function createRenderPipeline(
       return;
     }
     if (wireframeActive) syncWireframeCamera();
+    // Promote to the god-ray variant once the dedicated light's shadow map
+    // exists (the beauty pass allocates it a few frames after activation), and
+    // demote if a lighting rebuild ever retires that map mid-flight.
+    if (
+      pianoGodRaysEnabled() &&
+      pianoGodRaysRuntime !== null &&
+      pianoGodRaysActive !== pianoGodRaysRuntime.shadowMapReady()
+    ) {
+      selectActivePipeline();
+    }
     if (pianoGodRaysActive) {
       pianoGodRaysRuntime?.update(pianoGodRaysCenter);
       pianoGodRaysRenderedFrames += 1;

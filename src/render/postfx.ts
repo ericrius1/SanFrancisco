@@ -63,8 +63,8 @@ export const POSTFX_TUNING = tunables("postfx", {
   retroScan: { v: 0.35, min: 0, max: 1, step: 0.05, label: "· scanlines" },
   pianistRays: { v: true, label: "pianist · god rays" },
   pianistRaysSteps: { v: 48, min: 24, max: 96, step: 1, label: "pianist · raymarch steps" },
-  pianistRaysDensity: { v: 0.12, min: 0.02, max: 0.8, step: 0.01, label: "pianist · air density" },
-  pianistRaysMaxDensity: { v: 0.16, min: 0.02, max: 0.5, step: 0.01, label: "pianist · max brightness" },
+  pianistRaysDensity: { v: 0.2, min: 0.02, max: 0.8, step: 0.01, label: "pianist · air density" },
+  pianistRaysMaxDensity: { v: 0.2, min: 0.02, max: 0.5, step: 0.01, label: "pianist · max brightness" },
   pianistRaysAttenuation: { v: 2.2, min: 0, max: 4, step: 0.05, label: "pianist · distance falloff" },
   pianistRaysResolution: {
     v: 0.5,
