@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { tracer } from "../core/hitchTracer";
 
 export type StaticRegionWarmup = Readonly<{
   meshes: number;
@@ -111,6 +112,144 @@ function renderSignatures(mesh: WarmupMesh): string[] {
   ].join(":");
   const layout = `${objectMode}|${geometryLayout(mesh.geometry)}|receiveShadow:${mesh.receiveShadow}`;
   return renderableMaterials(mesh).map((material) => `${materialPipelineLayout(material)}|${layout}`);
+}
+
+export type PacedSceneWarmup = Readonly<{
+  meshes: number;
+  representatives: number;
+  chunks: number;
+  durationMs: number;
+}>;
+
+/**
+ * M6: compile every distinct mesh render path in the live scene in SMALL
+ * exclusive-compile windows instead of one monolithic compileAsync(scene).
+ * The renderer's compile gate (pipeline.ts) holds live rendering while a
+ * compile is in flight, so a single whole-scene compile freezes the frame for
+ * its full duration (hundreds of ms after P3 construction). Compiling one
+ * signature representative at a time and calling `pace()` whenever the chunk
+ * budget is spent keeps each frozen window bounded while covering the same
+ * signature set (compileAsync(mesh, camera, scene) shares cache keys with
+ * live renders — three r185 resolves sceneRef to the target scene).
+ *
+ * Representatives are compiled with visible/frustumCulled forced on for the
+ * mesh only (compile roots at the mesh, so ancestors are never consulted) and
+ * restored immediately after — hidden gated content stays hidden.
+ */
+export async function warmScenePaced(
+  renderer: THREE.WebGPURenderer,
+  camera: THREE.Camera,
+  scene: THREE.Scene,
+  pace: () => Promise<void>,
+  // M10: 35 ms chunks read as a wall of ~40 ms frames through the whole sweep
+  // (the chunk lands inside one rAF interval on top of the normal frame).
+  // 8 ms keeps a chunk + frame comfortably under 20 ms; a single oversized
+  // compile still overruns its chunk, but those are rare after the first runs.
+  chunkBudgetMs = 8
+): Promise<PacedSceneWarmup> {
+  const meshes: WarmupMesh[] = [];
+  scene.traverse((object) => {
+    const mesh = object as WarmupMesh;
+    if (mesh.isMesh) meshes.push(mesh);
+  });
+
+  // Signature strings over thousands of meshes are themselves a synchronous
+  // lump — pace the dedup sweep on the same budget as the compiles.
+  const coveredSignatures = new Set<string>();
+  const representatives: WarmupMesh[] = [];
+  const startedAt = performance.now();
+  let chunks = 1;
+  let chunkStartedAt = startedAt;
+  for (const mesh of meshes) {
+    const signatures = renderSignatures(mesh);
+    if (signatures.some((signature) => !coveredSignatures.has(signature))) {
+      representatives.push(mesh);
+      for (const signature of signatures) coveredSignatures.add(signature);
+    }
+    if (performance.now() - chunkStartedAt > chunkBudgetMs) {
+      await pace();
+      chunks++;
+      chunkStartedAt = performance.now();
+    }
+  }
+  for (const mesh of representatives) {
+    // The scene mutates between paced chunks (streamers attach/detach); a mesh
+    // that left the scene since collection no longer needs its warm here.
+    let attached: THREE.Object3D | null = mesh;
+    while (attached && !(attached as THREE.Scene).isScene) attached = attached.parent;
+    if (!attached) continue;
+    const visible = mesh.visible;
+    const frustumCulled = mesh.frustumCulled;
+    mesh.visible = true;
+    mesh.frustumCulled = false;
+    try {
+      await renderer.compileAsync(mesh, camera, scene);
+      tracer.count("pacedWarmCompile");
+    } catch {
+      // A single failed representative must not abort the sweep; its material
+      // simply compiles on first draw as before.
+    } finally {
+      mesh.visible = visible;
+      mesh.frustumCulled = frustumCulled;
+    }
+    if (performance.now() - chunkStartedAt > chunkBudgetMs) {
+      await pace();
+      chunks++;
+      chunkStartedAt = performance.now();
+    }
+  }
+
+  return {
+    meshes: meshes.length,
+    representatives: representatives.length,
+    chunks,
+    durationMs: performance.now() - startedAt
+  };
+}
+
+/**
+ * M10: compile only the meshes among `meshes` that introduce a render
+ * signature not in `seen` (which is updated in place). Used by the tile
+ * streamer's finalize hook: the FIRST streamed tile's bundle materials
+ * (facade near/far, road/park/plain sets) used to sync-create ~45 pipelines
+ * inside a live frame on first draw (measured ~600 ms warm-cache, seconds
+ * cold); later tiles share the same signatures and cost nothing. Compiles run
+ * through the renderer's gated compileAsync, so live frames hold instead of
+ * drawing mid-compile.
+ */
+export async function warmUnseenMeshSignatures(
+  renderer: THREE.WebGPURenderer,
+  camera: THREE.Camera,
+  scene: THREE.Scene,
+  meshes: readonly THREE.Object3D[],
+  seen: Set<string>
+): Promise<number> {
+  const fresh: WarmupMesh[] = [];
+  for (const object of meshes) {
+    const mesh = object as WarmupMesh;
+    if (!mesh.isMesh) continue;
+    const signatures = renderSignatures(mesh);
+    if (signatures.some((signature) => !seen.has(signature))) {
+      fresh.push(mesh);
+      for (const signature of signatures) seen.add(signature);
+    }
+  }
+  for (const mesh of fresh) {
+    const visible = mesh.visible;
+    const frustumCulled = mesh.frustumCulled;
+    mesh.visible = true;
+    mesh.frustumCulled = false;
+    try {
+      await renderer.compileAsync(mesh, camera, scene);
+      tracer.count("tileSignatureWarm");
+    } catch {
+      // A failed representative compiles on first draw as before.
+    } finally {
+      mesh.visible = visible;
+      mesh.frustumCulled = frustumCulled;
+    }
+  }
+  return fresh.length;
 }
 
 /** Warm the exact pipelines needed by a parsed static Blender region. */

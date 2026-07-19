@@ -285,6 +285,13 @@ export interface CityGenDoorProbe {
 export interface CityGenRing {
   count: number;
   update(playerPos: THREE.Vector3, dt: number): void;
+  /** M5: distance from (x, z) to the nearest WANTED cell (inside the current
+   *  chunk-visual window) that has not yet published its chunk (or fallen back
+   *  to the baked city) — Infinity when nothing constrains. The ring
+   *  coordinator mins this into its residency so the materialize front never
+   *  sweeps across a cell mid baked→chunk swap. One pass over ≤(2·cellLoad+1)²
+   *  keys (≤ ~49) — cheap; callers throttle. */
+  materializedRadiusAround(x: number, z: number): number;
   dispose(): void;
   stats(): {
     total: number;
@@ -1831,6 +1838,33 @@ export async function createCityGenRing(
 
   return {
     get count() { return total; },
+    materializedRadiusAround(x: number, z: number): number {
+      // No grid / disposed → citygen never constrains. Before the first scan
+      // (centerTile NaN, one frame at most) nothing is wanted yet either.
+      if (!grid || disposed || Number.isNaN(centerTileX)) return Infinity;
+      let r = Infinity;
+      for (let ix = centerTileX - activeCellLoad; ix <= centerTileX + activeCellLoad; ix++) {
+        for (let iz = centerTileZ - activeCellLoad; iz <= centerTileZ + activeCellLoad; iz++) {
+          const key = `${ix}_${iz}`;
+          if (!cellRanges.has(key)) continue; // no citygen content here
+          const cached = materializedCells.get(key);
+          if (cached && cached.length === 0) continue; // hydrated empty (all excluded)
+          const cell = loaded.get(key);
+          // "fallback" mirrors terminal tile failures: the baked city stands in
+          // permanently, so the front must not stall on it.
+          if (cell && (cell.phase === "ready" || cell.phase === "fallback")) continue;
+          // blocking (queued / hydrating / chunk building / awaiting prepare):
+          // distance from (x, z) to this cell's bounds constrains the front.
+          const cellMinX = minX + ix * tile;
+          const cellMinZ = minZ + iz * tile;
+          const dx = Math.max(cellMinX - x, 0, x - (cellMinX + tile));
+          const dz = Math.max(cellMinZ - z, 0, z - (cellMinZ + tile));
+          const d = Math.hypot(dx, dz);
+          if (d < r) r = d;
+        }
+      }
+      return r;
+    },
     update(playerPos, dt) {
       if (disposed) return;
       const ptx = Math.floor((playerPos.x - minX) / tile);

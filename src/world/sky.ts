@@ -269,6 +269,10 @@ export class Sky {
   #uFogEdgeEnd = uniform(WORLD_TUNING.values.radius * FOG_EDGE_END)
   #uFogEnabled = uniform(WORLD_TUNING.values.fogEnabled ? 1 : 0)
   #uFogBackdrop = uniform(WORLD_TUNING.values.fogEnabled ? 1 : 0)
+  // Void-realm ramp (docs/VOID_STREAM_REWRITE.md M2): 0 = normal sky, 1 = the
+  // dark holo void. A pure uniform multiply on dome/IBL radiance and on fog
+  // opacity — light-set membership and light intensities are never touched.
+  #uVoid = uniform(0)
   #fogNode: N | null = null
 
   #proceduralFog = sampleProceduralFog(sfCivilFromScalarDays(this.#civilDay))
@@ -323,6 +327,12 @@ export class Sky {
   /** Streamers/proxy owners call this only when static caster membership changes. */
   invalidateStaticShadows(scope: StaticShadowScope = "all") {
     this.#shadowNode.invalidateStatic(scope)
+  }
+
+  /** M7: the ring coordinator holds static shadow redraws while its
+   *  materialize sweep is active; latched dirt applies on settle. */
+  setStaticShadowStreamingHold(active: boolean) {
+    this.#shadowNode.setStreamingHold(active)
   }
 
   constructor(scene: THREE.Scene, farOcclusion: FarOcclusionField | null = null) {
@@ -393,6 +403,10 @@ export class Sky {
     const uLift = this.#uNightLift as N
     const uFogBackdrop = this.#uFogBackdrop as N
     const fogColor = color(FOG_COLOR).mul(this.#uFogLight as N)
+    // Void dim floor: not absolute black, so the dome keeps a faint deep-space
+    // read behind the holo grid (a multiply, never a branch).
+    const voidDim = mix(float(1), float(0.018), this.#uVoid as N)
+    const voidKeep = (this.#uVoid as N).oneMinus()
     return Fn(() => {
       const mu = dot(d, uSun)
       const el = uSun.y // sun elevation, sin-scaled
@@ -482,7 +496,9 @@ export class Sky {
         const mean = mix(hor, zen, 0.35).mul(
           mix(float(1), float(0.5), smoothstep(0.2, -0.6, d.y))
         )
-        return mix(sky, mean, saturate(opts.soften).mul(0.8)).mul(SKY_DOME_BOOST)
+        return mix(sky, mean, saturate(opts.soften).mul(0.8))
+          .mul(SKY_DOME_BOOST)
+          .mul(voidDim)
       }
 
       const radiance = sky.mul(SKY_DOME_BOOST)
@@ -495,10 +511,16 @@ export class Sky {
           float(0),
           d.y.max(0)
         ).mul(uFogBackdrop)
-        return mix(radiance as N, fogColor as N, horizonFog as N) as N
+        // Void: the fog backdrop retires with the fog itself, and the whole
+        // dome collapses toward the dark floor.
+        return mix(
+          radiance as N,
+          fogColor as N,
+          (horizonFog as N).mul(voidKeep)
+        ).mul(voidDim) as N
       }
 
-      return radiance
+      return radiance.mul(voidDim)
     })()
   }
 
@@ -700,8 +722,23 @@ export class Sky {
     // to the old #4d5358 charcoal attractor.
     return tslFog(
       color(FOG_COLOR).mul(this.#uFogLight as N),
-      clear.oneMinus().mul(this.#uFogEnabled as N)
+      clear
+        .oneMinus()
+        .mul(this.#uFogEnabled as N)
+        // Void realm: fog fades out with the void ramp (a uniform multiply on
+        // the fog factor — the graph and pipeline are unchanged).
+        .mul((this.#uVoid as N).oneMinus())
     )
+  }
+
+  /**
+   * Void-realm ramp (docs/VOID_STREAM_REWRITE.md M2): 0 = normal sky, 1 = the
+   * dark holo void. Darkens the dome + analytic IBL and disables marine fog via
+   * uniforms only. Sun/hemi stay at their normal intensity so the avatar reads
+   * — the light set never changes (C1). Driven by VoidRealm.update().
+   */
+  setVoidFactor(v: number) {
+    this.#uVoid.value = Math.min(1, Math.max(0, v))
   }
 
   /** When set, the cull-edge fade pulls in to this radius instead of the streamed

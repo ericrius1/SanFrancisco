@@ -15,6 +15,11 @@ import { ensureCCW, triangulate } from "../core/footprint";
 import { bodyColour } from "../render";
 import { specFor } from "../theme/archetypes";
 import { cameraCutawayMask } from "../../../render/cameraCutaway";
+import { applyHoloBirth } from "../../../render/materialize";
+import {
+  materialDisposeListenerCount,
+  registerSharedMaterialLeakCounter,
+} from "../../../render/renderObjectRegistry";
 
 // Target window spacing; the actual grid is SNAPPED per wall (integer columns,
 // integer storeys) in appendPrism, so the shader receives UVs already in "cell"
@@ -26,6 +31,12 @@ const WIN_SPACING = 2.4;   // ~metres between window centres (column target)
 const BODY_EMISSIVE = 0.3 * EXPOSURE_REBASE;
 
 let sharedMat: THREE.MeshStandardNodeMaterial | null = null;
+
+// M9 leak metric: retired chunk cells must not accumulate in this shared
+// material's dispose-listener array (chunkLod dispose releases them).
+registerSharedMaterialLeakCounter("cityGenChunkLodBeauty", () =>
+  materialDisposeListenerCount(sharedMat)
+);
 
 /** The one material every LOD building shares — per-vertex body colour with a
  *  darkened window grid + a deterministic ~30% of windows lit warm. Carries the
@@ -60,6 +71,16 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   // façades don't read near-black — the near mesh's wall material does the same.
   const bodyTint = body.mul(BODY_EMISSIVE).mul(float(1).sub(winMask));
   m.emissiveNode = bodyTint.add(litWin);
+  // M5: the chunk prisms are city fabric the materialize front sweeps across —
+  // front-only holo mix (no birth: while a sweep is active the ring
+  // coordinator min's the citygen unpublished-cell distance into the residency
+  // the front chases, so a cell never publishes under the band; that min only
+  // binds once the citygen ring exists — far-arrival sweeps, since boot loads
+  // citygen post-reveal. A cell publishing after the front passed swaps with
+  // the already-shaded baked tile, not the void). M6: every chunkLod cell
+  // shares THIS material instance (no per-cell clone), so the wrap compiles
+  // exactly once.
+  applyHoloBirth(m);
   sharedMat = m;
   return m;
 }

@@ -13,6 +13,11 @@ import {
 } from "./facade";
 import { createRoadMaterial, createParkMaterial } from "./streets";
 import { createTileMeshBatch, type TileMeshBatch, type TileBatchHandle } from "./tileBatch";
+import {
+  applyHoloBirth,
+  configureBatchHoloBirth,
+  materializeField
+} from "../render/materialize";
 import { bumpNormal } from "./tslUtil";
 import { registerTerrainFieldNormal } from "./groundcover/terrainFieldNormal";
 import { createCrownMaterial } from "./salesforceCrown";
@@ -267,6 +272,9 @@ const MINIMUM_VISUAL_RADIUS_CAP = 360;
 // authored landmark ahead of tiles that cannot yet contribute to its view.
 const BACKGROUND_STREAM_RADII = [1200, 2200] as const;
 const BACKGROUND_STREAM_STAGE_MS = 1800;
+// residentRadiusAround recompute cadence, in streamer ticks (~0.25 s at 60 Hz).
+// One pass over ~205 manifest entries — cheap, but not per-frame-per-caller.
+const RESIDENT_RADIUS_RECOMPUTE_TICKS = 15;
 // The far selective map covers 512 m from focus; include collider overhang and
 // a handoff margin. Citywide farOcclusion handles everything beyond this local
 // proxy residency without constructing dozens of invisible InstancedMeshes.
@@ -285,25 +293,29 @@ MeshoptDecoder.useWorkers(4);
 // the bake palette is near-paper-white (~0.9); under the reference's photometric
 // sun that saturates to pure white, so trim it into a concrete-like albedo — the
 // material's color multiplies the baked vertex colours
-const plainMat = new THREE.MeshStandardMaterial({
+// Node materials (not plain MeshStandardMaterial): the M5 materialize wrap
+// assigns colorNode/emissiveNode onto per-residency clones, and node slots on
+// plain materials are ignored by the WebGPU backend. Vertex colours still
+// multiply AFTER a custom colorNode (NodeMaterial.setupDiffuseColor).
+const plainMat = new THREE.MeshStandardNodeMaterial({
   color: 0x969390,
   vertexColors: true,
   roughness: 0.92,
   metalness: 0
 });
-const palaceMat = new THREE.MeshStandardMaterial({
+const palaceMat = new THREE.MeshStandardNodeMaterial({
   color: 0xd8c8b4,
   vertexColors: true,
   roughness: 0.88,
   metalness: 0
 });
-const sutroMat = new THREE.MeshStandardMaterial({
+const sutroMat = new THREE.MeshStandardNodeMaterial({
   color: 0xe4e1dc,
   vertexColors: true,
   roughness: 0.76,
   metalness: 0.12
 });
-const goldenGateMat = new THREE.MeshStandardMaterial({
+const goldenGateMat = new THREE.MeshStandardNodeMaterial({
   color: 0xffb18a,
   vertexColors: true,
   roughness: 0.72,
@@ -313,24 +325,56 @@ const goldenGateMat = new THREE.MeshStandardMaterial({
 const roadMat = createRoadMaterial();
 const parkMat = createParkMaterial();
 
-function createTileMaterialSet(): TileMaterialSet {
+function createTileMaterialSet(birth: ReturnType<typeof materializeField.birthOf>): TileMaterialSet {
   // Three's WebGPU RenderObject registers a dispose listener on every source
   // material. A process-wide shared material therefore retains every streamed
   // mesh/render object ever paired with it. Per-residency clones preserve the
   // same shader/pipeline cache key while giving unload an exact release signal.
+  //
+  // M5: every clone carries the holo-birth mix keyed to this residency's shared
+  // birth uniform (min(front, birth) — tiles streaming in after the front has
+  // passed fade in instead of popping, forever). Uniform nodes differ per tile
+  // but the graph SHAPE is identical, so the pipeline cache key is unchanged.
   const road = roadMat.clone();
   const park = parkMat.clone();
   const plain = plainMat.clone();
   const palace = palaceMat.clone();
   const sutro = sutroMat.clone();
-  return { road, park, plain, palace, sutro, all: [road, park, plain, palace, sutro] };
+  const all = [road, park, plain, palace, sutro];
+  for (const mat of all) applyHoloBirth(mat, { birth });
+  return { road, park, plain, palace, sutro, all };
+}
+
+// M5 batched-fold birth channel: BatchedMesh has no per-instance custom
+// attribute, so per-instance birth timestamps ride a tiny 1-row float
+// DataTexture indexed by the batch instance id (the same row the indirect
+// texture maps draws to — moduleLayer writeSlot precedent). Written ONCE at
+// add; the shader ramps from the shared worldTime uniform, so there are zero
+// per-frame CPU writes. Unwritten rows hold +1e9 (birth amount 0 → holo), but
+// every row is stamped in the same frame its instance is added.
+type BatchBirth = { tex: THREE.DataTexture; data: Float32Array };
+
+function createBatchBirth(capacity: number): BatchBirth {
+  const data = new Float32Array(capacity).fill(1e9);
+  const tex = new THREE.DataTexture(data, capacity, 1, THREE.RedFormat, THREE.FloatType);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return { tex, data };
+}
+
+function stampBatchBirth(birth: BatchBirth, instanceId: number): void {
+  if (instanceId < 0 || instanceId >= birth.data.length) return;
+  birth.data[instanceId] = materializeField.worldTime.value as number;
+  birth.tex.needsUpdate = true; // three coalesces to one upload per render
 }
 
 const GOLDEN_GATE_ROAD_INSET = 1.15;
 const BRIDGE_ROAD_SURFACE_OFFSET = 0.12;
 const BRIDGE_ROAD_SEGMENT_M = 60;
 
-function createGoldenGateRoadSurface(map: WorldMap): THREE.Mesh | null {
+function createGoldenGateRoadSurface(map: WorldMap, material: THREE.Material = roadMat): THREE.Mesh | null {
   const bridge = map.meta.bridges.find((b) => b.name === "Golden Gate Bridge");
   if (!bridge) return null;
 
@@ -376,7 +420,7 @@ function createGoldenGateRoadSurface(map: WorldMap): THREE.Mesh | null {
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 
-  const mesh = new THREE.Mesh(geometry, roadMat);
+  const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "lm_bridge_goldengate_asphalt";
   mesh.receiveShadow = true;
   return mesh;
@@ -467,6 +511,19 @@ export class TileStreamer {
    *  can warm its render pipeline off the critical path (renderer.compileAsync)
    *  instead of paying a serial compile on the first live frame that draws it. */
   onBatchCreated: (mesh: THREE.BatchedMesh) => void = () => {};
+  /** M10: fired at tile finalize with the tile's part meshes BEFORE any of them
+   *  attaches, so the app can compile first-seen material/geometry signatures
+   *  through the gated compileAsync. Without this the FIRST tile's bundle draw
+   *  sync-created its whole material family's pipelines inside a live frame. */
+  onTileFinalized: (meshes: THREE.Object3D[]) => void = () => {};
+  /** M10: true while the render pipeline's exclusive compile gate is holding
+   *  presented frames. While held, the LIVE (non-turbo) drain path pauses
+   *  attach/finalize work: attaches during held frames dirty their bundles
+   *  invisibly, and every dirty bundle then re-records (plus first-draw
+   *  pipeline creations) in the single first live frame after the window —
+   *  measured as a ~575 ms frame (38 bundle records + 45 pipelines) early in
+   *  the sweep. Turbo (covered boot) intentionally ignores this. */
+  isRenderHeld: () => boolean = () => false;
 
   #loader = new GLTFLoader();
   #scene: THREE.Scene;
@@ -504,6 +561,8 @@ export class TileStreamer {
   #backgroundStage: number = BACKGROUND_STREAM_RADII.length;
   #backgroundRadius = Number.POSITIVE_INFINITY;
   #nextBackgroundStageAt = 0;
+  // residentRadiusAround memo (reused object — no per-query allocation)
+  #residentRadiusCache = { x: Number.NaN, z: Number.NaN, tick: -1e9, value: 0 };
   // tiles with pendingParts still attaching, one mesh per frame
   #attaching: string[] = [];
   // tiles whose dense park-surface detail is held back until the player descends
@@ -545,6 +604,10 @@ export class TileStreamer {
   #roadBatchAnnounced = false;
   #parkBatchAnnounced = false;
   #buildingAtlasData: Uint8Array | null = null;
+  // per-instance birth timestamps for the three shared batches (M5)
+  #buildingBirth: BatchBirth | null = null;
+  #roadBirth: BatchBirth | null = null;
+  #parkBirth: BatchBirth | null = null;
   // Shared park BatchedMesh: every resident tile's grn_ pier deck folds into one
   // owner (parkMat is world-position keyed with no per-tile data, so this reuses
   // the generic tileBatch exactly like roads). grn_ rides the detail cadence.
@@ -580,6 +643,21 @@ export class TileStreamer {
     this.#landmarksPending = true;
     this.#landmarkShadowProxyPending = true;
     const landmarksReady = new Promise<THREE.Object3D | null>((resolve) => {
+      // M5: landmarks are loaded at boot (always resident), so front-gating
+      // alone suffices — per UNIQUE material, a holo-wrapped clone with a
+      // front-only amount (no birth). The shared base materials must stay
+      // unwrapped: they are also the clone SOURCES for per-tile material sets,
+      // which get their own birth-keyed wrap in createTileMaterialSet.
+      const landmarkHolo = new Map<THREE.Material, THREE.Material>();
+      const holoLandmarkMaterial = (source: THREE.Material): THREE.Material => {
+        let wrapped = landmarkHolo.get(source);
+        if (!wrapped) {
+          wrapped = source.clone();
+          applyHoloBirth(wrapped as THREE.MeshStandardNodeMaterial);
+          landmarkHolo.set(source, wrapped);
+        }
+        return wrapped;
+      };
       this.#loader.load("/tiles/landmarks.glb", (gltf) => {
         this.#landmarksPending = false;
         gltf.scene.traverse((o) => {
@@ -587,17 +665,22 @@ export class TileStreamer {
           if (!mesh.isMesh) return;
           if (mesh.name === "lm_salesforce_crown") {
             // the crown's LED display is world-position keyed; its bbox gives the
-            // cylinder axis + display height range
+            // cylinder axis + display height range. Unique per mesh — wrap the
+            // fresh instance directly (front-only), no clone needed.
             mesh.geometry.computeBoundingBox();
-            mesh.material = createCrownMaterial(mesh.geometry.boundingBox!);
+            const crown = createCrownMaterial(mesh.geometry.boundingBox!);
+            applyHoloBirth(crown);
+            mesh.material = crown;
           } else if (mesh.name === "lm_bridge_goldengate") {
-            mesh.material = goldenGateMat;
+            mesh.material = holoLandmarkMaterial(goldenGateMat);
           } else {
-            mesh.material = mesh.name.startsWith("lm_palace_")
-              ? palaceMat
-              : mesh.name.startsWith("lm_sutro_")
-                ? sutroMat
-                : plainMat;
+            mesh.material = holoLandmarkMaterial(
+              mesh.name.startsWith("lm_palace_")
+                ? palaceMat
+                : mesh.name.startsWith("lm_sutro_")
+                  ? sutroMat
+                  : plainMat
+            );
           }
           mesh.castShadow = true;
           mesh.receiveShadow = true;
@@ -605,7 +688,7 @@ export class TileStreamer {
           enableShadowLayer(mesh, SHADOW_LAYERS.FAR_PROXY);
         });
         applyLandmarkFixes(gltf.scene, map);
-        const goldenGateRoad = createGoldenGateRoadSurface(map);
+        const goldenGateRoad = createGoldenGateRoadSurface(map, holoLandmarkMaterial(roadMat));
         if (goldenGateRoad) gltf.scene.add(goldenGateRoad);
         // applyLandmarkFixes may add a new local caster (Coit footing).
         setLandmarkBeautyFarFallback(gltf.scene, true);
@@ -805,6 +888,14 @@ export class TileStreamer {
       this.#checkVisualPrime();
       return;
     }
+    // M10: presented frames are held (exclusive compile window) — pause the
+    // live drain entirely so scene mutations can't accumulate unseen and land
+    // as one giant record/first-draw frame when the window ends. Prime
+    // completion still re-checks so a covered arrival can't stall on a warm.
+    if (this.isRenderHeld()) {
+      this.#checkVisualPrime();
+      return;
+    }
     // one mesh attach (GPU upload) OR one finalize OR one dispose per frame,
     // so tile streaming costs stay flat instead of spiking when loads land in
     // bursts. Exception: while #catchingUp, drain up to 4/frame so a
@@ -878,6 +969,67 @@ export class TileStreamer {
       radius: this.#currentLoadRadius(),
       fullRadius: CONFIG.tileLoadRadius
     };
+  }
+
+  /**
+   * Largest radius R around (x,z) such that every WANTED tile whose bounds
+   * intersect the disc of radius R is fully attached (its pendingParts /
+   * pendingRoadParts / pendingBuildingParts queues drained). "Wanted" mirrors
+   * `#scan`'s own criterion — tile CENTER inside the current load radius — so
+   * a rim tile whose bounds graze the disc but whose center sits outside is
+   * (correctly) never counted as missing; the value is capped at
+   * `#currentLoadRadius()` because beyond it nothing is requested, so nothing
+   * constrains. Terminally failed tiles never attach and are deliberately
+   * non-blocking (the ring coordinator's front must not stall forever on a
+   * missing GLB; that area renders as the terrain fallback). Held-back park
+   * DETAIL (`detailParts`, a deliberate high-altitude quality deferral) does
+   * not block either. Terrain clipmap and landmarks are always resident.
+   *
+   * Cost: one pass over the manifest entries (~205 tiles), recomputed at most
+   * every RESIDENT_RADIUS_RECOMPUTE_TICKS streamer ticks and cached — callers
+   * may read it every frame.
+   */
+  residentRadiusAround(x: number, z: number): number {
+    const cache = this.#residentRadiusCache;
+    if (
+      this.#tick - cache.tick < RESIDENT_RADIUS_RECOMPUTE_TICKS &&
+      Math.abs(x - cache.x) < 1 &&
+      Math.abs(z - cache.z) < 1
+    ) {
+      return cache.value;
+    }
+    cache.tick = this.#tick;
+    cache.x = x;
+    cache.z = z;
+    if (!this.manifest || this.#entries.length === 0) {
+      cache.value = 0;
+      return 0;
+    }
+    tracer.count("tileResidencyScan");
+    const half = this.manifest.tile * 0.5;
+    let r = this.#currentLoadRadius();
+    if (!Number.isFinite(r)) r = CONFIG.tileLoadRadius;
+    const wantedR2 = r * r;
+    for (const e of this.#entries) {
+      const cdx = x - e.cx;
+      const cdz = z - e.cz;
+      if (cdx * cdx + cdz * cdz >= wantedR2) continue; // not wanted (see #scan)
+      const dx = Math.max(0, Math.abs(cdx) - half);
+      const dz = Math.max(0, Math.abs(cdz) - half);
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= r * r) continue;
+      const tile = this.loaded.get(e.key);
+      const resident =
+        tile !== undefined &&
+        (tile.pendingParts?.length ?? 0) === 0 &&
+        (tile.pendingRoadParts?.length ?? 0) === 0 &&
+        (tile.pendingBuildingParts?.length ?? 0) === 0;
+      if (resident) continue;
+      if (this.#visualFailures.get(e.key)?.terminal) continue;
+      r = Math.sqrt(d2);
+    }
+    cache.value = r;
+    return r;
   }
 
   /**
@@ -1399,6 +1551,13 @@ export class TileStreamer {
     const nB = Math.max(4, this.manifest.tiles[key].b);
     let slot: FacadeSlot | null = null;
     if (group) {
+      // M5: one shared birth uniform per tile residency. Stamped now (the
+      // first core mesh attaches next frame); forgotten on unload so a later
+      // reload re-births. Content the front has not reached is still gated by
+      // the front (min(front, birth)); content landing after the front passed
+      // plays the ~1 s birth ramp instead of popping.
+      const birth = materializeField.birthOf(`tile:${key}`);
+      materializeField.markBorn(`tile:${key}`);
       // RGBA per building: R = alive flag, G/B = base height (16-bit fixed point)
       // so the facade anchors storefronts and floor lines to each building's street.
       // the slot is pooled — reset the whole texture, not just this tile's nB entries
@@ -1437,8 +1596,13 @@ export class TileStreamer {
       const [tcx, tcz] = this.keyToCenter(key);
       const td = Math.hypot(this.#px - tcx, this.#pz - tcz);
       slot.far = td >= FACADE_FAR_ENTER;
+      // Facade slot materials are per-residency (recreated on pool reuse in
+      // #takeSlot), so wiring the holo-birth mix here — before any mesh binds
+      // them — keeps one graph shape while the birth uniform stays per-tile.
+      applyHoloBirth(slot.matNear!, { birth });
+      applyHoloBirth(slot.matFar!, { birth });
       const bMat = slot.far ? slot.matFar! : slot.matNear!;
-      const materials = createTileMaterialSet();
+      const materials = createTileMaterialSet(birth);
       group.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh) return;
@@ -1506,6 +1670,9 @@ export class TileStreamer {
       const bundle = new THREE.BundleGroup();
       bundle.name = `tile_${key}`;
       this.#scene.add(bundle);
+      // Signature warm hook BEFORE the first part can attach (attach starts on
+      // a later frame; the gated compile holds live frames while it runs).
+      this.onTileFinalized([...core, ...detail, ...roadParts, ...buildingParts]);
       this.loaded.set(key, {
         key,
         group: bundle,
@@ -1828,6 +1995,10 @@ export class TileStreamer {
       receiveShadow: true
     });
     configureFacadeBatchMaterial(mat, atlas, batch.mesh);
+    // M5 per-instance birth: wired after the facade graph, before the
+    // onBatchCreated warm, so the compiled pipeline is the final one (C2/C7).
+    this.#buildingBirth = createBatchBirth(cap);
+    configureBatchHoloBirth(mat, batch.mesh, this.#buildingBirth.tex);
     this.#buildingBatch = batch;
     this.onBatchCreated(batch.mesh);
     return batch;
@@ -1861,6 +2032,7 @@ export class TileStreamer {
     if (handle) {
       tile.buildingRow = handle.instanceId;
       tile.buildingBatched = true;
+      stampBatchBirth(this.#buildingBirth!, handle.instanceId);
       (tile.buildingBatchHandles ??= []).push(handle);
       // publish this tile's alive data into its atlas row before the instance can
       // render (addInstance made it visible; no frame elapses before this sync)
@@ -1897,16 +2069,22 @@ export class TileStreamer {
     // while the shared roadMat keeps serving the GG bridge road + bundle
     // fallbacks. Capacity + arena cover a healthy residency ring; an unusually
     // dense district grows the arena once, then add() returns null (fallback).
-    this.#roadBatch ??= createTileMeshBatch(this.#scene, {
-      name: "tileRoadBatch",
-      material: roadMat.clone(),
-      capacity: 192,
-      initialVertices: 393_216,
-      initialIndices: 1_048_576,
-      maxVertices: 1_048_576,
-      maxIndices: 2_621_440,
-      receiveShadow: true
-    });
+    if (!this.#roadBatch) {
+      const roadBatchMat = roadMat.clone();
+      this.#roadBatch = createTileMeshBatch(this.#scene, {
+        name: "tileRoadBatch",
+        material: roadBatchMat,
+        capacity: 192,
+        initialVertices: 393_216,
+        initialIndices: 1_048_576,
+        maxVertices: 1_048_576,
+        maxIndices: 2_621_440,
+        receiveShadow: true
+      });
+      // M5 per-instance birth, wired before the onBatchCreated warm below
+      this.#roadBirth = createBatchBirth(192);
+      configureBatchHoloBirth(roadBatchMat, this.#roadBatch.mesh, this.#roadBirth.tex);
+    }
     if (!this.#roadBatchAnnounced) {
       this.#roadBatchAnnounced = true;
       this.onBatchCreated(this.#roadBatch.mesh);
@@ -1914,6 +2092,7 @@ export class TileStreamer {
     mesh.updateWorldMatrix(true, false);
     const handle = this.#roadBatch.add(mesh.geometry, mesh.matrixWorld);
     if (handle) {
+      stampBatchBirth(this.#roadBirth!, handle.instanceId);
       // a road folded into a currently-hidden tile (non-destination during a
       // covered arrival) must start hidden — the batch is not under tile.group
       if (!tile.group.visible) handle.setVisible(false);
@@ -1942,16 +2121,22 @@ export class TileStreamer {
     const mesh = tile.detailParts!.shift() as THREE.Mesh;
     // grn_ pier decks are tiny (whole city < 8k verts / 23k idx); a small fixed
     // arena holds every resident deck without ever growing.
-    this.#parkBatch ??= createTileMeshBatch(this.#scene, {
-      name: "tileParkBatch",
-      material: parkMat.clone(),
-      capacity: 64,
-      initialVertices: 16_384,
-      initialIndices: 49_152,
-      maxVertices: 32_768,
-      maxIndices: 98_304,
-      receiveShadow: true
-    });
+    if (!this.#parkBatch) {
+      const parkBatchMat = parkMat.clone();
+      this.#parkBatch = createTileMeshBatch(this.#scene, {
+        name: "tileParkBatch",
+        material: parkBatchMat,
+        capacity: 64,
+        initialVertices: 16_384,
+        initialIndices: 49_152,
+        maxVertices: 32_768,
+        maxIndices: 98_304,
+        receiveShadow: true
+      });
+      // M5 per-instance birth, wired before the onBatchCreated warm below
+      this.#parkBirth = createBatchBirth(64);
+      configureBatchHoloBirth(parkBatchMat, this.#parkBatch.mesh, this.#parkBirth.tex);
+    }
     if (!this.#parkBatchAnnounced) {
       this.#parkBatchAnnounced = true;
       this.onBatchCreated(this.#parkBatch.mesh);
@@ -1959,6 +2144,7 @@ export class TileStreamer {
     mesh.updateWorldMatrix(true, false);
     const handle = this.#parkBatch.add(mesh.geometry, mesh.matrixWorld);
     if (handle) {
+      stampBatchBirth(this.#parkBirth!, handle.instanceId);
       if (!tile.group.visible) handle.setVisible(false);
       (tile.parkBatchHandles ??= []).push(handle);
       mesh.geometry.dispose(); // the batch copied the geometry into its arena
@@ -2041,6 +2227,8 @@ export class TileStreamer {
     if (!tile) return;
     this.loaded.delete(key);
     tile.loadToken.discarded = true;
+    // next residency of this tile re-births (M5 steady-state streaming grace)
+    materializeField.forgetBirth(`tile:${key}`);
     if (tile.loadToken.colliderRetained) {
       this.#colliderSource?.releaseTile(key);
       tile.loadToken.colliderRetained = false;

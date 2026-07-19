@@ -132,6 +132,9 @@ export class LagoonSkiff {
 
   dispose() {
     this.#hull.traverse((o) => {
+      // Sprites share three's module-global quad geometry — disposing it would
+      // destroy the GPU buffer under every sprite still alive in the app.
+      if ((o as unknown as THREE.Sprite).isSprite) return;
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();
     });

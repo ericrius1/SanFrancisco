@@ -4,6 +4,7 @@ import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.j
 import type { GroundTopOverlay, WorldMap } from "./heightmap";
 import type { TerrainCutoutSpec, TileStreamer } from "./tiles";
 import { attachKtx2Loader } from "../render/textures";
+import { applyHoloBirth, materializeField } from "../render/materialize";
 
 export type AuthoredRegionBounds = {
   centerX: number;
@@ -169,6 +170,48 @@ function disposeRoot(root: THREE.Object3D): void {
   root.clear();
 }
 
+/**
+ * M5 materialize: GLTF materials are plain (non-node) materials whose node
+ * slots the WebGPU backend ignores, so each UNIQUE material is converted to
+ * its node twin (copy() carries colours/maps/flags) and wrapped with the
+ * holo-birth mix keyed to the region's shared birth uniform. Runs BEFORE the
+ * region's prepareRoot warm so the compiled pipelines are the final graphs.
+ * Multi-material arrays are left untouched (none of the authored GLBs use
+ * them today).
+ */
+function applyRegionMaterialize(root: THREE.Object3D, birth: unknown): void {
+  const converted = new Map<THREE.Material, THREE.Material>();
+  root.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh || Array.isArray(mesh.material)) return;
+    const source = mesh.material as THREE.Material & { isNodeMaterial?: boolean };
+    let material = converted.get(source);
+    if (!material) {
+      if (source.isNodeMaterial) {
+        material = source;
+      } else if ((source as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial) {
+        material = new THREE.MeshPhysicalNodeMaterial().copy(source as THREE.MeshPhysicalMaterial);
+      } else if ((source as THREE.MeshBasicMaterial).isMeshBasicMaterial) {
+        material = new THREE.MeshBasicNodeMaterial().copy(source as THREE.MeshBasicMaterial);
+      } else {
+        material = new THREE.MeshStandardNodeMaterial().copy(source as THREE.MeshStandardMaterial);
+      }
+      applyHoloBirth(material as THREE.MeshStandardNodeMaterial, { birth });
+      converted.set(source, material);
+    }
+    mesh.material = material;
+  });
+  // M9: the GLTF originals are fully replaced by their node twins and never
+  // render again — release them now instead of leaking one set per region
+  // load. The twins SHARE texture objects with the originals (copy() carries
+  // references) and Material.dispose() never disposes textures (it only
+  // dispatches the material's own dispose event), so the twins' maps stay
+  // live. Unload keeps disposing the twins through disposeRoot.
+  for (const [source, twin] of converted) {
+    if (twin !== source) source.dispose();
+  }
+}
+
 function waitForSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
@@ -252,6 +295,23 @@ export class AuthoredRegionStreamer {
     } finally {
       signal?.removeEventListener("abort", abortRequired);
     }
+  }
+
+  /**
+   * M9: does this destination sit within the arrival radius of a region that
+   * OWNS TERRAIN (a groundTop-overlay floor handoff)? Far arrivals must keep
+   * the cover for that region's prime — releasing the player on the CPU
+   * carpet and installing the overlay afterwards pops them vertically.
+   * Regions without terrain stay detached on the far path.
+   */
+  requiresFloorHandoffAt(x: number, z: number): boolean {
+    for (const state of this.#states.values()) {
+      if (!state.definition.terrain) continue;
+      if (distanceToBounds(x, z, state.definition.bounds) <= state.definition.arrivalDistance) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Proximity path for ordinary travel. Call only from the live world tick;
@@ -380,6 +440,9 @@ export class AuthoredRegionStreamer {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
     });
+    // M5: holo-birth wrap (per unique material) BEFORE the warm below, keyed
+    // to this region's birth uniform (stamped at attach, forgotten at unload).
+    applyRegionMaterialize(root, materializeField.birthOf(`region:${definition.id}`));
     try {
       await this.#prepareRoot?.(definition.label, root);
       if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
@@ -394,6 +457,9 @@ export class AuthoredRegionStreamer {
     const { definition } = state;
     // The Blender replacement is present before terrain ownership changes. Both
     // operations are synchronous, so no render can observe the intermediate.
+    // M5: stamp the region's birth so a region streaming in after the front
+    // passed fades in through the holo ramp instead of popping.
+    materializeField.markBorn(`region:${definition.id}`);
     this.#scene.add(root);
     const terrain = definition.terrain;
     const claimedFootprints: string[] = [];
@@ -432,6 +498,7 @@ export class AuthoredRegionStreamer {
   #unload(state: RegionState): void {
     const root = state.root;
     if (!root) return;
+    materializeField.forgetBirth(`region:${state.definition.id}`); // next load re-births
     for (const watcher of this.#watchers.get(state.definition.id) ?? []) watcher.onUnload();
     root.removeFromParent();
     if (state.definition.terrain) {

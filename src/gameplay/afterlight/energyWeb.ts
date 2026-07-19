@@ -382,7 +382,10 @@ export class CosmicEnergyWeb {
     this.root.traverse((object) => {
       const mesh = object as THREE.Mesh;
       if (mesh.isMesh || (object as THREE.Points).isPoints || (object as THREE.Sprite).isSprite) {
-        mesh.geometry?.dispose();
+        // Sprites share three's module-global quad geometry — disposing it
+        // would destroy the GPU buffer under every sprite still alive in the
+        // app. Their (site-owned) materials still dispose below.
+        if (!(object as THREE.Sprite).isSprite) mesh.geometry?.dispose();
         const material = mesh.material;
         const list = Array.isArray(material) ? material : [material];
         for (const item of list) item?.dispose();

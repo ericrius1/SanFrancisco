@@ -677,7 +677,10 @@ export class AfterlightSiteVisuals {
     this.root.traverse((object) => {
       const mesh = object as THREE.Mesh;
       if (!mesh.isMesh && !(object as THREE.Points).isPoints && !(object as THREE.Sprite).isSprite) return;
-      if (mesh.geometry) geometries.add(mesh.geometry);
+      // Sprites share three's module-global quad geometry — disposing it would
+      // destroy the GPU buffer under every sprite still alive in the app. Their
+      // (site-owned) materials still dispose below.
+      if (!(object as THREE.Sprite).isSprite && mesh.geometry) geometries.add(mesh.geometry);
       const material = (object as THREE.Mesh).material;
       const list = Array.isArray(material) ? material : [material];
       for (const item of list) if (item) materials.add(item);

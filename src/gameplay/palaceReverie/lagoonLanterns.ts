@@ -150,6 +150,9 @@ export class LagoonLanterns {
     this.#sharedRim.dispose();
     for (const v of this.#vessels) {
       v.root.traverse((o) => {
+        // Sprites (halo) share three's module-global quad geometry — disposing
+        // it would destroy the GPU buffer under every sprite still alive.
+        if ((o as unknown as THREE.Sprite).isSprite) return;
         const m = o as THREE.Mesh;
         if (m.geometry) m.geometry.dispose();
       });

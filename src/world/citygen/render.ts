@@ -6,6 +6,7 @@
 // file is the direct "build these buildings now" path used by the demo + tests.
 import * as THREE from "three/webgpu";
 import { materialOpacity } from "three/tsl";
+import { applyHoloBirth } from "../../render/materialize";
 import { generate, type BuildingSpec } from "./index";
 import { buildCityGenMaterials, makeWallMaterial, type WallKind } from "./theme/materials";
 import { makeParallaxGlass, type ParallaxZone } from "./theme/parallaxWindow";
@@ -158,6 +159,12 @@ function fadeCloneOf(settled: THREE.Material): THREE.Material {
     nm.opacityNode = materialOpacity;
     f = nm as THREE.Material & { alphaHash: boolean };
   }
+  // M5: the fade clone (bundle fallback path) speaks the same holo language as
+  // the batched shells — the animated opacity uniform drives min(front, fade)
+  // darkness + emissive holo grid on top of the existing alphaHash dither.
+  // Fade clones exist ONLY while fading; the settle swap back to the shared
+  // opaque materials stays byte-identical.
+  applyHoloBirth(f as THREE.MeshStandardNodeMaterial, { extraAmount: materialOpacity });
   f.alphaHash = true; // dithered fade in the OPAQUE pass — no sorting, no blending
   f.opacity = 0.02;
   return f;

@@ -60,6 +60,11 @@ const ARRIVAL_HOLD = "world-arrival";
 const COLLISION_BLOCKED_AFTER_MS = 12_000;
 const COLLISION_RETRY_CYCLES = 1;
 const REQUIRED_VISUAL_TIMEOUT_MS = 18_000;
+// M7 far arrivals reveal on the destination's CPU ground carpet instead of the
+// full visual settle. Ground is a few frames of clipmap work; if it has not
+// converged in this long something is genuinely wrong and the arrival fails
+// closed through the same visual-blocked path as a near arrival.
+const FAR_GROUND_TIMEOUT_MS = 15_000;
 // Supplemental scenery is deliberately non-critical. A renderer/compiler bug
 // must never keep the opaque travel cover up forever when the baked local tiles
 // are already a valid fixed-quality destination.
@@ -83,6 +88,9 @@ export class WorldArrivalCoordinator {
   #physics: Physics;
   #prepareRequiredDestinationVisuals: DestinationVisualPreparer | null;
   #prepareDestinationVisuals: DestinationVisualPreparer | null;
+  #classifyFarArrival: ((x: number, z: number) => boolean) | null;
+  #onFarArrivalCut: ((x: number, z: number) => void) | null;
+  #destinationRequiresAuthoredFloor: ((x: number, z: number) => boolean) | null;
   #view = new WorldTransitionView();
   #generation = 0;
   #abort: AbortController | null = null;
@@ -102,6 +110,30 @@ export class WorldArrivalCoordinator {
     physics: Physics;
     prepareRequiredDestinationVisuals?: DestinationVisualPreparer;
     prepareDestinationVisuals?: DestinationVisualPreparer;
+    /**
+     * M7: true when the destination lies beyond current residency (content
+     * there is not attached). Far arrivals hold the opaque cover only for the
+     * cut itself: they reveal the moment the destination's CPU ground carpet
+     * is ready and let the materialize front sweep content in as it streams.
+     * Called with the RESOLVED destination while the player is still at the
+     * origin (pre-commit). Absent → every arrival uses the near path.
+     */
+    classifyFarArrival?: (x: number, z: number) => boolean;
+    /**
+     * M7: fired once right after a FAR arrival commits under the cover —
+     * main.ts recenters the ring coordinator's materialize front here
+     * (`focus(x, z, { reset: true, prime: false })`; the arrival already
+     * primed tiles/regions/collision through its own epoch-guarded path).
+     */
+    onFarArrivalCut?: (x: number, z: number) => void;
+    /**
+     * M9: true when the destination sits on an authored region that owns
+     * terrain (a groundTop-overlay floor handoff). A far arrival there must
+     * keep the cover until THAT region's prime finishes: releasing the player
+     * onto the CPU carpet and installing the overlay a beat later pops them
+     * vertically. All other visuals stay detached on the far path.
+     */
+    destinationRequiresAuthoredFloor?: (x: number, z: number) => boolean;
   }) {
     this.#input = options.input;
     this.#player = options.player;
@@ -110,6 +142,9 @@ export class WorldArrivalCoordinator {
     this.#physics = options.physics;
     this.#prepareRequiredDestinationVisuals = options.prepareRequiredDestinationVisuals ?? null;
     this.#prepareDestinationVisuals = options.prepareDestinationVisuals ?? null;
+    this.#classifyFarArrival = options.classifyFarArrival ?? null;
+    this.#onFarArrivalCut = options.onFarArrivalCut ?? null;
+    this.#destinationRequiresAuthoredFloor = options.destinationRequiresAuthoredFloor ?? null;
   }
 
   get active(): boolean {
@@ -162,6 +197,10 @@ export class WorldArrivalCoordinator {
       const supplementalVisuals = this.#prepareSupplementalVisuals(destination, controller, generation);
       preparedEpoch = collisionEpoch;
       this.#collisionEpoch = collisionEpoch;
+      // Classify while the player is still at the origin: "far" means the
+      // destination is beyond current residency, so the cover holds only for
+      // the cut and the materialize sweep plays the streaming instead.
+      const far = this.#classifyFarArrival?.(destination.x, destination.z) ?? false;
       this.#setState("committing");
       if (!this.#physics.activateCollisionArrival(collisionEpoch)) {
         throw new Error("Collision arrival was superseded before commit");
@@ -176,19 +215,59 @@ export class WorldArrivalCoordinator {
       this.#chase.yaw = destination.cameraYaw;
       this.#chase.cutTo(this.#player);
       this.#callSafely(plan.onCommitted, "onCommitted");
+      if (far) {
+        // Recenter the materialize front at the cut moment: generation bump
+        // aborts any in-flight sweep (boot or a prior teleport), the front
+        // collapses at the destination and chases residency exactly like boot.
+        this.#callSafely(
+          this.#onFarArrivalCut
+            ? () => this.#onFarArrivalCut?.(destination.x, destination.z)
+            : undefined,
+          "onFarArrivalCut"
+        );
+      }
 
       this.#setState("loading-visuals");
-      const visual = await this.#waitForDestinationVisuals(
-        visualPrime,
-        requiredVisuals,
-        supplementalVisuals
-      );
-      if (!this.#isCurrent(generation, controller)) return false;
-      if (visual.status === "failed") {
-        throw new DestinationVisualError("Destination visuals could not be loaded");
-      }
-      if (visual.status !== "ready") {
-        throw new DestinationVisualError("Destination visuals were superseded");
+      if (far) {
+        // Far arrival: the destination reveals as holo-terrain void once its
+        // CPU ground carpet is ready — a few frames, not the full visual
+        // settle. The tile/region/supplemental primes keep running in the
+        // background; the ring coordinator sweeps their content in as it
+        // attaches. Rejections must not become unhandled, and a failed
+        // required region is only a warning here (the holo terrain + sweep is
+        // the destination's visual floor, exactly like boot's void).
+        void Promise.allSettled([visualPrime.ready, requiredVisuals, supplementalVisuals])
+          .then(([, required]) => {
+            if (required.status === "rejected" && this.#isCurrent(generation, controller)) {
+              console.warn("[arrival] far-destination authored region unavailable", required.reason);
+            }
+          });
+        if (!await this.#waitForDestinationGround(collisionEpoch, generation, controller)) {
+          return false;
+        }
+        // M9: a far destination ON an authored floor handoff (groundTop
+        // overlay) additionally waits for the required-region prime — the
+        // overlay is the ground authority there, and revealing on the CPU
+        // carpet would pop the player up when the overlay installs a beat
+        // later. Only the required regions wait; tile prime + supplemental
+        // scenery stay detached (the sweep is still their reveal).
+        if (this.#destinationRequiresAuthoredFloor?.(destination.x, destination.z)) {
+          await this.#waitForRequiredFloorRegion(requiredVisuals);
+          if (!this.#isCurrent(generation, controller)) return false;
+        }
+      } else {
+        const visual = await this.#waitForDestinationVisuals(
+          visualPrime,
+          requiredVisuals,
+          supplementalVisuals
+        );
+        if (!this.#isCurrent(generation, controller)) return false;
+        if (visual.status === "failed") {
+          throw new DestinationVisualError("Destination visuals could not be loaded");
+        }
+        if (visual.status !== "ready") {
+          throw new DestinationVisualError("Destination visuals were superseded");
+        }
       }
 
       // Let the normal animation loop draw one destination frame while the
@@ -224,7 +303,7 @@ export class WorldArrivalCoordinator {
         const snapshot = this.snapshot;
         console.info(
           `[arrival] ${plan.label ?? "destination"}: visual ${Math.round(snapshot.visualMs ?? 0)}ms, ` +
-          `interactive ${Math.round(snapshot.interactiveMs ?? 0)}ms`
+          `interactive ${Math.round(snapshot.interactiveMs ?? 0)}ms${far ? " (far cut)" : ""}`
         );
       }
       return true;
@@ -395,6 +474,58 @@ export class WorldArrivalCoordinator {
       await nextWorldFrame();
     }
     return false;
+  }
+
+  /**
+   * M7 far-arrival reveal milestone: only the destination's CPU ground carpet
+   * (the same `groundReady` boot releases control on). Times out into the
+   * fail-closed visual-blocked path; a superseded epoch throws so the shared
+   * catch keeps the holds exactly as a superseded near arrival would.
+   */
+  async #waitForDestinationGround(
+    epoch: number,
+    generation: number,
+    controller: AbortController
+  ): Promise<boolean> {
+    const startedAt = performance.now();
+    while (this.#isCurrent(generation, controller)) {
+      const status = this.#physics.collisionArrivalStatus(epoch);
+      if (!status.current) throw new Error("Destination collision was superseded");
+      if (status.groundReady) return true;
+      if (performance.now() - startedAt >= FAR_GROUND_TIMEOUT_MS) {
+        throw new DestinationVisualError(
+          `Destination ground exceeded ${FAR_GROUND_TIMEOUT_MS}ms`
+        );
+      }
+      await nextWorldFrame();
+    }
+    return false;
+  }
+
+  /**
+   * M9 far-arrival authored-floor wait: bounds the required-region prime with
+   * the same timeout/fail-closed semantics as the near path's visual wait
+   * (failure → DestinationVisualError → visual-blocked, cover stays honest).
+   */
+  async #waitForRequiredFloorRegion(requiredVisuals: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new DestinationVisualError(
+          `Destination authored floor exceeded ${REQUIRED_VISUAL_TIMEOUT_MS}ms`
+        ));
+      }, REQUIRED_VISUAL_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([requiredVisuals, deadline]);
+    } catch (error) {
+      if (error instanceof DestinationVisualError) throw error;
+      throw new DestinationVisualError(
+        `Destination authored floor failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   #callSafely(callback: (() => void) | undefined, label: string): void {

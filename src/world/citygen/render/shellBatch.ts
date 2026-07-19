@@ -32,6 +32,7 @@ import {
 import type { MeshData } from "../core/types";
 import { wallPattern, WALL_EMISSIVE, type WallKind } from "../theme/materials";
 import { cameraCutawayVisibility } from "../../../render/cameraCutaway";
+import { applyHoloBirth } from "../../../render/materialize";
 
 // TSL node generics fight composition; `any` is this app's node-code idiom.
 type N = any;
@@ -123,6 +124,11 @@ function makeWallBatchMaterial(kind: WallKind, mesh: THREE.BatchedMesh, dataTex:
   const tinted = (wallPattern(kind) as N).mul(tint); // grayscale pattern × per-instance body colour
   m.colorNode = tinted;
   m.emissiveNode = tinted.mul(float(WALL_EMISSIVE)); // faint self-lit tint (near-zero ambient world)
+  // M5: the existing crossfade (per-instance fade texel) drives the same holo
+  // language as the world front — min(front, fade) darkens + adds the emissive
+  // grid while a building dithers in/out; settled (fade=1, front revealed)
+  // collapses to the exact original shading. Opacity/alphaHash stay untouched.
+  applyHoloBirth(m, { extraAmount: fade });
   m.opacityNode = fade.mul(cameraCutawayVisibility());
   m.maskShadowNode = castsShadow
     .and(fade.greaterThanEqual(0.5))
@@ -142,6 +148,8 @@ function makeStdBatchMaterial(base: THREE.Material, mesh: THREE.BatchedMesh, dat
   m.envMapIntensity = s.envMapIntensity ?? 5.5;
   if (s.emissive) { m.emissive = s.emissive.clone(); m.emissiveIntensity = s.emissiveIntensity ?? 1; }
   const { fade, castsShadow } = instanceData(mesh, dataTex);
+  // M5 holo retint of the crossfade — see makeWallBatchMaterial.
+  applyHoloBirth(m, { extraAmount: fade });
   m.opacityNode = fade.mul(cameraCutawayVisibility());
   m.maskShadowNode = castsShadow
     .and(fade.greaterThanEqual(0.5))

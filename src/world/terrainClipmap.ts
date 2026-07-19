@@ -40,6 +40,7 @@ import {
   createTerrainNormalMipData,
   createTerrainSurfaceMipData
 } from "./terrainMaterialData";
+import { holoShade, materializeAmount } from "../render/materialize";
 
 // TSL's composed node types become unwieldy across texture-stage operations;
 // the project uses this local alias for shader graphs while retaining typed
@@ -716,7 +717,20 @@ export class TerrainClipmap {
     }
     terrainColor = terrainColor.mul(variation.add(1));
     terrainColor = mix(terrainColor, color(LEVEL_DEBUG_COLORS[level.level]), this.#debugLevels.mul(0.72));
-    material.colorNode = terrainColor;
+
+    // Materialize/void holo mix (docs/VOID_STREAM_REWRITE.md M2). Terrain is
+    // always resident: no birth ramp, no dissolve, no geometry change — the
+    // height path (#heightAt) is untouched so CPU/GPU lockstep holds and the
+    // holo contour grid conforms to the REAL displaced heights. Below the
+    // front the lit response collapses to a dark base and the emissive carries
+    // the glowing world-grid + elevation contours; at amount = 1 both terms
+    // are plain uniform-driven mixes back to the normal shading (a few ALU,
+    // no added texture taps), so the revealed look is unchanged.
+    const materialized = materializeAmount({ worldPos: positionWorld as N }).toVar();
+    const holoReveal = smoothstep(0.25, 1, materialized);
+    material.colorNode = terrainColor.mul(mix(float(0.045), float(1), holoReveal));
+    material.emissiveNode = holoShade(positionWorld as N, terrainColor)
+      .mul(holoReveal.oneMinus());
     material.roughnessNode = surface.a.mul(0.03).add(0.94);
 
     const worldMaxX = grid.minX + (grid.width - 1) * grid.cellSize;

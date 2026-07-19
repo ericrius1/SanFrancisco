@@ -23,6 +23,58 @@ import { SHADOW_DEFAULTS } from "./defaults"
 import { CLIPMAP_SHADOW_EDGES } from "./edgeConfig"
 import { SHADOW_TUNING } from "./tuning"
 import { composeRasterAtlasVisibility } from "./visibilityComposition"
+import { tracer } from "../../core/hitchTracer"
+import { motionGate } from "../../core/motionGate"
+
+// M6 hitch closure: streamed caster attaches arrive in bursts (a ring sweep or
+// a citygen district publish invalidates every frame for seconds — pre-M6 that
+// meant a FULL static-domain redraw every frame). A redraw that includes
+// first-ever-drawn casters costs ~250 ms of GPU (measured; redraws of already
+// drawn content are cheap), so mid-burst redraws are the storm. Invalidations
+// now latch per-domain dirt and apply when the burst QUIETS (no invalidation
+// for QUIET_MS), with MAX_DEFER_MS bounding staleness while a burst stays hot.
+// A lone streamed attach redraws ≤ QUIET_MS later — imperceptible next to the
+// content's own birth fade. Dirt is never dropped.
+// Quiet must exceed the typical intra-burst attach gap (~300 ms tile cadence)
+// or every attach re-qualifies as "quiet" and redraws anyway; the defer bound
+// keeps shadows within a few seconds of streamed content (content itself
+// birth-fades over ~1.5 s, so a late shadow reads as part of the fade).
+const STATIC_REDRAW_QUIET_MS = 450
+const STATIC_REDRAW_MAX_DEFER_MS = 4000
+// M7: while the ring coordinator's materialize front is actively sweeping
+// (boot or a far teleport arrival), static-domain redraws are held entirely —
+// streamed casters are holo-dark under the front, so their shadows are
+// visually free to defer — and the latched dirt applies as one redraw per
+// domain (frame-staggered, as always) when the sweep settles. The safety
+// bound re-enables the normal quiet/defer applies if a sweep somehow never
+// settles (a stalled expansion must not freeze shadows forever).
+const STREAMING_HOLD_MAX_MS = 60_000
+// M10: a full static-domain redraw whose casters were streamed in under the
+// hold pays their first-ever shadow-pass draws (render objects + pipelines) in
+// one frame — measured ~40-140 ms warm, hundreds cold. Never apply two static
+// domain redraws closer than this, and give the settle moment itself a cushion
+// (the hold release stamps the same timer) so the redraws land as isolated,
+// spaced frames after the reveal instead of stacking on the settle burst.
+const STATIC_REDRAW_MIN_INTERVAL_MS = 700
+// M11 stillness routing: a ~40-60 ms full-domain redraw frame is imperceptible
+// while the view is still (the presented image barely changes and motion isn't
+// interrupted) but reads as a blip during a pan/walk. A due redraw therefore
+// waits for visual stillness; a continuously moving view forces it after
+// STATIC_REDRAW_MOTION_FORCE_MS — measured from when the redraw first became
+// APPLICABLE (due + unheld), NOT from dirtySince: hold-era dirt can be tens of
+// seconds old and would otherwise force instantly at settle. Motion-forced
+// redraws also space wider than still ones so two blips never cluster.
+const STATIC_REDRAW_MOTION_FORCE_MS = 6000
+const STATIC_REDRAW_MOTION_MIN_INTERVAL_MS = 1600
+// M10 visual: the first static redraws after a streaming-hold release contain
+// every caster the whole sweep streamed in — at low sun that flips entire
+// streets into building shade in ONE frame (a hard lighting pop at the settle
+// moment, screenshot-verified). Those redraws instead fade the domain's
+// contribution in over this window (shadow.intensity is a reactive reference
+// uniform in r185 ShadowNode — no recompiles). Ordinary streamed redraws keep
+// their instant apply: their deltas are small and birth-fade-adjacent.
+const POST_HOLD_INTRO_FADE_MS = 1500
+const POST_HOLD_INTRO_WINDOW_MS = 10_000
 
 export const CLIPMAP_SHADOW_CONFIG = {
   hero: {
@@ -127,6 +179,10 @@ type Domain = {
   config: DomainConfig
   light: ProjectionLight
   node: N
+  /** Tuning strength; shadow.intensity = strengthBase * intro-fade factor. */
+  strengthBase: number
+  /** performance.now() when a post-hold intro fade began (0 = no fade). */
+  introFadeAt: number
   initialized: boolean
   lastAnchor: THREE.Vector3
   lastSunDir: THREE.Vector3
@@ -180,6 +236,18 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
   #frame = 0
   #localStaticRevision = 0
   #farStaticRevision = 0
+  #localStaticDirty = false
+  #farStaticDirty = false
+  #localStaticInvalidatedAt = -Infinity
+  #farStaticInvalidatedAt = -Infinity
+  #localStaticDirtySince = -Infinity
+  #farStaticDirtySince = -Infinity
+  #localMotionDeferSince = -Infinity
+  #farMotionDeferSince = -Infinity
+  #streamingHold = false
+  #streamingHoldSince = 0
+  #lastStaticRedrawAt = -Infinity
+  #holdReleaseFadeUntil = -Infinity
   #right = new THREE.Vector3()
   #shadowUp = new THREE.Vector3()
   #snapped = new THREE.Vector3()
@@ -198,9 +266,118 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
     return Math.max(this.#localStaticRevision, this.#farStaticRevision)
   }
 
+  /** Latch a static-caster change; the redraw applies (burst-coalesced) in schedule(). */
   invalidateStatic(scope: StaticShadowScope = "all"): void {
-    if (scope !== "far") this.#localStaticRevision = (this.#localStaticRevision + 1) >>> 0
-    if (scope !== "local") this.#farStaticRevision = (this.#farStaticRevision + 1) >>> 0
+    const now = performance.now()
+    if (scope !== "far") {
+      if (!this.#localStaticDirty) this.#localStaticDirtySince = now
+      this.#localStaticDirty = true
+      this.#localStaticInvalidatedAt = now
+    }
+    if (scope !== "local") {
+      if (!this.#farStaticDirty) this.#farStaticDirtySince = now
+      this.#farStaticDirty = true
+      this.#farStaticInvalidatedAt = now
+    }
+    tracer.count("shadowInvalidate")
+  }
+
+  /** M7 streaming-burst hint (see STREAMING_HOLD_MAX_MS). Idempotent; lone
+   *  events outside a sweep keep the normal quiet-window apply path. */
+  setStreamingHold(active: boolean): void {
+    if (active === this.#streamingHold) return
+    this.#streamingHold = active
+    if (active) this.#streamingHoldSince = performance.now()
+    // Release cushion: the settle frame already carries the reveal + citygen
+    // settle swaps; the held redraws start one interval later and stay spaced.
+    else {
+      const now = performance.now()
+      this.#lastStaticRedrawAt = now
+      this.#holdReleaseFadeUntil = now + POST_HOLD_INTRO_WINDOW_MS
+    }
+  }
+
+  /** True while the M7 streaming hold is active (bounded by its safety cap). */
+  #holdActive(nowMs: number): boolean {
+    return this.#streamingHold && nowMs - this.#streamingHoldSince < STREAMING_HOLD_MAX_MS
+  }
+
+  /** True when this domain's latched dirt should redraw now: its invalidation
+   *  burst has quieted, or the deferral bound expired while the burst stays hot. */
+  #staticRedrawDue(nowMs: number, invalidatedAt: number, dirtySince: number): boolean {
+    return (
+      nowMs - invalidatedAt >= STATIC_REDRAW_QUIET_MS ||
+      nowMs - dirtySince >= STATIC_REDRAW_MAX_DEFER_MS
+    )
+  }
+
+  /** Promote latched dirt into revision bumps once per burst (bounded defer).
+   *  Local and far never apply on the same frame — the two full-domain map
+   *  redraws land on different frames, halving the worst single-frame cost. */
+  #applyPendingStaticInvalidations(nowMs: number): void {
+    if (this.#holdActive(nowMs)) {
+      if (this.#localStaticDirty || this.#farStaticDirty) {
+        tracer.count("shadowRedrawHeldStreaming")
+      }
+      return
+    }
+    // M10: global spacing — a domain redraw with fresh casters is one big
+    // frame; two of them must never land within the same perceptual moment.
+    // M11: prefer landing redraws in visual stillness (see
+    // STATIC_REDRAW_MOTION_FORCE_MS above); moving views widen the spacing.
+    const still = motionGate.isStill(nowMs)
+    const minIntervalMs = still
+      ? STATIC_REDRAW_MIN_INTERVAL_MS
+      : STATIC_REDRAW_MOTION_MIN_INTERVAL_MS
+    if (nowMs - this.#lastStaticRedrawAt < minIntervalMs) return
+    if (
+      this.#localStaticDirty &&
+      this.#staticRedrawDue(nowMs, this.#localStaticInvalidatedAt, this.#localStaticDirtySince)
+    ) {
+      if (this.#localMotionDeferSince === -Infinity) this.#localMotionDeferSince = nowMs
+      if (still || nowMs - this.#localMotionDeferSince >= STATIC_REDRAW_MOTION_FORCE_MS) {
+        this.#localStaticDirty = false
+        this.#localMotionDeferSince = -Infinity
+        this.#localStaticRevision = (this.#localStaticRevision + 1) >>> 0
+        this.#lastStaticRedrawAt = nowMs
+        this.#beginIntroFadeIfPostHold("local", nowMs)
+        tracer.count("shadowStaticRedrawLocal")
+        tracer.count(still ? "shadowRedrawStillHidden" : "shadowRedrawMotionForced")
+        return
+      }
+      tracer.count("shadowRedrawHeldMotion")
+    }
+    if (
+      this.#farStaticDirty &&
+      this.#staticRedrawDue(nowMs, this.#farStaticInvalidatedAt, this.#farStaticDirtySince)
+    ) {
+      if (this.#farMotionDeferSince === -Infinity) this.#farMotionDeferSince = nowMs
+      if (still || nowMs - this.#farMotionDeferSince >= STATIC_REDRAW_MOTION_FORCE_MS) {
+        this.#farStaticDirty = false
+        this.#farMotionDeferSince = -Infinity
+        this.#farStaticRevision = (this.#farStaticRevision + 1) >>> 0
+        this.#lastStaticRedrawAt = nowMs
+        this.#beginIntroFadeIfPostHold("far", nowMs)
+        tracer.count("shadowStaticRedrawFar")
+        tracer.count(still ? "shadowRedrawStillHidden" : "shadowRedrawMotionForced")
+        return
+      }
+      tracer.count("shadowRedrawHeldMotion")
+    }
+  }
+
+  /** Start a contribution fade for a static domain's first redraw after a
+   *  streaming-hold release (see POST_HOLD_INTRO_FADE_MS). */
+  #beginIntroFadeIfPostHold(id: DomainId, nowMs: number): void {
+    if (nowMs >= this.#holdReleaseFadeUntil) return
+    for (let i = 0; i < this.#domains.length; i++) {
+      const domain = this.#domains[i]
+      if (domain.id === id && domain.introFadeAt === 0) {
+        domain.introFadeAt = nowMs
+        tracer.count("shadowIntroFade")
+        return
+      }
+    }
   }
 
   /** Apply persisted/live pane values without rebuilding materials or shadow maps. */
@@ -232,6 +409,7 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
     for (const domain of this.#domains) {
       const next = byDomain[domain.id]
       const wasActive = domain.light.shadow.intensity > 0
+      domain.strengthBase = next.strength
       domain.light.shadow.intensity = next.strength
       domain.light.shadow.normalBias = next.normalBias
       domain.light.shadow.bias = next.depthBias
@@ -249,9 +427,21 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
     if (SHADOW_TUNING.values.farFieldStrength > 0) {
       this.#farOcclusion?.update(sunDirection, focus, nowMs)
     }
+    this.#applyPendingStaticInvalidations(nowMs)
 
     for (let i = 0; i < this.#domains.length; i++) {
       const domain = this.#domains[i]
+      // M10 post-hold intro fade: ramp the domain's contribution back in after
+      // its held redraw applied (shadow.intensity is a reactive reference).
+      if (domain.introFadeAt > 0) {
+        const k = (nowMs - domain.introFadeAt) / POST_HOLD_INTRO_FADE_MS
+        if (k >= 1) {
+          domain.introFadeAt = 0
+          domain.light.shadow.intensity = domain.strengthBase
+        } else {
+          domain.light.shadow.intensity = domain.strengthBase * Math.max(0.02, k * k)
+        }
+      }
       if (domain.light.shadow.intensity <= 0) continue
       let reason: ShadowUpdateReason = 0
 
@@ -265,9 +455,22 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
           : SHADOW_UPDATE_REASON.ANCHOR_MOVED
       }
 
+      // M10: a slow real-sun drift crossing the threshold re-renders the WHOLE
+      // domain — including every caster streamed in since the last redraw,
+      // whose first-ever shadow-pass draws (render objects + pipelines) land
+      // in one frame (observed as a ~170-pipeline spike at the settle moment).
+      // Static-domain sun crossings therefore never re-render directly: they
+      // LATCH the domain's static dirt and let #applyPendingStaticInvalidations
+      // pace them (streaming hold, quiet window, global min-interval). The
+      // redraw re-places with the CURRENT sun, so nothing is lost; lastSunDir
+      // updates only when a render fires, keeping the latch idempotent.
+      // Anchor/teleport recenters stay live — they are correctness.
       if (domain.initialized && domain.config.sunAngle > 0) {
         const dot = THREE.MathUtils.clamp(domain.lastSunDir.dot(sunDirection), -1, 1)
-        if (Math.acos(dot) >= domain.config.sunAngle) reason |= SHADOW_UPDATE_REASON.SUN_MOVED
+        if (Math.acos(dot) >= domain.config.sunAngle) {
+          if (domain.id === "hero") reason |= SHADOW_UPDATE_REASON.SUN_MOVED
+          else this.invalidateStatic(domain.id === "local" ? "local" : "far")
+        }
       }
 
       if (
@@ -468,6 +671,8 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       config,
       light,
       node,
+      strengthBase: shadowConfig.intensity,
+      introFadeAt: 0,
       initialized: false,
       lastAnchor: new THREE.Vector3(),
       lastSunDir: new THREE.Vector3(),

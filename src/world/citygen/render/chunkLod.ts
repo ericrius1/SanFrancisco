@@ -8,12 +8,24 @@ import type { BuildingSpec } from "../core/types";
 import { appendPrism, emptyArrays, geometryFrom, lodMaterial, type PrismArrays } from "./lod";
 import { footprintGrade, type GroundSampler } from "./foundation";
 import { setLocalFarShadowOnly } from "../../shadows/shadowLayers";
+import {
+  materialDisposeListenerCount,
+  registerSharedMaterialLeakCounter,
+  releaseRenderObjectsFor,
+} from "../../../render/renderObjectRegistry";
 
 // All chunks share one unlit depth-only material. The proxy meshes never enter
 // the beauty camera, and their geometry is shared with the merged LOD mesh.
+// M9: retired cells release their RenderObjects explicitly in dispose() —
+// sharing the material otherwise pins them in its dispose-listener array
+// forever (geometry dispose alone never frees a RenderObject in r185).
 const shadowProxyMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
 shadowProxyMaterial.name = "cityGenChunkShadowProxy.depth";
 shadowProxyMaterial.toneMapped = false;
+
+registerSharedMaterialLeakCounter("cityGenChunkShadowDepth", () =>
+  materialDisposeListenerCount(shadowProxyMaterial)
+);
 
 export interface ChunkLOD {
   /** finished merged mesh, or null while still building */
@@ -41,9 +53,9 @@ export interface ChunkLODOptions {
 }
 
 /** Exact beauty owner used to compile the merged chunk-LOD node graph while
- * detached. Live cells clone the same material graph, so the prepared pipeline
- * is reused without retaining a full city cell. The shadow proxy intentionally
- * stays out: it uses the app's already-booted generic depth-only shadow path. */
+ * detached. Live cells use the same SHARED material (M6), so the prepared
+ * pipeline is reused without retaining a full city cell. The shadow proxy
+ * intentionally stays out: it uses the generic depth-only shadow path. */
 export function createChunkLODBeautyWarmup(): { object: THREE.Mesh; dispose(): void } {
   const arrays = emptyArrays();
   appendPrism({
@@ -56,7 +68,9 @@ export function createChunkLODBeautyWarmup(): { object: THREE.Mesh; dispose(): v
     seed: 1,
   }, arrays);
   const geometry = geometryFrom(arrays);
-  const material = lodMaterial().clone();
+  // M6: warm the exact SHARED material live cells now use (no clone — see
+  // buildChunkLOD). dispose() releases the warmup RenderObject explicitly.
+  const material = lodMaterial();
   const object = new THREE.Mesh(geometry, material);
   object.name = "cityGenChunkLOD.warmup";
   object.castShadow = false;
@@ -67,8 +81,10 @@ export function createChunkLODBeautyWarmup(): { object: THREE.Mesh; dispose(): v
     object,
     dispose() {
       object.removeFromParent();
+      // M9: the warmup RenderObject would otherwise stay listed on the shared
+      // material (geometry dispose alone never releases it).
+      releaseRenderObjectsFor(object);
       geometry.dispose();
-      material.dispose();
     },
   };
 }
@@ -98,11 +114,17 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
       }
       if (cursor >= specs.length) {
         const g = geometryFrom(arr);
-        // Renderer-common installs a dispose listener on a mesh's source
-        // material. Reusing the process-wide template across retired cell
-        // geometries would therefore retain every old RenderObject forever.
-        beautyMaterial = lodMaterial().clone();
-        cellShadowMaterial = shadowProxyMaterial.clone();
+        // M6: share the process-wide materials. Per-cell material CLONES gave
+        // every published cell fresh material identities, and the next static
+        // shadow redraw (and first beauty draw) paid a fresh node build + GPU
+        // pipeline per clone — ~250 ms GPU per redraw during district
+        // streaming (the measured hitch storm). M9 correction: geometry
+        // dispose does NOT release RenderObjects (r185 onGeometryDispose only
+        // nulls attribute caches) — dispose() below releases the cell's
+        // RenderObjects explicitly so the shared materials never accumulate
+        // retired cells in their dispose-listener arrays.
+        beautyMaterial = lodMaterial();
+        cellShadowMaterial = shadowProxyMaterial;
         const mesh = new THREE.Mesh(g, beautyMaterial);
         mesh.name = "cityGenChunkLOD";
         mesh.castShadow = false;
@@ -142,11 +164,20 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
       attr.needsUpdate = true;
     },
     dispose() {
-      chunk.shadowMesh?.removeFromParent();
-      chunk.shadowMesh = null;
-      if (chunk.mesh) { chunk.mesh.geometry.dispose(); chunk.mesh = null; }
-      beautyMaterial?.dispose();
-      cellShadowMaterial?.dispose();
+      // M9: release BOTH meshes' RenderObjects (beauty + shadow pass entries)
+      // before dropping refs — the shared singleton materials would otherwise
+      // retain them (and the merged cell geometry arrays) forever. Never
+      // dispose the materials themselves here.
+      if (chunk.shadowMesh) {
+        chunk.shadowMesh.removeFromParent();
+        releaseRenderObjectsFor(chunk.shadowMesh);
+        chunk.shadowMesh = null;
+      }
+      if (chunk.mesh) {
+        releaseRenderObjectsFor(chunk.mesh);
+        chunk.mesh.geometry.dispose();
+        chunk.mesh = null;
+      }
       beautyMaterial = null;
       cellShadowMaterial = null;
     },

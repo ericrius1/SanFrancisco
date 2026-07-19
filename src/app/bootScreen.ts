@@ -21,6 +21,7 @@ export class BootScreen {
   #startButton = this.#startForm.querySelector<HTMLButtonElement>("button")!;
   #ready = false;
   #start: StartHandler | null = null;
+  #progressMax = 0;
 
   constructor() {
     this.nameInput.value = this.suggestedName;
@@ -63,7 +64,10 @@ export class BootScreen {
   }
 
   progress(percent: number, label: string): void {
-    this.#loadingBar.style.width = `${percent}%`;
+    // Boot phases report on independent scales (the P3 construction restarts
+    // below the P1 warmup's number) — keep the visible bar monotonic.
+    this.#progressMax = Math.max(this.#progressMax, percent);
+    this.#loadingBar.style.width = `${this.#progressMax}%`;
     this.#loadingLabel.textContent = label;
   }
 
@@ -74,6 +78,10 @@ export class BootScreen {
   }
 
   fail(error: unknown): void {
+    console.error("[boot] failed:", error);
+    // A failure after Start (P3 sliced construction) happens behind the
+    // dismissed cover — re-show the folio so the failure is never silent.
+    this.loading.classList.remove("done");
     const message = error instanceof Error ? error.message : String(error);
     this.#loadingLabel.textContent = `boot failed: ${message} — click to reload`;
     this.#loadingBar.style.width = "100%";
