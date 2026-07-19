@@ -11,9 +11,10 @@ import {
 } from "./keys";
 
 /**
- * A chunky voxel GRAND piano, dark near-black wood. Wing-shaped case
- * approximated by stacked boxes (wide front body + narrower angled tail), an
- * open lid propped on a stick, three legs, a pedal lyre, and a matching bench.
+ * A compact baby grand in polished near-black wood. The keyboard deck overlaps
+ * a single curved wing-shaped case, so the instrument reads as one continuous
+ * piece from the player's side rather than a keyboard parked beside two boxes.
+ * A matching open lid, three legs, a pedal lyre, and a bench complete it.
  *
  * The 88 keys are TWO InstancedMesh (52 whites + 36 blacks), so the whole
  * keyboard is two draws. Only currently-pressed keys have their instance matrix
@@ -66,8 +67,8 @@ export function buildGrandPiano(): OwnedPiano {
     geos.push(g);
     return g;
   };
-  const mat = (color: number): THREE.MeshLambertMaterial => {
-    const m = new THREE.MeshLambertMaterial({ color });
+  const mat = (color: number, roughness = 0.32, metalness = 0.03): THREE.MeshStandardMaterial => {
+    const m = new THREE.MeshStandardMaterial({ color, roughness, metalness });
     mats.push(m);
     return m;
   };
@@ -89,26 +90,105 @@ export function buildGrandPiano(): OwnedPiano {
     return m;
   };
 
-  const wood = mat(0x171310); // near-black, faint brown
-  const woodWarm = mat(0x211913); // slightly warmer edge/trim wood
-  const brass = mat(0x9c7b39); // pedals + hardware
-  const feltDark = mat(0x0d0b0a); // under the open lid / key slip
+  /**
+   * Extrude a piano-plan shape through local Y. Shape uses X/-Z internally so
+   * the finished geometry lies flat in the same frame as the keyboard.
+   */
+  const wingPrism = (
+    shape: THREE.Shape,
+    height: number,
+    material: THREE.Material,
+    y: number,
+    name: string,
+    xOffset = 0,
+    bevel = 0.008
+  ): THREE.Mesh => {
+    const geometry = own(new THREE.ExtrudeGeometry(shape, {
+      depth: height,
+      steps: 1,
+      curveSegments: 12,
+      bevelEnabled: bevel > 0,
+      bevelSegments: 2,
+      bevelSize: bevel,
+      bevelThickness: bevel
+    }));
+    geometry.rotateX(-Math.PI * 0.5);
+    if (xOffset !== 0) geometry.translate(xOffset, 0, 0);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = name;
+    mesh.position.y = y;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    return mesh;
+  };
 
-  // ---- case (rim): wide front body + narrower angled tail approximate a wing.
+  // Straight bass spine (+X), rounded tail, and a gently swept treble side.
+  // The front edge deliberately overlaps the fallboard/key deck by 7 cm.
+  const wingShape = () => {
+    const shape = new THREE.Shape();
+    shape.moveTo(0.74, 0.56);
+    shape.lineTo(0.74, 1.58);
+    shape.quadraticCurveTo(0.72, 1.84, 0.43, 1.94);
+    shape.quadraticCurveTo(0.12, 2.04, -0.2, 1.95);
+    shape.quadraticCurveTo(-0.56, 1.85, -0.7, 1.57);
+    shape.quadraticCurveTo(-0.79, 1.3, -0.76, 1.02);
+    shape.quadraticCurveTo(-0.74, 0.75, -0.67, 0.56);
+    shape.closePath();
+    return shape;
+  };
+
+  // Inset top panel leaves a broad, visible rim around the open soundboard.
+  const soundboardShape = () => {
+    const shape = new THREE.Shape();
+    shape.moveTo(0.65, 0.66);
+    shape.lineTo(0.65, 1.53);
+    shape.quadraticCurveTo(0.62, 1.72, 0.38, 1.81);
+    shape.quadraticCurveTo(0.11, 1.89, -0.14, 1.82);
+    shape.quadraticCurveTo(-0.44, 1.74, -0.56, 1.5);
+    shape.quadraticCurveTo(-0.63, 1.27, -0.61, 1.05);
+    shape.quadraticCurveTo(-0.6, 0.84, -0.55, 0.66);
+    shape.closePath();
+    return shape;
+  };
+
+  const wood = mat(0x211713, 0.24, 0.06); // polished ebony with a warm brown lift
+  const woodWarm = mat(0x4a2c20, 0.28, 0.04); // readable mahogany edge/trim
+  const brass = mat(0xb28a3d, 0.28, 0.62); // pedals + hardware
+  const feltDark = mat(0x100c0a, 0.86, 0); // under the open lid / key slip
+  const soundboard = mat(0x6e4930, 0.48, 0.01);
+
+  // ---- case: one continuous baby-grand shell instead of disconnected slabs.
   const RIM_TOP = KEY_CONTACT.top; // rim top sits at keyboard height
   const RIM_H = 0.24;
   const rimY = RIM_TOP - RIM_H * 0.5;
-  box(group, wood, 1.42, RIM_H, 0.66, 0, rimY, KEYBED_Z - 0.68); // front body
-  box(group, wood, 0.84, RIM_H, 0.72, 0.2, rimY, KEYBED_Z - 1.36); // tail, biased to the straight bass side
-  box(group, woodWarm, 1.46, 0.04, 0.7, 0, RIM_TOP + 0.005, KEYBED_Z - 0.68); // top rim cap
-  // soundboard well (dark) just under the lid so the open case doesn't look solid
-  box(group, feltDark, 1.24, 0.02, 0.86, 0, RIM_TOP - 0.02, KEYBED_Z - 0.9);
+  const caseShell = wingPrism(
+    wingShape(), RIM_H, wood, RIM_TOP - RIM_H,
+    "beachPianist.piano.case"
+  );
+  group.add(caseShell);
+  const rimCap = wingPrism(
+    wingShape(), 0.035, woodWarm, RIM_TOP - 0.012,
+    "beachPianist.piano.rimCap", 0, 0.006
+  );
+  group.add(rimCap);
+  const soundboardPanel = wingPrism(
+    soundboardShape(), 0.018, soundboard, RIM_TOP + 0.023,
+    "beachPianist.piano.soundboard", 0, 0.003
+  );
+  soundboardPanel.castShadow = false;
+  group.add(soundboardPanel);
 
-  // ---- key slip / fallboard + cheek blocks framing the keyboard
+  // ---- keyboard deck + slip/fallboard. The deck reaches back inside the wing
+  // shell, making a strong continuous bridge between the keys and soundboard.
+  const deckDepth = KEYBOARD.whiteDepth + 0.22;
+  box(
+    group, wood, KEYBOARD.width + 0.22, 0.17, deckDepth,
+    0, RIM_TOP - 0.105, KEY_CONTACT.z - deckDepth * 0.5 + 0.04
+  ).name = "beachPianist.piano.keyboardDeck";
   box(group, woodWarm, KEYBOARD.width + 0.12, 0.09, 0.06, 0, RIM_TOP - 0.02, KEY_CONTACT.z + 0.02); // front key slip
   box(group, wood, 0.09, 0.16, KEYBOARD.whiteDepth + 0.14, KEYBOARD.width * 0.5 + 0.06, RIM_TOP - 0.05, KEYBED_Z); // bass cheek
   box(group, wood, 0.09, 0.16, KEYBOARD.whiteDepth + 0.14, -KEYBOARD.width * 0.5 - 0.06, RIM_TOP - 0.05, KEYBED_Z); // treble cheek
-  box(group, woodWarm, KEYBOARD.width + 0.24, 0.14, 0.08, 0, RIM_TOP - 0.02, KEYBED_Z - KEYBOARD.whiteDepth * 0.5 - 0.08); // fallboard behind keys
+  box(group, woodWarm, KEYBOARD.width + 0.24, 0.14, 0.12, 0, RIM_TOP - 0.02, KEYBED_Z - KEYBOARD.whiteDepth * 0.5 - 0.06); // fallboard overlaps the case shoulder
 
   // ---- keybed slab the keys rest on (dark, just below key tops)
   box(group, feltDark, KEYBOARD.width + 0.02, 0.05, KEYBOARD.whiteDepth, 0, RIM_TOP - KEYBOARD.whiteHeight - 0.03, KEYBED_Z);
@@ -125,20 +205,28 @@ export function buildGrandPiano(): OwnedPiano {
   box(group, woodWarm, 0.26, 0.05, 0.16, 0, 0.05, KEY_CONTACT.z - 0.4);
   for (const px of [-0.06, 0, 0.06]) box(group, brass, 0.04, 0.02, 0.14, px, 0.06, KEY_CONTACT.z - 0.46);
 
-  // ---- open lid: a thin slab hinged along the +X (bass) spine, tipped up, plus
-  // a prop stick under the raised treble edge.
-  const spineX = KEYBOARD.width * 0.5 + 0.04;
+  // ---- open lid: repeats the exact wing silhouette and rotates about the
+  // straight +X bass spine, so its raised edge still belongs to the case.
+  const spineX = 0.74;
   const lidAngle = 0.6; // ~34°, half-stick open
   const lidPivot = new THREE.Group();
-  lidPivot.position.set(spineX, RIM_TOP + 0.03, KEYBED_Z - 0.9);
+  lidPivot.position.set(spineX, RIM_TOP + 0.065, 0);
   group.add(lidPivot);
-  const lid = box(lidPivot, wood, 1.32, 0.03, 1.44, -0.66, 0, 0); // extends toward -X (treble) from the spine
+  const lid = wingPrism(
+    wingShape(), 0.038, wood, 0,
+    "beachPianist.piano.lid", -spineX, 0.006
+  );
+  lidPivot.add(lid);
   lid.receiveShadow = true;
-  lidPivot.rotation.z = lidAngle; // treble edge lifts
+  lidPivot.rotation.z = -lidAngle; // treble (-X) edge lifts
+  for (const hingeZ of [-0.8, -1.42]) {
+    const hinge = box(group, brass, 0.035, 0.028, 0.13, spineX - 0.006, RIM_TOP + 0.052, hingeZ);
+    hinge.castShadow = false;
+  }
   // Prop stick under the raised treble edge, meeting the lid underside.
   const propX = -0.42;
-  const propTop = RIM_TOP + 0.03 + (spineX - propX) * Math.sin(lidAngle);
-  box(group, woodWarm, 0.055, propTop - RIM_TOP, 0.055, propX, (RIM_TOP + propTop) * 0.5, KEYBED_Z - 0.9);
+  const propTop = lidPivot.position.y + (spineX - propX) * Math.sin(lidAngle);
+  box(group, woodWarm, 0.045, propTop - RIM_TOP, 0.045, propX, (RIM_TOP + propTop) * 0.5, -1.15);
 
   // ---- bench behind the pianist (+Z)
   box(group, woodWarm, 0.94, 0.09, 0.36, 0, 0.5, 0.24); // seat top
@@ -154,8 +242,8 @@ export function buildGrandPiano(): OwnedPiano {
       KEYBOARD.whiteDepth * KEYBOARD.blackDepthFrac
     )
   );
-  const whiteMat = mat(0xece7da);
-  const blackMat = mat(0x0c0a09);
+  const whiteMat = mat(0xf2ede2, 0.36, 0.01);
+  const blackMat = mat(0x100c0a, 0.2, 0.04);
   const whiteKeys = new THREE.InstancedMesh(whiteGeo, whiteMat, WHITE_MIDIS.length);
   const blackKeys = new THREE.InstancedMesh(blackGeo, blackMat, BLACK_MIDIS.length);
   whiteKeys.name = "beachPianist.whiteKeys";
