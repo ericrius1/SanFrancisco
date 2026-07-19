@@ -17,10 +17,16 @@ import {
 import { createAuthoredFlowerPatch, type AuthoredFlowerPlacement } from "../vegetation/authoredFlowers";
 import {
   createAuthoredTreePatch,
-  type AuthoredTreeArchetype,
-  type AuthoredTreePlacement
+  type AuthoredTreeArchetype
 } from "../vegetation/authoredTrees";
-import { BEACH_PIANIST_BRIDGE_AIM, BEACH_PIANIST_SITE } from "./meta";
+import { BEACH_PIANIST_SITE } from "./meta";
+import {
+  collectGroveTrees,
+  groveDryRoot,
+  groveHash,
+  GROVE_TREE_HEIGHTS,
+  GROVE_TREE_LIMIT
+} from "./groveLayout";
 
 export type BeachPianistFoliage = {
   group: THREE.Group;
@@ -37,7 +43,7 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
       species: "windswept-monterey-cypress",
       seed: 9251,
       controls: {
-        height: 11.5,
+        height: GROVE_TREE_HEIGHTS["pianist-cypress-elder"],
         crownDensity: 0.96,
         crownWidth: 1.08,
         foliageColor: 0x36563c,
@@ -53,7 +59,7 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
       species: "monterey-cypress",
       seed: 9252,
       controls: {
-        height: 8.8,
+        height: GROVE_TREE_HEIGHTS["pianist-cypress-shelf"],
         crownDensity: 0.9,
         crownWidth: 1.16,
         foliageColor: 0x456846,
@@ -69,7 +75,7 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
       species: "monterey-pine",
       seed: 9253,
       controls: {
-        height: 10.2,
+        height: GROVE_TREE_HEIGHTS["pianist-pine"],
         crownDensity: 0.88,
         crownWidth: 1.04,
         foliageColor: 0x38543a,
@@ -82,17 +88,11 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
 ] as const;
 
 const FLOWER_SPECIES = ["lupine", "poppy", "yarrow", "goldfield"] as const;
-const TREE_LIMIT = 24;
+const TREE_LIMIT = GROVE_TREE_LIMIT;
 const SITE_X = BEACH_PIANIST_SITE.x;
 const SITE_Z = BEACH_PIANIST_SITE.z;
-const BRIDGE_DX = BEACH_PIANIST_BRIDGE_AIM.x - SITE_X;
-const BRIDGE_DZ = BEACH_PIANIST_BRIDGE_AIM.z - SITE_Z;
-const BRIDGE_INV_LENGTH = 1 / Math.hypot(BRIDGE_DX, BRIDGE_DZ);
-const SIGHT_X = BRIDGE_DX * BRIDGE_INV_LENGTH;
-const SIGHT_Z = BRIDGE_DZ * BRIDGE_INV_LENGTH;
 const SITE_COSINE = Math.cos(BEACH_PIANIST_SITE.yaw);
 const SITE_SINE = Math.sin(BEACH_PIANIST_SITE.yaw);
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 // The former 4+ metre circular performance clearing read as a bare pad around
 // the whole exhibit. Keep only roots that would visibly pierce the solid piano
 // case out of the scatter; grass and flowers may otherwise grow right up to it.
@@ -104,16 +104,7 @@ const PIANO_ROOT_CLEARANCE = {
   maxZ: -0.14
 } as const;
 
-function hash(index: number, salt: number): number {
-  const value = Math.sin(index * 127.1 + salt * 311.7) * 43758.5453;
-  return value - Math.floor(value);
-}
-
-function distanceFromBridgeSightline(x: number, z: number): number {
-  const dx = x - SITE_X;
-  const dz = z - SITE_Z;
-  return Math.abs(dx * SIGHT_Z - dz * SIGHT_X);
-}
+const hash = groveHash;
 
 function rootIntersectsPiano(x: number, z: number, margin: number): boolean {
   const dx = x - SITE_X;
@@ -126,57 +117,8 @@ function rootIntersectsPiano(x: number, z: number, margin: number): boolean {
     localZ <= PIANO_ROOT_CLEARANCE.maxZ + margin;
 }
 
-function dryRoot(map: WorldMap, x: number, z: number, radius: number): number | null {
-  if (map.isWater(x, z)) return null;
-  const center = map.groundTop(x, z);
-  let minY = center;
-  let maxY = center;
-  for (let i = 0; i < 4; i++) {
-    const angle = Math.PI * 0.25 + i * Math.PI * 0.5;
-    const sx = x + Math.cos(angle) * radius;
-    const sz = z + Math.sin(angle) * radius;
-    if (map.isWater(sx, sz)) return null;
-    const y = map.groundTop(sx, sz);
-    minY = Math.min(minY, y);
-    maxY = Math.max(maxY, y);
-  }
-  return maxY - minY <= Math.max(0.45, radius * 0.34) ? center : null;
-}
-
-function collectTrees(map: WorldMap): AuthoredTreePlacement[] {
-  const placements: AuthoredTreePlacement[] = [];
-  // Evenly inspect the whole ring, then nudge/radially retry each sector. The
-  // shoreline naturally rejects seaward candidates while retaining a grove on
-  // every dry side of the performance. A clear axial aisle preserves the
-  // authored arrival shot from the player through the piano to the bridge.
-  for (let sector = 0; sector < 38 && placements.length < TREE_LIMIT; sector++) {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const angle = sector * GOLDEN_ANGLE + (hash(sector, 17 + attempt) - 0.5) * 0.34;
-      const radius = 9.5 + hash(sector, 31 + attempt) * 20.5 + attempt * 0.55;
-      const x = SITE_X + Math.cos(angle) * radius;
-      const z = SITE_Z + Math.sin(angle) * radius;
-      if (distanceFromBridgeSightline(x, z) < 4.2 && radius < 24) continue;
-      const y = dryRoot(map, x, z, 2);
-      if (y === null) continue;
-      const archetype = sector % 5 === 0
-        ? "pianist-pine"
-        : sector % 3 === 0
-          ? "pianist-cypress-shelf"
-          : "pianist-cypress-elder";
-      placements.push({
-        x,
-        y,
-        z,
-        yaw: 0.88 + hash(sector, 53) * 0.8,
-        scale: 0.78 + hash(sector, 71) * 0.34,
-        archetype,
-        nearDetail: true
-      });
-      break;
-    }
-  }
-  return placements;
-}
+const dryRoot = groveDryRoot;
+const collectTrees = collectGroveTrees;
 
 function collectFlowers(map: WorldMap): AuthoredFlowerPlacement[] {
   const placements: AuthoredFlowerPlacement[] = [];

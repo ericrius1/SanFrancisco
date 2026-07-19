@@ -1,20 +1,25 @@
 // Local bird life for the Beach Pianist grove. Forty-two low-poly coastal
 // silhouettes share one geometry, one material and one draw call; all paths,
-// climb/pitch, turn banking and burst/glide wing beats are evaluated in the
-// WebGPU vertex stage from static instance data. Six stationary instances sit
-// at canopy height and provide the positions for sparse procedural tree chirps
-// on the shared World audio bus.
+// climb/pitch, turn banking, burst/glide wing beats AND the perch cycle
+// (cruise → glide in → sit on a real grove crown → take off) are evaluated in
+// the WebGPU vertex stage from static instance data. The perch crowns double
+// as the positions for sparse procedural tree chirps on the shared World
+// audio bus.
 
 import * as THREE from "three/webgpu";
 import { audioEngine } from "../../audio/engine";
 import { VOICE_LIB, type NatureVoiceKind } from "../../audio/voices";
 import { createPianoGroveBirdMaterial } from "./birdMaterial";
 
-const CANOPY_FLYERS = 12;
-const DISTANT_FLYERS = 24;
-const PERCHED = 6;
-const COUNT = CANOPY_FLYERS + DISTANT_FLYERS + PERCHED;
+const CANOPY_FLYERS = 10;
+const DISTANT_FLYERS = 20;
+const PERCH_CYCLERS = 12;
+const COUNT = CANOPY_FLYERS + DISTANT_FLYERS + PERCH_CYCLERS;
 const CHIRP_RADIUS = 105;
+
+/** Marks an instance that never enters the perch segment (flyEnd beyond the
+ *  cycle's [0,1) phase range keeps the landing weight identically zero). */
+const ALWAYS_FLY = 2;
 
 type Vertex = {
   x: number;
@@ -107,7 +112,9 @@ function createBirdGeometry(): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute("birdWing", new THREE.Float32BufferAttribute(wingData, 2));
-  geometry.computeVertexNormals();
+  // Deliberately NO normal attribute: the flat-tinted basic material never
+  // shades, and the freed vertex-buffer slot keeps the six instanced streams
+  // within WebGPU's 8-buffer limit (exceeding it silently kills the draw).
   geometry.computeBoundingSphere();
   geometry.name = "beachPianist.birds.geometry";
   return geometry;
@@ -268,6 +275,28 @@ function setPannerPosition(
   }
 }
 
+type InstanceSpec = {
+  /** Orbit centre in site-local space (instance matrix translation). */
+  center: { x: number; y: number; z: number };
+  /** Loose-orbit half sizes (m) and base angular speed (rad/s). */
+  radiusX: number;
+  radiusZ: number;
+  angularSpeed: number;
+  phase: number;
+  scale: number;
+  verticalWander: number;
+  flapRate: number;
+  flapAmplitude: number;
+  /** Perch cycle: seconds per full cycle, fly fraction (ALWAYS_FLY disables). */
+  cyclePeriod: number;
+  flyEnd: number;
+  cyclePhase: number;
+  /** Landing point relative to the orbit centre + settled facing. */
+  perchOffset: { x: number; y: number; z: number };
+  perchYaw: number;
+  tint: THREE.Color;
+};
+
 export class PianoGroveBirds {
   readonly group = new THREE.Group();
   #mesh: THREE.InstancedMesh;
@@ -276,22 +305,41 @@ export class PianoGroveBirds {
   #perches: THREE.Vector3[] = [];
   #audio = new PianoGroveBirdAudio();
   #enabled = true;
-  #matrix = new THREE.Matrix4();
+  #attributes: THREE.InstancedBufferAttribute[] = [];
+  #centers: Float32Array;
+  #motion: Float32Array;
+  #style: Float32Array;
+  #cycle: Float32Array;
+  #perch: Float32Array;
+  #tints: Float32Array;
 
-  constructor() {
+  /**
+   * `perches` are crown landing points in SITE-LOCAL space (already transformed
+   * out of world space by the caller). Without any — vegetation missing or an
+   * all-water ring — the cyclers gracefully stay airborne and chirps fall back
+   * to canopy-height anchor points.
+   */
+  constructor(perches: { position: THREE.Vector3; yaw: number }[] = []) {
     this.group.name = "beachPianist.birds";
-    const motionArray = new Float32Array(COUNT * 4);
-    const styleArray = new Float32Array(COUNT * 4);
-    const tintArray = new Float32Array(COUNT * 3);
-    const motion = new THREE.InstancedBufferAttribute(motionArray, 4);
-    const style = new THREE.InstancedBufferAttribute(styleArray, 4);
-    const tint = new THREE.InstancedBufferAttribute(tintArray, 3);
-    motion.setUsage(THREE.StaticDrawUsage);
-    style.setUsage(THREE.StaticDrawUsage);
-    tint.setUsage(THREE.StaticDrawUsage);
+    this.#centers = new Float32Array(COUNT * 3);
+    this.#motion = new Float32Array(COUNT * 4);
+    this.#style = new Float32Array(COUNT * 4);
+    this.#cycle = new Float32Array(COUNT * 4);
+    this.#perch = new Float32Array(COUNT * 4);
+    this.#tints = new Float32Array(COUNT * 3);
+    const center = new THREE.InstancedBufferAttribute(this.#centers, 3);
+    const motion = new THREE.InstancedBufferAttribute(this.#motion, 4);
+    const style = new THREE.InstancedBufferAttribute(this.#style, 4);
+    const cycle = new THREE.InstancedBufferAttribute(this.#cycle, 4);
+    const perch = new THREE.InstancedBufferAttribute(this.#perch, 4);
+    const tint = new THREE.InstancedBufferAttribute(this.#tints, 3);
+    for (const attributeBuffer of [center, motion, style, cycle, perch, tint]) {
+      attributeBuffer.setUsage(THREE.StaticDrawUsage);
+    }
+    this.#attributes = [center, motion, style, cycle, perch];
 
     this.#geometry = createBirdGeometry();
-    this.#material = createPianoGroveBirdMaterial({ motion, style, tint });
+    this.#material = createPianoGroveBirdMaterial({ center, motion, style, cycle, perch, tint });
     this.#mesh = new THREE.InstancedMesh(this.#geometry, this.#material, COUNT);
     this.#mesh.name = "beachPianist.birds.oneDraw";
     this.#mesh.castShadow = false;
@@ -299,118 +347,161 @@ export class PianoGroveBirds {
     // Vertex-stage orbits extend well beyond the static geometry bounds. The
     // parent site's 260/300 m gate is the single, cheaper culling decision.
     this.#mesh.frustumCulled = false;
+    // Instance matrices stay IDENTITY: r185 applies them to positionLocal
+    // before the custom positionNode, so any translation here would be
+    // scaled/rotated by the flight frame. Centres live in the attribute.
     this.#mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
 
     const palette = [0x34383a, 0x403832, 0x2b3034, 0x46413a, 0x30383b] as const;
     const color = new THREE.Color();
     let slot = 0;
 
+    // Lively canopy circuits directly over the grove. Tangential speed is what
+    // separates "flying" from "hovering": radius × angular speed lands in the
+    // 4–9 m/s small-bird cruise band, with the wander a clear subordinate.
     for (let i = 0; i < CANOPY_FLYERS; i++, slot++) {
       const centerAngle = hash(i, 11) * Math.PI * 2;
-      const centerRadius = 4 + hash(i, 17) * 18;
-      this.#writeInstance(
-        slot,
-        Math.cos(centerAngle) * centerRadius,
-        11.5 + hash(i, 23) * 7.5,
-        Math.sin(centerAngle) * centerRadius,
-        5 + hash(i, 29) * 8,
-        4 + hash(i, 31) * 7,
-        0.18 + hash(i, 37) * 0.2,
-        hash(i, 41) * Math.PI * 2,
-        0.58 + hash(i, 43) * 0.2,
-        0.7 + hash(i, 47) * 1.15,
-        16 + hash(i, 53) * 9,
-        0.68 + hash(i, 59) * 0.2,
-        color.setHex(palette[i % palette.length]),
-        motionArray,
-        styleArray,
-        tintArray
-      );
+      const centerRadius = 5 + hash(i, 17) * 17;
+      this.#writeInstance(slot, {
+        center: {
+          x: Math.cos(centerAngle) * centerRadius,
+          y: 12 + hash(i, 23) * 7,
+          z: Math.sin(centerAngle) * centerRadius
+        },
+        radiusX: 7 + hash(i, 29) * 7,
+        radiusZ: 6 + hash(i, 31) * 6,
+        angularSpeed: 0.42 + hash(i, 37) * 0.3,
+        phase: hash(i, 41) * Math.PI * 2,
+        scale: 0.55 + hash(i, 43) * 0.16,
+        verticalWander: 1 + hash(i, 47) * 1.2,
+        flapRate: 19 + hash(i, 53) * 8,
+        flapAmplitude: 0.66 + hash(i, 59) * 0.18,
+        cyclePeriod: 30,
+        flyEnd: ALWAYS_FLY,
+        cyclePhase: hash(i, 61),
+        perchOffset: { x: 0, y: 0, z: 0 },
+        perchYaw: 0,
+        tint: color.setHex(palette[i % palette.length])
+      });
     }
 
-    // Twice as many slow, slightly enlarged silhouettes occupy the bridge/sky
-    // depth. Their broad ellipses keep the background alive without requiring
-    // additional LOD meshes or audio sources.
+    // Slow, slightly enlarged silhouettes occupy the bridge/sky depth. Their
+    // broad ellipses keep the background alive without additional LOD meshes.
     for (let i = 0; i < DISTANT_FLYERS; i++, slot++) {
       const centerAngle = hash(i, 67) * Math.PI * 2;
       const centerRadius = 34 + hash(i, 71) * 62;
-      this.#writeInstance(
-        slot,
-        Math.cos(centerAngle) * centerRadius,
-        17 + hash(i, 73) * 22,
-        Math.sin(centerAngle) * centerRadius,
-        11 + hash(i, 79) * 18,
-        9 + hash(i, 83) * 17,
-        0.075 + hash(i, 89) * 0.09,
-        hash(i, 97) * Math.PI * 2,
-        0.67 + hash(i, 101) * 0.35,
-        1.5 + hash(i, 103) * 3.2,
-        10 + hash(i, 107) * 7,
-        0.46 + hash(i, 109) * 0.2,
-        color.setHex(palette[(i + 2) % palette.length]),
-        motionArray,
-        styleArray,
-        tintArray
-      );
+      this.#writeInstance(slot, {
+        center: {
+          x: Math.cos(centerAngle) * centerRadius,
+          y: 17 + hash(i, 73) * 22,
+          z: Math.sin(centerAngle) * centerRadius
+        },
+        radiusX: 13 + hash(i, 79) * 16,
+        radiusZ: 11 + hash(i, 83) * 15,
+        angularSpeed: 0.2 + hash(i, 89) * 0.22,
+        phase: hash(i, 97) * Math.PI * 2,
+        scale: 0.67 + hash(i, 101) * 0.35,
+        verticalWander: 1.4 + hash(i, 103) * 1.8,
+        flapRate: 13 + hash(i, 107) * 6,
+        flapAmplitude: 0.5 + hash(i, 109) * 0.2,
+        cyclePeriod: 30,
+        flyEnd: ALWAYS_FLY,
+        cyclePhase: hash(i, 113),
+        perchOffset: { x: 0, y: 0, z: 0 },
+        perchYaw: 0,
+        tint: color.setHex(palette[(i + 2) % palette.length])
+      });
     }
 
-    // Fixed canopy-height silhouettes double as spatial-audio anchors. Tiny
-    // non-zero radii keep the shader tangent finite; zero speed makes them read
-    // as settled birds rather than hovering flyers.
-    for (let i = 0; i < PERCHED; i++, slot++) {
-      const angle = (i / PERCHED) * Math.PI * 2 + (hash(i, 113) - 0.5) * 0.48;
-      const radius = 13 + hash(i, 127) * 14;
-      const x = Math.cos(angle) * radius;
-      const y = 7.4 + hash(i, 131) * 4.6;
-      const z = Math.sin(angle) * radius;
-      this.#perches.push(new THREE.Vector3(x, y, z));
-      this.#writeInstance(
-        slot,
-        x,
-        y,
-        z,
-        0.001,
-        0.001,
-        0,
-        angle + Math.PI * 0.5,
-        0.42 + hash(i, 137) * 0.1,
-        0,
-        1,
-        0,
-        color.setHex(palette[(i + 1) % palette.length]),
-        motionArray,
-        styleArray,
-        tintArray
-      );
+    // Perch cyclers: each owns a real grove crown and endlessly cycles
+    // cruise → glide in → settle → take off, staggered so a few birds are
+    // always sitting in the trees while others wheel overhead.
+    for (let i = 0; i < PERCH_CYCLERS; i++, slot++) {
+      const perchSource = perches.length > 0 ? perches[i % perches.length] : null;
+      // When crowns are shared, a per-bird lateral nudge keeps two silhouettes
+      // from ever settling into the same triangle of canopy.
+      const perchPosition = perchSource
+        ? perchSource.position
+            .clone()
+            .add(
+              new THREE.Vector3((hash(i, 227) - 0.5) * 0.9, 0, (hash(i, 229) - 0.5) * 0.9)
+            )
+        : null;
+      const offsetAngle = hash(i, 127) * Math.PI * 2;
+      const offsetRadius = 3.5 + hash(i, 131) * 4.5;
+      const center = perchPosition
+        ? {
+            x: perchPosition.x + Math.cos(offsetAngle) * offsetRadius,
+            y: perchPosition.y + 4 + hash(i, 137) * 3,
+            z: perchPosition.z + Math.sin(offsetAngle) * offsetRadius
+          }
+        : {
+            x: Math.cos(offsetAngle) * (13 + hash(i, 139) * 14),
+            y: 11 + hash(i, 137) * 5,
+            z: Math.sin(offsetAngle) * (13 + hash(i, 139) * 14)
+          };
+      if (perchPosition) this.#perches.push(perchPosition);
+      const period = 24 + hash(i, 149) * 18;
+      this.#writeInstance(slot, {
+        center,
+        radiusX: 6 + hash(i, 151) * 5,
+        radiusZ: 5 + hash(i, 157) * 5,
+        angularSpeed: 0.5 + hash(i, 163) * 0.3,
+        phase: hash(i, 167) * Math.PI * 2,
+        scale: 0.5 + hash(i, 173) * 0.15,
+        verticalWander: 0.8 + hash(i, 179) * 0.8,
+        flapRate: 20 + hash(i, 181) * 8,
+        flapAmplitude: 0.68 + hash(i, 191) * 0.16,
+        cyclePeriod: period,
+        // Airborne fallback when the grove has no crowns to land on.
+        flyEnd: perchPosition ? 0.52 + hash(i, 193) * 0.18 : ALWAYS_FLY,
+        cyclePhase: hash(i, 197),
+        perchOffset: perchPosition
+          ? {
+              x: perchPosition.x - center.x,
+              y: perchPosition.y - center.y,
+              z: perchPosition.z - center.z
+            }
+          : { x: 0, y: 0, z: 0 },
+        perchYaw: perchSource?.yaw ?? 0,
+        tint: color.setHex(palette[(i + 1) % palette.length])
+      });
     }
 
-    this.#mesh.instanceMatrix.needsUpdate = true;
+    // Chirp anchors survive a perchless grove: fall back to canopy-height ring
+    // points so the audio layer never divides by a zero perch count.
+    if (this.#perches.length === 0) {
+      for (let i = 0; i < 6; i++) {
+        const angle = (i / 6) * Math.PI * 2 + (hash(i, 199) - 0.5) * 0.48;
+        const radius = 13 + hash(i, 211) * 14;
+        this.#perches.push(
+          new THREE.Vector3(Math.cos(angle) * radius, 7.4 + hash(i, 223) * 4.6, Math.sin(angle) * radius)
+        );
+      }
+    }
+
     this.group.add(this.#mesh);
   }
 
-  #writeInstance(
-    slot: number,
-    x: number,
-    y: number,
-    z: number,
-    radiusX: number,
-    radiusZ: number,
-    angularSpeed: number,
-    phase: number,
-    scale: number,
-    verticalWander: number,
-    flapRate: number,
-    flapAmplitude: number,
-    tint: THREE.Color,
-    motion: Float32Array,
-    style: Float32Array,
-    colors: Float32Array
-  ): void {
-    motion.set([radiusX, radiusZ, angularSpeed, phase], slot * 4);
-    style.set([scale, verticalWander, flapRate, flapAmplitude], slot * 4);
-    tint.toArray(colors, slot * 3);
-    this.#matrix.makeTranslation(x, y, z);
-    this.#mesh?.setMatrixAt(slot, this.#matrix);
+  #writeInstance(slot: number, spec: InstanceSpec): void {
+    this.#centers.set([spec.center.x, spec.center.y, spec.center.z], slot * 3);
+    this.#motion.set([spec.radiusX, spec.radiusZ, spec.angularSpeed, spec.phase], slot * 4);
+    this.#style.set([spec.scale, spec.verticalWander, spec.flapRate, spec.flapAmplitude], slot * 4);
+    this.#cycle.set(
+      [
+        1 / Math.max(1, spec.cyclePeriod),
+        spec.flyEnd,
+        spec.cyclePhase,
+        // Transition width in cycle phase: ~3 s of glide-in/take-off.
+        Math.min(0.2, 3 / Math.max(1, spec.cyclePeriod))
+      ],
+      slot * 4
+    );
+    this.#perch.set(
+      [spec.perchOffset.x, spec.perchOffset.y, spec.perchOffset.z, spec.perchYaw],
+      slot * 4
+    );
+    spec.tint.toArray(this.#tints, slot * 3);
   }
 
   #worldPerch = (index: number, out: THREE.Vector3): THREE.Vector3 => {
@@ -430,15 +521,46 @@ export class PianoGroveBirds {
     this.#audio.update(dt, distance, gust, live, this.#perches.length, this.#worldPerch);
   }
 
+  /** Site-local crown landing points (QA surface for probes). */
+  get perchPoints(): readonly THREE.Vector3[] {
+    return this.#perches;
+  }
+
+  /** Raw per-instance data (QA surface for probes; do not mutate). */
+  get instanceData() {
+    return {
+      center: this.#centers,
+      motion: this.#motion,
+      style: this.#style,
+      cycle: this.#cycle,
+      perch: this.#perch
+    };
+  }
+
+  /** QA-only: clone one slot's flight data into every instance so probes can
+   *  observe a single behaviour with 42× visibility. Irreversible until the
+   *  site reloads; never call outside headless verification. */
+  debugCloneSlot(source: number): void {
+    for (let slot = 0; slot < COUNT; slot++) {
+      if (slot === source) continue;
+      this.#centers.copyWithin(slot * 3, source * 3, source * 3 + 3);
+      for (const array of [this.#motion, this.#style, this.#cycle, this.#perch]) {
+        array.copyWithin(slot * 4, source * 4, source * 4 + 4);
+      }
+    }
+    for (const attributeBuffer of this.#attributes) attributeBuffer.needsUpdate = true;
+  }
+
   get debugState() {
     return {
       instances: COUNT,
       canopyFlyers: CANOPY_FLYERS,
       distantFlyers: DISTANT_FLYERS,
-      perched: PERCHED,
+      perchCyclers: PERCH_CYCLERS,
+      perchPoints: this.#perches.length,
       drawCalls: 1,
       gpuAnimated: true,
-      flightModel: "banked-harmonic-burst-glide",
+      flightModel: "banked-harmonic-perch-cycle",
       visible: this.group.visible,
       shadows: false,
       audio: this.#audio.debugState
