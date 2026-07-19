@@ -85,18 +85,14 @@ export function startLiveFogFeed(sink: LiveFogSink): () => void {
   }
 
   const schedule = () => {
-    if (stopped) return
+    if (stopped || document.visibilityState === "hidden") return
     window.clearTimeout(timer)
     const jitter = 0.9 + Math.random() * 0.2
     timer = window.setTimeout(() => void poll(), POLL_MS * jitter)
   }
 
   const poll = async () => {
-    if (stopped || polling) return
-    if (document.visibilityState === "hidden") {
-      schedule()
-      return
-    }
+    if (stopped || polling || document.visibilityState === "hidden") return
     polling = true
     const controller = new AbortController()
     request = controller
@@ -108,7 +104,7 @@ export function startLiveFogFeed(sink: LiveFogSink): () => void {
       applyPayload(sink, payload, false)
       saveCachedPayload(payload)
     } catch (error) {
-      if (!stopped) {
+      if (!stopped && controller.signal.reason !== "page suspended") {
         sink.setLiveFogStatus(
           "offline",
           `last good fades to procedural · ${error instanceof Error ? error.message : "request failed"}`
@@ -127,8 +123,18 @@ export function startLiveFogFeed(sink: LiveFogSink): () => void {
     window.clearTimeout(timer)
     void poll()
   }
+  const onVisibilityChange = () => {
+    if (document.visibilityState === "hidden") {
+      window.clearTimeout(timer)
+      request?.abort("page suspended")
+      return
+    }
+    // Let an abort triggered by the preceding hidden edge clear `polling`
+    // before attempting the foreground refresh.
+    window.setTimeout(resume, 0)
+  }
   window.addEventListener("online", resume)
-  document.addEventListener("visibilitychange", resume)
+  document.addEventListener("visibilitychange", onVisibilityChange)
   void poll()
 
   return () => {
@@ -136,6 +142,6 @@ export function startLiveFogFeed(sink: LiveFogSink): () => void {
     window.clearTimeout(timer)
     request?.abort("weather feed stopped")
     window.removeEventListener("online", resume)
-    document.removeEventListener("visibilitychange", resume)
+    document.removeEventListener("visibilitychange", onVisibilityChange)
   }
 }

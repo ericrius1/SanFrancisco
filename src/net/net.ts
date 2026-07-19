@@ -436,7 +436,25 @@ export class Net {
   #statusDetail: string | undefined; // last transition detail, for onStatus replay-on-assign
   #url: string;
   #retryMs = 1000;
+  #retryTimer: number | null = null;
   #closed = false;
+  #pageVisible = document.visibilityState === "visible";
+  #onVisibilityChange = () => {
+    this.#pageVisible = document.visibilityState === "visible";
+    if (!this.#pageVisible) {
+      if (this.#retryTimer !== null) {
+        window.clearTimeout(this.#retryTimer);
+        this.#retryTimer = null;
+      }
+      if (this.#rakeFlushTimer !== null) {
+        window.clearTimeout(this.#rakeFlushTimer);
+        this.#rakeFlushTimer = null;
+      }
+      this.#ws?.close(1000, "page suspended");
+      return;
+    }
+    if (!this.#closed && !this.#ws) this.#connect();
+  };
   #sendAt = 0;
   #lastSent = "";
   #lastSentAt = 0;
@@ -471,7 +489,8 @@ export class Net {
     const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.#url = envUrl || `${proto}://${location.host}/ws`;
-    this.#connect();
+    document.addEventListener("visibilitychange", this.#onVisibilityChange);
+    if (this.#pageVisible) this.#connect();
   }
 
   #adoptRakeSession(raw: unknown): boolean {
@@ -643,7 +662,7 @@ export class Net {
   }
 
   #connect() {
-    if (this.#closed) return;
+    if (this.#closed || !this.#pageVisible || this.#ws) return;
     this.#setStatus("connecting");
     let ws: WebSocket;
     try {
@@ -694,8 +713,11 @@ export class Net {
   }
 
   #scheduleRetry() {
-    if (this.#closed) return;
-    setTimeout(() => this.#connect(), this.#retryMs);
+    if (this.#closed || !this.#pageVisible || this.#retryTimer !== null) return;
+    this.#retryTimer = window.setTimeout(() => {
+      this.#retryTimer = null;
+      this.#connect();
+    }, this.#retryMs);
     this.#retryMs = Math.min(this.#retryMs * 2, 15000);
   }
 
@@ -1298,6 +1320,9 @@ export class Net {
 
   dispose() {
     this.#closed = true;
+    document.removeEventListener("visibilitychange", this.#onVisibilityChange);
+    if (this.#retryTimer !== null) window.clearTimeout(this.#retryTimer);
+    this.#retryTimer = null;
     this.#applyPendingRakesLocally();
     this.#ws?.close();
   }

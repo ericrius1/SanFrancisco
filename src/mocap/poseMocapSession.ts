@@ -39,6 +39,29 @@ export class PoseMocapSession {
   #inferenceMsEma = 0;
   #lastStatusAt = 0;
   #trackingMode = "";
+  #pageVisible = document.visibilityState === "visible";
+
+  #onVisibilityChange = () => {
+    this.#pageVisible = document.visibilityState === "visible";
+    if (!this.#pageVisible) {
+      if (this.#frameCallback && "cancelVideoFrameCallback" in this.#video) {
+        this.#video.cancelVideoFrameCallback(this.#frameCallback);
+      } else if (this.#frameCallback) {
+        cancelAnimationFrame(this.#frameCallback);
+      }
+      this.#frameCallback = 0;
+      for (const track of this.#stream?.getVideoTracks() ?? []) track.enabled = false;
+      this.#video.pause();
+      this.#retargeter.reset();
+      if (this.#debugCanvas) clearPoseDebug(this.#debugCanvas);
+      return;
+    }
+    for (const track of this.#stream?.getVideoTracks() ?? []) track.enabled = true;
+    this.#lastInferenceAt = 0;
+    if (this.#running && this.#detector) {
+      void this.#video.play().then(() => this.#scheduleInference()).catch(() => {});
+    }
+  };
 
   constructor(options: SessionOptions) {
     this.#video = options.video;
@@ -50,12 +73,17 @@ export class PoseMocapSession {
 
   async start(): Promise<void> {
     this.#running = true;
+    this.#pageVisible = document.visibilityState === "visible";
+    document.addEventListener("visibilitychange", this.#onVisibilityChange);
     this.#onState("loading", "Requesting camera");
     try {
       this.#stream = await this.#openCamera();
       this.#video.srcObject = this.#stream;
+      if (!this.#pageVisible) {
+        for (const track of this.#stream.getVideoTracks()) track.enabled = false;
+      }
       await this.#waitForVideo();
-      await this.#video.play();
+      if (this.#pageVisible) await this.#video.play();
 
       this.#detector = new PoseDetector();
       await this.#detector.initialize((fraction, label) => {
@@ -72,8 +100,11 @@ export class PoseMocapSession {
 
   stop(): void {
     this.#running = false;
+    document.removeEventListener("visibilitychange", this.#onVisibilityChange);
     if (this.#frameCallback && "cancelVideoFrameCallback" in this.#video) {
       this.#video.cancelVideoFrameCallback(this.#frameCallback);
+    } else if (this.#frameCallback) {
+      cancelAnimationFrame(this.#frameCallback);
     }
     this.#frameCallback = 0;
     if (this.#inferenceActive) this.#disposePending = true;
@@ -130,19 +161,26 @@ export class PoseMocapSession {
   }
 
   #scheduleInference(): void {
-    if (!this.#running) return;
+    if (!this.#running || !this.#pageVisible || this.#frameCallback) return;
     if ("requestVideoFrameCallback" in this.#video) {
-      this.#frameCallback = this.#video.requestVideoFrameCallback(() => void this.#infer());
+      this.#frameCallback = this.#video.requestVideoFrameCallback(() => {
+        this.#frameCallback = 0;
+        void this.#infer();
+      });
     } else {
-      this.#frameCallback = requestAnimationFrame(() => void this.#infer());
+      this.#frameCallback = requestAnimationFrame(() => {
+        this.#frameCallback = 0;
+        void this.#infer();
+      });
     }
   }
 
   async #infer(): Promise<void> {
-    if (!this.#running || !this.#detector) return;
+    if (!this.#running || !this.#pageVisible || !this.#detector) return;
     this.#inferenceActive = true;
     try {
       const detection = await this.#detector.detect(this.#video);
+      if (!this.#running || !this.#pageVisible) return;
       const now = performance.now();
       const dt = this.#lastInferenceAt ? Math.min((now - this.#lastInferenceAt) / 1000, 0.25) : 1 / 30;
       this.#lastInferenceAt = now;

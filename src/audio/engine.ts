@@ -31,10 +31,25 @@ export class AudioEngine {
   #levels: Record<AudioGroupName, number> = { music: 0, effects: 0, world: 0, voice: 0 };
   #unlocked = false;
   #hold = 0;
-  // Persistent activity holds keep the ctx running while visible; background
-  // holds (voice chat) keep it running even while the tab is hidden.
+  // Persistent activity holds keep the context running only while the page is
+  // visible. Page suspension always wins over every feature hold.
   #persistent = 0;
-  #background = 0;
+  #pageVisible = typeof document === "undefined" || document.visibilityState === "visible";
+
+  #onVisibilityChange = () => {
+    this.#pageVisible = document.visibilityState === "visible";
+    const ctx = this.#ctx;
+    if (!ctx || ctx.state === "closed") return;
+    if (!this.#pageVisible) {
+      // Suspending the context halts the entire Web Audio graph, including
+      // oscillators, analysers, media-stream nodes and scheduled automation.
+      if (ctx.state === "running") void ctx.suspend();
+      return;
+    }
+    if (this.#unlocked && (this.#hold > 0 || this.#persistent > 0) && ctx.state === "suspended") {
+      void ctx.resume();
+    }
+  };
 
   constructor() {
     // Guarded so Node audio probes can import feature modules without a window.
@@ -42,7 +57,7 @@ export class AudioEngine {
     const unlock = () => {
       this.#unlocked = true;
       const ctx = this.#ensure();
-      if (ctx?.state === "suspended") void ctx.resume();
+      if (this.#pageVisible && ctx?.state === "suspended") void ctx.resume();
       window.removeEventListener("pointerdown", unlock);
       window.removeEventListener("keydown", unlock);
       window.removeEventListener("touchstart", unlock);
@@ -50,6 +65,7 @@ export class AudioEngine {
     window.addEventListener("pointerdown", unlock, { passive: true });
     window.addEventListener("keydown", unlock);
     window.addEventListener("touchstart", unlock, { passive: true });
+    document.addEventListener("visibilitychange", this.#onVisibilityChange);
   }
 
   get unlocked(): boolean {
@@ -68,7 +84,7 @@ export class AudioEngine {
       },
       hold: +this.#hold.toFixed(3),
       persistent: this.#persistent,
-      background: this.#background
+      pageVisible: this.#pageVisible
     };
   }
 
@@ -81,8 +97,8 @@ export class AudioEngine {
   async unlock(): Promise<void> {
     const ctx = this.#ensure();
     if (!ctx) return;
-    await ctx.resume().catch(() => {});
     this.#unlocked = true;
+    if (this.#pageVisible) await ctx.resume().catch(() => {});
   }
 
   /**
@@ -94,7 +110,7 @@ export class AudioEngine {
     const ctx = this.#ensure();
     if (!ctx) return null;
     this.touch(holdSeconds);
-    if (ctx.state === "suspended") void ctx.resume();
+    if (this.#pageVisible && ctx.state === "suspended") void ctx.resume();
     return { ctx, input: this.#groups[group] };
   }
 
@@ -118,18 +134,15 @@ export class AudioEngine {
 
   /**
    * A persistent hold for a sustained activity. The returned release fn is
-   * idempotent; `background: true` keeps the ctx running while the tab is hidden.
+   * idempotent. Visibility suspension always overrides persistent holds.
    */
-  acquireHold(opts?: { background?: boolean }): () => void {
-    const bg = opts?.background === true;
-    if (bg) this.#background++;
-    else this.#persistent++;
+  acquireHold(): () => void {
+    this.#persistent++;
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      if (bg) this.#background = Math.max(0, this.#background - 1);
-      else this.#persistent = Math.max(0, this.#persistent - 1);
+      this.#persistent = Math.max(0, this.#persistent - 1);
     };
   }
 
@@ -138,20 +151,16 @@ export class AudioEngine {
     const ctx = this.#ctx;
     if (!ctx) return;
 
-    const visible = document.visibilityState === "visible";
+    const visible = this.#pageVisible;
     this.#hold = Math.max(0, this.#hold - dt);
-    // Background holds keep running regardless of visibility; everything else
-    // pauses while hidden.
-    const wantRunning =
-      this.#background > 0 || (visible && (this.#hold > 0 || this.#persistent > 0));
+    const wantRunning = visible && (this.#hold > 0 || this.#persistent > 0);
 
     const vis = visible ? 1 : 0;
     const targets: Record<AudioGroupName, number> = {
       music: musicAudioLevel() * vis,
       effects: effectsAudioLevel() * vis,
       world: soundscapeAudioLevel() * vis,
-      // Voice stays audible while hidden — proximity chat is a social feature.
-      voice: voiceAudioLevel()
+      voice: voiceAudioLevel() * vis
     };
 
     const running = ctx.state === "running";
@@ -174,6 +183,9 @@ export class AudioEngine {
   }
 
   dispose(): void {
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.#onVisibilityChange);
+    }
     const ctx = this.#ctx;
     if (ctx && ctx.state !== "closed") void ctx.close();
     this.#ctx = null;
@@ -184,6 +196,7 @@ export class AudioEngine {
     if (typeof AudioContext === "undefined") return null; // Node probes
     const ctx = new AudioContext();
     this.#ctx = ctx;
+    if (!this.#pageVisible && ctx.state === "running") void ctx.suspend();
 
     // group gains (start silent) → master (reserved for future global fades) → out
     this.#master = ctx.createGain();

@@ -10,6 +10,12 @@ type FrameTracer = {
 export type FrameDriver = {
   setManual(enabled: boolean): void;
   resize(): void;
+  readonly debugState: {
+    manual: boolean;
+    pageVisible: boolean;
+    loopRunning: boolean;
+    ticks: number;
+  };
   dispose(): void;
 };
 
@@ -32,12 +38,19 @@ export function startFrameDriver(opts: {
   const throttleRaf = navigator.webdriver && !new URLSearchParams(location.search).has("fullfps");
   let lastLoop = performance.now();
   let manual = false;
+  let pageVisible = document.visibilityState === "visible";
+  let loopRunning = false;
+  let ticks = 0;
 
   const loop = () => {
+    // setAnimationLoop(null) is the primary background gate. Keep this guard as
+    // a hard backstop in case a queued callback crosses the visibility edge.
+    if (!pageVisible || manual) return;
     const now = performance.now();
     if (throttleRaf && now - lastLoop < 50) return;
     const frameMs = now - lastLoop;
     lastLoop = now;
+    ticks++;
     tick();
     if (isRevealed()) {
       tracer.frame(frameMs);
@@ -45,9 +58,50 @@ export function startFrameDriver(opts: {
     }
   };
 
+  let keepAliveTimer: number | null = null;
+
+  const stopKeepAlive = () => {
+    if (keepAliveTimer === null) return;
+    window.clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  };
+
+  const syncKeepAlive = () => {
+    // The dev watchdog recovers a stalled *visible* WebGPU loop. It must not
+    // itself wake the app while the page is suspended.
+    if (!import.meta.env.DEV || manual || !pageVisible) {
+      stopKeepAlive();
+      return;
+    }
+    if (keepAliveTimer !== null) return;
+    keepAliveTimer = window.setInterval(() => {
+      if (!manual && pageVisible && performance.now() - lastLoop > 250) {
+        ticks++;
+        tick(0.05);
+      }
+    }, 50);
+  };
+
+  const syncAnimationLoop = () => {
+    const shouldRun = !manual && pageVisible;
+    if (shouldRun !== loopRunning) {
+      // Reset the wall-clock anchor when resuming so time spent hidden never
+      // arrives as a giant simulation delta.
+      if (shouldRun) lastLoop = performance.now();
+      renderer.setAnimationLoop(shouldRun ? loop : null);
+      loopRunning = shouldRun;
+    }
+    syncKeepAlive();
+  };
+
   const setManual = (enabled: boolean) => {
     manual = enabled;
-    renderer.setAnimationLoop(enabled ? null : loop);
+    syncAnimationLoop();
+  };
+
+  const onVisibilityChange = () => {
+    pageVisible = document.visibilityState === "visible";
+    syncAnimationLoop();
   };
 
   const resize = () => {
@@ -63,24 +117,23 @@ export function startFrameDriver(opts: {
   });
 
   window.addEventListener("resize", resize);
+  document.addEventListener("visibilitychange", onVisibilityChange);
   resizeObserver.observe(app);
-  renderer.setAnimationLoop(loop);
-
-  let keepAliveTimer: number | null = null;
-  if (import.meta.env.DEV) {
-    keepAliveTimer = window.setInterval(() => {
-      if (!manual && (document.hidden || performance.now() - lastLoop > 250)) tick(0.05);
-    }, 50);
-  }
+  syncAnimationLoop();
 
   return {
     setManual,
     resize,
+    get debugState() {
+      return { manual, pageVisible, loopRunning, ticks };
+    },
     dispose() {
       renderer.setAnimationLoop(null);
+      loopRunning = false;
       window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       resizeObserver.disconnect();
-      if (keepAliveTimer !== null) window.clearInterval(keepAliveTimer);
+      stopKeepAlive();
     }
   };
 }

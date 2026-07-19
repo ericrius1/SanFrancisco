@@ -130,6 +130,18 @@ export class StarlinkSky {
   #disposed = false
   #visibleCount = 0
   #pollTimer = 0
+  #request: AbortController | null = null
+
+  #onVisibilityChange = () => {
+    if (document.visibilityState === "hidden") {
+      window.clearInterval(this.#pollTimer)
+      this.#pollTimer = 0
+      this.#request?.abort("page suspended")
+      return
+    }
+    void this.#ensureElements()
+    this.#startPolling()
+  }
 
   constructor(scene: THREE.Scene) {
     this.#positions = new Float32Array(MAX_VISIBLE * 4)
@@ -168,7 +180,15 @@ export class StarlinkSky {
     this.#sprite.visible = false
     scene.add(this.#sprite)
 
-    void this.#ensureElements()
+    document.addEventListener("visibilitychange", this.#onVisibilityChange)
+    if (document.visibilityState === "visible") {
+      void this.#ensureElements()
+      this.#startPolling()
+    }
+  }
+
+  #startPolling() {
+    if (this.#disposed || this.#pollTimer || document.visibilityState === "hidden") return
     this.#pollTimer = window.setInterval(() => {
       if (this.#disposed) return
       void this.#ensureElements(true)
@@ -176,10 +196,11 @@ export class StarlinkSky {
   }
 
   async #ensureElements(force = false) {
-    if (this.#disposed || this.#fetching) return
+    if (this.#disposed || this.#fetching || document.visibilityState === "hidden") return
     if (!force && this.#ready && Date.now() - this.#lastFetchMs < REFRESH_GP_MS) return
     this.#fetching = true
     const controller = new AbortController()
+    this.#request = controller
     const timeout = window.setTimeout(() => controller.abort("starlink timeout"), REQUEST_TIMEOUT_MS)
     try {
       const response = await fetch("/api/starlink", { signal: controller.signal })
@@ -201,7 +222,7 @@ export class StarlinkSky {
       this.#lastFetchMs = Date.now()
       this.#ready = next.length > 0
     } catch (error) {
-      if (!this.#ready) {
+      if (!this.#ready && document.visibilityState === "visible") {
         console.warn(
           "[starlink] GP feed unavailable:",
           error instanceof Error ? error.message : error
@@ -209,7 +230,15 @@ export class StarlinkSky {
       }
     } finally {
       window.clearTimeout(timeout)
+      if (this.#request === controller) this.#request = null
       this.#fetching = false
+      if (
+        controller.signal.reason === "page suspended" &&
+        !this.#disposed &&
+        document.visibilityState === "visible"
+      ) {
+        void this.#ensureElements(force)
+      }
     }
   }
 
@@ -286,6 +315,8 @@ export class StarlinkSky {
   dispose() {
     this.#disposed = true
     window.clearInterval(this.#pollTimer)
+    this.#request?.abort("starlink disposed")
+    document.removeEventListener("visibilitychange", this.#onVisibilityChange)
     this.#sprite.removeFromParent()
     this.#sprite.material.dispose()
     this.#satrecs = []
