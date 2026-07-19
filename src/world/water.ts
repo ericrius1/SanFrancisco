@@ -100,13 +100,13 @@ export class Water {
       const mat = new THREE.MeshStandardNodeMaterial({
         roughness: 0.48,
         metalness: 0,
-        transparent: true,
-        // The displaced near sheet can fold over itself in screen space from a
-        // surfer-height camera. Let its closest triangles occlude distant rows;
-        // the map-wide flat sheet remains a non-writing backdrop.
-        depthWrite: displace > 0,
-        alphaTest: displace > 0 ? 0.02 : 0
+        transparent: false,
+        // Ocean is an occluding body, not a tinted overlay. Both sheets write
+        // depth; alpha testing below resolves their complementary ownership and
+        // reveal masks in the opaque pass.
+        depthWrite: true
       });
+      mat.alphaTestNode = float(0.5);
 
       const t = this.#uTime;
 
@@ -282,11 +282,6 @@ export class Water {
       const baseRough = mix(float(0.76), float(0.42), detail);
       mat.roughnessNode = mix(baseRough, float(0.78), foamTotal);
 
-      // Body reads (near-)opaque so the Caribbean colour shows at full saturation
-      // instead of the sky bleeding through and greying it out: shallow 0.82,
-      // deep 1.0. Only the thin edges stay soft — the player-patch feather
-      // (waterVisibility) and the land cutout (dry) — so no seams, no z-fight.
-      const alpha = clamp(mix(0.82, 1.0, d2).add(foamTotal.mul(0.25)), 0, 1);
       const surfPresence = max(max(surfField.face, surfField.lip), surfField.white);
       // The lazy high-resolution face follows the player in a 1080 m down-line
       // window — wider than this whole 560 m near patch — so whenever the surf
@@ -295,8 +290,10 @@ export class Water {
       const surfReplacement = displace > 0
         ? smoothstep(0.12, 0.38, surfPresence).mul(this.#uSurfing)
         : float(0);
-      mat.opacityNode = alpha
-        .mul(waterVisibility)
+      // Interior water is fully opaque. opacityNode carries coverage only:
+      // the threshold turns the near/far handoff, dry cutout, and world reveal
+      // into solid ownership instead of blending the scene through the body.
+      mat.opacityNode = waterVisibility
         .mul(surfReplacement.oneMinus())
         .mul(dry.oneMinus())
         .mul(this.#uReveal)
