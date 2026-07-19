@@ -23,19 +23,34 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {
+  abs,
+  atomicAdd,
+  atomicStore,
   attribute,
   cameraPosition,
+  cameraViewMatrix,
+  cos,
   float,
   Fn,
+  If,
+  instanceIndex,
+  int,
   Loop,
   mix,
+  normalGeometry,
   normalView,
+  positionGeometry,
   positionLocal,
   positionViewDirection,
+  sin,
   smoothstep as smoothstepNode,
+  storage,
+  uint,
   uniform,
   vec2,
-  vec3
+  vec3,
+  vec4,
+  vertexStage
 } from "three/tsl";
 import { groundSway, groundSwayFlow, groundSwayLite, WIND_DIR } from "../groundcover/sway";
 import { DISPLACERS, MAX_DISPLACERS } from "../groundcover/displacers";
@@ -43,6 +58,7 @@ import { fadeAroundInstanceAnchor, instanceAnchorWorld, worldOffsetToModelLocal 
 import { fitGroundY } from "../groundcover/grounding";
 import { hash2, r2Offset, smoothstep, worleyClump } from "../groundcover/scatter";
 import { flowerDriftAt, grassyGround, nearAnyWildRegion, wildRegionAt } from "./layout";
+import { releaseRendererAttribute, requireRenderer } from "../../app/rendererRegistry";
 import type { GardenTerrain } from "../garden/layout";
 import { EXPOSURE_REBASE, FLOWER_TUNING } from "../../config";
 
@@ -517,7 +533,24 @@ type FlowerMaterialState = {
 
 type FlowerRenderTier = "authored" | "hero" | "mid" | "far";
 
-function flowerMaterial(tier: FlowerRenderTier): FlowerMaterialState {
+/** Storage handles for the GPU-culled ring tiers. The vertex shader resolves
+ *  the real instance through `visibleIndices[base + instanceIndex]`, written by
+ *  the per-frame frustum pass, and reconstructs the transform from packed data
+ *  instead of an instance matrix. */
+type FlowerIndirectSource = {
+  /** vec4 — anchor xyz (world) + yaw. */
+  data0: N;
+  /** vec4 — scale xz, scale y, rotation shade, bucket id. */
+  data1: N;
+  /** vec4 — bloom rgb + conservative cull radius. */
+  data2: N;
+  /** uint — shared compacted visible-index buffer. */
+  visibleIndices: N;
+  /** uint uniform — first slot of this bucket's visible region. */
+  base: N;
+};
+
+function flowerMaterial(tier: FlowerRenderTier, indirect?: FlowerIndirectSource): FlowerMaterialState {
   // True SSS is reserved for hero/authored petals where translucency covers
   // enough pixels to read. Mid/far tiers use a cheaper standard node material,
   // retaining the colour ramp and rim lift without paying SSS over the field.
@@ -533,13 +566,23 @@ function flowerMaterial(tier: FlowerRenderTier): FlowerMaterialState {
   const windOffset: N = swayData.yz;
   const headMask: N = attribute("aHead", "float");
   const grad: N = attribute("aG", "float"); // 0 bloom centre → 1 petal tip
-  const bloom: N = attribute("aBloom", "vec3"); // per-instance bloom colour
+
+  // Indirect tiers fetch packed instance data through the frustum-culled index
+  // buffer; hoist each vec4 into a var so reuse doesn't re-emit buffer loads.
+  const trueIndex: N | null = indirect
+    ? (indirect.visibleIndices.element(uint(instanceIndex).add(indirect.base)) as N).toVar()
+    : null;
+  const d0: N | null = indirect ? (indirect.data0.element(trueIndex) as N).toVar() : null;
+  const d1: N | null = indirect ? (indirect.data1.element(trueIndex) as N).toVar() : null;
+  const d2: N | null = indirect ? (indirect.data2.element(trueIndex) as N).toVar() : null;
+
   // positionNode runs after the instance matrix in Three r185. Keep the exact
   // mesh-local instance translation available so LOD scales around the root,
   // never around the world's origin. W carries precomputed yaw colour variance.
-  const flowerAnchor: N = attribute("aFlowerAnchor", "vec4");
-  const anchorLocal: N = flowerAnchor.xyz;
-  const anchorWorld: N = instanceAnchorWorld(anchorLocal);
+  const flowerAnchor: N | null = indirect ? null : attribute("aFlowerAnchor", "vec4");
+  const anchorLocal: N = indirect ? d0.xyz : flowerAnchor.xyz;
+  // Ring meshes sit at the world origin, so the packed anchor IS world space.
+  const anchorWorld: N = indirect ? d0.xyz : instanceAnchorWorld(anchorLocal);
   const focus = new THREE.Vector2(1e6, 1e6);
   const focusU: N = uniform(focus);
   const reachU: N = uniform(110);
@@ -547,8 +590,12 @@ function flowerMaterial(tier: FlowerRenderTier): FlowerMaterialState {
   // COLOUR-FROM-ROTATION (the article's cheap-variation trick): a flower's yaw
   // nudges its brightness, so a patch of the same species + tint still varies bloom
   // to bloom for free — packed beside the anchor, no extra buffer or pass.
-  const rotShade: N = flowerAnchor.w;
-  const bloomV: N = bloom.mul(rotShade);
+  const rotShade: N = indirect ? d1.z : flowerAnchor.w;
+  // Fragment stages cannot key storage reads off instanceIndex — route the
+  // shaded bloom colour through a vertex-stage varying in indirect mode.
+  const bloomV: N = indirect
+    ? vertexStage(d2.xyz.mul(rotShade))
+    : (attribute("aBloom", "vec3") as N).mul(rotShade);
   // Petal COLOUR RAMP: just a small luminous lift at the very centre → the SATURATED
   // bloom over most of the petal (a soft glow without washing the flower out — pale
   // reads as sickly in a bright daylit meadow, unlike the reference's dark scene).
@@ -556,8 +603,28 @@ function flowerMaterial(tier: FlowerRenderTier): FlowerMaterialState {
   const petalCol: N = mix(core, bloomV, (grad as N).pow(0.55));
   mat.colorNode = mix(STEM_COL, petalCol, headMask);
 
+  // Indirect mode reconstructs rotation in-shader (no instance matrix), so the
+  // lit normal must be yaw-rotated and pushed through a vertex-stage varying.
+  const yawCos: N | null = indirect ? (cos(d0.w) as N).toVar() : null;
+  const yawSin: N | null = indirect ? (sin(d0.w) as N).toVar() : null;
+  let litNormalView: N = normalView as N;
+  if (indirect) {
+    const inverseScaled: N = vec3(
+      (normalGeometry as N).x.div(d1.x.max(1e-4)),
+      (normalGeometry as N).y.div(d1.y.max(1e-4)),
+      (normalGeometry as N).z.div(d1.x.max(1e-4))
+    );
+    const rotated: N = vec3(
+      inverseScaled.x.mul(yawCos).sub(inverseScaled.z.mul(yawSin)) as N,
+      inverseScaled.y as N,
+      inverseScaled.x.mul(yawSin).add(inverseScaled.z.mul(yawCos)) as N
+    );
+    litNormalView = vertexStage((cameraViewMatrix as N).mul(vec4(rotated, 0)).xyz) as N;
+    mat.normalNode = litNormalView.normalize();
+  }
+
   // FRESNEL RIM: grazing petal edges glow, the way a back-lit petal's rim lights up.
-  const facing: N = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs();
+  const facing: N = litNormalView.normalize().dot((positionViewDirection as N).normalize()).abs();
   const rim: N = facing.oneMinus().pow(2.6);
   // Emissive keeps blooms luminous (a colour wash even in shade) with a brighter rim
   // edge — the reference blooms read self-lit, not lit only by where the sun happens
@@ -654,9 +721,27 @@ function flowerMaterial(tier: FlowerRenderTier): FlowerMaterialState {
         : float(1);
   const fade: N = ringFade.mul(lodFade);
 
-  const scaled: N = fadeAroundInstanceAnchor(positionLocal as N, anchorLocal, fade);
-  const offsetLocal: N = worldOffsetToModelLocal(windWorld.add(dipWorld).mul(fade));
-  mat.positionNode = scaled.add(offsetLocal);
+  if (indirect) {
+    // Reconstruct the instance transform from packed data: scale (fade shrinks
+    // toward the root at the geometry origin), yaw-rotate, translate to the
+    // world anchor. Wind/trample offsets are world-space and the ring meshes
+    // sit at the origin, so they apply directly.
+    const shaped: N = vec3(
+      (positionGeometry as N).x.mul(d1.x),
+      (positionGeometry as N).y.mul(d1.y),
+      (positionGeometry as N).z.mul(d1.x)
+    ).mul(fade);
+    const placed: N = vec3(
+      shaped.x.mul(yawCos).sub(shaped.z.mul(yawSin)).add(d0.x) as N,
+      shaped.y.add(d0.y) as N,
+      shaped.x.mul(yawSin).add(shaped.z.mul(yawCos)).add(d0.z) as N
+    );
+    mat.positionNode = placed.add(windWorld.add(dipWorld).mul(fade));
+  } else {
+    const scaled: N = fadeAroundInstanceAnchor(positionLocal as N, anchorLocal, fade);
+    const offsetLocal: N = worldOffsetToModelLocal(windWorld.add(dipWorld).mul(fade));
+    mat.positionNode = scaled.add(offsetLocal);
+  }
   mat.envMapIntensity = tier === "far" ? 0.25 : 0.5;
   return { material: mat, focus, reach: reachU };
 }
@@ -818,6 +903,8 @@ export function createAuthoredFlowerPatch(
 export type FlowerRing = {
   group: THREE.Group;
   update(focus: { x: number; z: number }): void;
+  /** Per-frame GPU frustum cull against the render camera (cheap; no readback). */
+  cullFrame(camera: THREE.Camera): void;
   /** force an immediate re-scatter at the last focus (debug panel calls this on a slider change) */
   refresh(): void;
   dispose(): void;
@@ -847,93 +934,42 @@ export type FlowerRing = {
 };
 
 type FlowerBucket = {
-  mesh: THREE.InstancedMesh;
+  mesh: THREE.Mesh;
   rows: Row[];
   capacity: number;
+  /** First slot of this bucket's region in the shared data/visible buffers. */
+  base: number;
+  /** Bucket id baked into data1.w so the single cull pass can route slots. */
+  index: number;
   triangles: number;
+  /** Unscaled local bounding radius of the bucket geometry, for cull margins. */
+  localRadius: number;
 };
 
+// GPU frustum culling replaced the old angular sector buckets: a per-frame
+// compute pass tests every live clump against the camera and compacts the
+// survivors into indirect draws, so each tier needs only one bucket per
+// distinct geometry (hero/mid per species, far shared). Capacities preserve
+// the previous reserve envelope (mid was 4 sectors × 1152 per species, far was
+// 10 sectors × 1536).
 const HERO_CAPACITY_PER_SPECIES = 640;
-// Four quadrants retain meaningful behind-camera culling for the mid ring while
-// avoiding a thicket of nearly empty species draws (the R2 scatter exposed 33
-// live draws with six sectors). Capacity grows proportionally, preserving the
-// exact supported population and reserved-memory envelope.
-const MID_SECTORS = 4;
-const MID_CAPACITY_PER_SPECIES_SECTOR = 1152;
-const FAR_SECTORS = 10;
-const FAR_CAPACITY_PER_SECTOR = 1536;
-const FLOWER_INSTANCE_BYTES = (16 + 3 + 4) * Float32Array.BYTES_PER_ELEMENT;
+const MID_CAPACITY_PER_SPECIES = 4608;
+const FAR_CAPACITY = 15360;
+const FLOWER_INSTANCE_BYTES = 12 * Float32Array.BYTES_PER_ELEMENT; // 3 packed vec4s
+/** World-space margin over the scaled cluster bound: wind sway + trample dip. */
+const FLOWER_CULL_SLACK = 0.9;
 
 const ROOT_FOOTPRINT_RADIUS = [0.31, 0.29, 0.27, 0.24] as const;
 const ROOT_MAX_RISE = 0.78;
 const ROOT_SINK = 0.035;
 const FAR_HEIGHT_SCALE = [1, 1.28, 0.9, 0.68] as const;
 
-/** Give every spatial bucket its own instanced attributes while sharing the
- *  immutable vertex/index buffers for that LOD geometry. */
-function createFlowerBucket(
-  group: THREE.Group,
-  name: string,
-  base: THREE.BufferGeometry,
-  material: THREE.Material,
-  capacity: number
-): FlowerBucket {
-  // InstancedMesh owns the instance count. A plain BufferGeometry can still
-  // carry InstancedBufferAttributes; using InstancedBufferGeometry here would
-  // add its independent default `instanceCount = Infinity` to WebGPU draws.
-  const geometry = new THREE.BufferGeometry();
-  geometry.setIndex(base.index);
-  for (const [attributeName, value] of Object.entries(base.attributes)) {
-    geometry.setAttribute(attributeName, value);
-  }
-  for (const drawGroup of base.groups) geometry.addGroup(drawGroup.start, drawGroup.count, drawGroup.materialIndex);
-  geometry.setDrawRange(base.drawRange.start, base.drawRange.count);
-  geometry.boundingBox = base.boundingBox?.clone() ?? null;
-  geometry.boundingSphere = base.boundingSphere?.clone() ?? null;
-
-  const bloom = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
-  const anchor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
-  // The ring only rewrites these buffers when it crosses the resample step.
-  // StaticDrawUsage prevents Three r185's WebGPU path from re-uploading every
-  // reserved slot on otherwise unchanged frames; needsUpdate below still
-  // uploads each newly scattered ring exactly once.
-  bloom.setUsage(THREE.StaticDrawUsage);
-  anchor.setUsage(THREE.StaticDrawUsage);
-  geometry.setAttribute("aBloom", bloom);
-  geometry.setAttribute("aFlowerAnchor", anchor);
-
-  const mesh = new THREE.InstancedMesh(geometry, material, capacity);
-  mesh.name = name;
-  mesh.frustumCulled = true;
-  mesh.layers.set(BEAUTY_ONLY_LAYER);
-  mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-  mesh.count = 0;
-  // Empty streaming pools stay out of the render list so WebGPU does not
-  // compile every flower-tier pipeline during the initial world reveal.
-  mesh.visible = false;
-  mesh.boundingBox = new THREE.Box3().makeEmpty();
-  mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 0);
-  group.add(mesh);
-  return {
-    mesh,
-    rows: [],
-    capacity,
-    triangles: (base.index?.count ?? base.getAttribute("position").count) / 3
-  };
-}
-
-function sectorFor(dx: number, dz: number, sectors: number): number {
-  const normalized = (Math.atan2(dz, dx) + Math.PI) / (Math.PI * 2);
-  return Math.min(sectors - 1, Math.max(0, Math.floor(normalized * sectors)));
-}
-
 export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: number) => boolean): FlowerRing {
+  // Lazily bound so CPU-side contracts can construct the ring headlessly; the
+  // per-frame cull only runs inside the live frame loop where a renderer exists.
+  let renderer: THREE.WebGPURenderer | null = null;
   const group = new THREE.Group();
   group.name = "wildlands_flowers";
-  const heroState = flowerMaterial("hero");
-  const midState = flowerMaterial("mid");
-  const farState = flowerMaterial("far");
-  const materialStates = [heroState, midState, farState] as const;
   const heroGeometries = BUILDERS.map((builder) => builder());
   const midGeometries = MID_BUILDERS.map((builder) => builder());
   const farGeometry = farAccentGeometry();
@@ -945,44 +981,140 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
   );
   const farTrianglesPerClump = (farGeometry.index?.count ?? farGeometry.getAttribute("position").count) / 3;
 
-  // Near stays at four whole-species draws. Mid/far are split into angular
-  // buckets with exact instance bounds, so sectors behind the camera finally
-  // frustum-cull instead of submitting one always-visible 220 m ring.
-  const heroBuckets = heroGeometries.map((geometry, species) =>
-    createFlowerBucket(
-      group,
-      `wildlands_flowers_hero_sp${species}`,
+  // One bucket per distinct geometry; the per-frame GPU cull handles every
+  // camera-facing decision per instance, so no angular sectoring is needed.
+  const bucketSpecs = [
+    ...heroGeometries.map((geometry, species) => ({
+      name: `wildlands_flowers_hero_sp${species}`,
+      tier: "hero" as FlowerRenderTier,
       geometry,
-      heroState.material,
-      HERO_CAPACITY_PER_SPECIES
-    )
-  );
-  const midBuckets = Array.from({ length: MID_SECTORS }, (_, sector) =>
-    midGeometries.map((geometry, species) =>
-      createFlowerBucket(
-        group,
-        `wildlands_flowers_mid_s${sector}_sp${species}`,
-        geometry,
-        midState.material,
-        MID_CAPACITY_PER_SPECIES_SECTOR
-      )
-    )
-  );
-  const farBuckets = Array.from({ length: FAR_SECTORS }, (_, sector) =>
-    createFlowerBucket(
-      group,
-      `wildlands_flowers_far_s${sector}`,
-      farGeometry,
-      farState.material,
-      FAR_CAPACITY_PER_SECTOR
-    )
-  );
-  const allBuckets = [heroBuckets, ...midBuckets, farBuckets].flat();
-  const reservedInstances = allBuckets.reduce((sum, bucket) => sum + bucket.capacity, 0);
+      capacity: HERO_CAPACITY_PER_SPECIES
+    })),
+    ...midGeometries.map((geometry, species) => ({
+      name: `wildlands_flowers_mid_sp${species}`,
+      tier: "mid" as FlowerRenderTier,
+      geometry,
+      capacity: MID_CAPACITY_PER_SPECIES
+    })),
+    {
+      name: "wildlands_flowers_far",
+      tier: "far" as FlowerRenderTier,
+      geometry: farGeometry,
+      capacity: FAR_CAPACITY
+    }
+  ];
+  const totalCapacity = bucketSpecs.reduce((sum, spec) => sum + spec.capacity, 0);
+
+  // Shared packed instance storage + the compacted visible-index buffer. CPU
+  // rescatters rewrite the staging arrays every RESAMPLE_STEP metres; the cull
+  // pass rewrites visibility every frame with zero readback.
+  const data0Attr = new THREE.StorageInstancedBufferAttribute(totalCapacity, 4);
+  const data1Attr = new THREE.StorageInstancedBufferAttribute(totalCapacity, 4);
+  const data2Attr = new THREE.StorageInstancedBufferAttribute(totalCapacity, 4);
+  const visibleAttr = new THREE.StorageBufferAttribute(new Uint32Array(totalCapacity), 1);
+  const bucketBaseAttr = new THREE.StorageBufferAttribute(new Uint32Array(bucketSpecs.length), 1);
+  const indirectData = new Uint32Array(bucketSpecs.length * 5);
+  for (let index = 0; index < bucketSpecs.length; index++) {
+    const geometry = bucketSpecs[index].geometry;
+    indirectData[index * 5] = geometry.index?.count ?? geometry.getAttribute("position").count;
+  }
+  const indirect = new THREE.IndirectStorageBufferAttribute(indirectData, 1);
+  const indirectStorage = storage(indirect, "uint", indirectData.length).toAtomic();
+  const data0Read = storage(data0Attr, "vec4", totalCapacity).toReadOnly();
+  const data1Read = storage(data1Attr, "vec4", totalCapacity).toReadOnly();
+  const data2Read = storage(data2Attr, "vec4", totalCapacity).toReadOnly();
+  const visibleRead = storage(visibleAttr, "uint", totalCapacity).toReadOnly();
+  const visibleWrite = storage(visibleAttr, "uint", totalCapacity);
+  const bucketBaseRead = storage(bucketBaseAttr, "uint", bucketSpecs.length).toReadOnly();
+
+  const materialStates: FlowerMaterialState[] = [];
+  let runningBase = 0;
+  const allBuckets = bucketSpecs.map((spec, index): FlowerBucket => {
+    const base = runningBase;
+    runningBase += spec.capacity;
+    (bucketBaseAttr.array as Uint32Array)[index] = base;
+    if (!spec.geometry.boundingSphere) spec.geometry.computeBoundingSphere();
+    const state = flowerMaterial(spec.tier, {
+      data0: data0Read,
+      data1: data1Read,
+      data2: data2Read,
+      visibleIndices: visibleRead,
+      base: uniform(base, "uint")
+    });
+    materialStates.push(state);
+
+    const geometry = new THREE.InstancedBufferGeometry();
+    if (spec.geometry.index) geometry.setIndex(spec.geometry.index);
+    for (const [attributeName, value] of Object.entries(spec.geometry.attributes)) {
+      geometry.setAttribute(attributeName, value);
+    }
+    geometry.instanceCount = spec.capacity;
+    geometry.setIndirect(indirect, index * 5 * Uint32Array.BYTES_PER_ELEMENT);
+    geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 24_000);
+
+    const mesh = new THREE.Mesh(geometry, state.material);
+    mesh.name = spec.name;
+    mesh.frustumCulled = false;
+    mesh.layers.set(BEAUTY_ONLY_LAYER);
+    // Empty streaming pools stay out of the render list so WebGPU does not
+    // compile every flower-tier pipeline during the initial world reveal.
+    mesh.visible = false;
+    // QA surface: contracts/probes read packed instance data through these
+    // instead of the former per-mesh instanced attributes.
+    mesh.userData.flowerBase = base;
+    mesh.userData.flowerCapacity = spec.capacity;
+    mesh.userData.flowerCount = 0;
+    group.add(mesh);
+    return {
+      mesh,
+      rows: [],
+      capacity: spec.capacity,
+      base,
+      index,
+      triangles: (spec.geometry.index?.count ?? spec.geometry.getAttribute("position").count) / 3,
+      localRadius: spec.geometry.boundingSphere?.radius ?? 1
+    };
+  });
+  const heroBuckets = allBuckets.slice(0, 4);
+  const midBuckets = allBuckets.slice(4, 8);
+  const farBucket = allBuckets[8];
+  group.userData.flowerData0 = data0Attr.array;
+  // QA surface: probes read the per-frame culled draw counts from this shared
+  // indirect buffer (renderer.getArrayBufferAsync) to verify GPU frustum culling.
+  group.userData.flowerIndirect = indirect;
+  const reservedInstances = totalCapacity;
   const capPerSpecies =
     HERO_CAPACITY_PER_SPECIES +
-    MID_SECTORS * MID_CAPACITY_PER_SPECIES_SECTOR +
-    Math.ceil((FAR_SECTORS * FAR_CAPACITY_PER_SECTOR) / PALETTES.length);
+    MID_CAPACITY_PER_SPECIES +
+    Math.ceil(FAR_CAPACITY / PALETTES.length);
+
+  // Per-frame culling: zero the draw counts, then route every live clump that
+  // survives the frustum test into its bucket's compacted visible region.
+  const cullViewProjection = uniform(new THREE.Matrix4());
+  const cullProjScale = uniform(new THREE.Vector2(1, 1));
+  const drawReset = Fn(() => {
+    atomicStore(indirectStorage.element(instanceIndex.mul(uint(5)).add(uint(1))), uint(0));
+  })().compute(bucketSpecs.length, [64]).setName("flowers draw reset");
+  const cull = Fn(() => {
+    const d1 = (data1Read.element(instanceIndex) as N).toVar();
+    const bucket = int(d1.w);
+    If(bucket.greaterThanEqual(int(0)), () => {
+      const d0 = (data0Read.element(instanceIndex) as N).toVar();
+      const radius = (data2Read.element(instanceIndex) as N).w.toVar();
+      const center = vec3(d0.x, d0.y.add(radius.mul(0.5)), d0.z);
+      const clip = ((cullViewProjection as N).mul(vec4(center, float(1))) as N).toVar();
+      // Left/right/top/bottom planes with a projection-scaled world margin; no
+      // near/far test (reversed-z safe — the ring reach already bounds range).
+      const inFront = clip.w.greaterThan(radius.negate());
+      const xIn = abs(clip.x).lessThan(clip.w.add(radius.mul(cullProjScale.x)));
+      const yIn = abs(clip.y).lessThan(clip.w.add(radius.mul(cullProjScale.y)));
+      If(inFront.and(xIn).and(yIn), () => {
+        const slot = atomicAdd(indirectStorage.element(uint(bucket).mul(uint(5)).add(uint(1))), uint(1));
+        visibleWrite.element(bucketBaseRead.element(uint(bucket)).add(slot)).assign(instanceIndex);
+      });
+    });
+  })().compute(totalCapacity, [256]).setName("flowers cull");
+  const cullPasses = [drawReset, cull];
 
   const col = new THREE.Color();
   const a = new THREE.Color();
@@ -999,10 +1131,35 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
   }
 
   function uploadRows() {
+    const stage0 = data0Attr.array as Float32Array;
+    const stage1 = data1Attr.array as Float32Array;
+    const stage2 = data2Attr.array as Float32Array;
+    // A negative bucket id marks a dead slot; the cull pass skips them, so no
+    // per-bucket live counters are needed.
+    for (let slot = 0; slot < totalCapacity; slot++) stage1[slot * 4 + 3] = -1;
     for (const bucket of allBuckets) {
-      writeFlowerInstances(bucket.mesh, bucket.rows, true);
+      for (let i = 0; i < bucket.rows.length; i++) {
+        const row = bucket.rows[i];
+        const slot = (bucket.base + i) * 4;
+        stage0[slot] = row.x;
+        stage0[slot + 1] = row.y;
+        stage0[slot + 2] = row.z;
+        stage0[slot + 3] = row.yaw;
+        stage1[slot] = row.sx;
+        stage1[slot + 1] = row.sy;
+        stage1[slot + 2] = flowerRotationShade(row.yaw);
+        stage1[slot + 3] = bucket.index;
+        stage2[slot] = row.r;
+        stage2[slot + 1] = row.g;
+        stage2[slot + 2] = row.b;
+        stage2[slot + 3] = bucket.localRadius * Math.max(row.sx, row.sy) + FLOWER_CULL_SLACK;
+      }
       bucket.mesh.visible = bucket.rows.length > 0;
+      bucket.mesh.userData.flowerCount = bucket.rows.length;
     }
+    data0Attr.needsUpdate = true;
+    data1Attr.needsUpdate = true;
+    data2Attr.needsUpdate = true;
   }
 
   function pushRow(bucket: FlowerBucket, row: Row): boolean {
@@ -1098,13 +1255,11 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
         let submitted = false;
         if (distance <= HERO_SAMPLE_END) submitted = pushRow(heroBuckets[species], row) || submitted;
         if (distance >= MID_SAMPLE_START && distance <= MID_SAMPLE_END) {
-          const sector = sectorFor(dx, dz, MID_SECTORS);
-          submitted = pushRow(midBuckets[sector][species], row) || submitted;
+          submitted = pushRow(midBuckets[species], row) || submitted;
         }
         if (distance >= FAR_SAMPLE_START) {
-          const sector = sectorFor(dx, dz, FAR_SECTORS);
           const farScale = FAR_HEIGHT_SCALE[species];
-          submitted = pushRow(farBuckets[sector], {
+          submitted = pushRow(farBucket, {
             ...row,
             sy: row.sy * farScale,
             sx: row.sx * (0.88 + farScale * 0.12)
@@ -1147,26 +1302,49 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
       }
       resample(focus.x, focus.z);
     },
+    cullFrame(camera) {
+      // Nothing live and already-cleared draw counts: skip the dispatch.
+      if (count === 0) return;
+      renderer ??= requireRenderer();
+      camera.updateMatrixWorld();
+      cullViewProjection.value.multiplyMatrices(
+        camera.projectionMatrix,
+        camera.matrixWorldInverse
+      );
+      cullProjScale.value.set(
+        camera.projectionMatrix.elements[0],
+        camera.projectionMatrix.elements[5]
+      );
+      renderer.compute(cullPasses);
+    },
     refresh() {
       if (last.x < 1e8) resample(last.x, last.z);
     },
     dispose() {
-      for (const bucket of allBuckets) bucket.mesh.geometry.dispose();
+      drawReset.dispose();
+      cull.dispose();
+      for (const bucket of allBuckets) {
+        bucket.mesh.geometry.setIndirect(null);
+        bucket.mesh.geometry.dispose();
+      }
       for (const geometry of heroGeometries) geometry.dispose();
       for (const geometry of midGeometries) geometry.dispose();
       farGeometry.dispose();
       for (const state of materialStates) state.material.dispose();
+      for (const attribute of [data0Attr, data1Attr, data2Attr, visibleAttr, bucketBaseAttr, indirect]) {
+        releaseRendererAttribute(attribute);
+      }
       group.removeFromParent();
       group.clear();
     },
     get stats() {
       const heroInstances = heroBuckets.reduce((sum, bucket) => sum + bucket.rows.length, 0);
-      const midInstances = midBuckets.flat().reduce((sum, bucket) => sum + bucket.rows.length, 0);
-      const farInstances = farBuckets.reduce((sum, bucket) => sum + bucket.rows.length, 0);
+      const midInstances = midBuckets.reduce((sum, bucket) => sum + bucket.rows.length, 0);
+      const farInstances = farBucket.rows.length;
       const submittedTriangles =
         heroBuckets.reduce((sum, bucket) => sum + bucket.rows.length * bucket.triangles, 0) +
-        midBuckets.flat().reduce((sum, bucket) => sum + bucket.rows.length * bucket.triangles, 0) +
-        farBuckets.reduce((sum, bucket) => sum + bucket.rows.length * bucket.triangles, 0);
+        midBuckets.reduce((sum, bucket) => sum + bucket.rows.length * bucket.triangles, 0) +
+        farBucket.rows.length * farBucket.triangles;
       const submittedInstances = heroInstances + midInstances + farInstances;
       return {
         count,

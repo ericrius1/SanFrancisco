@@ -29,8 +29,10 @@ for (const forbidden of [
 
 assert(grassSource.includes("renderer.computeAsync([gpu.reset"),
   "reset + every layer compactor must submit atomically in one compute pass");
-assert(grassSource.includes("renderer.getArrayBufferAsync(gpu.indirect)"),
-  "the bounded indirect readback must remain the only exact-count CPU transfer");
+assert(grassSource.includes("renderer.getArrayBufferAsync(gpu.liveCounts)"),
+  "the bounded live-count readback must remain the only exact-count CPU transfer");
+assert(grassSource.includes("renderer.compute(gpu.cullPasses)"),
+  "the per-frame frustum cull must dispatch draw counts fully on-GPU (no readback)");
 assert(grassSource.includes("WILD_GRASS_STREAM_STEP = 6"),
   "grass retargeting must remain coarser than per-frame player movement");
 assert(grassSource.includes("field.request(destination)"),
@@ -52,6 +54,15 @@ assert(placementSource.includes("withinRadius"), "compute must reject square-cor
 assert(placementSource.includes("GROUND_SLOPE_CULL"), "compute must reject unsafe terrain slopes");
 assert(placementSource.includes("authoredDensity.greaterThan(0)"),
   "painted foliage density must remain continuous instead of snapping at a 0.5 threshold");
+// Per-frame GPU frustum culling (the false-earth architecture): live counters
+// are separate from draw counts, the cull appends survivors into a compacted
+// visible-index buffer, and materials resolve instances through it.
+assert(placementSource.includes("atomicLoad(liveCounter)"),
+  "the per-frame cull must bound iteration by the live compaction counter");
+assert(placementSource.includes("visibleWrite.element(slot).assign(instanceIndex)"),
+  "the per-frame cull must append survivors into the visible-index indirection");
+assert(placementSource.includes("visibleIndices: storage(visibleAttr"),
+  "layer materials must read instances through the culled visible-index buffer");
 
 assert(fieldSource.includes("Entering X slabs") && fieldSource.includes("Entering Z slabs"),
   "field movement must update only entering toroidal slabs");
