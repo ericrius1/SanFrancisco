@@ -75,7 +75,9 @@ const KB: Record<PlayerMode, Row[]> = {
   ],
   surf: [
     { c: ["Locked"], label: "camera frames the shore" },
-    { c: ["A", "D"], label: "carve — wave side climbs, beach side speeds" },
+    { c: ["A", "D"], label: "carve left · right" },
+    { c: ["W"], label: "climb the face · pump" },
+    { c: ["S"], label: "stall in the pocket · barrel" },
     { c: ["A", "A"], label: "double-tap = cutback" },
     { c: ["Space"], label: "jump · natural air off the lip" },
     { c: ["X"], label: "flow when ready" },
@@ -167,8 +169,8 @@ const PAD: Record<PlayerMode, Row[]> = {
   ],
   surf: [
     { c: ["Locked"], label: "camera frames the shore" },
-    { c: ["LS"], label: "carve — wave side climbs, beach side speeds" },
-    { c: ["LS"], label: "double-flick = cutback" },
+    { c: ["LS ↔"], label: "carve · double-flick = cutback" },
+    { c: ["LS ↕", "RT", "LT"], label: "climb/pump · stall" },
     { c: ["A"], label: "jump · natural air off the lip" },
     { c: ["X"], label: "flow when ready" },
     { c: ["Y"], label: "exit to beach" }
@@ -190,7 +192,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   drive: "LB boost · RB power-slide with steer · release for a snap boost · Space handbrake",
   scooter: "LB power-slide with steer · ramps launch cleanly · rear seat fits a friend",
   board: "White glow = nose · pull right stick back in the air to flip",
-  surf: "Carve toward the beach for speed, then up the wave and off the lip · double-tap A/D to cut back · hold the pocket for the barrel",
+  surf: "W climbs and pumps · S stalls in the pocket for a barrel · double-tap A/D to cut back",
   bird: "Three-seat saddle — two friends can press E nearby and fly with you"
 }
 
@@ -319,6 +321,13 @@ export class HUD {
   setMode(mode: PlayerMode) {
     if (mode === this.#current) return
     this.#current = mode
+    // Surf already has a compact, always-visible control strip. Collapse the
+    // full global help panel on entry so it cannot cover the rider and wave;
+    // the pinned Controls handle remains available for anyone who wants it.
+    if (mode === "surf" && !this.#helpCollapsed) {
+      this.#helpCollapsed = true
+      this.#syncHelpCollapse()
+    }
     this.#renderHelp()
   }
 

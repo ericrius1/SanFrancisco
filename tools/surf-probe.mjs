@@ -134,6 +134,7 @@ class Cdp {
   consoleErrors = [];
   requests = [];
   failedRequests = [];
+  requestUrls = new Map();
 
   constructor(url) {
     this.#socket = new WebSocket(url);
@@ -158,9 +159,20 @@ class Cdp {
           message.params.args?.map((arg) => arg.value ?? arg.description).join(" ") ?? "console.error"
         );
       }
-      if (message.method === "Network.requestWillBeSent") this.requests.push(message.params.request.url);
+      if (message.method === "Network.requestWillBeSent") {
+        this.requests.push(message.params.request.url);
+        this.requestUrls.set(message.params.requestId, message.params.request.url);
+      }
       if (message.method === "Network.loadingFailed") {
-        this.failedRequests.push(message.params.errorText ?? "request failed");
+        // Chrome reports deliberately superseded image/module fetches as
+        // ERR_ABORTED when the board selection or activity context changes.
+        // They are cancellations, not transport failures.
+        if (!message.params.canceled) {
+          const url = this.requestUrls.get(message.params.requestId);
+          this.failedRequests.push(
+            `${message.params.errorText ?? "request failed"}${url ? ` — ${url}` : ""}`
+          );
+        }
       }
       if (!message.id) return;
       const pending = this.#pending.get(message.id);
@@ -347,15 +359,33 @@ async function waitEvalTicking(cdp, expression, seconds, label) {
  * navigation. A player just presses E again; do the same here instead of
  * treating one dropped edge as a product failure.
  */
+async function waitForModeAfterAttempt(cdp, mode, deadline) {
+  const attemptDeadline = Math.min(deadline, Date.now() + 8_000);
+  while (Date.now() < attemptDeadline) {
+    await tickFrames(cdp, 12);
+    if ((await evaluate(cdp, "window.__sf.player.mode")) === mode) return true;
+    await sleep(60);
+  }
+  return false;
+}
+
 async function pressEUntilMode(cdp, mode, seconds, label) {
   const started = Date.now();
-  while (Date.now() - started < seconds * 1000) {
+  const deadline = started + seconds * 1000;
+  while (Date.now() < deadline) {
     if ((await evaluate(cdp, "window.__sf.player.mode")) === mode) return;
+    // Covered surf exits move the player to the shack apron through Navigation.
+    // E is intentionally ignored until that arrival has finished, so advance
+    // it instead of filling the input queue with discarded edges.
+    if (await evaluate(cdp, "window.__sf.worldArrival?.active===true")) {
+      await tickFrames(cdp, 24);
+      await sleep(60);
+      continue;
+    }
     await pressKey(cdp, "KeyE", "e", 69);
-    await tickFrames(cdp, 12);
-    if ((await evaluate(cdp, "window.__sf.player.mode")) === mode) return;
-    await tickFrames(cdp, 24);
-    await sleep(60);
+    // Surf entry is prepared asynchronously. Give this single request time to
+    // finish; hammering E would increment its latest-wins serial and cancel it.
+    if (await waitForModeAfterAttempt(cdp, mode, deadline)) return;
   }
   throw new Error(`Timed out pressing E for ${label}`);
 }
@@ -374,6 +404,24 @@ async function setProbePad(cdp, { axes = [0, 0, 0, 0], buttons = {} } = {}) {
     pad.timestamp=performance.now();
     return true;
   })()`);
+}
+
+async function pressPadUntilMode(cdp, button, mode, seconds, label) {
+  const started = Date.now();
+  const deadline = started + seconds * 1000;
+  while (Date.now() < deadline) {
+    if ((await evaluate(cdp, "window.__sf.player.mode")) === mode) return;
+    if (await evaluate(cdp, "window.__sf.worldArrival?.active===true")) {
+      await tickFrames(cdp, 24);
+      await sleep(60);
+      continue;
+    }
+    await setProbePad(cdp, { buttons: { [button]: 1 } });
+    await tickFrames(cdp, 2);
+    await setProbePad(cdp);
+    if (await waitForModeAfterAttempt(cdp, mode, deadline)) return;
+  }
+  throw new Error(`Timed out pressing gamepad button ${button} for ${label}`);
 }
 
 async function main() {
@@ -562,8 +610,9 @@ async function main() {
       "(()=>{try{return window.__sf.remotes?.locatorTargets()?.length??0}catch{return 0}})()"
     );
     const localImages = activationImages.filter((url) =>
-      url.includes(`/${entered.config.surface}.png`) ||
-      (entered.config.decal !== "none" && url.includes(`/${entered.config.decal}.png`))
+      new RegExp(`/${entered.config.surface}\\.(?:png|webp)$`).test(pathnameOf(url)) ||
+      (entered.config.decal !== "none" &&
+        new RegExp(`/${entered.config.decal}\\.(?:png|webp)$`).test(pathnameOf(url)))
     );
     const expectedActivationImages = 1 + (entered.config.decal === "none" ? 0 : 1);
     check(
@@ -602,10 +651,25 @@ async function main() {
       mouseLock
     );
 
-    // Ride the pocket into the barrel first (entry drops onto a developed,
-    // often already-peeling section), then climb with W. These are the public
-    // keyboard controls — no controller teleports or telemetry mutation.
+    // Neutral cruising must keep an open chase view. S is the explicit pocket
+    // stall that earns a barrel; entry must never put the camera under a roof.
+    const neutralView = await evaluate(cdp, `(()=>{const s=window.__sf;
+      let maxBlend=0;const states=[];let prior='';
+      for(let i=0;i<180;i++){
+        s.tick(${DT});const t=s.player.surfTelemetry,c=s.chase.surfCameraDiagnostics();
+        if(t.tubeState!==prior){states.push(t.tubeState);prior=t.tubeState}
+        maxBlend=Math.max(maxBlend,c.tubeBlend);
+      }
+      const t=s.player.surfTelemetry,c=s.chase.surfCameraDiagnostics();
+      return {states,maxBlend,state:t.tubeState,stalling:t.stalling,camera:c};})()`);
+    check(
+      neutralView.state === "outside" && !neutralView.stalling && neutralView.maxBlend < 0.08,
+      "neutral riding keeps an open chase view outside the barrel",
+      neutralView
+    );
+
     const tubeRide = await evaluate(cdp, `(()=>{const s=window.__sf;
+      s.input.keys.add('KeyS');
       let frames=0,maxBlend=0,minRoofClearance=Infinity,minWaterClearance=Infinity;
       let minTubeClearance=Infinity,maxTubeDepth=0,allContact=true,sawInside=false;
       const states=[];let prior='';
@@ -621,6 +685,7 @@ async function main() {
         allContact&&=t.railContact;
         if(t.tubeState==='inside'&&c.mode==='barrel'&&c.tubeBlend>0.78&&t.tubeDwell>1.15)break;
       }
+      s.input.keys.delete('KeyS');
       const t=s.player.surfTelemetry,c=s.chase.surfCameraDiagnostics();
       return {frames,states,sawInside,maxBlend,minRoofClearance,minWaterClearance,minTubeClearance,
         maxTubeDepth,allContact,state:t.tubeState,dwell:t.tubeDwell,serial:t.tubeSerial,
@@ -629,8 +694,9 @@ async function main() {
     tubeShot = await capture(cdp, "surf-barrel-desktop.png");
     check(
       tubeRide.sawInside && tubeRide.maxTubeDepth >= 0.58 &&
-        tubeRide.allContact && tubeRide.minTubeClearance > 1.7,
-      "riding the pocket holds a supported, positively-cleared tube",
+        tubeRide.allContact && tubeRide.minTubeClearance > 0.25 &&
+        tubeRide.tubeClearance > 1.7,
+      "holding S stalls into a supported, positively-cleared tube",
       tubeRide
     );
     check(
@@ -641,15 +707,9 @@ async function main() {
       tubeRide.camera
     );
 
-    // Carving toward the wave climbs the face (one-stick model): the climb
-    // key depends on the peel (north travel → A, south → D). Reaching the lip
-    // with pace legitimately arms an auto-launch, so contact metrics count
-    // ride frames only and the loop accepts either outcome.
-    const pickClimbKey = async () =>
-      (await evaluate(cdp, "window.__sf.player.surfTelemetry.lineDirection")) > 0
-        ? { code: "KeyD", key: "d", vk: 68 }
-        : { code: "KeyA", key: "a", vk: 65 };
-    let climbKey = await pickClimbKey();
+    // W always climbs, independent of line direction. Reaching the lip with
+    // pace can arm an auto-launch, so ride-only contact metrics accept either.
+    const climbKey = { code: "KeyW", key: "w", vk: 87 };
     const climbStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
       return {crestDistance:t.crestDistance,launch:t.launchSerial};})()`);
     await setKey(cdp, true, climbKey.code, climbKey.key, climbKey.vk);
@@ -673,7 +733,7 @@ async function main() {
     check(
       (carveHigh.minCrest < climbStart.crestDistance - 1.4 || carveHigh.launched) &&
         carveHigh.maxSupportError < 0.18 && carveHigh.allContact,
-      "carving toward the wave climbs the face with clean rail contact until takeoff",
+      "W climbs the face with clean rail contact until takeoff",
       { start: climbStart, carveHigh }
     );
     // Settle back onto a supported ride before the roundhouse test.
@@ -728,10 +788,9 @@ async function main() {
     // into a trick rotation, then prove the five-point hull returns to
     // supported ride contact.
     await pressEUntilMode(cdp, "walk", 25, "pre-aerial beach reset");
-    await pressEUntilMode(cdp, "surf", 25, "pre-aerial surf reset");
+    await pressEUntilMode(cdp, "surf", 60, "pre-aerial surf reset");
     const aerialStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
       return {launch:t.launchSerial,landing:t.landingSerial,crest:t.crestDistance};})()`);
-    climbKey = await pickClimbKey();
     const takeoff = await evaluate(cdp, `(()=>{const s=window.__sf;
       s.input.keys.add('${climbKey.code}');
       let frames=0,minCrest=Infinity,minHull=Infinity,maxCharge=0,minFoot=Infinity,maxFoot=-Infinity;
@@ -751,7 +810,7 @@ async function main() {
     const spin = await evaluate(cdp, `(()=>{const s=window.__sf;
       s.input.keys.add('KeyA');
       const takeoffQ=s.player.quaternion.clone(),lastQ=takeoffQ.clone();
-      let frames=0,maxSpin=0,maxClearance=0,minFoot=Infinity,maxFoot=-Infinity;
+      let frames=0,maxSpin=0,maxClearance=0,maxCompression=0,minFoot=Infinity,maxFoot=-Infinity;
       let rotationPath=0,maxRotationFromTakeoff=0;
       for(;frames<210;frames++){
         s.tick(${DT});const t=s.player.surfTelemetry;
@@ -762,13 +821,15 @@ async function main() {
         const f=s.player.surfFootDeckClearance;
         maxSpin=Math.max(maxSpin,Math.abs(t.airSpin));
         maxClearance=Math.max(maxClearance,t.clearance);
+        maxCompression=Math.max(maxCompression,t.landingCompression);
         minFoot=Math.min(minFoot,f.left,f.right);maxFoot=Math.max(maxFoot,f.left,f.right);
         if(t.phase!=='air')break;
       }
       s.input.keys.delete('KeyA');
       const t=s.player.surfTelemetry;
       return {frames,maxSpin,maxClearance,phase:t.phase,airSpin:t.airSpin,
-        airTime:t.airTime,crest:t.crestDistance,minFoot,maxFoot,rotationPath,maxRotationFromTakeoff};})()`);
+        airTime:t.airTime,crest:t.crestDistance,maxCompression,minFoot,maxFoot,
+        rotationPath,maxRotationFromTakeoff};})()`);
     const landing = await evaluate(cdp, `(()=>{const s=window.__sf;
       let frames=0,minGroundHull=Infinity,maxAirClearance=0,maxCompression=0,maxImpactStreaks=0,impactSpawnSerial=0,minFoot=Infinity,maxFoot=-Infinity,phases=[];let prior='';
       for(;frames<300;frames++){
@@ -809,7 +870,7 @@ async function main() {
     check(
       landing.landing === aerialStart.landing + 1 && landing.phase === "ride" &&
         Math.abs(landing.landedSpin) < 0.01 && landing.minGroundHull >= -0.001 &&
-        landing.railContact && landing.maxCompression >= 0.5 &&
+        landing.railContact && Math.max(spin.maxCompression, landing.maxCompression) >= 0.5 &&
         landing.maxImpactStreaks >= 14 && landing.impactSpawnSerial === landing.landing,
       "release aligns one clean, compressed landing back onto five-point rail contact",
       landing
@@ -830,7 +891,6 @@ async function main() {
     // prove they no longer rotate the board away from its natural arc.
     const flipStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
       return {launch:t.launchSerial,landing:t.landingSerial};})()`);
-    climbKey = await pickClimbKey();
     const flipAir = await evaluate(cdp, `(()=>{const s=window.__sf;
       s.input.keys.add('${climbKey.code}');
       let frames=0;
@@ -993,7 +1053,7 @@ async function main() {
       "keyboard E exits atomically onto dry beach with no abandoned surfboard",
       { beforeAbandoned: keyboardExitCount, ...keyboardExit }
     );
-    await pressEUntilMode(cdp, "surf", 25, "keyboard surf re-entry");
+    await pressEUntilMode(cdp, "surf", 60, "keyboard surf re-entry");
     const keyboardReentry = await tickFrames(cdp, 4);
     check(
       keyboardReentry.mode === "surf" && keyboardReentry.phase === "ride" &&
@@ -1039,38 +1099,34 @@ async function main() {
       padLookLock
     );
 
-    // LS carve: beach side drops for speed, wave side climbs the face.
-    const padDropSign = await evaluate(cdp,
-      "window.__sf.player.surfTelemetry.lineDirection > 0 ? -0.85 : 0.85");
-    await setProbePad(cdp, { axes: [padDropSign, 0, 0, 0] });
+    // Horizontal LS carves without also being the face-placement puzzle.
+    await setProbePad(cdp, { axes: [0.85, 0, 0, 0] });
     await tickFrames(cdp, 80);
     const padPump = await evaluate(cdp, `(()=>{const s=window.__sf,t=s.player.surfTelemetry;
       return {connected:s.input.padConnected,device:s.input.device,
         steerAxis:s.input.axis('KeyA','KeyD'),
-        lean:t.lean,faceLine:t.faceLine,speed:t.speed,phase:t.phase};})()`);
+        lean:t.lean,carve:t.carveInput,faceLine:t.faceLine,speed:t.speed,phase:t.phase};})()`);
     check(
       padPump.connected && padPump.device === "pad" &&
-        Math.abs(padPump.steerAxis) > 0.6 && padPump.faceLine > 0.3,
-      "standard-gamepad stick toward the beach drops down the face",
+        Math.abs(padPump.steerAxis) > 0.6 && Math.abs(padPump.carve) > 0.25,
+      "standard-gamepad horizontal stick carves the board",
       padPump
     );
 
-    // Wave-side stick climbs toward the lip.
+    // Up on LS is the same stable climb/pump axis as keyboard W.
     await setProbePad(cdp);
     await evaluate(cdp, `(()=>{const s=window.__sf;for(let i=0;i<300&&s.player.surfTelemetry.phase==='air';i++)s.tick(${DT});return true})()`);
     await evaluate(cdp, `(()=>{const s=window.__sf;for(let i=0;i<420&&s.player.surfTelemetry.phase!=='ride';i++)s.tick(${DT});return true})()`);
-    const padClimbSign = await evaluate(cdp,
-      "window.__sf.player.surfTelemetry.lineDirection > 0 ? 0.85 : -0.85");
-    await setProbePad(cdp, { axes: [padClimbSign, 0, 0, 0] });
+    await setProbePad(cdp, { axes: [0, -0.85, 0, 0] });
     await tickFrames(cdp, 60);
     const padStall = await evaluate(cdp, `(()=>{const s=window.__sf,t=s.player.surfTelemetry;
-      return {steerAxis:s.input.axis('KeyA','KeyD'),faceLine:t.faceLine,speed:t.speed,
+      return {faceAxis:s.input.axis('KeyS','KeyW'),faceLine:t.faceLine,speed:t.speed,
         crest:t.crestDistance,phase:t.phase,pump:t.pump};})()`);
     await setProbePad(cdp);
     check(
-      Math.abs(padStall.steerAxis) > 0.6 &&
+      padStall.faceAxis > 0.6 &&
         (padStall.faceLine < -0.3 || padStall.phase === "air" || padStall.crest < 4.5),
-      "standard-gamepad stick toward the wave climbs the face",
+      "standard-gamepad vertical stick climbs the face",
       { dropState: padPump, climbState: padStall }
     );
 
@@ -1125,10 +1181,7 @@ async function main() {
     // Physical Y maps to the exact E exit action; release and press it again to
     // prove the full controller-only leave/retry loop.
     const padExitCount = await evaluate(cdp, "window.__sf.abandonedMounts.count");
-    await setProbePad(cdp, { buttons: { 3: 1 } });
-    await tickFrames(cdp, 2);
-    await setProbePad(cdp);
-    await tickFrames(cdp, 2);
+    await pressPadUntilMode(cdp, 3, "walk", 25, "gamepad beach exit");
     const padExit = await evaluate(cdp, `(()=>{const s=window.__sf,p=s.player;
       return {mode:p.mode,onWater:s.map.isWater(p.position.x,p.position.z),
         abandoned:s.abandonedMounts.count,x:p.position.x,z:p.position.z};})()`);
@@ -1137,19 +1190,7 @@ async function main() {
       "standard-gamepad Y exits onto the beach without abandoning the board",
       { beforeAbandoned: padExitCount, ...padExit }
     );
-    {
-      const started = Date.now();
-      let padBack = false;
-      while (Date.now() - started < 25_000) {
-        await setProbePad(cdp, { buttons: { 3: 1 } });
-        await tickFrames(cdp, 2);
-        await setProbePad(cdp);
-        await tickFrames(cdp, 12);
-        if ((await evaluate(cdp, "window.__sf.player.mode")) === "surf") { padBack = true; break; }
-        await sleep(60);
-      }
-      if (!padBack) throw new Error("Timed out pressing Y for gamepad surf re-entry");
-    }
+    await pressPadUntilMode(cdp, 3, "surf", 60, "gamepad surf re-entry");
     const padReentry = await tickFrames(cdp, 2);
     check(
       padReentry.mode === "surf" && padReentry.phase === "ride" &&

@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import {
+  cameraViewMatrix,
   positionLocal,
   positionWorld,
   positionView,
@@ -13,10 +14,13 @@ import {
   step,
   smoothstep,
   clamp,
+  cos,
   sin,
   exp,
   max,
+  normalize,
   uv,
+  vec4,
   mx_fractal_noise_float,
   mx_noise_float
 } from "three/tsl";
@@ -237,20 +241,35 @@ export class Water {
       // shimmer, and dug harder inside chop zones. bumpNormal is only screen-space
       // derivatives of this height, so a cheaper height = a cheaper bump.
       // NO If() gates here (see the branch-hazard note above).
-      let rippleH = wavelets(p, t).mul(0.3);
+      const rippleStrength = detail.mul(zoneF.mul(0.9).add(1));
+      const rippleH = wavelets(p, t).mul(0.3).mul(rippleStrength);
       if (displace > 0) {
-        // near patch (where you actually look from a boat/board) keeps a touch of
-        // organic FBM(2) break-up on top of the wavelets
-        rippleH = rippleH.add(mx_fractal_noise_float(vec3(p.mul(0.09), t.mul(0.06)), 2).mul(0.12));
+        // The low surf camera makes screen-derivative bump mapping unstable on
+        // this large displaced grid: dFdx/dFdy reset at primitive boundaries
+        // and light the tessellation like wireframe. These are the exact
+        // derivatives of wavelets() instead, so the ripple normal remains
+        // continuous across triangles and cannot expose the mesh topology.
+        const waveA: any = p.x.mul(0.13).add(p.y.mul(0.07)).add(t.mul(1.15));
+        const waveB: any = p.x.mul(-0.052).add(p.y.mul(0.164)).sub(t.mul(0.93));
+        const waveC: any = p.x.mul(0.093).sub(p.y.mul(0.121)).add(t.mul(1.45));
+        const waveD: any = p.x.mul(0.205).add(p.y.mul(0.178)).add(t.mul(1.95));
+        const dhdx: any = cos(waveA).mul(0.065)
+          .add(cos(waveB).mul(-0.02184))
+          .add(cos(waveC).mul(0.02976))
+          .add(cos(waveD).mul(0.041))
+          .mul(0.3)
+          .mul(rippleStrength);
+        const dhdz: any = cos(waveA).mul(0.035)
+          .add(cos(waveB).mul(0.06888))
+          .add(cos(waveC).mul(-0.03872))
+          .add(cos(waveD).mul(0.0356))
+          .mul(0.3)
+          .mul(rippleStrength);
+        const rippleNormal = normalize(vec3(dhdx.negate(), 1, dhdz.negate()));
+        mat.normalNode = normalize(cameraViewMatrix.mul(vec4(rippleNormal, 0)).xyz);
+      } else {
+        mat.normalNode = bumpNormal(rippleH);
       }
-      rippleH = rippleH.mul(detail).mul(zoneF.mul(0.9).add(1));
-      // positionNode displacement does not automatically rebuild the macro
-      // normal for this node material. Include the full analytic surf height
-      // so a standing wall shades as a wall rather than reflecting the bright
-      // sky as though it were a horizontal sheet.
-      mat.normalNode = bumpNormal(
-        displace > 0 ? rippleH.add(surfField.height) : rippleH
-      );
 
       // sun sparkle: occasional near-field flecks only; the env-mapped Fresnel
       // reflection carries the broad sunset sheen, so this stays subtle on top.
@@ -282,19 +301,11 @@ export class Water {
       const baseRough = mix(float(0.76), float(0.42), detail);
       mat.roughnessNode = mix(baseRough, float(0.78), foamTotal);
 
-      const surfPresence = max(max(surfField.face, surfField.lip), surfField.white);
-      // The lazy high-resolution face follows the player in a 1080 m down-line
-      // window — wider than this whole 560 m near patch — so whenever the surf
-      // overlay is live the base near sheet yields everywhere its semantic surf
-      // water is strong, preventing two copies of the same wall.
-      const surfReplacement = displace > 0
-        ? smoothstep(0.12, 0.38, surfPresence).mul(this.#uSurfing)
-        : float(0);
       // Interior water is fully opaque. opacityNode carries coverage only:
-      // the threshold turns the near/far handoff, dry cutout, and world reveal
-      // into solid ownership instead of blending the scene through the body.
+      // the hero surf sheet sits 2.5 cm above this base and wins depth wherever
+      // a wave stands. Cutting a second alpha-tested hole here used a different
+      // threshold from the hero mask and exposed contour/grid gaps between them.
       mat.opacityNode = waterVisibility
-        .mul(surfReplacement.oneMinus())
         .mul(dry.oneMinus())
         .mul(this.#uReveal)
         .mul(materializeAmount()); // spatial front sweep (collapses to 1 once revealed)

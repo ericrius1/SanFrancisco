@@ -10,18 +10,21 @@ export const SURF_TUNING = tunables("movement.surf", {
   // first carve so the dedicated camera can settle.
   entryAssistDuration: { v: 0.22, min: 0, max: 2, step: 0.05, label: "entry assist" },
   trimSpeed: { v: 17.5, min: 5, max: 30, step: 0.5, label: "neutral cruise" },
-  stallSpeed: { v: 7.5, min: 3, max: 14, step: 0.25, label: "wash speed floor" },
+  stallSpeed: { v: 9, min: 3, max: 14, step: 0.25, label: "pocket stall speed" },
   maxTrim: { v: 34, min: 12, max: 48, step: 0.5, label: "max line speed" },
   speedResponse: { v: 4.4, min: 0.5, max: 8, step: 0.1, label: "speed response" },
   speedDecay: { v: 0.35, min: 0, max: 3, step: 0.05, label: "over-trim bleed" },
   stallResponse: { v: 6.5, min: 1, max: 16, step: 0.25, label: "stall response" },
-  // KSPS-style decoupled axes. A/D swing the rail relative to the remembered
-  // travel direction and clamp short of vertical (you can never accidentally
-  // flip); W/S place you up/down the face directly.
+  // A/D swings the rail relative to remembered travel and clamps short of
+  // vertical; W/S owns stable face placement regardless of peel direction.
   carveYawAngle: { v: 0.68, min: 0.2, max: 1.05, step: 0.01, label: "recovery heading angle" },
   carveMaxAngle: { v: 1.12, min: 0.4, max: 1.5, step: 0.02, label: "max rail swing" },
   yawResponse: { v: 6.5, min: 1, max: 14, step: 0.25, label: "carve heading response" },
   carveResponse: { v: 8.5, min: 1, max: 18, step: 0.25, label: "rail swing response" },
+  faceInputResponse: { v: 7.5, min: 1, max: 18, step: 0.25, label: "W/S face response" },
+  steerFaceInfluence: { v: 0.2, min: 0, max: 0.65, step: 0.01, label: "carve face influence" },
+  steerEnergyInfluence: { v: 0.28, min: 0, max: 1, step: 0.02, label: "carve energy influence" },
+  pumpGain: { v: 5.2, min: 0, max: 16, step: 0.2, label: "W pump gain" },
   // Deliberate roundhouse: double-tap the carve direction. Holding full lock
   // is ordinary hard carving and must never reverse on its own.
   cutbackTapWindow: { v: 0.34, min: 0.15, max: 0.8, step: 0.01, label: "cutback double-tap window" },
@@ -38,7 +41,7 @@ export const SURF_TUNING = tunables("movement.surf", {
   // a high line, while stall assist holds the authored tube center once earned.
   // Neutral line sits up in the pocket on the standing green wall — not down on
   // the spent apron where the rider read as floating on the flat distant ocean.
-  faceOffset: { v: 6.5, min: 4.5, max: 11, step: 0.1, label: "neutral face line" },
+  faceOffset: { v: 8.8, min: 4.5, max: 11, step: 0.1, label: "neutral face line" },
   faceTrack: { v: 2.35, min: 0.2, max: 6, step: 0.05, label: "face spring" },
   recoveryFaceTrack: { v: 2.2, min: 0.5, max: 8, step: 0.1, label: "recovery magnet" },
   maxFaceCorrection: { v: 13, min: 4, max: 30, step: 0.5, label: "max cross-face speed" },
@@ -46,7 +49,7 @@ export const SURF_TUNING = tunables("movement.surf", {
   faceYawInfluence: { v: 0.08, min: 0, max: 1, step: 0.02, label: "yaw cross-face influence" },
   faceCorridorMin: { v: 1.25, min: 0.5, max: 4, step: 0.05, label: "crest contact limit" },
   faceCorridorMax: { v: 14.2, min: 8, max: 18, step: 0.1, label: "shoulder contact limit" },
-  tubeStallAssist: { v: 0.88, min: 0, max: 1.2, step: 0.02, label: "stall tube hold" },
+  tubeStallAssist: { v: 0.96, min: 0, max: 1.2, step: 0.02, label: "stall tube hold" },
   boundaryMargin: { v: 34, min: 10, max: 120, step: 1, label: "cutback margin" },
   // Hand the rider to the next set before shore attenuation flattens the face.
   waveResetMargin: { v: 96, min: 45, max: 160, step: 1, label: "next-wave margin" },

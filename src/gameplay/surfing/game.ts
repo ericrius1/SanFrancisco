@@ -48,7 +48,7 @@ export class SurfExperience {
       <div class="surf-status" data-surf-status>DROP IN</div>
       <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>X</b></div>
       <div class="surf-meter surf-launch-meter"><span>LIP</span><i data-surf-launch></i><b>AUTO</b></div>
-      <div class="surf-controls">A/D CARVE — WAVE SIDE CLIMBS · BEACH SIDE SPEEDS · 2-TAP = CUTBACK · SPACE JUMP · E EXIT</div>`;
+      <div class="surf-controls">A/D CARVE · W CLIMB + PUMP · S STALL FOR BARREL · SPACE JUMP · E EXIT</div>`;
     this.#scoreEl = this.root.querySelector("[data-surf-score]")!;
     this.#comboEl = this.root.querySelector("[data-surf-combo]")!;
     this.#statusEl = this.root.querySelector("[data-surf-status]")!;

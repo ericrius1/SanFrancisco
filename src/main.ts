@@ -3939,7 +3939,7 @@ async function boot() {
           player.trySwitch("surf");
           // The persistent surf HUD already carries controls; keep this as a
           // quick entry confirmation so it is gone before a fast tube line.
-          hud.message("You're surfing — A/D carve · W pump · S stall · E exits to the beach", 1);
+          hud.message("You're surfing — A/D carve · W climb + pump · S stall · E exits", 1);
         });
         } else if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);

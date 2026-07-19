@@ -380,9 +380,13 @@ export class OceanBeachWaves {
       )
       .add(vec3(0.5, 0.62, 0.58).mul(max(foam, wash).mul(0.05 * LIGHT_SCALE)));
 
-    // ripple bump from the wave height + a little chop so the face isn't glassy
-    const chop = mx_noise_float(vec3(wx.mul(0.22), wz.mul(0.22), t.mul(0.6))).mul(0.08);
-    mat.normalNode = bumpNormal(contactHeight.add(chop));
+    // Keep the macro contact field out of the derivative normal: feeding the
+    // full displaced wall into it exposed the tessellation as a bright lattice.
+    // A small world-space ripple restores water texture without tracing cells.
+    const surfaceRipple = mx_noise_float(
+      vec3(wx.mul(0.16), wz.mul(0.16), t.mul(0.45))
+    ).mul(0.045);
+    mat.normalNode = bumpNormal(surfaceRipple);
 
     // This sheet replaces the base ocean only where an actual wave stands up.
     // Keeping the whole 116 x 1080 m contact patch visible turns its flat
@@ -515,9 +519,8 @@ export class OceanBeachWaves {
     );
     const height = f.height.mul(edge);
     mat.positionNode = vec3(wx, height.add(0.012), wz);
-    // Displaced walls must shade as walls — a flat normal mirrors the bright
-    // sky and reads as the same grey stripe this sheet exists to remove.
-    mat.normalNode = bumpNormal(height);
+    // Do not derive a fragment normal from this coarse far-field grid. That
+    // made every triangle edge visible as a luminous lattice at grazing angles.
     const faceMask = smoothstep(0.12, 0.82, f.face);
     // Same daylight palette as the hero sheet so distant sets match near ones.
     const body = mix(color(0x12857c), color(0x0d7f60), faceMask);
