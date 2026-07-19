@@ -32,13 +32,6 @@ export type VehicleSignals = {
   driveVoice?: "engine" | "electric";
   /** Drive/scooter bumper-slide + handbrake intensity (0..1) for skid bed. */
   driveSlide?: number;
-  /**
-   * Board-only: how strongly a lit streetlamp pool is falling on the rider right
-   * now (0..1), reconstructed on the CPU from the same hero pool centres + night
-   * intensity the projected-surface-light pass paints the avatar glow with. Drives
-   * the electric-field whoosh so the sound tracks the light you see on yourself.
-   */
-  lampLight?: number;
 };
 
 type Voice = {
@@ -192,12 +185,6 @@ export class VehicleAudio {
   #skidGain: GainNode | null = null;
   #skidFilter: BiquadFilterNode | null = null;
   #skidLevel = 0;
-  /** Electric-field whoosh under streetlamps — a layer beside the mode voices. */
-  #lampGain: GainNode | null = null;
-  #lampBand: { filter: BiquadFilterNode; gain: GainNode } | null = null;
-  #lampShimmerGain: GainNode | null = null;
-  #lampSmooth = 0; // JS-smoothed lamp field, so passes swell + release
-  #lampLevel = 0;
 
   /** Headless-verify/tuning peek: context state + smoothed levels. */
   get debugState() {
@@ -211,8 +198,6 @@ export class VehicleAudio {
       lastCarLandingLevel: this.#lastCarLandingLevel,
       lastCarLandingPeak: this.#lastCarLandingPeak,
       skidLevel: this.#skidLevel,
-      lampField: this.#lampSmooth,
-      lampLevel: this.#lampLevel,
       voices: this.#voices.map((v) => ({ mode: v.mode, level: v.level }))
     };
   }
@@ -416,7 +401,6 @@ export class VehicleAudio {
       v.gain.gain.value = v.level;
     }
     this.#driveSkid(sig, dt);
-    this.#driveLampField(sig, dt);
   }
 
   /**
@@ -436,35 +420,6 @@ export class VehicleAudio {
     this.#skidLevel = approach(this.#skidLevel, target, dt, sliding ? 5 : 3.5);
     this.#skidGain.gain.value = this.#skidLevel;
     this.#skidFilter.frequency.value = Math.min(900, Math.max(120, tune.audioTone)) + amount * 90;
-  }
-
-  /**
-   * Electric-field whoosh under streetlamps. `sig.lampLight` is the live 0..1
-   * "how lit am I" the projected-surface-light pass uses on the avatar; skirting
-   * a pool's edge is a whisper, riding through its centre is a full swoosh. Kept
-   * to the hoverboard for now (drop the mode gate to let other rides feel it).
-   */
-  #driveLampField(sig: VehicleSignals | null, dt: number) {
-    if (!this.#lampGain || !this.#lampBand || !this.#lampShimmerGain) return;
-    const ctx = this.#ctx;
-    if (!ctx) return;
-    const onBoard = !!sig && sig.mode === "board";
-    const raw = onBoard ? clamp01(sig!.lampLight ?? 0) : 0;
-    // Smooth the field; rising a touch faster than it releases so a pass under a
-    // pole swells promptly then trails off like moving out of the light.
-    const prev = this.#lampSmooth;
-    this.#lampSmooth = approach(this.#lampSmooth, raw, dt, raw > prev ? 6 : 3.5);
-    const field = this.#lampSmooth;
-    // Positive rate-of-change adds whoosh brightness on a quick pass through.
-    const onset = Math.max(0, (field - prev) / Math.max(dt, 1 / 120));
-    const whoosh = clamp01(field + onset * 0.35);
-    const now = ctx.currentTime;
-    // Quadratic level: edge-skirting stays near silent, dead-centre is the swoosh.
-    this.#lampLevel = field * field * 0.5;
-    this.#lampGain.gain.setTargetAtTime(this.#lampLevel, now, 0.05);
-    this.#lampBand.filter.frequency.setTargetAtTime(520 + 2100 * whoosh, now, 0.06);
-    this.#lampBand.gain.gain.setTargetAtTime(0.05 + 0.5 * whoosh, now, 0.05);
-    this.#lampShimmerGain.gain.setTargetAtTime(0.28 * field * field, now, 0.08);
   }
 
   #ensure(): AudioContext | null {
@@ -535,33 +490,6 @@ export class VehicleAudio {
     skidSrc.start(0, Math.random() * 1.5);
     this.#skidFilter = skidLp;
     this.#skidGain = skidGain;
-
-    // Electric-field whoosh: gliding under a lit streetlamp, the rider sweeps
-    // through the pool of light like moving through a charged field. An airy
-    // bandpass-swept noise "whoosh" carries the motion; a pair of slightly
-    // detuned shimmer partials spread hard-ish L/R give the wide, beating
-    // "electric" sheen; a slow LFO wobbles their detune like a live field. The
-    // whole layer idles silent and is driven entirely by #driveLampField.
-    const lampOut = ctx.createGain();
-    lampOut.gain.value = 0;
-    lampOut.connect(this.#master);
-    const lampBand = this.#noiseInto(ctx, "bandpass", 600, 1.1, 0, lampOut);
-    const shimmerGain = ctx.createGain();
-    shimmerGain.gain.value = 0; // driven by field² — only rings near the centre
-    shimmerGain.connect(lampOut);
-    const panL = ctx.createStereoPanner();
-    panL.pan.value = -0.55;
-    panL.connect(shimmerGain);
-    const panR = ctx.createStereoPanner();
-    panR.pan.value = 0.55;
-    panR.connect(shimmerGain);
-    const shimmerA = this.#oscInto(ctx, "triangle", 523.25, 0.5, panL); // C5
-    const shimmerB = this.#oscInto(ctx, "sine", 783.99, 0.34, panR); // G5 (a fifth up)
-    this.#lfo(ctx, 0.5, 9, shimmerA.detune); // slow charged-field wobble
-    this.#lfo(ctx, 0.37, 12, shimmerB.detune);
-    this.#lampBand = lampBand;
-    this.#lampShimmerGain = shimmerGain;
-    this.#lampGain = lampOut;
 
     return ctx;
   }

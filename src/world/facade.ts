@@ -44,11 +44,11 @@ import { LIGHT_SCALE } from "../config";
 import { cameraCutawayMask } from "../render/cameraCutaway";
 
 /** Sky-driven lit-window weight: 0 in daylight → 1 after dusk, written every
- * frame by Sky#applySun (same twilight curve as the street lamps). Window
- * emissives — here, the citygen parallax glass and the far LOD — multiply by
- * this so lit panes only read after dark. Historically the glow was constant
- * and daylight "crushed" it via the old +2-stop ACES shoulder grade; the 2026-07
- * day re-grade removed that crush, so the gate is now explicit. */
+ * frame by Sky#applySun. Window emissives — here, the citygen parallax glass
+ * and the far LOD — multiply by this so lit panes only read after dark.
+ * Historically the glow was constant and daylight "crushed" it via the old
+ * +2-stop ACES shoulder grade; the 2026-07 day re-grade removed that crush, so
+ * the gate is now explicit. */
 export const WINDOW_GLOW_W = uniform(0);
 
 /* ------------------------------------------------------------------ palettes */

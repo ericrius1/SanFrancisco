@@ -14,20 +14,20 @@ import { LIGHT_SCALE } from "../../config";
 import { tunables } from "../../core/persist";
 import { carBrakeHex, type CarConfig } from "./config";
 
-// TSL node generics fight composition; `any` is the local idiom (see streetLamps.ts).
+// TSL node generics fight composition; `any` is the local idiom (see bayLights.ts).
 type N = any;
 
 /**
- * Fake headlamp beams + brake glow. Like the street lamps, the headlamps create
- * NO THREE.Light (a light-count change rebuilds every pipeline, a ~7s freeze).
- * The forward throw is carried entirely by two additive rim-lit cones (the
- * volumetric beam) and a soft additive ground splash, both gated by a sky-driven
- * night intensity. The brake glow just lerps the shared taillight emissive.
+ * Fake headlamp beams + brake glow. Headlamps create NO THREE.Light (a
+ * light-count change rebuilds every pipeline, a ~7s freeze). The forward throw
+ * is carried entirely by two additive rim-lit cones (the volumetric beam) and a
+ * soft additive ground splash, both gated by a sky-driven night intensity. The
+ * brake glow just lerps the shared taillight emissive.
  */
 
-// Sky-driven night ramp, rewritten every frame by Sky.#applySun next to
-// STREET_LAMPS_INTENSITY: 0 in daylight, up through twilight so the beams only
-// switch on after dark. Shared by every car's beam + splash material.
+// Sky-driven night ramp, rewritten every frame by Sky.#applySun: 0 in daylight,
+// up through twilight so the beams only switch on after dark. Shared by every
+// car's beam + splash material.
 export const CAR_HEADLIGHT_INTENSITY = uniform(0);
 
 /** A few live knobs in the "/" panel (movement › car › headlights · brake). */

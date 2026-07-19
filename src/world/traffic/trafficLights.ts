@@ -86,7 +86,7 @@ type GantryPlan = {
 };
 
 type LensUniform = ReturnType<typeof uniform>;
-// TSL node generics fight composition; any is the idiom here (see streetLamps.ts).
+// TSL node generics fight composition; any is the idiom here (see bayLights.ts).
 type N = any;
 
 const EMPTY_GEO = new THREE.BufferGeometry();

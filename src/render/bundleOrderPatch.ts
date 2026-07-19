@@ -5,8 +5,8 @@ import * as THREE from "three/webgpu";
  * (WebGPUBackend.finishRender → currentPass.executeBundles), i.e. AFTER every
  * direct draw — opaque and transparent alike. Bundle content (our streamed
  * tiles: roads + baked buildings) therefore paints over anything that does not
- * write depth: additive fireworks sprites, street-lamp ground pools, paintball
- * glows, busker fireflies. Opaque objects survive only because their depth
+ * write depth: additive fireworks sprites, paintball glows, busker fireflies.
+ * Opaque objects survive only because their depth
  * writes make the late bundle draws fail the depth test.
  *
  * Minimal repro: tools/bundle-depth-probe.{html,mjs} — a sprite in front of a

@@ -3,8 +3,8 @@ import { LIGHT_SCALE } from "../config";
 
 /**
  * Night glow for tennis / pickle balls: the ball itself goes emissive.
- * Intensity is driven from sun elevation (same twilight ramp as street lamps /
- * fireflies). Point lights were removed — they were a WebGPU lighting cost.
+ * Intensity is driven from sun elevation (same twilight ramp as fireflies).
+ * Point lights were removed — they were a WebGPU lighting cost.
  */
 
 export const TENNIS_BALL_COLOR = 0xb9ef31;

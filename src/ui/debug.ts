@@ -17,7 +17,6 @@ import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
 import { SKY_TUNING, type Sky } from "../world/sky";
-import { STREET_LIGHT_TUNING } from "../world/streetLightTuning";
 import {
   POSTFX_TUNING,
   POSTFX_TOGGLES,
@@ -725,10 +724,6 @@ export class DebugPanel {
       keys: ["sunDay", "hemiDay"],
       onChange: () => this.#sky.applyLightGrade()
     });
-    // Both the cheap distant discs and close depth-projected pools poll this
-    // shared group, so sliders stay live without shader recompiles.
-    const streetLights = lighting.addFolder({ title: "street lights", expanded: false });
-    STREET_LIGHT_TUNING.bind(streetLights);
     await checkpoint();
 
     this.#moveFolders = addMovementTuning(advanced);

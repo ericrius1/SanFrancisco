@@ -30,7 +30,6 @@ import { tracer } from "../core/hitchTracer";
 import { motionGate } from "../core/motionGate";
 import { warmScenePaced } from "./warmStaticRegion";
 import type { PianoGodRaysParams } from "./pianoGodRaysTypes";
-import type { ProjectedSurfaceLightSource } from "./projectedSurfaceLightTypes";
 
 type SceneSamples = 0 | 4;
 type RuntimePassOptions = { options: { samples?: number } };
@@ -48,11 +47,6 @@ type PianoGodRaysRuntime = {
   sceneTexture: any;
   configure(params: PianoGodRaysParams): void;
   update(center: THREE.Vector3): void;
-  dispose(): void;
-};
-type ProjectedSurfaceLightRuntime = {
-  sample(sampleUv?: any): any;
-  update(): void;
   dispose(): void;
 };
 type FxaaRuntime = {
@@ -223,34 +217,6 @@ export function createRenderPipeline(
   let activeVariantMask = getPostFxVariantMask();
   let activePipeline = getVariantPipeline(activeVariantMask);
 
-  // Close projected surface lights are a second lazy graph. Their module,
-  // half-resolution target, depth reconstruction, and extra composite lookup
-  // do not exist during clean boot, daylight, or when no source is nearby.
-  let projectedSource: ProjectedSurfaceLightSource | null = null;
-  let projectedRuntime: ProjectedSurfaceLightRuntime | null = null;
-  let projectedRuntimeSource: ProjectedSurfaceLightSource | null = null;
-  let projectedModulePromise: Promise<typeof import("./projectedSurfaceLights")> | null = null;
-  let projectedBuildPending: { source: ProjectedSurfaceLightSource; epoch: number } | null = null;
-  let projectedEpoch = 0;
-  let projectedActive = false;
-  let projectedRenderedFrames = 0;
-  const projectedVariants = new Map<number, THREE.RenderPipeline>();
-
-  const getProjectedVariantPipeline = (requestedMask: number) => {
-    if (!projectedRuntime) return null;
-    const mask = requestedMask & 7;
-    let variant = projectedVariants.get(mask);
-    if (variant !== undefined) return variant;
-    variant = new THREE.RenderPipeline(renderer);
-    variant.outputColorTransform = false;
-    variant.outputNode = postfx.getWithSurfaceLight(
-      mask,
-      (sampleUv) => projectedRuntime!.sample(sampleUv)
-    );
-    projectedVariants.set(mask, variant);
-    return variant;
-  };
-
   // The official raymarched GodraysNode stack is a piano-only nested lazy
   // feature. Its module, dedicated shadow light and render targets do not exist
   // until the player enters the grove gate; leaving disposes all GPU ownership.
@@ -268,131 +234,33 @@ export function createRenderPipeline(
     pianoGodRaysRequested && POSTFX_TUNING.values.pianistRays && directionalLight
   );
 
-  const getPianoGodRaysVariantPipeline = (
-    requestedMask: number,
-    includesProjectedLights: boolean
-  ) => {
+  const getPianoGodRaysVariantPipeline = (requestedMask: number) => {
     if (!pianoGodRaysRuntime) return null;
     const mask = requestedMask & 7;
-    const key = mask | (includesProjectedLights ? 8 : 0);
-    let variant = pianoGodRaysVariants.get(key);
+    let variant = pianoGodRaysVariants.get(mask);
     if (variant !== undefined) return variant;
     variant = new THREE.RenderPipeline(renderer);
     variant.outputColorTransform = false;
     variant.outputNode = postfx.getWithSceneTexture(
       mask,
-      pianoGodRaysRuntime.sceneTexture,
-      includesProjectedLights
-        ? (sampleUv) => projectedRuntime!.sample(sampleUv)
-        : undefined
+      pianoGodRaysRuntime.sceneTexture
     );
-    pianoGodRaysVariants.set(key, variant);
+    pianoGodRaysVariants.set(mask, variant);
     return variant;
   };
 
   const selectActivePipeline = () => {
-    const wantsProjected =
-      projectedSource !== null &&
-      projectedSource.active &&
-      projectedRuntime !== null &&
-      projectedRuntimeSource === projectedSource;
-    projectedSource?.setProjectionReady(wantsProjected);
-    projectedActive = wantsProjected;
-    const basePipeline = wantsProjected
-      ? getProjectedVariantPipeline(activeVariantMask)
-      : getVariantPipeline(activeVariantMask);
-    if (
-      pianoGodRaysEnabled() &&
-      pianoGodRaysRuntime !== null
-    ) {
-      const variant = getPianoGodRaysVariantPipeline(
-        activeVariantMask,
-        wantsProjected
-      );
+    const basePipeline = getVariantPipeline(activeVariantMask);
+    if (pianoGodRaysEnabled() && pianoGodRaysRuntime !== null) {
+      const variant = getPianoGodRaysVariantPipeline(activeVariantMask);
       if (variant) {
         activePipeline = variant;
         pianoGodRaysActive = true;
         return;
       }
     }
-    activePipeline = basePipeline ?? getVariantPipeline(activeVariantMask);
+    activePipeline = basePipeline;
     pianoGodRaysActive = false;
-  };
-
-  const disposeProjectedRuntime = () => {
-    projectedSource?.setProjectionReady(false);
-    projectedActive = false;
-    for (const variant of projectedVariants.values()) variant.dispose();
-    projectedVariants.clear();
-    // God-ray variants may include the projected-light sampler, so rebuild
-    // those retained graphs when projected ownership changes.
-    for (const variant of pianoGodRaysVariants.values()) variant.dispose();
-    pianoGodRaysVariants.clear();
-    projectedRuntime?.dispose();
-    projectedRuntime = null;
-    projectedRuntimeSource = null;
-    selectActivePipeline();
-  };
-
-  const loadProjectedModule = () => {
-    if (!projectedModulePromise) {
-      projectedModulePromise = import("./projectedSurfaceLights").catch((err) => {
-        projectedModulePromise = null;
-        throw err;
-      });
-    }
-    return projectedModulePromise;
-  };
-
-  const ensureProjectedRuntime = () => {
-    const requestedSource = projectedSource;
-    if (!requestedSource || !requestedSource.active) {
-      selectActivePipeline();
-      return;
-    }
-    if (projectedRuntime && projectedRuntimeSource === requestedSource) {
-      selectActivePipeline();
-      return;
-    }
-
-    const epoch = projectedEpoch;
-    if (
-      projectedBuildPending?.source === requestedSource &&
-      projectedBuildPending.epoch === epoch
-    ) return;
-    projectedBuildPending = { source: requestedSource, epoch };
-    void loadProjectedModule()
-      .then(({ createProjectedSurfaceLights }) => {
-        if (projectedEpoch !== epoch || projectedSource !== requestedSource) return;
-        disposeProjectedRuntime();
-        projectedRuntime = createProjectedSurfaceLights({
-          camera,
-          sceneDepth,
-          source: requestedSource
-        });
-        projectedRuntimeSource = requestedSource;
-        selectActivePipeline();
-      })
-      .catch((err) => console.warn("[render] projected surface lights unavailable:", err))
-      .finally(() => {
-        if (
-          projectedBuildPending?.source === requestedSource &&
-          projectedBuildPending.epoch === epoch
-        ) projectedBuildPending = null;
-      });
-  };
-
-  const setProjectedSurfaceLightSource = (
-    source: ProjectedSurfaceLightSource | null
-  ) => {
-    if (source === projectedSource) return;
-    projectedSource?.setProjectionReady(false);
-    projectedEpoch += 1;
-    projectedBuildPending = null;
-    projectedSource = source;
-    if (projectedRuntimeSource !== source) disposeProjectedRuntime();
-    if (source?.active) ensureProjectedRuntime();
-    else selectActivePipeline();
   };
 
   const disposePianoGodRaysRuntime = () => {
@@ -852,13 +720,6 @@ export function createRenderPipeline(
       return;
     }
     if (wireframeActive) syncWireframeCamera();
-    projectedSource?.setViewPosition(camera.position as THREE.Vector3);
-    if (projectedSource?.active) ensureProjectedRuntime();
-    else if (projectedActive) selectActivePipeline();
-    if (projectedActive) {
-      projectedRuntime?.update();
-      projectedRenderedFrames += 1;
-    }
     if (pianoGodRaysActive) {
       pianoGodRaysRuntime?.update(pianoGodRaysCenter);
       pianoGodRaysRenderedFrames += 1;
@@ -989,10 +850,6 @@ export function createRenderPipeline(
     }
 
     if (wireframeActive) syncWireframeCamera();
-    projectedSource?.setViewPosition(camera.position as THREE.Vector3);
-    if (projectedSource?.active) ensureProjectedRuntime();
-    else if (projectedActive) selectActivePipeline();
-    if (projectedActive) projectedRuntime?.update();
     if (pianoGodRaysActive) pianoGodRaysRuntime?.update(pianoGodRaysCenter);
 
     const previousTarget = renderer.getRenderTarget();
@@ -1066,8 +923,6 @@ export function createRenderPipeline(
     },
     /** Enter/leave the only area allowed to allocate and render god rays. */
     setPianoGodRaysArea,
-    /** Attach/detach a bounded, lazy close-range surface-light source. */
-    setProjectedSurfaceLightSource,
     /** Push piano god-ray controls without changing the global style mask. */
     applyPianoGodRaysFx,
     /** Probe-facing state; read-only and allocation-free until requested. */
@@ -1077,14 +932,6 @@ export function createRenderPipeline(
         active: pianoGodRaysActive,
         loaded: pianoGodRaysRuntime !== null,
         renderedFrames: pianoGodRaysRenderedFrames
-      };
-    },
-    /** Probe-facing projected-light state. */
-    get projectedSurfaceLightState() {
-      return {
-        active: projectedActive,
-        loaded: projectedRuntime !== null,
-        renderedFrames: projectedRenderedFrames
       };
     },
     /** Swap the scene pass to/from the retained wireframe override + camera. */

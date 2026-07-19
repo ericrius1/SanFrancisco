@@ -3,7 +3,7 @@ import { suppressesFullReload } from "./app/hmr/suppressFullReload";
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import CameraControls from "camera-controls";
-import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, LIGHT_SCALE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
+import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { resetAllTweaks, saveTweak } from "./core/persist";
 import { Input, formatInteractPrompt, localizeInteractText } from "./core/input";
 import { tracer } from "./core/hitchTracer";
@@ -34,7 +34,6 @@ import { FarOcclusionField } from "./world/shadows/farOcclusionField";
 import { createRoadMarkings } from "./world/roadMarkings";
 import { RoadGraph } from "./world/traffic/roadGraph";
 import { TrafficLightView } from "./world/traffic/trafficLights";
-import { StreetLamps } from "./world/streetLamps";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks, BAY_LIGHTS_INTENSITY } from "./world/bayLights";
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks, GOLDEN_GATE_LIGHTS_INTENSITY } from "./world/goldenGateLights";
@@ -1366,19 +1365,11 @@ async function boot() {
   // later paints the map roads, avoiding another request/parse. Failures leave
   // the city without signals but never block boot.
   let trafficLights: TrafficLightView | null = null;
-  let streetLamps: StreetLamps | null = null;
   auxPending++;
   const roadGraphPromise = RoadGraph.load();
   void roadGraphPromise
     .then((roads) => {
       trafficLights = new TrafficLightView(scene, map, roads);
-      // fake night-street lighting: reuse the just-loaded graph (no second fetch)
-      streetLamps = new StreetLamps(scene, map, roads);
-      pipeline.setProjectedSurfaceLightSource(
-        streetLamps.projectedSurfaceLightSource
-      );
-      const sfHooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-      if (sfHooks) Object.assign(sfHooks, { streetLamps });
     })
     .catch((err: unknown) => console.warn("[traffic] signals unavailable", err))
     .finally(() => auxPending--);
@@ -3462,32 +3453,6 @@ async function boot() {
     );
   };
   const sendPickleballNetwork = () => pickleballController?.sendNetwork();
-  // 0..1 "how strongly a lit streetlamp pool falls on the rider right now",
-  // rebuilt on the CPU from the same hero pool centres + night intensity the
-  // projected-surface-light pass uses to paint the warm glow on the avatar. Feeds
-  // the hoverboard's electric-field whoosh (vehicleAudio) so the sound tracks the
-  // light you see on yourself: skirting the edge is a whisper, dead-centre is full.
-  const lampFieldPos = new THREE.Vector4();
-  const lampFieldNrm = new THREE.Vector4();
-  const computeLampField = (): number => {
-    const lamps = streetLamps?.projectedSurfaceLightSource;
-    if (!lamps) return 0;
-    const nightW = Math.min(1, Math.max(0, lamps.intensity / LIGHT_SCALE)); // day→0, night→1
-    if (nightW <= 0.001 || lamps.count <= 0) return 0;
-    const px = player.position.x;
-    const pz = player.position.z;
-    let hit = 0;
-    for (let i = 0; i < lamps.count; i++) {
-      lamps.copyLight(i, lampFieldPos, lampFieldNrm); // xyz = pool centre, w = radius
-      const dx = px - lampFieldPos.x;
-      const dz = pz - lampFieldPos.z;
-      const radius = lampFieldPos.w || 6;
-      const fall = Math.max(0, 1 - Math.hypot(dx, dz) / radius);
-      const f = fall * fall; // matches the pass's pow(...,2) radial falloff
-      if (f > hit) hit = f;
-    }
-    return hit * nightW;
-  };
   // Frame-local crossings hoisted to loop scope so the split hooks share one
   // value per frame: preSimulate computes them (the pickleball gameplay advance
   // has side effects and must run exactly once), the live path reads them; the
@@ -3784,8 +3749,7 @@ async function boot() {
         surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
         surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
         driveVoice: player.driveSpec.voice ?? "engine",
-        driveSlide: player.driveSlideFeedback.intensity,
-        lampLight: player.mode === "board" ? computeLampField() : 0
+        driveSlide: player.driveSlideFeedback.intensity
       });
       swimAudio.update(frameDt, {
         swimming: player.swimming,
@@ -4358,7 +4322,6 @@ async function boot() {
     if (!worldArrival.active) authoredRegions.update(player.position.x, player.position.z);
     tiles.update(player.position.x, player.position.z, highUp, !revealed);
     trafficLights?.update(player.position, performance.now() / 1000);
-    streetLamps?.update(player.position);
     refreshCarHeadlightUniforms();
     abandonedMounts.update(frameDt, player.position);
     if (!worldArrival.active) {
@@ -4690,10 +4653,7 @@ async function boot() {
       surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
       surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
       driveVoice: player.driveSpec.voice ?? "engine",
-      driveSlide: player.driveSlideFeedback.intensity,
-      // Lamp-field whoosh only exists on the hoverboard voice — skip the
-      // all-lamps scan for every other mode (it already early-outs by day).
-      lampLight: player.mode === "board" ? computeLampField() : 0
+      driveSlide: player.driveSlideFeedback.intensity
     });
     swimAudio.update(frameDt, {
       swimming: player.swimming,
@@ -5016,7 +4976,6 @@ async function boot() {
       fetchBall: () => fetchBall,
       goldenGateLights: () => goldenGateLights,
       trafficLights: () => trafficLights,
-      streetLamps: () => streetLamps,
       citygen: () => citygen,
       oceanBeachWaves: () => oceanBeachWaves,
       surfExperience: () => surfExperience,

@@ -207,7 +207,6 @@ export function createPostFx(deps: {
   /** Build one immutable specialization. The public getter retains the result. */
   const build = (
     mask: number,
-    surfaceLightAt?: (uv: any) => any,
     sourceTexture: any = sceneTex
   ) => {
     const ink = (mask & POSTFX_INK) !== 0;
@@ -261,10 +260,6 @@ export function createPostFx(deps: {
         lin = sourceTexture.sample(sampleUv).rgb;
       }
       if (contactFactorAt) lin = lin.mul(contactFactorAt(uv));
-      // Optional close-range surface lighting is still linear HDR here. Add it
-      // before renderOutput so it follows the exact same tone mapping and
-      // stylized grading as the road/sidewalk pixels beneath it.
-      if (surfaceLightAt) lin = lin.add(surfaceLightAt(sampleUv));
 
       const c = renderOutput(vec4(lin, 1)).rgb.toVar();
 
@@ -427,18 +422,11 @@ export function createPostFx(deps: {
     return variant;
   };
 
-  /** Build a light-aware specialization; the owning lazy runtime caches it. */
-  const getWithSurfaceLight = (
-    requestedMask: number,
-    surfaceLightAt: (uv: any) => any
-  ) => build(requestedMask & POSTFX_ALL, surfaceLightAt);
-
   /** Build a specialization over a lazy pre-composited scene texture (god rays). */
   const getWithSceneTexture = (
     requestedMask: number,
-    sourceTexture: any,
-    surfaceLightAt?: (uv: any) => any
-  ) => build(requestedMask & POSTFX_ALL, surfaceLightAt, sourceTexture);
+    sourceTexture: any
+  ) => build(requestedMask & POSTFX_ALL, sourceTexture);
 
-  return { get, getWithSurfaceLight, getWithSceneTexture };
+  return { get, getWithSceneTexture };
 }
