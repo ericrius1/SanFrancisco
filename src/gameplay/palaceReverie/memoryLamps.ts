@@ -364,6 +364,10 @@ export class MemoryLamps {
       lamp.flameMat.dispose();
       lamp.haloMat.dispose();
       lamp.root.traverse((o) => {
+        // Sprites (flame/halo) share three's module-global quad geometry —
+        // disposing it would destroy the GPU buffer under every sprite still
+        // alive in the app. Their materials are disposed above.
+        if ((o as unknown as THREE.Sprite).isSprite) return;
         const m = o as THREE.Mesh;
         if (m.geometry) m.geometry.dispose();
         if (m.name === "lamp-wash" || m.name === "lamp-puddle") (m.material as THREE.Material).dispose();

@@ -7,8 +7,11 @@ import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, L
 import { resetAllTweaks, saveTweak } from "./core/persist";
 import { Input, formatInteractPrompt, localizeInteractText } from "./core/input";
 import { tracer } from "./core/hitchTracer";
-import { bootMarkStart, bootMark, bootMarkSummary, persistBootHistory } from "./core/bootMarks";
+import { motionGate } from "./core/motionGate";
+import { bootMarkStart, bootMark, bootMarkList, bootMarkSummary, persistBootHistory } from "./core/bootMarks";
 import { createFrameScheduler } from "./core/frameBudget";
+import { createFrameBudgetCheckpoint } from "./core/cooperativeWork";
+import { prefetchBox3D } from "./core/box3dWorld";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "./world/oceanBeachWaves";
 import { createSurfShack, type SurfShack } from "./gameplay/surfing/shack";
 import { Sky, SKY_TUNING } from "./world/sky";
@@ -20,6 +23,10 @@ import {
 } from "./world/ghostShip/route";
 import type { GhostShip } from "./world/ghostShip";
 import { Water } from "./world/water";
+import { VoidRealm } from "./world/voidRealm";
+import { materializeField } from "./render/materialize";
+import { sharedMaterialLeakSnapshot } from "./render/renderObjectRegistry";
+import { RingCoordinator } from "./app/ringCoordinator";
 import { emitEmbodimentWaterEcho } from "./world/waterEchoes";
 import { UnderwaterOverlay } from "./fx/underwater";
 import { syncBallGlowNight } from "./fx/ballGlow";
@@ -29,8 +36,8 @@ import { RoadGraph } from "./world/traffic/roadGraph";
 import { TrafficLightView } from "./world/traffic/trafficLights";
 import { StreetLamps } from "./world/streetLamps";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
-import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/bayLights";
-import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
+import { createBayLights, updateBayLights, resetBayLightsTweaks, BAY_LIGHTS_INTENSITY } from "./world/bayLights";
+import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks, GOLDEN_GATE_LIGHTS_INTENSITY } from "./world/goldenGateLights";
 import { createSutroBeacons, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
 import type { GoldenGateTennisSite } from "./world/goldenGateTennis";
 import {
@@ -208,23 +215,38 @@ async function boot() {
   }
   bootMarkStart();
   progress(8, "reading the map");
+  // ---------------------------------------------------------- P0 kickoff
+  // (docs/VOID_STREAM_REWRITE.md M3.) Every boot-critical stream starts NOW,
+  // in parallel: map data, GPU init, the box3d WASM module, and the tiles
+  // manifest (already racing via the inline <head> prefetch — see index.html
+  // __sfPrefetch). The awaits below only order construction, not downloads.
+  const mapPromise = bootMap();
+  const gpuPromise = bootGpu(app);
+  // The awaits below are sequential, so a GPU failure while the map is still
+  // pending would briefly surface as an unhandled rejection. This marker only
+  // silences that window — the real `await gpuPromise` still throws into
+  // boot()'s catch.
+  void gpuPromise.catch(() => {});
+  prefetchBox3D();
   // Boot stages are extracted into app/boot/* (docs/MAIN_DECOMPOSITION.md step
   // 5). Each bootMark stays here, in the same name/order, right after its stage.
-  const { map } = await bootMap();
+  const { map } = await mapPromise;
   bootMark("map");
 
   progress(18, "waking the gpu");
-  const { renderer, scene, camera } = await bootGpu(app);
+  const { renderer, scene, camera } = await gpuPromise;
   bootMark("gpu");
 
   const farOcclusion = new FarOcclusionField(map);
   const sky = new Sky(scene, farOcclusion);
-  const water = new Water(scene, map);
+  // Void realm couples sky/fog/water uniforms to the shared materialize front
+  // (docs/VOID_STREAM_REWRITE.md M2/M3). Water itself is a P3 construction —
+  // the realm late-binds it via attachWater and drives the sky alone until then.
+  const voidRealm = new VoidRealm(sky);
   // The authored high-resolution break is activity code, not a boot fundamental.
   // Its analytic CPU heightfield stays available through oceanBeachWaves.ts, but
   // the heavy visual mesh/HUD chunk is requested only when surfing starts.
   let oceanBeachWaves: import("./gameplay/surfing/waves").OceanBeachWaves | null = null;
-  const underwater = new UnderwaterOverlay(app, map);
 
   progress(40, "streaming the city");
   const { tiles, authoredRegions } = await bootTiles({ scene, camera, renderer, map, sky });
@@ -268,17 +290,10 @@ async function boot() {
   });
 
   // off-boot-path loads (lane markings, the road graph's signals + lamps)
-  // still don't block boot, but the settle gate holds the loading cover until
-  // they land — success OR failure — so they never pop over the revealed city
+  // never block boot; their fetches now kick off in P3 so nothing optional
+  // races the void essentials. auxPending only feeds boot log lines today.
   let auxPending = 0;
   let roadMarkings: THREE.Group | null = null;
-  auxPending++;
-  void createRoadMarkings(scene, map)
-    .then((group) => {
-      roadMarkings = group;
-    })
-    .catch((err) => console.warn("[roads] lane markings unavailable", err))
-    .finally(() => auxPending--);
 
   // Physics comes online in parallel with initial-arrival resolution and chains
   // the far-occlusion field onto its tile-collider callbacks (extracted to
@@ -297,10 +312,669 @@ async function boot() {
   } = initialArrival;
   bootMark("physics");
 
-  progress(62, "waking up san francisco");
+  // ------------------------------------------------------ P1 void essentials
+  // (docs/VOID_STREAM_REWRITE.md M3.) Only what the first live void frame
+  // needs is constructed before the provisional loop starts: input, the
+  // player (all embodiments + the 4-slot LightPool — the light set never
+  // changes size after this), the chase camera, the render pipeline and the
+  // materialize/void-realm coupling. Everything else builds in P3 as
+  // frame-budget-sliced construction UNDER the live void render.
+  progress(58, "entering the void");
   const input = new Input(renderer.domElement);
-  const hud = new HUD();
   const modeDiscovery = new ModeDiscovery();
+  // Avatar identity: a saved avatar means the player chose one in the editor;
+  // otherwise leave it to the server's per-id seed (adopted on welcome below) so
+  // every player — every browser tab included — looks distinct. randomAvatarTraits
+  // is just a non-default placeholder for the seconds before we're welcomed (and
+  // the whole life of an offline single-player session).
+  const savedAvatar = loadSavedAvatar();
+  let customized = savedAvatar !== null;
+  let avatarTraits = savedAvatar ?? randomAvatarTraits();
+  const savedCar = loadSavedCar();
+  let carCustomized = savedCar !== null;
+  let carConfig = savedCar ?? randomCarConfig();
+  setLocalCarConfig(carConfig);
+  // Board identity follows the exact same contract as the avatar: saved means
+  // chosen; otherwise a placeholder until the server's per-id seed arrives.
+  const savedBoard = loadSavedBoard();
+  let boardCustomized = savedBoard !== null;
+  let boardConfig = savedBoard ?? randomBoardConfig();
+  setLocalBoardConfig(boardConfig); // abandonedMounts builds YOUR board from this
+  const savedScooter = loadSavedScooter();
+  let scooterCustomized = savedScooter !== null;
+  let scooterConfig = savedScooter ?? randomScooterConfig();
+  setLocalScooterConfig(scooterConfig);
+  // Surfboard identity follows the same explicit-choice/per-id-seed contract,
+  // but its PNG art remains completely unloaded until surfing or the lab starts.
+  const savedSurfboard = loadSavedSurfboard();
+  let surfboardCustomized = savedSurfboard !== null;
+  let surfboardConfig = savedSurfboard ?? randomSurfboardConfig();
+  setLocalSurfboardConfig(surfboardConfig);
+  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig, surfboardConfig, carConfig);
+  player.holdForWorldArrival("boot-arrival");
+  let initialCollisionEpoch = physics.prepareCollisionArrival(player.position);
+  physics.activateCollisionArrival(initialCollisionEpoch);
+  let initialArrivalReleased = false;
+  let initialCollisionRetryCycles = 0;
+  let initialCollisionFailureReported = false;
+  let initialVisualFailureReported = false;
+  const chase = new ChaseCamera(camera, map, physics);
+  chase.yaw = spawn.heading; // behind the player, looking the way they face (spawn.heading is raw facing)
+  // Seed above the local ground — hilltop spawns sit well over y=30.
+  camera.position.set(spawn.x + 20, map.effectiveGround(spawn.x, spawn.z) + 30, spawn.z + 20);
+
+  // Frame-budget scheduler: ALL deferrable bursty work (streamed physics bodies,
+  // citygen assembly, material warmups) queues here and drains under a per-frame
+  // ms budget in the tick — see core/frameBudget.ts for the contract.
+  const scheduler = createFrameScheduler();
+
+  // post-processing: scene pass AA + optional stylized screen effects
+  const pipeline = createRenderPipeline(renderer, scene, camera, sky.sun);
+  // M10: while an exclusive compile window holds presented frames, the tile
+  // streamer pauses its live attach drain (see tiles.isRenderHeld doc).
+  tiles.isRenderHeld = () => pipeline.compileHeld;
+
+  // Void-safe aliases: renderFrame reads these from the first void frame,
+  // long before P3 constructs the systems behind them.
+  let foliageOn = Boolean(FOLIAGE_TUNING.values.visible);
+  let siteFoliage: SiteFoliageStreamer | null = null;
+  let beachPianist: BeachPianist | null = null;
+  let pianoGodRaysActive = false;
+  let bootHud: HUD | null = null; // set once the HUD constructs in P3
+  const releasePianoGodRays = () => {
+    if (!pianoGodRaysActive) return;
+    pianoGodRaysActive = false;
+    pipeline.setPianoGodRaysArea(false);
+  };
+  const renderFrame = () => {
+    // God rays are intentionally hard-scoped to the piano grove. Mission
+    // Dolores and every other region stay on the base post-processing graph.
+    const wantsPianoGodRays =
+      Boolean(POSTFX_TUNING.values.pianistRays) &&
+      foliageOn &&
+      siteFoliage?.isReady("beach-pianist-grove") === true &&
+      beachPianist?.isPlayerInGodRayArea(player.position, pianoGodRaysActive) === true;
+    if (wantsPianoGodRays !== pianoGodRaysActive) {
+      pianoGodRaysActive = wantsPianoGodRays;
+      pipeline.setPianoGodRaysArea(wantsPianoGodRays, beachPianist?.group.position);
+    }
+    pipeline.render();
+  };
+
+  let prepareDestinationEssentials: (
+    destination: Readonly<{ x: number; z: number }>,
+    signal: AbortSignal
+  ) => void | Promise<void> = () => {};
+  // M7 far-arrival hooks: late-bound like prepareDestinationEssentials — the
+  // ring coordinator constructs in P5, after this coordinator. Until then
+  // every arrival is "near" (boot cannot arrive before P5 anyway).
+  let classifyFarArrival: (x: number, z: number) => boolean = () => false;
+  let onFarArrivalCut: (x: number, z: number) => void = () => {};
+  const worldArrival = new WorldArrivalCoordinator({
+    input,
+    player,
+    chase,
+    tiles,
+    physics,
+    prepareRequiredDestinationVisuals: (destination, signal) =>
+      authoredRegions.prepareAt(destination, signal),
+    prepareDestinationVisuals: (destination, signal) =>
+      prepareDestinationEssentials(destination, signal),
+    classifyFarArrival: (x, z) => classifyFarArrival(x, z),
+    onFarArrivalCut: (x, z) => onFarArrivalCut(x, z),
+    // M9: far arrivals onto an authored groundTop-overlay floor (Sutro Baths
+    // deck, Fort Mason bandstand…) keep the cover for that region's prime so
+    // the overlay install can never pop the player up post-reveal.
+    destinationRequiresAuthoredFloor: (x, z) => authoredRegions.requiresFloorHandoffAt(x, z)
+  });
+  // World-background quiet-window admission (motion/arrival-aware pacing for
+  // optional constructors + warmups) — extracted per docs/MAIN_DECOMPOSITION.md.
+  const backgroundAdmission = createBackgroundAdmission({
+    input,
+    player,
+    isArrivalActive: () => worldArrival.active
+  });
+  const {
+    waitForWindow: waitForWorldBackgroundWindow,
+    nextPresentationFrame,
+    waitForCityGenRenderWindow
+  } = backgroundAdmission;
+  worldArrival.onStateChange = (snapshot) => {
+    if (snapshot.active) backgroundAdmission.onArrivalStart();
+    // A runtime relocation owns its own named hold and supersedes the boot
+    // collision epoch. Hand ownership over atomically so a forced slow boot can
+    // never leave a stale boot hold pinned after the new destination is safe.
+    const runtimeOwnsCommittedWorld =
+      snapshot.state === "loading-visuals" ||
+      snapshot.state === "visual-blocked" ||
+      snapshot.state === "visually-ready" ||
+      snapshot.state === "loading-collision" ||
+      snapshot.state === "collision-blocked";
+    if (runtimeOwnsCommittedWorld && !initialArrivalReleased) {
+      initialArrivalReleased = true;
+      player.releaseWorldArrivalHold("boot-arrival");
+    }
+  };
+
+  // Session resume / invite placement commits the FINAL player position now,
+  // during the void phase, so the void prime, the collision bubble and the
+  // first multiplayer Y are exact from the first frame. Surf restoration needs
+  // the surf runtime (a P3 concern) — those sessions restore on foot here and
+  // upgrade to the wave in P3.
+  if (resumed) {
+    const resumedInitialMode = resumed.mode === "surf" ? "walk" : resumed.mode;
+    player.restoreState({ ...resumed, mode: resumedInitialMode });
+    modeDiscovery.discover(resumedInitialMode);
+    chase.yaw = devReload?.camera.yaw ?? resumed.heading + Math.PI;
+    if (devReload) {
+      chase.pitch = devReload.camera.pitch;
+      chase.zoom = devReload.camera.zoom;
+      (window as unknown as { __sfDevReloadRestored?: boolean }).__sfDevReloadRestored = true;
+    }
+    chase.cutTo(player);
+    if (import.meta.env.DEV) console.log("[sf] resumed session", resumed);
+  }
+  if (invite) {
+    const inviteMode = invite.animal ? "drive" : invite.mode === "surf" ? "walk" : invite.mode;
+    // land to the sharer's right so nobody spawns inside anybody — wider for
+    // the big embodiments (a boat is 9 m long, planes bank wide)
+    const side = inviteMode === "boat" || inviteMode === "plane" ? 7 : inviteMode === "drive" ? 4 : 2.5;
+    const jx = invite.x + Math.cos(invite.facing) * side;
+    const jz = invite.z - Math.sin(invite.facing) * side;
+    player.teleportTo({ x: jx, y: invite.y, z: jz, facing: invite.facing, mode: inviteMode });
+    chase.yaw = invite.facing;
+    chase.cutTo(player);
+    // one-shot: strip the params so a refresh resumes the session instead of
+    // re-teleporting (the 1 Hz session save takes over from here)
+    const q = new URLSearchParams(location.search);
+    q.delete("j");
+    q.delete("via");
+    history.replaceState(null, "", location.pathname + (q.size ? `?${q}` : ""));
+    if (import.meta.env.DEV) console.log("[sf] joined via invite", invite);
+  }
+  // Seed every first visible frame at the final player pose. Fresh sessions use
+  // this too; otherwise a fast cached boot can briefly expose the old 20/30 m
+  // camera seed damping toward the avatar.
+  chase.cutTo(player);
+
+  // Controllers, saved sessions, and invite embodiment restoration can all
+  // adjust the authoritative X/Z after the overlapped early prime began. Never
+  // reveal or release against the provisional spawn: supersede both streams
+  // from the actual held body with the same generic path used at runtime.
+  if (Math.hypot(
+    player.position.x - initialVisualFocus.x,
+    player.position.z - initialVisualFocus.z
+  ) >= 1) {
+    primeInitialVisualAt(player.position.x, player.position.z);
+    initialCollisionEpoch = physics.prepareCollisionArrival(player.position);
+    if (!physics.activateCollisionArrival(initialCollisionEpoch)) {
+      throw new Error("Initial collision destination was superseded before activation");
+    }
+    initialCollisionRetryCycles = 0;
+    initialCollisionFailureReported = false;
+    initialVisualFailureReported = false;
+  }
+
+  input.setMode(player.mode);
+  const startMode = invite || resumed ? "walk" : (spawnPoint?.mode ?? START.mode);
+  // Surf needs its runtime/camera chunks (deferred to P3); every other
+  // embodiment already exists on the Player and can start immediately.
+  if (startMode !== "walk" && startMode !== "surf" && ALL_MODES.includes(startMode)) {
+    player.trySwitch(startMode);
+  }
+
+  // Collapse the materialize front at the arrival: the world boots as the holo
+  // void (terrain contour grid; sky darkened + water hidden via VoidRealm).
+  materializeField.holo(player.position.x, player.position.z);
+  voidRealm.update();
+
+  const timer = new THREE.Timer();
+  let accumulator = 0;
+  let elapsed = 0;
+  const aim = new THREE.Vector3();
+  const rayOrigin = new THREE.Vector3(); // aimOrigin returns a shared tmp — keep our own copy
+
+  // Warm only the render path the first frame actually uses (a near-empty holo
+  // scene: terrain clipmap + sky + avatar). Optional modes, debug overlays,
+  // tools, particles, underwater rendering, and audio remain behind their
+  // first-use gates instead of taxing every new visitor.
+  bootMark("world");
+  progress(88, "warming the first view");
+  sky.update(0, camera.position, player.renderPosition);
+  syncBallGlowNight(sky.sunElevation);
+  player.warmup();
+  // Initialize render-target contents and the contact-shadow pass once before
+  // warmup temporarily freezes render-scoped updates. Without this covered
+  // frame, a production WebGPU build can retain an uninitialized (black)
+  // contact/output target even though subsequent scene submissions succeed.
+  renderFrame();
+  await pipeline.warmup("boot");
+  bootMark("warmup");
+  // One frame flushes the covered compile submission without an arbitrary wait.
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+  // ---------------------------------------------------------- P2 void live
+  // Reveal now means "the void is ready": ground carpet under the player, a
+  // rendered void frame and the boot warmup done — NOT the old full local
+  // visual+collision settle. The provisional void loop below renders and
+  // accepts input while P3 constructs the rest of the app in ~5 ms slices.
+  let modulesReady = true;
+  let revealed = false;
+  let resolveRevealed!: () => void;
+  const revealedPromise = new Promise<void>((r) => {
+    resolveRevealed = r;
+  });
+  let constructionDoneFlag = false;
+  let resolveConstructionDone!: () => void;
+  const constructionDone = new Promise<void>((r) => {
+    resolveConstructionDone = r;
+  });
+  // Post-reveal deferred region builds must ALSO wait for sliced construction:
+  // reveal fires seconds before their dependencies exist now.
+  const worldReady = Promise.all([revealedPromise, constructionDone]).then(() => {});
+  const pendingStartActions: Array<() => void> = [];
+  const runAfterConstruction = (action: () => void) => {
+    if (constructionDoneFlag) action();
+    else pendingStartActions.push(action);
+  };
+  const bootQuery = new URLSearchParams(location.search);
+  // `?flickerspy=1`: in-session diagnostic for the sky-flicker reports — see
+  // dev/flickerSpy.ts. Lazy import; costs nothing without the flag.
+  if (bootQuery.has("flickerspy")) {
+    void import("./dev/flickerSpy").then(({ installFlickerSpy }) =>
+      installFlickerSpy({ renderer, scene, camera })
+    );
+  }
+  // Local development is primarily exercised by browser agents, so enter the
+  // world as soon as it is ready instead of leaving them stranded at a purely
+  // human identity gate. `?startscreen=1` keeps the real onboarding path easy
+  // to inspect. Deployed browser tests opt in explicitly with `?autostart=1`.
+  const autoEnter =
+    !beganAsReadingVisit &&
+    !bootQuery.has("startscreen") &&
+    (import.meta.env.DEV || ["autostart", "demo", "profile"].some((key) => bootQuery.has(key)));
+  // Explicit headless verification, demos and perf runs skip the identity hold.
+  const skipGate = ["demo", "skipsettle"].some((key) => bootQuery.has(key));
+  // Local HMR reloads that were already in-game resume without the identity gate.
+  // Production always waits for Start / Enter — returning players keep their saved
+  // name prefilled in the form. Deployed tests still opt in via `?autostart` etc.
+  // (handled by `autoEnter` above).
+  const autoStartSaved =
+    !beganAsReadingVisit &&
+    !bootQuery.has("startscreen") &&
+    Boolean(devReload?.started);
+  const settleStart = performance.now();
+  console.info(`[boot] void core up in ${((settleStart - bootT0) / 1000).toFixed(1)}s — going live`);
+  const revealWorld = (reason = "void-ready") => {
+    if (revealed) return;
+    revealed = true;
+    backgroundAdmission.deferAtLeast(1200);
+    resolveRevealed(); // release any region-deferred park builds (gated on constructionDone too)
+    progress(100, "ready");
+    bootScreen.markReady();
+    // Procedural weather has rendered from frame one. Only after reveal may the
+    // optional live adapter/chunk request observations.
+    sky.enableLiveFogAfterReveal();
+    // Cache world assets for instant repeat loads. Post-reveal on purpose — it
+    // must not compete with the boot fetches it is meant to make free next time.
+    if (import.meta.env.PROD && "serviceWorker" in navigator) {
+      void navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+    bootMark("reveal");
+    console.info(
+      `[boot] world ${reason} in ${((performance.now() - bootT0) / 1000).toFixed(1)}s` +
+        ` (sched ${scheduler.pending}/${scheduler.waiting} waiting, tiles ${tiles.busy}, modules ${modulesReady}, aux ${auxPending})`
+    );
+    console.info(`[boot] phases ${bootMarkSummary()}`);
+    // Prefer HMR resume over generic local auto-enter so a mid-session reload
+    // keeps the player's name instead of minting a fresh fun one.
+    if (autoStartSaved) {
+      // no click to consume, so pointer lock has no gesture — startGame still
+      // requests it (a no-op if the browser declines; first scene click re-locks)
+      bootScreen.startNow(devReload!.name);
+      return;
+    }
+    if (autoEnter) {
+      // Programmatic starts have no user gesture, so do not request pointer
+      // lock. The first canvas click can capture it normally when needed.
+      bootScreen.startNow(suggestedName, { lock: false });
+      return;
+    }
+    bootScreen.focusNameInput(); // re-focus in case the player clicked away while waiting
+  };
+
+  // Name gate: the immediate half must work from the void (before P3 builds
+  // net/hud/audio); everything touching those systems queues until P4.
+  bootScreen.setStartHandler((typedName, opts) => {
+    nameInput.blur(); // hand the keyboard back to the game
+    document.body.classList.add("started"); // reveals the HUD (hidden behind the gate)
+    loading.classList.add("done");
+    // the submit click/Enter is the gesture pointer lock needs. A deep-link start
+    // has no gesture (and opens a modal that frees the cursor anyway), so skip it.
+    if (opts?.lock !== false) input.requestLock();
+    runAfterConstruction(() => {
+      net.setName(typedName);
+      avatar.get()?.setName(net.name); // keep the avatar-panel field in step with the gate (no-op until opened)
+      window.setTimeout(() => audioControls.showMicNudge(), 650);
+      hud.message(
+        invite?.from
+          ? `Welcome, ${net.name} — you dropped in on ${invite.from}`
+          : `Welcome to San Francisco, ${net.name}`,
+        3.2
+      );
+    });
+  });
+
+  // Boot-arrival progression, shared by the void loop and the real loop's
+  // postSchedule hook. Control releases the moment the CPU ground carpet is
+  // ready under the arrival (the void has no building visuals to fall
+  // through); the full collision arrival keeps converging in the background
+  // and completes exactly as before.
+  let bootHoldReleased = false;
+  let bootArrivalX = player.position.x;
+  let bootArrivalZ = player.position.z;
+  let lastBootReanchorAt = 0;
+  const bootArrivalTick = () => {
+    if (initialArrivalReleased) return;
+    const status = physics.collisionArrivalStatus(initialCollisionEpoch);
+    if (!bootHoldReleased && status.groundReady) {
+      bootHoldReleased = true;
+      player.releaseWorldArrivalHold("boot-arrival");
+      bootMark("control");
+    }
+    if (initialVisualState === "pending" && performance.now() >= initialVisualDeadlineAt) {
+      initialVisualState = "fallback";
+    }
+    if (initialVisualState === "fallback" && !initialVisualFailureReported) {
+      initialVisualFailureReported = true;
+      console.warn("[boot] local building visuals unavailable; continuing with the terrain fallback");
+      bootHud?.message("Some neighborhood detail could not load — the map can take you somewhere else", 8);
+    }
+    if (status.failedColliderTiles > 0 && initialCollisionRetryCycles < 1) {
+      const restarted = physics.retryCollisionArrival(initialCollisionEpoch);
+      if (restarted > 0) {
+        initialCollisionRetryCycles++;
+        console.warn(`[boot] retrying ${restarted} failed local collision tile${restarted === 1 ? "" : "s"}`);
+      }
+    } else if (
+      status.failedColliderTiles > 0 &&
+      initialCollisionRetryCycles >= 1 &&
+      !initialCollisionFailureReported
+    ) {
+      initialCollisionFailureReported = true;
+      console.warn("[boot] local collision remains unavailable");
+      bootHud?.message("This spot could not settle safely — open the map and choose another place", 8);
+    }
+    // Early control means the player can wander before the pinned arrival
+    // completes. Re-anchor the safety bubble under them (the same generic
+    // prepare/activate path runtime relocations use) so completion cannot
+    // strand on a spawn the carpet has left behind.
+    if (bootHoldReleased && !status.ready) {
+      const dx = player.position.x - bootArrivalX;
+      const dz = player.position.z - bootArrivalZ;
+      if (dx * dx + dz * dz > 60 * 60 && performance.now() - lastBootReanchorAt > 2000) {
+        lastBootReanchorAt = performance.now();
+        bootArrivalX = player.position.x;
+        bootArrivalZ = player.position.z;
+        initialCollisionEpoch = physics.prepareCollisionArrival(player.position);
+        physics.activateCollisionArrival(initialCollisionEpoch);
+        initialCollisionRetryCycles = 0;
+        return;
+      }
+    }
+    if (initialVisualState !== "pending" && status.ready) {
+      if (physics.completeCollisionArrival(initialCollisionEpoch)) {
+        initialArrivalReleased = true;
+        tiles.resumeBackgroundStreaming();
+      }
+    }
+  };
+
+  // Single call-site helper for the ring coordinator's per-frame update: BOTH
+  // the provisional voidTick and the real loop's updateWorld call this right
+  // before materializeField.update. Bound when the coordinator is created in
+  // P5 below (same synchronous block — no tick can run before then).
+  let ringUpdate: (dt: number) => void = () => {};
+
+  // M5: Bay Lights / Golden Gate lights ramp up as the materialize front
+  // crosses their world region — a CPU-side scale on the intensity uniforms
+  // Sky#applySun rewrites every sky.update, so this multiply must run
+  // immediately after EVERY sky.update that precedes a render. Anchor = the
+  // bridge midpoint (the front band sweeps it in ~1 s). No shader work.
+  const bridgeAnchor = (name: string): { x: number; z: number } | null => {
+    const bridge = map.meta.bridges.find((b) => b.name === name);
+    if (!bridge || bridge.line.length === 0) return null;
+    const mid = bridge.line[Math.floor(bridge.line.length / 2)];
+    return { x: mid[0], z: mid[1] };
+  };
+  const bayLightsAnchor = bridgeAnchor("Bay Bridge");
+  const goldenGateAnchor = bridgeAnchor("Golden Gate Bridge");
+  const applyLightFrontRamps = () => {
+    if (bayLightsAnchor) {
+      BAY_LIGHTS_INTENSITY.value *= materializeField.amountAt(bayLightsAnchor.x, bayLightsAnchor.z);
+    }
+    if (goldenGateAnchor) {
+      GOLDEN_GATE_LIGHTS_INTENSITY.value *=
+        materializeField.amountAt(goldenGateAnchor.x, goldenGateAnchor.z);
+    }
+  };
+
+  // M5: citygen chunk-publication radius folded into the residency the front
+  // chases. The ring is a post-reveal dynamic import — until it exists nothing
+  // constrains (Infinity); rebound right after the ring holder is declared.
+  let citygenResidencyRadius: (x: number, z: number) => number = () => Infinity;
+
+  // Provisional void loop: the minimal per-frame set — input → fixed-step
+  // physics → player/camera → sky/materialize → streaming drains → render.
+  // The real loop (P4) swaps in atomically by replacing `activeTick` between
+  // frames: same timer/accumulator/player instances, no double-ticked frame.
+  let voidFrames = 0;
+  const voidTick = (forcedDt?: number) => {
+    timer.update();
+    const frameDt = forcedDt ?? Math.min(timer.getDelta(), 0.09);
+    input.pollPad(frameDt);
+    input.pollDriver(frameDt);
+    elapsed += frameDt;
+    accumulator += frameDt;
+    if (!input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
+    if (!input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+    if (player.mode === "plane") player.steerFly(input, frameDt);
+    chase.lookDir(aim);
+    tracer.begin("physics");
+    physics.maintainStreaming(player.position);
+    let steps = 0;
+    while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
+      player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
+      physics.step(physics.world.fixedTimeStep);
+      accumulator -= physics.world.fixedTimeStep;
+      steps++;
+    }
+    if (steps === 3) accumulator = 0;
+    tracer.end("physics");
+    tracer.begin("world");
+    player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
+    player.syncMesh(frameDt);
+    tiles.update(player.position.x, player.position.z, false, !revealed);
+    authoredRegions.update(player.position.x, player.position.z);
+    chase.update(frameDt, player, input);
+    ringUpdate(frameDt);
+    materializeField.update(frameDt);
+    voidRealm.update();
+    sky.update(elapsed, camera.position, player.renderPosition);
+    applyLightFrontRamps();
+    tracer.end("world");
+    tracer.begin("sched");
+    scheduler.run(revealed ? (frameDt < 1 / 55 ? 3 : frameDt < 1 / 35 ? 1.5 : 0.8) : 24);
+    bootArrivalTick();
+    tracer.end("sched");
+    input.endFrame();
+    tracer.begin("render");
+    renderFrame();
+    tracer.end("render");
+    if (voidFrames === 0) bootMark("voidFrame");
+    voidFrames++;
+    if (!revealed) {
+      // Either release path may fire first: bootArrivalTick sets
+      // bootHoldReleased when the ground carpet is ready, but a runtime
+      // relocation (worldArrival.onStateChange) can release the boot hold via
+      // initialArrivalReleased alone — after which bootArrivalTick
+      // early-returns forever and only the 15 s cap would reveal.
+      if (voidFrames >= 2 && (bootHoldReleased || initialArrivalReleased)) revealWorld("void-ready");
+      else if (performance.now() - settleStart > 15000) revealWorld("reveal-forced (15s cap)");
+    }
+  };
+  let activeTick: (forcedDt?: number) => void = voidTick;
+  const adaptiveRes = createAdaptiveResolution(renderer);
+  const frameDriver = startFrameDriver({
+    renderer,
+    camera,
+    app,
+    tick: (forcedDt?: number) => activeTick(forcedDt),
+    tracer,
+    isRevealed: () => revealed,
+    // P3 construction slices legitimately produce long frames after reveal;
+    // hold the governor until the P4 handoff so they can never trigger a
+    // spurious downscale of the freshly revealed world.
+    adaptiveRes: {
+      update: (emaMs: number) => {
+        if (constructionDoneFlag) adaptiveRes.update(emaMs);
+      }
+    }
+  });
+  // Deterministic capture stops the wall-clock loop so tools can drive tick(dt).
+  // Discard any fractional wall-clock remainder on entry; otherwise identical
+  // fixed-step reels can interpolate from a different boot-time accumulator.
+  (window as never as { __sfManual: (on: boolean) => void }).__sfManual = (on) => {
+    if (on) accumulator = 0;
+    frameDriver.setManual(on);
+  };
+  // Void-phase probe surface: the full `__sf` registry only exists at the END
+  // of boot, but M3 QA needs marks/position/front visibility DURING P2/P3.
+  if (import.meta.env.DEV || bootQuery.has("profile")) {
+    (window as never as { __sfVoid: unknown }).__sfVoid = {
+      marks: () => bootMarkList().map((m) => ({ label: m.label, t: Math.round(m.t) })),
+      playerPos: () => [player.position.x, player.position.y, player.position.z],
+      revealed: () => revealed,
+      constructionDone: () => constructionDoneFlag,
+      frontRadius: () => materializeField.frontRadius.value as number
+    };
+  }
+  if (skipGate) loading.classList.add("done");
+
+  // ---------------------------------------------- P5 ring coordinator (M4)
+  // Owns the materialize front: per-frame residency-chasing sweeps from the
+  // boot focus (both voidTick and the real loop call ringCoordinator.update
+  // right before materializeField.update). Staged tile expansion keeps its
+  // existing triggers (bootArrivalTick completion, the worldReady quiet-window
+  // block below); the coordinator chases what lands and only nudges a stage
+  // directly after a 20 s stall so continuous movement can't pin the front.
+  // `?voidholo=1` still means "hold the holo" for manual `__sf.materialize`.
+  const ringCoordinator = new RingCoordinator(player.position.x, player.position.z, {
+    tiles,
+    player,
+    prime: primeInitialVisualAt,
+    fullRadius: fullTileRadius,
+    // M9: surf caps CONFIG.tileLoadRadius at 2 km (< settle radius); the
+    // coordinator settles at a plateaued live cap instead of sweeping forever.
+    liveLoadRadius: () => CONFIG.tileLoadRadius,
+    citygenRadius: (x, z) => citygenResidencyRadius(x, z),
+    holdHolo: bootQuery.has("voidholo"),
+    onSettled: () => bootMark("frontComplete"),
+    onExpansionStalled: () => {
+      // The same restore the worldReady quiet-window block performs, forced
+      // after the stall deadline. Surf keeps its explicit 2 km mode cap (its
+      // stash restore is handled by that block when the session quiets down).
+      if (player.mode !== "surf" && CONFIG.tileLoadRadius < fullTileRadius) {
+        CONFIG.tileLoadRadius = fullTileRadius;
+        CONFIG.tileUnloadRadius = fullTileRadius + 400;
+      }
+      tiles.beginBackgroundExpansion();
+    }
+  });
+  // M7 far-arrival classification. FAR means "the destination's content is
+  // not resident": the hop is a genuine relocation (> FAR_ARRIVAL_MIN_HOP —
+  // recovery probes and short covered mode relocations stay near) AND the
+  // attached-tile radius measured AROUND THE DESTINATION is below
+  // FAR_ARRIVAL_RESIDENT_MIN. `tiles.residentRadiusAround(dest)` is the
+  // truest available residency signal: a short hop inside the settled world
+  // reads a large radius (near — never re-dissolve a resident front), while a
+  // multi-km teleport reads ~0 because nothing near the destination is
+  // attached. Classification runs pre-commit, so player.position is the
+  // origin. The one-off dest-centred query costs a single 205-entry manifest
+  // pass at arrival time.
+  const FAR_ARRIVAL_MIN_HOP = 500;
+  const FAR_ARRIVAL_RESIDENT_MIN = 500;
+  // `?nofarcut=1`: QA escape hatch — force every arrival onto the pre-M7 near
+  // path (full visual settle under the cover) for A/B timing on one build.
+  const farCutDisabled = bootQuery.has("nofarcut");
+  classifyFarArrival = (x, z) => {
+    if (farCutDisabled) return false;
+    const hop = Math.hypot(x - player.position.x, z - player.position.z);
+    if (hop < FAR_ARRIVAL_MIN_HOP) return false;
+    if (tiles.residentRadiusAround(x, z) < FAR_ARRIVAL_RESIDENT_MIN) return true;
+    // M9: during an active sweep, resident ground beyond the current front is
+    // still HOLO — a near-classified hop there would drop the cover onto the
+    // unswept void. Classify it far so the front refocuses at the destination.
+    return ringCoordinator.state === "sweeping" && !ringCoordinator.coversPoint(x, z);
+  };
+  // The cut moment of a far arrival: abort any in-flight sweep (latest-wins,
+  // boot included), recenter + collapse the front at the destination, and
+  // chase its residency exactly like boot. `prime: false` — worldArrival
+  // already primed tiles/regions/collision through its own epoch-guarded path.
+  onFarArrivalCut = (x, z) => ringCoordinator.focus(x, z, { reset: true, prime: false });
+  // M7 shadow streaming hold: while the front is actively sweeping, static
+  // shadow-domain redraws are held (casters are holo-dark under the front) and
+  // latched dirt applies as one redraw per domain on settle.
+  let shadowStreamingHold = false;
+  ringUpdate = (dt) => {
+    ringCoordinator.update(dt);
+    const sweeping = ringCoordinator.state === "sweeping";
+    if (sweeping !== shadowStreamingHold) {
+      shadowStreamingHold = sweeping;
+      sky.setStaticShadowStreamingHold(sweeping);
+    }
+  };
+  if (import.meta.env.DEV || bootQuery.has("profile")) {
+    Object.assign((window as never as { __sfVoid: Record<string, unknown> }).__sfVoid, {
+      ringState: () => ringCoordinator.state,
+      residentRadius: () => ringCoordinator.residentRadius()
+    });
+  }
+
+  // ------------------------------------------------ P3 sliced construction
+  // The former synchronous boot stretch, in its ORIGINAL ORDER, chopped by a
+  // ~5 ms frame-budget checkpoint between constructor groups so live void
+  // frames never hitch on construction. Systems are constructed but NOT
+  // ticked — nothing below runs per-frame until the real loop lands at P4.
+  const constructionSlice = createFrameBudgetCheckpoint(5);
+  await constructionSlice();
+  const water = new Water(scene, map);
+  voidRealm.attachWater(water);
+  // Compile the water sheets detached before their first visible frame — the
+  // void loop is LIVE now; an uncompiled sheet would stall a whole frame on
+  // its pipeline build (contract C2/C3).
+  {
+    const waterRoots = [water.far, water.near, water.palaceLagoon, water.underside];
+    const restore = waterRoots.map((m) => m.visible);
+    for (const m of waterRoots) m.visible = false;
+    void Promise.all(
+      waterRoots.map((m) => warmHiddenRoot(renderer, camera, scene, m).catch(() => {}))
+    ).then(() => waterRoots.forEach((m, i) => (m.visible = restore[i])));
+  }
+  const underwater = new UnderwaterOverlay(app, map);
+  // off-boot-path lane markings (attaches whenever the fetch lands)
+  auxPending++;
+  void createRoadMarkings(scene, map)
+    .then((group) => {
+      roadMarkings = group;
+    })
+    .catch((err) => console.warn("[roads] lane markings unavailable", err))
+    .finally(() => auxPending--);
+  await constructionSlice();
+
+  progress(62, "waking up san francisco");
+  const hud = new HUD();
+  bootHud = hud;
   const fx = new FX(scene);
   const wake = new WakeRipples(scene);
   const boardWake = new BoardWake(scene, map, wake);
@@ -317,6 +991,7 @@ async function boot() {
   const gameplaySfxBus = new GameplaySfxBus();
   gameplaySfxBus.prewarm();
   audioEngine.prewarm();
+  await constructionSlice();
 
   // Space / pad-X toys — ↑/↓ pick the toolbar row, ←/→ cycle within it
   const graffiti = new Graffiti(scene);
@@ -383,6 +1058,7 @@ async function boot() {
   );
   setTool("ball");
   setColor(0);
+  await constructionSlice();
 
   // procedural vehicle hum + the HUD's compact four-group mixer (bottom-left)
   const vehicleAudio = new VehicleAudio();
@@ -403,37 +1079,9 @@ async function boot() {
   // splash in the Japanese Tea Garden's stream rings through a tunable feedback
   // delay — the fey-realm "magic echo". Rides the nature context/effects bus.
   const ballImpactAudio = new BallImpactAudio(nature);
-
-  // Avatar identity: a saved avatar means the player chose one in the editor;
-  // otherwise leave it to the server's per-id seed (adopted on welcome below) so
-  // every player — every browser tab included — looks distinct. randomAvatarTraits
-  // is just a non-default placeholder for the seconds before we're welcomed (and
-  // the whole life of an offline single-player session).
-  const savedAvatar = loadSavedAvatar();
-  let customized = savedAvatar !== null;
-  let avatarTraits = savedAvatar ?? randomAvatarTraits();
-  const savedCar = loadSavedCar();
-  let carCustomized = savedCar !== null;
-  let carConfig = savedCar ?? randomCarConfig();
-  setLocalCarConfig(carConfig);
-  // Board identity follows the exact same contract as the avatar: saved means
-  // chosen; otherwise a placeholder until the server's per-id seed arrives.
-  const savedBoard = loadSavedBoard();
-  let boardCustomized = savedBoard !== null;
-  let boardConfig = savedBoard ?? randomBoardConfig();
-  setLocalBoardConfig(boardConfig); // abandonedMounts builds YOUR board from this
-  const savedScooter = loadSavedScooter();
-  let scooterCustomized = savedScooter !== null;
-  let scooterConfig = savedScooter ?? randomScooterConfig();
-  setLocalScooterConfig(scooterConfig);
-  // Surfboard identity follows the same explicit-choice/per-id-seed contract,
-  // but its PNG art remains completely unloaded until surfing or the lab starts.
-  const savedSurfboard = loadSavedSurfboard();
-  let surfboardCustomized = savedSurfboard !== null;
-  let surfboardConfig = savedSurfboard ?? randomSurfboardConfig();
-  setLocalSurfboardConfig(surfboardConfig);
+  // Identity configs loaded in P1 (the Player needed them); re-apply the
+  // board's audio styling now that the vehicle-audio graph exists.
   vehicleAudio.setBoardStyle(boardConfig);
-  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig, surfboardConfig, carConfig);
   const updatePlayerFoley = (dt: number, active: boolean) => {
     const speed = Math.hypot(player.velocity.x, player.velocity.z);
     const surfaceType = map.surfaceType(player.position.x, player.position.z);
@@ -456,18 +1104,6 @@ async function boot() {
       indoor: player.indoor
     } : null);
   };
-  player.holdForWorldArrival("boot-arrival");
-  let initialCollisionEpoch = physics.prepareCollisionArrival(player.position);
-  physics.activateCollisionArrival(initialCollisionEpoch);
-  let initialCollisionReady = false;
-  let initialArrivalReleased = false;
-  let initialCollisionRetryCycles = 0;
-  let initialCollisionFailureReported = false;
-  let initialVisualFailureReported = false;
-  const chase = new ChaseCamera(camera, map, physics);
-  chase.yaw = spawn.heading; // behind the player, looking the way they face (spawn.heading is raw facing)
-  // Seed above the local ground — hilltop spawns sit well over y=30.
-  camera.position.set(spawn.x + 20, map.effectiveGround(spawn.x, spawn.z) + 30, spawn.z + 20);
   const localAudioPlacement = (x: number, y: number, z: number, reach = 70) => {
     const dx = x - camera.position.x;
     const dy = y - camera.position.y;
@@ -650,10 +1286,9 @@ async function boot() {
   let leaveCameraModeForSurf: () => void = () => {};
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
-  const startMode = invite || resumed ? "walk" : (spawnPoint?.mode ?? START.mode);
-  if (startMode !== "walk" && ALL_MODES.includes(startMode)) {
-    if (startMode !== "surf" || await prepareSurfEntry()) player.trySwitch(startMode);
-  }
+  // startMode was applied in P1; a surf start upgrades below once the surf
+  // runtime + debug panel exist (onModeChange references the latter).
+  await constructionSlice();
   // Surf-mode far-cull (perf audit's #1 win): a west-facing surfer never sees the
   // city behind them, but streamed tiles + citygen chunks are frustumCulled=false
   // — they pay GPU draw cost every frame regardless of view, cleared only by
@@ -717,18 +1352,6 @@ async function boot() {
   };
   input.setMode(player.mode);
   toolbar.setVehicle(player.mode);
-  // onModeChange is wired after the startup trySwitch, so a boot straight into
-  // surf (spawnPoint/invite) needs the cull applied once explicitly.
-  if (player.mode === "surf") {
-    // The boot visual prime temporarily reduced this to 1 km. Seed the surf
-    // stash from the real fixed-quality radius so leaving surf restores normal
-    // residency instead of permanently preserving the boot bubble.
-    CONFIG.tileLoadRadius = fullTileRadius;
-    CONFIG.tileUnloadRadius = fullTileRadius + 400;
-    applySurfCull(true);
-    void chase.ensureSurfCamera();
-    void ensureSurfRuntime();
-  }
   // controller: swap the help labels to whichever device was touched last
   input.onDeviceChange = (device) => hud.setDevice(device);
   window.addEventListener("gamepadconnected", () => hud.message("Controller connected", 2.4));
@@ -799,6 +1422,7 @@ async function boot() {
   // Scattered boardable bay boats (persistent, self-sailing, far-hidden) —
   // extracted per docs/MAIN_DECOMPOSITION.md.
   spawnScatterBoats(abandonedMounts);
+  await constructionSlice();
   // Nature uses one sandbox vegetation runtime now. The old primitive Flora
   // and site-local blob/tree renderers are gone: regions own placement, while
   // shared trees, shrubs, grass and flowers own geometry/materials/wind/LOD.
@@ -844,7 +1468,6 @@ async function boot() {
   let missionDolores: MissionDoloresMuseum | null = null;
   let missionDoloresLoading: Promise<void> | null = null;
   let sutroBaths: import("./world/sutroBaths").SutroBaths | null = null;
-  let pianoGodRaysActive = false;
   let museumBookOpen = false;
   const ensureMissionDolores = (playerPos: THREE.Vector3): void => {
     if (missionDolores || missionDoloresLoading) return;
@@ -871,34 +1494,11 @@ async function boot() {
         console.warn("[boot] Mission Dolores museum unavailable:", err);
       });
   };
-  const releasePianoGodRays = () => {
-    if (!pianoGodRaysActive) return;
-    pianoGodRaysActive = false;
-    pipeline.setPianoGodRaysArea(false);
-  };
-  const renderFrame = () => {
-    // God rays are intentionally hard-scoped to the piano grove. Mission
-    // Dolores and every other region stay on the base post-processing graph.
-    const wantsPianoGodRays =
-      Boolean(POSTFX_TUNING.values.pianistRays) &&
-      foliageOn &&
-      siteFoliage?.isReady("beach-pianist-grove") === true &&
-      beachPianist?.isPlayerInGodRayArea(player.position, pianoGodRaysActive) === true;
-    if (wantsPianoGodRays !== pianoGodRaysActive) {
-      pianoGodRaysActive = wantsPianoGodRays;
-      pipeline.setPianoGodRaysArea(wantsPianoGodRays, beachPianist?.group.position);
-    }
-    pipeline.render();
-  };
   const gardenDisplacer: GroundDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
-  // Master foliage switch (bound at the top of the "/" panel). When off, every
-  // vegetation group is hidden AND its per-frame update is skipped in the loop
-  // below — see the `foliageOn` gate around garden/wildlands update.
-  let foliageOn = Boolean(FOLIAGE_TUNING.values.visible);
-  // Exhibit-site vegetation streamer — constructed after the optional-site
-  // stage machinery exists; registrations are boot-safe data.
-  let siteFoliage: SiteFoliageStreamer | null = null;
+  // Master foliage switch (bound at the top of the "/" panel): `foliageOn`,
+  // declared in P1 beside renderFrame. When off, every vegetation group is
+  // hidden AND its per-frame update is skipped in the loop below.
   const setFoliageVisible = (visible: boolean) => {
     foliageOn = visible;
     garden?.setVisible(visible, player.position);
@@ -912,6 +1512,7 @@ async function boot() {
   };
   const islands = new Islands(physics, map, scene);
   islands.setFoliageVisible(foliageOn);
+  await constructionSlice();
 
   // Decoupled world-query service: every "what does this ray hit" caller (paint,
   // the in-world cursor, future systems) goes through here. Backed by box3d's
@@ -926,15 +1527,14 @@ async function boot() {
   const buildingRayRefiner = new BuildingRayRefiner(scene);
   physics.setBuildingRayRefiner(buildingRayRefiner);
 
-  // Frame-budget scheduler: ALL deferrable bursty work (streamed physics bodies,
-  // citygen assembly, material warmups) queues here and drains under a per-frame
-  // ms budget in the tick — see core/frameBudget.ts for the contract.
-  const scheduler = createFrameScheduler();
-
   // The production ring is citywide. The small demo spawner is debug-only and
   // stays out of ordinary boot unless a probe explicitly asks for it.
   let citygen: { update?: (dt: number) => void; [k: string]: unknown } | null = null;
   const citygenRing: { current: CityGenRing | null } = { current: null };
+  // M5: the ring coordinator's residency now mins the citygen chunk radius
+  // (declared as a rebindable above P5 — the coordinator exists before this).
+  citygenResidencyRadius = (x, z) =>
+    citygenRing.current?.materializedRadiusAround(x, z) ?? Infinity;
 
   // crabs to hunt (hunt.ts)
   const satchel = new Satchel();
@@ -950,10 +1550,8 @@ async function boot() {
   // Sutro Baths ruins, cypress and a lantern-keeper. Distance-LOD region.
   let landsEnd: LandsEndRegion | null = null;
   let waveOrgan: WaveOrgan | null = null;
-  // Baker Beach — a bearded voxel pianist at a voxel grand, the Golden Gate
-  // Bridge behind him. Lazy optional site (procedural build; recording + note
-  // timeline fetched on first approach).
-  let beachPianist: BeachPianist | null = null;
+  // Baker Beach pianist: `beachPianist` is declared in P1 (renderFrame reads
+  // it); the lazy optional site hydrates it via onSitesChanged below.
   let unregisterBeachPianistTuning: (() => void) | null = null;
   // Buena Vista's hidden summit ritual: five wandering echoes and a sky-scale
   // finale, asleep outside its clearing like the other located activities.
@@ -990,6 +1588,7 @@ async function boot() {
   } catch (err) {
     console.warn("[boot] sutro beacons unavailable:", err);
   }
+  await constructionSlice();
   // Keep the seven mapped Tea Garden buildings as the immediate baked fallback.
   // Their authored, walkable replacements claim the footprints atomically only
   // after the essential Tea Garden subtree is GPU-ready and attached. Suppressing
@@ -1044,6 +1643,7 @@ async function boot() {
   // Summit dialogue: the trio chills until you walk up, press E and ask for a
   // song (shared NPC conversation system — gameplay/agents/conversation.ts).
   const buskerTalk = createBuskerConversation(buskers);
+  await constructionSlice();
   let ridePromptShown = false;
   let doorPromptShown = false;
   let doorScanCountdown = 0;
@@ -1169,9 +1769,7 @@ async function boot() {
   document.querySelector<HTMLButtonElement>("[data-ui-restore]")!.addEventListener("click", showUi);
 
   hud.setMode(player.mode);
-
-  // post-processing: scene pass AA + optional stylized screen effects
-  const pipeline = createRenderPipeline(renderer, scene, camera, sky.sun);
+  await constructionSlice();
 
   // ---- multiplayer: presence relay (src/net/net.ts) + remote avatars +
   // minimap. Drop-in social layer: movement stays client-authoritative, the
@@ -1454,6 +2052,7 @@ async function boot() {
     surfboard.syncVisible(mode === "surf");
   };
   syncCustomizerForMode(player.mode);
+  await constructionSlice();
   net.onWelcome = () => {
     avatar.get()?.setName(net.name); // server may canonicalize a duplicate/invalid name
     if (customized) {
@@ -1675,27 +2274,9 @@ async function boot() {
     }
   };
 
-  // Name gate is wired at module startup so typing works during loading; this
-  // callback is attached once the game objects it needs exist.
-  bootScreen.setStartHandler((typedName, opts) => {
-    net.setName(typedName);
-    avatar.get()?.setName(net.name); // keep the avatar-panel field in step with the gate (no-op until opened)
-    nameInput.blur(); // hand the keyboard back to the game
-    document.body.classList.add("started"); // reveals the HUD (hidden behind the gate)
-    loading.classList.add("done");
-    window.setTimeout(() => audioControls.showMicNudge(), 650);
-    // the submit click/Enter is the gesture pointer lock needs. A deep-link start
-    // has no gesture (and opens a modal that frees the cursor anyway), so skip it.
-    if (opts?.lock !== false) input.requestLock();
-    // `invite` is declared further down boot; by the time a submit can happen
-    // (Start enables at load's end) it's long initialized
-    hud.message(
-      invite?.from
-        ? `Welcome, ${net.name} — you dropped in on ${invite.from}`
-        : `Welcome to San Francisco, ${net.name}`,
-      3.2
-    );
-  });
+  // The name gate's start handler was installed in P2 (it must work from the
+  // live void); its net/hud/audio effects queue through runAfterConstruction.
+  await constructionSlice();
 
   const mapFwd = new THREE.Vector3();
   const minimap = new Minimap(
@@ -1713,49 +2294,8 @@ async function boot() {
   // Activity-site pins (static coords) — extracted per docs/MAIN_DECOMPOSITION.md.
   registerActivityLandmarks(minimap, map, ghostShipBeacon.pose, ensureSurfShack);
   const playerLocator = new PlayerLocator();
-  let prepareDestinationEssentials: (
-    destination: Readonly<{ x: number; z: number }>,
-    signal: AbortSignal
-  ) => void | Promise<void> = () => {};
-  const worldArrival = new WorldArrivalCoordinator({
-    input,
-    player,
-    chase,
-    tiles,
-    physics,
-    prepareRequiredDestinationVisuals: (destination, signal) =>
-      authoredRegions.prepareAt(destination, signal),
-    prepareDestinationVisuals: (destination, signal) =>
-      prepareDestinationEssentials(destination, signal)
-  });
-  // World-background quiet-window admission (motion/arrival-aware pacing for
-  // optional constructors + warmups) — extracted per docs/MAIN_DECOMPOSITION.md.
-  const backgroundAdmission = createBackgroundAdmission({
-    input,
-    player,
-    isArrivalActive: () => worldArrival.active
-  });
-  const {
-    waitForWindow: waitForWorldBackgroundWindow,
-    nextPresentationFrame,
-    waitForCityGenRenderWindow
-  } = backgroundAdmission;
-  worldArrival.onStateChange = (snapshot) => {
-    if (snapshot.active) backgroundAdmission.onArrivalStart();
-    // A runtime relocation owns its own named hold and supersedes the boot
-    // collision epoch. Hand ownership over atomically so a forced slow boot can
-    // never leave a stale boot hold pinned after the new destination is safe.
-    const runtimeOwnsCommittedWorld =
-      snapshot.state === "loading-visuals" ||
-      snapshot.state === "visual-blocked" ||
-      snapshot.state === "visually-ready" ||
-      snapshot.state === "loading-collision" ||
-      snapshot.state === "collision-blocked";
-    if (runtimeOwnsCommittedWorld && !initialArrivalReleased) {
-      initialArrivalReleased = true;
-      player.releaseWorldArrivalHold("boot-arrival");
-    }
-  };
+  // worldArrival + backgroundAdmission were constructed in P1 (the reveal path
+  // and void loop need them); only navigation composes here.
   const navigation = new NavigationController({
     player,
     hud,
@@ -1917,6 +2457,7 @@ async function boot() {
     jumpLandingAudio.reset();
     tutorial.note("teleport");
   };
+  await constructionSlice();
 
 
   const diagnostics = new RendererDiagnostics(renderer);
@@ -1989,77 +2530,25 @@ async function boot() {
   const oceanKite = createOceanKiteGate({ map, scene, renderer, camera, player, debugPanel });
   import.meta.hot?.dispose(oceanKite.dispose);
 
-  // Resume last session: position, heading and vehicle survive a refresh. A
-  // Vite structural reload additionally restores the exact chase-camera view.
-  // (after the debug panel exists — restoreState can fire onModeChange).
-  // An invite link wins over the saved session — the click's intent is explicit.
-  if (resumed) {
-    const resumedMode = resumed.mode === "surf" && !(await prepareSurfEntry()) ? "walk" : resumed.mode;
-    player.restoreState({ ...resumed, mode: resumedMode });
-    modeDiscovery.discover(resumedMode);
-    chase.yaw = devReload?.camera.yaw ?? resumed.heading + Math.PI;
-    if (devReload) {
-      chase.pitch = devReload.camera.pitch;
-      chase.zoom = devReload.camera.zoom;
-      (window as unknown as { __sfDevReloadRestored?: boolean }).__sfDevReloadRestored = true;
-    }
-    chase.cutTo(player);
-    if (import.meta.env.DEV) console.log("[sf] resumed session", resumed);
+  // Session resume / invite POSITION was committed back in P1 (void phase).
+  // What remains here are the parts that need P3 systems: the surf runtime for
+  // surf sessions, and the ridden-animal identity for animal invites.
+  if (invite?.animal) embodiments.currentAnimal = invite.animal;
+  const wantsBootSurf =
+    startMode === "surf" || resumed?.mode === "surf" || (invite && !invite.animal && invite.mode === "surf");
+  if (wantsBootSurf && player.mode === "walk" && (await prepareSurfEntry())) {
+    player.trySwitch("surf");
   }
-  if (invite) {
-    let mode = invite.mode;
-    if (invite.animal) {
-      embodiments.currentAnimal = invite.animal;
-      // Forest is hydrated by a deferred async owner; preserve its declared
-      // runtime type here instead of letting synchronous flow analysis freeze
-      // the captured binding at its boot-time null value.
-      const invitedForest = forest as Forest | null;
-      if (invitedForest && ANIMALS && invite.animal) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const animalEntry: any = ANIMALS[invite.animal];
-        player.setDriveStyle(invitedForest.buildRiddenMesh(invite.animal), animalEntry?.spec);
-      }
-      mode = "drive";
-    }
-    // land to the sharer's right so nobody spawns inside anybody — wider for
-    // the big embodiments (a boat is 9 m long, planes bank wide)
-    const side = mode === "boat" || mode === "plane" ? 7 : mode === "drive" ? 4 : 2.5;
-    const jx = invite.x + Math.cos(invite.facing) * side;
-    const jz = invite.z - Math.sin(invite.facing) * side;
-    if (mode === "surf" && !(await prepareSurfEntry())) mode = "walk";
-    player.teleportTo({ x: jx, y: invite.y, z: jz, facing: invite.facing, mode });
-    chase.yaw = invite.facing;
-    chase.cutTo(player);
-    // one-shot: strip the params so a refresh resumes the session instead of
-    // re-teleporting (the 1 Hz session save takes over from here)
-    const q = new URLSearchParams(location.search);
-    q.delete("j");
-    q.delete("via");
-    history.replaceState(null, "", location.pathname + (q.size ? `?${q}` : ""));
-    if (import.meta.env.DEV) console.log("[sf] joined via invite", invite);
-  }
-  // Seed every first visible frame at the final player pose. Fresh sessions use
-  // this too; otherwise a fast cached boot can briefly expose the old 20/30 m
-  // camera seed damping toward the avatar.
-  chase.cutTo(player);
-
-  // Controllers, saved sessions, and invite embodiment restoration can all
-  // adjust the authoritative X/Z after the overlapped early prime began. Never
-  // reveal or release against the provisional spawn: supersede both streams
-  // from the actual held body with the same generic path used at runtime.
-  if (Math.hypot(
-    player.position.x - initialVisualFocus.x,
-    player.position.z - initialVisualFocus.z
-  ) >= 1) {
-    primeInitialVisualAt(player.position.x, player.position.z);
-    initialCollisionEpoch = physics.prepareCollisionArrival(player.position);
-    if (!physics.activateCollisionArrival(initialCollisionEpoch)) {
-      throw new Error("Initial collision destination was superseded before activation");
-    }
-    initialCollisionReady = false;
-    initialCollisionRetryCycles = 0;
-    initialCollisionFailureReported = false;
-    initialVisualFailureReported = false;
+  // applySurfCull assigns the stash inside a closure, so synchronous flow
+  // analysis freezes the binding at its boot-time null — same cast pattern as
+  // the invited-forest read above.
+  const bootSurfStash = surfCullStash as { load: number; unload: number } | null;
+  if (player.mode === "surf" && bootSurfStash) {
+    // The boot visual prime temporarily reduced the tile radius to 1 km, and
+    // onModeChange's applySurfCull stashed that bubble. Seed the stash from the
+    // real fixed-quality radius so leaving surf restores normal residency.
+    bootSurfStash.load = fullTileRadius;
+    bootSurfStash.unload = fullTileRadius + 400;
   }
 
   // Share button (top-right): copy an invite link that reproduces where I am
@@ -2164,9 +2653,8 @@ async function boot() {
     });
   };
 
-  const aim = new THREE.Vector3();
-  const rayOrigin = new THREE.Vector3(); // aimOrigin returns a shared tmp — keep our own copy
-  // The interaction ray. Normally it's the centre-screen aim; while the free
+  // The interaction ray (`aim`/`rayOrigin` live in P1 — the void loop steers
+  // with them too). Normally it's the centre-screen aim; while the free
   // cursor is out (L toggled) it's the camera-through-mouse ray instead, so
   // clicks and the hover glow track wherever the loose orb is pointing.
   const aimRay = (origin: THREE.Vector3, dir: THREE.Vector3) => {
@@ -2202,45 +2690,18 @@ async function boot() {
   };
 
   let fireCooldown = 0;
+  await constructionSlice();
 
-  // Warm only the render path the first frame actually uses. Optional modes,
-  // debug overlays, tools, particles, underwater rendering, and audio remain
-  // behind their first-use gates instead of taxing every new visitor.
-  bootMark("world");
-  progress(88, "warming the first view");
-  sky.update(0, camera.position, player.renderPosition);
-  syncBallGlowNight(sky.sunElevation);
-  player.warmup();
-  // Initialize render-target contents and the contact-shadow pass once before
-  // warmup temporarily freezes render-scoped updates. Without this covered
-  // frame, a production WebGPU build can retain an uninitialized (black)
-  // contact/output target even though subsequent scene submissions succeed.
-  renderFrame();
-  await pipeline.warmup("boot");
-  bootMark("warmup");
-  // One frame flushes the covered compile submission without an arbitrary wait.
-  await new Promise<void>((r) => requestAnimationFrame(() => r()));
-
-  // Optional modules remain in separate chunks and start only after the local
-  // baked neighborhood is visible plus one browser-idle opportunity. They never
-  // compete with the first frame or hold the Start button.
-  progress(92, "finishing the neighborhood");
-  // Optional modules stream independently and never gate first play.
-  let modulesReady = true;
-  // Resolves the instant the loading cover lifts. Any heavy region the spawn
-  // doesn't gate waits on this and builds post-reveal (hidden → compileAsync →
-  // visible) so it never delays first play — the "load the trees when you go
-  // there" idea, generalized across garden / wildlands / golf.
-  let resolveRevealed!: () => void;
-  const revealedPromise = new Promise<void>((r) => {
-    resolveRevealed = r;
-  });
+  // Boot warmup + the first covered frame happened in P1; reveal machinery
+  // (revealedPromise / worldReady / modulesReady) lives in P2. The deferred
+  // region builds below gate on `worldReady` — reveal fires seconds before
+  // their construction dependencies exist now.
   // Keep all Behind-the-scenes UI out of essential loading. After the visual +
   // collision reveal, give the live world a quiet beat, then request only the
   // tiny launcher during browser idle. The timeout guarantees it appears within
   // a few seconds instead of waiting on optional garden/tree/golf completion.
   // The reader itself waits for a click; its heavy chapters wait for their tabs.
-  void revealedPromise.then(async () => {
+  void worldReady.then(async () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 2500));
     await new Promise<void>((resolve) => {
       if ("requestIdleCallback" in window) {
@@ -2259,7 +2720,7 @@ async function boot() {
   // Expand from the fixed-quality local boot bubble to the normal city radius
   // only after the first view has had a quiet beat. Asset quality is unchanged;
   // this merely stops unseen origin districts from occupying destination slots.
-  void revealedPromise.then(async () => {
+  void worldReady.then(async () => {
     await waitForWorldBackgroundWindow();
     if (player.mode === "surf") {
       // Surf's explicit 2 km mode cap remains active; only its restore target is
@@ -2274,7 +2735,7 @@ async function boot() {
     }
     tiles.beginBackgroundExpansion();
   });
-  void revealedPromise.then(async () => {
+  void worldReady.then(async () => {
     await waitForWorldBackgroundWindow(1800);
     islands.armVegetation(scene, async (group) => {
       await waitForWorldBackgroundWindow(1800);
@@ -2511,7 +2972,7 @@ async function boot() {
     input, hud, chase, remotes, embodiments, fx, siteGate, worldArrival,
     debugPanel, dogParkAudio, authoredRegions, worldQueries,
     waitForWorldBackgroundWindow,
-    revealedPromise,
+    revealedPromise: worldReady,
     getFoliageOn: () => foliageOn,
     getRevealed: () => revealed,
     getAvatar: () => avatarTraits,
@@ -2598,7 +3059,7 @@ async function boot() {
     // the local first frame or enter the clean-boot bundle/request waterfall.
     // Once admitted, however, its nearby destination cell must make progress
     // during ordinary walking/driving instead of waiting for movement to stop.
-    await revealedPromise;
+    await worldReady;
     await waitForCityGenRenderWindow();
 
     // CityGen improves every district, so start it before fauna and authored
@@ -2696,7 +3157,7 @@ async function boot() {
     if (gardenGates) {
       gardenReady = prepareGardenForScene();
     } else {
-      void revealedPromise.then(() => {
+      void worldReady.then(() => {
         wakeDeferredGarden = () => {
           wakeDeferredGarden = null;
           void prepareGardenForScene().catch((err) =>
@@ -2738,7 +3199,7 @@ async function boot() {
     if (buenaVistaGates) {
       buenaVistaTreesReady = buildBuenaVistaTrees(false);
     } else {
-      void revealedPromise.then(() => {
+      void worldReady.then(() => {
         wakeDeferredBuenaVistaTrees = () => {
           wakeDeferredBuenaVistaTrees = null;
           void buildBuenaVistaTrees(true).catch((err) => {
@@ -2836,7 +3297,7 @@ async function boot() {
     if (wildlandsGolfGates) {
       wildlandsGolfReady = buildWildlandsGolf(false);
     } else {
-      void revealedPromise.then(() => {
+      void worldReady.then(() => {
         wakeDeferredWildlandsGolf = () => {
           wakeDeferredWildlandsGolf = null;
           void buildWildlandsGolf(true).catch((err) => {
@@ -2860,147 +3321,11 @@ async function boot() {
       console.warn("[sf] deferred module load failed:", err);
     });
 
-  // ------------------------------------------------------- settle gate
-  // The cover waits only for the fixed-quality local visual minimum and the
-  // collision safety bubble. Far tiles and optional systems remain center-out
-  // background work, so first play never waits for the whole city.
-  const settleStart = performance.now();
-  console.info(`[boot] core up in ${((settleStart - bootT0) / 1000).toFixed(1)}s — settling the world`);
-  let revealed = false;
-  let quietFrames = 0;
-  let peakRemaining = 0;
-  let settlePct = 88;
-  let settleLabel = "";
-  const bootQuery = new URLSearchParams(location.search);
-  // `?flickerspy=1`: in-session diagnostic for the sky-flicker reports — see
-  // dev/flickerSpy.ts. Lazy import; costs nothing without the flag.
-  if (bootQuery.has("flickerspy")) {
-    void import("./dev/flickerSpy").then(({ installFlickerSpy }) =>
-      installFlickerSpy({ renderer, scene, camera })
-    );
-  }
-  // Local development is primarily exercised by browser agents, so enter the
-  // world as soon as it is ready instead of leaving them stranded at a purely
-  // human identity gate. `?startscreen=1` keeps the real onboarding path easy
-  // to inspect. Deployed browser tests opt in explicitly with `?autostart=1`.
-  const autoEnter =
-    !beganAsReadingVisit &&
-    !bootQuery.has("startscreen") &&
-    (import.meta.env.DEV || ["autostart", "demo", "profile"].some((key) => bootQuery.has(key)));
-  // Explicit headless verification, demos and perf runs also skip the settle
-  // hold because they measure live-frame behaviour rather than boot polish.
-  const skipGate = ["demo", "skipsettle"].some((key) => bootQuery.has(key));
-  // Local HMR reloads that were already in-game resume without the identity gate.
-  // Production always waits for Start / Enter — returning players keep their saved
-  // name prefilled in the form. Deployed tests still opt in via `?autostart` etc.
-  // (handled by `autoEnter` above).
-  const autoStartSaved =
-    !beganAsReadingVisit &&
-    !bootQuery.has("startscreen") &&
-    Boolean(devReload?.started);
-  const revealWorld = (reason = "settled") => {
-    if (revealed) return;
-    revealed = true;
-    backgroundAdmission.deferAtLeast(1200);
-    resolveRevealed(); // release any region-deferred park builds
-    progress(100, "ready");
-    bootScreen.markReady();
-    // Procedural weather has rendered from frame one. Only after reveal may the
-    // optional live adapter/chunk request observations.
-    sky.enableLiveFogAfterReveal();
-    // Cache world assets for instant repeat loads. Post-reveal on purpose — it
-    // must not compete with the boot fetches it is meant to make free next time.
-    if (import.meta.env.PROD && "serviceWorker" in navigator) {
-      void navigator.serviceWorker.register("/sw.js").catch(() => {});
-    }
-    bootMark("reveal");
-    console.info(
-      `[boot] world ${reason} in ${((performance.now() - bootT0) / 1000).toFixed(1)}s` +
-        ` (sched ${scheduler.pending}/${scheduler.waiting} waiting, tiles ${tiles.busy}, modules ${modulesReady}, aux ${auxPending})`
-    );
-    console.info(`[boot] phases ${bootMarkSummary()}`);
-    persistBootHistory();
-    // Prefer HMR resume over generic local auto-enter so a mid-session reload
-    // keeps the player's name instead of minting a fresh fun one.
-    if (autoStartSaved) {
-      // no click to consume, so pointer lock has no gesture — startGame still
-      // requests it (a no-op if the browser declines; first scene click re-locks)
-      bootScreen.startNow(devReload!.name);
-      return;
-    }
-    if (autoEnter) {
-      // Programmatic starts have no user gesture, so do not request pointer
-      // lock. The first canvas click can capture it normally when needed.
-      bootScreen.startNow(suggestedName, { lock: false });
-      return;
-    }
-    bootScreen.focusNameInput(); // re-focus in case the player clicked away while waiting
-  };
-  // Called once per covered tick. Only the generic local visual bubble and
-  // movement-safety collision bubble gate first play; optional districts,
-  // activities, media and the far draw ring keep streaming independently.
-  const settleTick = () => {
-    if (revealed) return;
-    const initialStatus = initialArrivalReleased
-      ? null
-      : physics.collisionArrivalStatus(initialCollisionEpoch);
-    initialCollisionReady = initialArrivalReleased || initialStatus?.ready === true;
-    if (initialStatus && initialStatus.failedColliderTiles > 0 && initialCollisionRetryCycles < 1) {
-      const restarted = physics.retryCollisionArrival(initialCollisionEpoch);
-      if (restarted > 0) {
-        initialCollisionRetryCycles++;
-        console.warn(`[boot] retrying ${restarted} failed local collision tile${restarted === 1 ? "" : "s"}`);
-      }
-    }
-    const remaining = (initialVisualState === "pending" ? 1 : 0) + (initialCollisionReady ? 0 : 1);
-    peakRemaining = Math.max(peakRemaining, remaining);
-    if (remaining === 0) quietFrames++;
-    else quietFrames = 0;
-    // 15 s cap: a missing chunk or a genuinely slow connection falls back to
-    // the old behaviour (reveal while still streaming) instead of wedging.
-    // One already-rendered covered destination frame plus this reveal tick are
-    // enough to prove the destination is stable: the browser cannot composite
-    // the removed cover until this tick's render has also returned. A 12-frame
-    // hold made slow GPUs wait much longer than fast ones after identical work.
-    if (quietFrames >= 2) {
-      revealWorld();
-      return;
-    }
-    if (performance.now() - settleStart > 15000) {
-      if (initialVisualState === "pending") {
-        initialVisualState = "fallback";
-        console.warn("[boot] local visuals missed the reveal deadline; using the terrain fallback");
-        hud.message("Some neighborhood detail is still streaming in", 8);
-      }
-      revealWorld("reveal-forced (15s cap)");
-      return;
-    }
-    settlePct = Math.min(99, Math.max(settlePct, 88 + Math.round(11 * (1 - remaining / Math.max(1, peakRemaining)))));
-    const label = initialVisualState === "pending"
-      ? "bringing the neighborhood into view"
-      : !initialCollisionReady
-        ? "settling the ground"
-        : "ready";
-    if (label !== settleLabel) {
-      settleLabel = label;
-      console.info(`[boot] +${((performance.now() - bootT0) / 1000).toFixed(1)}s ${label} (sched ${scheduler.pending}, tiles ${tiles.busy}, aux ${auxPending})`);
-    }
-    progress(settlePct, label);
-  };
+  // The old settle gate is gone: reveal happened back in P2 the moment the
+  // void was ready (bootArrivalTick owns the boot-arrival lifecycle now), and
+  // the timer/elapsed/accumulator frame clock lives in P1.
+  await constructionSlice();
 
-  if (skipGate) {
-    loading.classList.add("done");
-    revealWorld("skip-gate");
-  }
-
-  // A shared `?read=` link is handled earlier by startup.ts: the
-  // panel is already opening over the loading folio while the world settles here
-  // in the background. No auto-enter — the visitor meets the start screen only
-  // when they close the panel.
-
-  const timer = new THREE.Timer();
-  let accumulator = 0;
-  let elapsed = 0;
   // Past this range the horizon proxy is a sub-15px smudge behind marine fog;
   // keeping it out of the draw list entirely is what prevents it from ever
   // flashing mid-sky on a corrupted frame.
@@ -3305,6 +3630,7 @@ async function boot() {
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       updateSurfPresentation(frameDt);
       sky.update(elapsed, camera.position, player.renderPosition);
+      applyLightFrontRamps();
       hud.update(frameDt);
       input.endFrame();
       renderFrame();
@@ -3374,6 +3700,7 @@ async function boot() {
       // Social/remount poses can still move while the simulation clock is
       // frozen. Keep the full-rate hero map aligned before drawing this frame.
       sky.update(elapsed, camera.position, player.renderPosition);
+      applyLightFrontRamps();
       input.endFrame();
       renderFrame();
       return "handled";
@@ -3486,6 +3813,7 @@ async function boot() {
       // The world clock stays frozen, but the player and camera can move in this
       // branch. Keep shadow coverage and the every-frame subject map current.
       sky.update(elapsed, camera.position, player.renderPosition);
+      applyLightFrontRamps();
       input.endFrame();
       renderFrame();
       return "handled";
@@ -4266,7 +4594,13 @@ async function boot() {
     teaGarden.project(camera);
     buskerTalk.project(camera);
     beachPianist?.project(camera);
+    // Ring-coordinator front driver + materialize front animation + void-realm
+    // coupling (uniform writes only).
+    ringUpdate(frameDt);
+    materializeField.update(frameDt);
+    voidRealm.update();
     sky.update(elapsed, camera.position, player.renderPosition);
+    applyLightFrontRamps();
     // Surf contact/camera use Player's fixed-step simulation clock. Feed that
     // exact clock to the displaced ocean and lazy face/roof too; using render
     // elapsed here let the visible crest and barrel envelope drift away after
@@ -4476,46 +4810,10 @@ async function boot() {
 
   // Post-scheduler drain: the deferred-work budget (scheduler.run) lives in
   // gameLoop.ts, bracketed with the "sched" tracer phase; this hook runs after
-  // it — initial-arrival reveal release + the settle tick.
+  // it. Boot-arrival progression (control release, collision retries,
+  // completion) is shared with the void loop via bootArrivalTick (P2).
   const postSchedule = (_frameDt: number) => {
-    if (!initialArrivalReleased) {
-      if (initialVisualState === "pending" && performance.now() >= initialVisualDeadlineAt) {
-        initialVisualState = "fallback";
-      }
-      const initialStatus = physics.collisionArrivalStatus(initialCollisionEpoch);
-      initialCollisionReady = initialStatus.ready;
-      if (initialVisualState === "fallback" && !initialVisualFailureReported) {
-        initialVisualFailureReported = true;
-        console.warn("[boot] local building visuals unavailable; continuing with the terrain fallback");
-        hud.message("Some neighborhood detail could not load — the map can take you somewhere else", 8);
-      }
-      if (initialStatus.failedColliderTiles > 0 && initialCollisionRetryCycles < 1) {
-        const restarted = physics.retryCollisionArrival(initialCollisionEpoch);
-        if (restarted > 0) {
-          initialCollisionRetryCycles++;
-          console.warn(`[boot] retrying ${restarted} failed local collision tile${restarted === 1 ? "" : "s"}`);
-        }
-      } else if (
-        initialStatus.failedColliderTiles > 0 &&
-        initialCollisionRetryCycles >= 1 &&
-        !initialCollisionFailureReported
-      ) {
-        initialCollisionFailureReported = true;
-        console.warn("[boot] local collision remains unavailable; player stays fail-closed");
-        hud.message("This spot could not settle safely — open the map and choose another place", 8);
-      }
-      if (initialVisualState !== "pending" && initialCollisionReady) {
-        if (physics.completeCollisionArrival(initialCollisionEpoch)) {
-          initialArrivalReleased = true;
-          player.releaseWorldArrivalHold("boot-arrival");
-          tiles.resumeBackgroundStreaming();
-        } else {
-          initialCollisionReady = false;
-        }
-      }
-    }
-
-    settleTick();
+    bootArrivalTick();
   };
 
   // Compose the per-frame order in app/gameLoop.ts. It owns frame timing (the
@@ -4550,23 +4848,57 @@ async function boot() {
       afterRender: () => diagnostics.updateStats()
     }
   });
-  const adaptiveRes = createAdaptiveResolution(renderer);
-  const frameDriver = startFrameDriver({
-    renderer,
-    camera,
-    app,
-    tick,
-    tracer,
-    isRevealed: () => revealed,
-    adaptiveRes
-  });
-  // Deterministic capture stops the wall-clock loop so tools can drive tick(dt).
-  // Discard any fractional wall-clock remainder on entry; otherwise identical
-  // fixed-step reels can interpolate from a different boot-time accumulator.
-  (window as never as { __sfManual: (on: boolean) => void }).__sfManual = (on) => {
-    if (on) accumulator = 0;
-    frameDriver.setManual(on);
-  };
+  // ------------------------------------------------------------- P4 handoff
+  // The real loop replaces the provisional void tick between frames: same
+  // timer/accumulator/player/camera instances (the frame driver from P2 keeps
+  // running; only `activeTick` swaps), so no state snaps and no double-ticked
+  // frame. The driver + __sfManual were installed in P2.
+  bootMark("constructionDone");
+  activeTick = tick;
+  bootMark("handoff");
+  constructionDoneFlag = true;
+  resolveConstructionDone();
+  for (const action of pendingStartActions.splice(0)) action();
+  persistBootHistory();
+  console.info(`[boot] construction done — ${bootMarkSummary()}`);
+  // P3 built material-heavy systems the P1 boot warmup never saw. Re-run the
+  // (re-invokable) pipeline warmup off the critical path so their pipelines
+  // compile before their content shows (contract C2).
+  void (async () => {
+    // M10: the materialize sweep is the visually critical stretch, and even
+    // small paced compile chunks stack onto streaming frames as a 20-30 ms
+    // carpet for its whole duration. This re-run is a SAFETY sweep (content
+    // that streams during the sweep warms through its own gated hooks — C2 is
+    // owned by the front never crossing unwarmed ground), so hold it until the
+    // front has settled (bounded so a never-settling session still warms),
+    // give the settle moment itself a cushion (the held shadow redraws and
+    // citygen settle swaps land there), then trickle behind quiet windows.
+    const warmupHoldStart = performance.now();
+    while (
+      ringCoordinator.state === "sweeping" &&
+      performance.now() - warmupHoldStart < 120_000
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 12_000));
+    await waitForWorldBackgroundWindow(1500);
+    try {
+      // M6: this re-run happens LIVE (post-reveal) — pace it so no single
+      // exclusive-compile window freezes rendering for more than a chunk
+      // budget. Each pace yields a real presentation frame, then waits for
+      // background quiet — with a REAL deadline (M9): the first argument is
+      // extra-quiet-ms, not a cap, so a continuously moving player would
+      // otherwise defer the paced warmup forever and pin warmupInFlight for
+      // the whole session. ~3 s per chunk keeps warmup polite but guarantees
+      // progress.
+      await pipeline.warmup("boot", async () => {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        await waitForWorldBackgroundWindow(600, performance.now() + 3000);
+      });
+    } catch (error) {
+      console.warn("[boot] post-construction pipeline warmup failed", error);
+    }
+  })();
 
   // Dev/profile-only free camera for headless render probes: locks the camera
   // to a fixed eye→target via the cine hook (owns pose+camera, so chase can't
@@ -4620,7 +4952,31 @@ async function boot() {
       buildingRayRefiner, underwater, water, ensureSurfRuntime, debugOverlays,
       calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING,
       setFoliageVisible, buskers, buskerTalk, ensureCarCustomizer, siteGate,
-      siteFoliage, TSL, worldArrival, lazyRegionTimings,
+      siteFoliage, TSL, worldArrival, lazyRegionTimings, voidRealm, motionGate,
+      // Materialize front debug surface (docs/VOID_STREAM_REWRITE.md M2):
+      // holo() collapses the front at the player (whole world holo), sweep()
+      // animates the radius outward, reveal() restores the normal world.
+      materialize: {
+        field: materializeField,
+        setFront: (x: number, z: number, radius: number, band?: number) =>
+          materializeField.setFront(x, z, radius, band),
+        sweep: (toRadius: number, speed?: number) =>
+          materializeField.sweep(toRadius, speed),
+        holo: () => materializeField.holo(player.position.x, player.position.z),
+        reveal: () => materializeField.reveal()
+      },
+      // Ring coordinator debug surface (docs/VOID_STREAM_REWRITE.md M4):
+      // front/residency telemetry + the teleport-style focus() entry point.
+      rings: {
+        state: () => ringCoordinator.state,
+        residentRadius: () => ringCoordinator.residentRadius(),
+        frontRadius: () => ringCoordinator.frontRadius(),
+        focus: (x: number, z: number, opts?: { reset?: boolean }) =>
+          ringCoordinator.focus(x, z, opts)
+      },
+      // M9 leak metric: shared-material dispose-listener counts (retired
+      // RenderObject retention) + total released. Must plateau on long roams.
+      m9Leak: () => sharedMaterialLeakSnapshot(),
       getPaintAudio: () => paintAudio,
       getBubbleAudio: () => bubbleAudio,
       boardSelector: board,

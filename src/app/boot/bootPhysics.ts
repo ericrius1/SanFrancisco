@@ -28,9 +28,37 @@ export async function bootPhysics(
   { map, tiles, farOcclusion, initialArrivalPromise }: BootPhysicsDeps
 ): Promise<BootPhysicsResult> {
   const [physics, initialArrival] = await Promise.all([
-    Physics.create(map, tiles),
+    Physics.createCore(map, tiles),
     initialArrivalPromise
   ]);
+  // Collider services (landmark query mirrors + the canonical building
+  // collider index) consume the already-resolved tiles manifest and complete
+  // in the background — the void phase never waits on them; the boot collision
+  // arrival converges once the index lands (docs/VOID_STREAM_REWRITE.md M3).
+  // A failure here (typically the building-collider index fetch) would leave
+  // the boot collision arrival un-ready forever — the player walking through
+  // every building for the whole session. Heal with a bounded backoff before
+  // giving up loudly; `initColliderServices` is idempotent under retry.
+  const colliderRetryDelaysMs = [2_000, 8_000, 30_000];
+  const startColliderServices = (attempt: number): void => {
+    void physics.initColliderServices().catch((err) => {
+      if (attempt < colliderRetryDelaysMs.length) {
+        const delayMs = colliderRetryDelaysMs[attempt];
+        console.warn(
+          `[physics] collider services unavailable — retrying in ${delayMs / 1000}s ` +
+            `(attempt ${attempt + 1}/${colliderRetryDelaysMs.length})`,
+          err
+        );
+        setTimeout(() => startColliderServices(attempt + 1), delayMs);
+      } else {
+        console.error(
+          "[physics] collider services unavailable after retries — building collision stays offline this session",
+          err
+        );
+      }
+    });
+  };
+  startColliderServices(0);
   // Physics owns the primary tile callbacks. Chain the far field after it so
   // streamed collider massing feeds both systems without changing ownership.
   const syncFarTile = (key: string, colliders = tiles.loaded.get(key)?.colliders) => {

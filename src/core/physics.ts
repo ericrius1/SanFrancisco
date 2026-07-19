@@ -179,6 +179,7 @@ export class Physics {
   // from the same boxes in canonical per-tile collider data (including b=0
   // open-water bridge cells), so arrival readiness is owned by that one stream.
   #landmarkSolids: number[] = [];
+  #landmarkQueryHydrated = false; // guards duplicate mirrors when initColliderServices retries
   #solidRay: RayCastHit = { handle: 0, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 0, distance: 0 };
   // CityGen exact-poly wall + interior boxes are created on the STEPPED world
   // (world/citygen/stream/ring.ts), so they're invisible to #solids — the query
@@ -219,7 +220,14 @@ export class Physics {
     this.tiles = tiles;
   }
 
-  static async create(map: WorldMap, tiles: TileStreamer): Promise<Physics> {
+  /**
+   * Void-boot core (docs/VOID_STREAM_REWRITE.md M3): the stepped world, query
+   * world, ground carpet pools and tile hooks — everything `maintainStreaming`
+   * and the CPU-carpet groundReady test need. The landmark query mirrors and
+   * the canonical building-collider index are deferred to
+   * `initColliderServices()` so the void phase never waits on them.
+   */
+  static async createCore(map: WorldMap, tiles: TileStreamer): Promise<Physics> {
     const p = new Physics(map, tiles);
     p.box3d = await createBox3D();
     p.world = p.box3d.createWorld([...CONFIG.gravity]);
@@ -264,25 +272,40 @@ export class Physics {
     // Wire tile hooks from instance methods so private fields are only touched via
     // `this.#…`. esbuild rejects `p.#private` inside static-create arrow callbacks.
     p.#wireTileStreamerHooks(tiles);
+    return p;
+  }
 
+  /**
+   * Deferred boot completion (docs/VOID_STREAM_REWRITE.md M3): landmark query
+   * mirrors + the canonical collider index. Runs in the background after
+   * `createCore` — the collision-arrival status stays honestly "pending" (all
+   * required tiles unresolved) until the index lands, and every consumer is
+   * already null-safe against `#colliderIndex`.
+   */
+  async initColliderServices(): Promise<void> {
     // Always-resident bridge + landmark mirrors for the never-stepped query
     // world. Movement physics is deliberately not sourced here: the bake also
     // emits these boxes into canonical collider tiles, including explicit b=0
     // manifest cells over open-water bridge spans. That bounded tile stream is
     // therefore the single arrival-readiness and stepped-body authority.
-    const landmarkController = new AbortController();
-    const landmarkTimer = setTimeout(() => landmarkController.abort(), 4_000);
-    try {
-      const res = await fetch("/data/landmark-colliders.json", { signal: landmarkController.signal });
-      if (res.ok) {
-        for (const b of (await res.json()) as LandmarkBox[]) {
-          p.#landmarkSolids.push(p.#makeSolid(b.x, b.y, b.z, b.hx, b.hy, b.hz, b.yaw ?? 0));
+    // Idempotent under boot's bounded retry (bootPhysics.ts): a collider-index
+    // failure below re-enters this method, and the mirrors must not duplicate.
+    if (!this.#landmarkQueryHydrated) {
+      const landmarkController = new AbortController();
+      const landmarkTimer = setTimeout(() => landmarkController.abort(), 4_000);
+      try {
+        const res = await fetch("/data/landmark-colliders.json", { signal: landmarkController.signal });
+        if (res.ok) {
+          for (const b of (await res.json()) as LandmarkBox[]) {
+            this.#landmarkSolids.push(this.#makeSolid(b.x, b.y, b.z, b.hx, b.hy, b.hz, b.yaw ?? 0));
+          }
+          this.#landmarkQueryHydrated = true;
         }
+      } catch (err) {
+        console.warn("[physics] landmark/bridge query mirrors unavailable", err);
+      } finally {
+        clearTimeout(landmarkTimer);
       }
-    } catch (err) {
-      console.warn("[physics] landmark/bridge query mirrors unavailable", err);
-    } finally {
-      clearTimeout(landmarkTimer);
     }
 
     // One canonical service owns both physics and visual collider metadata. It
@@ -291,10 +314,9 @@ export class Physics {
     // the duplicate visual worker. Individual tile/network failures remain
     // explicit, retryable, and fail closed through the arrival status.
     const index = new BuildingColliderIndex();
-    await index.init(tiles.manifest);
-    p.#colliderIndex = index;
-    tiles.setColliderSource(index);
-    return p;
+    await index.init(this.tiles.manifest);
+    this.#colliderIndex = index;
+    this.tiles.setColliderSource(index);
   }
 
   /** Bind TileStreamer callbacks with `this.#` access (safe for esbuild). */

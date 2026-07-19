@@ -21,6 +21,7 @@ import {
   mx_noise_float
 } from "three/tsl";
 import { PALACE_LAGOON, palaceLagoonMask, waterHeight, type WorldMap } from "./heightmap";
+import { materializeAmount } from "../render/materialize";
 import { bumpNormal, chopZoneMask, oceanBeachSurfField, oceanBeachSwell, swellBase, swellChop } from "./tslUtil";
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 import { WaterEchoes } from "./waterEchoes";
@@ -68,6 +69,13 @@ export class Water {
   readonly echoes: WaterEchoes;
 
   #uTime = uniform(0);
+  // Void-realm reveal (docs/VOID_STREAM_REWRITE.md M2): 1 = normal water,
+  // 0 = fully hidden in the holo void. A plain opacity multiply on every
+  // sheet — same pipelines, driven by VoidRealm.update(). M5 multiplies the
+  // SPATIAL front amount (materializeAmount at positionWorld) inside this too,
+  // so the bay materializes as the front crosses it rather than one global
+  // fade; #uReveal stays the void-phase outer multiplier.
+  #uReveal = uniform(1);
   #uNearRect = uniform(new THREE.Vector3(0, 0, NEAR_PATCH_MASK_OUTER));
   #uNearVisibility = uniform(1);
   #uSurfing = uniform(0);
@@ -290,7 +298,9 @@ export class Water {
       mat.opacityNode = alpha
         .mul(waterVisibility)
         .mul(surfReplacement.oneMinus())
-        .mul(dry.oneMinus());
+        .mul(dry.oneMinus())
+        .mul(this.#uReveal)
+        .mul(materializeAmount()); // spatial front sweep (collapses to 1 once revealed)
 
       mat.envMapIntensity = 0.25;
       return mat;
@@ -351,7 +361,10 @@ export class Water {
       const lagoonCol = mix(color(0x071d18), color(0x3e5c3e), smoothstep(0.08, 0.94, radial));
       mat.colorNode = mix(lagoonCol, color(0xe8e1cf), foam);
       mat.roughnessNode = mix(float(0.24), float(0.58), shore);
-      mat.opacityNode = clamp(edgeFade.mul(0.975).add(foam.mul(0.08)), 0, 1).mul(shoreCut);
+      mat.opacityNode = clamp(edgeFade.mul(0.975).add(foam.mul(0.08)), 0, 1)
+        .mul(shoreCut)
+        .mul(this.#uReveal)
+        .mul(materializeAmount()); // spatial front sweep
 
       const sparkle = smoothstep(0.8, 0.98, mx_noise_float(vec3(p.mul(1.8), t.mul(0.7))))
         .mul(edgeFade)
@@ -416,7 +429,9 @@ export class Water {
       const distFade = clamp(float(1).sub(horiz.div(1300)), 0, 1);
       // near-opaque so the real sky can't leak through the "surface"; the window
       // lets a little brightness through (like looking out into the air).
-      undMat.opacityNode = clamp(mix(float(0.98), float(0.88), win).mul(distFade), 0, 1);
+      undMat.opacityNode = clamp(mix(float(0.98), float(0.88), win).mul(distFade), 0, 1)
+        .mul(this.#uReveal)
+        .mul(materializeAmount()); // spatial front sweep
     }
     const undGeo = new THREE.PlaneGeometry(3200, 3200, 1, 1);
     undGeo.rotateX(Math.PI / 2); // face DOWN (−y) → visible only from below
@@ -435,6 +450,12 @@ export class Water {
 
     scene.add(this.far, this.near, this.palaceLagoon, this.underside);
     this.echoes = new WaterEchoes(scene, map);
+  }
+
+  /** Void-realm reveal ramp (0 = hidden in the void, 1 = normal water).
+   *  Uniform-only; every water pipeline is unchanged. */
+  setReveal(v: number) {
+    this.#uReveal.value = Math.min(1, Math.max(0, v));
   }
 
   update(t: number, camPos: THREE.Vector3, playerPos: THREE.Vector3, surfing = false) {

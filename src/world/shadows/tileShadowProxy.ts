@@ -1,6 +1,11 @@
 import * as THREE from "three/webgpu"
 import type { BuildingCollider } from "../tiles"
 import { yieldToFrame } from "../../core/cooperativeWork"
+import {
+  materialDisposeListenerCount,
+  registerSharedMaterialLeakCounter,
+  releaseRenderObjectsFor
+} from "../../render/renderObjectRegistry"
 import { setLocalFarShadowOnly } from "./shadowLayers"
 
 const DEFAULT_CELL_SIZE = 128
@@ -52,10 +57,9 @@ type PreparedTileShadowProxy = {
   visibleBoxes: number
   rejectedColliders: number
   ownsSharedResources: boolean
-  ownedMaterial: THREE.MeshBasicMaterial | null
+  ownedGeometry: THREE.BufferGeometry | null
 }
 
-let sharedGeometry: THREE.BufferGeometry | null = null
 let sharedMaterial: THREE.MeshBasicMaterial | null = null
 let sharedResourceUsers = 0
 
@@ -77,23 +81,39 @@ function createUnitBoxGeometry(): THREE.BufferGeometry {
   return geometry
 }
 
-function acquireSharedResources(): readonly [THREE.BufferGeometry, THREE.MeshBasicMaterial] {
-  if (!sharedGeometry) sharedGeometry = createUnitBoxGeometry()
+/**
+ * ONE material for every proxy. M6: proxies used to clone this per tile so
+ * dispose() could release their RenderObjects — but a NEW material identity on
+ * streamed casters made the next static shadow redraw pay a fresh node build +
+ * GPU pipeline (~250 ms measured per redraw during ring sweeps: the storm).
+ *
+ * M9 correction: geometry dispose does NOT release RenderObjects (r185
+ * `onGeometryDispose` only nulls attribute caches; only material dispose runs
+ * `renderObject.dispose()` and the RenderObjects cleanup). With the material
+ * shared, retired proxies' RenderObjects would pin their meshes + instance
+ * arrays in the shared material's `_listeners.dispose` array forever, so
+ * `dispose()` below releases them explicitly via `releaseRenderObjectsFor`
+ * (src/render/renderObjectRegistry.ts). The material stays shared — live
+ * pipelines never churn.
+ */
+function acquireSharedMaterial(): THREE.MeshBasicMaterial {
   if (!sharedMaterial) {
     sharedMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff })
     sharedMaterial.name = "tileShadowProxy.depth"
     sharedMaterial.toneMapped = false
   }
   sharedResourceUsers++
-  return [sharedGeometry, sharedMaterial]
+  return sharedMaterial
 }
+
+registerSharedMaterialLeakCounter("tileShadowProxyDepth", () =>
+  materialDisposeListenerCount(sharedMaterial)
+)
 
 function releaseSharedResources(): void {
   sharedResourceUsers--
   if (sharedResourceUsers > 0) return
-  sharedGeometry?.dispose()
   sharedMaterial?.dispose()
-  sharedGeometry = null
   sharedMaterial = null
   sharedResourceUsers = 0
 }
@@ -168,7 +188,7 @@ export class TileShadowProxy {
   #rejectedColliders = 0
   #disposed = false
   #ownsSharedResources = false
-  #ownedMaterial: THREE.MeshBasicMaterial | null = null
+  #ownedGeometry: THREE.BufferGeometry | null = null
 
   constructor(options: TileShadowProxyOptions, prepared?: PreparedTileShadowProxy) {
     if (!options.tileKey) throw new Error("TileShadowProxy requires a tileKey")
@@ -197,7 +217,7 @@ export class TileShadowProxy {
       this.#visibleBoxes = prepared.visibleBoxes
       this.#rejectedColliders = prepared.rejectedColliders
       this.#ownsSharedResources = prepared.ownsSharedResources
-      this.#ownedMaterial = prepared.ownedMaterial
+      this.#ownedGeometry = prepared.ownedGeometry
       for (const mesh of prepared.meshes) this.group.add(mesh)
       return
     }
@@ -245,14 +265,15 @@ export class TileShadowProxy {
     const cells: RuntimeCell[] = []
     const meshes: THREE.InstancedMesh[] = []
     if (validCount > 0) {
-      const [geometry, materialTemplate] = acquireSharedResources()
+      const material = acquireSharedMaterial()
       this.#ownsSharedResources = true
-      // Three WebGPU RenderObjects subscribe to material.dispose, not the
-      // InstancedMesh dispose event. One proxy-owned clone lets retirement
-      // release every microcell RenderObject without duplicating geometry.
-      const material = materialTemplate.clone()
-      material.name = `${materialTemplate.name}:${this.tileKey}`
-      this.#ownedMaterial = material
+      // Proxy-owned trivial geometry so its GPU-side buffers free at retire.
+      // (M9 note: geometry dispose does NOT release RenderObjects — dispose()
+      // calls releaseRenderObjectsFor per mesh for that. The material stays
+      // shared: a new material identity per streamed caster forced a fresh
+      // shadow pipeline on the next static redraw — the M6 storm root cause.)
+      const geometry = createUnitBoxGeometry()
+      this.#ownedGeometry = geometry
       const orderedCells = Array.from(buildCells.values()).sort((a, b) => a.z - b.z || a.x - b.x)
       for (let cellIndex = 0; cellIndex < orderedCells.length; cellIndex++) {
         const build = orderedCells[cellIndex]
@@ -366,10 +387,16 @@ export class TileShadowProxy {
     if (this.#disposed) return
     this.#disposed = true
     this.group.removeFromParent()
-    for (let i = 0; i < this.#cells.length; i++) this.#cells[i].mesh.dispose()
+    for (let i = 0; i < this.#cells.length; i++) {
+      // M9: release the microcell's RenderObjects (shadow-pass entries pin the
+      // mesh + instance matrices in the SHARED material's dispose-listener
+      // array otherwise — geometry dispose alone never frees them).
+      releaseRenderObjectsFor(this.#cells[i].mesh)
+      this.#cells[i].mesh.dispose()
+    }
     this.group.clear()
-    this.#ownedMaterial?.dispose()
-    this.#ownedMaterial = null
+    this.#ownedGeometry?.dispose()
+    this.#ownedGeometry = null
     if (this.#ownsSharedResources) releaseSharedResources()
   }
 
@@ -473,18 +500,18 @@ export async function createTileShadowProxyAsync(
   const cells: RuntimeCell[] = []
   const meshes: THREE.InstancedMesh[] = []
   let ownsSharedResources = false
-  let ownedMaterial: THREE.MeshBasicMaterial | null = null
+  let ownedGeometry: THREE.BufferGeometry | null = null
 
   try {
     if (validCount > 0) {
-      const [geometry, materialTemplate] = acquireSharedResources()
+      const material = acquireSharedMaterial()
       ownsSharedResources = true
-      ownedMaterial = materialTemplate.clone()
-      ownedMaterial.name = `${materialTemplate.name}:${options.tileKey}`
+      // Proxy-owned trivial geometry — see the sync constructor's comment.
+      ownedGeometry = createUnitBoxGeometry()
       const orderedCells = Array.from(buildCells.values()).sort((a, b) => a.z - b.z || a.x - b.x)
       for (let cellIndex = 0; cellIndex < orderedCells.length; cellIndex++) {
         const build = orderedCells[cellIndex]
-        const mesh = new THREE.InstancedMesh(geometry, ownedMaterial, build.entries.length)
+        const mesh = new THREE.InstancedMesh(ownedGeometry, material, build.entries.length)
         mesh.name = `tileShadowProxy:${options.tileKey}:${build.x}:${build.z}`
         mesh.castShadow = true
         mesh.receiveShadow = false
@@ -530,11 +557,11 @@ export async function createTileShadowProxyAsync(
       visibleBoxes,
       rejectedColliders,
       ownsSharedResources,
-      ownedMaterial
+      ownedGeometry
     })
   } catch (error) {
     for (const cell of cells) cell.mesh.dispose()
-    ownedMaterial?.dispose()
+    ownedGeometry?.dispose()
     if (ownsSharedResources) releaseSharedResources()
     throw error
   }

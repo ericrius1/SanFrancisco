@@ -360,12 +360,44 @@ export class Net {
   /** Latest validated full-match snapshot, cached for lazy/late initialization. */
   pickleballState: RemotePickleballState | null = null;
 
-  onRoster: () => void = () => {}; // any join/leave/rename (rebuild lists)
+  // The constructor opens the socket immediately, but boot wires the real
+  // handlers a few sliced-construction frames later (main.ts P3). A fast
+  // `welcome` can therefore dispatch into the default no-ops and would be
+  // permanently missed (seed adoption, roster hydration, the online status).
+  // These three replay on assignment when that already happened, so handler
+  // wiring order can never lose the initial hydration.
+  #onRoster: () => void = () => {};
+  /** any join/leave/rename (rebuild lists) */
+  get onRoster(): () => void {
+    return this.#onRoster;
+  }
+  set onRoster(fn: () => void) {
+    this.#onRoster = fn;
+    if (this.selfId !== 0) fn(); // welcomed before wiring — replay hydrated roster
+  }
   onJoin: (id: number, name: string) => void = () => {}; // a new player entered (announce/toast)
-  onWelcome: () => void = () => {}; // assigned id + roster hydrated — push saved avatar
+  #onWelcome: () => void = () => {};
+  /** assigned id + roster hydrated — push saved avatar */
+  get onWelcome(): () => void {
+    return this.#onWelcome;
+  }
+  set onWelcome(fn: () => void) {
+    this.#onWelcome = fn;
+    if (this.selfId !== 0) {
+      if (import.meta.env.DEV) console.info("[net] welcome arrived before handler wiring — replayed");
+      fn();
+    }
+  }
   onSample: (id: number, s: NetSample) => void = () => {};
   onLeave: (id: number) => void = () => {};
-  onStatus: (status: NetStatus, detail?: string) => void = () => {};
+  #onStatus: (status: NetStatus, detail?: string) => void = () => {};
+  get onStatus(): (status: NetStatus, detail?: string) => void {
+    return this.#onStatus;
+  }
+  set onStatus(fn: (status: NetStatus, detail?: string) => void) {
+    this.#onStatus = fn;
+    if (this.status !== "connecting") fn(this.status, this.#statusDetail); // replay a missed transition
+  }
   onRtc: (from: number, payload: unknown) => void = () => {}; // voice signaling (src/net/voice.ts)
   /** Someone else fired a paintball: origin, velocity, 24-bit rgb. */
   onPaint: (id: number, x: number, y: number, z: number, vx: number, vy: number, vz: number, rgb: number) => void = () => {};
@@ -401,6 +433,7 @@ export class Net {
   onEnsembleNote: (slot: EnsembleSlot, ownerId: number, step: number, velocity: number) => void = () => {};
 
   #ws: WebSocket | null = null;
+  #statusDetail: string | undefined; // last transition detail, for onStatus replay-on-assign
   #url: string;
   #retryMs = 1000;
   #closed = false;
@@ -667,8 +700,11 @@ export class Net {
   }
 
   #setStatus(s: NetStatus, detail?: string) {
-    if (this.status === s) return;
+    // M9: a repeated status with a NEW detail must still publish (a replayed
+    // connection cycle used to leave a stale detail on the HUD).
+    if (this.status === s && this.#statusDetail === detail) return;
     this.status = s;
+    this.#statusDetail = detail;
     this.onStatus(s, detail);
   }
 

@@ -26,6 +26,9 @@ import {
 import { createContactShadowComplement } from "./contactShadows";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
 import { yieldToFrame } from "../core/cooperativeWork";
+import { tracer } from "../core/hitchTracer";
+import { motionGate } from "../core/motionGate";
+import { warmScenePaced } from "./warmStaticRegion";
 import type { PianoGodRaysParams } from "./pianoGodRaysTypes";
 import type { ProjectedSurfaceLightSource } from "./projectedSurfaceLightTypes";
 
@@ -65,6 +68,18 @@ const BEAUTY_ONLY_LAYER = 31;
 const GPU_BUFFER_USAGE_MAP_READ = 0x0001;
 const GPU_BUFFER_USAGE_COPY_DST = 0x0008;
 const GPU_MAP_MODE_READ = 0x0001;
+
+// M11: an exclusive compile window HOLDS presented frames for its duration
+// (C3), so a monster TSL codegen window (water sheets ~250 ms, facade family
+// ~480 ms) is a visible freeze ONLY if the player was moving — while the view
+// is still, the held frame shows an identical image and is imperceptible. Each
+// serialized window therefore waits for visual stillness before starting, with
+// a bounded per-window deadline (and the motionGate's global motion budget) so
+// a player who never stops degrades to the ungated M10 behavior, never worse.
+const COMPILE_STILL_DEADLINE_MS = 8000;
+// Windows longer than a frame interval are what the stillness gate exists for;
+// use the same threshold to classify hidden vs visible in the tracer.
+const COMPILE_WINDOW_VISIBLE_MS = 33;
 
 /**
  * WebGPU render graph: a scene pass owns color/depth, and a lightweight
@@ -565,11 +580,53 @@ export function createRenderPipeline(
       targetScene: THREE.Scene | null = null
     ) => {
       const run = async () => {
+        // M11: start this window during stillness when possible (see
+        // COMPILE_STILL_DEADLINE_MS). The wait happens BEFORE the exclusive
+        // depth increments, so live frames keep presenting while we wait.
+        // Nested calls (compileFullscreenQuads awaits the gated compileAsync
+        // while already holding the exclusive depth) must NOT wait: frames are
+        // already frozen, so waiting only lengthens the freeze.
+        let stillAtStart = true;
+        if (exclusiveCompileDepth === 0) {
+          const gateWaitStartedAt = performance.now();
+          stillAtStart = await motionGate.waitForStillness(
+            COMPILE_STILL_DEADLINE_MS,
+            // Frames became held by an outer window mid-wait: waiting can no
+            // longer hide anything, it only lengthens the frozen image.
+            () => exclusiveCompileDepth > 0
+          );
+          const gateWaitMs = Math.round(performance.now() - gateWaitStartedAt);
+          if (gateWaitMs > 0) tracer.count("compileGateWaitMs", gateWaitMs);
+          if (!stillAtStart && gateWaitMs > 50) tracer.count("compileGateForced");
+        } else {
+          stillAtStart = motionGate.isStill();
+        }
         exclusiveCompileDepth++;
+        const startedAt = performance.now();
         try {
           return await original(compileScene, compileCamera, targetScene);
         } finally {
           exclusiveCompileDepth--;
+          // M6 attribution: bursty compiles are the prime hitch suspect. The
+          // per-frame counts land on the spiking frame in tracer.spikes.
+          tracer.count("gpuCompile");
+          const windowMs = Math.round(performance.now() - startedAt);
+          tracer.count("gpuCompileMs", windowMs);
+          // M11 attribution: a long window is a perceived hitch only when the
+          // view was moving at its start or moved during it.
+          if (windowMs > COMPILE_WINDOW_VISIBLE_MS) {
+            const movedDuring = motionGate.lastMovementAt() > startedAt;
+            tracer.count(
+              stillAtStart && !movedDuring
+                ? "compileWindowStillHidden"
+                : "compileWindowMotionVisible"
+            );
+          }
+          // M10 attribution: name the owners of long exclusive windows.
+          if (windowMs > 100) {
+            const owner = compileScene as THREE.Object3D & { name?: string; type?: string };
+            console.info(`[compile] ${owner.name || owner.type || "?"} window ${windowMs}ms`);
+          }
         }
       };
       const gated = chain.then(run, run);
@@ -667,7 +724,7 @@ export function createRenderPipeline(
    */
   let warmupInFlight: Promise<void> | null = null;
   let warmupRun = 0;
-  const warmupOnce = async (scope: WarmupScope) => {
+  const warmupOnce = async (scope: WarmupScope, pace?: () => Promise<void>) => {
     const profileWarmup = new URLSearchParams(location.search).has("profile");
     const run = ++warmupRun;
     const startedAt = performance.now();
@@ -679,6 +736,16 @@ export function createRenderPipeline(
       stages.push(`${label} ${Math.round(now - stageStartedAt)}ms`);
       stageStartedAt = now;
     };
+    // M6: a LIVE (uncovered) warmup re-run must not freeze rendering for one
+    // monolithic whole-scene compile — the compile gate holds frames for the
+    // full window. Pre-compile every distinct mesh signature in small paced
+    // chunks BEFORE the render-scoped overrides below (live frames keep their
+    // normal update types — contact shadows stay live between chunks), so the
+    // compilePass sweeps find warm pipelines and finish in a few ms.
+    if (pace) {
+      const paced = await warmScenePaced(renderer, camera, scene, pace);
+      markStage(`paced-prewarm ${paced.representatives}/${paced.meshes} in ${paced.chunks} chunks`);
+    }
     const sceneUpdateType = scenePass.updateBeforeType;
     const prePassUpdateType = prePass.updateBeforeType;
     const contactUpdateType = contactShadows.pass?.updateBeforeType;
@@ -764,9 +831,9 @@ export function createRenderPipeline(
       );
     }
   };
-  const warmup = (scope: WarmupScope = "full") => {
+  const warmup = (scope: WarmupScope = "full", pace?: () => Promise<void>) => {
     if (warmupInFlight !== null) return warmupInFlight;
-    warmupInFlight = warmupOnce(scope).finally(() => {
+    warmupInFlight = warmupOnce(scope, pace).finally(() => {
       warmupInFlight = null;
     });
     return warmupInFlight;
@@ -775,7 +842,15 @@ export function createRenderPipeline(
   applyPostFx();
 
   const render = () => {
-    if (exclusiveCompileDepth > 0) return;
+    // M11: the stillness gate samples the presented camera every render call —
+    // including held ones, so movement DURING a hold is still observed and
+    // waiters/deadlines keep progressing while frames are frozen.
+    motionGate.sampleFrame(camera);
+    if (exclusiveCompileDepth > 0) {
+      // Held frame: a compile window is mutating shared renderer state (C3).
+      tracer.count("renderSkipCompile");
+      return;
+    }
     if (wireframeActive) syncWireframeCamera();
     projectedSource?.setViewPosition(camera.position as THREE.Vector3);
     if (projectedSource?.active) ensureProjectedRuntime();
@@ -962,6 +1037,13 @@ export function createRenderPipeline(
 
   return {
     render,
+    /** M10: true while an exclusive compile window is holding presented
+     * frames. Streaming attach paths poll this so scene mutations that dirty
+     * render bundles don't pile up unseen behind a long window and then all
+     * record (with their first-draw pipeline creations) in one giant frame. */
+    get compileHeld() {
+      return exclusiveCompileDepth > 0;
+    },
     /** The currently selected persistent fullscreen pipeline. */
     get pipeline() {
       return activePipeline;

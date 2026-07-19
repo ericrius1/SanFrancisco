@@ -1,6 +1,9 @@
 import * as THREE from "three/webgpu";
 import { CONFIG, RENDER_TUNING } from "../config";
 import { applyBundleOrderPatch } from "../render/bundleOrderPatch";
+import { installAttributeDisposePatch } from "../render/attributeDisposePatch";
+import { installPaddedAttributePatch } from "../render/paddedAttributePatch";
+import { installRenderObjectRegistry } from "../render/renderObjectRegistry";
 import { registerRenderer } from "./rendererRegistry";
 
 export type RenderCore = {
@@ -60,6 +63,21 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
   // Tiles are BundleGroups; stock r185 draws bundles after transparency and
   // can cover non-depth-writing effects.
   applyBundleOrderPatch(renderer);
+
+  // M9: index RenderObjects by mesh so retiring streamed content that SHARES a
+  // long-lived material (tile shadow proxies, citygen chunk cells) can release
+  // its render objects — geometry dispose alone never does in r185.
+  installRenderObjectRegistry(renderer);
+
+  // r185 destroys an interleaved attribute's shared GPU buffer but evicts the
+  // backend cache under the wrong key, so later draws reuse the destroyed
+  // buffer forever (the sprite-geometry validation storm). Symmetrize the key.
+  installAttributeDisposePatch(renderer);
+
+  // M10: r185 rebuilds a padded attribute's ENTIRE mirror array on every
+  // update (per-vertex subarray loop) — ~280 ms per streamed-tile batch attach
+  // on the 16-bit quantized arenas. The patch pads/uploads only updateRanges.
+  installPaddedAttributePatch(renderer);
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(

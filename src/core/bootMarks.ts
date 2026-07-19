@@ -21,6 +21,12 @@ export function bootMark(label: string) {
   marks.push({ label, t: performance.now() });
 }
 
+/** Read-only view of the mark timeline (absolute performance.now() stamps).
+ *  Feeds the `__sfVoid` boot-probe hook (docs/VOID_STREAM_REWRITE.md M3). */
+export function bootMarkList(): ReadonlyArray<{ label: string; t: number }> {
+  return marks;
+}
+
 /** "map 512 · gpu 890 · tiles 1240 · physics 410 · world 220 · warmup 1180 = 4.5s"
  *  — each number is the delta FROM THE PREVIOUS mark (ms), so the fat phase is
  *  obvious at a glance; the tail is total seconds since start. */

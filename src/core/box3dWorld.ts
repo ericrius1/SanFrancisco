@@ -786,6 +786,18 @@ function loadBox3DModule(): Promise<Box3DModule> {
   return box3DModulePromise;
 }
 
+/**
+ * Boot kickoff (docs/VOID_STREAM_REWRITE.md M3 P0): start the ~1 MB WASM
+ * module import immediately so it downloads/instantiates in parallel with the
+ * map/GPU/manifest streams. A failed prefetch clears the memo so the real
+ * `createBox3D()` call retries instead of inheriting the rejection.
+ */
+export function prefetchBox3D(): void {
+  loadBox3DModule().catch(() => {
+    box3DModulePromise = null;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Ragdoll bone table, ported verbatim from vendored native/human.c CreateHuman.
 // Bone order (pelvis .. lower_arm_r) and index 5 == head are load-bearing:
