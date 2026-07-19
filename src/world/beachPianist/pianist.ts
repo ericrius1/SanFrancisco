@@ -7,9 +7,9 @@ import { keyCenterX } from "./keys";
 import { PIANO_FINGER_COUNT } from "./notes";
 
 /**
- * The bearded voxel pianist: light skin, a dark-brown side/back cut covering the
- * rear fifth of his crown while leaving the forehead open, a black long-sleeve
- * tee, black pants, white shoes, a full dark beard and black sunglasses. He sits
+ * The bearded voxel pianist: light skin, a black perimeter cut wrapping
+ * around a bald crown, a black long-sleeve tee, black pants, white shoes, a full
+ * dark beard and black sunglasses. He sits
  * at the bench, thighs level, shins down, feet at the pedals, and plays the
  * keyboard with closed-form arm IK aimed at the current notes' key positions.
  * Between phrases his hands hover; during the rest he drops them to his lap and
@@ -26,8 +26,7 @@ const { damp, lerp, clamp } = THREE.MathUtils;
 export const SEAT = { x: 0, y: 0.6, z: 0.11 } as const;
 
 const SKIN = 0xf2c7ad;
-const DARK_HAIR = 0x5b4933;
-const BEARD = 0x241a12;
+const BLACK_HAIR_AND_BEARD = 0x241a12;
 const BLACK_CLOTH = 0x141414;
 const WHITE_SHOE = 0xf3f1ea;
 
@@ -116,7 +115,7 @@ export function buildPianist(stage: THREE.Group): Pianist {
   const rig = buildRig({ skin: 0, hair: "buzz", hat: "none", outfit: "tee", color: 5, accent: 5 });
   const m = rig.avatar.materials;
   m.skin.color.set(SKIN);
-  m.hair.color.set(DARK_HAIR);
+  m.hair.color.set(BLACK_HAIR_AND_BEARD);
   m.jacket.color.set(BLACK_CLOTH); // tee torso
   m.trim.color.set(BLACK_CLOTH); // tee collar
   m.sleeve.color.set(BLACK_CLOTH); // sleeves run from shoulder to wrist
@@ -330,21 +329,23 @@ export function buildPianist(stage: THREE.Group): Pianist {
   );
   if (stockShades instanceof THREE.Mesh) stockShades.material = shades;
 
-  // Replace the stock buzz crown with a close side/back wrap. The occipital
-  // panel rises to the scalp and joins a shallow rear-crown slab: its 0.055 m
-  // overlap on the 0.26 m-deep head covers roughly the back 20% of the top
-  // without reaching the forehead or face.
+  // Replace the stock buzz crown with a close perimeter wrap. Full-depth side
+  // panels connect the occipital hair to a thin front hairline, while four
+  // shallow crown rails leave a clearly skin-coloured bald patch in the middle.
   for (const crown of rig.avatar.hair.buzz) crown.visible = false;
   const hairWrap = new THREE.Group();
-  hairWrap.name = "beachPianist.sideBackHair";
+  hairWrap.name = "beachPianist.perimeterHair";
   rig.head.add(hairWrap);
   box(hairWrap, m.hair, 0.27, 0.24, 0.04, 0, 0.22, 0.15); // raised back/occipital hair
-  box(hairWrap, m.hair, 0.035, 0.2, 0.18, -0.1475, 0.2, 0.06); // left side
-  box(hairWrap, m.hair, 0.035, 0.2, 0.18, 0.1475, 0.2, 0.06); // right side
-  box(hairWrap, m.hair, 0.27, 0.03, 0.095, 0, 0.345, 0.1225); // rear 20% of crown
+  box(hairWrap, m.hair, 0.035, 0.22, 0.27, -0.1475, 0.21, 0); // left side, temple to back
+  box(hairWrap, m.hair, 0.035, 0.22, 0.27, 0.1475, 0.21, 0); // right side, temple to back
+  box(hairWrap, m.hair, 0.27, 0.03, 0.075, 0, 0.345, 0.1025); // rear crown rail
+  box(hairWrap, m.hair, 0.27, 0.03, 0.055, 0, 0.345, -0.1125); // front crown hairline
+  box(hairWrap, m.hair, 0.045, 0.03, 0.16, -0.1175, 0.345, -0.005); // left crown rail
+  box(hairWrap, m.hair, 0.045, 0.03, 0.16, 0.1175, 0.345, -0.005); // right crown rail
 
   // Fuller dark beard than the ukulelist: chin slab, jaw frames, upper cheeks.
-  const beard = mat(BEARD);
+  const beard = mat(BLACK_HAIR_AND_BEARD);
   box(rig.head, beard, 0.22, 0.12, 0.05, 0, 0.07, -0.13); // chin/jaw slab
   box(rig.head, beard, 0.05, 0.15, 0.19, -0.13, 0.12, -0.03); // jaw frame L
   box(rig.head, beard, 0.05, 0.15, 0.19, 0.13, 0.12, -0.03); // jaw frame R
