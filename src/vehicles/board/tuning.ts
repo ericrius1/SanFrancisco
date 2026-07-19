@@ -1,8 +1,8 @@
 import { tunables } from "../../core/persist";
 
 export const BOARD_TUNING = tunables("movement.board", {
-  maxSpeed: { v: 26, min: 5, max: 80, step: 0.5, label: "max speed" },
-  boostMaxSpeed: { v: 46, min: 10, max: 120, step: 0.5, label: "boost max" },
+  maxSpeed: { v: 26, min: 5, max: 80, step: 0.5, label: "speed" },
+  boostMaxSpeed: { v: 46, min: 10, max: 120, step: 0.5, label: "boost speed" },
   reverseMax: { v: 12, min: 2, max: 30, step: 0.5, label: "reverse max" },
   accel: { v: 15, min: 2, max: 60, step: 0.5, label: "accel" },
   boostAccel: { v: 26, min: 4, max: 80, step: 0.5, label: "boost accel" },
