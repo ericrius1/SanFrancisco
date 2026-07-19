@@ -57,6 +57,8 @@ const BED_IDS = Object.keys(BED_FILES) as BedId[];
 const MAX_VOICES = 16;
 const BED_PARK_SECONDS = 4;
 const BED_BUFFER_UNLOAD_SECONDS = 60;
+const BED_REGION_UNUSED_UNLOAD_SECONDS = 30;
+const BED_REGION_INFLUENCE_THRESHOLD = 0.02;
 
 type Bed = {
   source: AudioBufferSourceNode | null;
@@ -93,11 +95,12 @@ export class NatureSoundscape {
   #beds = new Map<BedId, Bed>();
   #bedBuffers = new Map<BedId, AudioBuffer>();
   #voices: ActiveVoice[] = [];
-  #loadingBeds = new Map<BedId, number>();
+  #loadingBeds = new Map<BedId, symbol>();
   #failedBeds = new Set<BedId>();
   #bedLoadGeneration = 0;
   #bedIdleSeconds = 0;
-  #bedsWanted = false;
+  #wantedBedMask = 0;
+  #bedUnusedSeconds = new Float32Array(BED_IDS.length);
   #bufferPreparation: Promise<void> | null = null;
   #buffersReady = false;
   #holdRelease: (() => void) | null = null; // engine hold while near a region / awake
@@ -124,8 +127,11 @@ export class NatureSoundscape {
       beds: BED_IDS.map((id) => ({
         id,
         level: +(this.#beds.get(id)?.level ?? 0).toFixed(3),
+        wanted: this.#isBedWanted(id),
         loaded: this.#bedBuffers.has(id),
-        running: Boolean(this.#beds.get(id)?.source)
+        loading: this.#loadingBeds.has(id),
+        running: Boolean(this.#beds.get(id)?.source),
+        unusedSeconds: +this.#bedUnusedSeconds[BED_IDS.indexOf(id)].toFixed(1)
       })),
       decodedBedMiB: +(
         [...this.#bedBuffers.values()].reduce(
@@ -221,15 +227,22 @@ export class NatureSoundscape {
     let windBias = 0;
     let fog = 0;
     let infSum = 0;
+    let wantedBedMask = 0;
     for (let i = 0; i < NATURE_REGIONS.length; i++) {
-      const inf = regionInfluence(NATURE_REGIONS[i], o.playerPos.x, o.playerPos.z);
+      const region = NATURE_REGIONS[i];
+      const inf = regionInfluence(region, o.playerPos.x, o.playerPos.z);
       this.#inf[i] = inf;
       presence = Math.max(presence, inf);
+      if (inf > BED_REGION_INFLUENCE_THRESHOLD) {
+        for (let bedIndex = 0; bedIndex < BED_IDS.length; bedIndex++) {
+          if ((region.beds[BED_IDS[bedIndex]] ?? 0) > 0) wantedBedMask |= 1 << bedIndex;
+        }
+      }
       // exposed hilltops: the wind term climbs with the listener's altitude
-      const wa = NATURE_REGIONS[i].windAltitude;
+      const wa = region.windAltitude;
       const lift = wa ? 1 + wa.boost * smooth(wa.y0, wa.y1, o.playerPos.y) : 1;
-      windBias += inf * NATURE_REGIONS[i].character.windBias * lift;
-      fog += inf * NATURE_REGIONS[i].character.fog;
+      windBias += inf * region.character.windBias * lift;
+      fog += inf * region.character.fog;
       infSum += inf;
     }
     if (infSum > 0) {
@@ -243,15 +256,19 @@ export class NatureSoundscape {
     }
     if (!ctx) return;
     // Sampled ambience is first-approach content. A city keydown unlocks the
-    // graph and starts worker synthesis, but does not fetch/decode four nature
-    // beds until the listener is actually close enough to hear them.
-    if (audioEngine.unlocked && allowed && presence > 0.02 && Number(T.beds) > 0.001) {
-      this.#bedsWanted = true;
+    // graph and starts worker synthesis, but only fetches/decodes the union of
+    // beds declared by regions that are actually influencing the listener.
+    if (
+      audioEngine.unlocked && allowed && presence > BED_REGION_INFLUENCE_THRESHOLD &&
+      Number(T.beds) > 0.001 && wantedBedMask !== 0
+    ) {
+      this.#wantedBedMask = wantedBedMask;
       this.#bedIdleSeconds = 0;
-      if (o.allowNewLoads !== false) void this.#loadBeds();
+      this.#updateBedResidency(dt);
+      if (o.allowNewLoads !== false) void this.#loadBeds(wantedBedMask);
       this.#startBeds();
     } else {
-      this.#bedsWanted = false;
+      this.#wantedBedMask = 0;
       this.#bedIdleSeconds += Math.max(0, dt);
       if (this.#bedIdleSeconds >= BED_PARK_SECONDS) this.#stopBeds();
       if (
@@ -530,38 +547,52 @@ export class NatureSoundscape {
     return task;
   }
 
-  async #loadBeds(): Promise<void> {
+  async #loadBeds(wantedMask: number): Promise<void> {
     const ctx = this.#ctx;
     if (!ctx) return;
     const generation = this.#bedLoadGeneration;
-    const tasks = BED_IDS.map(async (id) => {
-      if (this.#bedBuffers.has(id) || this.#loadingBeds.has(id) || this.#failedBeds.has(id)) return;
-      this.#loadingBeds.set(id, generation);
-      try {
+    const tasks: Promise<void>[] = [];
+    for (let bedIndex = 0; bedIndex < BED_IDS.length; bedIndex++) {
+      if ((wantedMask & (1 << bedIndex)) === 0) continue;
+      const id = BED_IDS[bedIndex];
+      if (this.#bedBuffers.has(id) || this.#loadingBeds.has(id) || this.#failedBeds.has(id)) continue;
+      const token = Symbol(id);
+      this.#loadingBeds.set(id, token);
+      tasks.push((async () => {
         try {
-          const res = await fetch(BED_FILES[id]);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const arr = await res.arrayBuffer();
-          const buf = await ctx.decodeAudioData(arr);
-          if (this.#ctx === ctx && this.#bedLoadGeneration === generation) {
-            this.#bedBuffers.set(id, buf);
+          try {
+            const res = await fetch(BED_FILES[id]);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const arr = await res.arrayBuffer();
+            const buf = await ctx.decodeAudioData(arr);
+            if (
+              this.#ctx === ctx && this.#bedLoadGeneration === generation &&
+              this.#loadingBeds.get(id) === token && this.#isBedWanted(id)
+            ) {
+              this.#bedBuffers.set(id, buf);
+            }
+          } catch (err) {
+            if (this.#bedLoadGeneration === generation && this.#loadingBeds.get(id) === token) {
+              this.#failedBeds.add(id);
+            }
+            console.warn(`[nature-audio] bed failed: ${id}`, err);
           }
-        } catch (err) {
-          if (this.#bedLoadGeneration === generation) this.#failedBeds.add(id);
-          console.warn(`[nature-audio] bed failed: ${id}`, err);
+        } finally {
+          if (this.#loadingBeds.get(id) === token) this.#loadingBeds.delete(id);
         }
-      } finally {
-        if (this.#loadingBeds.get(id) === generation) this.#loadingBeds.delete(id);
-      }
-    });
+      })());
+    }
+    if (tasks.length === 0) return;
     await Promise.all(tasks);
-    if (audioEngine.unlocked && this.#bedsWanted) this.#startBeds();
+    if (audioEngine.unlocked && this.#wantedBedMask !== 0) this.#startBeds();
   }
 
   #startBeds(): void {
     const ctx = this.#ctx;
-    if (!ctx || !audioEngine.unlocked || !this.#bedsWanted) return;
-    for (const id of BED_IDS) {
+    if (!ctx || !audioEngine.unlocked || this.#wantedBedMask === 0) return;
+    for (let bedIndex = 0; bedIndex < BED_IDS.length; bedIndex++) {
+      if ((this.#wantedBedMask & (1 << bedIndex)) === 0) continue;
+      const id = BED_IDS[bedIndex];
       const bed = this.#beds.get(id);
       const buf = this.#bedBuffers.get(id);
       if (!bed || !buf || bed.source) continue;
@@ -587,10 +618,33 @@ export class NatureSoundscape {
     }
   }
 
-  #stopBeds(releaseBuffers = false): void {
-    if (!releaseBuffers && ![...this.#beds.values()].some((bed) => bed.source || bed.panLfo)) return;
-    const now = this.#ctx?.currentTime ?? 0;
-    for (const bed of this.#beds.values()) {
+  #isBedWanted(id: BedId): boolean {
+    const index = BED_IDS.indexOf(id);
+    return index >= 0 && (this.#wantedBedMask & (1 << index)) !== 0;
+  }
+
+  #updateBedResidency(dt: number): void {
+    const safeDt = Math.max(0, dt);
+    for (let bedIndex = 0; bedIndex < BED_IDS.length; bedIndex++) {
+      if ((this.#wantedBedMask & (1 << bedIndex)) !== 0) {
+        this.#bedUnusedSeconds[bedIndex] = 0;
+        continue;
+      }
+      const previous = this.#bedUnusedSeconds[bedIndex];
+      const next = previous + safeDt;
+      this.#bedUnusedSeconds[bedIndex] = next;
+      if (previous < BED_PARK_SECONDS && next >= BED_PARK_SECONDS) {
+        this.#stopBed(BED_IDS[bedIndex]);
+      }
+      if (previous < BED_REGION_UNUSED_UNLOAD_SECONDS && next >= BED_REGION_UNUSED_UNLOAD_SECONDS) {
+        this.#stopBed(BED_IDS[bedIndex], true);
+      }
+    }
+  }
+
+  #stopBed(id: BedId, releaseBuffer = false): void {
+    const bed = this.#beds.get(id);
+    if (bed) {
       try { bed.source?.stop(); } catch { /* already stopped */ }
       try { bed.panLfo?.stop(); } catch { /* already stopped */ }
       bed.source?.disconnect();
@@ -602,14 +656,25 @@ export class NatureSoundscape {
       bed.panLfoGain = null;
       bed.panner = null;
       bed.level = 0;
+      const now = this.#ctx?.currentTime ?? 0;
       bed.gain.gain.cancelScheduledValues(now);
       bed.gain.gain.setValueAtTime(0, now);
     }
+    if (!releaseBuffer) return;
+    this.#loadingBeds.delete(id);
+    this.#failedBeds.delete(id);
+    this.#bedBuffers.delete(id);
+  }
+
+  #stopBeds(releaseBuffers = false): void {
+    if (!releaseBuffers && ![...this.#beds.values()].some((bed) => bed.source || bed.panLfo)) return;
+    for (const id of BED_IDS) this.#stopBed(id, releaseBuffers);
     if (!releaseBuffers) return;
     this.#bedLoadGeneration++;
     this.#loadingBeds.clear();
     this.#failedBeds.clear();
     this.#bedBuffers.clear();
+    this.#bedUnusedSeconds.fill(0);
   }
 
   #reapVoices(now: number): void {
