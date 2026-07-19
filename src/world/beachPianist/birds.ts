@@ -1,8 +1,9 @@
 // Local bird life for the Beach Pianist grove. Forty-two low-poly coastal
 // silhouettes share one geometry, one material and one draw call; all paths,
-// headings and wing beats are evaluated in the WebGPU vertex stage from static
-// instance data. Six stationary instances sit at canopy height and provide the
-// positions for sparse procedural tree chirps on the shared World audio bus.
+// climb/pitch, turn banking and burst/glide wing beats are evaluated in the
+// WebGPU vertex stage from static instance data. Six stationary instances sit
+// at canopy height and provide the positions for sparse procedural tree chirps
+// on the shared World audio bus.
 
 import * as THREE from "three/webgpu";
 import { audioEngine } from "../../audio/engine";
@@ -318,7 +319,7 @@ export class PianoGroveBirds {
         hash(i, 41) * Math.PI * 2,
         0.58 + hash(i, 43) * 0.2,
         0.7 + hash(i, 47) * 1.15,
-        5.2 + hash(i, 53) * 2.4,
+        16 + hash(i, 53) * 9,
         0.68 + hash(i, 59) * 0.2,
         color.setHex(palette[i % palette.length]),
         motionArray,
@@ -344,7 +345,7 @@ export class PianoGroveBirds {
         hash(i, 97) * Math.PI * 2,
         0.67 + hash(i, 101) * 0.35,
         1.5 + hash(i, 103) * 3.2,
-        3.7 + hash(i, 107) * 1.8,
+        10 + hash(i, 107) * 7,
         0.46 + hash(i, 109) * 0.2,
         color.setHex(palette[(i + 2) % palette.length]),
         motionArray,
@@ -437,6 +438,7 @@ export class PianoGroveBirds {
       perched: PERCHED,
       drawCalls: 1,
       gpuAnimated: true,
+      flightModel: "banked-harmonic-burst-glide",
       visible: this.group.visible,
       shadows: false,
       audio: this.#audio.debugState
