@@ -73,6 +73,8 @@
     "test:shadows:temporal": "node tools/shadow-temporal-probe.mjs",
     "test:shadows:far-field": "node tools/far-occlusion-field-test.mjs",
     "test:shadows:contact": "node tools/contact-shadow-contract-test.mjs",
+    "test:godrays:lifetime": "node tools/piano-godrays-lifetime-probe.mjs",
+    "test:webgpu:texture-lifetime": "node --experimental-strip-types tools/texture-dispose-patch-test.ts",
     "test:fog-weather": "node --experimental-strip-types tools/fog-weather-test.mjs",
     "test:palace-softness": "node --experimental-strip-types tools/palace-surface-softness-test.mjs",
     "test:ukiyo-postfx": "node tools/ukiyo-postfx-probe.mjs",

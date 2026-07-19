@@ -4,6 +4,7 @@ import { applyBundleOrderPatch } from "../render/bundleOrderPatch";
 import { installAttributeDisposePatch } from "../render/attributeDisposePatch";
 import { installPaddedAttributePatch } from "../render/paddedAttributePatch";
 import { installRenderObjectRegistry } from "../render/renderObjectRegistry";
+import { installDeferredTextureDisposePatch } from "../render/textureDisposePatch";
 import { registerRenderer } from "./rendererRegistry";
 
 export type RenderCore = {
@@ -78,6 +79,11 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
   // update (per-vertex subarray loop) — ~280 ms per streamed-tile batch attach
   // on the 16-bit quantized arenas. The patch pads/uploads only updateRanges.
   installPaddedAttributePatch(renderer);
+
+  // r185 destroys a render target's raw GPUTexture synchronously even though
+  // retained render bundles can still replay a bind group that references it.
+  // Retire raw textures only after completed frames and a queue drain.
+  installDeferredTextureDisposePatch(renderer);
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(

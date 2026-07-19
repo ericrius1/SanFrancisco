@@ -30,6 +30,10 @@ import { tracer } from "../core/hitchTracer";
 import { motionGate } from "../core/motionGate";
 import { warmScenePaced } from "./warmStaticRegion";
 import type { PianoGodRaysParams } from "./pianoGodRaysTypes";
+import {
+  deferredTextureDisposalState,
+  markTextureDisposalFrame
+} from "./textureDisposePatch";
 
 type SceneSamples = 0 | 4;
 type RuntimePassOptions = { options: { samples?: number } };
@@ -727,6 +731,7 @@ export function createRenderPipeline(
     const fxaaActive = fxaaRequested && fxaaRuntime !== null;
     if (!fastCaptureTarget && !fxaaActive) {
       activePipeline.render();
+      markTextureDisposalFrame(renderer);
       return;
     }
     const previousTarget = renderer.getRenderTarget();
@@ -750,6 +755,7 @@ export function createRenderPipeline(
       activePipeline.render();
     }
     renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
+    markTextureDisposalFrame(renderer);
   };
 
   const drainFastSlot = (slot: number) => {
@@ -933,6 +939,10 @@ export function createRenderPipeline(
         loaded: pianoGodRaysRuntime !== null,
         renderedFrames: pianoGodRaysRenderedFrames
       };
+    },
+    /** Probe-facing raw GPU texture retirement state. */
+    get textureDisposalState() {
+      return deferredTextureDisposalState(renderer);
     },
     /** Swap the scene pass to/from the retained wireframe override + camera. */
     setWireframe,
