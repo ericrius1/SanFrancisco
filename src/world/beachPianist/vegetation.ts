@@ -207,11 +207,15 @@ const GRASS_COLORS = [
   new THREE.Color(0x45602f),
   new THREE.Color(0x8b854d)
 ] as const;
+const GRASS_BLADES_PER_CLUSTER = 16;
 
 function collectGrass(map: WorldMap): GrassEntry[] {
   const placements: GrassEntry[] = [];
   const normal = new THREE.Vector3();
-  const spacing = 0.82;
+  // This is a hero meadow seen from ground level on arrival. Keep neighbouring
+  // cluster footprints overlapping even at their smallest authored spread so
+  // the pale terrain never opens into random bald patches between blades.
+  const spacing = 0.4;
   const halfExtent = 30;
   let index = 0;
 
@@ -220,9 +224,9 @@ function collectGrass(map: WorldMap): GrassEntry[] {
       const i = index++;
       // Jittered cells avoid a planted grid while preserving continuous
       // coverage all the way to the water and onto the lower bluff.
-      const x = SITE_X + dx + (hash(i, 127) - 0.5) * spacing * 0.72;
-      const z = SITE_Z + dz + (hash(i, 131) - 0.5) * spacing * 0.72;
-      if (rootIntersectsPiano(x, z, 0.12) || hash(i, 137) < 0.08) continue;
+      const x = SITE_X + dx + (hash(i, 127) - 0.5) * spacing * 0.12;
+      const z = SITE_Z + dz + (hash(i, 131) - 0.5) * spacing * 0.12;
+      if (rootIntersectsPiano(x, z, 0.12)) continue;
       const y = dryRoot(map, x, z, 0.32);
       if (y === null) continue;
       map.normal(x, z, normal, 0.65);
@@ -234,7 +238,7 @@ function collectGrass(map: WorldMap): GrassEntry[] {
         z,
         yaw: hash(i, 139) * Math.PI * 2,
         height: 0.48 + hash(i, 149) * 0.62,
-        spread: 0.72 + hash(i, 151) * 0.3,
+        spread: 0.95 + hash(i, 151) * 0.2,
         color: GRASS_COLORS[Math.floor(hash(i, 157) * GRASS_COLORS.length) % GRASS_COLORS.length],
         windAmp: 0.7 + hash(i, 163) * 0.46
       });
@@ -271,10 +275,10 @@ export function createBeachPianistFoliage(map: WorldMap): BeachPianistFoliage {
     }
   });
   const grassSourceGeometry = createBladeClusterGeometry({
-    blades: 7,
-    segments: 3,
-    width: 0.085,
-    radius: 0.38,
+    blades: GRASS_BLADES_PER_CLUSTER,
+    segments: 2,
+    width: 0.095,
+    radius: 0.4,
     curvature: 0.3
   });
   const grassMaterial = createGrassMaterial({ wind: "full", interactionSlots: 12 });
@@ -316,7 +320,7 @@ export function createBeachPianistFoliage(map: WorldMap): BeachPianistFoliage {
       flowerClumps: flowers.stats.instances,
       flowerHeads: flowers.stats.heads,
       grassClusters: grassPlacements.length,
-      grassBlades: grassPlacements.length * 7
+      grassBlades: grassPlacements.length * GRASS_BLADES_PER_CLUSTER
     }
   };
 }
