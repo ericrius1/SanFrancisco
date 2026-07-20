@@ -181,6 +181,8 @@ import { wireEscapeStack } from "./app/compose/escapeStack";
 import { createOceanKiteGate } from "./app/compose/oceanKite";
 import { createBackgroundAdmission } from "./app/compose/backgroundAdmission";
 import { resolveInitialArrival } from "./app/compose/initialArrival";
+import type { ZoneSpec } from "./app/compose/zoneMode";
+import { WakeCityButton } from "./ui/wakeCity";
 import { createToolCycle } from "./app/compose/toolCycle";
 import { createTeaGardenController } from "./app/compose/teaGarden";
 import { createOptionalSites, type OptionalSiteId } from "./app/compose/optionalSites";
@@ -326,9 +328,33 @@ async function boot() {
     resumed,
     spawnPoint,
     spawn,
+    zone,
+    cityTileRadius,
     fullTileRadius
   } = initialArrival;
   bootMark("physics");
+
+  // Zone-only boot ("pocket world", ?zone=<id>): a minimal substrate + one
+  // destination site instead of the whole city. `fullTileRadius` is already the
+  // bubble radius (the tile-radius lever in initialArrival), so the ring settles
+  // at the pocket. Heavy city-wide optional systems are deferred into
+  // `deferredCityWork` and run by wakeCity() when the player upgrades to the full
+  // world. Default boot (no zone) keeps `mode: "full"`, so `deferCity` runs every
+  // registered builder inline and every new path below is inert.
+  const worldScope: { mode: "full" | "zone"; zone: ZoneSpec | null; cityTileRadius: number } = {
+    mode: zone ? "zone" : "full",
+    zone,
+    cityTileRadius
+  };
+  const deferredCityWork: { name: string; run: () => void | Promise<void> }[] = [];
+  let cityWoken = worldScope.mode === "full";
+  // In full boot cityWoken is already true, so run() fires inline (identical to
+  // the pre-zone control flow). In zone boot the builder is stashed until wake;
+  // if wake already happened (a late IIFE builder), it runs immediately.
+  const deferCity = (name: string, run: () => void | Promise<void>): void | Promise<void> => {
+    if (cityWoken) return run();
+    deferredCityWork.push({ name, run });
+  };
 
   // ------------------------------------------------------ P1 void essentials
   // (docs/VOID_STREAM_REWRITE.md M3.) Only what the first live void frame
@@ -1529,14 +1555,30 @@ async function boot() {
   // later paints the map roads, avoiding another request/parse. Failures leave
   // the city without signals but never block boot.
   let trafficLights: TrafficLightView | null = null;
-  auxPending++;
-  const roadGraphPromise = RoadGraph.load();
-  void roadGraphPromise
-    .then((roads) => {
-      trafficLights = new TrafficLightView(scene, map, roads);
-    })
-    .catch((err: unknown) => console.warn("[traffic] signals unavailable", err))
-    .finally(() => auxPending--);
+  // The road graph feeds both the traffic signals here and the minimap upgrade
+  // below (via roadGraphPromise). In zone boot both defer to wake — the pocket
+  // has no city streets to signal — so the wake runner both loads the graph and
+  // (re)runs the minimap upgrade, since its own chain below no-ops on the null.
+  let roadGraphPromise: Promise<RoadGraph> | null = null;
+  const loadRoadGraphAndSignals = () => {
+    auxPending++;
+    const p = RoadGraph.load();
+    roadGraphPromise = p;
+    void p
+      .then((roads) => {
+        trafficLights = new TrafficLightView(scene, map, roads);
+      })
+      .catch((err: unknown) => console.warn("[traffic] signals unavailable", err))
+      .finally(() => auxPending--);
+  };
+  deferCity("traffic", () => {
+    loadRoadGraphAndSignals();
+    // Only the wake path needs to re-issue the minimap upgrade; in full boot the
+    // chain at its original site already fired against the live promise.
+    if (worldScope.mode === "zone") {
+      void roadGraphPromise!.then((roads) => minimap.setRoadGraph(roads)).catch(() => {});
+    }
+  });
   let creatures: Creatures | null = null;
   let forest: Forest | null = null;
   // ANIMALS record — populated by the deferred forest module load
@@ -1576,7 +1618,7 @@ async function boot() {
   const inOrbit = () => viewMode === "orbit";
   // Scattered boardable bay boats (persistent, self-sailing, far-hidden) —
   // extracted per docs/MAIN_DECOMPOSITION.md.
-  spawnScatterBoats(abandonedMounts);
+  deferCity("scatter-boats", () => spawnScatterBoats(abandonedMounts));
   await constructionSlice();
   // Nature uses one sandbox vegetation runtime now. The old primitive Flora
   // and site-local blob/tree renderers are gone: regions own placement, while
@@ -1663,10 +1705,27 @@ async function boot() {
     teaGarden.setFoliageVisible(visible);
     sutroBaths?.setFoliageVisible(visible);
     siteFoliage?.setVisible(visible);
-    islands.setFoliageVisible(visible);
+    islands?.setFoliageVisible(visible);
   };
-  const islands = new Islands(physics, map, scene);
-  islands.setFoliageVisible(foliageOn);
+  // Alcatraz/Angel/Yerba Buena islands: city-wide scenery, deferred in zone boot
+  // and (re)armed with its vegetation by the wake runner.
+  let islands: Islands | null = null;
+  const armIslandsVegetation = () =>
+    islands?.armVegetation(scene, async (group) => {
+      await waitForWorldBackgroundWindow(1800);
+      try {
+        await renderer.compileAsync(group, camera, scene);
+      } catch (err) {
+        console.warn("[islands] deferred vegetation compile failed:", err);
+      }
+    });
+  deferCity("islands", () => {
+    islands = new Islands(physics, map, scene);
+    islands.setFoliageVisible(foliageOn);
+    // Full boot arms vegetation at the worldReady quiet window below; a wake
+    // build happens after that window, so arm it here.
+    if (worldScope.mode === "zone") armIslandsVegetation();
+  });
   await constructionSlice();
 
   // Decoupled world-query service: every "what does this ray hit" caller (paint,
@@ -1713,11 +1772,15 @@ async function boot() {
   // Buena Vista's hidden summit ritual: five wandering echoes and a sky-scale
   // finale, asleep outside its clearing like the other located activities.
   let afterlight: AfterlightExperience | null = null;
-  const hunt = new Hunt(map, scene);
-  hunt.onCatch = (kind) => {
-    satchel.add(kind);
-    hud.message("Crab caught!", 1.1);
-  };
+  // Shoreline crab hunt: city-wide scenery, deferred in zone boot.
+  let hunt: Hunt | null = null;
+  deferCity("hunt", () => {
+    hunt = new Hunt(map, scene);
+    hunt.onCatch = (kind) => {
+      satchel.add(kind);
+      hud.message("Crab caught!", 1.1);
+    };
+  });
 
   // Decorative landmarks/parks: each build is isolated in its own try/catch so a
   // broken subsystem degrades scenery (a missing tower, dark bridge) instead of
@@ -2447,9 +2510,15 @@ async function boot() {
   );
   // The coarse surface mask already makes streets visible immediately. Upgrade
   // it with the exact shared graph as soon as the traffic load finishes.
-  void roadGraphPromise.then((roads) => minimap.setRoadGraph(roads)).catch(() => {});
+  // Null in zone boot until wake loads the graph (the wake runner re-issues this).
+  // Cast breaks the closure-only-assignment CFA freeze (same trick as bootSurfStash).
+  void (roadGraphPromise as Promise<RoadGraph> | null)
+    ?.then((roads) => minimap.setRoadGraph(roads))
+    .catch(() => {});
   // Activity-site pins (static coords) — extracted per docs/MAIN_DECOMPOSITION.md.
-  registerActivityLandmarks(minimap, map, ghostShipBeacon.pose, ensureSurfShack);
+  deferCity("activity-landmarks", () =>
+    registerActivityLandmarks(minimap, map, ghostShipBeacon.pose, ensureSurfShack)
+  );
   const playerLocator = new PlayerLocator();
   // worldArrival + backgroundAdmission were constructed in P1 (the reveal path
   // and void loop need them); only navigation composes here.
@@ -2725,9 +2794,60 @@ async function boot() {
     if (!player.riding && player.mode === "drive" && embodiments.currentAnimal) parts.push(embodiments.currentAnimal);
     return `${location.origin}${location.pathname}?j=${parts.join(",")}&via=${encodeURIComponent(net.name)}`;
   };
-  new ShareButton(buildShareUrl, (ok) =>
+  const shareButton = new ShareButton(buildShareUrl, (ok) =>
     hud.message(ok ? "Invite link copied — send it to a friend" : "Couldn't copy the link", 3.2)
   );
+  // Zone boot: shared links carry the pocket so recipients boot into the same
+  // zone at the shared spot; wakeCity() clears it (they are in the full world).
+  if (worldScope.zone) shareButton.setZone(worldScope.zone.id);
+
+  // Zone-only boot → full world upgrade. Idempotent: set the tile radius back to
+  // the real city radius (kicking the same background expansion the worldReady
+  // quiet-window block uses), run every deferred city builder sequentially, then
+  // lift the optional-site zone restriction. The ring has already settled at the
+  // bubble; the front gate is inactive post-settle, so newly loaded tiles simply
+  // appear — no new sweep. The two radius-restore paths compare against
+  // fullTileRadius (= bubble), so raising CONFIG above it never re-clamps.
+  let cityWakePromise: Promise<void> | null = null;
+  let wakeButton: WakeCityButton | null = null;
+  const wakeCity = (): Promise<void> => {
+    if (worldScope.mode === "full") return Promise.resolve();
+    if (cityWakePromise) return cityWakePromise;
+    cityWakePromise = (async () => {
+      // cityWoken flips now so any late IIFE builder runs inline; worldScope.mode
+      // stays "zone" until the drain finishes, because the traffic and islands
+      // runners branch on it to take their wake-only sub-steps (minimap re-issue
+      // / vegetation arm) — those runners execute while draining below.
+      cityWoken = true;
+      hud.message("Waking the rest of San Francisco…", 3.2);
+      if (player.mode !== "surf") {
+        CONFIG.tileLoadRadius = worldScope.cityTileRadius;
+        CONFIG.tileUnloadRadius = worldScope.cityTileRadius + 400;
+      } else if (surfCullStash) {
+        // Surf owns the live radius (capped at 2 km); retarget its exit-restore
+        // values so leaving the water lands on the citywide radius, not the
+        // zone bubble it stashed when surf began.
+        surfCullStash.load = worldScope.cityTileRadius;
+        surfCullStash.unload = worldScope.cityTileRadius + 400;
+      }
+      tiles.beginBackgroundExpansion();
+      while (deferredCityWork.length > 0) {
+        const work = deferredCityWork.shift()!;
+        try {
+          await work.run();
+        } catch (err) {
+          console.warn(`[zone] wake step "${work.name}" failed:`, err);
+        }
+      }
+      worldScope.mode = "full";
+      sites.liftZoneRestriction();
+      shareButton.setZone(null);
+      wakeButton?.remove();
+      wakeButton = null;
+    })();
+    return cityWakePromise;
+  };
+  if (worldScope.mode === "zone") wakeButton = new WakeCityButton(wakeCity);
 
   // "Behind the scenes" overlay + X/GitHub links (top-right, under Tutorial).
   // Free the pointer lock while it's open so the cursor can reach the links.
@@ -2897,14 +3017,8 @@ async function boot() {
   });
   void worldReady.then(async () => {
     await waitForWorldBackgroundWindow(1800);
-    islands.armVegetation(scene, async (group) => {
-      await waitForWorldBackgroundWindow(1800);
-      try {
-        await renderer.compileAsync(group, camera, scene);
-      } catch (err) {
-        console.warn("[islands] deferred vegetation compile failed:", err);
-      }
-    });
+    // Null in zone boot (islands is deferred); the wake runner arms it instead.
+    armIslandsVegetation();
   });
   // Generic proximity gates: every starting point follows the same rule. After
   // first reveal, nearby optional regions may hydrate; distant ones wait for
@@ -2912,7 +3026,7 @@ async function boot() {
   const NEAR_GATE = 1300;
   // Park + authored-region map pins (eager, coords-only) — extracted per
   // docs/MAIN_DECOMPOSITION.md; GARDEN_XZ/GOLF_XZ now live beside the pins.
-  registerParkLandmarks(minimap, authoredRegions);
+  deferCity("park-landmarks", () => registerParkLandmarks(minimap, authoredRegions));
 
   type LazyRegionTimingEvent = { phase: string; atMs: number; elapsedMs: number };
   const lazyRegionTimings: Record<string, { startedAt: number; events: LazyRegionTimingEvent[] }> = {};
@@ -3136,6 +3250,10 @@ async function boot() {
     getFoliageOn: () => foliageOn,
     getRevealed: () => revealed,
     getAvatar: () => avatarTraits,
+    // Zone boot: only the destination site auto-loads (its exhibit foliage too).
+    // The site itself still hydrates via the normal arrival/proximity path since
+    // the spawn is at the site. Lifted by wakeCity().
+    zoneAllowlist: worldScope.zone ? new Set<OptionalSiteId>([worldScope.zone.siteId]) : undefined,
     onSitesChanged: (r) => {
       goldenGateTennis = r.goldenGateTennis;
       pickleballController = r.pickleballController;
@@ -3225,39 +3343,46 @@ async function boot() {
     // CityGen improves every district, so start it before fauna and authored
     // sites. The ring yields once per detached WebGPU owner and can cancel stale
     // cell work by generation before driver compilation starts.
-    const citygenMod = await import("./world/citygen");
-    await waitForCityGenRenderWindow();
-    try {
-      citygenRing.current = await citygenMod.createCityGenRing(
-        {
-          excludeBuilding: (key, index) =>
-            // The roster is fixed here, before the restored hall wakes. Reserve
-            // its boiler-room footprint alongside the authored Tea Garden and
-            // the six source-authored Fort Mason replacements.
-            isTeaGardenBuilding(key, index) ||
-            (key === "1_12" && index === 0) ||
-            (key === "10_8" && [0, 19, 20, 22, 23, 24].includes(index))
-        },
-        {
-          scene,
-          physics,
-          map,
-          tiles,
-          schedule: scheduler.schedule,
-          beforeRenderOwnership: (isCurrent) => waitForCityGenRenderWindow(isCurrent),
-          // The ring keeps these exact owners detached and submits them one at
-          // a time, yielding a presentation frame before every compile. It is
-          // not published until every exterior driving variant is prepared.
-          prepareRenderOwner: (owner) => renderer.compileAsync(owner, camera, scene)
-        }
-      );
-    } catch (error) {
-      // CityGen is an enhancement over the complete baked city. A failed
-      // exterior compile must not publish a half-warm owner or abort the other
-      // deferred world modules.
-      console.warn("[citygen] exterior preparation failed — retaining baked city", error);
-      citygenRing.current = null;
-    }
+    // The dynamic import lives inside the builder so zone boot fetches the
+    // citygen chunk only at wake, not at reveal.
+    const buildCityGenRing = async () => {
+      const citygenMod = await import("./world/citygen");
+      await waitForCityGenRenderWindow();
+      try {
+        citygenRing.current = await citygenMod.createCityGenRing(
+          {
+            excludeBuilding: (key, index) =>
+              // The roster is fixed here, before the restored hall wakes. Reserve
+              // its boiler-room footprint alongside the authored Tea Garden and
+              // the six source-authored Fort Mason replacements.
+              isTeaGardenBuilding(key, index) ||
+              (key === "1_12" && index === 0) ||
+              (key === "10_8" && [0, 19, 20, 22, 23, 24].includes(index))
+          },
+          {
+            scene,
+            physics,
+            map,
+            tiles,
+            schedule: scheduler.schedule,
+            beforeRenderOwnership: (isCurrent) => waitForCityGenRenderWindow(isCurrent),
+            // The ring keeps these exact owners detached and submits them one at
+            // a time, yielding a presentation frame before every compile. It is
+            // not published until every exterior driving variant is prepared.
+            prepareRenderOwner: (owner) => renderer.compileAsync(owner, camera, scene)
+          }
+        );
+      } catch (error) {
+        // CityGen is an enhancement over the complete baked city. A failed
+        // exterior compile must not publish a half-warm owner or abort the other
+        // deferred world modules.
+        console.warn("[citygen] exterior preparation failed — retaining baked city", error);
+        citygenRing.current = null;
+      }
+    };
+    // Zone boot defers the citygen ring to wake; all consumers use
+    // `citygenRing.current?.` so a null ring is already handled everywhere.
+    await deferCity("citygen", buildCityGenRing);
     // Legacy procedural-spawn probes opt in explicitly. Normal visitors never
     // fetch or construct this duplicate material/render pack.
     if (new URLSearchParams(location.search).has("citygendemo")) {
@@ -3267,16 +3392,20 @@ async function boot() {
       citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
     }
 
-    // Forest + Creatures: the bay serpent and rideable animals
-    await waitForWorldBackgroundWindow(1800);
-    const [forestMod, creaturesMod] = await Promise.all([
-      import("./gameplay/forest"),
-      import("./gameplay/creatures")
-    ]);
-    await waitForWorldBackgroundWindow(1800);
-    ANIMALS = forestMod.ANIMALS as NonNullable<typeof ANIMALS>;
-    creatures = new creaturesMod.Creatures(scene);
-    forest = new forestMod.Forest(map, scene);
+    // Forest + Creatures: the bay serpent and rideable animals. Zone boot defers
+    // them to wake; every consumer already reads `forest?.`/`creatures?.`.
+    const buildForestAndCreatures = async () => {
+      await waitForWorldBackgroundWindow(1800);
+      const [forestMod, creaturesMod] = await Promise.all([
+        import("./gameplay/forest"),
+        import("./gameplay/creatures")
+      ]);
+      await waitForWorldBackgroundWindow(1800);
+      ANIMALS = forestMod.ANIMALS as NonNullable<typeof ANIMALS>;
+      creatures = new creaturesMod.Creatures(scene);
+      forest = new forestMod.Forest(map, scene);
+    };
+    await deferCity("forest-creatures", buildForestAndCreatures);
 
     // Each optional region keeps its code, textures and tree growth behind its
     // own gate. A clean boot does not fetch all parks merely because the module
@@ -4611,12 +4740,12 @@ async function boot() {
     // tuning; balls keep flying tool-agnostically, so run it every live frame
     ballImpactAudio.update(frameDt);
     if (embodiments.currentAnimal) forest?.setRiddenSpeed(player.speed);
-    if (!worldArrival.active) islands.update(elapsed, camera.position);
+    if (!worldArrival.active) islands?.update(elapsed, camera.position);
     // Baked destination tiles already provide the fixed-quality arrival view.
     // CityGen hydrates its richer cells only after the local visual/collision
     // transaction finishes, so it never competes with teleport-critical work.
     if (!worldArrival.active) citygenRing.current?.update(player.position, frameDt);
-    if (!worldArrival.active && !highUp) hunt.update(frameDt, elapsed, player.position);
+    if (!worldArrival.active && !highUp) hunt?.update(frameDt, elapsed, player.position);
     if (!worldArrival.active) golf?.update(frameDt, elapsed, { player, input, hud, chase, camera });
     if (!worldArrival.active && sites.perfAllowed("palace")) {
       palaceReverie?.update(frameDt, elapsed, player.position, hud);
@@ -5101,7 +5230,7 @@ async function boot() {
       audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
       doorAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice,
       minimap, playerLocator, boardWake, abandonedMounts, ghostShipBeacon,
-      embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl,
+      embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl, wakeCity,
       tutorial, teleportToTarget, citygenRing, worldCursor, worldQueries,
       buildingRayRefiner, underwater, water, ensureSurfRuntime, debugOverlays,
       calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING,
