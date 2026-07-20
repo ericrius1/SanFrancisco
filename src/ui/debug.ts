@@ -93,41 +93,75 @@ function bladeLabel(blade: BladeApi): string {
   return "";
 }
 
-function revealAll(blade: BladeApi) {
-  blade.hidden = false;
-  if (isFolderApi(blade)) for (const child of blade.children) revealAll(child);
+const SEARCH_HIDDEN_CLASS = "sf-tp-search-hidden";
+const SEARCH_EXPANDED_CLASS = "sf-tp-search-expanded";
+
+type SearchBlade = {
+  blade: BladeApi;
+  label: string;
+  children: SearchBlade[];
+  hidden: boolean;
+  expanded: boolean;
+};
+
+/** Build the lowercase search corpus once per pane shape, rather than reading
+ * every reactive Tweakpane label again on each keystroke. */
+function indexSearchBlade(blade: BladeApi): SearchBlade {
+  return {
+    blade,
+    label: bladeLabel(blade).toLowerCase(),
+    children: isFolderApi(blade) ? blade.children.map(indexSearchBlade) : [],
+    hidden: blade.element.classList.contains(SEARCH_HIDDEN_CLASS),
+    expanded: blade.element.classList.contains(SEARCH_EXPANDED_CLASS)
+  };
 }
 
-/** Case-insensitive substring filter over the pane tree. Returns whether any
- * descendant matched (so parent folders stay visible when a child hits). A
- * folder whose own title matches reveals its whole subtree. */
-function filterPane(blade: BladeApi, query: string): boolean {
-  if (!query) {
-    blade.hidden = false;
-    if (isFolderApi(blade)) for (const child of blade.children) filterPane(child, query);
+function setSearchHidden(entry: SearchBlade, hidden: boolean) {
+  if (entry.hidden === hidden) return;
+  entry.hidden = hidden;
+  entry.blade.element.classList.toggle(SEARCH_HIDDEN_CLASS, hidden);
+}
+
+function setSearchExpanded(entry: SearchBlade, expanded: boolean) {
+  if (entry.expanded === expanded) return;
+  entry.expanded = expanded;
+  entry.blade.element.classList.toggle(SEARCH_EXPANDED_CLASS, expanded);
+}
+
+function revealSearchBlade(entry: SearchBlade) {
+  setSearchHidden(entry, false);
+  setSearchExpanded(entry, false);
+  for (const child of entry.children) revealSearchBlade(child);
+}
+
+/** Apply one indexed substring query. Folder matches reveal their subtree;
+ * descendant matches reveal the path to the result. Search-only expansion is a
+ * CSS presentation class: Tweakpane's expanded setter measures the whole folder
+ * twice per change and was the source of the search-time forced reflows. */
+function filterSearchBlade(entry: SearchBlade, query: string): boolean {
+  const selfMatch = entry.label.includes(query);
+  if (selfMatch && entry.children.length > 0) {
+    setSearchHidden(entry, false);
+    setSearchExpanded(entry, true);
+    for (const child of entry.children) revealSearchBlade(child);
     return true;
   }
 
-  const selfMatch = bladeLabel(blade).toLowerCase().includes(query);
-
-  if (!isFolderApi(blade)) {
-    blade.hidden = !selfMatch;
-    return selfMatch;
+  let descendantMatch = false;
+  for (const child of entry.children) {
+    if (filterSearchBlade(child, query)) descendantMatch = true;
   }
 
-  if (selfMatch) {
-    revealAll(blade);
-    blade.expanded = true;
-    return true;
-  }
+  const matches = selfMatch || descendantMatch;
+  setSearchHidden(entry, !matches);
+  setSearchExpanded(entry, entry.children.length > 0 && matches);
+  return matches;
+}
 
-  let childMatch = false;
-  for (const child of blade.children) {
-    if (filterPane(child, query)) childMatch = true;
-  }
-  blade.hidden = !childMatch;
-  if (childMatch) blade.expanded = true;
-  return childMatch;
+function clearSearchBlade(entry: SearchBlade) {
+  setSearchHidden(entry, false);
+  setSearchExpanded(entry, false);
+  for (const child of entry.children) clearSearchBlade(child);
 }
 
 /**
@@ -143,6 +177,10 @@ export class DebugPanel {
   #root: HTMLDivElement | null = null;
   #buildTask: Promise<void> | null = null;
   #searchQuery = "";
+  #searchIndex: SearchBlade[] = [];
+  #searchIndexDirty = true;
+  #searchFrame = 0;
+  #searchReady = false;
   #mode: PlayerMode = "walk";
   #moveFolders: ReturnType<typeof addMovementTuning> | null = null;
   #renderer: THREE.WebGPURenderer;
@@ -208,6 +246,11 @@ export class DebugPanel {
       this.#buildTask = this.#build().catch((err) => {
         // Retry only when the shell never landed; a partial pane stays put.
         if (!this.#pane) this.#buildTask = null;
+        else {
+          this.#searchReady = true;
+          this.#invalidateSearchIndex();
+          this.#applyFilter();
+        }
         console.warn("[debug] panel build failed:", err);
         throw err;
       });
@@ -280,16 +323,40 @@ export class DebugPanel {
     };
   }
 
-  /** Hide/show blades by the live search query, then re-assert mode-only movement. */
+  #invalidateSearchIndex() {
+    this.#searchIndexDirty = true;
+  }
+
+  #scheduleFilter() {
+    if (this.#searchFrame) return;
+    this.#searchFrame = requestAnimationFrame(() => {
+      this.#searchFrame = 0;
+      this.#applyFilter();
+    });
+  }
+
+  /** Hide/show blades by the live search query, then re-assert mode-only movement.
+   * Input events are coalesced to one pass per frame by #scheduleFilter(). */
   #applyFilter() {
-    if (!this.#pane) return;
+    if (!this.#pane || !this.#searchReady) return;
     const query = this.#searchQuery.trim().toLowerCase();
-    for (const child of this.#pane.children) filterPane(child, query);
+    if (this.#searchIndexDirty) {
+      this.#searchIndex = this.#pane.children.map(indexSearchBlade);
+      this.#searchIndexDirty = false;
+    }
+
+    this.#root?.classList.toggle("sf-tp-searching", Boolean(query));
+    if (query) {
+      for (const child of this.#searchIndex) filterSearchBlade(child, query);
+    } else {
+      for (const child of this.#searchIndex) clearSearchBlade(child);
+    }
+
     // Without a query, movement stays mode-gated. While searching, any matching
     // mode folder can surface (so you can find plane/boat knobs while walking).
-    if (!query && this.#moveFolders) {
+    if (this.#moveFolders) {
       for (const [m, folder] of Object.entries(this.#moveFolders)) {
-        folder.hidden = m !== this.#mode;
+        folder.hidden = query ? false : m !== this.#mode;
       }
     }
     this.#applyOverlayContext();
@@ -466,7 +533,8 @@ export class DebugPanel {
       record.folder = null;
       console.warn(`[debug] feature tuning build failed (${record.registration.id})`, error);
     }
-    this.#applyFilter();
+    this.#invalidateSearchIndex();
+    if (this.#searchReady) this.#applyFilter();
   }
 
   #removeFeatureTuning(record: DebugFeatureTuningRecord) {
@@ -486,6 +554,7 @@ export class DebugPanel {
       record.folder.dispose();
       record.folder = null;
     }
+    this.#invalidateSearchIndex();
   }
 
   /**
@@ -518,7 +587,10 @@ export class DebugPanel {
       style.textContent = [
         ".tp-ckbv_i{width:var(--cnt-usz,20px);height:var(--cnt-usz,20px);z-index:1;cursor:pointer}",
         ".tp-ckbv_w,.tp-ckbv_w *{pointer-events:none}",
-        ".tp-fldv.tp-fldv-expanded:not(.tp-fldv-cpl)>.tp-fldv_c{overflow:hidden}"
+        ".tp-fldv.tp-fldv-expanded:not(.tp-fldv-cpl)>.tp-fldv_c{overflow:hidden}",
+        ".sf-tp-search-hidden{display:none!important}",
+        ".sf-tp-searching .tp-fldv.sf-tp-search-expanded>.tp-fldv_c{display:block!important;height:auto!important;opacity:1!important;overflow:visible!important;padding-bottom:var(--cnt-vp)!important;padding-top:var(--cnt-vp)!important;transition:none!important}",
+        ".sf-tp-searching .tp-fldv.sf-tp-search-expanded>.tp-fldv_b>.tp-fldv_m{transform:none;transition:none}"
       ].join("");
       document.head.appendChild(style);
     }
@@ -541,7 +613,7 @@ export class DebugPanel {
       "display:block;box-sizing:border-box;width:100%;margin:0 0 6px;padding:7px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:4px;background:rgba(12,12,14,0.92);color:#eee;font:12px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;outline:none";
     search.addEventListener("input", () => {
       this.#searchQuery = search.value;
-      this.#applyFilter();
+      this.#scheduleFilter();
     });
     search.addEventListener("keydown", (e) => {
       e.stopPropagation();
@@ -549,7 +621,7 @@ export class DebugPanel {
         if (search.value) {
           search.value = "";
           this.#searchQuery = "";
-          this.#applyFilter();
+          this.#scheduleFilter();
         } else {
           search.blur();
         }
@@ -558,11 +630,19 @@ export class DebugPanel {
     });
     root.appendChild(search);
 
+    const loading = document.createElement("div");
+    loading.setAttribute("role", "status");
+    loading.textContent = "loading tuning controls…";
+    loading.style.cssText =
+      "padding:8px 10px;border-radius:4px;background:rgba(12,12,14,0.82);color:rgba(238,238,238,0.72);font:11px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace";
+    root.appendChild(loading);
+
     // Tweakpane is debug-only tooling: fetch its chunk on first "/" instead of
     // shipping it in the boot bundle.
     const { Pane } = await import("tweakpane");
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
+    loading.remove();
     // Yield between heavy folder groups so the animation loop keeps presenting.
     const checkpoint = createFrameBudgetCheckpoint(6);
 
@@ -929,6 +1009,8 @@ export class DebugPanel {
       profiler.title = profilerOn ? "close full profiler ▾" : "open full profiler ▸";
     });
 
+    this.#invalidateSearchIndex();
+    this.#searchReady = true;
     this.#applyFilter();
   }
 }
