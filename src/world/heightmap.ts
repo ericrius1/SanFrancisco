@@ -175,7 +175,11 @@ export class WorldMap {
       prefetched("/data/terrain/overview-surface.bin").catch(() => null)
     ]);
     const terrain = meta.terrain;
-    if (!ovRes?.ok || !ovSurfRes?.ok || terrain?.heightEncoding !== "int16") {
+    // A dev server without the terrain bake answers these paths with the SPA
+    // index.html fallback (200 OK, text/html) — treat that as "absent" too.
+    const isHtml = (r: Response | null) =>
+      (r?.headers.get("content-type") ?? "").includes("text/html");
+    if (!ovRes?.ok || !ovSurfRes?.ok || isHtml(ovRes) || isHtml(ovSurfRes) || terrain?.heightEncoding !== "int16") {
       console.warn("[heightmap] terrain overview unavailable — falling back to full map load");
       return WorldMap.load();
     }
@@ -185,12 +189,12 @@ export class WorldMap {
     const { width: W, height: H } = meta.grid;
     const ow = Math.ceil(W / OVERVIEW_SCALE);
     const oh = Math.ceil(H / OVERVIEW_SCALE);
-    const overview = new Int16Array(ovBuf);
-    const overviewSurface = new Uint8Array(ovSurfBuf);
-    if (overview.length !== ow * oh || overviewSurface.length !== ow * oh) {
+    if (ovBuf.byteLength !== ow * oh * 2 || ovSurfBuf.byteLength !== ow * oh) {
       console.warn("[heightmap] terrain overview size mismatch — falling back to full map load");
       return WorldMap.load();
     }
+    const overview = new Int16Array(ovBuf);
+    const overviewSurface = new Uint8Array(ovSurfBuf);
 
     // Bilinear upsample: overview texel (ox, oz) is the box average of source
     // cells [8ox, 8ox+8) so its sampling center sits at gx = 8ox + 3.5.
