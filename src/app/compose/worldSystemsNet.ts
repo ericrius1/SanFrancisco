@@ -208,6 +208,12 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     isActive: () => core.state.archery?.firstPersonActive ?? false,
     release: () => { core.state.archery?.releaseForNavigation(player); }
   });
+  minigameSession.register({
+    id: "hang-gliding",
+    label: "Skyline Glide",
+    isActive: () => core.state.hangGliding?.active ?? false,
+    release: () => { core.state.hangGliding?.releaseForNavigation(player, chase); }
+  });
   const releaseGameplayForNavigation = () => {
     if (inOrbit()) setViewMode("third");
     return minigameSession.releaseForNavigation(captureMinigameOrigin());
@@ -1389,6 +1395,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       state.fortMasonEnsemble = r.fortMasonEnsemble;
       core.state.palaceReverie = r.palaceReverie;
       core.state.afterlight = r.afterlight;
+      core.state.hangGliding = r.hangGliding;
       core.state.coronaHeights = r.coronaHeights;
       core.state.landsEnd = r.landsEnd;
       core.state.waveOrgan = r.waveOrgan;
@@ -1422,6 +1429,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
         fortMasonEnsemble: state.fortMasonEnsemble,
         palaceReverie: core.state.palaceReverie,
         afterlight: core.state.afterlight,
+        hangGliding: core.state.hangGliding,
         coronaHeights: core.state.coronaHeights,
         landsEnd: core.state.landsEnd,
         waveOrgan: core.state.waveOrgan,

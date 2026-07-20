@@ -11,6 +11,7 @@ import {
   poseDrive,
   poseIdle,
   poseGolf,
+  poseHangGlider,
   poseRide,
   poseSurfRide,
   poseScooter,
@@ -53,6 +54,7 @@ import {
   type CarConfig
 } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
+import type { HangGliderFlightProfile } from "../vehicles/plane/hangGliderPhysics";
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
 import { buildBoardMesh, activateBoardSurface, animateBoard, updateBoardSurface, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
@@ -297,6 +299,8 @@ export class Player {
   #pilotRig: Rig; // plane crew: open cockpit, hands on the built-in yoke
   #phoenixRiderRig: Rig; // front saddle seat; two friends attach over the network
   #planeAnim: PlaneAnim;
+  #hangGliderVisual: THREE.Group | null = null;
+  #planeBaseVisibility = new Map<THREE.Object3D, boolean>();
   #avatar: AvatarTraits;
   #firstPersonView = false;
   #externalEmbodimentHidden = false;
@@ -488,6 +492,64 @@ export class Player {
   /** Snapshot used by activity-owned embodiment rigs without exposing mutable player state. */
   get avatarTraits(): AvatarTraits {
     return { ...this.#avatar };
+  }
+
+  get hangGliding(): boolean {
+    return this.#modes.plane.hangGliding;
+  }
+
+  get hangGliderTelemetry() {
+    return this.#modes.plane.hangGliderTelemetry;
+  }
+
+  /**
+   * Quest-owned airplane embodiment swap. The optional activity supplies the
+   * already-built glider root; Player keeps the persistent avatar rig and the
+   * normal plane controller allocation, so the optional chunk stays off boot.
+   */
+  beginHangGliding(
+    visual: THREE.Group,
+    launch: { x: number; y: number; z: number; heading: number },
+    liftSampler: (x: number, z: number, time: number) => number,
+    profile: HangGliderFlightProfile
+  ): void {
+    if (this.#hangGliderVisual) this.#clearHangGliderVisual();
+    const plane = this.meshes.plane;
+    this.#planeBaseVisibility.clear();
+    for (const child of plane.children) {
+      if (child === this.#pilotRig.group) continue;
+      this.#planeBaseVisibility.set(child, child.visible);
+      child.visible = false;
+    }
+    this.#hangGliderVisual = visual;
+    visual.visible = true;
+    plane.add(visual);
+    plane.userData.hangGliding = true;
+    this.#pilotRig.group.position.set(0, -1.42, 0.38);
+    this.#pilotRig.group.rotation.set(-Math.PI / 2, 0, 0);
+    this.#modes.plane.setHangGliding(true, liftSampler, profile);
+    this.position.set(launch.x, launch.y, launch.z);
+    this.#spawnBody("plane", launch.heading, launch.y);
+  }
+
+  /** End the quest embodiment and optionally place the pilot back on foot. */
+  stopHangGliding(spawn?: { x: number; y?: number; z: number; heading: number }): void {
+    if (!this.#modes.plane.hangGliding && !this.#hangGliderVisual) return;
+    this.#modes.plane.setHangGliding(false);
+    this.#clearHangGliderVisual();
+    if (spawn) this.respawn(spawn);
+  }
+
+  #clearHangGliderVisual(): void {
+    const plane = this.meshes.plane;
+    this.#hangGliderVisual?.removeFromParent();
+    this.#hangGliderVisual = null;
+    for (const [child, visible] of this.#planeBaseVisibility) child.visible = visible;
+    this.#planeBaseVisibility.clear();
+    plane.userData.hangGliding = false;
+    const cockpit = plane.userData.cockpit as Cockpit;
+    this.#pilotRig.group.position.set(...cockpit.seat);
+    this.#pilotRig.group.rotation.set(0, 0, 0);
   }
 
   /** Optional, first-use webcam pose overlay. Activity-owned poses keep priority. */
@@ -1850,10 +1912,15 @@ export class Player {
       // pilot leans with the bank, hands following the yoke; props spin with
       // airspeed (the local mesh's parts — remotes rediscover their clones')
       const bank = this.#modes.plane.bank;
-      poseDrive(this.#pilotRig, bank, this.#animT, true);
-      if (this.#planeAnim.yoke) this.#planeAnim.yoke.rotation.z = bank * 1.6;
-      const spin = dt * (7 + this.speed * 0.55);
-      for (const p of this.#planeAnim.props) p.rotation.z += spin;
+      if (this.#modes.plane.hangGliding) {
+        const telemetry = this.#modes.plane.hangGliderTelemetry;
+        poseHangGlider(this.#pilotRig, telemetry.bank, telemetry.pitch, this.#animT);
+      } else {
+        poseDrive(this.#pilotRig, bank, this.#animT, true);
+        if (this.#planeAnim.yoke) this.#planeAnim.yoke.rotation.z = bank * 1.6;
+        const spin = dt * (7 + this.speed * 0.55);
+        for (const p of this.#planeAnim.props) p.rotation.z += spin;
+      }
     } else if (this.mode === "boat") {
       const steer = this.#modes.boat.steerVis;
       poseDrive(this.#helmRig, steer, this.#animT, true);
