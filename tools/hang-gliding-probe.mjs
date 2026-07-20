@@ -208,6 +208,32 @@ async function main() {
     const afterDive = await page.evaluate(() => window.__sf.player.hangGliderTelemetry.airspeed);
     check("nose-down-builds-airspeed", afterDive > beforeDive + 0.25, { beforeDive, afterDive });
 
+    const beforeBankHeading = await page.evaluate(() => window.__sf.player.heading);
+    await page.keyboard.down("KeyD");
+    await page.evaluate(() => {
+      for (let i = 0; i < 72; i++) window.__sf.tick(1 / 60);
+    });
+    await page.keyboard.up("KeyD");
+    const bankCue = await page.evaluate((headingBefore) => {
+      const player = window.__sf.player;
+      const Vector3 = player.position.constructor;
+      const heading = player.heading - Math.PI;
+      const forward = new Vector3(-Math.sin(heading), 0, -Math.cos(heading));
+      const worldUp = new Vector3(0, 1, 0);
+      const right = forward.clone().cross(worldUp).normalize();
+      const visualUp = worldUp.clone().applyQuaternion(player.quaternion);
+      return {
+        bank: player.hangGliderTelemetry.bank,
+        headingDelta: player.heading - headingBefore,
+        visualRightLean: visualUp.dot(right)
+      };
+    }, beforeBankHeading);
+    check(
+      "right-turn-bank-leans-right",
+      bankCue.bank > 0.25 && bankCue.headingDelta < -0.02 && bankCue.visualRightLean > 0.08,
+      bankCue
+    );
+
     await page.evaluate(() => {
       window.__sfManual(true);
       const sf = window.__sf;

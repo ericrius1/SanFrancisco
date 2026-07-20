@@ -297,7 +297,10 @@ export class FlyController implements ModeController {
 
     const m = V.mat.lookAt(V.tmp.set(0, 0, 0), V.tmp2.copy(fwd), V.up);
     const q = ctx.quaternion.setFromRotationMatrix(m);
-    q.premultiply(V.quat.setFromAxisAngle(fwd, -state.bank));
+    // Flight math uses positive bank for a rightward weight shift. Three's
+    // forward axis points down -Z, so the same positive angle visually drops
+    // the right wing; negating it made the glider lean out of its turn.
+    q.premultiply(V.quat.setFromAxisAngle(fwd, state.bank));
     w.setBodyTransform(
       ctx.body,
       [ctx.position.x, ctx.position.y, ctx.position.z],

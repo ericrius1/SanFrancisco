@@ -220,7 +220,7 @@ export class HangGlidingExperience {
     const wing = this.#glider.getObjectByName("hang_glider_wing");
     if (wing) {
       wing.rotation.x = Math.sin(time * 2.1) * 0.006 + telemetry.pitch * 0.035;
-      wing.rotation.z = -telemetry.bank * 0.035;
+      wing.rotation.z = telemetry.bank * 0.035;
     }
 
     const gate = this.course.gates[this.#gate];
