@@ -4,6 +4,7 @@ import type { Input } from "../../core/input";
 import type { ModeController, PlayerCtx } from "../../player/types";
 import { PLANE_TUNING } from "./tuning";
 import { TYPICAL_TREE_HEIGHT } from "../shared";
+import type { HangGliderFlightProfile, HangGliderFlightState } from "./hangGliderPhysics";
 
 const V = {
   tmp: new THREE.Vector3(),
@@ -11,6 +12,23 @@ const V = {
   up: new THREE.Vector3(0, 1, 0),
   mat: new THREE.Matrix4(),
   quat: new THREE.Quaternion()
+};
+const HANG_GLIDER_LAUNCH_FALLBACK = 22;
+const HANG_GLIDER_SINK_FALLBACK = 0.78;
+
+export type HangGliderTelemetry = {
+  active: boolean;
+  airspeed: number;
+  verticalSpeed: number;
+  sinkRate: number;
+  lift: number;
+  bank: number;
+  pitch: number;
+  altitude: number;
+  stalled: boolean;
+  landed: boolean;
+  touchdownSink: number;
+  touchdownSpeed: number;
 };
 
 export class FlyController implements ModeController {
@@ -20,10 +38,60 @@ export class FlyController implements ModeController {
   fwd = new THREE.Vector3(0, 0, -1);
   #speed = 45;
   #bank = 0;
+  #hangGliding = false;
+  #hangRoll = 0;
+  #hangPitch = 0;
+  #hangProfile: HangGliderFlightProfile | null = null;
+  #hangLiftSampler: ((x: number, z: number, time: number) => number) | null = null;
+  #hangState: HangGliderFlightState = {
+    heading: 0,
+    pitch: -0.04,
+    bank: 0,
+    airspeed: HANG_GLIDER_LAUNCH_FALLBACK
+  };
+  #hangTelemetry: HangGliderTelemetry = {
+    active: false,
+    airspeed: HANG_GLIDER_LAUNCH_FALLBACK,
+    verticalSpeed: -HANG_GLIDER_SINK_FALLBACK,
+    sinkRate: HANG_GLIDER_SINK_FALLBACK,
+    lift: 0,
+    bank: 0,
+    pitch: -0.04,
+    altitude: 0,
+    stalled: false,
+    landed: false,
+    touchdownSink: 0,
+    touchdownSpeed: 0
+  };
 
   /** Visual bank angle — drives the pilot pose and yoke spin. */
   get bank(): number {
     return this.#bank;
+  }
+
+  get hangGliding(): boolean {
+    return this.#hangGliding;
+  }
+
+  get hangGliderTelemetry(): Readonly<HangGliderTelemetry> {
+    return this.#hangTelemetry;
+  }
+
+  setHangGliding(
+    active: boolean,
+    liftSampler: ((x: number, z: number, time: number) => number) | null = null,
+    profile: HangGliderFlightProfile | null = null
+  ): void {
+    if (active && !profile) throw new Error("[plane] hang-glider flight profile is required");
+    this.#hangGliding = active;
+    this.#hangProfile = active ? profile : null;
+    this.#hangLiftSampler = active ? liftSampler : null;
+    this.#hangRoll = 0;
+    this.#hangPitch = 0;
+    this.#hangTelemetry.active = active;
+    this.#hangTelemetry.landed = false;
+    this.#hangTelemetry.touchdownSink = 0;
+    this.#hangTelemetry.touchdownSpeed = 0;
   }
 
   spawnBody(ctx: PlayerCtx, facing: number): number {
@@ -32,7 +100,7 @@ export class FlyController implements ModeController {
     ctx.body = w.createBox({
       type: BodyType.Dynamic,
       position: [p.x, p.y + 2.5, p.z],
-      halfExtents: [1.1, 0.5, 2.6],
+      halfExtents: this.#hangGliding ? [0.9, 0.42, 1.45] : [1.1, 0.5, 2.6],
       density: 70,
       friction: 0.3,
       restitution: 0.2
@@ -42,10 +110,26 @@ export class FlyController implements ModeController {
     this.fwd.set(-Math.sin(facing), 0, -Math.cos(facing)).normalize();
     this.#speed = PLANE_TUNING.values.spawnSpeed;
     this.#bank = 0;
+    this.#hangState.heading = facing;
+    this.#hangState.pitch = -0.04;
+    this.#hangState.bank = 0;
+    const launchSpeed = this.#hangProfile?.launchSpeed ?? HANG_GLIDER_LAUNCH_FALLBACK;
+    const baseSink = this.#hangProfile?.baseSink ?? HANG_GLIDER_SINK_FALLBACK;
+    this.#hangState.airspeed = launchSpeed;
+    this.#hangTelemetry.active = this.#hangGliding;
+    this.#hangTelemetry.airspeed = launchSpeed;
+    this.#hangTelemetry.verticalSpeed = -baseSink;
+    this.#hangTelemetry.sinkRate = baseSink;
+    this.#hangTelemetry.lift = 0;
+    this.#hangTelemetry.bank = 0;
+    this.#hangTelemetry.pitch = -0.04;
+    this.#hangTelemetry.stalled = false;
+    this.#hangTelemetry.landed = false;
     return p.y + 2.5;
   }
 
   enter(ctx: PlayerCtx) {
+    if (this.#hangGliding) return;
     // same XZ as the previous mode; climb to ~2× tree height (+ a little) and
     // clear the local skyline so the first seconds of flight aren't a canyon
     const roof = ctx.physics.highestBuildingTop(ctx.position.x, ctx.position.z, 150);
@@ -60,6 +144,19 @@ export class FlyController implements ModeController {
    * Pitch is kept off vertical so heading stays well-defined.
    */
   steerFly(input: Input, dt: number) {
+    if (this.#hangGliding) {
+      if (input.suspended) {
+        this.#hangRoll = 0;
+        this.#hangPitch = 0;
+        return;
+      }
+      const mouseRoll = THREE.MathUtils.clamp(input.mouseDX * 0.0075, -0.7, 0.7);
+      const mousePitch = THREE.MathUtils.clamp(-input.mouseDY * 0.007, -0.7, 0.7);
+      this.#hangRoll = THREE.MathUtils.clamp(input.axis("KeyA", "KeyD") + mouseRoll, -1, 1);
+      // W / stick-forward lowers the nose; S / stick-back pulls the bar in.
+      this.#hangPitch = THREE.MathUtils.clamp(input.axis("KeyW", "KeyS") + mousePitch, -1, 1);
+      return;
+    }
     if (input.suspended) return;
 
     const tf = PLANE_TUNING.values;
@@ -98,6 +195,10 @@ export class FlyController implements ModeController {
   // Attitude is code-owned (banked into turns); the solver owns translation so
   // collisions still land hits.
   update(ctx: PlayerCtx, dt: number, input: Input) {
+    if (this.#hangGliding) {
+      this.#updateHangGlider(ctx, dt, input);
+      return;
+    }
     const w = ctx.physics.world;
     const tf = PLANE_TUNING.values;
 
@@ -141,5 +242,93 @@ export class FlyController implements ModeController {
       fwd.normalize();
     }
     ctx.heading = yaw + Math.PI;
+  }
+
+  #updateHangGlider(ctx: PlayerCtx, dt: number, input: Input): void {
+    const w = ctx.physics.world;
+    const state = this.#hangState;
+    const profile = this.#hangProfile;
+    if (!profile) throw new Error("[plane] active hang glider lost its flight profile");
+    const ground = ctx.map.effectiveGround(ctx.position.x, ctx.position.z);
+
+    if (this.#hangTelemetry.landed) {
+      const yaw = state.heading;
+      const q = ctx.quaternion.setFromAxisAngle(V.up, yaw);
+      w.setBodyTransform(
+        ctx.body,
+        [ctx.position.x, ground + 1.08, ctx.position.z],
+        [q.x, q.y, q.z, q.w]
+      );
+      w.setBodyVelocity(ctx.body, [0, 0, 0], [0, 0, 0]);
+      return;
+    }
+
+    const lift = THREE.MathUtils.clamp(
+      this.#hangLiftSampler?.(ctx.position.x, ctx.position.z, ctx.time) ?? 0,
+      0,
+      8.5
+    );
+    const result = profile.step(
+      state,
+      {
+        roll: this.#hangRoll,
+        pitch: this.#hangPitch,
+        tuck: input.down("ShiftLeft"),
+        flare: input.down("Space")
+      },
+      dt,
+      lift
+    );
+    this.#bank = state.bank;
+    this.#speed = state.airspeed;
+
+    const c = Math.cos(state.pitch);
+    const fwd = this.fwd.set(
+      -Math.sin(state.heading) * c,
+      Math.sin(state.pitch),
+      -Math.cos(state.heading) * c
+    ).normalize();
+    const horizontal = result.horizontalSpeed;
+    w.setBodyVelocity(
+      ctx.body,
+      [fwd.x * horizontal, result.verticalSpeed, fwd.z * horizontal],
+      [0, 0, 0]
+    );
+
+    const m = V.mat.lookAt(V.tmp.set(0, 0, 0), V.tmp2.copy(fwd), V.up);
+    const q = ctx.quaternion.setFromRotationMatrix(m);
+    q.premultiply(V.quat.setFromAxisAngle(fwd, -state.bank));
+    w.setBodyTransform(
+      ctx.body,
+      [ctx.position.x, ctx.position.y, ctx.position.z],
+      [q.x, q.y, q.z, q.w]
+    );
+
+    const clearance = ctx.position.y - ground;
+    if (clearance <= 1.12 && result.verticalSpeed <= 0.4) {
+      this.#hangTelemetry.landed = true;
+      this.#hangTelemetry.touchdownSink = Math.max(0, -result.verticalSpeed);
+      this.#hangTelemetry.touchdownSpeed = state.airspeed;
+      w.setBodyTransform(
+        ctx.body,
+        [ctx.position.x, ground + 1.08, ctx.position.z],
+        [q.x, q.y, q.z, q.w]
+      );
+      w.setBodyVelocity(ctx.body, [0, 0, 0], [0, 0, 0]);
+    }
+    if (ctx.position.y > 1800 && result.verticalSpeed > 0) {
+      w.setBodyVelocity(ctx.body, [fwd.x * horizontal, 0, fwd.z * horizontal], [0, 0, 0]);
+    }
+
+    this.#hangTelemetry.active = true;
+    this.#hangTelemetry.airspeed = state.airspeed;
+    this.#hangTelemetry.verticalSpeed = result.verticalSpeed;
+    this.#hangTelemetry.sinkRate = result.sinkRate;
+    this.#hangTelemetry.lift = result.thermalLift;
+    this.#hangTelemetry.bank = state.bank;
+    this.#hangTelemetry.pitch = state.pitch;
+    this.#hangTelemetry.altitude = Math.max(0, clearance);
+    this.#hangTelemetry.stalled = result.stalled;
+    ctx.heading = state.heading + Math.PI;
   }
 }

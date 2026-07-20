@@ -835,6 +835,31 @@ export function poseDrive(r: Rig, steer: number, t: number, hasWheel: boolean) {
   }
 }
 
+/** Prone hang-glider harness pose. The rig root is rotated into the flight
+ * line by Player; these joint angles keep both hands on the control bar while
+ * the pilot shifts shoulders and hips into the bank. */
+export function poseHangGlider(r: Rig, bank: number, pitch: number, t: number) {
+  const breathe = Math.sin(t * 1.7) * 0.014;
+  const weightShift = THREE.MathUtils.clamp(bank / 0.88, -1, 1);
+  r.hips.position.set(weightShift * 0.12, breathe, 0);
+  set(r.hips, -0.04 + pitch * 0.18, 0, -weightShift * 0.12);
+  set(r.torso, 0.1 - pitch * 0.3, -weightShift * 0.1, -weightShift * 0.18);
+  set(r.head, -0.36 - pitch * 0.24, weightShift * 0.22, weightShift * 0.08);
+  // Legs trail together in the cocoon harness, with a slight crossed-ankle
+  // asymmetry so the silhouette never reads as a rigid plank.
+  set(r.legL, 0.08, 0.04, 0.04);
+  set(r.legR, -0.02, -0.04, -0.04);
+  set(r.shinL, -0.1, 0, 0);
+  set(r.shinR, -0.16, 0, 0);
+  // Weight shift: the outside arm reaches while the inside elbow softens.
+  set(r.armL, 1.0 - weightShift * 0.16, -0.2, 0.12);
+  set(r.armR, 1.0 + weightShift * 0.16, 0.2, -0.12);
+  set(r.foreL, 0.42 + weightShift * 0.12, 0, 0.04);
+  set(r.foreR, 0.42 - weightShift * 0.12, 0, -0.04);
+  setHandPose(r, "L", 0.9);
+  setHandPose(r, "R", 0.9);
+}
+
 /** Upright scooter stance: hands wide on the bar, knees tucked around the
  * step-through shield, and the rider leaning naturally into steering. */
 export function poseScooter(r: Rig, steer: number, t: number, airborne: boolean) {

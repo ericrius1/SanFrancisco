@@ -497,6 +497,9 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         if (sites.perfAllowed("sutro-baths")) {
           core.state.sutroBaths?.update(0, ctx.state.elapsed, player.renderPosition, camera, windGustValue());
         }
+        if (sites.perfAllowed("hang-gliding")) {
+          core.state.hangGliding?.update(frameDt, ctx.state.elapsed, player, hud, input, chase);
+        }
       }
       if (inOrbit()) { chase.suspend(player); orbit.update(frameDt); }
       else {
@@ -508,7 +511,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       }
       // keep the vehicle hum, ambience and social presence alive like full pause
       vehicleAudio.update(frameDt, {
-        mode: player.mode,
+        mode: player.hangGliding ? "walk" : player.mode,
         speed: player.speed,
         vspeed: player.velocity.y,
         boost: input.down("ShiftLeft"),
@@ -645,7 +648,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // (renderPosition), so a visible "Talk" prompt always accepts the matching E.
     let teaGardenEConsumed = interactPressed
       && teaGarden.interact(player.renderPosition, player.mode);
-    const exitedToWalk = interactPressed && !teaGardenEConsumed && exitToWalk();
+    const hangGlidingOwnsInteract =
+      interactPressed && (core.state.hangGliding?.capturesInteraction ?? false);
+    const exitedToWalk =
+      interactPressed && !teaGardenEConsumed && !hangGlidingOwnsInteract && exitToWalk();
     if (exitedToWalk) {
       teaGardenEConsumed = teaGarden.interact(player.renderPosition, player.mode);
     }
@@ -663,6 +669,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !core.state.landsEnd?.keeper.tryInteract(player, hud) &&
       !core.state.waveOrgan?.tryInteract(player, hud) &&
       !core.state.missionDolores?.tryInteract(player.position, player.mode, hud) &&
+      !core.state.hangGliding?.tryInteract(player, hud, input, chase) &&
       !core.state.afterlight?.tryInteract(player, hud) &&
       !(
         core.state.surfShack?.tryInteract(player, hud, (config) => {
@@ -1235,6 +1242,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (!worldArrival.active && sites.perfAllowed("afterlight")) {
       core.state.afterlight?.update(frameDt, ctx.state.elapsed, player, hud);
     }
+    // Sutro Tower's Skyline Glide: the fixed-step plane controller owns the
+    // air; this lazy site owns gates, thermals, scoring and landing evaluation.
+    if (!worldArrival.active && sites.perfAllowed("hang-gliding")) {
+      core.state.hangGliding?.update(frameDt, ctx.state.elapsed, player, hud, input, chase);
+    }
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
     if (!worldArrival.active && sites.perfAllowed("goldman")) {
       core.state.goldenGateTennis?.update(frameDt, ctx.state.elapsed, player.position);
@@ -1431,7 +1443,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // Boards live on the shack rack until grabbed — no under-arm carry on the sand.
     player.setCarryingBoard(false);
     vehicleAudio.update(frameDt, {
-      mode: player.mode,
+      mode: player.hangGliding ? "walk" : player.mode,
       speed: player.speed,
       vspeed: player.velocity.y,
       boost: input.down("ShiftLeft"),

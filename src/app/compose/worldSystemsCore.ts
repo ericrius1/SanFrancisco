@@ -71,6 +71,7 @@ import type { LandsEndRegion } from "../../world/landsEnd";
 import type { WaveOrgan } from "../../world/waveOrgan";
 import type {  } from "../../world/beachPianist";
 import type { AfterlightExperience } from "../../gameplay/afterlight";
+import type { HangGlidingExperience } from "../../gameplay/hangGliding";
 import { Satchel } from "../../ui/satchel";
 import { HUD } from "../../ui/hud";
 // The launcher and reader stay dynamically loaded; a reading entry may create
@@ -164,6 +165,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     waveOrgan: null as (WaveOrgan | null),
     unregisterBeachPianistTuning: null as ((() => void) | null),
     afterlight: null as (AfterlightExperience | null),
+    hangGliding: null as (HangGlidingExperience | null),
     goldenGateLights: null as (ReturnType<typeof createGoldenGateLights>),
     ridePromptShown: false as any,
     doorPromptShown: false as any,

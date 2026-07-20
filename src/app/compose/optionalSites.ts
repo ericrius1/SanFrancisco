@@ -1,7 +1,7 @@
 // Optional authored-site scheduler. Extracted from main.ts per
-// docs/MAIN_DECOMPOSITION.md. This owns the ~11 lazily-imported destination
+// docs/MAIN_DECOMPOSITION.md. This owns the lazily-imported destination
 // sites (Goldman/pickleball, archery, pup, Fort Mason, palace, afterlight,
-// Corona Heights, Lands End, Wave Organ, Beach Pianist, Sutro Baths) plus their
+// Skyline Glide, Corona Heights, Lands End, Wave Organ, Beach Pianist, Sutro Baths) plus their
 // exhibit-vegetation streamer, the streaming-monitor perf A/B panel, the
 // serialized load queue, distance unload, and arrival re-prioritization.
 //
@@ -28,6 +28,7 @@ import { PUP_CENTER } from "../../gameplay/pup/meta";
 import { FORT_MASON_ENSEMBLE_CENTER } from "../../gameplay/fortMasonEnsemble/meta";
 import { REVERIE_CENTER } from "../../gameplay/palaceReverie/meta";
 import { AFTERLIGHT_ARRIVAL, isAfterlightOpenAtHour } from "../../gameplay/afterlight/meta";
+import { HANG_GLIDING_SITE } from "../../gameplay/hangGliding/meta";
 import { LANDS_END_CENTER } from "../../world/landsEnd/meta";
 import { WAVE_ORGAN_CENTER } from "../../world/waveOrgan/meta";
 import { BEACH_PIANIST_CENTER } from "../../world/beachPianist/meta";
@@ -61,6 +62,7 @@ import type { LandsEndRegion } from "../../world/landsEnd";
 import type { WaveOrgan } from "../../world/waveOrgan";
 import type { BeachPianist } from "../../world/beachPianist";
 import type { AfterlightExperience } from "../../gameplay/afterlight";
+import type { HangGlidingExperience } from "../../gameplay/hangGliding";
 import type { PickleballController } from "../systems/pickleball";
 
 type Nature = ReturnType<typeof createNatureSoundscape>;
@@ -72,6 +74,7 @@ export type OptionalSiteId =
   | "archery"
   | "palace"
   | "afterlight"
+  | "hang-gliding"
   | "corona"
   | "lands-end"
   | "wave-organ"
@@ -121,6 +124,7 @@ export type OptionalSiteRefs = {
   fortMasonEnsemble: FortMasonEnsemble | null;
   palaceReverie: PalaceReverieGame | null;
   afterlight: AfterlightExperience | null;
+  hangGliding: HangGlidingExperience | null;
   coronaHeights: CoronaHeightsPark | null;
   landsEnd: LandsEndRegion | null;
   waveOrgan: WaveOrgan | null;
@@ -214,6 +218,7 @@ export function createOptionalSites({
   let fortMasonEnsemble: FortMasonEnsemble | null = null;
   let palaceReverie: PalaceReverieGame | null = null;
   let afterlight: AfterlightExperience | null = null;
+  let hangGliding: HangGlidingExperience | null = null;
   let coronaHeights: CoronaHeightsPark | null = null;
   let landsEnd: LandsEndRegion | null = null;
   let waveOrgan: WaveOrgan | null = null;
@@ -295,6 +300,7 @@ export function createOptionalSites({
       fortMasonEnsemble,
       palaceReverie,
       afterlight,
+      hangGliding,
       coronaHeights,
       landsEnd,
       waveOrgan,
@@ -535,6 +541,23 @@ export function createOptionalSites({
     }
   };
 
+  const loadHangGliding = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+    const { createHangGliding } = await import("../../gameplay/hangGliding");
+    await stage();
+    const experience = createHangGliding(map, physics, scene);
+    try {
+      await experience.ready;
+      await prepareOptionalRoot("hang-gliding", experience.root, stage);
+      hangGliding = experience;
+      optionalSiteGateRegistrations["hang-gliding"] = siteGate.register(experience.siteHooks());
+      refreshOptionalSiteDebug();
+    } catch (error) {
+      if (hangGliding === experience) hangGliding = null;
+      experience.dispose();
+      throw error;
+    }
+  };
+
   const loadCorona = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
     const { CoronaHeightsPark: LoadedCoronaHeightsPark } = await import("../../world/coronaHeights");
     await stage();
@@ -661,6 +684,12 @@ export function createOptionalSites({
       load: loadFortMasonEnsemble
     }),
     optionalWorldSite({ id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, load: loadPalace }),
+    optionalWorldSite({
+      id: "hang-gliding",
+      label: "Sutro Tower · Skyline Glide",
+      ...HANG_GLIDING_SITE,
+      load: loadHangGliding
+    }),
     optionalWorldSite({
       id: "afterlight",
       label: "Afterlight · 21:00–05:00",
@@ -816,6 +845,7 @@ export function createOptionalSites({
     archery: true,
     palace: true,
     afterlight: true,
+    "hang-gliding": true,
     corona: true,
     "lands-end": true,
     "wave-organ": true,
@@ -830,6 +860,7 @@ export function createOptionalSites({
     archery: "archery",
     palace: "palace-reverie",
     afterlight: "afterlight",
+    "hang-gliding": "hang-gliding",
     pup: "pup"
   };
   const optionalSitePerfAllowed = (id: OptionalSiteId): boolean =>
@@ -858,6 +889,9 @@ export function createOptionalSites({
         break;
       case "afterlight":
         if (!on && afterlight) afterlight.root.visible = false;
+        break;
+      case "hang-gliding":
+        if (!on && hangGliding) hangGliding.root.visible = false;
         break;
       case "corona":
         if (!on && coronaHeights) coronaHeights.group.visible = false;
@@ -919,6 +953,11 @@ export function createOptionalSites({
         return {
           runtime: siteGate.awake("afterlight") ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(afterlight?.root)
+        };
+      case "hang-gliding":
+        return {
+          runtime: hangGliding?.phase === "flying" || hangGliding?.phase === "result" ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(hangGliding?.root)
         };
       case "corona":
         return {
@@ -1098,6 +1137,13 @@ export function createOptionalSites({
         afterlight.dispose();
         afterlight = null;
       }
+      refreshOptionalSiteDebug();
+    },
+    "hang-gliding": () => {
+      optionalSiteGateRegistrations["hang-gliding"]?.dispose();
+      delete optionalSiteGateRegistrations["hang-gliding"];
+      hangGliding?.dispose();
+      hangGliding = null;
       refreshOptionalSiteDebug();
     },
     archery: () => {
