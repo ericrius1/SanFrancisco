@@ -927,6 +927,13 @@ async function boot() {
     // target to the nearest still-front-hidden chunk (same as residency chase).
     unhideClearedRadius: () => frontGate.clearedRadius(),
     holdHolo: bootQuery.has("voidholo"),
+    // M16: hold the front at the player's ~5 m pool of light until control is
+    // handed over AND the anchor terrain tile is real (spawn OR teleport dest
+    // — the gate re-evaluates against the live focus). Only then does the
+    // bloom clock start and the world ring out. body.started flips in the
+    // start handler's immediate half; classList.contains is a cheap DOM read.
+    spreadGate: (cx, cz) =>
+      document.body.classList.contains("started") && map.isTileRealAt(cx, cz),
     onSettled: () => bootMark("frontComplete"),
     onExpansionStalled: () => {
       // The same restore the worldReady quiet-window block performs, forced

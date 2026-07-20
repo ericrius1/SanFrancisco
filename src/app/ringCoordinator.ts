@@ -83,6 +83,15 @@ export type RingCoordinatorOptions = {
   onExpansionStalled?: () => void;
   /** Fired once when the front settles to full reveal (bootMark hook). */
   onSettled?: () => void;
+  /**
+   * M16: "spreading starts" gate. While it returns false the bloom clock is
+   * frozen and the front stays pinned at the player's tiny PLAYER_CLEAR pool —
+   * everything past ~5 m is pure void. main.ts wires it to "control handed
+   * over AND the anchor terrain tile at (cx, cz) is real", so boot and far
+   * teleports both hold the pool until the world is actually ready to ring
+   * out. Omitted → always spreading (legacy behavior).
+   */
+  spreadGate?: (cx: number, cz: number) => boolean;
   /** `?voidholo=1`: hold the collapsed holo for manual `__sf.materialize`. */
   holdHolo?: boolean;
 };
@@ -96,7 +105,7 @@ const FRONT_MARGIN = 60;
 // still tracks a moving player so the ground underfoot is never pure void,
 // but it no longer force-jumps the front to a wide radius at spawn. Content
 // beyond the front is hidden/discarded, so a small clear bubble is safe.
-const PLAYER_CLEAR = 12;
+const PLAYER_CLEAR = 2;
 // Generous absolute cap: residency beyond this settles the front regardless
 // of the configured draw distance (matches the M3 interim final sweep).
 const SETTLE_CAP = 3600;
@@ -133,14 +142,15 @@ const SWEEP_MAX_AGE_S = 90;
 // radius only after residency has plateaued at it this long — never at boot,
 // where the initial bubble clamp lifts and growth resumes within seconds.
 const CAPPED_RADIUS_QUIET_MS = 12_000;
-// M15: the dissolve band (and with it the ~3-band edge-glow window every holo
-// consumer renders) SCALES with the front radius during the early bloom, so
-// the spawn moment shows a ~10-15 m lit disc instead of a band-48 glow that
-// reads ~4x wider than the actual front. Relaxes to the default band as the
-// ring grows; the settled sentinel is unaffected (band is irrelevant at
-// radius=1e9 — every amount saturates to 1).
-const BAND_MIN = 10;
-const BAND_RADIUS_SCALE = 0.4;
+// M15/M16: the dissolve band (and with it the ~3-band edge-glow window every
+// holo consumer renders, AND the terrain visibility tail at front + 3·band)
+// SCALES with the front radius. With the spread gate holding the front at the
+// PLAYER_CLEAR bubble, the void moment is a ~5 m pool of light — literally
+// nothing renders past it — until spreading starts. Relaxes to the default
+// band as the ring grows; the settled sentinel is unaffected (band is
+// irrelevant at radius=1e9 — every amount saturates to 1).
+const BAND_MIN = 1;
+const BAND_RADIUS_SCALE = 0.35;
 const bandFor = (radius: number): number =>
   Math.min(MATERIALIZE_DEFAULT_BAND, Math.max(BAND_MIN, radius * BAND_RADIUS_SCALE));
 
@@ -266,6 +276,21 @@ export class RingCoordinator {
     }
     if (this.#age > SWEEP_MAX_AGE_S) {
       this.#forceSettle("age-cap");
+      return;
+    }
+
+    // M16: before spreading starts, the front is pinned at the player's tiny
+    // pool — no residency chase, no settle, and the bloom clock stays at 0 so
+    // the eventual spread still opens with the slow dramatic bloom.
+    const spreading = this.#opts.spreadGate?.(this.#cx, this.#cz) !== false;
+    if (!spreading) {
+      this.#age = 0;
+      const pinned = Math.max(playerDist + PLAYER_CLEAR, this.#radius);
+      if (pinned > this.#radius) {
+        this.#radius = pinned;
+        materializeField.frontRadius.value = this.#radius;
+      }
+      materializeField.frontBand.value = bandFor(this.#radius);
       return;
     }
 
