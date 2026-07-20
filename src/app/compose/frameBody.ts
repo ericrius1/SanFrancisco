@@ -78,7 +78,7 @@ import type { MainCtx } from "./ctx";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, constructionSlice } = ctx;
-  const { water, underwater, hud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, islands, worldQueries, citygenRing, hunt, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
   const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
   const state = {
     cineHook: null as (((dt: number) => void) | null),
@@ -1210,12 +1210,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // tuning; balls keep flying tool-agnostically, so run it every live frame
     ballImpactAudio.update(frameDt);
     if (embodiments.currentAnimal) core.state.forest?.setRiddenSpeed(player.speed);
-    if (!worldArrival.active) islands.update(ctx.state.elapsed, camera.position);
+    if (!worldArrival.active) core.state.islands?.update(ctx.state.elapsed, camera.position);
     // Baked destination tiles already provide the fixed-quality arrival view.
     // CityGen hydrates its richer cells only after the local visual/collision
     // transaction finishes, so it never competes with teleport-critical work.
     if (!worldArrival.active) citygenRing.current?.update(player.position, frameDt);
-    if (!worldArrival.active && !core.state.highUp) hunt.update(frameDt, ctx.state.elapsed, player.position);
+    if (!worldArrival.active && !core.state.highUp) core.state.hunt?.update(frameDt, ctx.state.elapsed, player.position);
     if (!worldArrival.active) core.state.golf?.update(frameDt, ctx.state.elapsed, { player, input, hud, chase, camera });
     if (!worldArrival.active && sites.perfAllowed("palace")) {
       core.state.palaceReverie?.update(frameDt, ctx.state.elapsed, player.position, hud);

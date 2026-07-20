@@ -462,6 +462,7 @@
       #hud .tutorial-ui,
       #hud .tutorial-panel,
       #hud .links-ui,
+      #hud .wake-city-ui,
       #hud .minigame-exit,
       #hud .player-locator {
         transition: opacity 0.35s ease;
@@ -478,6 +479,7 @@
       #hud.faded .tutorial-ui,
       #hud.faded .tutorial-panel,
       #hud.faded .links-ui,
+      #hud.faded .wake-city-ui,
       #hud.faded .minigame-exit,
       #hud.faded .player-locator {
         opacity: 0;
@@ -494,6 +496,7 @@
       #hud.faded .tutorial-ui,
       #hud.faded .tutorial-panel,
       #hud.faded .links-ui,
+      #hud.faded .wake-city-ui,
       #hud.faded .minigame-exit {
         pointer-events: none;
       }
@@ -1322,6 +1325,16 @@
         position: absolute;
         right: max(20px, env(safe-area-inset-right));
         top: max(146px, calc(env(safe-area-inset-top) + 130px));
+        z-index: var(--z-hud-base);
+        pointer-events: auto;
+        user-select: none;
+      }
+      /* zone-only boot: "Wake the city" — bottom of the right button stack
+         (Share > Tutorial > Behind-the-scenes/links > Wake) */
+      #hud .wake-city-ui {
+        position: absolute;
+        right: max(20px, env(safe-area-inset-right));
+        top: max(280px, calc(env(safe-area-inset-top) + 264px));
         z-index: var(--z-hud-base);
         pointer-events: auto;
         user-select: none;
@@ -3915,8 +3928,12 @@
         }
         #hud .share-ui,
         #hud .tutorial-ui,
-        #hud .links-ui {
+        #hud .links-ui,
+        #hud .wake-city-ui {
           right: max(10px, env(safe-area-inset-right));
+        }
+        #hud .wake-city-ui {
+          top: max(302px, calc(env(safe-area-inset-top) + 286px));
         }
         #hud .links-ui {
           top: max(214px, calc(env(safe-area-inset-top) + 198px));

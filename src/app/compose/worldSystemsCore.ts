@@ -86,7 +86,7 @@ import type { MainCtx } from "./ctx";
 
 
 export async function composeWorldSystemsCore(ctx: MainCtx) {
-  const { player, input, camera, scene, chase, map, physics, renderer, sky, tiles, app, voidRealm, audioEngine, modeDiscovery, constructionSlice, progress } = ctx;
+  const { player, input, camera, scene, chase, map, physics, renderer, sky, tiles, app, voidRealm, audioEngine, modeDiscovery, constructionSlice, progress, waitForWorldBackgroundWindow } = ctx;
   const state = {
     garden: null as {
     group: THREE.Group;
@@ -138,6 +138,9 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     setRemoteBirdAssetsActive: undefined as undefined | ((active: boolean) => void),
     surfCullStash: null as ({ load: number; unload: number; detail: number; maxDetail: number } | null),
     trafficLights: null as (TrafficLightView | null),
+    roadGraphPromise: null as (Promise<RoadGraph> | null),
+    islands: null as (Islands | null),
+    hunt: null as (Hunt | null),
     creatures: null as (Creatures | null),
     forest: null as (Forest | null),
     ANIMALS: null as (Record<string, any> | null),
@@ -603,14 +606,30 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // later paints the map roads, avoiding another request/parse. Failures leave
   // the city without signals but never block boot.
   // (state.trafficLights hoisted to the module state record)
-  ctx.state.auxPending++;
-  const roadGraphPromise = RoadGraph.load();
-  void roadGraphPromise
-    .then((roads) => {
-      state.trafficLights = new TrafficLightView(scene, map, roads);
-    })
-    .catch((err: unknown) => console.warn("[traffic] signals unavailable", err))
-    .finally(() => ctx.state.auxPending--);
+  // The road graph feeds both the traffic signals here and the minimap upgrade
+  // (worldSystemsNet, via state.roadGraphPromise). In zone boot both defer to
+  // wake — the pocket has no city streets to signal — so the wake runner both
+  // loads the graph and (re)issues the minimap upgrade (the NET chain no-ops
+  // on the null promise).
+  const loadRoadGraphAndSignals = () => {
+    ctx.state.auxPending++;
+    const p = RoadGraph.load();
+    state.roadGraphPromise = p;
+    void p
+      .then((roads) => {
+        state.trafficLights = new TrafficLightView(scene, map, roads);
+      })
+      .catch((err: unknown) => console.warn("[traffic] signals unavailable", err))
+      .finally(() => ctx.state.auxPending--);
+  };
+  void ctx.zoneBoot.deferCity("traffic", () => {
+    loadRoadGraphAndSignals();
+    if (ctx.zoneBoot.worldScope.mode === "zone") {
+      void state.roadGraphPromise!
+        .then((roads) => ctx.late.minimap?.setRoadGraph(roads))
+        .catch(() => {});
+    }
+  });
   // (state.creatures hoisted to the module state record)
   // (state.forest hoisted to the module state record)
   // state.ANIMALS record — populated by the deferred state.forest module load
@@ -650,7 +669,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   const inOrbit = () => viewMode === "orbit";
   // Scattered boardable bay boats (persistent, self-sailing, far-hidden) —
   // extracted per docs/MAIN_DECOMPOSITION.md.
-  spawnScatterBoats(abandonedMounts);
+  void ctx.zoneBoot.deferCity("scatter-boats", () => spawnScatterBoats(abandonedMounts));
   await constructionSlice();
   // Nature uses one sandbox vegetation runtime now. The old primitive Flora
   // and site-local blob/tree renderers are gone: regions own placement, while
@@ -717,10 +736,24 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     ctx.late.teaGarden!.setFoliageVisible(visible);
     state.sutroBaths?.setFoliageVisible(visible);
     ctx.state.siteFoliage?.setVisible(visible);
-    islands.setFoliageVisible(visible);
+    state.islands?.setFoliageVisible(visible);
   };
-  const islands = new Islands(physics, map, scene);
-  islands.setFoliageVisible(ctx.state.foliageOn);
+  // Alcatraz/Angel/Yerba Buena islands: city-wide scenery, deferred in zone
+  // boot and (re)armed with vegetation by the wake runner.
+  const armIslandsVegetation = () =>
+    state.islands?.armVegetation(scene, async (group) => {
+      await waitForWorldBackgroundWindow(1800);
+      try {
+        await renderer.compileAsync(group, camera, scene);
+      } catch (err) {
+        console.warn("[islands] deferred vegetation compile failed:", err);
+      }
+    });
+  void ctx.zoneBoot.deferCity("islands", () => {
+    state.islands = new Islands(physics, map, scene);
+    state.islands.setFoliageVisible(ctx.state.foliageOn);
+    if (ctx.zoneBoot.worldScope.mode === "zone") armIslandsVegetation();
+  });
   await constructionSlice();
 
   // Decoupled world-query service: every "what does this ray hit" caller (paint,
@@ -767,11 +800,14 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // Buena Vista's hidden summit ritual: five wandering echoes and a sky-scale
   // finale, asleep outside its clearing like the other located activities.
   // (state.afterlight hoisted to the module state record)
-  const hunt = new Hunt(map, scene);
-  hunt.onCatch = (kind) => {
-    satchel.add(kind);
-    hud.message("Crab caught!", 1.1);
-  };
+  // Shoreline crab hunt: city-wide scenery, deferred in zone boot.
+  void ctx.zoneBoot.deferCity("hunt", () => {
+    state.hunt = new Hunt(map, scene);
+    state.hunt.onCatch = (kind) => {
+      satchel.add(kind);
+      hud.message("Crab caught!", 1.1);
+    };
+  });
 
   // Decorative landmarks/parks: each build is isolated in its own try/catch so a
   // broken subsystem degrades scenery (a missing tower, dark bridge) instead of
@@ -1014,7 +1050,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     updateSurfPresentation,
     birdTrails,
     droneFireworkMounts,
-    roadGraphPromise,
     abandonedMounts,
     embodiments,
     exitToWalk,
@@ -1024,12 +1059,11 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     gardenDisplacer,
     gardenDisplacers,
     setFoliageVisible,
-    islands,
+    armIslandsVegetation,
     worldQueries,
     buildingRayRefiner,
     citygenRing,
     satchel,
-    hunt,
     dogParkAudio,
     buskers,
     buskerTalk,

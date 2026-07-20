@@ -227,6 +227,7 @@ const PANELS: Record<string, string> = {
   car: ".car-ui",
   satchel: ".satchel",
   share: ".share-ui",
+  wakeCity: ".wake-city-ui",
   tutorial: ".tutorial-ui, .tutorial-panel",
   links: ".links-ui",
   locator: ".player-locator",

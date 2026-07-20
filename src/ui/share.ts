@@ -7,6 +7,10 @@
 export class ShareButton {
   #label: HTMLSpanElement;
   #resetTimer: ReturnType<typeof setTimeout> | undefined;
+  /** In zone-only boot, the shared link carries `zone=<id>` so recipients get
+   * the same pocket boot at the shared spot. Cleared by wakeCity() (they are in
+   * the full world then). */
+  #zoneId: string | null = null;
 
   constructor(buildUrl: () => string, onCopied: (ok: boolean) => void) {
     const root = document.createElement("div");
@@ -18,13 +22,24 @@ export class ShareButton {
     btn.innerHTML = `<span class="ic">🔗</span><span class="share-label">Share spot</span>`;
     this.#label = btn.querySelector(".share-label")!;
     btn.addEventListener("click", () => {
-      void this.#copy(buildUrl()).then((ok) => {
+      void this.#copy(this.#withZone(buildUrl())).then((ok) => {
         this.#flash(ok ? "Copied!" : "Copy failed");
         onCopied(ok);
       });
     });
     root.appendChild(btn);
     document.getElementById("hud")!.appendChild(root);
+  }
+
+  /** null = full world (default): shared links omit the zone param. */
+  setZone(id: string | null) {
+    this.#zoneId = id;
+  }
+
+  #withZone(url: string): string {
+    if (!this.#zoneId) return url;
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}zone=${encodeURIComponent(this.#zoneId)}`;
   }
 
   async #copy(text: string): Promise<boolean> {

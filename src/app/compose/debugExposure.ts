@@ -31,7 +31,7 @@ export async function installDebugSurfaces(
   }
 ): Promise<void> {
   const { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, scheduler, chase, map, input, sky, worldArrival, voidRealm, audioEngine } = ctx;
-  const { hud, fx, fireworks, graffiti, bubbles, setTool, setColor, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, nature, dogParkAudio, ballImpactAudio, boardWake, abandonedMounts, embodiments, paintballs, paintSkins, hunt, satchel, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, ensureSurfRuntime, setFoliageVisible, buskers, buskerTalk, siteGate } = core;
+  const { hud, fx, fireworks, graffiti, bubbles, setTool, setColor, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, nature, dogParkAudio, ballImpactAudio, boardWake, abandonedMounts, embodiments, paintballs, paintSkins, satchel, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, ensureSurfRuntime, setFoliageVisible, buskers, buskerTalk, siteGate } = core;
   const { debugPanel, net, remotes, voice, minimap, playerLocator, ghostShipBeacon, switchMode, buildShareUrl, tutorial, teleportToTarget, debugOverlays, calibrationChart, ensureCarCustomizer, lazyRegionTimings, sites, teaGarden, oceanKite, board, car, applyBoardConfig } = netW;
   const { tick } = frameB;
 
@@ -81,7 +81,7 @@ export async function installDebugSurfaces(
       audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
       doorAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice,
       minimap, playerLocator, boardWake, abandonedMounts, ghostShipBeacon,
-      embodiments, switchMode, paintballs, paintSkins, hunt, satchel, buildShareUrl,
+      embodiments, switchMode, paintballs, paintSkins, satchel, buildShareUrl, wakeCity: netW.wakeCity,
       tutorial, teleportToTarget, citygenRing, worldCursor, worldQueries,
       buildingRayRefiner, underwater, water, ensureSurfRuntime, debugOverlays,
       calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING,
@@ -140,6 +140,8 @@ export async function installDebugSurfaces(
     });
     registry.getters({
       creatures: () => core.state.creatures,
+      hunt: () => core.state.hunt,
+      islands: () => core.state.islands,
       forest: () => core.state.forest,
       garden: () => core.state.garden,
       wildlands: () => core.state.wildlands,

@@ -2,7 +2,8 @@ node_modules/
 /dist/
 # Generated terrain tile bake (tools/bake-terrain-tiles.mjs). Rebuilt
 # automatically by the build's contract test when missing — never commit.
-public/data/terrain/
+# Match the bare name too, so a worktree symlink at this path can't be staged.
+public/data/terrain
 .data/
 # RL training artifacts: logs, frame recordings, checkpoints-in-progress.
 # Deployed policies live in public/models/ and ARE committed.

@@ -205,9 +205,34 @@ async function boot() {
     resumed,
     spawnPoint,
     spawn,
+    zone,
+    cityTileRadius,
     fullTileRadius
   } = initialArrival;
   bootMark("physics");
+
+  // Zone-only boot ("pocket world", ?zone=<id>): a minimal substrate + one
+  // destination site instead of the whole city. `fullTileRadius` is already
+  // the bubble radius (the tile-radius lever in initialArrival), so the ring
+  // settles at the pocket. Heavy city-wide optional systems register through
+  // `zoneBoot.deferCity` and run at wakeCity() when the player upgrades to the
+  // full world. Default boot (no zone) keeps mode "full", so deferCity runs
+  // every registered builder inline and every zone path stays inert. The
+  // record is threaded to the compose modules via ctx (the deferCity call
+  // sites and wakeCity itself live there).
+  const zoneBoot = {
+    worldScope: {
+      mode: (zone ? "zone" : "full") as "full" | "zone",
+      zone,
+      cityTileRadius
+    },
+    deferredCityWork: [] as { name: string; run: () => void | Promise<void> }[],
+    cityWoken: !zone,
+    deferCity(name: string, run: () => void | Promise<void>): void | Promise<void> {
+      if (zoneBoot.cityWoken) return run();
+      zoneBoot.deferredCityWork.push({ name, run });
+    }
+  };
 
   // ------------------------------------------------------ P1 void essentials
   // (docs/VOID_STREAM_REWRITE.md M3.) Only what the first live void frame
@@ -843,7 +868,8 @@ async function boot() {
   // through the live ctx.state facade below.
   const ctx = {
     suggestedName,
-    late: { teaGarden: null, net: null, debugPanel: null },
+    late: { teaGarden: null, net: null, debugPanel: null, minimap: null },
+    zoneBoot,
     player,
     input,
     camera,

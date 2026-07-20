@@ -76,6 +76,20 @@ export interface MainCtx {
     teaGarden: ReturnType<typeof import("./teaGarden").createTeaGardenController> | null;
     net: import("../../net/net").Net | null;
     debugPanel: import("../../ui/debug").DebugPanel | null;
+    minimap: import("../../ui/minimap").Minimap | null;
+  };
+  /** Zone-only boot plumbing (?zone= pocket worlds — see zoneMode.ts). In full
+   *  boot `deferCity` runs builders inline; in zone boot they stash until
+   *  wakeCity() (worldSystemsNet) drains them. */
+  zoneBoot: {
+    worldScope: {
+      mode: "full" | "zone";
+      zone: import("./zoneMode").ZoneSpec | null;
+      cityTileRadius: number;
+    };
+    deferredCityWork: { name: string; run: () => void | Promise<void> }[];
+    cityWoken: boolean;
+    deferCity(name: string, run: () => void | Promise<void>): void | Promise<void>;
   };
   state: {
     oceanBeachWaves: import("../../gameplay/surfing/waves").OceanBeachWaves | null;
