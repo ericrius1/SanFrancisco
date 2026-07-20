@@ -224,6 +224,15 @@ export class BeachPianist {
     return true;
   }
 
+  /** Film cue: start (or restart) a song from the top without talking to him.
+   * Closes any open dialogue and cuts a mid-song take so framing can be set first. */
+  cueShow(songIndex = 0): boolean {
+    if (this.#disposed || !SONGS[songIndex]) return false;
+    this.#conversation.close();
+    this.#performanceStartMs = null;
+    return this.requestPerformance(songIndex);
+  }
+
   get active(): boolean {
     return this.#conversation.active;
   }

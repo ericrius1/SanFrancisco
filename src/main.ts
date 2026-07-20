@@ -2604,7 +2604,10 @@ async function boot() {
     scene,
     pipeline,
     setFoliageVisible,
-    () => wildlands?.flowers.refresh(),
+    () => {
+      wildlands?.flowers.refresh();
+      siteFoliage?.refresh();
+    },
     () => wildlands?.grass.refresh(),
     () => diagnostics.toggleInspector(),
     () => { citygenRing.current?.refreshInteriors(); }
@@ -4163,7 +4166,7 @@ async function boot() {
       sky.applyFogParams();
       sky.invalidateStaticShadows("all");
       pipeline.applyPostFx(); // toggles back off + sliders back to defaults
-      sky.timeRatePercent = SKY_TUNING.values.timeRatePercent;
+      sky.dayCycleSeconds = SKY_TUNING.values.dayCycleSeconds;
       sky.nightBrightness = SKY_TUNING.values.nightBrightness;
       sky.followRealTime(); // default: back to mirroring the real SF clock
       sky.applyFogParams();
@@ -4225,6 +4228,19 @@ async function boot() {
           console.warn("[screenshot]", err);
           hud.message(err instanceof Error ? err.message : "Screenshot failed", 3.5);
         });
+    }
+    // B: Beach pianist film cue — start/restart the song without talking to him
+    // (set the camera first). Shift+B picks Fogline Nocturne; plain B is Sunset Jam.
+    if (
+      document.body.classList.contains("started") &&
+      !worldArrival.active &&
+      beachPianist &&
+      input.pressed("KeyB")
+    ) {
+      const songIndex = input.shiftedPress("KeyB") ? 1 : 0;
+      if (beachPianist.cueShow(songIndex)) {
+        hud.message(songIndex === 1 ? "Pianist · Fogline Nocturne" : "Pianist · Sunset Jam", 2.2);
+      }
     }
     updateCrownDisplay(frameDt);
     updateBayLights(frameDt);
@@ -4881,6 +4897,7 @@ async function boot() {
     {
       const cursorLive =
         document.body.classList.contains("started") &&
+        !immersive &&
         player.mode !== "surf" &&
         !inOrbit() &&
         !input.suspended &&

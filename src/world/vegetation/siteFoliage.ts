@@ -21,6 +21,8 @@ export type SiteFoliagePatch = {
   ready: Promise<void>;
   update(focus: { x: number; z: number }, force?: boolean): void;
   dispose(): void;
+  /** Optional live retune (e.g. wildflower density slider). */
+  refresh?: () => void;
 };
 
 export type SiteFoliageRegistration = {
@@ -133,6 +135,14 @@ export class SiteFoliageStreamer {
    * foliage (for example, canopy rays must not run before their trees attach). */
   isReady(id: string): boolean {
     return this.#entries.some((entry) => entry.registration.id === id && entry.status === "ready");
+  }
+
+  /** Ask every ready patch to re-apply live tuning (no-op when unsupported). */
+  refresh(): void {
+    if (this.#disposed) return;
+    for (const entry of this.#entries) {
+      if (entry.status === "ready") entry.patch?.refresh?.();
+    }
   }
 
   dispose(): void {

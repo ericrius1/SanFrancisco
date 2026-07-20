@@ -457,7 +457,7 @@ export class DebugPanel {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
       this.#lightingView.realTime = this.#sky.realTime;
-      this.#lightingView.timeRatePercent = this.#sky.timeRatePercent;
+      this.#lightingView.dayCycleSeconds = this.#sky.dayCycleSeconds;
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
     }
     try {
@@ -689,7 +689,7 @@ export class DebugPanel {
     const lightingView = {
       timeOfDay: this.#sky.timeOfDay,
       realTime: this.#sky.realTime,
-      timeRatePercent: this.#sky.timeRatePercent,
+      dayCycleSeconds: this.#sky.dayCycleSeconds,
       nightBrightness: this.#sky.nightBrightness
     };
     this.#lightingView = lightingView;
@@ -710,7 +710,7 @@ export class DebugPanel {
         if (value) {
           this.#sky.followRealTime();
         } else {
-          // unchecking real SF time starts the local day cycle at the slider %
+          // unchecking real SF time starts the local day cycle at dayCycleSeconds
           this.#sky.realTime = false;
           this.#sky.cycleEnabled = true;
         }
@@ -718,8 +718,8 @@ export class DebugPanel {
         this.#refreshLightingBindings();
         return;
       }
-      if (key === "timeRatePercent") {
-        this.#sky.timeRatePercent = value as number;
+      if (key === "dayCycleSeconds") {
+        this.#sky.dayCycleSeconds = value as number;
         return;
       }
       if (key === "nightBrightness") {
@@ -729,7 +729,7 @@ export class DebugPanel {
     };
     this.#lightingBindings = SKY_TUNING.bind(meta, {
       target: lightingView,
-      keys: ["timeOfDay", "realTime", "timeRatePercent", "nightBrightness"],
+      keys: ["timeOfDay", "realTime", "dayCycleSeconds", "nightBrightness"],
       onChange: onSkyChange
     });
 
@@ -767,9 +767,9 @@ export class DebugPanel {
     VEGETATION_TUNING.bind(sharedVegetation, {
       onChange: () => applyVegetationTuning()
     });
-    // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
-    // its next re-scatter; force one now (on slider RELEASE only, `last`) so the edit
-    // shows without waiting for the player to walk.
+    // Wildflower ring + piano-grove meadow: density + clump↔scatter shaping. The
+    // ring and resident site patches read these on refresh; force one now (on
+    // slider RELEASE only, `last`) so the edit shows without walking away.
     const flowers = foliage.addFolder({ title: "wildflowers", expanded: false });
     FLOWER_TUNING.bind(flowers, {
       onChange: (_key, _value, last) => {

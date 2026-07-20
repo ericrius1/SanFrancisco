@@ -32,10 +32,30 @@ export function groveHash(index: number, salt: number): number {
   return value - Math.floor(value);
 }
 
-function distanceFromBridgeSightline(x: number, z: number): number {
+/** Signed metres to the screen-right of the arrival→bridge sightline. */
+function rightOfBridgeSightline(x: number, z: number): number {
   const dx = x - SITE_X;
   const dz = z - SITE_Z;
-  return Math.abs(dx * SIGHT_Z - dz * SIGHT_X);
+  return dx * SIGHT_Z - dz * SIGHT_X;
+}
+
+function alongBridgeSightline(x: number, z: number): number {
+  const dx = x - SITE_X;
+  const dz = z - SITE_Z;
+  return dx * SIGHT_X + dz * SIGHT_Z;
+}
+
+/**
+ * Keep the arrival postcard clear: no trunks in a crown-wide aisle from the
+ * pad out toward the Golden Gate deck. The old 24 m cutoff left a pine/elder
+ * pair sitting ~1.4 m off-axis at ~30 m — exactly on the south tower. Bias
+ * the cut wider on screen-right, where the bridge span reads in that shot.
+ */
+function blocksBridgeSightline(x: number, z: number): boolean {
+  const along = alongBridgeSightline(x, z);
+  if (along <= 0 || along >= 42) return false;
+  const right = rightOfBridgeSightline(x, z);
+  return right >= 0 ? right < 12 : -right < 9;
 }
 
 /** Reject wet or steep roots so trees (and landing birds) sit on stable ground. */
@@ -72,7 +92,7 @@ export function collectGroveTrees(map: WorldMap): GroveTreePlacement[] {
       const radius = 9.5 + groveHash(sector, 31 + attempt) * 20.5 + attempt * 0.55;
       const x = SITE_X + Math.cos(angle) * radius;
       const z = SITE_Z + Math.sin(angle) * radius;
-      if (distanceFromBridgeSightline(x, z) < 4.2 && radius < 24) continue;
+      if (blocksBridgeSightline(x, z)) continue;
       const y = groveDryRoot(map, x, z, 2);
       if (y === null) continue;
       const archetype: GroveArchetypeId = sector % 5 === 0

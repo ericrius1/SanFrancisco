@@ -14,14 +14,14 @@ import {
  * A compact baby grand in polished near-black wood. The keyboard deck overlaps
  * a single curved wing-shaped case, so the instrument reads as one continuous
  * piece from the player's side rather than a keyboard parked beside two boxes.
- * A matching open lid, three legs, a pedal lyre, and a bench complete it.
+ * A matching closed lid, three legs, a pedal lyre, and a bench complete it.
  *
  * The 88 keys are TWO InstancedMesh (52 whites + 36 blacks), so the whole
  * keyboard is two draws. Only currently-pressed keys have their instance matrix
  * refreshed each frame — a pressed key sinks and tips its front edge down.
  *
  * Local frame: the pianist sits at the origin facing -Z; the keyboard is in
- * front of him (toward -Z) with the bass at +X, the wing body and open lid
+ * front of him (toward -Z) with the bass at +X, the wing body and closed lid
  * stretch further away, and the bench sits behind him at +Z.
  */
 
@@ -154,7 +154,7 @@ export function buildGrandPiano(): OwnedPiano {
   const wood = mat(0x211713, 0.24, 0.06); // polished ebony with a warm brown lift
   const woodWarm = mat(0x4a2c20, 0.28, 0.04); // readable mahogany edge/trim
   const brass = mat(0xb28a3d, 0.28, 0.62); // pedals + hardware
-  const feltDark = mat(0x100c0a, 0.86, 0); // under the open lid / key slip
+  const feltDark = mat(0x100c0a, 0.86, 0); // keybed lining / key slip
   const soundboard = mat(0x6e4930, 0.48, 0.01);
 
   // ---- case: one continuous baby-grand shell instead of disconnected slabs.
@@ -205,10 +205,9 @@ export function buildGrandPiano(): OwnedPiano {
   box(group, woodWarm, 0.26, 0.05, 0.16, 0, 0.05, KEY_CONTACT.z - 0.4);
   for (const px of [-0.06, 0, 0.06]) box(group, brass, 0.04, 0.02, 0.14, px, 0.06, KEY_CONTACT.z - 0.46);
 
-  // ---- open lid: repeats the exact wing silhouette and rotates about the
-  // straight +X bass spine, so its raised edge still belongs to the case.
+  // ---- closed lid: repeats the exact wing silhouette and rests level above
+  // the rim. Its local origin remains on the straight +X bass spine.
   const spineX = 0.74;
-  const lidAngle = 0.6; // ~34°, half-stick open
   const lidPivot = new THREE.Group();
   lidPivot.position.set(spineX, RIM_TOP + 0.065, 0);
   group.add(lidPivot);
@@ -218,15 +217,10 @@ export function buildGrandPiano(): OwnedPiano {
   );
   lidPivot.add(lid);
   lid.receiveShadow = true;
-  lidPivot.rotation.z = -lidAngle; // treble (-X) edge lifts
   for (const hingeZ of [-0.8, -1.42]) {
     const hinge = box(group, brass, 0.035, 0.028, 0.13, spineX - 0.006, RIM_TOP + 0.052, hingeZ);
     hinge.castShadow = false;
   }
-  // Prop stick under the raised treble edge, meeting the lid underside.
-  const propX = -0.42;
-  const propTop = lidPivot.position.y + (spineX - propX) * Math.sin(lidAngle);
-  box(group, woodWarm, 0.045, propTop - RIM_TOP, 0.045, propX, (RIM_TOP + propTop) * 0.5, -1.15);
 
   // ---- bench behind the pianist (+Z)
   box(group, woodWarm, 0.94, 0.09, 0.36, 0, 0.5, 0.24); // seat top

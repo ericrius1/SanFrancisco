@@ -232,13 +232,13 @@ export const CITYGEN_TUNING = tunables("citygen", {
 })
 
 /**
- * Wildflower ring shaping, bound in the "/" panel's foliage folder. The flowers are
- * a player-following ring (like the grass); these knobs are read live on each
- * re-scatter, and the debug panel forces an immediate re-scatter on slider release.
+ * Wildflower shaping, bound in the "/" panel's foliage folder. The player-following
+ * wildlands ring reads these live on each re-scatter; the beach pianist grove also
+ * re-filters its authored meadow from the same knobs on slider release.
  *  · density    — overall keep multiplier (0 = none, 1 = designed, up to 2.5 = carpet)
  *  · clumpiness  — 0 = even scatter across the field, 1 = tight clumps + sparse singles
  *  · clumpSize   — radius (m) of a clump when clumpiness > 0
- *  · reach       — ring radius (m) the flowers fill around the player
+ *  · reach       — ring radius (m) the flowers fill around the player (ring only)
  */
 export const FLOWER_TUNING = tunables("flowers", {
   // Default raised from 1 → 1.4 after per-frame GPU frustum culling landed:
