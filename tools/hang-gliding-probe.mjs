@@ -199,8 +199,11 @@ async function main() {
     check("launch-needs-no-new-quest-fetches", launchRequests.filter((url) => OPTIONAL_CODE.test(url)).length === 0, launchRequests);
 
     const beforeDive = flight.airspeed;
+    await page.evaluate(() => window.__sfManual(true));
     await page.keyboard.down("KeyW");
-    await sleep(1200);
+    await page.evaluate(() => {
+      for (let i = 0; i < 90; i++) window.__sf.tick(1 / 60);
+    });
     await page.keyboard.up("KeyW");
     const afterDive = await page.evaluate(() => window.__sf.player.hangGliderTelemetry.airspeed);
     check("nose-down-builds-airspeed", afterDive > beforeDive + 0.25, { beforeDive, afterDive });
