@@ -12,7 +12,6 @@ assert.equal(
 );
 
 const foliageRuntimeFiles = [
-  "src/world/nativeTreeForest/index.ts",
   "src/world/vegetation/nativeTreeMaterials.ts",
   "src/world/vegetation/authoredShrubs.ts",
   "src/world/wildlands/flowerRing.ts",
@@ -33,6 +32,33 @@ for (const seam of [
 ]) {
   assert.equal(foliageRuntime.includes(seam), false, `foliage runtime reintroduced ${seam}`);
 }
+
+// nativeTreeForest carries one sanctioned exception: the opt-in
+// `conventionalShadowCasting` path (beach-pianist grove god rays) forwards a
+// `castShadow` flag that defaults to false. Everything beyond that flag
+// assignment stays forbidden.
+const nativeForest = source("src/world/nativeTreeForest/index.ts");
+assert.equal(
+  nativeForest.includes("castShadow = false"),
+  true,
+  "nativeTreeForest castShadow opt-in must default to false"
+);
+for (const seam of [
+  ".receiveShadow",
+  ".shadowSide",
+  "shadowProxyShape",
+  "treeShadowProxy",
+  "nativeTreeShadowMeshes",
+  "disposeTreeShadowProxies"
+]) {
+  assert.equal(nativeForest.includes(seam), false, `nativeTreeForest reintroduced ${seam}`);
+}
+const nativeForestOutsideOptIn = nativeForest.replaceAll(".castShadow = castShadow;", "");
+assert.equal(
+  nativeForestOutsideOptIn.includes(".castShadow"),
+  false,
+  "nativeTreeForest set .castShadow outside the opt-in flag assignment"
+);
 
 const compiler = [
   "src/world/treeCompiler/types.ts",
