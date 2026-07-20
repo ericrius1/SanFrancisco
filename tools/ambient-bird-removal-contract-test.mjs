@@ -5,9 +5,16 @@ import path from "node:path";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const creaturesPath = path.join(root, "src/gameplay/creatures.ts");
-const mainPath = path.join(root, "src/main.ts");
+// The creature runtime wiring moved from main.ts into the compose modules
+// (docs/MAIN_DECOMPOSITION.md steps 6+7) — check the whole composition root.
+const wiringPaths = [
+  path.join(root, "src/main.ts"),
+  path.join(root, "src/app/compose/worldSystemsCore.ts"),
+  path.join(root, "src/app/compose/worldSystemsNet.ts"),
+  path.join(root, "src/app/compose/frameBody.ts")
+];
 const creatures = readFileSync(creaturesPath, "utf8");
-const main = readFileSync(mainPath, "utf8");
+const main = wiringPaths.map((p) => readFileSync(p, "utf8")).join("\n");
 
 for (const forbidden of [
   /\bbirds?\b/i,
@@ -28,7 +35,7 @@ for (const forbidden of [
 assert.equal(
   /\b(gulls?|flocks?)\b/i.test(main),
   false,
-  "ambient-bird runtime wiring returned to src/main.ts"
+  "ambient-bird runtime wiring returned to the composition root"
 );
 assert.match(
   main,
