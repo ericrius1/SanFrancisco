@@ -1,33 +1,51 @@
-// Ring coordinator (docs/VOID_STREAM_REWRITE.md §C, milestone M4).
+// Ring coordinator (docs/VOID_STREAM_REWRITE.md §C; M18 particle-scan rewrite).
 //
 // Thin orchestration over the EXISTING streamers: it never loads anything
-// itself. Each frame it chases what the tile streamer reports as fully
-// attached (`tiles.residentRadiusAround`) with the shared materialize front,
-// so the holo→shaded sweep only ever advances over ground that is resident.
-// Staged background expansion stays owned by tiles.ts / the worldReady
-// quiet-window block in main.ts — the coordinator merely nudges the next
-// stage after a stall deadline so continuous player movement can never pin
-// the front (or the draw ring) at the boot bubble forever.
+// itself. It drives the void arrival experience as a phase machine:
+//
+//   holding    `?voidholo=1` debug hold (manual `__sf.materialize` driving).
+//   scanning   The terrain-scan particle wave (materialize front) ripples out
+//              to SCAN_RADIUS, chasing TERRAIN-DATA residency only — the wave
+//              never outruns installed ground truth, and fabric stays fully
+//              hidden behind the front gate.
+//   morphing   worldReveal eases 0→1 (~1.6 s): terrain/water/sky dawn in as
+//              one ramp, the particle field retires, the void fog wall arms
+//              at the bubble edge. The front parks at the revealed sentinel
+//              and the front gate releases at the END of the morph (fabric
+//              then birth-fades in under its budgeted flush).
+//   filling    The rest of the world loads behind the fog wall (staged
+//              background expansion, exactly the pre-M18 machinery). The
+//              coordinator chases full fabric residency and nudges stalled
+//              expansion; the player is free inside (and beyond — the wall is
+//              a medium, not a barrier) the scanned bubble.
+//   revealing  The payoff: the wall radius sweeps outward while its density
+//              eases to zero, unveiling the completed city (~5 s).
+//   settled    Normal play. Everything here is inert.
 //
 // Hot-path discipline: `update()` performs a handful of scalar ops and at
-// most two uniform writes per frame; the residency query is throttled both
+// most a few uniform writes per frame; the residency query is throttled both
 // here (every RESIDENCY_REFRESH_FRAMES frames) and inside the streamer's own
 // tick-cadence cache. No allocations per frame.
 import { bandForRadius, materializeField } from "../render/materialize";
-import { frontGateClampMargin } from "../render/frontGate";
 import { tracer } from "../core/hitchTracer";
 import type { TileStreamer } from "../world/tiles";
 
-export type RingCoordinatorState = "holding" | "sweeping" | "settled";
+export type RingCoordinatorState =
+  | "holding"
+  | "scanning"
+  | "morphing"
+  | "filling"
+  | "revealing"
+  | "settled";
 
 export type RingFocusOptions = {
-  /** true (default): collapse the front to radius 0 at the new centre. */
+  /** true (default): collapse to a fresh void scan at the new centre. */
   reset?: boolean;
   /**
    * true (default): re-prime the participants through the injected prime
    * callback. M7 far arrivals pass false because worldArrival already primed
    * tiles/regions/collision for the destination through its own epoch-guarded
-   * path — the coordinator then only recenters the front and chases residency.
+   * path — the coordinator then only recenters and replays the phases.
    */
   prime?: boolean;
 };
@@ -44,112 +62,108 @@ export type RingCoordinatorOptions = {
    */
   prime: (x: number, z: number) => void;
   /**
+   * M18: distance to the nearest terrain DATA that is not yet installed
+   * around the focus (terrainTiles.residentRadiusAround). The scan wave
+   * chases this — the particle field must never form ground whose real
+   * heights haven't landed. Omitted → the wave runs purely on its clock.
+   */
+  terrainRadius?: (x: number, z: number) => number;
+  /**
    * M5: distance to the nearest citygen cell that has not yet published its
-   * chunk (Infinity when nothing constrains — including before the citygen
-   * ring exists, since it loads post-reveal). Min'd into the residency the
-   * front chases, so the sweep never crosses a cell mid baked→chunk swap.
+   * chunk (Infinity when nothing constrains). Min'd into the FILL residency
+   * so the fog wall never drops while a cell is mid baked→chunk swap.
    */
   citygenRadius?: (x: number, z: number) => number;
   /**
    * The player's real full draw radius (CONFIG.tileLoadRadius before boot
-   * clamped it to the initial visual bubble). Residency reaching
-   * min(fullRadius, SETTLE_CAP) is "full draw distance" for settle purposes.
+   * clamped it to the initial visual bubble). Fill residency reaching
+   * min(fullRadius, SETTLE_CAP) is "full world" for reveal purposes.
    */
   fullRadius: number;
   /**
-   * M9: LIVE CONFIG.tileLoadRadius. A mode can cap it below fullRadius (surf's
-   * 2 km cull cap), which would hold residency below the settle radius forever.
-   * Once residency has verifiably plateaued at such a cap the coordinator
-   * settles at the capped radius instead of sweeping until the age bound. The
-   * plateau requirement keeps boot honest: the initial-visual-bubble clamp
-   * also reads below fullRadius but lifts (and residency keeps growing)
-   * within seconds.
+   * M9: LIVE CONFIG.tileLoadRadius. A mode can cap it below fullRadius
+   * (surf's 2 km cull cap), which would hold fill residency below the reveal
+   * radius forever. Once residency has verifiably plateaued at such a cap the
+   * coordinator reveals at the capped radius instead of waiting for the age
+   * bound.
    */
   liveLoadRadius?: () => number;
   /**
-   * M12: distance (from the front centre) to the nearest chunk still hidden by
-   * the front visibility gate (frontGate.clearedRadius; Infinity when nothing
-   * is hidden). The front's target clamps to it minus frontGateClampMargin()
-   * so the dissolve edge can never outpace the budgeted unhide queue — the
-   * same way it chases residency.
+   * M18: drive the void fog wall (sky.setVoidFogWall). Called with the wall
+   * centre/radius/density whenever the coordinator changes it (a few writes
+   * per phase transition, per-frame only during `revealing`).
    */
-  unhideClearedRadius?: () => number;
+  fogWall?: (x: number, z: number, radius: number, density: number) => void;
   /**
-   * Fired once per stall deadline when staged expansion has not grown
+   * Fired once per stall deadline when staged expansion has not grown fill
    * residency for STALL_MS while the draw ring is still below full. main.ts
    * performs the same restore the worldReady quiet-window block does
    * (CONFIG.tileLoadRadius → full) + `tiles.beginBackgroundExpansion()`.
    */
   onExpansionStalled?: () => void;
-  /** Fired once when the front settles to full reveal (bootMark hook). */
+  /** Fired once when the reveal completes (bootMark hook). */
   onSettled?: () => void;
   /**
-   * M16: "spreading starts" gate. While it returns false the bloom clock is
-   * frozen and the front stays pinned at the player's tiny PLAYER_CLEAR pool —
-   * everything past ~5 m is pure void. main.ts wires it to "control handed
-   * over AND the anchor terrain tile at (cx, cz) is real", so boot and far
-   * teleports both hold the pool until the world is actually ready to ring
-   * out. Omitted → always spreading (legacy behavior).
+   * M16: "spreading starts" gate. While it returns false the scan clock is
+   * frozen and the wave stays pinned at the player's tiny PLAYER_CLEAR pool —
+   * pure black past a few metres of points. main.ts wires it to "control
+   * handed over AND the anchor terrain tile at (cx, cz) is real", so boot and
+   * far teleports both hold until the ground is truly ready to ring out.
+   * Omitted → always spreading.
    */
   spreadGate?: (cx: number, cz: number) => boolean;
-  /** `?voidholo=1`: hold the collapsed holo for manual `__sf.materialize`. */
+  /** `?voidholo=1`: hold the collapsed void for manual `__sf.materialize`. */
   holdHolo?: boolean;
 };
 
-// Front trails resident ground by this margin so the dissolve band never
-// touches a tile mid-attach.
-const FRONT_MARGIN = 60;
-// The player always keeps a revealed bubble. Deliberately TINY: the void
-// moment shows only a ~dozen-metre lit disc hugging the avatar ("immediate
-// area, even nothing at all"), and the sweep rings out from there. The term
-// still tracks a moving player so the ground underfoot is never pure void,
-// but it no longer force-jumps the front to a wide radius at spawn. Content
-// beyond the front is hidden/discarded, so a small clear bubble is safe.
+// ---- Phase A: the scan -----------------------------------------------------
+/** Scan bubble radius (m): ~20 terrain tiles ≈ 0.7 MB of ground truth. The
+ *  particle lattice (terrainScanParticles) is sized to this + margin. */
+export const SCAN_RADIUS = 1600;
+// Wave never sweeps ground whose terrain tile hasn't installed (margin keeps
+// the soft edge off a mid-install tile seam).
+const SCAN_TERRAIN_MARGIN = 24;
+// The player always keeps a revealed pool around their feet, even pre-spread.
 const PLAYER_CLEAR = 2;
-// Generous absolute cap: residency beyond this settles the front regardless
-// of the configured draw distance (matches the M3 interim final sweep).
+// Brisk wave profile: ease in near the player for readability, then sprint.
+// ~4.5 s to cover 1600 m when data keeps up.
+const V_SCAN_START = 90; // m/s at focus
+const V_SCAN_MAX = 620; // m/s once established
+const VELOCITY_EASE = 1.9; // 1/s — exponential approach toward vMax
+// A scan must always terminate: on starved networks the wave waits for tiles,
+// but past this age we morph with whatever installed (far ground dawns from
+// the coarse overview and sharpens as tiles land — better than eternal void).
+const SCAN_MAX_AGE_S = 45;
+
+// ---- Phase A→B: the morph --------------------------------------------------
+const MORPH_SECONDS = 1.6;
+
+// ---- Phase B: the fill -----------------------------------------------------
+// Fill completion target (same semantics as the old settle).
 const SETTLE_CAP = 3600;
-// Once fully resident, push the band this far past the last ring before
-// collapsing to the revealed sentinel, so the final dissolve exits the fog
-// veil instead of vanishing mid-air.
-const SETTLE_OVERSHOOT = 240;
-// Growth profile: slow initial bloom near the player for drama, easing up to
-// a brisk-but-visible edge speed across the first BLOOM_SECONDS, then a fast
-// catch-up chase once the sweep is established.
-const BLOOM_SECONDS = 10;
-const V_BLOOM_START = 16; // m/s at focus
-const V_BLOOM_END = 120; // m/s at BLOOM_SECONDS
-const V_FAST = 520; // m/s catch-up after the bloom
-const VELOCITY_EASE = 1.6; // 1/s — exponential approach rate toward vMax
-// Residency refresh cadence (frames) + expansion stall deadline.
 const RESIDENCY_REFRESH_FRAMES = 20;
 const STALL_MS = 20_000;
-// ---- M9 settle escapes: a sweep must ALWAYS terminate. -------------------
-// Residency is measured around the sweep FOCUS while tiles load/unload around
-// the PLAYER, so a player who boots and immediately drives/flies away one
-// direction leaves focus residency decaying: the settle condition never fires
-// and everything beyond the front stays holo-dark forever. Two escapes:
-// Player-escape: beyond this distance from the focus the player has left the
-// theater. Content near them is resident (streamers follow the player) and
-// post-settle attaches still birth-fade, so the instant reveal is invisible at
-// this range. Kept below the front cap (SETTLE_CAP + SETTLE_OVERSHOOT) so the
-// escape fires while PLAYER_CLEAR still protects the player's bubble.
-const PLAYER_ESCAPE_DISTANCE = 2600;
-// Absolute sweep age bound — covers capped load radii (surf) and any future
-// residency stall the other escapes miss.
-const SWEEP_MAX_AGE_S = 90;
-// A live tileLoadRadius below fullRadius (surf's mode cap) becomes the settle
-// radius only after residency has plateaued at it this long — never at boot,
-// where the initial bubble clamp lifts and growth resumes within seconds.
+// A live tileLoadRadius below fullRadius (surf's mode cap) becomes the reveal
+// radius only after residency has plateaued at it this long.
 const CAPPED_RADIUS_QUIET_MS = 12_000;
-// M15/M16: the dissolve band SCALES with the front radius. With the spread
-// gate holding the front at the PLAYER_CLEAR bubble, the void moment is a
-// ~5 m pool of light — literally nothing renders past it — until spreading
-// starts. Relaxes to the default band as the ring grows; the settled sentinel
-// is unaffected (band is irrelevant at radius=1e9 — every amount saturates to
-// 1). M17: the helper lives in materialize.ts (bandForRadius) so EVERY
-// setFront/holo caller shares the radius-scaled path.
-const bandFor = bandForRadius;
+// The fill must always terminate too (slow networks): past this age the
+// reveal runs with whatever loaded; late chunks birth-fade behind normal fog.
+const FILL_MAX_AGE_S = 300;
+// Player far from the focus with the world around THEM loaded = they've left
+// the theater; reveal rather than pinning the wall to an abandoned focus.
+const PLAYER_ESCAPE_DISTANCE = 2600;
+
+// ---- Phase B→C: the reveal -------------------------------------------------
+const REVEAL_SECONDS = 5.2;
+/** Wall radius at the end of the sweep (past the draw/fog edge). */
+const REVEAL_END_RADIUS = 6500;
+/** Wall density while the fill runs (1 = the authored dense shroud). */
+const WALL_DENSITY = 1;
+
+const smooth01 = (t: number): number => {
+  const c = Math.min(1, Math.max(0, t));
+  return c * c * (3 - 2 * c);
+};
 
 export class RingCoordinator {
   #opts: RingCoordinatorOptions;
@@ -158,24 +172,24 @@ export class RingCoordinator {
   #cx: number;
   #cz: number;
   #radius = 0;
-  #velocity = V_BLOOM_START;
-  #age = 0; // seconds since the current sweep began
-  #resident = 0; // cached tiles.residentRadiusAround at the focus
-  #settleTarget = 0; // 0 = not yet fully resident
+  #velocity = V_SCAN_START;
+  #age = 0; // seconds since the current phase began
+  #resident = 0; // cached fill residency around the focus
   #framesSinceResidency = RESIDENCY_REFRESH_FRAMES; // refresh on first update
   #lastGrowthAt = performance.now();
   #lastNudgeAt = 0;
 
   /**
    * Adopts (cx, cz) as the initial focus WITHOUT re-priming — boot already
-   * primed tiles/regions/collision at this point. Collapses the front there.
+   * primed tiles/regions/collision at this point. Collapses to void there.
    */
   constructor(cx: number, cz: number, opts: RingCoordinatorOptions) {
     this.#opts = opts;
     this.#cx = cx;
     this.#cz = cz;
-    this.#state = opts.holdHolo ? "holding" : "sweeping";
-    materializeField.setFront(cx, cz, 0, bandFor(0));
+    this.#state = opts.holdHolo ? "holding" : "scanning";
+    materializeField.holo(cx, cz);
+    this.#opts.fogWall?.(cx, cz, 1e9, 0);
   }
 
   get state(): RingCoordinatorState {
@@ -186,37 +200,47 @@ export class RingCoordinator {
     return this.#generation;
   }
 
-  /** Cached staged-resident radius around the focus (metres). */
+  /** True while fabric visibility must stay held (scan + morph + the debug
+   *  hold) — main wires frontGate.setActive to this. */
+  get fabricHeld(): boolean {
+    return (
+      this.#state === "holding" ||
+      this.#state === "scanning" ||
+      this.#state === "morphing"
+    );
+  }
+
+  /** Cached fill-residency radius around the focus (metres). */
   residentRadius(): number {
     return this.#resident;
   }
 
-  /** Current front radius (metres; MATERIALIZE_REVEALED_RADIUS once settled). */
+  /** Current scan-front radius (metres; sentinel once morphed). */
   frontRadius(): number {
     return materializeField.frontRadius.value as number;
   }
 
   /**
-   * M9: true when (x, z) already lies inside the materialize front (always
-   * true once settled). Arrival classification uses this so a mid-sweep hop to
-   * ground that is resident but NOT yet swept counts as far — the front then
-   * refocuses at the destination instead of the cover dropping onto holo.
+   * True when (x, z) lies inside the currently-unveiled world: within the
+   * scan wave while scanning, within the fog wall's bubble during fill, and
+   * everywhere once revealed. Arrival classification uses this so a mid-fill
+   * hop into the shroud counts as far — the phases then replay at the
+   * destination instead of the cover dropping into dense fog.
    */
   coversPoint(x: number, z: number): boolean {
-    if (this.#state === "settled") return true;
+    if (this.#state === "settled" || this.#state === "revealing") return true;
     const dx = x - this.#cx;
     const dz = z - this.#cz;
-    return dx * dx + dz * dz <= this.#radius * this.#radius;
+    const r = this.#state === "filling" ? SCAN_RADIUS : this.#radius;
+    return dx * dx + dz * dz <= r * r;
   }
 
   /**
-   * Recenter the front for a relocation (M7 teleport arrivals). Bumps the
-   * generation so any stale async completions from the previous focus are
-   * ignored, re-primes the participants through the shared prime path (unless
-   * the caller already primed — `prime: false`), and (when `reset`, the
-   * default) collapses the front to a fresh bloom at the destination.
-   * `reset: false` keeps the current radius for short hops where
-   * re-dissolving the whole world would be jarring.
+   * Recenter for a relocation (M7 teleport arrivals). Bumps the generation so
+   * stale async completions from the previous focus are ignored, re-primes
+   * the participants through the shared prime path (unless the caller already
+   * primed — `prime: false`), and (when `reset`, the default) replays the
+   * whole void arrival at the destination.
    */
   focus(x: number, z: number, options: RingFocusOptions = {}): void {
     const reset = options.reset !== false;
@@ -225,16 +249,21 @@ export class RingCoordinator {
     this.#cz = z;
     if (reset) {
       this.#radius = 0;
-      this.#velocity = V_BLOOM_START;
+      this.#velocity = V_SCAN_START;
       this.#age = 0;
+      materializeField.holo(x, z);
+      this.#opts.fogWall?.(x, z, 1e9, 0);
+      if (this.#state !== "holding") this.#state = "scanning";
+    } else {
+      // Keep the current phase for short covered hops; just recenter.
+      const c = materializeField.frontCenter.value as { set(x: number, z: number): void };
+      c.set(x, z);
+      this.#opts.fogWall?.(x, z, this.#state === "filling" ? SCAN_RADIUS : 1e9, this.#state === "filling" ? WALL_DENSITY : 0);
     }
     this.#resident = 0;
-    this.#settleTarget = 0;
     this.#framesSinceResidency = RESIDENCY_REFRESH_FRAMES;
     this.#lastGrowthAt = performance.now();
     this.#lastNudgeAt = 0;
-    materializeField.setFront(x, z, this.#radius, bandFor(this.#radius));
-    if (this.#state !== "holding") this.#state = "sweeping";
     // The prime path owns its own epoch/generation guards (tiles.primeAt
     // generations, primeInitialVisualAt epoch) — stale completions there
     // cannot touch this coordinator's state.
@@ -244,125 +273,134 @@ export class RingCoordinator {
   /**
    * Per-frame driver. Single call site helper — invoked from BOTH the
    * provisional voidTick and the real loop's updateWorld, right before
-   * `materializeField.update`. Never shrinks the front; `bootArrivalTick`'s
-   * stray re-anchor moves only the collision bubble, so a wandering player is
-   * chased via the PLAYER_CLEAR term rather than by resetting the front.
+   * `materializeField.update`.
    */
   update(dt: number): void {
-    if (this.#state !== "sweeping") return;
+    if (this.#state === "holding" || this.#state === "settled") return;
     const clamped = Math.min(Math.max(dt, 0), 0.1);
-    this.#age += clamped;
-
-    if (++this.#framesSinceResidency >= RESIDENCY_REFRESH_FRAMES) {
-      this.#framesSinceResidency = 0;
-      this.#refreshResidency();
+    switch (this.#state) {
+      case "scanning":
+        this.#updateScan(clamped);
+        return;
+      case "morphing":
+        this.#updateMorph(clamped);
+        return;
+      case "filling":
+        this.#updateFill(clamped);
+        return;
+      case "revealing":
+        this.#updateReveal(clamped);
+        return;
     }
+  }
 
-    // Target radius: chase staged residency, but keep the player inside a
-    // revealed bubble, and never shrink (monotonic during a sweep).
+  // ---- scanning -----------------------------------------------------------
+  #updateScan(dt: number): void {
     const p = this.#opts.player.position;
     const pdx = p.x - this.#cx;
     const pdz = p.z - this.#cz;
     const playerDist = Math.sqrt(pdx * pdx + pdz * pdz);
 
-    // M9 settle escapes — see the constants and #forceSettle. Checked before
-    // the target math so a pinned sweep can never outlive them.
+    // Player long gone (booted and immediately flew off) — settle everything.
     if (playerDist > PLAYER_ESCAPE_DISTANCE) {
-      this.#forceSettle("player-escape");
-      return;
-    }
-    if (this.#age > SWEEP_MAX_AGE_S) {
-      this.#forceSettle("age-cap");
+      this.#forceSettle("player-escape-scan");
       return;
     }
 
-    // M16: before spreading starts, the front is pinned at the player's tiny
-    // pool — no residency chase, no settle, and the bloom clock stays at 0 so
-    // the eventual spread still opens with the slow dramatic bloom.
+    // M16: before spreading starts, the wave is pinned at the player's feet —
+    // the scan clock stays at 0 so the eventual spread opens from scratch.
     const spreading = this.#opts.spreadGate?.(this.#cx, this.#cz) !== false;
     if (!spreading) {
-      this.#age = 0;
       const pinned = Math.max(playerDist + PLAYER_CLEAR, this.#radius);
       if (pinned > this.#radius) {
         this.#radius = pinned;
         materializeField.frontRadius.value = this.#radius;
       }
-      materializeField.frontBand.value = bandFor(this.#radius);
+      materializeField.frontBand.value = bandForRadius(this.#radius);
       return;
     }
 
-    let target = Math.max(
-      this.#resident - FRONT_MARGIN,
-      playerDist + PLAYER_CLEAR,
-      this.#radius
-    );
-    if (this.#settleTarget > 0) target = Math.max(target, this.#settleTarget);
-    target = Math.min(target, SETTLE_CAP + SETTLE_OVERSHOOT);
-    // M12: never outpace the visibility unhide queue. Content is revealed
-    // (visibility flip) at front + band + frontGateLead(); clamping the target
-    // to nearestHidden − frontGateClampMargin() (< lead + band) means chunks
-    // always flip visible well beyond the dissolve edge, where the holo edge
-    // window renders them near-black. A clamp below the current radius simply
-    // pauses the front (gap ≤ 0 — monotonicity preserved) until the gate's
-    // budgeted reveals catch up. Settle escapes above still terminate a sweep
-    // a stuck queue could otherwise pin. M15: both terms scale with the band
-    // (which tracks the radius during the early bloom) so nothing flips
-    // visible hundreds of metres out at the void moment.
-    const cleared = this.#opts.unhideClearedRadius?.() ?? Infinity;
-    if (Number.isFinite(cleared)) {
-      target = Math.min(target, Math.max(0, cleared - frontGateClampMargin()));
+    this.#age += dt;
+    if (this.#age > SCAN_MAX_AGE_S) {
+      tracer.count("ringScanAgeCap");
+      this.#beginMorph();
+      return;
     }
 
-    // Eased, capped velocity: smooth bloom for the first BLOOM_SECONDS so the
-    // edge stays visible near the player, then a fast chase outward.
-    const bloomT = Math.min(this.#age / BLOOM_SECONDS, 1);
-    const vMax =
-      bloomT < 1
-        ? V_BLOOM_START + (V_BLOOM_END - V_BLOOM_START) * bloomT * bloomT * (3 - 2 * bloomT)
-        : V_FAST;
-    this.#velocity += (vMax - this.#velocity) * Math.min(1, clamped * VELOCITY_EASE);
+    // Target: the scan bubble, clamped to installed terrain data, but never
+    // below the player's pool and never shrinking.
+    const terrain = this.#opts.terrainRadius?.(this.#cx, this.#cz) ?? Infinity;
+    let target = Math.min(
+      SCAN_RADIUS,
+      Math.max(
+        Number.isFinite(terrain) ? terrain - SCAN_TERRAIN_MARGIN : SCAN_RADIUS,
+        playerDist + PLAYER_CLEAR,
+        this.#radius
+      )
+    );
 
+    const vMax = this.#age < 1.2 ? V_SCAN_START + (V_SCAN_MAX - V_SCAN_START) * smooth01(this.#age / 1.2) : V_SCAN_MAX;
+    this.#velocity += (vMax - this.#velocity) * Math.min(1, dt * VELOCITY_EASE);
     const gap = target - this.#radius;
     if (gap > 0) {
-      this.#radius += Math.min(gap, this.#velocity * clamped);
+      this.#radius += Math.min(gap, this.#velocity * dt);
       materializeField.frontRadius.value = this.#radius;
     }
-    // M15: keep the band tracking the radius through the early bloom (pure
-    // uniform write; monotonic like the radius, capped at the default band).
-    materializeField.frontBand.value = bandFor(this.#radius);
+    materializeField.frontBand.value = bandForRadius(this.#radius);
 
-    if (this.#settleTarget > 0 && this.#radius >= this.#settleTarget - 0.5) {
-      this.#state = "settled";
-      // Collapsed-front path: reveal() parks the radius at the revealed
-      // sentinel so every materialize mix is byte-stable at amount=1 —
-      // steady-state cost is the collapsed-front path, and this update()
-      // early-returns from here on.
+    if (this.#radius >= SCAN_RADIUS - 0.5) this.#beginMorph();
+  }
+
+  // ---- morphing -----------------------------------------------------------
+  #beginMorph(): void {
+    this.#state = "morphing";
+    this.#age = 0;
+    // Arm the wall at the bubble edge BEFORE the dawn: the sky's (1 − void)
+    // multiply ramps its visible density in exactly as the world lights up.
+    this.#opts.fogWall?.(this.#cx, this.#cz, SCAN_RADIUS, WALL_DENSITY);
+  }
+
+  #updateMorph(dt: number): void {
+    this.#age += dt;
+    const t = Math.min(1, this.#age / MORPH_SECONDS);
+    materializeField.worldReveal.value = smooth01(t);
+    if (t >= 1) {
+      // Park the front at the revealed sentinel: every materialize amount
+      // collapses to its plain birth/extra terms from here on, and the scan
+      // particle field (scaled by 1 − worldReveal) is fully retired.
       materializeField.reveal();
-      this.#opts.onSettled?.();
+      this.#state = "filling";
+      this.#age = 0;
+      this.#lastGrowthAt = performance.now();
+      // main's ringUpdate sees fabricHeld flip false and releases the front
+      // gate → budgeted flush; fabric birth-fades in behind the fog wall.
     }
   }
 
-  /**
-   * M9: escape settle. Takes the SAME settle path as the residency route —
-   * settled state (main's ringUpdate wrapper polls it and releases the M7
-   * shadow streaming hold on the change), materializeField.reveal(), and the
-   * onSettled bootMark — just without waiting for focus residency that will
-   * never arrive. New content keeps birth-fading after settle, so the instant
-   * reveal is invisible at escape distances.
-   */
-  #forceSettle(reason: string): void {
-    if (this.#state !== "sweeping") return;
-    tracer.count("ringForceSettle");
-    console.info(
-      `[rings] force-settle (${reason}) age=${this.#age.toFixed(1)}s ` +
-      `front=${Math.round(this.#radius)}m resident=${Math.round(this.#resident)}m`
-    );
-    this.#state = "settled";
-    materializeField.reveal();
-    this.#opts.onSettled?.();
+  // ---- filling ------------------------------------------------------------
+  #updateFill(dt: number): void {
+    this.#age += dt;
+    if (++this.#framesSinceResidency >= RESIDENCY_REFRESH_FRAMES) {
+      this.#framesSinceResidency = 0;
+      this.#refreshFillResidency();
+    }
+    if (this.#age > FILL_MAX_AGE_S) {
+      tracer.count("ringFillAgeCap");
+      this.#beginReveal();
+      return;
+    }
+    const p = this.#opts.player.position;
+    const playerDist = Math.hypot(p.x - this.#cx, p.z - this.#cz);
+    if (
+      playerDist > PLAYER_ESCAPE_DISTANCE &&
+      this.#opts.tiles.residentRadiusAround(p.x, p.z) > 800
+    ) {
+      tracer.count("ringPlayerEscapeFill");
+      this.#beginReveal();
+    }
   }
 
-  #refreshResidency(): void {
+  #refreshFillResidency(): void {
     const now = performance.now();
     let resident = this.#opts.tiles.residentRadiusAround(this.#cx, this.#cz);
     if (this.#opts.citygenRadius) {
@@ -373,37 +411,74 @@ export class RingCoordinator {
     if (resident > this.#resident + 1) this.#lastGrowthAt = now;
     this.#resident = resident;
 
-    let settleRadius = Math.min(this.#opts.fullRadius, SETTLE_CAP);
+    let revealRadius = Math.min(this.#opts.fullRadius, SETTLE_CAP);
     // M9: respect a LIVE capped load radius (surf's 2 km cap) once residency
-    // has plateaued at it — see the liveLoadRadius option doc.
+    // has plateaued at it.
     const liveRadius = this.#opts.liveLoadRadius?.() ?? Infinity;
     if (
-      liveRadius < settleRadius &&
+      liveRadius < revealRadius &&
       resident >= liveRadius - 0.5 &&
       now - this.#lastGrowthAt > CAPPED_RADIUS_QUIET_MS
     ) {
-      settleRadius = liveRadius;
+      revealRadius = liveRadius;
     }
-    if (this.#settleTarget === 0 && resident >= settleRadius - 0.5) {
-      this.#settleTarget = Math.min(resident, SETTLE_CAP) + SETTLE_OVERSHOOT;
+    if (resident >= revealRadius - 0.5) {
+      this.#beginReveal();
       return;
     }
 
     // Stall nudge: staged expansion is admission-gated (quiet windows, boot
     // arrival completion). If the player keeps moving those gates can stay
     // shut indefinitely — past the deadline, kick the next stage directly.
-    if (
-      this.#settleTarget === 0 &&
-      now - this.#lastGrowthAt > STALL_MS &&
-      now - this.#lastNudgeAt > STALL_MS
-    ) {
+    if (now - this.#lastGrowthAt > STALL_MS && now - this.#lastNudgeAt > STALL_MS) {
       this.#lastNudgeAt = now;
-      // No-op unless a settled visual prime is still holding the draw ring at
-      // the destination minimum (the same release bootArrivalTick performs on
-      // arrival completion).
       this.#opts.tiles.resumeBackgroundStreaming();
       const dbg = this.#opts.tiles.backgroundStreamingDebug;
-      if (dbg.radius < settleRadius) this.#opts.onExpansionStalled?.();
+      if (dbg.radius < revealRadius) this.#opts.onExpansionStalled?.();
     }
+  }
+
+  // ---- revealing ----------------------------------------------------------
+  #beginReveal(): void {
+    if (this.#state === "revealing" || this.#state === "settled") return;
+    tracer.count("ringReveal");
+    console.info(
+      `[rings] reveal begins — fill resident=${Math.round(this.#resident)}m ` +
+      `after ${this.#age.toFixed(1)}s`
+    );
+    this.#state = "revealing";
+    this.#age = 0;
+  }
+
+  #updateReveal(dt: number): void {
+    this.#age += dt;
+    const t = Math.min(1, this.#age / REVEAL_SECONDS);
+    const eased = smooth01(t);
+    const radius = SCAN_RADIUS + (REVEAL_END_RADIUS - SCAN_RADIUS) * eased;
+    // Density holds through the first stretch (the wall visibly recedes),
+    // then dissolves entirely over the back half.
+    const density = WALL_DENSITY * (1 - smooth01((t - 0.45) / 0.55));
+    this.#opts.fogWall?.(this.#cx, this.#cz, radius, density);
+    if (t >= 1) {
+      this.#opts.fogWall?.(this.#cx, this.#cz, 1e9, 0);
+      this.#state = "settled";
+      this.#opts.onSettled?.();
+    }
+  }
+
+  /**
+   * Escape settle: jump straight to the fully-revealed steady state (used
+   * when the player has left the theater entirely). New content keeps
+   * birth-fading after settle, so the instant reveal is invisible at escape
+   * distances.
+   */
+  #forceSettle(reason: string): void {
+    if (this.#state === "settled") return;
+    tracer.count("ringForceSettle");
+    console.info(`[rings] force-settle (${reason}) age=${this.#age.toFixed(1)}s`);
+    materializeField.reveal();
+    this.#opts.fogWall?.(this.#cx, this.#cz, 1e9, 0);
+    this.#state = "settled";
+    this.#opts.onSettled?.();
   }
 }

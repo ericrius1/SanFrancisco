@@ -5,7 +5,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
 import { enableLocalFarShadowLayers } from "../world/shadows/shadowLayers";
-import { applyHoloBirth, materializeAmount } from "../render/materialize";
+import { applyBirthFade, materializeAmount } from "../render/materialize";
 
 /**
  * Floating islands drifting over the city — little grass discs with a dirt
@@ -105,7 +105,7 @@ export class Islands {
     // settled shading is unchanged (the wrap collapses at the revealed
     // sentinel / birth-holo gate).
     const bodyMat = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.85 });
-    applyHoloBirth(bodyMat);
+    applyBirthFade(bodyMat);
     let totalBalloons = 0;
 
     for (let i = 0; i < SPOTS.length; i++) {
@@ -156,7 +156,7 @@ export class Islands {
 
     const balloonGeo = new THREE.SphereGeometry(0.62, 16, 12);
     const balloonMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.3 });
-    applyHoloBirth(balloonMat);
+    applyBirthFade(balloonMat);
     this.#balloonMesh = new THREE.InstancedMesh(balloonGeo, balloonMat, totalBalloons);
     this.#balloonMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.#balloonMesh.frustumCulled = false;

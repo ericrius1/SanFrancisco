@@ -14,8 +14,8 @@ import {
 import { createRoadMaterial, createParkMaterial } from "./streets";
 import { createTileMeshBatch, type TileMeshBatch, type TileBatchHandle } from "./tileBatch";
 import {
-  applyHoloBirth,
-  configureBatchHoloBirth,
+  applyBirthFade,
+  configureBatchBirthFade,
   materializeField
 } from "../render/materialize";
 import { frontGate, type FrontGateHandle } from "../render/frontGate";
@@ -347,7 +347,7 @@ function createTileMaterialSet(birth: ReturnType<typeof materializeField.birthOf
   const palace = palaceMat.clone();
   const sutro = sutroMat.clone();
   const all = [road, park, plain, palace, sutro];
-  for (const mat of all) applyHoloBirth(mat, { birth });
+  for (const mat of all) applyBirthFade(mat, { birth });
   return { road, park, plain, palace, sutro, all };
 }
 
@@ -678,7 +678,7 @@ export class TileStreamer {
         let wrapped = landmarkHolo.get(source);
         if (!wrapped) {
           wrapped = source.clone();
-          applyHoloBirth(wrapped as THREE.MeshStandardNodeMaterial);
+          applyBirthFade(wrapped as THREE.MeshStandardNodeMaterial);
           landmarkHolo.set(source, wrapped);
         }
         return wrapped;
@@ -694,7 +694,7 @@ export class TileStreamer {
             // fresh instance directly (front-only), no clone needed.
             mesh.geometry.computeBoundingBox();
             const crown = createCrownMaterial(mesh.geometry.boundingBox!);
-            applyHoloBirth(crown);
+            applyBirthFade(crown);
             mesh.material = crown;
           } else if (mesh.name === "lm_bridge_goldengate") {
             mesh.material = holoLandmarkMaterial(goldenGateMat);
@@ -1649,8 +1649,8 @@ export class TileStreamer {
       // Facade slot materials are per-residency (recreated on pool reuse in
       // #takeSlot), so wiring the holo-birth mix here — before any mesh binds
       // them — keeps one graph shape while the birth uniform stays per-tile.
-      applyHoloBirth(slot.matNear!, { birth });
-      applyHoloBirth(slot.matFar!, { birth });
+      applyBirthFade(slot.matNear!, { birth });
+      applyBirthFade(slot.matFar!, { birth });
       const bMat = slot.far ? slot.matFar! : slot.matNear!;
       const materials = createTileMaterialSet(birth);
       group.traverse((o) => {
@@ -2055,7 +2055,7 @@ export class TileStreamer {
     // M5 per-instance birth: wired after the facade graph, before the
     // onBatchCreated warm, so the compiled pipeline is the final one (C2/C7).
     this.#buildingBirth = createBatchBirth(cap);
-    configureBatchHoloBirth(mat, batch.mesh, this.#buildingBirth.tex);
+    configureBatchBirthFade(mat, batch.mesh, this.#buildingBirth.tex);
     this.#buildingBatch = batch;
     this.onBatchCreated(batch.mesh);
     return batch;
@@ -2140,7 +2140,7 @@ export class TileStreamer {
       });
       // M5 per-instance birth, wired before the onBatchCreated warm below
       this.#roadBirth = createBatchBirth(192);
-      configureBatchHoloBirth(roadBatchMat, this.#roadBatch.mesh, this.#roadBirth.tex);
+      configureBatchBirthFade(roadBatchMat, this.#roadBatch.mesh, this.#roadBirth.tex);
     }
     if (!this.#roadBatchAnnounced) {
       this.#roadBatchAnnounced = true;
@@ -2192,7 +2192,7 @@ export class TileStreamer {
       });
       // M5 per-instance birth, wired before the onBatchCreated warm below
       this.#parkBirth = createBatchBirth(64);
-      configureBatchHoloBirth(parkBatchMat, this.#parkBatch.mesh, this.#parkBirth.tex);
+      configureBatchBirthFade(parkBatchMat, this.#parkBatch.mesh, this.#parkBirth.tex);
     }
     if (!this.#parkBatchAnnounced) {
       this.#parkBatchAnnounced = true;

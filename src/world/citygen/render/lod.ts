@@ -15,7 +15,7 @@ import { ensureCCW, triangulate } from "../core/footprint";
 import { bodyColour } from "../render";
 import { specFor } from "../theme/archetypes";
 import { cameraCutawayMask } from "../../../render/cameraCutaway";
-import { applyHoloBirth } from "../../../render/materialize";
+import { applyBirthFade } from "../../../render/materialize";
 import {
   materialDisposeListenerCount,
   registerSharedMaterialLeakCounter,
@@ -80,7 +80,7 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   // the already-shaded baked tile, not the void). M6: every chunkLod cell
   // shares THIS material instance (no per-cell clone), so the wrap compiles
   // exactly once.
-  applyHoloBirth(m);
+  applyBirthFade(m);
   sharedMat = m;
   return m;
 }

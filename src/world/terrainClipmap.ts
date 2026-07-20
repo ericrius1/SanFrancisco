@@ -41,13 +41,7 @@ import {
   createTerrainNormalMipData,
   createTerrainSurfaceMipData
 } from "./terrainMaterialData";
-import {
-  GRID_TO_HORIZON_DEBUG,
-  edgeGlowWindow,
-  holoShade,
-  materializeAmount,
-  materializeField
-} from "../render/materialize";
+import { materializeField } from "../render/materialize";
 
 // TSL's composed node types become unwieldy across texture-stage operations;
 // the project uses this local alias for shader graphs while retaining typed
@@ -766,57 +760,24 @@ export class TerrainClipmap {
     terrainColor = terrainColor.mul(variation.add(1));
     terrainColor = mix(terrainColor, color(LEVEL_DEBUG_COLORS[level.level]), this.#debugLevels.mul(0.72));
 
-    // Materialize/void holo mix (docs/VOID_STREAM_REWRITE.md M2 + M13). Terrain
-    // is always resident: no birth ramp, no dissolve, no geometry change — the
-    // height path (#heightAt) is untouched so CPU/GPU lockstep holds and the
-    // holo contour grid conforms to the REAL displaced heights. Below the
-    // front the lit response collapses to a dark base and the emissive carries
-    // the glowing world-grid + elevation contours; at amount = 1 both terms
-    // are plain uniform-driven mixes back to the normal shading (a few ALU,
-    // no added texture taps), so the revealed look is unchanged.
-    //
-    // M13: the grid is now CONCENTRIC like the buildings — the glowing grid +
-    // the faint lit floor both ride an edge window hugging the advancing front
-    // (edgeGlowWindow: ~1 at/inside the dissolve edge, easing to 0 over ~3
-    // bands beyond it). So the void/control moment shows only a small lit patch
-    // of contour grid around the front centre, fading to dark ground + sky
-    // beyond; as the front sweeps, the lit band grows outward with it. A very
-    // faint albedo floor survives far out so the horizon reads as dark ground,
-    // not a pure black abyss. The window collapses to 1 once the front parks at
-    // the revealed sentinel, so settled shading is byte-identical to today.
-    // `?gridhorizon=1` restores the old to-horizon grid for A/B debugging.
-    const materialized = materializeAmount({ worldPos: positionWorld as N }).toVar();
-    const holoReveal = smoothstep(0.25, 1, materialized);
-    const frontDist = (positionWorld as N).xz
-      .sub(materializeField.frontCenter as N)
-      .length();
-    const floorWindow = GRID_TO_HORIZON_DEBUG ? float(1) : edgeGlowWindow(frontDist);
-    // Optional very-faint floor: ~0.05 albedo near the front, easing to a
-    // minimal 0.02 far beyond it (err toward darker — the void moment is an
-    // "immediate area focus", not "ground to horizon").
-    const holoFloor = mix(float(0.02), float(0.05), floorWindow);
-    material.colorNode = terrainColor.mul(mix(holoFloor, float(1), holoReveal));
-    material.emissiveNode = holoShade(positionWorld as N, terrainColor, {
-      edgeWindow: !GRID_TO_HORIZON_DEBUG
-    }).mul(holoReveal.oneMinus());
+    // Dawn ramp (docs/VOID_STREAM_REWRITE.md M18). Terrain is always resident:
+    // no birth ramp, no dissolve, no geometry change — the height path
+    // (#heightAt) is untouched so CPU/GPU lockstep holds. During the void scan
+    // the terrain contributes NOTHING (the GPU scan particles are the only
+    // ground visual); the ring coordinator then eases worldReveal 0→1 and the
+    // whole clipmap dawns from black to normal shading. At worldReveal = 1
+    // both terms are identity multiplies — settled shading is byte-identical.
+    const dawn = (materializeField.worldReveal as N).saturate();
+    material.colorNode = terrainColor.mul(dawn);
     material.roughnessNode = surface.a.mul(0.03).add(0.94);
 
-    // Beyond the front the terrain contributes NOTHING — not even a dark
-    // silhouette occluding the sky. The clipmap already alpha-tests for the
-    // map-edge cutout, so folding a front-visibility window into opacity is
-    // free (no new pipeline): fragments past the glow tail are discarded and
-    // the void sky shows through. Collapses to 1 at the revealed sentinel
-    // (settled shading byte-identical) and under ?gridhorizon=1.
-    // saturate((radius + 3·band − dist) / band): fades out over one band
-    // ending at radius+3band. Constant-denominator form — smoothstep here
-    // would divide by (b−a)=0 in f32 at the revealed sentinel (1e9).
-    const frontVisibility = GRID_TO_HORIZON_DEBUG
-      ? float(1)
-      : (materializeField.frontRadius as N)
-          .add((materializeField.frontBand as N).mul(3))
-          .sub(frontDist)
-          .div((materializeField.frontBand as N))
-          .saturate();
+    // While the dawn ramp sits at exactly 0 the terrain is fully absent — not
+    // even a dark silhouette occluding the starfield. The clipmap already
+    // alpha-tests for the map-edge cutout, so folding the void gate into
+    // opacity is free (no new pipeline). The first non-zero ramp value flips
+    // the ground in while everything is still black-on-black (sky dome dark,
+    // albedo ~0), so the flip never reads as a pop.
+    const voidGate = step(0.0001, dawn);
 
     const worldMaxX = grid.minX + (grid.width - 1) * grid.cellSize;
     const worldMaxZ = grid.minZ + (grid.height - 1) * grid.cellSize;
@@ -824,10 +785,43 @@ export class TerrainClipmap {
       .mul(step((positionWorld as N).x, worldMaxX))
       .mul(step(grid.minZ, (positionWorld as N).z))
       .mul(step((positionWorld as N).z, worldMaxZ));
-    material.opacityNode = inBounds.mul(terrainCutoutMask()).mul(frontVisibility);
+    material.opacityNode = inBounds.mul(terrainCutoutMask()).mul(voidGate);
     material.alphaTestNode = float(0.5);
     material.envMapIntensity = 0.68;
     return material;
+  }
+
+  /**
+   * Public bilinear height sample of the terrain height atlas at an arbitrary
+   * world XZ (TSL node, usable in any vertex stage). Cheaper than the
+   * clipmap's own Catmull-Rom path (4 taps vs 16) — intended for consumers
+   * that need plausible conforming heights rather than C1 continuity, e.g.
+   * the terrain-scan particle field. Reads the SAME atlas the tile streamer
+   * blits into, so results sharpen live as real tiles install.
+   */
+  heightNodeBilinear(worldXZ: N, sourceLod: number): N {
+    const grid = this.#grid;
+    const baseTexel = (worldXZ as N).sub(vec2(grid.minX, grid.minZ)).div(grid.cellSize);
+    const scale = 1 / (1 << sourceLod);
+    const texel = baseTexel.add(0.5).mul(scale).sub(0.5);
+    const cell = texel.floor();
+    const t = texel.fract();
+    const h00 = this.#heightTap(cell.x, cell.y, sourceLod);
+    const h10 = this.#heightTap(cell.x.add(1), cell.y, sourceLod);
+    const h01 = this.#heightTap(cell.x, cell.y.add(1), sourceLod);
+    const h11 = this.#heightTap(cell.x.add(1), cell.y.add(1), sourceLod);
+    return mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y);
+  }
+
+  /** World-space bounds of the height lattice (scan particles hide outside). */
+  gridBounds(): { minX: number; minZ: number; maxX: number; maxZ: number } {
+    const grid = this.#grid;
+    return {
+      minX: grid.minX,
+      minZ: grid.minZ,
+      maxX: grid.minX + (grid.width - 1) * grid.cellSize,
+      maxZ: grid.minZ + (grid.height - 1) * grid.cellSize
+    };
   }
 
   /**

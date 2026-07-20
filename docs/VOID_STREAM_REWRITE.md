@@ -242,3 +242,36 @@ holo-off default) stays green.
   probe + CDP screenshots for visuals.
 - `?startscreen=1` covers the start-gate experience; default local dev
   auto-enters.
+
+## M18 — Particle-scan arrival + fog-walled fill (July 2026 rewrite)
+
+The cyan holo language (contour grid, scanline, edge windows, birth-holo gate)
+is GONE. The arrival experience is now a phase machine (ringCoordinator):
+
+1. **scanning** — spawn into pure black; a GPU point-cloud wave
+   (`src/world/terrainScanParticles.ts`, ~155k stateless sprites in two LOD
+   tiers) ripples to SCAN_RADIUS=1600 m (~20 terrain tiles ≈ 0.7 MB), heights
+   sampled live from the clipmap height atlas in the vertex stage, radius
+   clamped to terrain-tile residency. Fabric fully hidden (frontGate hold-all).
+2. **morphing** — `materializeField.worldReveal` eases 0→1 (~1.6 s): terrain
+   (dawn ramp in terrainClipmap), water, sky and every amount-driven consumer
+   dawn on one uniform; particles retire; the void fog wall arms at the bubble
+   edge via the sky fog node's inverted-pool term (`sky.setVoidFogWall`).
+   The front parks at the revealed sentinel; frontGate releases (budgeted
+   flush; fabric appears via plain dark→lit birth fades — applyBirthFade).
+3. **filling** — the rest of the world loads behind the opaque wall (old
+   settle-residency machinery + stall nudges + escapes). Local fabric fades in
+   around the player; beyond-wall attach work is invisible.
+4. **revealing** — wall radius sweeps outward (~5 s) while density eases to 0:
+   the completed city unveils in one moment.
+5. **settled** — steady state; wall term collapses (radius 1e9, density 0).
+
+Escapes bound every phase (scan age cap 45 s, fill age cap 300 s,
+player-escape, capped-radius plateau). Far teleports replay the phases at the
+destination (coversPoint = wave radius while scanning, wall bubble while
+filling). `amountAt`/`materializeAmount` are min'd with worldReveal, so
+CPU-ramped emissives (Bay/GG lights) stay dark until the dawn.
+
+Fog wall honors weather-fog composition but NOT the user fog toggle (it is a
+streaming shroud, not weather). Fabric hitches during the fill are budget-
+bounded exactly as before — fog hides pops, budgets fix hitches.

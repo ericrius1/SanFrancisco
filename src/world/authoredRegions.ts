@@ -4,7 +4,7 @@ import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.j
 import type { GroundTopOverlay, WorldMap } from "./heightmap";
 import type { TerrainCutoutSpec, TileStreamer } from "./tiles";
 import { attachKtx2Loader } from "../render/textures";
-import { applyHoloBirth, materializeField } from "../render/materialize";
+import { applyBirthFade, materializeField } from "../render/materialize";
 import { frontGate, type FrontGateHandle } from "../render/frontGate";
 
 export type AuthoredRegionBounds = {
@@ -201,7 +201,7 @@ function applyRegionMaterialize(root: THREE.Object3D, birth: unknown): void {
       } else {
         material = new THREE.MeshStandardNodeMaterial().copy(source as THREE.MeshStandardMaterial);
       }
-      applyHoloBirth(material as THREE.MeshStandardNodeMaterial, { birth });
+      applyBirthFade(material as THREE.MeshStandardNodeMaterial, { birth });
       converted.set(source, material);
     }
     mesh.material = material;

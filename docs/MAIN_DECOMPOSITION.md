@@ -223,3 +223,26 @@ four testable boot modules are the win.
   hitch attribution keeps working.
 - Anything optional obeys the massive-app loading policy (no eager asset or
   chunk fetches at boot).
+
+## Steps 6+7 landed — P3 world-systems + frame body + P5/P4 tails extracted
+
+`main.ts` is now **~1,020 lines** (was ~5,270): a true composition root
+(P0–P2 boot core, the ctx facade, the P4 handoff). The former inline blocks
+live in `src/app/compose/`:
+
+- `worldSystemsCore.ts` (P3 groups A–I: water/FX/tools/audio/surf/embodiments/
+  regions/lights), `worldSystemsNet.ts` (J–N: net/remotes/customizers/nav/
+  minimap/debug-panel/sites), `frameBody.ts` (O: the per-frame hook bodies +
+  tick), `voidArrival.ts` (M18 ring coordinator wiring + far-arrival hooks +
+  ringUpdate), `debugExposure.ts` (the `__sf` DebugRegistry build + dev demo
+  harness).
+- Pattern: `composeWorldSystemsCore(ctx)` → typed record; crossing consts ride
+  the record (consumers destructure), crossing lets live on each module's
+  `state` record (`core.state.fetchBall`), and main's own mutable boot lets are
+  exposed through the live get/set facade `ctx.state` (`app/compose/ctx.ts`).
+  Late NET→CORE captures (teaGarden/net/debugPanel) ride `ctx.late` with
+  non-null asserts that mirror the original single-closure TDZ semantics.
+- Typing debt: `MainCtx` types the load-bearing systems precisely and the long
+  tail as `any` — tighten opportunistically.
+Verified: tsc clean, production build, full void-arrival boot probe (all five
+M18 phases + zero page errors) after each extraction.

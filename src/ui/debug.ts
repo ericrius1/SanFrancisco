@@ -933,10 +933,6 @@ export class DebugPanel {
         this.#renderer.setSize(window.innerWidth, window.innerHeight);
       }
     });
-    // M13: re-enable the cyan holo-materialize birth look for chunks streaming
-    // in during settled play (chunk-loading visibility debugging). The value is
-    // polled per frame by main's ringUpdate — no onChange side effect needed.
-    RENDER_TUNING.bind(rendering, { keys: ["holoChunkStreaming"] });
     const waterEchoes = rendering.addFolder({ title: "water echoes", expanded: false });
     WATER_ECHO_TUNING.bind(waterEchoes, { onChange: () => {} });
     await checkpoint();

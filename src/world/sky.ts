@@ -178,6 +178,9 @@ const FOG_NOISE_SPEED = 0.2
 const FOG_NOISE_CENTER = 0.7
 const FOG_TOP_VARIATION = 22 // metres, exactly the r185 reference amplitude
 const FOG_EXTINCTION_LENGTH = 160 // metres at unit density (Beer-Lambert mean free path)
+// Void fog wall (M18): mean free path INSIDE the wall medium at unit density.
+// Short — the wall must read near-opaque ~3 lengths past the bubble edge.
+const FOG_WALL_EXTINCTION_LENGTH = 40
 // SF's broad flat districts do not intersect the noisy ceiling as often as the
 // reference's mountain terrain. A symmetric, mean-preserving density swing makes
 // the same octaves read as rolling pockets over streets and water.
@@ -267,6 +270,17 @@ export class Sky {
   // dark holo void. A pure uniform multiply on dome/IBL radiance and on fog
   // opacity — light-set membership and light intensities are never touched.
   #uVoid = uniform(0)
+  // Void fog wall (M18 fill phase): everything OUTSIDE the circle
+  // (#uWallCenter, #uWallRadius) is a participating medium of density
+  // #uWallDensity — the world beyond the scanned bubble builds up invisibly
+  // behind it until the big reveal sweeps the radius out and the density to 0.
+  // Transmittance uses the analytic overlap of the camera→fragment ray with
+  // the outside region, so a player who walks INTO the wall is correctly
+  // immersed (short rays stay clear, long rays whiten). Radius 1e9 + density 0
+  // collapse the term to zero (the boot/settled default).
+  #uWallCenter = uniform(new THREE.Vector2(0, 0))
+  #uWallRadius = uniform(1e9)
+  #uWallDensity = uniform(0)
   #fogNode: N | null = null
 
   #proceduralFog = sampleProceduralFog(sfCivilFromScalarDays(this.#civilDay))
@@ -703,26 +717,66 @@ export class Sky {
       horizontalDist
     )
 
+    // Void fog wall (M18): Beer-Lambert extinction over the analytic overlap
+    // of the camera→fragment ray with the region OUTSIDE the wall circle
+    // (2D XZ ray-vs-circle, branch-free: a missed circle yields zero inside
+    // length via sqrt(max(disc, 0))). Radius 1e9 → the whole ray is "inside"
+    // → zero optical depth → the term collapses when the wall is down.
+    const wallL = horizontalDist.max(0.001)
+    const wallDir = (positionWorld as N).xz.sub((cameraPosition as N).xz).div(wallL)
+    const wallM = (this.#uWallCenter as N).sub((cameraPosition as N).xz)
+    const wallB = wallM.dot(wallDir)
+    const wallC = wallM.dot(wallM).sub((this.#uWallRadius as N).mul(this.#uWallRadius as N))
+    const wallS = wallB.mul(wallB).sub(wallC).max(0).sqrt()
+    const wallT0 = wallB.sub(wallS).clamp(0, wallL)
+    const wallT1 = wallB.add(wallS).clamp(0, wallL)
+    const wallOutside = wallL.sub(wallT1.sub(wallT0))
+    const wallFog = wallOutside
+      .mul(this.#uWallDensity as N)
+      .div(FOG_WALL_EXTINCTION_LENGTH)
+      .negate()
+      .exp()
+      .oneMinus()
+
     // Probabilistic union, identical to the reference for bank + haze and extended
-    // by only the narrow cull fade: 1 - (1-bank)(1-haze)(1-edge).
+    // by only the narrow cull fade: 1 - (1-bank)(1-haze)(1-edge)(1-mist).
     const clear = bankFog
       .oneMinus()
       .mul(distHaze.oneMinus())
       .mul(edgeFade.oneMinus())
       .mul(buenaVistaMist.oneMinus())
 
+    // Weather fog honors the user fog toggle; the void WALL does not (it is a
+    // streaming shroud, not weather — disabling it would expose the raw world
+    // build during the fill phase). Union the two, then the void ramp gates
+    // everything (the scan phase is clear black; the wall arms as the dawn
+    // brings the void factor down).
+    const weatherFactor = clear.oneMinus().mul(this.#uFogEnabled as N)
+    const combinedFactor = float(1).sub(
+      weatherFactor.oneMinus().mul(wallFog.oneMinus())
+    )
+
     // Keep the official reference colour in color-managed form. It reads milky
     // white under ACES and now agrees with the visible horizon instead of resolving
     // to the old #4d5358 charcoal attractor.
     return tslFog(
       color(FOG_COLOR).mul(this.#uFogLight as N),
-      clear
-        .oneMinus()
-        .mul(this.#uFogEnabled as N)
-        // Void realm: fog fades out with the void ramp (a uniform multiply on
-        // the fog factor — the graph and pipeline are unchanged).
-        .mul((this.#uVoid as N).oneMinus())
+      // Void realm: fog fades out with the void ramp (a uniform multiply on
+      // the fog factor — the graph and pipeline are unchanged).
+      combinedFactor.mul((this.#uVoid as N).oneMinus())
     )
+  }
+
+  /**
+   * Void fog wall control (M18 fill phase). Everything outside `radius` around
+   * (x, z) renders through a dense shroud while the far world builds behind
+   * it; the reveal animation sweeps `radius` outward while easing `density`
+   * to 0. `density` 0 (or a huge radius) collapses the term entirely.
+   */
+  setVoidFogWall(x: number, z: number, radius: number, density: number) {
+    ;(this.#uWallCenter.value as THREE.Vector2).set(x, z)
+    this.#uWallRadius.value = Math.max(1, radius)
+    this.#uWallDensity.value = Math.max(0, density)
   }
 
   /**

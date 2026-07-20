@@ -36,12 +36,7 @@ export const RENDER_TUNING = tunables("render", {
   // of matte spheres at 5/18/50/90% albedo — the referee for any grading change.
   greyCards: { v: false, label: "grey cards (5·18·50·90%)" },
   wireframe: { v: false, label: "wireframe mode (R)" },
-  wireframeLodGradient: { v: true, label: "resolution gradient" },
-  // M13 debug: chunks streaming in during NORMAL (settled) play render the
-  // cyan holo-materialize birth look instead of their plain crossfade — a
-  // chunk-loading visibility aid. Boot/teleport sweeps always use holo.
-  // Polled per frame by main's ringUpdate (works without the pane open).
-  holoChunkStreaming: { v: false, label: "holo chunk streaming" }
+  wireframeLodGradient: { v: true, label: "resolution gradient" }
 });
 
 /** Free-orbit camera (C mode). Bound under advanced → camera in the "/" panel. */

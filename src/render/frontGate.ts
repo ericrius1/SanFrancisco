@@ -1,58 +1,30 @@
-// Front visibility gate (M12 — "nothing but void beyond the front").
+// Front visibility gate (M12, simplified by the M18 particle-scan rewrite:
+// "nothing but void during the scan").
 //
-// During the ring coordinator's sweep, world content whose nearest point lies
-// beyond the materialize front (+ band + lead margin) stays HIDDEN even when it
-// is resident/attached/warmed: beyond the dissolve edge the player sees pure
-// void (terrain contour grid + sky only), and the city grows outward into the
-// darkness. This module is visibility-only — loading, warming and residency
-// keep running ahead of the front exactly as before (C2 depends on it).
+// While the ring coordinator is in its void phases (scan + morph), world
+// fabric that becomes resident/attached/warmed stays HIDDEN — the player sees
+// pure black + the terrain-scan particle field only. This module is
+// visibility-only: loading, warming and residency keep running underneath
+// exactly as before.
 //
 // Contract:
-// - Systems ask `shouldHide(x, z, r)` at attach time; when true they hide their
+// - Systems ask `shouldHide(...)` at attach time; when true they hide their
 //   chunk and register it via `hide(...)` with a `show()` callback.
-// - `update()` (one call per frame from the ring driver) reveals registered
-//   chunks nearest-first under a small per-frame budget, triggered while the
-//   chunk is still beyond the visible dissolve edge (inside the lead margin),
-//   where the materialize shader renders it near-invisible — so the flip never
-//   reads as a pop. Unhide work is tracer-counted (`frontUnhide`).
-// - `clearedRadius()` reports the nearest still-hidden chunk; the ring
-//   coordinator clamps the front's target to it (the front must never outpace
-//   the unhide queue), exactly like it chases residency.
-// - `setActive(false)` (settle / force-settle) releases everything under a
-//   larger budget — no path may leave content permanently hidden.
+// - While the gate is ACTIVE nothing is revealed — there is no admission
+//   ring any more; the scan wave owns the whole screen.
+// - `setActive(false)` (the coordinator leaving the morph, or a settle
+//   escape) releases everything through `update()`'s budgeted nearest-first
+//   flush — fabric then birth-fades in (plain dark→lit ramps) while the void
+//   fog wall hides everything beyond the scanned bubble. No path may leave
+//   content permanently hidden.
 // - Steady state: with no registered entries and the gate inactive, both
 //   `shouldHide` and `update` are trivial early-outs (zero settled cost).
 import * as THREE from "three/webgpu";
-import { materializeField, MATERIALIZE_REVEALED_RADIUS } from "./materialize";
+import { materializeField } from "./materialize";
 import { tracer } from "../core/hitchTracer";
 
-/** How far beyond the dissolve edge (front + band) chunks un-hide, as a
- *  multiple of the CURRENT band. M15: the band scales with the front radius
- *  during the early bloom (ringCoordinator.bandFor), so the admission ring
- *  scales with it — at spawn (band 10) chunks flip visible only ~50 m out
- *  instead of ~250 m, so no black tile bodies silhouette against the sky at
- *  the void moment; at full band 48 this reproduces the M12 value (band +
- *  4·band = 240 ≈ the old 48 + 200). Must stay comfortably larger than the
- *  clamp margin below so admission and the front-clamp can never deadlock
- *  (admit at d ≤ front + 5·band while the front may reach d − margin:
- *  5·band > 3·band + 6 for any band ≥ 3). */
-export const FRONT_GATE_LEAD_BANDS = 4;
-/** Ring-coordinator clamp: front target ≤ nearestHidden − this. Keeps the
- *  visibility flip past the ~3-band edge-glow window (plus a small headroom),
- *  where the holo shader renders the chunk near-black — band 48 reproduces
- *  the M12 value (150). */
-export function frontGateClampMargin(): number {
-  return (materializeField.frontBand.value as number) * 3 + 6;
-}
-/** Current admission lead in metres (band-scaled — see FRONT_GATE_LEAD_BANDS). */
-export function frontGateLead(): number {
-  return (materializeField.frontBand.value as number) * FRONT_GATE_LEAD_BANDS;
-}
-// Per-frame unhide budgets: flipping visibility can force BundleGroup
-// re-records, so reveals are metered (nearest-first). The flush budget applies
-// once the gate deactivates (settle) so the world completes quickly without a
-// single monster frame.
-const SWEEP_UNHIDE_BUDGET = 6;
+// Per-frame unhide budget for the release flush: flipping visibility can
+// force BundleGroup re-records, so reveals are metered (nearest-first).
 const FLUSH_UNHIDE_BUDGET = 16;
 
 export type FrontGateHandle = { cancel(): void };
@@ -69,8 +41,8 @@ class FrontGate {
   #active = false;
   #entries = new Set<Entry>();
 
-  /** True while a sweep gates visibility (main drives this off the ring
-   *  coordinator state each frame — active unless settled). */
+  /** True while the void phases gate visibility (main drives this off the
+   *  ring coordinator state each frame). */
   get active(): boolean {
     return this.#active;
   }
@@ -84,49 +56,32 @@ class FrontGate {
     this.#active = active;
   }
 
-  #admitRadius(): number {
-    const radius = materializeField.frontRadius.value as number;
-    if (radius >= MATERIALIZE_REVEALED_RADIUS) return Infinity;
-    return radius + (materializeField.frontBand.value as number) + frontGateLead();
-  }
-
   #nearestDist(x: number, z: number, r: number): number {
     const c = materializeField.frontCenter.value as THREE.Vector2;
     return Math.max(0, Math.hypot(x - c.x, z - c.y) - r);
   }
 
-  /** Should a chunk with bounding circle (x, z, r) start hidden right now? */
-  shouldHide(x: number, z: number, r: number): boolean {
-    if (!this.#active) return false;
-    return this.#nearestDist(x, z, r) > this.#admitRadius();
+  /** Should a chunk with bounding circle (x, z, r) start hidden right now?
+   *  M18: while the gate is active EVERYTHING starts hidden. */
+  shouldHide(_x: number, _z: number, _r: number): boolean {
+    return this.#active;
   }
 
-  /** Rect variant (exact bounds distance — large cells' bounding circles are
-   *  too conservative): should content covering [minX..maxX]×[minZ..maxZ]
-   *  stay deferred/hidden right now? `extraLead` widens the admission ring for
-   *  consumers whose reveal has pipeline latency of its own (citygen's
-   *  serialized cell prepare): anything past ~3 bands beyond the front renders
-   *  near-black through the holo edge window, so a wider lead stays invisible
-   *  while letting that latency overlap the front's progress. */
+  /** Rect variant kept for callers with exact bounds (citygen cells). The
+   *  bounds and lead no longer matter — active means hidden. */
   shouldHideRect(
-    minX: number,
-    minZ: number,
-    maxX: number,
-    maxZ: number,
-    extraLead = 0
+    _minX: number,
+    _minZ: number,
+    _maxX: number,
+    _maxZ: number,
+    _extraLead = 0
   ): boolean {
-    if (!this.#active) return false;
-    const admit = this.#admitRadius();
-    if (!Number.isFinite(admit)) return false;
-    const c = materializeField.frontCenter.value as THREE.Vector2;
-    const dx = Math.max(minX - c.x, 0, c.x - maxX);
-    const dz = Math.max(minZ - c.y, 0, c.y - maxZ);
-    return Math.hypot(dx, dz) > admit + extraLead;
+    return this.#active;
   }
 
   /** Register an already-hidden chunk. `show()` fires exactly once (from
-   *  `update()`'s budgeted reveal) unless the handle is cancelled first (chunk
-   *  unloaded / visibility ownership taken over by another path). */
+   *  `update()`'s budgeted release flush) unless the handle is cancelled
+   *  first (chunk unloaded / visibility ownership taken over). */
   hide(x: number, z: number, r: number, show: () => void): FrontGateHandle {
     const entry: Entry = { x, z, r, show, dist: 0 };
     this.#entries.add(entry);
@@ -137,9 +92,8 @@ class FrontGate {
     };
   }
 
-  /** Distance (from the live front centre) to the nearest still-hidden chunk;
-   *  Infinity when nothing is hidden. The ring coordinator min's this into its
-   *  target so the front never outpaces the unhide queue. */
+  /** DEBUG/probe: distance (from the front centre) to the nearest still-hidden
+   *  chunk; Infinity when nothing is hidden. */
   clearedRadius(): number {
     let min = Infinity;
     for (const e of this.#entries) {
@@ -155,13 +109,12 @@ class FrontGate {
   // front refocus. They register ONCE here with a fixed bounds circle; the
   // shared `applyStatic()` (called from main at gate arm + far-arrival cuts,
   // beside tiles/authoredRegions applyFrontGate) re-evaluates each entry:
-  // beyond the admission ring the object hides and joins the normal budgeted
-  // reveal queue, inside it the object shows. Zero steady-state cost — when
-  // the gate is inactive every entry just stays/becomes visible.
+  // while the gate is active the object hides and joins the budgeted release
+  // flush, otherwise it shows. Zero steady-state cost.
   #statics: { obj: { visible: boolean }; x: number; z: number; r: number; handle?: FrontGateHandle }[] = [];
 
   /** Register a boot-resident scene prop for front gating (idempotent per
-   *  object). Applies the current front test immediately. */
+   *  object). Applies the current gate state immediately. */
   registerStatic(obj: { visible: boolean }, x: number, z: number, r: number): void {
     if (this.#statics.some((s) => s.obj === obj)) return;
     const entry = { obj, x, z, r, handle: undefined as FrontGateHandle | undefined };
@@ -169,8 +122,8 @@ class FrontGate {
     this.#applyStaticEntry(entry);
   }
 
-  /** Re-apply the front test to every registered static prop (front refocus /
-   *  gate arm — the same moment tiles.applyFrontGate runs). */
+  /** Re-apply the gate to every registered static prop (gate arm / far-arrival
+   *  cuts — the same moment tiles.applyFrontGate runs). */
   applyStatic(): void {
     for (const entry of this.#statics) this.#applyStaticEntry(entry);
   }
@@ -190,21 +143,18 @@ class FrontGate {
   }
 
   /** Per-frame driver (call once, right after the ring coordinator update).
-   *  Reveals admitted chunks nearest-first under the budget; when inactive,
-   *  flushes everything under the larger budget. */
+   *  Inert while active; once released, flushes everything nearest-first
+   *  under the budget (fabric birth-fades handle the appearance). */
   update(): void {
-    if (this.#entries.size === 0) return;
-    const flush = !this.#active;
-    const admit = flush ? Infinity : this.#admitRadius();
+    if (this.#active || this.#entries.size === 0) return;
     let candidates: Entry[] | null = null;
     for (const e of this.#entries) {
       e.dist = this.#nearestDist(e.x, e.z, e.r);
-      if (e.dist <= admit) (candidates ??= []).push(e);
+      (candidates ??= []).push(e);
     }
     if (!candidates) return;
     candidates.sort((a, b) => a.dist - b.dist);
-    const budget = flush ? FLUSH_UNHIDE_BUDGET : SWEEP_UNHIDE_BUDGET;
-    const n = Math.min(candidates.length, budget);
+    const n = Math.min(candidates.length, FLUSH_UNHIDE_BUDGET);
     for (let i = 0; i < n; i++) {
       const e = candidates[i];
       this.#entries.delete(e);

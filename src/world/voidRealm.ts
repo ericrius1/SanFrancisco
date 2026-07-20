@@ -14,9 +14,6 @@ import type { Sky } from "./sky";
 import type { Water } from "./water";
 import { materializeField } from "../render/materialize";
 
-/** Front radius (m) by which the void has fully faded back to the normal sky. */
-const VOID_FADE_RADIUS = 900;
-
 export class VoidRealm {
   readonly #sky: Sky;
   #water: Water | null = null;
@@ -47,11 +44,13 @@ export class VoidRealm {
     return Number.isNaN(this.#applied) ? 0 : this.#applied;
   }
 
-  /** Derive the factor from the front and push it into sky + water uniforms.
-   *  Cheap and idempotent — call once per frame next to materializeField.update. */
+  /** Derive the factor from the global dawn ramp (M18: sky, fog and water all
+   *  dawn on the same worldReveal ease the ring coordinator drives during the
+   *  morph — the scan phase itself is pure black) and push it into sky +
+   *  water uniforms. Cheap and idempotent — call once per frame next to
+   *  materializeField.update. */
   update(): void {
-    const radius = materializeField.frontRadius.value as number;
-    const derived = 1 - Math.min(1, Math.max(0, radius / VOID_FADE_RADIUS));
+    const derived = 1 - Math.min(1, Math.max(0, materializeField.worldReveal.value as number));
     const v = this.#override ?? derived;
     if (v === this.#applied) return;
     this.#applied = v;
