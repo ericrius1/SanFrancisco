@@ -13,7 +13,7 @@
 // most two uniform writes per frame; the residency query is throttled both
 // here (every RESIDENCY_REFRESH_FRAMES frames) and inside the streamer's own
 // tick-cadence cache. No allocations per frame.
-import { materializeField, MATERIALIZE_DEFAULT_BAND } from "../render/materialize";
+import { bandForRadius, materializeField } from "../render/materialize";
 import { frontGateClampMargin } from "../render/frontGate";
 import { tracer } from "../core/hitchTracer";
 import type { TileStreamer } from "../world/tiles";
@@ -142,17 +142,14 @@ const SWEEP_MAX_AGE_S = 90;
 // radius only after residency has plateaued at it this long — never at boot,
 // where the initial bubble clamp lifts and growth resumes within seconds.
 const CAPPED_RADIUS_QUIET_MS = 12_000;
-// M15/M16: the dissolve band (and with it the ~3-band edge-glow window every
-// holo consumer renders, AND the terrain visibility tail at front + 3·band)
-// SCALES with the front radius. With the spread gate holding the front at the
-// PLAYER_CLEAR bubble, the void moment is a ~5 m pool of light — literally
-// nothing renders past it — until spreading starts. Relaxes to the default
-// band as the ring grows; the settled sentinel is unaffected (band is
-// irrelevant at radius=1e9 — every amount saturates to 1).
-const BAND_MIN = 1;
-const BAND_RADIUS_SCALE = 0.35;
-const bandFor = (radius: number): number =>
-  Math.min(MATERIALIZE_DEFAULT_BAND, Math.max(BAND_MIN, radius * BAND_RADIUS_SCALE));
+// M15/M16: the dissolve band SCALES with the front radius. With the spread
+// gate holding the front at the PLAYER_CLEAR bubble, the void moment is a
+// ~5 m pool of light — literally nothing renders past it — until spreading
+// starts. Relaxes to the default band as the ring grows; the settled sentinel
+// is unaffected (band is irrelevant at radius=1e9 — every amount saturates to
+// 1). M17: the helper lives in materialize.ts (bandForRadius) so EVERY
+// setFront/holo caller shares the radius-scaled path.
+const bandFor = bandForRadius;
 
 export class RingCoordinator {
   #opts: RingCoordinatorOptions;

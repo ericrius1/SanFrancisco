@@ -57,6 +57,18 @@ export const MATERIALIZE_REVEALED_RADIUS = 1e9;
 /** Default dissolve band width in metres (holo → shaded transition ring). */
 export const MATERIALIZE_DEFAULT_BAND = 48;
 
+// M15/M17: the dissolve band (and with it the ~3-band edge-glow window every
+// holo consumer renders, AND the terrain visibility tail at front + 3·band)
+// SCALES with the front radius. A small radius with the DEFAULT band is a
+// contradiction the renderer turns into the "bright grid to ~150 m" look — a
+// collapsed front must always read as a tiny pool of light. Shared here (the
+// ring coordinator drives its per-frame sweeps through the same helper) so no
+// setFront/holo caller can ever leave (radius≈0, band=48) behind.
+const BAND_MIN = 1;
+const BAND_RADIUS_SCALE = 0.35;
+export const bandForRadius = (radius: number): number =>
+  Math.min(MATERIALIZE_DEFAULT_BAND, Math.max(BAND_MIN, radius * BAND_RADIUS_SCALE));
+
 /** Cool cyan-teal holo default (fog-city palette); retint via `holoColor`. */
 export const HOLO_COLOR_DEFAULT = 0x36e0cf;
 
@@ -156,11 +168,14 @@ export class MaterializeField {
     return [...this.#births.keys()];
   }
 
-  /** Place the front explicitly; cancels any running sweep. */
-  setFront(x: number, z: number, radius: number, band = MATERIALIZE_DEFAULT_BAND): void {
+  /** Place the front explicitly; cancels any running sweep. Omitting `band`
+   *  derives it from the radius (see bandForRadius) so a collapsed front is
+   *  always the tiny-pool look, never a zero-radius front with the wide
+   *  default dissolve window. */
+  setFront(x: number, z: number, radius: number, band?: number): void {
     (this.frontCenter.value as THREE.Vector2).set(x, z);
     this.frontRadius.value = Math.max(0, radius);
-    this.frontBand.value = Math.max(1, band);
+    this.frontBand.value = Math.max(1, band ?? bandForRadius(radius));
     this.#sweepTarget = null;
   }
 
