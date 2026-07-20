@@ -56,11 +56,11 @@ assert.equal(
   "an affordable outer candidate inside the speed-adjusted band should remain eligible",
 );
 
-const mainSource = readFileSync(path.join(ROOT, "src", "main.ts"), "utf8");
-const cityGenStart = mainSource.indexOf("const citygenMod = await import(\"./world/citygen\")");
-const cityGenEnd = mainSource.indexOf("// Legacy procedural-spawn probes", cityGenStart);
+const worldSystemsSource = readFileSync(path.join(ROOT, "src", "app", "compose", "worldSystemsNet.ts"), "utf8");
+const cityGenStart = worldSystemsSource.indexOf("const citygenMod = await import(\"../../world/citygen\")");
+const cityGenEnd = worldSystemsSource.indexOf("// Legacy procedural-spawn probes", cityGenStart);
 assert.ok(cityGenStart >= 0 && cityGenEnd > cityGenStart, "CityGen lazy-start block should remain discoverable");
-const cityGenBlock = mainSource.slice(cityGenStart, cityGenEnd);
+const cityGenBlock = worldSystemsSource.slice(cityGenStart, cityGenEnd);
 assert.doesNotMatch(
   cityGenBlock,
   /waitForWorldBackgroundWindow/,
@@ -69,11 +69,18 @@ assert.doesNotMatch(
 assert.match(
   cityGenBlock,
   /beforeRenderOwnership:\s*\(isCurrent\)\s*=>\s*waitForCityGenRenderWindow\(isCurrent\)/,
-  "per-cell owner preparation must carry its generation predicate into the host gate",
+  "detached owner preparation must carry its current-owner predicate into the host gate",
 );
 assert.match(
-  mainSource,
-  /const waitForCityGenRenderWindow[\s\S]*?while \(worldArrival\.active\)[\s\S]*?isCurrent && !isCurrent\(\)/,
+  cityGenBlock,
+  /prepareRenderOwner:\s*\(owner\)\s*=>\s*pipeline\.prepareSceneOwner\(owner\)/,
+  "CityGen owners must compile in the live beauty scene-pass context",
+);
+
+const admissionSource = readFileSync(path.join(ROOT, "src", "app", "compose", "backgroundAdmission.ts"), "utf8");
+assert.match(
+  admissionSource,
+  /const waitForCityGenRenderWindow[\s\S]*?while \(isArrivalActive\(\) \|\| !revealSettled\(\)\)[\s\S]*?isCurrent && !isCurrent\(\)/,
   "the CityGen owner gate must remain arrival-aware and cancellable",
 );
 
@@ -81,7 +88,12 @@ const ringSource = readFileSync(path.join(ROOT, "src", "world", "citygen", "stre
 assert.match(
   ringSource,
   /beforeRenderOwnership\?\.\(isCurrent\)/,
-  "the ring must pass the active cell predicate before WebGPU compilation",
+  "the ring must pass the current-owner predicate before WebGPU compilation",
+);
+assert.doesNotMatch(
+  ringSource,
+  /ActiveChunkPrepare|chunk-lod:cell:/,
+  "CityGen must warm shared prototypes rather than compile every streamed cell",
 );
 assert.match(
   ringSource,
@@ -96,7 +108,9 @@ console.log(JSON.stringify({
   contracts: {
     postRevealLazyImport: true,
     movementQuietGateExcluded: true,
-    generationPredicateForwarded: true,
+    ownerPredicateForwarded: true,
+    scenePassContextPreparation: true,
+    prototypeOnlyChunkWarmup: true,
     corePrecedesLegacyCost: true,
   },
 }, null, 2));

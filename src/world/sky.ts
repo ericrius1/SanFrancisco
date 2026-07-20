@@ -43,6 +43,7 @@ import {
   type StaticShadowScope
 } from "./shadows/clipmapShadowNode"
 import type { FarOcclusionField } from "./shadows/farOcclusionField"
+import { createStreamedStaticCasterWarmup } from "./shadows/streamedCasterWarmup"
 import {
   sanFranciscoCivilNow,
   sanFranciscoTimeOfDay,
@@ -346,6 +347,11 @@ export class Sky {
   constructor(scene: THREE.Scene, farOcclusion: FarOcclusionField | null = null) {
     this.#scene = scene
     scene.environmentIntensity = 0.075 // a hint of sky in the reflections; the diffuse fill is the hemi's job
+
+    // Covered-boot shadow warmup for streamed merged-proxy vertex layouts.
+    // This stays shadow-only and degenerate, but retains both static-domain
+    // WebGPU node/pipeline cache entries for the lifetime of the world.
+    scene.add(createStreamedStaticCasterWarmup())
 
     this.mesh = new THREE.Mesh(
       new THREE.SphereGeometry(1, 48, 24),
