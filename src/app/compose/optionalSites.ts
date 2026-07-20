@@ -155,7 +155,8 @@ export function createOptionalSites({
   getFoliageOn,
   getRevealed,
   getAvatar,
-  onSitesChanged
+  onSitesChanged,
+  zoneAllowlist
 }: {
   map: WorldMap;
   physics: Physics;
@@ -186,6 +187,10 @@ export function createOptionalSites({
   getAvatar: () => AvatarTraits;
   /** Fires at every site ref change (the old refreshOptionalSiteDebug points). */
   onSitesChanged: (refs: OptionalSiteRefs) => void;
+  /** Zone-only boot: when set, only sites in this set auto-load and only their
+   * exhibit foliage registers. `liftZoneRestriction()` (called by wakeCity)
+   * clears it. Independent of the perf A/B flags. */
+  zoneAllowlist?: ReadonlySet<OptionalSiteId>;
 }): {
   update: () => void;
   /** Per-frame (runs even during arrival, unlike update): re-assert the streaming
@@ -194,6 +199,9 @@ export function createOptionalSites({
   ensure: (id: OptionalSiteId) => Promise<void>;
   reprioritizeForArrival: (destination: Readonly<{ x: number; z: number }>) => void;
   perfAllowed: (id: OptionalSiteId) => boolean;
+  /** Zone-only boot: drop the allowlist (all sites auto-loadable again) and
+   * register the exhibit foliage entries that were skipped. Idempotent. */
+  liftZoneRestriction: () => void;
   streamingIdle: () => boolean;
   /** The live site registry, exposed on __sf.optionalWorldSites for the lazy-site probes. */
   readonly list: readonly OptionalWorldSite[];
@@ -212,6 +220,10 @@ export function createOptionalSites({
   let sutroBaths: SutroBaths | null = null;
   let pickleballController: PickleballController | null = null;
   let siteFoliage: SiteFoliageStreamer | null = null;
+  // Zone-only boot allowlist (independent of the perf A/B flags). Cleared by
+  // liftZoneRestriction() at wake, which then registers the deferred foliage.
+  let zoneRestriction: ReadonlySet<OptionalSiteId> | null = zoneAllowlist ?? null;
+  const zoneAllowed = (id: OptionalSiteId): boolean => !zoneRestriction || zoneRestriction.has(id);
   const OPTIONAL_SITE_APPROACH_RADIUS = 500;
   const OPTIONAL_SITE_RECHECK_RADIUS = OPTIONAL_SITE_APPROACH_RADIUS * 1.25;
   const OPTIONAL_SITE_UNLOAD_RADIUS = 1000;
@@ -705,53 +717,80 @@ export function createOptionalSites({
       })
   });
   siteFoliage.setVisible(getFoliageOn());
-  siteFoliage.register({
-    id: "lands-end-cypress",
-    x: LANDS_END_CENTER.x,
-    z: LANDS_END_CENTER.z,
-    loadDistance: 1500,
-    unloadDistance: 2000,
-    build: async () => (await import("../../world/landsEnd/vegetation")).createLandsEndFoliage(map)
-  });
-  siteFoliage.register({
-    id: "beach-pianist-grove",
-    x: BEACH_PIANIST_CENTER.x,
-    z: BEACH_PIANIST_CENTER.z,
-    loadDistance: 950,
-    unloadDistance: 1250,
-    build: async () =>
-      (await import("../../world/beachPianist/vegetation")).createBeachPianistFoliage(map)
-  });
   const coronaFoliageRules = {
     hash: coronaHash2,
     inDogPark: (x: number, z: number) => coronaPointInPolygon(x, z, CORONA_DOG_PARK),
     distanceToTrails: coronaDistanceToTrails
   };
-  siteFoliage.register({
-    id: "corona-trees",
-    x: CORONA_HEIGHTS_SUMMIT.x,
-    z: CORONA_HEIGHTS_SUMMIT.z,
-    loadDistance: 1500,
-    unloadDistance: 2000,
-    build: async () =>
-      (await import("../../world/coronaHeights/vegetation")).createCoronaHeightsFoliage(
-        map,
-        coronaFoliageRules,
-        ["trees"]
-      )
-  });
-  siteFoliage.register({
-    id: "corona-groundcover",
-    x: CORONA_HEIGHTS_SUMMIT.x,
-    z: CORONA_HEIGHTS_SUMMIT.z,
-    loadDistance: 650,
-    unloadDistance: 950,
-    build: async () =>
-      (await import("../../world/coronaHeights/vegetation")).createCoronaHeightsFoliage(
-        map,
-        coronaFoliageRules,
-        ["groundcover"]
-      )
+  // Each exhibit-foliage entry names the optional site (zone) it belongs to.
+  // Under a zone allowlist only the matching zone's entries register at boot;
+  // the rest are held and registered by liftZoneRestriction() at wake.
+  const siteFoliageRegistrations: Array<{
+    zone: OptionalSiteId;
+    entry: Parameters<SiteFoliageStreamer["register"]>[0];
+  }> = [
+    {
+      zone: "lands-end",
+      entry: {
+        id: "lands-end-cypress",
+        x: LANDS_END_CENTER.x,
+        z: LANDS_END_CENTER.z,
+        loadDistance: 1500,
+        unloadDistance: 2000,
+        build: async () => (await import("../../world/landsEnd/vegetation")).createLandsEndFoliage(map)
+      }
+    },
+    {
+      zone: "beach-pianist",
+      entry: {
+        id: "beach-pianist-grove",
+        x: BEACH_PIANIST_CENTER.x,
+        z: BEACH_PIANIST_CENTER.z,
+        loadDistance: 950,
+        unloadDistance: 1250,
+        build: async () =>
+          (await import("../../world/beachPianist/vegetation")).createBeachPianistFoliage(map)
+      }
+    },
+    {
+      zone: "corona",
+      entry: {
+        id: "corona-trees",
+        x: CORONA_HEIGHTS_SUMMIT.x,
+        z: CORONA_HEIGHTS_SUMMIT.z,
+        loadDistance: 1500,
+        unloadDistance: 2000,
+        build: async () =>
+          (await import("../../world/coronaHeights/vegetation")).createCoronaHeightsFoliage(
+            map,
+            coronaFoliageRules,
+            ["trees"]
+          )
+      }
+    },
+    {
+      zone: "corona",
+      entry: {
+        id: "corona-groundcover",
+        x: CORONA_HEIGHTS_SUMMIT.x,
+        z: CORONA_HEIGHTS_SUMMIT.z,
+        loadDistance: 650,
+        unloadDistance: 950,
+        build: async () =>
+          (await import("../../world/coronaHeights/vegetation")).createCoronaHeightsFoliage(
+            map,
+            coronaFoliageRules,
+            ["groundcover"]
+          )
+      }
+    }
+  ];
+  const deferredFoliageRegistrations = siteFoliageRegistrations.filter((registration) => {
+    if (zoneAllowed(registration.zone)) {
+      siteFoliage!.register(registration.entry);
+      return false;
+    }
+    return true;
   });
 
   // One compact truth panel for the authored-site streaming contract. "ready"
@@ -1126,6 +1165,7 @@ export function createOptionalSites({
     let nearestDistance = OPTIONAL_SITE_APPROACH_RADIUS;
     for (const site of optionalWorldSites) {
       if (site.state === "ready" || site.state === "failed") continue;
+      if (!zoneAllowed(site.id)) continue;
       if (!optionalSitePerfAllowed(site.id)) continue;
       if (site.available?.() === false) continue;
       const destDistance = Math.hypot(destination.x - site.x, destination.z - site.z);
@@ -1178,6 +1218,7 @@ export function createOptionalSites({
     let nearestDistanceSq = OPTIONAL_SITE_APPROACH_RADIUS * OPTIONAL_SITE_APPROACH_RADIUS;
     for (const site of optionalWorldSites) {
       if (site.state !== "dormant") continue;
+      if (!zoneAllowed(site.id)) continue;
       if (!optionalSitePerfAllowed(site.id)) continue;
       if (site.available?.() === false) continue;
       const dx = player.position.x - site.x;
@@ -1198,6 +1239,14 @@ export function createOptionalSites({
     reprioritizeOptionalSitesForArrival({ x: player.position.x, z: player.position.z });
   });
 
+  const liftZoneRestriction = (): void => {
+    if (!zoneRestriction) return;
+    zoneRestriction = null;
+    for (const registration of deferredFoliageRegistrations.splice(0)) {
+      siteFoliage?.register(registration.entry);
+    }
+  };
+
   return {
     update: updateOptionalWorldSites,
     applyPerfGates: () => {
@@ -1206,6 +1255,7 @@ export function createOptionalSites({
     ensure: ensureOptionalWorldSite,
     reprioritizeForArrival: reprioritizeOptionalSitesForArrival,
     perfAllowed: optionalSitePerfAllowed,
+    liftZoneRestriction,
     // renderIdle's site half: no site queued/loading and Sutro's private close-
     // water GPU gate is quiet. main ANDs this with modulesReady.
     streamingIdle: () =>
