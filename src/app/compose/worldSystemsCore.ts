@@ -773,11 +773,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // stays out of ordinary boot unless a probe explicitly asks for it.
   // (state.citygen hoisted to the module state record)
   const citygenRing: { current: CityGenRing | null } = { current: null };
-  // M5: the ring coordinator's residency now mins the state.citygen chunk radius
-  // (declared as a rebindable above P5 — the coordinator exists before this).
-  ctx.state.citygenResidencyRadius = (x, z) =>
-    citygenRing.current?.materializedRadiusAround(x, z) ?? Infinity;
-  // M12: same rebindable pattern for the far-teleport cell re-gate.
+  // M12: late-bound far-teleport cell re-gate.
   ctx.state.citygenApplyFrontGate = () => citygenRing.current?.applyFrontGate();
 
   // crabs to hunt (hunt.ts)

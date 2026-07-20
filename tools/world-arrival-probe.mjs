@@ -279,6 +279,14 @@ async function installInstrumentation(page) {
     const originalPrimeAt = sf.tiles.primeAt.bind(sf.tiles);
     sf.tiles.primeAt = (x, z) => {
       const startedT = now();
+      // A latest-wins request may replace a prime that already reached ready
+      // but had not yet reached interaction release. TileStreamer correctly
+      // adopts the new generation without resolving the already-settled
+      // promise twice; mirror that replacement as superseded in the probe.
+      const replacedReady = [...visualPrimes].reverse().find((candidate) =>
+        candidate.status === "ready" && candidate.releasedT === null
+      );
+      if (replacedReady) replacedReady.status = "superseded";
       const prime = originalPrimeAt(x, z);
       const record = {
         generation: prime.generation,
@@ -286,6 +294,7 @@ async function installInstrumentation(page) {
         startedT,
         settledT: null,
         releasedT: null,
+        releaseRequestedT: null,
         status: "pending",
         requiredTileKeys: [...prime.requiredTileKeys],
         requiredTerrainKeys: [...prime.requiredTerrainKeys]
@@ -294,16 +303,24 @@ async function installInstrumentation(page) {
       void prime.ready.then((result) => {
         record.settledT = now();
         record.status = result.status;
+        if (result.status === "ready" && record.releaseRequestedT !== null) {
+          record.releasedT = Math.max(record.releaseRequestedT, record.settledT);
+        }
       });
       return prime;
     };
     const originalResumeBackground = sf.tiles.resumeBackgroundStreaming.bind(sf.tiles);
     sf.tiles.resumeBackgroundStreaming = () => {
       const record = [...visualPrimes].reverse().find((prime) =>
-        prime.status === "ready" && prime.releasedT === null
+        prime.status !== "superseded" && prime.releasedT === null
       );
-      if (record) record.releasedT = now();
-      return originalResumeBackground();
+      const requestedT = now();
+      const accepted = originalResumeBackground();
+      if (accepted && record) {
+        record.releaseRequestedT = requestedT;
+        if (record.status === "ready") record.releasedT = record.releaseRequestedT;
+      }
+      return accepted;
     };
 
     const recordState = (snapshot) => {

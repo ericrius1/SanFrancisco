@@ -237,6 +237,8 @@ type ActiveVisualPrime = {
   requiredTerrainKeys: string[];
   resolve: (result: TileVisualPrimeResult) => void;
   settled: boolean;
+  /** Interaction release arrived before the visual minimum. */
+  releaseRequested: boolean;
 };
 
 // precomputed per-manifest-tile scan entry (avoids Object.keys + string parsing every scan)
@@ -277,6 +279,13 @@ const MINIMUM_VISUAL_RADIUS_CAP = 360;
 // the ordinary draw ring in two quiet stages. This keeps a newly requested
 // authored landmark ahead of tiles that cannot yet contribute to its view.
 const BACKGROUND_STREAM_RADII = [1200, 2200] as const;
+/**
+ * Normal play keeps a moving near/mid-distance working set instead of
+ * eventually admitting every tile inside the user's full vista radius. The
+ * narrow cull-edge fog follows this limit, so cells beyond it remain invisible
+ * until the player actually approaches them.
+ */
+export const BACKGROUND_STREAM_LIMIT = BACKGROUND_STREAM_RADII[BACKGROUND_STREAM_RADII.length - 1];
 const BACKGROUND_STREAM_STAGE_MS = 1800;
 // residentRadiusAround recompute cadence, in streamer ticks (~0.25 s at 60 Hz).
 // One pass over ~205 manifest entries — cheap, but not per-frame-per-caller.
@@ -564,7 +573,7 @@ export class TileStreamer {
   #shadowProxyBuildActive = false;
   #colliderSource: TileColliderSource | null = null;
   #unsubscribeColliderSource: (() => void) | null = null;
-  #backgroundStage: number = BACKGROUND_STREAM_RADII.length;
+  #backgroundStage: number = BACKGROUND_STREAM_RADII.length - 1;
   #backgroundRadius = Number.POSITIVE_INFINITY;
   #nextBackgroundStageAt = 0;
   // residentRadiusAround memo (reused object — no per-query allocation)
@@ -897,16 +906,17 @@ export class TileStreamer {
     this.#prevPx = focusX;
     this.#prevPz = focusZ;
     this.#hasPrevPos = true;
-    if (!this.#visualPrime && this.#backgroundStage < BACKGROUND_STREAM_RADII.length) {
+    if (!this.#visualPrime && this.#backgroundStage < BACKGROUND_STREAM_RADII.length - 1) {
       if (this.#fastStream || performance.now() >= this.#nextBackgroundStageAt) {
         if (this.#fastStream) {
-          this.#backgroundStage = BACKGROUND_STREAM_RADII.length;
-          this.#backgroundRadius = Number.POSITIVE_INFINITY;
+          // Speed raises fetch concurrency and jumps to the MID ring, not the
+          // full city. Re-centering that ring as the player moves is what makes
+          // newly relevant tiles eligible.
+          this.#backgroundStage = BACKGROUND_STREAM_RADII.length - 1;
+          this.#backgroundRadius = BACKGROUND_STREAM_LIMIT;
         } else {
           this.#backgroundStage++;
-          this.#backgroundRadius = this.#backgroundStage < BACKGROUND_STREAM_RADII.length
-            ? BACKGROUND_STREAM_RADII[this.#backgroundStage]
-            : Number.POSITIVE_INFINITY;
+          this.#backgroundRadius = BACKGROUND_STREAM_RADII[this.#backgroundStage];
           this.#nextBackgroundStageAt = performance.now() + BACKGROUND_STREAM_STAGE_MS;
         }
         this.#scan(focusX, focusZ);
@@ -996,11 +1006,19 @@ export class TileStreamer {
    * draw ring. World arrival calls this only after reveal and collision release,
    * so background Meshopt/decode work cannot steal the final interaction frames.
    */
-  resumeBackgroundStreaming(): void {
+  resumeBackgroundStreaming(): boolean {
     const prime = this.#visualPrime;
-    if (!prime?.settled || prime.generation !== this.#generation) return;
+    if (!prime || prime.generation !== this.#generation) return false;
+    if (!prime.settled) {
+      // A far arrival can become interactive on real ground before its baked
+      // visual minimum finishes. Remember the release instead of leaving the
+      // streamer stuck in required-only mode until a later teleport.
+      prime.releaseRequested = true;
+      return true;
+    }
     this.#visualPrime = null;
     this.beginBackgroundExpansion();
+    return true;
   }
 
   /** Restart the ordinary ring center-out after boot restores the user's full
@@ -1016,13 +1034,20 @@ export class TileStreamer {
   get backgroundStreamingDebug(): Readonly<{
     stage: number;
     radius: number;
+    limit: number;
     fullRadius: number;
   }> {
     return {
       stage: this.#backgroundStage,
       radius: this.#currentLoadRadius(),
+      limit: Math.min(CONFIG.tileLoadRadius, BACKGROUND_STREAM_LIMIT),
       fullRadius: CONFIG.tileLoadRadius
     };
+  }
+
+  /** Live radius shared with enhancement streamers such as CityGen. */
+  get activeStreamingRadius(): number {
+    return this.#currentLoadRadius();
   }
 
   /**
@@ -1135,7 +1160,8 @@ export class TileStreamer {
       requiredTileSet: new Set(requiredTileKeys),
       requiredTerrainKeys,
       resolve,
-      settled: false
+      settled: false,
+      releaseRequested: false
     };
     this.#visualPrime = state;
 
@@ -1224,6 +1250,21 @@ export class TileStreamer {
       requiredTileKeys: [...prime.requiredTileKeys],
       requiredTerrainKeys: [...prime.requiredTerrainKeys]
     });
+    if (
+      status === "ready" &&
+      prime.releaseRequested &&
+      this.#visualPrime === prime
+    ) {
+      this.#visualPrime = null;
+      const releasedGeneration = prime.generation;
+      // Let ready observers and the destination's final attach frame complete
+      // before scanning/starting the mid ring. A newer teleport wins the
+      // microtask and suppresses this obsolete expansion.
+      queueMicrotask(() => {
+        if (this.#generation !== releasedGeneration || this.#visualPrime) return;
+        this.beginBackgroundExpansion();
+      });
+    }
   }
 
   #disposeObjectGeometry(object: THREE.Object3D | null): void {
@@ -1279,7 +1320,13 @@ export class TileStreamer {
     this.#hasScanned = true;
     const loadRadius = this.#currentLoadRadius();
     const loadR2 = loadRadius * loadRadius;
-    const unloadR2 = CONFIG.tileUnloadRadius * CONFIG.tileUnloadRadius;
+    // Retention follows the admitted working set, not the much larger user
+    // vista radius. Otherwise a long drive still accumulates a city-wide trail
+    // even though new far tiles are correctly demand-gated.
+    const unloadRadius = this.#visualPrime
+      ? CONFIG.tileUnloadRadius
+      : Math.min(CONFIG.tileUnloadRadius, loadRadius + 400);
+    const unloadR2 = unloadRadius * unloadRadius;
     const required = this.#visualPrime?.generation === this.#generation
       ? this.#visualPrime.requiredTileSet
       : null;

@@ -44,6 +44,7 @@ import {
   windGustValue,
 } from "../../world/vegetation/runtime";
 import type {  } from "../../world/citygen";
+import { BACKGROUND_STREAM_LIMIT } from "../../world/tiles";
 import type {  } from "../../gameplay/archery";
 import type {  } from "../../gameplay/pup";
 import type {  } from "../../gameplay/fortMasonEnsemble";
@@ -77,7 +78,7 @@ import type { MainCtx } from "./ctx";
 
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
-  const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, constructionSlice } = ctx;
+  const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
   const { water, underwater, hud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
   const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
   const state = {
@@ -493,7 +494,9 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       // and streaming focus current so crossing a doorway cannot leave the camera
       // stuck in the previous indoor/outdoor mode.
       if (!worldArrival.active) {
-        citygenRing.current?.update(player.position, frameDt);
+        if (ringCoordinator.state === "settled") {
+          citygenRing.current?.update(player.position, frameDt);
+        }
         if (sites.perfAllowed("sutro-baths")) {
           core.state.sutroBaths?.update(0, ctx.state.elapsed, player.renderPosition, camera, windGustValue());
         }
@@ -784,6 +787,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       renderer.setSize(window.innerWidth, window.innerHeight);
       CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
       CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
+      sky.setStreamingCullRadius(Math.min(WORLD_TUNING.values.radius, BACKGROUND_STREAM_LIMIT));
       setFoliageVisible(FOLIAGE_TUNING.values.visible);
       tiles.forceScan();
       sky.applyFogParams();
@@ -1212,9 +1216,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (embodiments.currentAnimal) core.state.forest?.setRiddenSpeed(player.speed);
     if (!worldArrival.active) core.state.islands?.update(ctx.state.elapsed, camera.position);
     // Baked destination tiles already provide the fixed-quality arrival view.
-    // CityGen hydrates its richer cells only after the local visual/collision
-    // transaction finishes, so it never competes with teleport-critical work.
-    if (!worldArrival.active) citygenRing.current?.update(player.position, frameDt);
+    // CityGen hydrates its richer cells only after the complete point/fog
+    // handoff settles, so it never competes with teleport-critical work or
+    // changes the authored reveal timing.
+    if (!worldArrival.active && ringCoordinator.state === "settled") {
+      citygenRing.current?.update(player.position, frameDt);
+    }
     if (!worldArrival.active && !core.state.highUp) core.state.hunt?.update(frameDt, ctx.state.elapsed, player.position);
     if (!worldArrival.active) core.state.golf?.update(frameDt, ctx.state.elapsed, { player, input, hud, chase, camera });
     if (!worldArrival.active && sites.perfAllowed("palace")) {

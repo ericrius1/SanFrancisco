@@ -793,6 +793,16 @@ export class Sky {
    *  draw radius — lets surf mode tighten tile streaming without a hard seam
    *  popping at the (much closer) unload distance. null restores the default. */
   #cullRadiusOverride: number | null = null
+  #streamingCullRadius: number | null = null
+
+  /** Base cull edge owned by the ordinary moving tile working set. Activity
+   * overrides (surf, cinematics) still take precedence and can be cleared
+   * without losing this baseline. */
+  setStreamingCullRadius(r: number | null) {
+    this.#streamingCullRadius = r
+    this.applyFogParams()
+  }
+
   setCullRadiusOverride(r: number | null) {
     this.#cullRadiusOverride = r
     this.applyFogParams()
@@ -807,7 +817,7 @@ export class Sky {
     // turn exponentially whiter, so players had to select absurd 60–300 km radii
     // just to see across an 11 km city. Only the narrow cull-edge fade follows the
     // streamed radius; broad haze and the height bank stay in physical metres.
-    const edgeR = this.#cullRadiusOverride ?? v.radius
+    const edgeR = this.#cullRadiusOverride ?? this.#streamingCullRadius ?? v.radius
     // densityFogFactor is exp², so sqrt keeps master/weather linear in optical
     // effect. The bank is already a Beer-Lambert path integral.
     this.#uFogDensity.value = v.fog * Math.sqrt(master * weather.hazeScale)

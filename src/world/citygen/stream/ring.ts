@@ -74,7 +74,7 @@ const DETAIL_COST_BUDGET = 55_000;
 const COLLIDER_R = 90;
 const COLLIDER_EXIT = 115; // hysteresis: drop back to baked only past here
 const COLLIDER_BUDGET = 20; // exact-collider swaps per scan (cheap: no mesh) — nearest first
-const CHUNK_BUDGET = 260;// buildings merged into chunk geometry per frame (no hitch)
+const CHUNK_BUDGET = 96; // buildings merged into chunk geometry per frame (bounded upload slices)
 // Converting the packed worker payload into rich Entry/poly objects is allocation
 // heavy in a dense cell. Bound that work so a 1,600-building downtown cell never
 // becomes one GC-prone teleport frame. This is scheduling only; visual quality is
@@ -86,7 +86,7 @@ const CELL_HYDRATE_SLICE = 96;
 const CELL_RETIRE_SLICE = 48;
 const CELL_RETIRE_HEAVY_SLICE = 1;
 // Rich cells contain Entry objects, footprint tuples and live terrain samples.
-// Keep enough for the entire 7x7 visual ring plus backtracking headroom, but do
+// Keep enough for the moving near/mid ring plus backtracking headroom, but do
 // not retain every district visited during a long teleport session. The packed
 // worker payload remains the immutable source for cheap re-hydration.
 const MATERIALIZED_CELL_CACHE_MAX = 128;
@@ -130,6 +130,9 @@ interface QuerySolidHost {
   removeQuerySolid(id: number): void;
 }
 interface Tiles {
+  /** Current near/mid tile-admission radius. CityGen must not outrun the
+   * substrate streamer and hydrate districts that are still outside its ring. */
+  readonly activeStreamingRadius?: number;
   suppressBuilding(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
   unsuppressBuilding(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
   suppressBuildingMesh(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
@@ -290,12 +293,11 @@ export interface CityGenDoorProbe {
 export interface CityGenRing {
   count: number;
   update(playerPos: THREE.Vector3, dt: number): void;
-  /** M5: distance from (x, z) to the nearest WANTED cell (inside the current
+  /** Distance from (x, z) to the nearest WANTED cell (inside the current
    *  chunk-visual window) that has not yet published its chunk (or fallen back
-   *  to the baked city) — Infinity when nothing constrains. The ring
-   *  coordinator mins this into its residency so the materialize front never
-   *  sweeps across a cell mid baked→chunk swap. One pass over ≤(2·cellLoad+1)²
-   *  keys (≤ ~49) — cheap; callers throttle. */
+   *  to the baked city) — Infinity when nothing constrains. Debug/probe surface;
+   *  the baked city is complete, so this enhancement never gates world reveal.
+   *  One pass over ≤(2·cellLoad+1)² keys (normally ≤25) — cheap. */
   materializedRadiusAround(x: number, z: number): number;
   /** M12: re-evaluate every published cell against the front visibility gate
    *  (far-teleport refocus — cells revealed by the previous sweep re-hide when
@@ -510,6 +512,10 @@ export async function createCityGenRing(
       throw new Error(`CityGen exterior preparation failed (${exteriorPipelinePrepareFailures} owner${exteriorPipelinePrepareFailures === 1 ? "" : "s"})`);
     }
   }
+  // A ring may finish its one-time pipeline preparation during a later
+  // teleport. Publish the owner hidden whenever the point-scan gate is active
+  // so its empty black batches cannot become depth-writing silhouettes.
+  renderRoot.visible = !frontGate.active;
   ctx.scene.add(renderRoot);
   // no host scheduler → run deferred work immediately (portable fallback)
   const schedule: ScheduleFn = ctx.schedule ?? ((_lane, job) => { let v = job(); let guard = 0; while (v === "again" && guard++ < 10000) v = job(); });
@@ -1187,6 +1193,7 @@ export async function createCityGenRing(
   // (OUTSIDE the BundleGroup) so its per-frame rotation never re-records a bundle.
   const doorRoot = new THREE.Group();
   doorRoot.name = "cityGenDoors";
+  doorRoot.visible = !frontGate.active;
   ctx.scene.add(doorRoot);
   // Every live door reuses these two geometries and the theme's shared materials.
   // Opening many doors therefore adds transforms/draws, not geometry allocations or
@@ -1891,6 +1898,12 @@ export async function createCityGenRing(
     get count() { return total; },
     applyFrontGate(): void {
       if (disposed) return;
+      // Module/shell batches and animated doors are shared city-wide owners,
+      // not children of a cell chunk, so gate them explicitly. Leaving these
+      // roots visible during the scan produced the dark-house occlusion that
+      // blocked the outward point ripple even though every chunk was hidden.
+      renderRoot.visible = !frontGate.active;
+      doorRoot.visible = !frontGate.active;
       for (const cell of loaded.values()) {
         if (cell.phase === "ready") applyCellFrontGate(cell);
       }
@@ -1924,6 +1937,14 @@ export async function createCityGenRing(
     },
     update(playerPos, dt) {
       if (disposed) return;
+      const sharedOwnersVisible = !frontGate.active;
+      if (renderRoot.visible !== sharedOwnersVisible) renderRoot.visible = sharedOwnersVisible;
+      if (doorRoot.visible !== sharedOwnersVisible) doorRoot.visible = sharedOwnersVisible;
+      // The complete baked city remains the fallback underneath the reveal.
+      // Do not hydrate, merge, upload, or compile its CityGen enhancement while
+      // the point/dawn fabric gate is held; all of that work can wait until the
+      // authored handoff has finished.
+      if (frontGate.active) return;
       const ptx = Math.floor((playerPos.x - minX) / tile);
       const ptz = Math.floor((playerPos.z - minZ) / tile);
       const destinationChanged = ptx !== centerTileX || ptz !== centerTileZ;
@@ -1967,12 +1988,17 @@ export async function createCityGenRing(
       accum = 0;
 
       // read the live-tunable knobs fresh each scan (dragging a "/" slider re-tunes now).
-      // Chunk MESH reach is capped at CHUNK_VISUAL_RADIUS so a large draw-distance
-      // vista doesn't stream hundreds of prism cells (Corona/meadow tris). Baked
-      // OSM tiles still cover the farther skyline. Unload one cell further out.
+      // Chunk MESH reach follows the tile streamer's live near/mid tier as well
+      // as its own quality cap. A reveal therefore starts with only the local
+      // cell and grows to nearby cells after the substrate ring expands; CityGen
+      // never races ahead and hydrates an unseen 7x7 district grid.
       const cellLoad = Math.max(
         1,
-        Math.floor(Math.min(CONFIG.tileLoadRadius, CHUNK_VISUAL_RADIUS) / tile)
+        Math.floor(Math.min(
+          CONFIG.tileLoadRadius,
+          CHUNK_VISUAL_RADIUS,
+          ctx.tiles.activeStreamingRadius ?? CONFIG.tileLoadRadius,
+        ) / tile)
       );
       activeCellLoad = cellLoad;
       pumpChunkPrepare();

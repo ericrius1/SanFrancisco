@@ -34,6 +34,9 @@ export function createBackgroundAdmission({
   /** Resolves at the next admitted quiet stage (idle + one presentation frame).
    * `deadline` caps the wait: past it, admission happens even while moving. */
   waitForWindow: (extraQuietMs?: number, deadline?: number) => Promise<void>;
+  /** Critical substrate expansion may run once the point/dawn handoff ends,
+   * while the fog wall still covers the outer fill. */
+  waitForStreamingWindow: (extraQuietMs?: number, deadline?: number) => Promise<void>;
   /** Arrival began: re-anchor motion and hold background work for a fixed beat. */
   onArrivalStart: () => void;
   /** Never admit before now+quietMs (keeps any later deadline already set). */
@@ -41,7 +44,11 @@ export function createBackgroundAdmission({
   nextPresentationFrame: () => Promise<void>;
   /** CityGen's gentler gate: yield frames across arrivals, never require idling. */
   waitForCityGenRenderWindow: (isCurrent?: () => boolean) => Promise<boolean>;
+  /** Late-bind the reveal phase machine (constructed after this coordinator). */
+  setRevealLifecycle: (lifecycle: { fabricHeld(): boolean; settled(): boolean }) => void;
 } {
+  let revealFabricHeld = () => false;
+  let revealSettled = () => true;
   let worldBackgroundNotBefore = performance.now() + WORLD_BACKGROUND_BOOT_QUIET_MS;
   let worldBackgroundAdmissionAt = worldBackgroundNotBefore;
   let worldBackgroundMotionX = player.position.x;
@@ -85,16 +92,26 @@ export function createBackgroundAdmission({
   const deferAtLeast = (quietMs: number) => {
     worldBackgroundNotBefore = Math.max(worldBackgroundNotBefore, performance.now() + quietMs);
   };
-  /** `deadline` (ms, performance.now clock) caps how long quiet is awaited:
-   * past it the caller admits on the next idle+frame even while the player
-   * keeps moving. An active arrival always blocks regardless of deadline. */
-  const waitForWindow = async (extraQuietMs = 0, deadline = Infinity): Promise<void> => {
+  /** `deadline` caps only the quiet/motion wait. Arrival and reveal lifecycle
+   * gates remain hard: optional work must never interrupt the authored handoff. */
+  const waitForWindowWithGate = async (
+    lifecycleBlocked: () => boolean,
+    extraQuietMs = 0,
+    deadline = Infinity,
+    postLifecycleQuietMs = 0,
+  ): Promise<void> => {
     while (true) {
+      if (lifecycleBlocked() && postLifecycleQuietMs > 0) {
+        // Keep sliding the quiet edge while the point/fog reveal is active.
+        // When it finally settles, optional work gets a genuine calm beat
+        // instead of waking as a thundering herd on the very next frame.
+        deferAtLeast(postLifecycleQuietMs);
+      }
       const target = Math.min(
         Math.max(worldBackgroundNotBefore + extraQuietMs, worldBackgroundAdmissionAt),
         deadline
       );
-      if (!isArrivalActive() && performance.now() >= target) {
+      if (!isArrivalActive() && !lifecycleBlocked() && performance.now() >= target) {
         await new Promise<void>((resolve) => {
           if ("requestIdleCallback" in window) {
             window.requestIdleCallback(() => resolve(), { timeout: 1000 });
@@ -104,6 +121,7 @@ export function createBackgroundAdmission({
         });
         if (
           !isArrivalActive() &&
+          !lifecycleBlocked() &&
           (performance.now() >= deadline ||
             (performance.now() >= worldBackgroundNotBefore + extraQuietMs &&
               performance.now() >= worldBackgroundAdmissionAt))
@@ -121,31 +139,48 @@ export function createBackgroundAdmission({
       await new Promise<void>((resolve) => setTimeout(resolve, remaining));
     }
   };
+  const waitForWindow = (extraQuietMs = 0, deadline = Infinity) =>
+    waitForWindowWithGate(
+      () => !revealSettled(),
+      extraQuietMs,
+      deadline,
+      WORLD_BACKGROUND_AFTER_ARRIVAL_MS,
+    );
+  const waitForStreamingWindow = (extraQuietMs = 0, deadline = Infinity) =>
+    waitForWindowWithGate(revealFabricHeld, extraQuietMs, deadline);
   const nextPresentationFrame = () => new Promise<void>((resolve) => {
     requestAnimationFrame(() => resolve());
   });
   /**
-   * CityGen's destination cell is part of the nearby world, not optional far
-   * scenery. Yield one frame between WebGPU owner preparations, and continue to
-   * defer across an active arrival, but never require the player to stop moving.
+   * CityGen is an enhancement over the complete baked city. Each non-cancellable
+   * driver preparation therefore waits for the reveal to settle AND for a real
+   * quiet window; if motion begins, at most the one already-admitted owner can
+   * finish before the sequence pauses again.
    * A per-cell generation predicate lets a teleport cancel an old owner before
    * its non-cancellable compileAsync call begins.
    */
   const waitForCityGenRenderWindow = async (isCurrent?: () => boolean): Promise<boolean> => {
-    while (isArrivalActive()) {
+    while (isArrivalActive() || !revealSettled()) {
       if (isCurrent && !isCurrent()) return false;
+      deferAtLeast(WORLD_BACKGROUND_AFTER_ARRIVAL_MS);
       await nextPresentationFrame();
     }
     if (isCurrent && !isCurrent()) return false;
-    await nextPresentationFrame();
+    await waitForWindow();
     return !isCurrent || isCurrent();
+  };
+  const setRevealLifecycle = (lifecycle: { fabricHeld(): boolean; settled(): boolean }) => {
+    revealFabricHeld = lifecycle.fabricHeld;
+    revealSettled = lifecycle.settled;
   };
   return {
     noteMotion,
     waitForWindow,
+    waitForStreamingWindow,
     onArrivalStart,
     deferAtLeast,
     nextPresentationFrame,
-    waitForCityGenRenderWindow
+    waitForCityGenRenderWindow,
+    setRevealLifecycle
   };
 }

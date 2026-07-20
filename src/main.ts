@@ -344,6 +344,7 @@ async function boot() {
       prepareDestinationEssentials(destination, signal),
     classifyFarArrival: (x, z) => classifyFarArrival(x, z),
     onFarArrivalCut: (x, z) => onFarArrivalCut(x, z),
+    waitForRenderIdle: () => pipeline.waitForCompileIdle(),
     // M9: far arrivals onto an authored groundTop-overlay floor (Sutro Baths
     // deck, Fort Mason bandstand…) keep the cover for that region's prime so
     // the overlay install can never pop the player up post-reveal.
@@ -358,6 +359,7 @@ async function boot() {
   });
   const {
     waitForWindow: waitForWorldBackgroundWindow,
+    waitForStreamingWindow: waitForWorldStreamingWindow,
     nextPresentationFrame,
     waitForCityGenRenderWindow
   } = backgroundAdmission;
@@ -709,12 +711,8 @@ async function boot() {
       materializeField.amountAt(SUTRO_TOWER_ANCHOR.x, SUTRO_TOWER_ANCHOR.z);
   };
 
-  // M5: citygen chunk-publication radius folded into the residency the front
-  // chases. The ring is a post-reveal dynamic import — until it exists nothing
-  // constrains (Infinity); rebound right after the ring holder is declared.
-  let citygenResidencyRadius: (x: number, z: number) => number = () => Infinity;
-  // M12: far-teleport re-gate for published citygen cells (rebound with the
-  // residency query once the ring's dynamic import lands; no-op before then).
+  // M12: far-teleport re-gate for published CityGen cells (no-op before the
+  // ring's dynamic import lands).
   let citygenApplyFrontGate: () => void = () => {};
 
   // Provisional void loop: the minimal per-frame set — input → fixed-step
@@ -845,10 +843,16 @@ async function boot() {
     terrainTiles,
     scanParticles,
     primeInitialVisualAt,
-    citygenResidencyRadius: (x, z) => citygenResidencyRadius(x, z),
     citygenApplyFrontGate: () => citygenApplyFrontGate()
   });
   const ringCoordinator = arrival.ringCoordinator;
+  backgroundAdmission.setRevealLifecycle({
+    fabricHeld: () => ringCoordinator.fabricHeld,
+    settled: () => ringCoordinator.state === "settled"
+  });
+  pipeline.setCompileBlocker(
+    () => worldArrival.active || ringCoordinator.state !== "settled"
+  );
   classifyFarArrival = arrival.classifyFarArrival;
   onFarArrivalCut = arrival.onFarArrivalCut;
   ringUpdate = arrival.ringUpdate;
@@ -881,6 +885,7 @@ async function boot() {
     renderer,
     sky,
     waitForWorldBackgroundWindow,
+    waitForWorldStreamingWindow,
     aim,
     tiles,
     rayOrigin,
@@ -890,6 +895,7 @@ async function boot() {
     authoredRegions,
     applyLightFrontRamps,
     waitForCityGenRenderWindow,
+    ringCoordinator,
     spawn,
     app,
     voidRealm,
@@ -950,8 +956,6 @@ async function boot() {
       set classifyFarArrival(v) { classifyFarArrival = v as never; },
       get onFarArrivalCut() { return onFarArrivalCut; },
       set onFarArrivalCut(v) { onFarArrivalCut = v as never; },
-      get citygenResidencyRadius() { return citygenResidencyRadius; },
-      set citygenResidencyRadius(v) { citygenResidencyRadius = v as never; },
       get citygenApplyFrontGate() { return citygenApplyFrontGate; },
       set citygenApplyFrontGate(v) { citygenApplyFrontGate = v as never; },
       get avatarTraits() { return avatarTraits; },

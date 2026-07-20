@@ -69,17 +69,17 @@ export type RingCoordinatorOptions = {
    */
   terrainRadius?: (x: number, z: number) => number;
   /**
-   * M5: distance to the nearest citygen cell that has not yet published its
-   * chunk (Infinity when nothing constrains). Min'd into the FILL residency
-   * so the fog wall never drops while a cell is mid baked→chunk swap.
-   */
-  citygenRadius?: (x: number, z: number) => number;
-  /**
    * The player's real full draw radius (CONFIG.tileLoadRadius before boot
    * clamped it to the initial visual bubble). Fill residency reaching
    * min(fullRadius, SETTLE_CAP) is "full world" for reveal purposes.
    */
   fullRadius: number;
+  /**
+   * Radius the initial fog-walled fill is actually allowed to admit. This is
+   * deliberately smaller than the full vista radius: the ordinary streamer
+   * re-centres this working set as the player moves.
+   */
+  fillRadius?: number;
   /**
    * M9: LIVE CONFIG.tileLoadRadius. A mode can cap it below fullRadius
    * (surf's 2 km cull cap), which would hold fill residency below the reveal
@@ -403,15 +403,14 @@ export class RingCoordinator {
   #refreshFillResidency(): void {
     const now = performance.now();
     let resident = this.#opts.tiles.residentRadiusAround(this.#cx, this.#cz);
-    if (this.#opts.citygenRadius) {
-      tracer.count("ringCitygenResidency");
-      const citygen = this.#opts.citygenRadius(this.#cx, this.#cz);
-      if (citygen < resident) resident = citygen;
-    }
     if (resident > this.#resident + 1) this.#lastGrowthAt = now;
     this.#resident = resident;
 
-    let revealRadius = Math.min(this.#opts.fullRadius, SETTLE_CAP);
+    let revealRadius = Math.min(
+      this.#opts.fullRadius,
+      this.#opts.fillRadius ?? Infinity,
+      SETTLE_CAP
+    );
     // M9: respect a LIVE capped load radius (surf's 2 km cap) once residency
     // has plateaued at it.
     const liveRadius = this.#opts.liveLoadRadius?.() ?? Infinity;

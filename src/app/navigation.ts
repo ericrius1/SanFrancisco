@@ -91,6 +91,7 @@ export class NavigationController {
     const spot = this.#history[nextIndex];
     void this.#arrival.arrive({
       label: spot.label,
+      replayPointReveal: true,
       resolve: async (signal) => {
         if (signal.aborted) throw aborted();
         return {
@@ -176,6 +177,7 @@ export class NavigationController {
     const origin = this.#capture("Previous place");
     void this.#arrival.arrive({
       label: toName,
+      replayPointReveal: true,
       resolve: async (signal) => {
         const target = playerId !== undefined ? this.#remotes.stateOf(playerId) : null;
         if (playerId !== undefined && !target) throw new Error(`${toName ?? "Player"} is no longer available`);
@@ -286,6 +288,7 @@ export class NavigationController {
     const origin = this.#capture("Previous place");
     void this.#arrival.arrive({
       label: options.label,
+      replayPointReveal: true,
       resolve: options.resolve,
       onCommitted: () => {
         this.#commitNewPlace(origin, options.label);
@@ -322,6 +325,7 @@ export class NavigationController {
     const origin = this.#capture("Previous place");
     void this.#arrival.arrive({
       label,
+      replayPointReveal: true,
       resolve: async (signal) => {
         if (signal.aborted) throw aborted();
         return {

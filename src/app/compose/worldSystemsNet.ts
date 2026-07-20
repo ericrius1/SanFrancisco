@@ -20,6 +20,7 @@ import type {  } from "../../world/coronaHeights";
 import type {  } from "../../world/missionDolores";
 import { WILD_REGIONS } from "../../world/wildlands/regions";
 import { BUENA_VISTA_REGION } from "../../world/buenaVista";
+import { BACKGROUND_STREAM_LIMIT } from "../../world/tiles";
 import type { PlayerMode } from "../../player/types";
 import {  PAINT_COLORS } from "../../fx/graffiti";
 import {  ProxySet } from "../../core/worldQueries";
@@ -94,7 +95,7 @@ import type { MainCtx } from "./ctx";
 type RegionKey = "garden" | "wildlands" | "golf"; // mirrors main.ts's boot-scope alias
 
 export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>) {
-  const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, waitForWorldBackgroundWindow, aim, tiles, rayOrigin, worldReady, scheduler, pipeline, authoredRegions, waitForCityGenRenderWindow, app, fullTileRadius, invite, startMode, savedSurfboard, savedScooter, savedCar, savedBoard, savedAvatar, resumed, nextPresentationFrame, autoStartHiroTour, releasePianoGodRays, constructionSlice } = ctx;
+  const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, waitForWorldBackgroundWindow, waitForWorldStreamingWindow, aim, tiles, rayOrigin, worldReady, scheduler, pipeline, authoredRegions, waitForCityGenRenderWindow, app, fullTileRadius, invite, startMode, savedSurfboard, savedScooter, savedCar, savedBoard, savedAvatar, resumed, nextPresentationFrame, autoStartHiroTour, releasePianoGodRays, constructionSlice } = ctx;
   const { hud, fx, fireworks, paintballs, setColor, vehicleAudio, jumpLandingAudio, audioControls, nature, ballImpactAudio, ensureSurfShack, prepareSurfEntry, embodiments, inOrbit, siteGate, setFoliageVisible, armIslandsVegetation, worldQueries, citygenRing, dogParkAudio, buskerTalk, setViewMode } = core;
   const state = {
     ghostShip: null as (GhostShip | null),
@@ -949,6 +950,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
         core.state.surfCullStash.unload = ctx.zoneBoot.worldScope.cityTileRadius + 400;
       }
       tiles.beginBackgroundExpansion();
+      sky.setStreamingCullRadius(Math.min(ctx.zoneBoot.worldScope.cityTileRadius, BACKGROUND_STREAM_LIMIT));
       while (ctx.zoneBoot.deferredCityWork.length > 0) {
         const work = ctx.zoneBoot.deferredCityWork.shift()!;
         try {
@@ -1119,7 +1121,10 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   // only after the first view has had a quiet beat. Asset quality is unchanged;
   // this merely stops unseen origin districts from occupying destination slots.
   void worldReady.then(async () => {
-    await waitForWorldBackgroundWindow();
+    // The near/mid substrate is the only background lane allowed during the
+    // fog-walled fill. Optional regions and enhancement compiles use the
+    // stricter settled-world gate.
+    await waitForWorldStreamingWindow();
     if (player.mode === "surf") {
       // Surf's explicit 2 km mode cap remains active; only its restore target is
       // the normal full radius.
@@ -1132,6 +1137,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       CONFIG.tileUnloadRadius = fullTileRadius + 400;
     }
     tiles.beginBackgroundExpansion();
+    sky.setStreamingCullRadius(Math.min(fullTileRadius, BACKGROUND_STREAM_LIMIT));
   });
   void worldReady.then(async () => {
     await waitForWorldBackgroundWindow(1800);

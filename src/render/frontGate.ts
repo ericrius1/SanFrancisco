@@ -25,7 +25,7 @@ import { tracer } from "../core/hitchTracer";
 
 // Per-frame unhide budget for the release flush: flipping visibility can
 // force BundleGroup re-records, so reveals are metered (nearest-first).
-const FLUSH_UNHIDE_BUDGET = 16;
+const FLUSH_UNHIDE_BUDGET = 6;
 
 export type FrontGateHandle = { cancel(): void };
 
