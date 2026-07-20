@@ -1,19 +1,18 @@
-// Local bird life for the Beach Pianist grove. Forty-two low-poly coastal
-// silhouettes share one geometry, one material and one draw call; all paths,
-// climb/pitch, turn banking, burst/glide wing beats AND the perch cycle
-// (cruise → glide in → sit on a real grove crown → take off) are evaluated in
-// the WebGPU vertex stage from static instance data. The perch crowns double
-// as the positions for sparse procedural tree chirps on the shared World
-// audio bus.
+// Local bird life for the Beach Pianist grove. Low-poly coastal silhouettes
+// share one geometry, one material and one draw call; all paths, climb/pitch,
+// turn banking, burst/glide wing beats AND the perch cycle (cruise → glide in
+// → sit on a real grove crown → take off) are evaluated in the WebGPU vertex
+// stage from static instance data. The perch crowns double as the positions
+// for sparse procedural tree chirps on the shared World audio bus.
 
 import * as THREE from "three/webgpu";
 import { audioEngine } from "../../audio/engine";
 import { VOICE_LIB, type NatureVoiceKind } from "../../audio/voices";
 import { createPianoGroveBirdMaterial } from "./birdMaterial";
 
-const CANOPY_FLYERS = 10;
-const DISTANT_FLYERS = 20;
-const PERCH_CYCLERS = 12;
+const CANOPY_FLYERS = 6;
+const DISTANT_FLYERS = 18;
+const PERCH_CYCLERS = 8;
 const COUNT = CANOPY_FLYERS + DISTANT_FLYERS + PERCH_CYCLERS;
 const CHIRP_RADIUS = 105;
 
@@ -356,26 +355,26 @@ export class PianoGroveBirds {
     const color = new THREE.Color();
     let slot = 0;
 
-    // Lively canopy circuits directly over the grove. Tangential speed is what
-    // separates "flying" from "hovering": radius × angular speed lands in the
-    // 4–9 m/s small-bird cruise band, with the wander a clear subordinate.
+    // Loose canopy circuits over the grove. Wider ellipses + lower angular
+    // speed keep tangential cruise in a calm 3–6 m/s band so birds drift across
+    // the frame instead of tightly looping the pianist.
     for (let i = 0; i < CANOPY_FLYERS; i++, slot++) {
       const centerAngle = hash(i, 11) * Math.PI * 2;
-      const centerRadius = 5 + hash(i, 17) * 17;
+      const centerRadius = 12 + hash(i, 17) * 22;
       this.#writeInstance(slot, {
         center: {
           x: Math.cos(centerAngle) * centerRadius,
-          y: 12 + hash(i, 23) * 7,
+          y: 13 + hash(i, 23) * 9,
           z: Math.sin(centerAngle) * centerRadius
         },
-        radiusX: 7 + hash(i, 29) * 7,
-        radiusZ: 6 + hash(i, 31) * 6,
-        angularSpeed: 0.42 + hash(i, 37) * 0.3,
+        radiusX: 14 + hash(i, 29) * 12,
+        radiusZ: 12 + hash(i, 31) * 11,
+        angularSpeed: 0.18 + hash(i, 37) * 0.16,
         phase: hash(i, 41) * Math.PI * 2,
         scale: 0.55 + hash(i, 43) * 0.16,
-        verticalWander: 1 + hash(i, 47) * 1.2,
-        flapRate: 19 + hash(i, 53) * 8,
-        flapAmplitude: 0.66 + hash(i, 59) * 0.18,
+        verticalWander: 1.4 + hash(i, 47) * 1.6,
+        flapRate: 14 + hash(i, 53) * 6,
+        flapAmplitude: 0.52 + hash(i, 59) * 0.16,
         cyclePeriod: 30,
         flyEnd: ALWAYS_FLY,
         cyclePhase: hash(i, 61),
@@ -389,21 +388,21 @@ export class PianoGroveBirds {
     // broad ellipses keep the background alive without additional LOD meshes.
     for (let i = 0; i < DISTANT_FLYERS; i++, slot++) {
       const centerAngle = hash(i, 67) * Math.PI * 2;
-      const centerRadius = 34 + hash(i, 71) * 62;
+      const centerRadius = 40 + hash(i, 71) * 70;
       this.#writeInstance(slot, {
         center: {
           x: Math.cos(centerAngle) * centerRadius,
-          y: 17 + hash(i, 73) * 22,
+          y: 18 + hash(i, 73) * 24,
           z: Math.sin(centerAngle) * centerRadius
         },
-        radiusX: 13 + hash(i, 79) * 16,
-        radiusZ: 11 + hash(i, 83) * 15,
-        angularSpeed: 0.2 + hash(i, 89) * 0.22,
+        radiusX: 18 + hash(i, 79) * 20,
+        radiusZ: 15 + hash(i, 83) * 18,
+        angularSpeed: 0.12 + hash(i, 89) * 0.14,
         phase: hash(i, 97) * Math.PI * 2,
         scale: 0.67 + hash(i, 101) * 0.35,
-        verticalWander: 1.4 + hash(i, 103) * 1.8,
-        flapRate: 13 + hash(i, 107) * 6,
-        flapAmplitude: 0.5 + hash(i, 109) * 0.2,
+        verticalWander: 1.6 + hash(i, 103) * 2.0,
+        flapRate: 11 + hash(i, 107) * 5,
+        flapAmplitude: 0.42 + hash(i, 109) * 0.18,
         cyclePeriod: 30,
         flyEnd: ALWAYS_FLY,
         cyclePhase: hash(i, 113),
@@ -414,8 +413,8 @@ export class PianoGroveBirds {
     }
 
     // Perch cyclers: each owns a real grove crown and endlessly cycles
-    // cruise → glide in → settle → take off, staggered so a few birds are
-    // always sitting in the trees while others wheel overhead.
+    // cruise → glide in → settle → take off. Longer sits + wider, slower
+    // cruise legs keep most of the grove quiet while a few birds drift out.
     for (let i = 0; i < PERCH_CYCLERS; i++, slot++) {
       const perchSource = perches.length > 0 ? perches[i % perches.length] : null;
       // When crowns are shared, a per-bird lateral nudge keeps two silhouettes
@@ -428,33 +427,34 @@ export class PianoGroveBirds {
             )
         : null;
       const offsetAngle = hash(i, 127) * Math.PI * 2;
-      const offsetRadius = 3.5 + hash(i, 131) * 4.5;
+      const offsetRadius = 6 + hash(i, 131) * 8;
       const center = perchPosition
         ? {
             x: perchPosition.x + Math.cos(offsetAngle) * offsetRadius,
-            y: perchPosition.y + 4 + hash(i, 137) * 3,
+            y: perchPosition.y + 5 + hash(i, 137) * 4,
             z: perchPosition.z + Math.sin(offsetAngle) * offsetRadius
           }
         : {
-            x: Math.cos(offsetAngle) * (13 + hash(i, 139) * 14),
-            y: 11 + hash(i, 137) * 5,
-            z: Math.sin(offsetAngle) * (13 + hash(i, 139) * 14)
+            x: Math.cos(offsetAngle) * (16 + hash(i, 139) * 18),
+            y: 12 + hash(i, 137) * 6,
+            z: Math.sin(offsetAngle) * (16 + hash(i, 139) * 18)
           };
       if (perchPosition) this.#perches.push(perchPosition);
-      const period = 24 + hash(i, 149) * 18;
+      const period = 36 + hash(i, 149) * 28;
       this.#writeInstance(slot, {
         center,
-        radiusX: 6 + hash(i, 151) * 5,
-        radiusZ: 5 + hash(i, 157) * 5,
-        angularSpeed: 0.5 + hash(i, 163) * 0.3,
+        radiusX: 10 + hash(i, 151) * 9,
+        radiusZ: 9 + hash(i, 157) * 8,
+        angularSpeed: 0.22 + hash(i, 163) * 0.18,
         phase: hash(i, 167) * Math.PI * 2,
         scale: 0.5 + hash(i, 173) * 0.15,
-        verticalWander: 0.8 + hash(i, 179) * 0.8,
-        flapRate: 20 + hash(i, 181) * 8,
-        flapAmplitude: 0.68 + hash(i, 191) * 0.16,
+        verticalWander: 1.0 + hash(i, 179) * 1.0,
+        flapRate: 15 + hash(i, 181) * 6,
+        flapAmplitude: 0.52 + hash(i, 191) * 0.14,
         cyclePeriod: period,
         // Airborne fallback when the grove has no crowns to land on.
-        flyEnd: perchPosition ? 0.52 + hash(i, 193) * 0.18 : ALWAYS_FLY,
+        // Most of the cycle is perched so the canopy feels settled.
+        flyEnd: perchPosition ? 0.32 + hash(i, 193) * 0.14 : ALWAYS_FLY,
         cyclePhase: hash(i, 197),
         perchOffset: perchPosition
           ? {
@@ -538,7 +538,7 @@ export class PianoGroveBirds {
   }
 
   /** QA-only: clone one slot's flight data into every instance so probes can
-   *  observe a single behaviour with 42× visibility. Irreversible until the
+   *  observe a single behaviour with COUNT× visibility. Irreversible until the
    *  site reloads; never call outside headless verification. */
   debugCloneSlot(source: number): void {
     for (let slot = 0; slot < COUNT; slot++) {

@@ -475,16 +475,18 @@ export function buildPianist(stage: THREE.Group): Pianist {
 
     // Set body motion first: the wrist solve reads the live torso frame, so a
     // loud-passage lean cannot lift the fingertips away from their keys.
-    const nod = Math.max(leftDip, rightDip);
+    // Head stays mostly still while playing — slow gaze drift only, never
+    // keyed to note dips (those used to bounce the skull with every strike).
     const restLookY = 0.55 * Math.sin(elapsed * 0.22) + 0.25;
+    const playLookY = 0.08 * Math.sin(elapsed * 0.11) + 0.04 * Math.sin(elapsed * 0.07 + 1.3);
     rig.torso.rotation.set(
       lerp(0.06 + breathe * 0.02, 0.12 + drive.loud * 0.05 + breathe * 0.012, perform),
       lerp(Math.sin(elapsed * 0.3) * 0.05, Math.sin(elapsed * 0.5) * 0.02, perform),
       0
     );
     rig.head.rotation.set(
-      lerp(0.02 + breathe * 0.02, -0.18 + nod * 0.14 * perform + breathe * 0.01, perform),
-      lerp(restLookY, Math.sin(elapsed * 0.4) * 0.06, perform),
+      lerp(0.02 + breathe * 0.02, -0.12 + breathe * 0.008, perform),
+      lerp(restLookY, playLookY, perform),
       0
     );
 

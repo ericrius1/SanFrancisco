@@ -28,7 +28,10 @@ import {
 import { CROWN_INTENSITY } from "./salesforceCrown"
 import { WINDOW_GLOW_W } from "./facade"
 import { BAY_LIGHTS_INTENSITY } from "./bayLights"
-import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
+import {
+  GOLDEN_GATE_LIGHTS_INTENSITY,
+  GOLDEN_GATE_LIGHTS_SLIDERS
+} from "./goldenGateLights"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
 import { CAR_HEADLIGHT_INTENSITY } from "../vehicles/car/lights"
 import { BUENA_VISTA_MIST, BUENA_VISTA_SUMMIT_CLEARING } from "./buenaVista"
@@ -1108,15 +1111,16 @@ export class Sky {
     BAY_LIGHTS_INTENSITY.value =
       LIGHT_SCALE * (0.7 * dayW + 1.7 * goldW + 2.6 * nightW)
     // Golden Gate architectural lighting: off in daylight, fading in through
-    // evening twilight and fading back out as the sun returns.
-    const goldenGateTwilightW = smooth01(0.5, 7.5, -elevation)
+    // evening twilight (onDeg → fullDeg below horizon; tweakpane-adjustable).
+    const ggOn = GOLDEN_GATE_LIGHTS_SLIDERS.values.onDeg
+    const ggFull = Math.max(ggOn + 0.2, GOLDEN_GATE_LIGHTS_SLIDERS.values.fullDeg)
+    const goldenGateTwilightW = smooth01(ggOn, ggFull, -elevation)
     GOLDEN_GATE_LIGHTS_INTENSITY.value = LIGHT_SCALE * 3.0 * goldenGateTwilightW
-    // Car headlamp beams / ground splash: off by day, thrown after dark
-    // (fake lights — no THREE.Light).
-    CAR_HEADLIGHT_INTENSITY.value = LIGHT_SCALE * 0.95 * goldenGateTwilightW
-    // lit building windows (baked facades + citygen glass + far LOD): dark by
-    // day, on through the same twilight ramp
-    WINDOW_GLOW_W.value = goldenGateTwilightW
+    // Car headlamps / window glow keep a slower shared dusk ramp so they are
+    // not tied to the bridge-light onset knobs.
+    const nightGlowW = smooth01(0.5, 7.5, -elevation)
+    CAR_HEADLIGHT_INTENSITY.value = LIGHT_SCALE * 0.95 * nightGlowW
+    WINDOW_GLOW_W.value = nightGlowW
     // Sutro's aviation beacons: faint red by day, blazing after dark
     SUTRO_LIGHTS_INTENSITY.value =
       LIGHT_SCALE * (0.12 * dayW + 0.9 * goldW + 1.9 * nightW)

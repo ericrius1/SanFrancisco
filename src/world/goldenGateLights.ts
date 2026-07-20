@@ -29,6 +29,10 @@ export const GOLDEN_GATE_LIGHTS_INTENSITY = uniform(0);
 export const GOLDEN_GATE_LIGHTS_TIME = uniform(0);
 
 export const GOLDEN_GATE_LIGHTS_SLIDERS = tunables("goldenGateLights", {
+  // Sky.#applySun reads these each frame: lights begin when the sun is this many
+  // degrees below the horizon, and reach full by `fullDeg`. Negative = still up.
+  onDeg: { v: -0.5, min: -4, max: 6, step: 0.1, label: "on (° below horizon)" },
+  fullDeg: { v: 2.0, min: 0.2, max: 12, step: 0.1, label: "full (° below horizon)" },
   brightness: { v: 1.45, min: 0, max: 4, step: 0.05, label: "brightness x" },
   deck: { v: 1.25, min: 0, max: 3, step: 0.05, label: "deck lamps" },
   cables: { v: 1.15, min: 0, max: 2.5, step: 0.05, label: "cable glow" },

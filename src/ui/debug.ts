@@ -779,7 +779,12 @@ export class DebugPanel {
 
     const goldenGate = advanced.addFolder({ title: "golden gate lights", expanded: false });
     GOLDEN_GATE_LIGHTS_SLIDERS.bind(goldenGate, {
-      onChange: (key, value) => (GOLDEN_GATE_LIGHTS_TUNING[key].value = value as number)
+      onChange: (key, value) => {
+        if (key in GOLDEN_GATE_LIGHTS_TUNING) {
+          GOLDEN_GATE_LIGHTS_TUNING[key as keyof typeof GOLDEN_GATE_LIGHTS_TUNING].value =
+            value as number;
+        }
+      }
     });
 
     // Alpha-hashed tee volumes poll these values into shader uniforms each
