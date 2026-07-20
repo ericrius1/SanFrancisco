@@ -18,6 +18,7 @@ import {
   configureBatchHoloBirth,
   materializeField
 } from "../render/materialize";
+import { frontGate, type FrontGateHandle } from "../render/frontGate";
 import { bumpNormal } from "./tslUtil";
 import { registerTerrainFieldNormal } from "./groundcover/terrainFieldNormal";
 import { createCrownMaterial } from "./salesforceCrown";
@@ -122,6 +123,11 @@ type LoadedTile = {
   // per-tile bundle (batch full/arena exhausted). Gates the near/far facade LOD
   // swap, which only applies to bundle-resident facades.
   buildingBatched?: boolean;
+  // M12: set while this tile is hidden by the front visibility gate (resident +
+  // warmed but beyond the materialize front during a sweep). The handle's
+  // show() reveals the tile; cancelled whenever another path takes over
+  // visibility (unload, covered-arrival adopt, re-gate).
+  frontGateHandle?: FrontGateHandle;
 };
 
 type TileLoadToken = {
@@ -616,6 +622,25 @@ export class TileStreamer {
   // landmarks GLB still in flight (counts toward `busy` for the boot settle gate)
   #landmarksPending = false;
   #landmarkShadowProxyPending = false;
+  // M12 front gate: always-resident landmark subtrees (top-level children of
+  // landmarks.glb), each with a world-XZ bounds circle computed once at load.
+  #landmarkGates: {
+    obj: THREE.Object3D;
+    x: number;
+    z: number;
+    r: number;
+    handle?: FrontGateHandle;
+  }[] = [];
+  // Front gates for the landmark shadow-proxy cell meshes: a proxy must not
+  // keep casting while its beauty landmark is front-hidden. Same shape as
+  // #landmarkGates; rebuilt whenever the proxy (re)installs.
+  #landmarkProxyGates: {
+    obj: THREE.Object3D;
+    x: number;
+    z: number;
+    r: number;
+    handle?: FrontGateHandle;
+  }[] = [];
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -694,6 +719,20 @@ export class TileStreamer {
         setLandmarkBeautyFarFallback(gltf.scene, true);
         this.landmarks = gltf.scene;
         this.#scene.add(gltf.scene);
+        // M12: gate each top-level landmark subtree behind the materialize
+        // front. Bounds circles computed once here (a handful of subtrees).
+        gltf.scene.updateMatrixWorld(true);
+        const box = new THREE.Box3();
+        for (const child of gltf.scene.children) {
+          box.makeEmpty();
+          box.setFromObject(child);
+          if (box.isEmpty()) continue;
+          const x = (box.min.x + box.max.x) / 2;
+          const z = (box.min.z + box.max.z) / 2;
+          const r = Math.hypot(box.max.x - box.min.x, box.max.z - box.min.z) / 2;
+          this.#landmarkGates.push({ obj: child, x, z, r });
+        }
+        this.#applyLandmarkFrontGate();
         this.onShadowCastersChanged("all");
         resolve(gltf.scene);
       }, undefined, (err) => {
@@ -726,6 +765,21 @@ export class TileStreamer {
         this.landmarkShadowProxy?.dispose();
         this.landmarkShadowProxy = proxy;
         this.#scene.add(proxy.group);
+        // M12: gate the proxy cells behind the materialize front like the
+        // beauty subtrees — a hidden landmark must not keep casting via its
+        // proxy. Cell bounds come from each InstancedMesh's instanced bbox
+        // (world space — proxy matrices are world-space, group is identity).
+        for (const gate of this.#landmarkProxyGates) gate.handle?.cancel();
+        this.#landmarkProxyGates.length = 0;
+        for (const mesh of proxy.meshes) {
+          const box = mesh.boundingBox;
+          if (!box || box.isEmpty()) continue;
+          const x = (box.min.x + box.max.x) / 2;
+          const z = (box.min.z + box.max.z) / 2;
+          const r = Math.hypot(box.max.x - box.min.x, box.max.z - box.min.z) / 2;
+          this.#landmarkProxyGates.push({ obj: mesh, x, z, r });
+        }
+        this.#applyLandmarkFrontGate();
         setLandmarkBeautyFarFallback(landmarkRoot, false);
         this.#landmarkShadowProxyPending = false;
         console.info(
@@ -1117,11 +1171,9 @@ export class TileStreamer {
       const dx = px - cx;
       const dz = pz - cz;
       const destinationRelevant = dx * dx + dz * dz <= tileLoadRadiusSq;
-      tile.group.visible = destinationRelevant;
-      this.#setTileRoadVisible(tile, destinationRelevant);
-      this.#setTileBuildingVisible(tile, destinationRelevant);
-      this.#setTileParkVisible(tile, destinationRelevant);
-      if (tile.shadowProxy) tile.shadowProxy.group.visible = destinationRelevant;
+      // M12: routed through the front gate — a destination-relevant tile that
+      // still lies beyond the (about-to-refocus) front stays gate-managed.
+      this.#applyTileVisibility(tile, destinationRelevant);
       if (!destinationRelevant) continue;
       tile.generation = generation;
       tile.loadToken.generation = generation;
@@ -1237,11 +1289,9 @@ export class TileStreamer {
       e.d2 = (px - e.cx) * (px - e.cx) + (pz - e.cz) * (pz - e.cz);
       const loadedTile = this.loaded.get(e.key);
       if (loadedTile && e.d2 < loadR2 && loadedTile.generation !== this.#generation) {
-        loadedTile.group.visible = true;
-        this.#setTileRoadVisible(loadedTile, true);
-        this.#setTileBuildingVisible(loadedTile, true);
-        this.#setTileParkVisible(loadedTile, true);
-        if (loadedTile.shadowProxy) loadedTile.shadowProxy.group.visible = true;
+        // M12: routed through the front gate (re-adopted tiles beyond a
+        // sweeping front stay hidden until the front approaches).
+        this.#applyTileVisibility(loadedTile, true);
         loadedTile.generation = this.#generation;
         loadedTile.loadToken.generation = this.#generation;
         this.#queueColliderApply(e.key, loadedTile.loadToken);
@@ -1689,6 +1739,10 @@ export class TileStreamer {
         pendingBuildingParts: buildingParts.length ? buildingParts : undefined
       });
       this.#attaching.push(key);
+      // M12: a tile finalizing beyond the sweeping front starts hidden (empty
+      // bundle now; batch instances folded in later start hidden via the
+      // existing `!tile.group.visible` checks). Warm/attach work is untouched.
+      this.#applyTileVisibility(this.loaded.get(key)!, true);
     } else {
       this.loaded.set(key, {
         key,
@@ -1888,6 +1942,9 @@ export class TileStreamer {
         return;
       }
       tile.shadowProxy = proxy;
+      // M12: mirror the tile's (possibly front-gated) visibility onto the
+      // late-arriving proxy so a hidden tile never gains a live shadow caster.
+      proxy.group.visible = tile.group.visible;
       this.#scene.add(proxy.group);
       this.onShadowCastersChanged(this.#shadowScopeForTile(key));
     }).catch((error) => {
@@ -2162,6 +2219,93 @@ export class TileStreamer {
     for (const handle of tile.parkBatchHandles) handle.setVisible(visible);
   }
 
+  // ---- M12 front visibility gate ------------------------------------------
+  // During a sweep, resident tiles beyond the materialize front stay hidden
+  // (bundle group + batched instances + shadow proxy) and register with the
+  // shared frontGate, which reveals them nearest-first under a per-frame
+  // budget as the front approaches. Loading/attaching/warming is untouched —
+  // this is visibility only, and the gate is inert once the sweep settles.
+
+  /** Bounding circle for a tile's front-gate test (centre + half-diagonal). */
+  #tileGateCircle(key: string): [number, number, number] {
+    const [cx, cz] = this.keyToCenter(key);
+    return [cx, cz, this.manifest.tile * Math.SQRT2 * 0.5];
+  }
+
+  #showTileVisuals(tile: LoadedTile): void {
+    tile.group.visible = true;
+    this.#setTileRoadVisible(tile, true);
+    this.#setTileBuildingVisible(tile, true);
+    this.#setTileParkVisible(tile, true);
+    if (tile.shadowProxy) tile.shadowProxy.group.visible = true;
+  }
+
+  #hideTileVisuals(tile: LoadedTile): void {
+    tile.group.visible = false;
+    this.#setTileRoadVisible(tile, false);
+    this.#setTileBuildingVisible(tile, false);
+    this.#setTileParkVisible(tile, false);
+    if (tile.shadowProxy) tile.shadowProxy.group.visible = false;
+  }
+
+  /** Route a "make this tile visible/hidden" decision through the front gate.
+   *  Cancels any prior gate registration first so exactly one owner ever
+   *  controls the tile's visibility (gate vs covered-arrival adopt). */
+  #applyTileVisibility(tile: LoadedTile, wanted: boolean): void {
+    tile.frontGateHandle?.cancel();
+    tile.frontGateHandle = undefined;
+    if (!wanted) {
+      this.#hideTileVisuals(tile);
+      return;
+    }
+    const [cx, cz, r] = this.#tileGateCircle(tile.key);
+    if (frontGate.shouldHide(cx, cz, r)) {
+      this.#hideTileVisuals(tile);
+      tile.frontGateHandle = frontGate.hide(cx, cz, r, () => {
+        tile.frontGateHandle = undefined;
+        this.#showTileVisuals(tile);
+      });
+    } else {
+      this.#showTileVisuals(tile);
+    }
+  }
+
+  /** Re-apply the front gate to every loaded tile + landmark subtree after a
+   *  front refocus (far teleport): content revealed by the previous sweep must
+   *  re-hide when it now lies beyond the collapsed front at the destination.
+   *  Tiles hidden by a covered-arrival adopt (visible=false WITHOUT a gate
+   *  registration) keep that ownership untouched. No-op cost when the gate is
+   *  inactive: shouldHide is false, so every tile just stays/becomes visible. */
+  applyFrontGate(): void {
+    for (const tile of this.loaded.values()) {
+      if (!tile.group.visible && !tile.frontGateHandle) continue;
+      this.#applyTileVisibility(tile, true);
+    }
+    this.#applyLandmarkFrontGate();
+  }
+
+  /** Gate the always-resident landmark subtrees (few — one bounds circle each,
+   *  computed once at load). GG bridge's huge bounding circle admits it early;
+   *  its holo material + M12 edge window keep the far spans black until the
+   *  front actually reaches them. */
+  #applyLandmarkFrontGate(): void {
+    for (const gates of [this.#landmarkGates, this.#landmarkProxyGates]) {
+      for (const gate of gates) {
+        gate.handle?.cancel();
+        gate.handle = undefined;
+        if (frontGate.shouldHide(gate.x, gate.z, gate.r)) {
+          gate.obj.visible = false;
+          gate.handle = frontGate.hide(gate.x, gate.z, gate.r, () => {
+            gate.handle = undefined;
+            gate.obj.visible = true;
+          });
+        } else {
+          gate.obj.visible = true;
+        }
+      }
+    }
+  }
+
   #bestAttachIndex(): number {
     const required = this.#visualPrime?.generation === this.#generation
       ? this.#visualPrime.requiredTileSet
@@ -2227,6 +2371,9 @@ export class TileStreamer {
     if (!tile) return;
     this.loaded.delete(key);
     tile.loadToken.discarded = true;
+    // M12: drop any front-gate registration (a later reload re-gates fresh)
+    tile.frontGateHandle?.cancel();
+    tile.frontGateHandle = undefined;
     // next residency of this tile re-births (M5 steady-state streaming grace)
     materializeField.forgetBirth(`tile:${key}`);
     if (tile.loadToken.colliderRetained) {

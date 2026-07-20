@@ -11,7 +11,13 @@ export interface BootMapResult {
 }
 
 export async function bootMap(): Promise<BootMapResult> {
-  const map = await WorldMap.load();
+  // M14: the default path loads only meta + the 1/8 terrain overview (~160 KB)
+  // and streams real 800 m tiles behind the materialize front. `?fullmap=1`
+  // keeps the legacy monolithic load as an A/B + emergency escape hatch.
+  const fullMap = new URLSearchParams(location.search).has("fullmap");
+  const map = fullMap ? await WorldMap.load() : await WorldMap.loadCore();
+  // Runs against coarse data on the streamed path; it registers a tile-install
+  // fixup so its carve is re-applied when a real tile overwrites the region.
   prepareCoronaHeightsGround(map);
   return { map };
 }

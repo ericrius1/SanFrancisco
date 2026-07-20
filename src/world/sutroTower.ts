@@ -42,6 +42,11 @@ const TAU = Math.PI * 2;
 // ~298 m tall; 1 world unit == 1 m, so heights below double as metres.
 const CX = -782;
 const CZ = 3846;
+
+/** World XZ of the tower centre — the materialize front ramp anchor (main's
+ *  applyLightFrontRamps scales SUTRO_LIGHTS_INTENSITY by the front amount here,
+ *  the Bay/Golden-Gate lights CPU-ramp pattern). */
+export const SUTRO_TOWER_ANCHOR = { x: CX, z: CZ };
 const LEG_ROT = Math.PI / 6; // splay one bay toward the overlook, matches photo
 
 /** Radius of the candelabra shell at height h above the base (pinched waist). */

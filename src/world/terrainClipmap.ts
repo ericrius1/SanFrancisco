@@ -36,11 +36,18 @@ import {
   type TerrainCutoutSpec
 } from "./terrainCutouts";
 import {
+  computeSurfaceWeightsRegion,
   createTerrainDetailTextureData,
   createTerrainNormalMipData,
   createTerrainSurfaceMipData
 } from "./terrainMaterialData";
-import { holoShade, materializeAmount } from "../render/materialize";
+import {
+  GRID_TO_HORIZON_DEBUG,
+  edgeGlowWindow,
+  holoShade,
+  materializeAmount,
+  materializeField
+} from "../render/materialize";
 
 // TSL's composed node types become unwieldy across texture-stage operations;
 // the project uses this local alias for shader graphs while retaining typed
@@ -50,6 +57,10 @@ type N = any;
 const HEIGHT_MIP_LEVELS = 4;
 const HEIGHT_BOUNDS_BLOCK_CELLS = 8;
 const BOUNDS_Y_MARGIN = 1;
+
+// Reused scratch for the M14 sub-rect blits (no per-install allocation).
+const _stagingRegion = new THREE.Box2();
+const _stagingDst = new THREE.Vector2();
 
 export { TERRAIN_CUTOUT_CAPACITY, type TerrainCutoutSpec } from "./terrainCutouts";
 
@@ -118,24 +129,43 @@ class TerrainHeightBounds {
     this.#maxs = new Float32Array(this.#width * this.#height);
 
     for (let bz = 0; bz < this.#height; bz++) {
-      const iz0 = bz * HEIGHT_BOUNDS_BLOCK_CELLS;
-      const iz1 = Math.min(height - 1, iz0 + HEIGHT_BOUNDS_BLOCK_CELLS);
       for (let bx = 0; bx < this.#width; bx++) {
-        const ix0 = bx * HEIGHT_BOUNDS_BLOCK_CELLS;
-        const ix1 = Math.min(width - 1, ix0 + HEIGHT_BOUNDS_BLOCK_CELLS);
-        let minY = Infinity;
-        let maxY = -Infinity;
-        for (let iz = iz0; iz <= iz1; iz++) {
-          const row = iz * width;
-          for (let ix = ix0; ix <= ix1; ix++) {
-            const y = map.heights[row + ix];
-            minY = Math.min(minY, y);
-            maxY = Math.max(maxY, y);
-          }
-        }
-        const index = bz * this.#width + bx;
-        this.#mins[index] = minY;
-        this.#maxs[index] = maxY;
+        this.#computeBlock(bx, bz);
+      }
+    }
+  }
+
+  #computeBlock(bx: number, bz: number): void {
+    const { width, height } = this.#map.meta.grid;
+    const iz0 = bz * HEIGHT_BOUNDS_BLOCK_CELLS;
+    const iz1 = Math.min(height - 1, iz0 + HEIGHT_BOUNDS_BLOCK_CELLS);
+    const ix0 = bx * HEIGHT_BOUNDS_BLOCK_CELLS;
+    const ix1 = Math.min(width - 1, ix0 + HEIGHT_BOUNDS_BLOCK_CELLS);
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let iz = iz0; iz <= iz1; iz++) {
+      const row = iz * width;
+      for (let ix = ix0; ix <= ix1; ix++) {
+        const y = this.#map.heights[row + ix];
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    const index = bz * this.#width + bx;
+    this.#mins[index] = minY;
+    this.#maxs[index] = maxY;
+  }
+
+  /** M14: recompute the blocks whose (edge-sharing) cell coverage intersects
+   *  the inclusive cell rect a streamed tile just overwrote. */
+  updateRegion(gx0: number, gz0: number, gx1: number, gz1: number): void {
+    const bx0 = Math.max(0, Math.ceil((gx0 - HEIGHT_BOUNDS_BLOCK_CELLS) / HEIGHT_BOUNDS_BLOCK_CELLS));
+    const bx1 = Math.min(this.#width - 1, Math.floor(gx1 / HEIGHT_BOUNDS_BLOCK_CELLS));
+    const bz0 = Math.max(0, Math.ceil((gz0 - HEIGHT_BOUNDS_BLOCK_CELLS) / HEIGHT_BOUNDS_BLOCK_CELLS));
+    const bz1 = Math.min(this.#height - 1, Math.floor(gz1 / HEIGHT_BOUNDS_BLOCK_CELLS));
+    for (let bz = bz0; bz <= bz1; bz++) {
+      for (let bx = bx0; bx <= bx1; bx++) {
+        this.#computeBlock(bx, bz);
       }
     }
   }
@@ -182,15 +212,27 @@ class TerrainHeightBounds {
 }
 
 function createHeightTexture(map: WorldMap): HeightTextureData {
-  let sourceMin = Infinity;
-  let sourceMax = -Infinity;
-  for (const height of map.heights) {
-    sourceMin = Math.min(sourceMin, height);
-    sourceMax = Math.max(sourceMax, height);
+  // M14: FIXED quantization range from meta.terrain (the int16 encoding
+  // envelope) instead of a whole-map rescan, so streamed tile installs
+  // re-encode texels identically without global knowledge. The shader decode
+  // reads the same min/range constants below. Legacy float32 maps (no terrain
+  // meta) keep the scan.
+  let min: number;
+  let range: number;
+  const terrain = map.meta.terrain;
+  if (terrain?.heightEncoding === "int16") {
+    min = terrain.heightBase;
+    range = 32767 * terrain.heightQuant;
+  } else {
+    let sourceMin = Infinity;
+    let sourceMax = -Infinity;
+    for (const height of map.heights) {
+      sourceMin = Math.min(sourceMin, height);
+      sourceMax = Math.max(sourceMax, height);
+    }
+    min = Math.floor(sourceMin) - 1;
+    range = Math.ceil(sourceMax) + 1 - min;
   }
-  const min = Math.floor(sourceMin) - 1;
-  const maxHeight = Math.ceil(sourceMax) + 1;
-  const range = maxHeight - min;
   const encode = (height: number) => Math.max(
     0,
     Math.min(65535, Math.round(((height - min) / range) * 65535))
@@ -401,6 +443,11 @@ export class TerrainClipmap {
   readonly #detailTexture = createDetailTexture();
   readonly #bounds: TerrainHeightBounds;
   readonly #grid: WorldMap["meta"]["grid"];
+  readonly #map: WorldMap;
+  // M14 pooled staging textures for sub-rect GPU installs (see applyTileRegion).
+  #stagingRG: THREE.DataTexture | null = null;
+  #stagingRGBA: THREE.DataTexture | null = null;
+  #lastTileInstallMs = 0;
   readonly #center = uniform(new THREE.Vector2());
   readonly #morphBand = uniform(TERRAIN_CLIPMAP_TUNING.values.morphBand);
   readonly #macroVariation = uniform(TERRAIN_CLIPMAP_TUNING.values.macroVariation);
@@ -415,6 +462,7 @@ export class TerrainClipmap {
   constructor(map: WorldMap) {
     const buildStarted = performance.now();
     this.group.name = "terrainClipmap";
+    this.#map = map;
     this.#grid = map.meta.grid;
     this.#height = createHeightTexture(map);
     this.#normal = createNormalTexture(map);
@@ -718,20 +766,57 @@ export class TerrainClipmap {
     terrainColor = terrainColor.mul(variation.add(1));
     terrainColor = mix(terrainColor, color(LEVEL_DEBUG_COLORS[level.level]), this.#debugLevels.mul(0.72));
 
-    // Materialize/void holo mix (docs/VOID_STREAM_REWRITE.md M2). Terrain is
-    // always resident: no birth ramp, no dissolve, no geometry change — the
+    // Materialize/void holo mix (docs/VOID_STREAM_REWRITE.md M2 + M13). Terrain
+    // is always resident: no birth ramp, no dissolve, no geometry change — the
     // height path (#heightAt) is untouched so CPU/GPU lockstep holds and the
     // holo contour grid conforms to the REAL displaced heights. Below the
     // front the lit response collapses to a dark base and the emissive carries
     // the glowing world-grid + elevation contours; at amount = 1 both terms
     // are plain uniform-driven mixes back to the normal shading (a few ALU,
     // no added texture taps), so the revealed look is unchanged.
+    //
+    // M13: the grid is now CONCENTRIC like the buildings — the glowing grid +
+    // the faint lit floor both ride an edge window hugging the advancing front
+    // (edgeGlowWindow: ~1 at/inside the dissolve edge, easing to 0 over ~3
+    // bands beyond it). So the void/control moment shows only a small lit patch
+    // of contour grid around the front centre, fading to dark ground + sky
+    // beyond; as the front sweeps, the lit band grows outward with it. A very
+    // faint albedo floor survives far out so the horizon reads as dark ground,
+    // not a pure black abyss. The window collapses to 1 once the front parks at
+    // the revealed sentinel, so settled shading is byte-identical to today.
+    // `?gridhorizon=1` restores the old to-horizon grid for A/B debugging.
     const materialized = materializeAmount({ worldPos: positionWorld as N }).toVar();
     const holoReveal = smoothstep(0.25, 1, materialized);
-    material.colorNode = terrainColor.mul(mix(float(0.045), float(1), holoReveal));
-    material.emissiveNode = holoShade(positionWorld as N, terrainColor)
-      .mul(holoReveal.oneMinus());
+    const frontDist = (positionWorld as N).xz
+      .sub(materializeField.frontCenter as N)
+      .length();
+    const floorWindow = GRID_TO_HORIZON_DEBUG ? float(1) : edgeGlowWindow(frontDist);
+    // Optional very-faint floor: ~0.05 albedo near the front, easing to a
+    // minimal 0.02 far beyond it (err toward darker — the void moment is an
+    // "immediate area focus", not "ground to horizon").
+    const holoFloor = mix(float(0.02), float(0.05), floorWindow);
+    material.colorNode = terrainColor.mul(mix(holoFloor, float(1), holoReveal));
+    material.emissiveNode = holoShade(positionWorld as N, terrainColor, {
+      edgeWindow: !GRID_TO_HORIZON_DEBUG
+    }).mul(holoReveal.oneMinus());
     material.roughnessNode = surface.a.mul(0.03).add(0.94);
+
+    // Beyond the front the terrain contributes NOTHING — not even a dark
+    // silhouette occluding the sky. The clipmap already alpha-tests for the
+    // map-edge cutout, so folding a front-visibility window into opacity is
+    // free (no new pipeline): fragments past the glow tail are discarded and
+    // the void sky shows through. Collapses to 1 at the revealed sentinel
+    // (settled shading byte-identical) and under ?gridhorizon=1.
+    // saturate((radius + 3·band − dist) / band): fades out over one band
+    // ending at radius+3band. Constant-denominator form — smoothstep here
+    // would divide by (b−a)=0 in f32 at the revealed sentinel (1e9).
+    const frontVisibility = GRID_TO_HORIZON_DEBUG
+      ? float(1)
+      : (materializeField.frontRadius as N)
+          .add((materializeField.frontBand as N).mul(3))
+          .sub(frontDist)
+          .div((materializeField.frontBand as N))
+          .saturate();
 
     const worldMaxX = grid.minX + (grid.width - 1) * grid.cellSize;
     const worldMaxZ = grid.minZ + (grid.height - 1) * grid.cellSize;
@@ -739,7 +824,7 @@ export class TerrainClipmap {
       .mul(step((positionWorld as N).x, worldMaxX))
       .mul(step(grid.minZ, (positionWorld as N).z))
       .mul(step((positionWorld as N).z, worldMaxZ));
-    material.opacityNode = inBounds.mul(terrainCutoutMask());
+    material.opacityNode = inBounds.mul(terrainCutoutMask()).mul(frontVisibility);
     material.alphaTestNode = float(0.5);
     material.envMapIntensity = 0.68;
     return material;
@@ -801,6 +886,339 @@ export class TerrainClipmap {
    */
   setCutouts(cutouts: readonly TerrainCutoutSpec[]): void {
     setTerrainCutoutUniforms(cutouts);
+  }
+
+  // ---------------------------------------------------------------- M14
+  // Streamed-tile GPU install: regenerate the affected texel sub-rects of the
+  // height/normal/surface pyramids FROM THE CPU LATTICE (the source of truth —
+  // WorldMap.installTile has already written the rows) for mip0 + the three
+  // coarser mips, and blit each rect into the live DataTextures through a
+  // pooled 128×128 staging texture + renderer.copyTextureToTexture (WebGPU
+  // sub-rect copy, srcRegion/dstPosition/dstLevel). The CPU-side mip arrays
+  // are updated in place so any future full re-upload stays consistent. A full
+  // 8.7 MB pyramid re-upload per tile is forbidden; this path uploads ~120 KB.
+
+  #staging(bytesPerPixel: 2 | 4): THREE.DataTexture {
+    const existing = bytesPerPixel === 2 ? this.#stagingRG : this.#stagingRGBA;
+    if (existing) return existing;
+    const size = 128;
+    const texture = new THREE.DataTexture(
+      new Uint8Array(size * size * bytesPerPixel),
+      size,
+      size,
+      bytesPerPixel === 2 ? THREE.RGFormat : THREE.RGBAFormat,
+      THREE.UnsignedByteType
+    );
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
+    texture.flipY = false;
+    texture.name = `terrainTileStaging${bytesPerPixel === 2 ? "RG" : "RGBA"}`;
+    texture.needsUpdate = true;
+    if (bytesPerPixel === 2) this.#stagingRG = texture;
+    else this.#stagingRGBA = texture;
+    return texture;
+  }
+
+  #uploadRect(
+    renderer: THREE.WebGPURenderer,
+    dst: THREE.DataTexture,
+    level: number,
+    x0: number,
+    y0: number,
+    w: number,
+    h: number,
+    rows: Uint8Array,
+    bytesPerPixel: 2 | 4
+  ): void {
+    const staging = this.#staging(bytesPerPixel);
+    const sdata = staging.image.data as Uint8Array;
+    const sw = staging.image.width;
+    for (let y = 0; y < h; y++) {
+      sdata.set(rows.subarray(y * w * bytesPerPixel, (y + 1) * w * bytesPerPixel), y * sw * bytesPerPixel);
+    }
+    staging.needsUpdate = true;
+    _stagingRegion.min.set(0, 0);
+    _stagingRegion.max.set(w, h);
+    _stagingDst.set(x0, y0);
+    renderer.copyTextureToTexture(staging, dst, _stagingRegion, _stagingDst, 0, level);
+  }
+
+  #mip(texture: THREE.DataTexture, level: number): { data: Uint8Array; width: number; height: number } {
+    return (texture.mipmaps as unknown as { data: Uint8Array; width: number; height: number }[])[level];
+  }
+
+  /** Recompute a height-pyramid sub-rect (packed RG8) in place; returns tight rows. */
+  #refreshHeightRect(level: number, x0: number, y0: number, x1: number, y1: number): Uint8Array {
+    const mip = this.#mip(this.#height.texture, level);
+    const w = x1 - x0 + 1;
+    const h = y1 - y0 + 1;
+    const out = new Uint8Array(w * h * 2);
+    if (level === 0) {
+      const { min, range } = this.#height;
+      const W = mip.width;
+      const heights = this.#map.heights;
+      for (let y = 0; y < h; y++) {
+        const row = (y0 + y) * W;
+        for (let x = 0; x < w; x++) {
+          let q = Math.round(((heights[row + x0 + x] - min) / range) * 65535);
+          q = q < 0 ? 0 : q > 65535 ? 65535 : q;
+          const di = (row + x0 + x) * 2;
+          mip.data[di] = q >>> 8;
+          mip.data[di + 1] = q & 255;
+          const oi = (y * w + x) * 2;
+          out[oi] = q >>> 8;
+          out[oi + 1] = q & 255;
+        }
+      }
+    } else {
+      const prev = this.#mip(this.#height.texture, level - 1);
+      const readU16 = (index: number) => (prev.data[index * 2] << 8) | prev.data[index * 2 + 1];
+      for (let y = 0; y < h; y++) {
+        const sy0 = (y0 + y) * 2;
+        const sy1 = Math.min(prev.height - 1, sy0 + 1);
+        for (let x = 0; x < w; x++) {
+          const sx0 = (x0 + x) * 2;
+          const sx1 = Math.min(prev.width - 1, sx0 + 1);
+          const q = Math.round((
+            readU16(sy0 * prev.width + sx0) +
+            readU16(sy0 * prev.width + sx1) +
+            readU16(sy1 * prev.width + sx0) +
+            readU16(sy1 * prev.width + sx1)
+          ) * 0.25);
+          const di = ((y0 + y) * mip.width + x0 + x) * 2;
+          mip.data[di] = q >>> 8;
+          mip.data[di + 1] = q & 255;
+          const oi = (y * w + x) * 2;
+          out[oi] = q >>> 8;
+          out[oi + 1] = q & 255;
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Recompute a normal-pyramid sub-rect from the current heights. Mip levels
+   *  ≥ 1 decode the quantized height mip (± half a 0.01 m step of the boot
+   *  float chain — invisible inside 8-bit normal channels). */
+  #refreshNormalRect(level: number, x0: number, y0: number, x1: number, y1: number): Uint8Array {
+    const mip = this.#mip(this.#normal.texture, level);
+    const w = x1 - x0 + 1;
+    const h = y1 - y0 + 1;
+    const width = mip.width;
+    const height = mip.height;
+    const cellSize = this.#grid.cellSize * (1 << level);
+    let sample: (gx: number, gz: number) => number;
+    if (level === 0) {
+      const heights = this.#map.heights;
+      const W = this.#grid.width;
+      sample = (gx, gz) => heights[gz * W + gx];
+    } else {
+      const heightMip = this.#mip(this.#height.texture, level);
+      const { min, range } = this.#height;
+      sample = (gx, gz) => {
+        const index = (gz * heightMip.width + gx) * 2;
+        return min + (((heightMip.data[index] << 8) | heightMip.data[index + 1]) / 65535) * range;
+      };
+    }
+    const clampX = (v: number) => (v < 0 ? 0 : v > width - 1 ? width - 1 : v);
+    const clampY = (v: number) => (v < 0 ? 0 : v > height - 1 ? height - 1 : v);
+    const out = new Uint8Array(w * h * 2);
+    for (let y = 0; y < h; y++) {
+      const gy = y0 + y;
+      const ya = clampY(gy - 1);
+      const yb = gy;
+      const yc = clampY(gy + 1);
+      for (let x = 0; x < w; x++) {
+        const gx = x0 + x;
+        const xa = clampX(gx - 1);
+        const xc = clampX(gx + 1);
+        // Same separable [1 2 1] derivative as encodeNormalMip.
+        const left = sample(xa, ya) + 2 * sample(xa, yb) + sample(xa, yc);
+        const right = sample(xc, ya) + 2 * sample(xc, yb) + sample(xc, yc);
+        const down = sample(xa, ya) + 2 * sample(gx, ya) + sample(xc, ya);
+        const up = sample(xa, yc) + 2 * sample(gx, yc) + sample(xc, yc);
+        let nx = left - right;
+        const ny = cellSize * 8;
+        let nz = down - up;
+        const inverseLength = 1 / Math.max(1e-6, Math.hypot(nx, ny, nz));
+        nx *= inverseLength;
+        nz *= inverseLength;
+        const r = Math.round((Math.max(-1, Math.min(1, nx)) * 0.5 + 0.5) * 255);
+        const g = Math.round((Math.max(-1, Math.min(1, nz)) * 0.5 + 0.5) * 255);
+        const di = (gy * width + gx) * 2;
+        mip.data[di] = r;
+        mip.data[di + 1] = g;
+        const oi = (y * w + x) * 2;
+        out[oi] = r;
+        out[oi + 1] = g;
+      }
+    }
+    return out;
+  }
+
+  /** Recompute a surface-weight sub-rect. Level 0 mirrors the full build's
+   *  erosion + feather over the rect (computeSurfaceWeightsRegion); coarser
+   *  levels box-average the previous mip like downsampleWeights. */
+  #refreshSurfaceRect(level: number, x0: number, y0: number, x1: number, y1: number): Uint8Array {
+    const mip = this.#mip(this.#surface.texture, level);
+    const w = x1 - x0 + 1;
+    const h = y1 - y0 + 1;
+    if (level === 0) {
+      const rows = computeSurfaceWeightsRegion(
+        this.#map.surface,
+        this.#grid.width,
+        this.#grid.height,
+        x0,
+        y0,
+        x1,
+        y1
+      );
+      for (let y = 0; y < h; y++) {
+        mip.data.set(rows.subarray(y * w * 4, (y + 1) * w * 4), ((y0 + y) * mip.width + x0) * 4);
+      }
+      return rows;
+    }
+    const prev = this.#mip(this.#surface.texture, level - 1);
+    const out = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      const sy0 = (y0 + y) * 2;
+      const sy1 = Math.min(prev.height - 1, sy0 + 1);
+      for (let x = 0; x < w; x++) {
+        const sx0 = (x0 + x) * 2;
+        const sx1 = Math.min(prev.width - 1, sx0 + 1);
+        for (let channel = 0; channel < 4; channel++) {
+          const value = Math.round((
+            prev.data[(sy0 * prev.width + sx0) * 4 + channel] +
+            prev.data[(sy0 * prev.width + sx1) * 4 + channel] +
+            prev.data[(sy1 * prev.width + sx0) * 4 + channel] +
+            prev.data[(sy1 * prev.width + sx1) * 4 + channel]
+          ) * 0.25);
+          mip.data[((y0 + y) * mip.width + x0 + x) * 4 + channel] = value;
+          out[(y * w + x) * 4 + channel] = value;
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Install one streamed 800 m tile's texel region across all three pyramids
+   * (mip0 + 3 coarser mips each) and refresh the frustum height bounds.
+   * `gx0/gz0` are the tile's base cell, `cellsX/cellsZ` its extent. Budget:
+   * the streamer calls this at most once per frame. Returns the CPU+encode
+   * cost in ms (upload is a queue write + sub-rect GPU copy).
+   */
+  applyTileRegion(
+    renderer: THREE.WebGPURenderer,
+    gx0: number,
+    gz0: number,
+    cellsX: number,
+    cellsZ: number
+  ): number {
+    const started = performance.now();
+    const mipCount = (this.#height.texture.mipmaps as unknown as unknown[]).length;
+    type Rect = { x0: number; y0: number; x1: number; y1: number };
+    const heightRects: Rect[] = [];
+    let rect: Rect = { x0: gx0, y0: gz0, x1: gx0 + cellsX - 1, y1: gz0 + cellsZ - 1 };
+    for (let level = 0; level < mipCount; level++) {
+      const mip = this.#mip(this.#height.texture, level);
+      const clamped: Rect = {
+        x0: Math.max(0, rect.x0),
+        y0: Math.max(0, rect.y0),
+        x1: Math.min(mip.width - 1, rect.x1),
+        y1: Math.min(mip.height - 1, rect.y1)
+      };
+      heightRects.push(clamped);
+      const rows = this.#refreshHeightRect(level, clamped.x0, clamped.y0, clamped.x1, clamped.y1);
+      this.#uploadRect(
+        renderer,
+        this.#height.texture,
+        level,
+        clamped.x0,
+        clamped.y0,
+        clamped.x1 - clamped.x0 + 1,
+        clamped.y1 - clamped.y0 + 1,
+        rows,
+        2
+      );
+      // Next level: halve, then expand one texel so box averages crossing the
+      // rect border recompute conservatively.
+      rect = {
+        x0: (clamped.x0 >> 1) - 1,
+        y0: (clamped.y0 >> 1) - 1,
+        x1: (clamped.x1 >> 1) + 1,
+        y1: (clamped.y1 >> 1) + 1
+      };
+    }
+    for (let level = 0; level < mipCount; level++) {
+      const mip = this.#mip(this.#normal.texture, level);
+      const source = heightRects[level];
+      const clamped: Rect = {
+        x0: Math.max(0, source.x0 - 1),
+        y0: Math.max(0, source.y0 - 1),
+        x1: Math.min(mip.width - 1, source.x1 + 1),
+        y1: Math.min(mip.height - 1, source.y1 + 1)
+      };
+      const rows = this.#refreshNormalRect(level, clamped.x0, clamped.y0, clamped.x1, clamped.y1);
+      this.#uploadRect(
+        renderer,
+        this.#normal.texture,
+        level,
+        clamped.x0,
+        clamped.y0,
+        clamped.x1 - clamped.x0 + 1,
+        clamped.y1 - clamped.y0 + 1,
+        rows,
+        2
+      );
+    }
+    // Surface weights reach 4 cells beyond the tile (erosion + feather).
+    rect = { x0: gx0 - 4, y0: gz0 - 4, x1: gx0 + cellsX + 3, y1: gz0 + cellsZ + 3 };
+    for (let level = 0; level < mipCount; level++) {
+      const mip = this.#mip(this.#surface.texture, level);
+      const clamped: Rect = {
+        x0: Math.max(0, rect.x0),
+        y0: Math.max(0, rect.y0),
+        x1: Math.min(mip.width - 1, rect.x1),
+        y1: Math.min(mip.height - 1, rect.y1)
+      };
+      const rows = this.#refreshSurfaceRect(level, clamped.x0, clamped.y0, clamped.x1, clamped.y1);
+      this.#uploadRect(
+        renderer,
+        this.#surface.texture,
+        level,
+        clamped.x0,
+        clamped.y0,
+        clamped.x1 - clamped.x0 + 1,
+        clamped.y1 - clamped.y0 + 1,
+        rows,
+        4
+      );
+      rect = {
+        x0: (clamped.x0 >> 1) - 1,
+        y0: (clamped.y0 >> 1) - 1,
+        x1: (clamped.x1 >> 1) + 1,
+        y1: (clamped.y1 >> 1) + 1
+      };
+    }
+    this.#bounds.updateRegion(gx0, gz0, gx0 + cellsX - 1, gz0 + cellsZ - 1);
+    this.#lastTileInstallMs = performance.now() - started;
+    return this.#lastTileInstallMs;
+  }
+
+  get lastTileInstallMs(): number {
+    return this.#lastTileInstallMs;
+  }
+
+  /** M14 QA: the encoded mip0 height data + quantization constants — the exact
+   *  bytes the GPU samples — for CPU↔GPU lockstep probes. */
+  debugHeightEncoding(): {
+    min: number;
+    range: number;
+    mip0: { data: Uint8Array; width: number; height: number };
+  } {
+    return { min: this.#height.min, range: this.#height.range, mip0: this.#mip(this.#height.texture, 0) };
   }
 
   update(x: number, z: number, force = false): void {
@@ -887,6 +1305,8 @@ export class TerrainClipmap {
     this.#normal.texture.dispose();
     this.#surface.texture.dispose();
     this.#detailTexture.dispose();
+    this.#stagingRG?.dispose();
+    this.#stagingRGBA?.dispose();
     this.group.clear();
   }
 }

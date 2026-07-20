@@ -214,6 +214,103 @@ export function createTerrainSurfaceMipData(
   return { mipmaps, bytes };
 }
 
+/**
+ * M14 sub-rect twin of the surface base-mip build above: recompute the
+ * feathered RGBA weights for an inclusive cell rect from the CURRENT class
+ * lattice (mixed overview + streamed tiles — the source of truth). The park
+ * path erosion (3 passes, 1-cell neighborhood each) plus the 1-cell Gaussian
+ * feather need a 4-cell margin for exact values inside the rect; the margin
+ * shrinks by one ring per erosion pass (onion) so every read sees a value of
+ * the correct pass. Global-border cells never erode, matching the full build's
+ * `y in [1, H-2]` loops. Returns tightly packed RGBA rows for the rect.
+ */
+export function computeSurfaceWeightsRegion(
+  sourceClasses: Uint8Array,
+  width: number,
+  height: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number
+): Uint8Array {
+  const MARGIN = 4;
+  const rx0 = Math.max(0, x0 - MARGIN);
+  const ry0 = Math.max(0, y0 - MARGIN);
+  const rx1 = Math.min(width - 1, x1 + MARGIN);
+  const ry1 = Math.min(height - 1, y1 + MARGIN);
+  const rw = rx1 - rx0 + 1;
+  const rh = ry1 - ry0 + 1;
+  let local = new Uint8Array(rw * rh);
+  for (let y = 0; y < rh; y++) {
+    local.set(sourceClasses.subarray((ry0 + y) * width + rx0, (ry0 + y) * width + rx0 + rw), y * rw);
+  }
+  // Erosion passes over a shrinking onion. Ring r of the local buffer holds
+  // pass-min(r-1, …) values, which is exactly what pass p reads at distance 1.
+  for (let pass = 0; pass < 3; pass++) {
+    // Ring that can be recomputed exactly this pass. A side whose buffer edge
+    // coincides with the global edge has no missing data, so no inset there
+    // (the global-border skip below already matches the full build).
+    const inset = pass + 1;
+    const ix0 = rx0 === 0 ? 0 : inset;
+    const ix1 = rx1 === width - 1 ? rw : rw - inset;
+    const iy0 = ry0 === 0 ? 0 : inset;
+    const iy1 = ry1 === height - 1 ? rh : rh - inset;
+    const next = Uint8Array.from(local);
+    let changed = 0;
+    for (let y = iy0; y < iy1; y++) {
+      const gy = ry0 + y;
+      if (gy < 1 || gy > height - 2) continue;
+      for (let x = ix0; x < ix1; x++) {
+        const gx = rx0 + x;
+        if (gx < 1 || gx > width - 2) continue;
+        if (local[y * rw + x] !== 0) continue;
+        let parkNeighbors = 0;
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            if (kx === 0 && ky === 0) continue;
+            if (local[(y + ky) * rw + (x + kx)] === 1) parkNeighbors++;
+          }
+        }
+        if (parkNeighbors >= 5) {
+          next[y * rw + x] = 1;
+          changed++;
+        }
+      }
+    }
+    local = next;
+    if (changed === 0) break;
+  }
+  // Gaussian feather → RGBA weights for the target rect only.
+  const kernel = [1, 2, 1] as const;
+  const outW = x1 - x0 + 1;
+  const outH = y1 - y0 + 1;
+  const out = new Uint8Array(outW * outH * 4);
+  for (let y = 0; y < outH; y++) {
+    const ly = y0 + y - ry0;
+    for (let x = 0; x < outW; x++) {
+      const lx = x0 + x - rx0;
+      const weights = [0, 0, 0, 0];
+      for (let ky = -1; ky <= 1; ky++) {
+        const sy = Math.max(0, Math.min(rh - 1, ly + ky));
+        // Local clamp matches the global clampIndex because the buffer edge
+        // coincides with the global edge whenever clamping can engage (the
+        // 4-cell margin otherwise guarantees in-bounds reads).
+        for (let kx = -1; kx <= 1; kx++) {
+          const sx = Math.max(0, Math.min(rw - 1, lx + kx));
+          const sourceClass = local[sy * rw + sx];
+          const surface = sourceClass === 4 ? 0 : Math.max(0, Math.min(3, sourceClass));
+          weights[surface] += kernel[ky + 1] * kernel[kx + 1];
+        }
+      }
+      const offset = (y * outW + x) * 4;
+      for (let channel = 0; channel < 4; channel++) {
+        out[offset + channel] = Math.round(weights[channel] * (255 / 16));
+      }
+    }
+  }
+  return out;
+}
+
 function hashByte(x: number, y: number, salt: number): number {
   let h = Math.imul(x + salt, 0x45d9f3b) ^ Math.imul(y - salt, 0x119de1f3);
   h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);

@@ -30,6 +30,7 @@ import {
   shouldAdmitNewDetail,
 } from "./detailAdmission";
 import type { CityGridIngestReply, PackedCityGrid } from "./ingestTypes";
+import { frontGate, type FrontGateHandle } from "../../../render/frontGate";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 
@@ -225,6 +226,10 @@ interface CellState {
    *  been prepared in the live render context. Only `ready` may suppress baked
    *  meshes or admit detail/collider work. */
   phase: "building" | "awaiting-prepare" | "preparing" | "ready" | "fallback";
+  /** M12: set while this published cell's chunk mesh is hidden by the front
+   *  visibility gate (beyond the sweeping materialize front). Publication,
+   *  residency and warm are untouched — visibility only. */
+  frontGateHandle?: FrontGateHandle;
 }
 
 // Highest ground under a footprint (verts + edge midpoints), from live terrain.
@@ -292,6 +297,10 @@ export interface CityGenRing {
    *  sweeps across a cell mid baked→chunk swap. One pass over ≤(2·cellLoad+1)²
    *  keys (≤ ~49) — cheap; callers throttle. */
   materializedRadiusAround(x: number, z: number): number;
+  /** M12: re-evaluate every published cell against the front visibility gate
+   *  (far-teleport refocus — cells revealed by the previous sweep re-hide when
+   *  they now lie beyond the collapsed front). Inert when the gate is off. */
+  applyFrontGate(): void;
   dispose(): void;
   stats(): {
     total: number;
@@ -1542,6 +1551,8 @@ export async function createCityGenRing(
 
   // ---- cell load / unload -----------------------------------------------------
   const disposeCellChunk = (cell: CellState) => {
+    cell.frontGateHandle?.cancel();
+    cell.frontGateHandle = undefined;
     cell.chunk?.mesh?.removeFromParent();
     cell.chunk?.shadowMesh?.removeFromParent();
     cell.chunk?.dispose();
@@ -1627,6 +1638,10 @@ export async function createCityGenRing(
     // Detach from all live scans/build queues immediately; expensive per-entry
     // disposal and baked-mesh restoration then drain under the shared budget.
     loaded.delete(cell.key);
+    // M12: an unloading cell leaves the front gate immediately (its entry must
+    // not clamp the front or reveal a retiring mesh later).
+    cell.frontGateHandle?.cancel();
+    cell.frontGateHandle = undefined;
     // Stop old-region chunk draws immediately; resource destruction remains
     // sliced below so a teleport never performs a dense teardown in one frame.
     if (cell.chunk?.mesh) cell.chunk.mesh.visible = false;
@@ -1747,6 +1762,42 @@ export async function createCityGenRing(
       for (const e of suppressed) ctx.tiles.unsuppressBuildingMesh(e.key, e.i);
       throw error;
     }
+    applyCellFrontGate(cell);
+  };
+
+  // M12 front gate: a cell publishing beyond the sweeping materialize front
+  // keeps its chunk mesh HIDDEN (the baked meshes it suppressed are equally
+  // dark/gate-hidden out there, so the atomic swap stays invisible) and
+  // registers with the shared frontGate, which reveals it — budgeted,
+  // nearest-first — as the front approaches. Publication, residency
+  // (materializedRadiusAround) and pipeline warm are untouched: visibility
+  // only. Inert once the sweep settles (shouldHideRect false when inactive).
+  const applyCellFrontGate = (cell: CellState) => {
+    cell.frontGateHandle?.cancel();
+    cell.frontGateHandle = undefined;
+    const chunk = cell.chunk;
+    if (!chunk?.mesh) return;
+    const cellMinX = minX + cell.ix * tile;
+    const cellMinZ = minZ + cell.iz * tile;
+    if (frontGate.shouldHideRect(cellMinX, cellMinZ, cellMinX + tile, cellMinZ + tile)) {
+      chunk.mesh.visible = false;
+      if (chunk.shadowMesh) chunk.shadowMesh.visible = false;
+      cell.frontGateHandle = frontGate.hide(
+        cellMinX + tile / 2,
+        cellMinZ + tile / 2,
+        tile * Math.SQRT2 * 0.5,
+        () => {
+          cell.frontGateHandle = undefined;
+          // Only reveal while this cell is still the live published owner.
+          if (loaded.get(cell.key) !== cell || cell.phase !== "ready" || !cell.chunk?.mesh) return;
+          cell.chunk.mesh.visible = true;
+          if (cell.chunk.shadowMesh) cell.chunk.shadowMesh.visible = true;
+        }
+      );
+    } else {
+      chunk.mesh.visible = true;
+      if (chunk.shadowMesh) chunk.shadowMesh.visible = true;
+    }
   };
 
   const completeChunkPrepare = (task: ActiveChunkPrepare, prepared: boolean) => {
@@ -1838,6 +1889,12 @@ export async function createCityGenRing(
 
   return {
     get count() { return total; },
+    applyFrontGate(): void {
+      if (disposed) return;
+      for (const cell of loaded.values()) {
+        if (cell.phase === "ready") applyCellFrontGate(cell);
+      }
+    },
     materializedRadiusAround(x: number, z: number): number {
       // No grid / disposed → citygen never constrains. Before the first scan
       // (centerTile NaN, one frame at most) nothing is wanted yet either.
@@ -2124,6 +2181,11 @@ export async function createCityGenRing(
     dispose() {
       if (disposed) return;
       disposed = true;
+      // M12: no gate entry may outlive the ring (stale show() / front clamp).
+      for (const cell of loaded.values()) {
+        cell.frontGateHandle?.cancel();
+        cell.frontGateHandle = undefined;
+      }
       cellGeneration++;
       cellQueue.length = 0;
       activeCellHydration = null;

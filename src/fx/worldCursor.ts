@@ -78,6 +78,9 @@ export class WorldCursor {
     mat.toneMapped = false;
 
     this.#mesh = new THREE.Mesh(geo, mat);
+    // Named so probes/censuses can tell the cursor orb (UI affordance) apart
+    // from world content (M15 void-purity pixel assertions hide it per shot).
+    this.#mesh.name = "world_cursor_orb";
     this.#mesh.frustumCulled = false;
     this.#mesh.renderOrder = 999;
     this.#mesh.visible = false;

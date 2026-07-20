@@ -19,9 +19,16 @@
           cover.as = "image";
           cover.type = "image/webp";
           document.head.appendChild(cover);
-          window.__sfPrefetch = Object.fromEntries(
-            ["/data/meta.json","/data/heightmap.bin","/data/surface.bin","/data/groundtop-delta.bin","/data/manifest.json"].map((u) => [u, fetch(u)])
-          );
+          // M14: the default boot streams terrain — prefetch only the tiny
+          // overview artifacts (~160 KB). `?fullmap=1` keeps the legacy
+          // monolithic prefetch for the escape-hatch load path.
+          // Presence-based, matching bootMap.ts's URLSearchParams.has("fullmap")
+          // exactly — a bare `?fullmap` must also take the legacy prefetch.
+          const fullmap = /[?&]fullmap(?:=|&|$)/.test(location.search);
+          const urls = fullmap
+            ? ["/data/meta.json","/data/heightmap.bin","/data/surface.bin","/data/groundtop-delta.bin","/data/manifest.json"]
+            : ["/data/meta.json","/data/manifest.json","/data/terrain/terrain-manifest.json","/data/terrain/overview.bin","/data/terrain/overview-surface.bin"];
+          window.__sfPrefetch = Object.fromEntries(urls.map((u) => [u, fetch(u)]));
         };
         if (!readingEntry) window.__sfStartPrefetch();
       })();

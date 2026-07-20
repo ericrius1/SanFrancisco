@@ -25,6 +25,7 @@ import type { GhostShip } from "./world/ghostShip";
 import { Water } from "./world/water";
 import { VoidRealm } from "./world/voidRealm";
 import { materializeField } from "./render/materialize";
+import { frontGate } from "./render/frontGate";
 import { sharedMaterialLeakSnapshot } from "./render/renderObjectRegistry";
 import { RingCoordinator } from "./app/ringCoordinator";
 import { emitEmbodimentWaterEcho } from "./world/waterEchoes";
@@ -37,7 +38,7 @@ import { TrafficLightView } from "./world/traffic/trafficLights";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks, BAY_LIGHTS_INTENSITY } from "./world/bayLights";
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks, GOLDEN_GATE_LIGHTS_INTENSITY } from "./world/goldenGateLights";
-import { createSutroBeacons, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
+import { createSutroBeacons, updateSutroTower, resetSutroLightsTweaks, SUTRO_LIGHTS_INTENSITY, SUTRO_TOWER_ANCHOR } from "./world/sutroTower";
 import type { GoldenGateTennisSite } from "./world/goldenGateTennis";
 import {
   JAPANESE_TEA_GARDEN_ENTRANCE,
@@ -187,6 +188,7 @@ import { NavigationController } from "./app/navigation";
 import { WorldArrivalCoordinator } from "./app/worldArrival";
 import { DebugRegistry } from "./app/debugRegistry";
 import { bootMap } from "./app/boot/bootMap";
+import { TerrainTileStreamer } from "./world/terrainTiles";
 import { bootGpu } from "./app/boot/bootGpu";
 import { bootTiles } from "./app/boot/bootTiles";
 import { bootPhysics } from "./app/boot/bootPhysics";
@@ -251,6 +253,20 @@ async function boot() {
   const { tiles, authoredRegions } = await bootTiles({ scene, camera, renderer, map, sky });
   bootMark("tiles");
 
+  // M14 terrain-data streaming: real 800 m height/surface/groundtop tiles
+  // overwrite the boot overview lattice concentrically behind the front.
+  // Anchored below at spawn resolution (primeInitialVisualAt) and re-anchored
+  // on far-teleport cuts; driven per frame from the ringUpdate wrapper. Null
+  // on the `?fullmap=1` legacy path (everything is real from boot).
+  const terrainTiles = map.terrainStreaming && tiles.terrainClipmap
+    ? new TerrainTileStreamer({
+      map,
+      clipmap: tiles.terrainClipmap,
+      renderer,
+      onAnchorInstalled: () => bootMark("spawnTile")
+    })
+    : null;
+
   // Resolve the real initial destination and start its fixed-quality local tile
   // prime while Box3D instantiates. These streams are independent: visual fetch,
   // worker spawn validation, and WASM setup should overlap rather than forming a
@@ -260,6 +276,9 @@ async function boot() {
   let initialVisualEpoch = 0;
   const initialVisualFocus = { x: Number.NaN, z: Number.NaN };
   const primeInitialVisualAt = (x: number, z: number) => {
+    // M14: the destination's REAL terrain tile (+ 3×3 ring) takes absolute
+    // fetch priority — physics groundReady now requires it at the anchor.
+    terrainTiles?.setAnchor(x, z);
     const epoch = ++initialVisualEpoch;
     initialVisualFocus.x = x;
     initialVisualFocus.z = z;
@@ -756,12 +775,21 @@ async function boot() {
       GOLDEN_GATE_LIGHTS_INTENSITY.value *=
         materializeField.amountAt(goldenGateAnchor.x, goldenGateAnchor.z);
     }
+    // M15: Sutro's FAA beacons are visible city-wide by design — during a
+    // sweep they must stay dark until the front crosses the tower (the same
+    // CPU ramp as the bridges; Sky#applySun rewrites the intensity each frame).
+    SUTRO_LIGHTS_INTENSITY.value =
+      (SUTRO_LIGHTS_INTENSITY.value as number) *
+      materializeField.amountAt(SUTRO_TOWER_ANCHOR.x, SUTRO_TOWER_ANCHOR.z);
   };
 
   // M5: citygen chunk-publication radius folded into the residency the front
   // chases. The ring is a post-reveal dynamic import — until it exists nothing
   // constrains (Infinity); rebound right after the ring holder is declared.
   let citygenResidencyRadius: (x: number, z: number) => number = () => Infinity;
+  // M12: far-teleport re-gate for published citygen cells (rebound with the
+  // residency query once the ring's dynamic import lands; no-op before then).
+  let citygenApplyFrontGate: () => void = () => {};
 
   // Provisional void loop: the minimal per-frame set — input → fixed-step
   // physics → player/camera → sky/materialize → streaming drains → render.
@@ -857,7 +885,13 @@ async function boot() {
       constructionDone: () => constructionDoneFlag,
       frontRadius: () => materializeField.frontRadius.value as number,
       frameDriver,
-      audioEngine
+      audioEngine,
+      // M15 leak QA: scene + sky handles for void-phase visibility censuses
+      // (probes walk the scene to find content rendering beyond the front, and
+      // force a time of day BEFORE the void moment — `__sf` only exists at the
+      // end of boot).
+      scene,
+      sky
     };
   }
   if (skipGate) loading.classList.add("done");
@@ -870,6 +904,11 @@ async function boot() {
   // block below); the coordinator chases what lands and only nudges a stage
   // directly after a 20 s stall so continuous movement can't pin the front.
   // `?voidholo=1` still means "hold the holo" for manual `__sf.materialize`.
+  // M12 QA escape hatch (`?nofrontgate=1`, the ?nofarcut precedent): keep the
+  // front visibility gate permanently inactive for A/B timing on one build —
+  // shouldHide is false everywhere, so behavior reverts to pre-M12 layer 1.
+  const frontGateDisabled = bootQuery.has("nofrontgate");
+  const frontGateWanted = (active: boolean) => frontGate.setActive(active && !frontGateDisabled);
   const ringCoordinator = new RingCoordinator(player.position.x, player.position.z, {
     tiles,
     player,
@@ -878,7 +917,15 @@ async function boot() {
     // M9: surf caps CONFIG.tileLoadRadius at 2 km (< settle radius); the
     // coordinator settles at a plateaued live cap instead of sweeping forever.
     liveLoadRadius: () => CONFIG.tileLoadRadius,
-    citygenRadius: (x, z) => citygenResidencyRadius(x, z),
+    // M14: terrain-data residency joins the same min — the front never sweeps
+    // onto overview-only ground.
+    citygenRadius: (x, z) => Math.min(
+      citygenResidencyRadius(x, z),
+      terrainTiles ? terrainTiles.residentRadiusAround(x, z) : Infinity
+    ),
+    // M12: the front may never outpace the visibility unhide queue — clamp its
+    // target to the nearest still-front-hidden chunk (same as residency chase).
+    unhideClearedRadius: () => frontGate.clearedRadius(),
     holdHolo: bootQuery.has("voidholo"),
     onSettled: () => bootMark("frontComplete"),
     onExpansionStalled: () => {
@@ -892,6 +939,17 @@ async function boot() {
       tiles.beginBackgroundExpansion();
     }
   });
+  // M12: arm the visibility gate synchronously with the coordinator (same
+  // block — no tick, and therefore no tile finalize, can run in between), so
+  // the very first resident content beyond the collapsed front starts hidden.
+  frontGateWanted(ringCoordinator.state !== "settled");
+  // Anything that landed BEFORE the gate armed (P1 landmarks GLB — the Bay/
+  // Golden Gate bridges and Alcatraz are boot-resident and were visible as
+  // silhouettes across the void) re-gates now against the collapsed front.
+  tiles.applyFrontGate();
+  // Ready authored regions (rare this early, but the boot-critical ones can
+  // attach before this block) re-gate against the collapsed front too.
+  authoredRegions.applyFrontGate();
   // M7 far-arrival classification. FAR means "the destination's content is
   // not resident": the hop is a genuine relocation (> FAR_ARRIVAL_MIN_HOP —
   // recovery probes and short covered mode relocations stay near) AND the
@@ -922,14 +980,49 @@ async function boot() {
   // boot included), recenter + collapse the front at the destination, and
   // chase its residency exactly like boot. `prime: false` — worldArrival
   // already primed tiles/regions/collision through its own epoch-guarded path.
-  onFarArrivalCut = (x, z) => ringCoordinator.focus(x, z, { reset: true, prime: false });
+  onFarArrivalCut = (x, z) => {
+    // M14: re-anchor terrain-data streaming at the destination (the arrival's
+    // ground wait requires the dest tile REAL before the cover can drop).
+    terrainTiles?.setAnchor(x, z);
+    ringCoordinator.focus(x, z, { reset: true, prime: false });
+    // M12: refocus re-arms the visibility gate — content revealed by the
+    // previous sweep (or shown by the covered-arrival adopt while the front was
+    // still centred at the origin) re-hides when it lies beyond the collapsed
+    // front at the destination. Runs at the cut, under the arrival cover.
+    frontGateWanted(true);
+    tiles.applyFrontGate();
+    authoredRegions.applyFrontGate();
+    citygenApplyFrontGate();
+    // M15: one-off boot props (surf shack, …) re-gate against the collapsed
+    // front at the destination too.
+    frontGate.applyStatic();
+  };
   // M7 shadow streaming hold: while the front is actively sweeping, static
   // shadow-domain redraws are held (casters are holo-dark under the front) and
   // latched dirt applies as one redraw per domain on settle.
   let shadowStreamingHold = false;
   ringUpdate = (dt) => {
+    // M14: terrain tile streaming rides the same per-frame path — one decoded
+    // install max per call, then fetch top-up (no-op once everything wanted
+    // is real).
+    terrainTiles?.update(player.position.x, player.position.z);
     ringCoordinator.update(dt);
     const sweeping = ringCoordinator.state === "sweeping";
+    // M12: visibility gate rides the coordinator state — active while sweeping
+    // (and while `?voidholo=1` holds), released on settle so its per-frame
+    // flush (budgeted) unhides everything. Both calls are trivial early-outs
+    // once settled with an empty gate (zero steady-state cost).
+    frontGateWanted(ringCoordinator.state !== "settled");
+    frontGate.update();
+    // M13: birth-holo language rides the coordinator state too — full holo
+    // during boot/teleport sweeps (and the `?voidholo` hold), while chunks
+    // streaming in during settled NORMAL play appear via their plain
+    // crossfades unless the "/"-panel "holo chunk streaming" debug toggle
+    // re-enables the look. Polling the tunable here means the toggle works
+    // without the pane ever opening (persisted tweaks apply on boot).
+    materializeField.setBirthHoloEnabled(
+      ringCoordinator.state !== "settled" || RENDER_TUNING.values.holoChunkStreaming
+    );
     if (sweeping !== shadowStreamingHold) {
       shadowStreamingHold = sweeping;
       sky.setStaticShadowStreamingHold(sweeping);
@@ -938,7 +1031,33 @@ async function boot() {
   if (import.meta.env.DEV || bootQuery.has("profile")) {
     Object.assign((window as never as { __sfVoid: Record<string, unknown> }).__sfVoid, {
       ringState: () => ringCoordinator.state,
-      residentRadius: () => ringCoordinator.residentRadius()
+      residentRadius: () => ringCoordinator.residentRadius(),
+      // M12 probe surface: how many chunks the front gate is hiding + the
+      // clearedRadius the coordinator clamps to.
+      frontGate: () => ({
+        active: frontGate.active,
+        hidden: frontGate.hiddenCount,
+        cleared: frontGate.clearedRadius()
+      }),
+      // M13 probe surface: steady-state birth-holo gate (target + lerped
+      // uniform value) and a setter for the debug tunable so probes can A/B
+      // the holo-streaming look without opening the pane.
+      birthHolo: () => ({
+        enabled: materializeField.birthHoloEnabled,
+        gate: materializeField.birthHoloGate.value as number,
+        debugToggle: RENDER_TUNING.values.holoChunkStreaming
+      }),
+      setHoloChunkStreaming: (on: boolean) => {
+        RENDER_TUNING.values.holoChunkStreaming = Boolean(on);
+      },
+      // M14 probe surface: terrain-data streaming telemetry.
+      terrainTiles: () => terrainTiles
+        ? {
+          ...terrainTiles.debug(),
+          residentRadius: terrainTiles.residentRadiusAround(player.position.x, player.position.z),
+          spawnTileReal: map.isTileRealAt(player.position.x, player.position.z)
+        }
+        : null
     });
   }
 
@@ -1150,6 +1269,20 @@ async function boot() {
     if (surfShack) return;
     surfShack = createSurfShack(map);
     scene.add(surfShack.group);
+    // M15 void purity: the shack is a boot-resident one-off prop no streamer
+    // owns — register it with the shared front gate so it stays hidden beyond
+    // the sweeping front (and re-gates on far-arrival refocus via applyStatic).
+    {
+      const box = new THREE.Box3().setFromObject(surfShack.group);
+      if (!box.isEmpty()) {
+        frontGate.registerStatic(
+          surfShack.group,
+          (box.min.x + box.max.x) / 2,
+          (box.min.z + box.max.z) / 2,
+          Math.hypot(box.max.x - box.min.x, box.max.z - box.min.z) / 2
+        );
+      }
+    }
     refreshSurfDebug();
   };
   const refreshSurfDebug = () => {
@@ -1526,6 +1659,8 @@ async function boot() {
   // (declared as a rebindable above P5 — the coordinator exists before this).
   citygenResidencyRadius = (x, z) =>
     citygenRing.current?.materializedRadiusAround(x, z) ?? Infinity;
+  // M12: same rebindable pattern for the far-teleport cell re-gate.
+  citygenApplyFrontGate = () => citygenRing.current?.applyFrontGate();
 
   // crabs to hunt (hunt.ts)
   const satchel = new Satchel();
@@ -4938,7 +5073,16 @@ async function boot() {
         residentRadius: () => ringCoordinator.residentRadius(),
         frontRadius: () => ringCoordinator.frontRadius(),
         focus: (x: number, z: number, opts?: { reset?: boolean }) =>
-          ringCoordinator.focus(x, z, opts)
+          ringCoordinator.focus(x, z, opts),
+        // M14 terrain-data streaming telemetry (null on ?fullmap=1).
+        terrain: () => terrainTiles
+          ? {
+            ...terrainTiles.debug(),
+            residentRadius: terrainTiles.residentRadiusAround(player.position.x, player.position.z),
+            playerTileReal: map.isTileRealAt(player.position.x, player.position.z),
+            playerTile: map.tileKeyAt(player.position.x, player.position.z)
+          }
+          : null
       },
       // M9 leak metric: shared-material dispose-listener counts (retired
       // RenderObject retention) + total released. Must plateau on long roams.

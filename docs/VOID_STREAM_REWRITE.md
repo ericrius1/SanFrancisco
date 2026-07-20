@@ -183,6 +183,57 @@ unchanged (fail closed).
   probe (3-phase waterfall per docs/LAZY_LOADING.md), hitchTracer summaries,
   screenshots, timing comparison vs main.
 
+## M14 — Data-concentric world (terrain tiling)
+
+Phase 2: the sweep loads DATA, not just visuals. Boot fetches ~350KB instead of
+~11.5MB; terrain heights/surface/groundtop stream concentrically behind the
+front. Full ground-truth in the terrain-pipeline exploration (grid: 8m cells,
+1888×1736, tile=800m=100 cells, manifest = existence oracle).
+
+Core design decisions:
+- **Full-lattice arrays stay** (~26MB RAM, same as today). Boot allocates them
+  and fills from a low-res OVERVIEW (1/8 heights ~102KB + 1/8 surface ~51KB,
+  new bake artifacts). Absent regions therefore read plausible coarse data —
+  no sampler changes, no apron, no guards; `#sampleGrid` and every consumer
+  (FarOcclusionField length check included) work unmodified. Real 800m tiles
+  overwrite their region (CPU arrays + GPU sub-rect) as they stream.
+- **Bake**: `tools/bake-terrain-tiles.mjs` emits `public/data/terrain/`
+  overviews + per-tile bundles `tile_IX_IZ.bin` (heights int16 + surface u8 +
+  groundtop sparse deltas for that tile), keyed to the existing 800m manifest
+  grid. Contract test: stitched tiles + overview == original artifacts
+  byte-exact (heights/surface) / value-exact (groundTops).
+- **Runtime**: terrain-tile worker (spawnWorker pattern: id map, cancel,
+  transferables) fetches+decodes+builds the 4 mip sub-rects; main thread
+  installs bounded per frame — CPU row writes + `copyTextureToTexture` blits
+  into the clipmap height/normal/surface atlases (all mips) + height-bounds
+  region update + `groundRevision` bump (throttled). CPU install and GPU blit
+  land in the SAME install step (lockstep). Quantization range comes from
+  `meta.terrain` constants, not a whole-map rescan.
+- **Overlay safety**: tiles patch BASE arrays only (overlays compose at query
+  time). `prepareCoronaHeightsGround` re-applies after any intersecting tile
+  installs (post-install fixup hook), then bumps revision.
+- **Residency**: `terrain.residentRadiusAround(x,z)` joins the ring
+  coordinator's residency min — the front cannot sweep onto ground whose data
+  isn't installed. Fetch priority: spawn/teleport-dest tile first, then
+  nearest-first outward, abortable per focus generation.
+- **groundReady tightens**: `#groundReadyAt` (and far-arrival ground wait)
+  additionally require the terrain tile at the anchor cell to be REAL (not
+  overview) — spawn and teleport ground is never approximate. Elsewhere,
+  physics carpet may transiently ride overview ground (fast vehicles beyond
+  the front); tile install re-places via the existing groundRevision path.
+- **Escape hatch**: `?fullmap=1` keeps the legacy monolithic load path for
+  A/B and emergencies; old artifacts remain in /data.
+- Boot prefetch (index.html) becomes meta + manifest + overviews; spawn tiles
+  fetch immediately after spawn resolution.
+
+Acceptance: boot waterfall probe asserts NO heightmap.bin/surface.bin/
+groundtop-delta.bin fetch (default path) and total terrain bytes < ~500KB
+before control; map bootMark and far-teleport arrival times drop accordingly;
+lockstep contract tests extended to tile installs; fast-drive probe confirms
+sane physics Y while outrunning tiles (overview ground) with no pop at spawn/
+teleport anchors; full regression suite (escape-settle, rapid teleports,
+holo-off default) stays green.
+
 ## QA notes
 
 - Probes must fresh-boot (memory: baseline ladder pollutes late stops) and

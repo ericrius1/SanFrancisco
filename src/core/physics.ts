@@ -742,6 +742,11 @@ export class Physics {
 
   /** The patch supplies ordinary ground and the recentered carpet covers holes. */
   #groundReadyAt(x: number, z: number): boolean {
+    // M14: the terrain tile under the anchor must hold REAL streamed data —
+    // spawn holds and far-teleport ground waits must never release onto
+    // approximate overview ground (always true on ?fullmap=1 / legacy loads;
+    // a terminally missing tile fails open via markTileUnavailable).
+    if (!this.map.isTileRealAt(x, z)) return false;
     const carpetReady =
       this.#carpetCX === Math.round(x / CONFIG.carpetCell) &&
       this.#carpetCZ === Math.round(z / CONFIG.carpetCell) &&

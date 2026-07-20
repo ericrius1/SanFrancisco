@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { abs, attribute, float, mix, positionLocal, saturate, uniform } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
+import { materializeAmount } from "../../render/materialize";
 import type { WorldMap } from "../../world/heightmap";
 import type { RoadGraph } from "./roadGraph.ts";
 import type { TrafficSignal, TrafficSignalSystem } from "./trafficSignals.ts";
@@ -337,7 +338,12 @@ function makeLensMaterial(): { material: THREE.MeshBasicNodeMaterial; litState: 
   // isLit = 1 when this lens's id equals litState, else 0 (ids differ by ≥1, so
   // saturate(|Δ|) is 0 for the match and 1 for every mismatch).
   const isLit = float(1).sub(saturate(abs(id.sub(litState)))) as N;
-  material.colorNode = mix(dim, lit, isLit);
+  // M15 void purity: lenses (the emissive part of a signal) stay black until
+  // the materialize front crosses them — no lit reds/greens speckling the void
+  // beyond the sweep. Collapses to 1 once the front parks at the revealed
+  // sentinel, so settled shading is unchanged. The dark steel frame keeps its
+  // plain material (hasNode=false bundle-skip optimization, see #frameMat).
+  material.colorNode = mix(dim, lit, isLit).mul(materializeAmount() as N);
   const scale = mix(float(LENS_DIM_SCALE), float(LENS_LIT_SCALE), isLit) as N;
   material.positionNode = center.add(positionLocal.sub(center).mul(scale));
   return { material, litState };
