@@ -11,6 +11,7 @@ import { RingCoordinator } from "../ringCoordinator";
 import { tracer } from "../../core/hitchTracer";
 import type { TerrainTileStreamer } from "../../world/terrainTiles";
 import type { TerrainScanParticles } from "../../world/terrainScanParticles";
+import { BACKGROUND_STREAM_LIMIT } from "../../world/tiles";
 import type { MainCtx } from "./ctx";
 
 export function installVoidArrival(deps: {
@@ -19,8 +20,7 @@ export function installVoidArrival(deps: {
   terrainTiles: TerrainTileStreamer | null;
   scanParticles: TerrainScanParticles | null;
   primeInitialVisualAt: (x: number, z: number) => void;
-  /** LIVE reads of main's late-assigned citygen hooks (NET module wires them). */
-  citygenResidencyRadius: (x: number, z: number) => number;
+  /** LIVE read of main's late-assigned CityGen gate hook (NET wires it). */
   citygenApplyFrontGate: () => void;
 }) {
   const { player, tiles, authoredRegions, sky, map, fullTileRadius } = deps.ctx;
@@ -44,6 +44,7 @@ export function installVoidArrival(deps: {
     player,
     prime: deps.primeInitialVisualAt,
     fullRadius: fullTileRadius,
+    fillRadius: Math.min(fullTileRadius, BACKGROUND_STREAM_LIMIT),
     // M9: surf caps CONFIG.tileLoadRadius at 2 km (< reveal radius); the
     // coordinator reveals at a plateaued live cap instead of waiting forever.
     liveLoadRadius: () => CONFIG.tileLoadRadius,
@@ -51,9 +52,9 @@ export function installVoidArrival(deps: {
     // field must never form ground whose real heights haven't landed.
     terrainRadius: (x, z) =>
       terrainTiles ? terrainTiles.residentRadiusAround(x, z) : Infinity,
-    // M5: citygen cell publication joins the FILL residency min — the fog
-    // wall never drops while a cell is mid baked→chunk swap.
-    citygenRadius: (x, z) => deps.citygenResidencyRadius(x, z),
+    // CityGen is a richer enhancement over the complete baked city. It does
+    // not constrain the reveal: optional mesh builds must not change the fog
+    // timing or expose their compile windows during the handoff.
     // M18: the void fog wall lives in the sky's fog node.
     fogWall: (x, z, radius, density) => sky.setVoidFogWall(x, z, radius, density),
     holdHolo: bootQuery.has("voidholo"),
@@ -74,6 +75,7 @@ export function installVoidArrival(deps: {
         CONFIG.tileUnloadRadius = fullTileRadius + 400;
       }
       tiles.beginBackgroundExpansion();
+      sky.setStreamingCullRadius(Math.min(CONFIG.tileLoadRadius, BACKGROUND_STREAM_LIMIT));
     }
   });
   // M12: arm the visibility gate synchronously with the coordinator (same

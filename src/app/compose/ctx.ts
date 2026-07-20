@@ -34,6 +34,7 @@ export interface MainCtx {
   renderer: any;
   sky: Sky;
   waitForWorldBackgroundWindow: (extraQuietMs?: number, deadline?: number) => Promise<void>;
+  waitForWorldStreamingWindow: (extraQuietMs?: number, deadline?: number) => Promise<void>;
   aim: THREE.Vector3;
   tiles: TileStreamer;
   rayOrigin: THREE.Vector3;
@@ -43,6 +44,7 @@ export interface MainCtx {
   authoredRegions: any;
   applyLightFrontRamps: any;
   waitForCityGenRenderWindow: any;
+  ringCoordinator: import("../ringCoordinator").RingCoordinator;
   spawn: any;
   app: any;
   voidRealm: VoidRealm;
@@ -109,7 +111,6 @@ export interface MainCtx {
     ringUpdate: (dt: number) => void;
     classifyFarArrival: (x: number, z: number) => boolean;
     onFarArrivalCut: (x: number, z: number) => void;
-    citygenResidencyRadius: (x: number, z: number) => number;
     citygenApplyFrontGate: () => void;
     avatarTraits: any;
     carConfig: any;

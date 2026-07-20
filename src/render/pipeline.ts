@@ -93,6 +93,8 @@ export function createRenderPipeline(
   camera: THREE.Camera,
   directionalLight: THREE.DirectionalLight | null = null
 ) {
+  let waitForCompileIdle: () => Promise<void> = async () => {};
+  let compileBlocked = () => false;
   // Beauty sees the ordinary world plus ephemeral hashed markers. The ink
   // prepass below deliberately stays on layer 0 so alpha-hash grain cannot
   // become a noisy normal/depth outline.
@@ -453,12 +455,27 @@ export function createRenderPipeline(
   {
     const original = renderer.compileAsync.bind(renderer);
     let chain: Promise<unknown> = Promise.resolve();
+    type PendingCompile = { promise: Promise<unknown>; started: boolean };
+    const pendingCompiles: PendingCompile[] = [];
     renderer.compileAsync = ((
       compileScene: THREE.Object3D,
       compileCamera: THREE.Camera,
       targetScene: THREE.Scene | null = null
     ) => {
+      const pending: PendingCompile = {
+        promise: Promise.resolve(),
+        started: false,
+      };
       const run = async () => {
+        // Optional owners queued before a teleport stay queued until the full
+        // point/fog reveal settles. A run that already crossed this boundary
+        // is the sole non-cancellable owner the covered relocation waits for.
+        // Nested compiles inside an exclusive owner must proceed to avoid an
+        // outer-await/inner-block deadlock.
+        while (exclusiveCompileDepth === 0 && compileBlocked()) {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        }
+        pending.started = true;
         // M11: start this window during stillness when possible (see
         // COMPILE_STILL_DEADLINE_MS). The wait happens BEFORE the exclusive
         // depth increments, so live frames keep presenting while we wait.
@@ -509,9 +526,28 @@ export function createRenderPipeline(
         }
       };
       const gated = chain.then(run, run);
+      pending.promise = gated;
       chain = gated.catch(() => {});
+      pendingCompiles.push(pending);
+      const removePending = () => {
+        const index = pendingCompiles.indexOf(pending);
+        if (index >= 0) pendingCompiles.splice(index, 1);
+      };
+      void gated.then(removePending, removePending);
       return gated;
     }) as typeof renderer.compileAsync;
+
+    // Published below for atomic relocations. A teleport paints its lightweight
+    // DOM cover first, then waits for any already-admitted non-cancellable GPU
+    // compile to drain before it cuts/restarts the point scan. Background
+    // admission is arrival-aware, so no new optional owner should join once
+    // that wait begins. Wait only for the run that already crossed the reveal
+    // blocker; queued owners remain paused and never lengthen the cover.
+    waitForCompileIdle = async () => {
+      const admittedBeforeArrival = pendingCompiles.find((pending) => pending.started);
+      if (!admittedBeforeArrival) return;
+      await admittedBeforeArrival.promise.catch(() => {});
+    };
   }
 
   /**
@@ -917,6 +953,14 @@ export function createRenderPipeline(
 
   return {
     render,
+    /** Late-bind app-level arrival/reveal admission after the phase machine is
+     * constructed. Boot compilation remains unblocked before this binding. */
+    setCompileBlocker(blocker: () => boolean) {
+      compileBlocked = blocker;
+    },
+    /** Wait for GPU owner compilation that was already admitted before a
+     * covered world relocation. Does not start or force any new work. */
+    waitForCompileIdle,
     /** M10: true while an exclusive compile window is holding presented
      * frames. Streaming attach paths poll this so scene mutations that dirty
      * render bundles don't pile up unseen behind a long window and then all

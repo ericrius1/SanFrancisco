@@ -38,6 +38,9 @@ export type DestinationVisualPreparer = (
 
 export type WorldArrivalPlan = {
   label?: string;
+  /** Explicit teleports replay the point-scan arrival even when the destination
+   * is already resident. Mode handoffs omit this and keep their local path. */
+  replayPointReveal?: boolean;
   resolve: (signal: AbortSignal) => Promise<ResolvedWorldArrival>;
   onCommitted?: () => void;
   onInteractive?: () => void;
@@ -91,6 +94,7 @@ export class WorldArrivalCoordinator {
   #classifyFarArrival: ((x: number, z: number) => boolean) | null;
   #onFarArrivalCut: ((x: number, z: number) => void) | null;
   #destinationRequiresAuthoredFloor: ((x: number, z: number) => boolean) | null;
+  #waitForRenderIdle: (() => Promise<void>) | null;
   #view = new WorldTransitionView();
   #generation = 0;
   #abort: AbortController | null = null;
@@ -134,6 +138,9 @@ export class WorldArrivalCoordinator {
      * vertically. All other visuals stay detached on the far path.
      */
     destinationRequiresAuthoredFloor?: (x: number, z: number) => boolean;
+    /** Drain a non-cancellable GPU compile already admitted before the travel
+     * cover painted, so the destination point scan starts on a clear renderer. */
+    waitForRenderIdle?: () => Promise<void>;
   }) {
     this.#input = options.input;
     this.#player = options.player;
@@ -145,6 +152,7 @@ export class WorldArrivalCoordinator {
     this.#classifyFarArrival = options.classifyFarArrival ?? null;
     this.#onFarArrivalCut = options.onFarArrivalCut ?? null;
     this.#destinationRequiresAuthoredFloor = options.destinationRequiresAuthoredFloor ?? null;
+    this.#waitForRenderIdle = options.waitForRenderIdle ?? null;
   }
 
   get active(): boolean {
@@ -185,6 +193,12 @@ export class WorldArrivalCoordinator {
     try {
       const [, destination] = await Promise.all([coverPainted, plan.resolve(controller.signal)]);
       if (!this.#isCurrent(generation, controller)) return false;
+      // The cover is now painted and input is held. Finish at most the compile
+      // that had already begun before the request, then cut/restart the point
+      // reveal. Optional compilation admission sees this arrival as active and
+      // cannot start another owner behind the wait.
+      await this.#waitForRenderIdle?.();
+      if (!this.#isCurrent(generation, controller)) return false;
 
       // Begin both independent streams, then atomically commit under the opaque
       // cover. Fixed steps now drain destination physics while the visual prime
@@ -200,7 +214,8 @@ export class WorldArrivalCoordinator {
       // Classify while the player is still at the origin: "far" means the
       // destination is beyond current residency, so the cover holds only for
       // the cut and the materialize sweep plays the streaming instead.
-      const far = this.#classifyFarArrival?.(destination.x, destination.z) ?? false;
+      const far = plan.replayPointReveal === true ||
+        (this.#classifyFarArrival?.(destination.x, destination.z) ?? false);
       this.#setState("committing");
       if (!this.#physics.activateCollisionArrival(collisionEpoch)) {
         throw new Error("Collision arrival was superseded before commit");
@@ -286,6 +301,14 @@ export class WorldArrivalCoordinator {
       // under the still-fading cover and make the first visible camera pose jump.
       await revealDone;
       if (!this.#isCurrent(generation, controller)) return false;
+      // A real terrain tile can install during the 180 ms cover fade. That
+      // increments the ground revision and deliberately invalidates the local
+      // carpet/patch for a frame or two. Re-converge here instead of treating
+      // that normal destination refinement as a terminal collision failure.
+      if (!this.#physics.isCollisionArrivalReady(collisionEpoch)) {
+        this.#setState("loading-collision");
+        if (!await this.#waitForCollision(collisionEpoch, generation, controller, plan)) return false;
+      }
       if (!this.#physics.completeCollisionArrival(collisionEpoch)) {
         throw new Error("Destination collision changed before interaction release");
       }
@@ -296,8 +319,16 @@ export class WorldArrivalCoordinator {
       this.#collisionEpoch = null;
       this.#player.releaseWorldArrivalHold(ARRIVAL_HOLD);
       this.#input.setSuspensionHold(ARRIVAL_HOLD, false);
-      this.#setState("idle");
+      // Let completion observers of the prime's ready promise run before its
+      // required-only hold is released. This preserves a precise ready→release
+      // lifecycle for diagnostics and downstream ownership hooks.
+      await Promise.resolve();
       this.#tiles.resumeBackgroundStreaming();
+      // Publish idle only after the generation-owned visual prime is released.
+      // An observer may synchronously start the next teleport from this event;
+      // it must never be followed by the previous arrival resuming that new
+      // destination's required-only stream.
+      this.#setState("idle");
       this.#callSafely(plan.onInteractive, "onInteractive");
       if (new URLSearchParams(location.search).has("profile")) {
         const snapshot = this.snapshot;
@@ -367,8 +398,9 @@ export class WorldArrivalCoordinator {
             this.#collisionEpoch = null;
             this.#player.releaseWorldArrivalHold(ARRIVAL_HOLD);
             this.#input.setSuspensionHold(ARRIVAL_HOLD, false);
-            this.#setState("idle");
+            await Promise.resolve();
             this.#tiles.resumeBackgroundStreaming();
+            this.#setState("idle");
           }
         } catch (recoveryError) {
           if (this.#isCurrent(generation, controller)) {
@@ -384,8 +416,8 @@ export class WorldArrivalCoordinator {
       this.#unsafeVisualReady = false;
       this.#player.releaseWorldArrivalHold(ARRIVAL_HOLD);
       this.#input.setSuspensionHold(ARRIVAL_HOLD, false);
-      this.#setState("idle");
       this.#tiles.resumeBackgroundStreaming();
+      this.#setState("idle");
       return false;
     }
   }
@@ -414,8 +446,8 @@ export class WorldArrivalCoordinator {
     this.#collisionEpoch = null;
     this.#player.releaseWorldArrivalHold(ARRIVAL_HOLD);
     this.#input.setSuspensionHold(ARRIVAL_HOLD, false);
-    this.#setState("idle");
     this.#tiles.resumeBackgroundStreaming();
+    this.#setState("idle");
   }
 
   dispose(): void {
