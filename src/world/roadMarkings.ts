@@ -1,5 +1,7 @@
 import * as THREE from "three/webgpu";
+import { materialColor } from "three/tsl";
 import { EXPOSURE_REBASE } from "../config";
+import { materializeAmount } from "../render/materialize";
 import type { WorldMap } from "./heightmap";
 import { loadRoadsJson } from "./traffic/roadGraphLoader";
 
@@ -51,6 +53,11 @@ function makeMarkingMaterial(colorHex: number, opacity: number): THREE.MeshBasic
   // opaque blending made the paint depend on transparent-pass ordering; opaque
   // depth writes make every accepted marking pixel stable.
   mat.color.multiplyScalar(EXPOSURE_REBASE * opacity);
+  // M15 void purity: paint is unlit (always full-bright) city-wide geometry —
+  // beyond the sweeping materialize front it must contribute nothing, so the
+  // colour rides the shared front amount (collapses to 1 once settled).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mat.colorNode = (materialColor as any).mul(materializeAmount());
   return mat;
 }
 

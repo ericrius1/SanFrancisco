@@ -1,9 +1,11 @@
 import * as THREE from "three/webgpu";
+import { materialColor } from "three/tsl";
 import { BodyType } from "../core/physics";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
 import { enableLocalFarShadowLayers } from "../world/shadows/shadowLayers";
+import { applyHoloBirth, materializeAmount } from "../render/materialize";
 
 /**
  * Floating islands drifting over the city — little grass discs with a dirt
@@ -96,7 +98,14 @@ export class Islands {
   #foliageFocus = { x: 0, z: 0 };
 
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
-    const bodyMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
+    // M15 void purity: the fleet is visible city-wide by design, so during a
+    // materialize sweep each island must render the shared holo language (near
+    // black past the edge window) instead of a sunlit pastel silhouette
+    // hanging in the void. Node materials + the standard opaque-fabric wrap;
+    // settled shading is unchanged (the wrap collapses at the revealed
+    // sentinel / birth-holo gate).
+    const bodyMat = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.85 });
+    applyHoloBirth(bodyMat);
     let totalBalloons = 0;
 
     for (let i = 0; i < SPOTS.length; i++) {
@@ -146,7 +155,8 @@ export class Islands {
     }
 
     const balloonGeo = new THREE.SphereGeometry(0.62, 16, 12);
-    const balloonMat = new THREE.MeshStandardMaterial({ roughness: 0.3 });
+    const balloonMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.3 });
+    applyHoloBirth(balloonMat);
     this.#balloonMesh = new THREE.InstancedMesh(balloonGeo, balloonMat, totalBalloons);
     this.#balloonMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.#balloonMesh.frustumCulled = false;
@@ -164,15 +174,17 @@ export class Islands {
 
     const stringGeo = new THREE.BufferGeometry();
     stringGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(totalBalloons * 6), 3));
-    this.#strings = new THREE.LineSegments(
-      stringGeo,
-      new THREE.LineBasicMaterial({
-        color: 0xf5efdf,
-        opacity: 0.7,
-        transparent: true,
-        depthWrite: false
-      })
-    );
+    const stringMat = new THREE.LineBasicNodeMaterial({
+      color: 0xf5efdf,
+      opacity: 0.7,
+      transparent: true,
+      depthWrite: false
+    });
+    // Balloon strings vanish beyond the front too (thin additive-looking
+    // brights would otherwise shimmer against the void).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    stringMat.colorNode = (materialColor as any).mul(materializeAmount());
+    this.#strings = new THREE.LineSegments(stringGeo, stringMat);
     this.#strings.frustumCulled = false;
     scene.add(this.#strings);
   }

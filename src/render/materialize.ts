@@ -61,6 +61,17 @@ export const MATERIALIZE_DEFAULT_BAND = 48;
 export const HOLO_COLOR_DEFAULT = 0x36e0cf;
 
 /**
+ * DEBUG escape hatch (`?gridhorizon=1`): restore the pre-M13 to-horizon terrain
+ * contour grid by disabling the edge window on terrain shading. Read once at
+ * module load; guarded so headless bakes (no `location`) default to the
+ * windowed "immediate area focus" look. Only affects the void/sweep phase —
+ * settled shading is identical either way.
+ */
+export const GRID_TO_HORIZON_DEBUG =
+  typeof location !== "undefined" &&
+  new URLSearchParams(location.search).has("gridhorizon");
+
+/**
  * Shared front state + birth registry. A single instance lives at module
  * scope (`materializeField`); the uniforms it owns are referenced by every
  * materialize-aware material, so one write updates all of them.
@@ -81,9 +92,35 @@ export class MaterializeField {
    *  Named worldTime in the contract doc; advanced by update(). */
   readonly worldTime = uniform(0);
 
+  /**
+   * M13 steady-state birth-holo gate. 1 = birth/crossfade ramps render the full
+   * holo language (boot sweep, teleport-arrival sweeps, debug toggle); 0 = the
+   * applyMaterialize amount is forced to 1, so chunks streaming in during
+   * NORMAL PLAY skip the cyan grid/scanline look and appear with each system's
+   * own plain crossfade (citygen fadeClone alphaHash opacity, shellBatch fade
+   * texel dither) or a plain attach (tiles / authored regions) — the pre-M5
+   * steady-state behavior. Driven per frame from the ring coordinator state
+   * (main's ringUpdate): enabled while not settled, else the debug tunable.
+   * Disable lerps down (~0.4 s) so mid-ramp chunks finish smoothly at settle;
+   * enable snaps so a teleport cut is atomic with its front collapse.
+   */
+  readonly birthHoloGate = uniform(1);
+  #birthHoloTarget = 1;
+
   #births = new Map<string, ReturnType<typeof uniform>>();
   #sweepTarget: number | null = null;
   #sweepSpeed = 450;
+
+  /** See `birthHoloGate`. Idempotent; call every frame (ringUpdate does). */
+  setBirthHoloEnabled(on: boolean): void {
+    this.#birthHoloTarget = on ? 1 : 0;
+    if (on) this.birthHoloGate.value = 1;
+  }
+
+  /** DEBUG/probe: current gate target (true = holo birth language active). */
+  get birthHoloEnabled(): boolean {
+    return this.#birthHoloTarget === 1;
+  }
 
   /**
    * Shared birth-timestamp uniform for a chunk/site/tile residency key.
@@ -170,6 +207,13 @@ export class MaterializeField {
   update(dt: number): void {
     const clamped = Math.min(Math.max(dt, 0), 0.1);
     this.worldTime.value = (this.worldTime.value as number) + clamped;
+    // Birth-holo gate: disable direction eases (~0.4 s) so chunks mid-birth at
+    // the settle moment ramp smoothly to full instead of popping; the enable
+    // direction snapped in the setter.
+    const gate = this.birthHoloGate.value as number;
+    if (gate > this.#birthHoloTarget) {
+      this.birthHoloGate.value = Math.max(this.#birthHoloTarget, gate - clamped * 2.5);
+    }
     if (this.#sweepTarget === null) return;
     const current = this.frontRadius.value as number;
     const delta = this.#sweepTarget - current;
@@ -229,14 +273,38 @@ function contourLines(coord: N, spacing: number): N {
 }
 
 /**
+ * M12 edge glow window: 1 at/inside the dissolve edge, easing to 0 over
+ * ~3 bands beyond the front. Concentrates the holo grid/fill glow in a window
+ * hugging the edge so content far beyond the front renders essentially
+ * black-on-black against the void sky (the budgeted visibility unhide — see
+ * frontGate.ts — flips chunks where this window is ~0, so the flip is
+ * imperceptible). Collapses to 1 everywhere once the front parks at the
+ * revealed sentinel, so post-settle birth ramps keep today's look exactly.
+ */
+export function edgeGlowWindow(dist: N): N {
+  const f = materializeField;
+  const beyond = dist.sub(f.frontRadius as N).div((f.frontBand as N).mul(3));
+  return smoothstep(0, 1, beyond).oneMinus();
+}
+
+/**
  * The holo look at a world position: near-black base + glowing world-space
  * contour grid (8 m lattice + 1 m sub-grid + 4 m elevation contours that
  * conform to real heights) + an animated scanline band that hugs the dissolve
  * edge. Pure ALU — no texture taps. Returns an emissive-ready vec3 in the
  * shared `holoColor`; `baseColor`, when given, ghosts a hint of the original
  * albedo into the fill so large surfaces keep a whisper of identity.
+ *
+ * `edgeWindow` (M12): attenuate the grid/fill glow beyond the dissolve edge
+ * (see edgeGlowWindow). Default OFF so the terrain clipmap — whose
+ * contour-grid-to-horizon IS the void aesthetic — keeps its full-view grid;
+ * world fabric wrapped via applyMaterialize/applyHoloBirth opts in.
  */
-export function holoShade(worldPos: N, baseColor?: N): N {
+export function holoShade(
+  worldPos: N,
+  baseColor?: N,
+  opts: { edgeWindow?: boolean } = {}
+): N {
   const f = materializeField;
   const wp = worldPos as N;
   const holo = vec3(f.holoColor as N);
@@ -259,11 +327,17 @@ export function holoShade(worldPos: N, baseColor?: N): N {
     .oneMinus()
     .mul(edge);
 
-  const fill = baseColor
+  let fill = baseColor
     ? holo.mul(0.028).add((baseColor as N).mul(holo).mul(0.05))
     : holo.mul(0.035);
+  let glowLines = holo.mul(lines).mul(f.holoIntensity as N);
+  if (opts.edgeWindow) {
+    const window = edgeGlowWindow(dist).toVar();
+    fill = fill.mul(window);
+    glowLines = glowLines.mul(window);
+  }
   return fill
-    .add(holo.mul(lines).mul(f.holoIntensity as N))
+    .add(glowLines)
     .add(holo.mul(scan).mul((f.holoIntensity as N).mul(0.45)));
 }
 
@@ -305,18 +379,32 @@ export function applyMaterialize(
   const wp = (opts.worldPos ?? positionWorld) as N;
   let amountExpr = materializeAmount({ worldPos: wp, birth: opts.birth });
   if (opts.extraAmount) amountExpr = min(amountExpr, (opts.extraAmount as N).saturate());
-  const amount = amountExpr.toVar();
+  // M13 steady-state gate: when birthHoloGate is 0 (ring coordinator settled,
+  // debug toggle off) the amount is forced to 1, collapsing the whole wrap to
+  // the original graph — steady-state streamed chunks appear WITHOUT the holo
+  // look while each system's own plain crossfade still runs (see the gate's
+  // doc comment). Gate = 1 during boot/teleport sweeps → exact holo behavior.
+  // One shared uniform, ~2 ALU, same single pipeline.
+  const amount = amountExpr
+    .max((materializeField.birthHoloGate as N).oneMinus())
+    .toVar();
   // Shading crossfade rides the upper half of the ramp; the dissolve stipple
   // owns the lower third, so geometry is fully present (as holo) before it
   // starts trading holo shading for real shading.
   const reveal = smoothstep(0.45, 1.0, amount);
 
   const origColor = (mat.colorNode ?? materialColor) as N;
-  const holo = holoShade(wp, origColor);
+  // M12: world fabric concentrates the holo glow in a window hugging the
+  // dissolve edge — far beyond the front it renders essentially black-on-black
+  // so the budgeted visibility unhide (frontGate) is imperceptible.
+  const holo = holoShade(wp, origColor, { edgeWindow: true });
 
   // Holo phase darkens the lit base almost to black — the hologram reads from
-  // the emissive lines, not from sun/hemi response.
-  mat.colorNode = origColor.mul(mix(float(0.04), float(1), reveal));
+  // the emissive lines, not from sun/hemi response. The dark floor also rides
+  // the M12 edge window: far beyond the edge even the 4% sunlit albedo goes to
+  // zero, so noon boots show no faint silhouettes against the void.
+  const colorWindow = edgeGlowWindow(wp.xz.sub(materializeField.frontCenter as N).length());
+  mat.colorNode = origColor.mul(mix(colorWindow.mul(0.04), float(1), reveal));
 
   // Edge flash: a brief extra pulse of holoColor while a fragment crosses the
   // middle of the band (parabola peaking at amount = 0.5, zero at both ends).

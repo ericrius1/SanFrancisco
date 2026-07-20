@@ -14,6 +14,7 @@ import {
   vertexStage
 } from "three/tsl";
 import { LIGHT_SCALE } from "../config";
+import { applyHoloBirth, materializeAmount } from "../render/materialize";
 import {
   MAX_PROJECTED_SURFACE_LIGHTS,
   type ProjectedSurfaceLightSource
@@ -318,11 +319,15 @@ export class StreetLamps {
     // ---- meshes (three draws) --------------------------------------------------
     // a. POSTS — dark steel, standard-lit, matches the traffic-pole material
     const postGeo = buildPostGeo();
-    const postMat = new THREE.MeshStandardMaterial({
+    const postMat = new THREE.MeshStandardNodeMaterial({
       color: 0x2b3033,
       roughness: 0.5,
       metalness: 0.55
     });
+    // M15 void purity: posts are world fabric — beyond the sweeping front they
+    // render the shared holo language (near-black past the edge window) instead
+    // of a sunlit pole against the void. Inert once settled (front sentinel).
+    applyHoloBirth(postMat);
     this.#posts = new THREE.InstancedMesh(postGeo, postMat, CAP);
 
     // b. DISCS — additive ground pool, radial warm falloff scaled by intensity
@@ -384,11 +389,16 @@ export class StreetLamps {
       .mul(lampFade.y)
       .mul(this.#poolStrength)
       .mul(STREET_LAMPS_INTENSITY) as N;
+    // M15 void purity: the pool only lights up once the materialize front has
+    // crossed it (per-vertex front amount, interpolated across the 16-gon like
+    // the other vertexStage terms). Collapses to 1 at the revealed sentinel.
+    const discFrontAmt = vertexStage(materializeAmount()) as N;
     discMat.colorNode = litRaw
       .div(litRaw.add(1))
       .mul(discWeight)
       .mul(edgeFade)
-      .mul(bornFade) as N;
+      .mul(bornFade)
+      .mul(discFrontAmt) as N;
     discMat.transparent = true;
     discMat.blending = THREE.AdditiveBlending;
     discMat.depthWrite = false;
@@ -408,7 +418,13 @@ export class StreetLamps {
     bulbGeo.translate(HEAD_X, BULB_Y, 0);
     const bulbMat = new THREE.MeshBasicNodeMaterial();
     const lit = saturate(STREET_LAMPS_INTENSITY.div(LIGHT_SCALE)) as N;
-    bulbMat.colorNode = mix(color(0x15181b), color(0xffcf99), lit) as N;
+    // M15 void purity: bulbs stay dark glass until the front crosses them —
+    // the warm night glow (and the daylight glass tint) is front-gated so no
+    // orange points speckle the void horizon during a sweep.
+    const bulbFrontAmt = vertexStage(materializeAmount()) as N;
+    bulbMat.colorNode = mix(color(0x15181b), color(0xffcf99), lit).mul(
+      bulbFrontAmt
+    ) as N;
     bulbMat.toneMapped = false;
     this.#bulbs = new THREE.InstancedMesh(bulbGeo, bulbMat, CAP);
 

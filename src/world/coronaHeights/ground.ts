@@ -54,17 +54,26 @@ export function prepareCoronaHeightsGround(map: WorldMap): void {
   const maxGX = Math.min(width - 1, Math.ceil((cx + CORONA_HILL_RADIUS_X * 1.12 - minX) / cellSize));
   const minGZ = Math.max(0, Math.floor((cz - CORONA_HILL_RADIUS_Z * 1.12 - minZ) / cellSize));
   const maxGZ = Math.min(height - 1, Math.ceil((cz + CORONA_HILL_RADIUS_Z * 1.12 - minZ) / cellSize));
-  for (let gz = minGZ; gz <= maxGZ; gz++) {
-    const z = minZ + gz * cellSize;
-    for (let gx = minGX; gx <= maxGX; gx++) {
-      const x = minX + gx * cellSize;
-      const q = ((x - cx) / CORONA_HILL_RADIUS_X) ** 2 + ((z - cz) / CORONA_HILL_RADIUS_Z) ** 2;
-      if (q >= 1.12) continue;
-      const feather = 1 - smooth01((q - 0.9) / 0.22);
-      map.groundTops[gz * width + gx] +=
-        CORONA_GROUND_LIFT * feather +
-        summitPlatformLift(x, z) +
-        (pointInPolygon(x, z, CORONA_DOG_PARK) ? DOG_QUERY_LIFT : 0);
+  const applyLift = (gxa: number, gza: number, gxb: number, gzb: number) => {
+    for (let gz = gza; gz <= gzb; gz++) {
+      const z = minZ + gz * cellSize;
+      for (let gx = gxa; gx <= gxb; gx++) {
+        const x = minX + gx * cellSize;
+        const q = ((x - cx) / CORONA_HILL_RADIUS_X) ** 2 + ((z - cz) / CORONA_HILL_RADIUS_Z) ** 2;
+        if (q >= 1.12) continue;
+        const feather = 1 - smooth01((q - 0.9) / 0.22);
+        map.groundTops[gz * width + gx] +=
+          CORONA_GROUND_LIFT * feather +
+          summitPlatformLift(x, z) +
+          (pointInPolygon(x, z, CORONA_DOG_PARK) ? DOG_QUERY_LIFT : 0);
+      }
     }
-  }
+  };
+  applyLift(minGX, minGZ, maxGX, maxGZ);
+  // M14: on the streamed boot path the initial application ran against coarse
+  // overview data; a real tile overwriting this region resets groundTops to
+  // height (+ baked delta), so the carve must be re-added over the intersection
+  // after every intersecting install (WorldMap runs this post-write, then the
+  // streamer's coalesced revision bump covers physics).
+  map.addTileInstallFixup(minGX, minGZ, maxGX, maxGZ, applyLift);
 }

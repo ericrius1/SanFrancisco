@@ -5,6 +5,7 @@ import type { GroundTopOverlay, WorldMap } from "./heightmap";
 import type { TerrainCutoutSpec, TileStreamer } from "./tiles";
 import { attachKtx2Loader } from "../render/textures";
 import { applyHoloBirth, materializeField } from "../render/materialize";
+import { frontGate, type FrontGateHandle } from "../render/frontGate";
 
 export type AuthoredRegionBounds = {
   centerX: number;
@@ -58,6 +59,10 @@ type RegionState = {
   controller: AbortController | null;
   overlay: GroundTopOverlay | null;
   error: string | null;
+  // M12: set while the region root is hidden by the front visibility gate
+  // (attached beyond the materialize front during a sweep). Visibility only —
+  // terrain ownership/colliders/watchers are live regardless.
+  frontGateHandle?: FrontGateHandle;
 };
 
 type RegionWatcher = {
@@ -461,6 +466,11 @@ export class AuthoredRegionStreamer {
     // passed fades in through the holo ramp instead of popping.
     materializeField.markBorn(`region:${definition.id}`);
     this.#scene.add(root);
+    // M12: a region attaching beyond the sweeping materialize front starts
+    // hidden; the shared frontGate reveals it (budgeted, nearest-first) as the
+    // front approaches. Terrain overlay/cutouts/watchers below stay live —
+    // collision correctness never depends on visibility.
+    this.#applyRegionFrontGate(state, root);
     const terrain = definition.terrain;
     const claimedFootprints: string[] = [];
     try {
@@ -483,6 +493,11 @@ export class AuthoredRegionStreamer {
       }
       state.root = root;
       state.status = "ready";
+      // M12 race fix: applyFrontGate() skips non-ready regions, so a front
+      // refocus that landed while this attach was mid-flight never re-gated
+      // this root (its gate decision above used the OLD front). Re-evaluate
+      // against the CURRENT front now that the region is ready.
+      this.#applyRegionFrontGate(state, root);
       for (const watcher of this.#watchers.get(definition.id) ?? []) watcher.onLoad(root);
       this.#tiles.onShadowCastersChanged("all");
       console.info(`[authored-region] ${definition.label} ready`);
@@ -490,14 +505,46 @@ export class AuthoredRegionStreamer {
       for (const id of claimedFootprints) this.#tiles.clearTerrainCutout(id);
       if (state.overlay) this.#map.clearGroundTopOverlay(state.overlay);
       state.overlay = null;
+      state.frontGateHandle?.cancel();
+      state.frontGateHandle = undefined;
       root.removeFromParent();
       throw error;
+    }
+  }
+
+  /** M12: (re-)evaluate one attached region root against the front gate. */
+  #applyRegionFrontGate(state: RegionState, root: THREE.Group): void {
+    state.frontGateHandle?.cancel();
+    state.frontGateHandle = undefined;
+    const bounds = state.definition.bounds;
+    const r = Math.hypot(bounds.halfX, bounds.halfZ);
+    if (frontGate.shouldHide(bounds.centerX, bounds.centerZ, r)) {
+      root.visible = false;
+      state.frontGateHandle = frontGate.hide(bounds.centerX, bounds.centerZ, r, () => {
+        state.frontGateHandle = undefined;
+        root.visible = true;
+      });
+    } else {
+      root.visible = true;
+    }
+  }
+
+  /** M12: re-apply the front gate to every ready region after a front refocus
+   *  (far teleport) — regions revealed by the previous sweep re-hide when they
+   *  now lie beyond the collapsed front at the destination. Inert when the
+   *  gate is inactive (everything just stays visible). */
+  applyFrontGate(): void {
+    for (const state of this.#states.values()) {
+      if (state.status === "ready" && state.root) this.#applyRegionFrontGate(state, state.root);
     }
   }
 
   #unload(state: RegionState): void {
     const root = state.root;
     if (!root) return;
+    // M12: drop any front-gate registration (a later attach re-gates fresh)
+    state.frontGateHandle?.cancel();
+    state.frontGateHandle = undefined;
     materializeField.forgetBirth(`region:${state.definition.id}`); // next load re-births
     for (const watcher of this.#watchers.get(state.definition.id) ?? []) watcher.onUnload();
     root.removeFromParent();

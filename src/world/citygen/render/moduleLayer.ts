@@ -41,6 +41,7 @@ import { MODULE_TRIM_HEX } from "../theme/materials";
 import { ZONES, type ParallaxZone } from "../theme/parallaxWindow";
 import { rng } from "../core/rng";
 import { cameraCutawayVisibility } from "../../../render/cameraCutaway";
+import { applyHoloBirth } from "../../../render/materialize";
 
 // TSL node generics fight composition; `any` is this app's node-code idiom.
 type N = any;
@@ -139,6 +140,13 @@ function makeTrimMaterial(fadeTex: THREE.DataTexture): THREE.MeshStandardNodeMat
   m.emissiveNode = nodes.tint.mul(float(0.16 * EXPOSURE_REBASE));
   m.opacityNode = nodes.fade.mul(cameraCutawayVisibility());
   m.alphaHash = true; // dithered crossfade in the opaque pass (fade=1 → no discard)
+  // M15 void purity: the window buckets are CITY-WIDE shared meshes — they are
+  // not under any front-gated cell group, so during a sweep an instance beyond
+  // the front rendered its normal shading (a lit trim frame floating in the
+  // void). Ride the shared front holo mix like shellBatch does, min'd with the
+  // building's own fade (positionNode is world-space, so positionWorld — the
+  // wrap's default — evaluates the per-instance world position correctly).
+  applyHoloBirth(m, { extraAmount: nodes.fade });
   return m;
 }
 
@@ -169,6 +177,10 @@ function makeGlassMaterial(fadeTex: THREE.DataTexture): THREE.MeshStandardNodeMa
     .mul(step(nodes.glassHidden, float(0.001)))
     .mul(cameraCutawayVisibility());
   m.alphaHash = true;
+  // M15 void purity: same front holo mix as the trim bucket — this is what
+  // kills the lit-window glow (the emissiveNode above) beyond the sweeping
+  // front; the wrap multiplies emissive by the reveal ramp.
+  applyHoloBirth(m, { extraAmount: nodes.fade });
   return m;
 }
 

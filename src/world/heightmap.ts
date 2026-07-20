@@ -25,6 +25,37 @@ export type Meta = {
 
 export type GroundTopOverlay = (x: number, z: number, base: number) => number;
 
+/** Decoded terrain tile payload (SFTT — see tools/bake-terrain-tiles.mjs and
+ * feature-research/m14a-terrain-bake/audit.md). Heights are already meters. */
+export type TerrainTileData = {
+  cellsX: number;
+  cellsZ: number;
+  heights: Float32Array;
+  surface: Uint8Array;
+  deltaIndices: Uint32Array;
+  deltaMm: Uint16Array;
+};
+
+/** Post-install ground fixup: runtime data-only carves (Corona Heights) that
+ * write into groundTops must be re-applied after a streamed tile overwrites
+ * their region. `apply` receives the already-intersected inclusive cell rect. */
+type TileInstallFixup = {
+  minGX: number;
+  minGZ: number;
+  maxGX: number;
+  maxGZ: number;
+  apply: (gx0: number, gz0: number, gx1: number, gz1: number) => void;
+};
+
+// Overview artifacts are baked at 1/8 resolution (tools/bake-terrain-tiles.mjs).
+const OVERVIEW_SCALE = 8;
+// terrainResidentRadiusAround cap — comfortably above the ring coordinator's
+// SETTLE_CAP + overshoot so residency never artificially constrains a settle.
+const TERRAIN_RESIDENT_CAP = 4400;
+// Cache cadence for the residency scan (342 tiles — cheap, but callers may
+// poll every frame). Mirrors tiles.residentRadiusAround's memo idiom.
+const TERRAIN_RESIDENT_REFRESH_MS = 250;
+
 /** Consume a boot-critical download the inline <head> prefetch already started
  * (window.__sfPrefetch). Falls back to a fresh fetch when the prefetch is
  * missing (script not present / HMR), rejected, or its body was already read. */
@@ -68,8 +99,19 @@ export class WorldMap {
   groundTops!: Float32Array;
   surface!: Uint8Array;
   groundRevision = 0;
+  /** True on the default streamed boot path (loadCore): the lattices start as
+   *  a bilinear upsample of the 1/8 overview and real 800 m tiles overwrite
+   *  their region as they stream. False on the legacy ?fullmap=1 path, where
+   *  every cell is real from the start. */
+  terrainStreaming = false;
   #bridgeBounds?: { minX: number; maxX: number; minZ: number; maxZ: number }[];
   #groundTopOverlays: GroundTopOverlay[] = [];
+  #tileReal: Uint8Array | null = null;
+  #tileCells = 0; // cells per tile edge (meta.tile / cellSize = 100)
+  #realTileCount = 0;
+  #tileFixups: TileInstallFixup[] = [];
+  #residentCache = { x: Number.NaN, z: Number.NaN, at: -1e9, value: 0 };
+  #pendingRevisionBump = false;
 
   static async load(): Promise<WorldMap> {
     const map = new WorldMap();
@@ -116,6 +158,256 @@ export class WorldMap {
     }
 
     return map;
+  }
+
+  /**
+   * M14 default boot path: fetch only meta + the 1/8 overview artifacts
+   * (~160 KB), allocate the FULL lattices and bilinear-upsample the overview
+   * into them. Every downstream consumer works unmodified on plausible coarse
+   * data; real 800 m tiles overwrite their region via installTile as they
+   * stream. Falls back to the legacy monolithic load when the overview bake
+   * is absent (older deploy / un-baked checkout).
+   */
+  static async loadCore(): Promise<WorldMap> {
+    const [meta, ovRes, ovSurfRes] = await Promise.all([
+      prefetched("/data/meta.json").then((r) => r.json()) as Promise<Meta>,
+      prefetched("/data/terrain/overview.bin").catch(() => null),
+      prefetched("/data/terrain/overview-surface.bin").catch(() => null)
+    ]);
+    const terrain = meta.terrain;
+    if (!ovRes?.ok || !ovSurfRes?.ok || terrain?.heightEncoding !== "int16") {
+      console.warn("[heightmap] terrain overview unavailable — falling back to full map load");
+      return WorldMap.load();
+    }
+    const [ovBuf, ovSurfBuf] = await Promise.all([ovRes.arrayBuffer(), ovSurfRes.arrayBuffer()]);
+    const map = new WorldMap();
+    map.meta = meta;
+    const { width: W, height: H } = meta.grid;
+    const ow = Math.ceil(W / OVERVIEW_SCALE);
+    const oh = Math.ceil(H / OVERVIEW_SCALE);
+    const overview = new Int16Array(ovBuf);
+    const overviewSurface = new Uint8Array(ovSurfBuf);
+    if (overview.length !== ow * oh || overviewSurface.length !== ow * oh) {
+      console.warn("[heightmap] terrain overview size mismatch — falling back to full map load");
+      return WorldMap.load();
+    }
+
+    // Bilinear upsample: overview texel (ox, oz) is the box average of source
+    // cells [8ox, 8ox+8) so its sampling center sits at gx = 8ox + 3.5.
+    const { heightBase, heightQuant } = terrain;
+    const heights = new Float32Array(W * H);
+    const surface = new Uint8Array(W * H);
+    // Precompute the X-axis taps once (shared by every row).
+    const ox0s = new Int32Array(W);
+    const ox1s = new Int32Array(W);
+    const txs = new Float32Array(W);
+    for (let gx = 0; gx < W; gx++) {
+      const fx = (gx - (OVERVIEW_SCALE - 1) / 2) / OVERVIEW_SCALE;
+      const clamped = Math.min(Math.max(fx, 0), ow - 1.0001);
+      const o0 = Math.floor(clamped);
+      ox0s[gx] = o0;
+      ox1s[gx] = Math.min(ow - 1, o0 + 1);
+      txs[gx] = clamped - o0;
+    }
+    for (let gz = 0; gz < H; gz++) {
+      const fz = (gz - (OVERVIEW_SCALE - 1) / 2) / OVERVIEW_SCALE;
+      const clampedZ = Math.min(Math.max(fz, 0), oh - 1.0001);
+      const oz0 = Math.floor(clampedZ);
+      const oz1 = Math.min(oh - 1, oz0 + 1);
+      const tz = clampedZ - oz0;
+      const row0 = oz0 * ow;
+      const row1 = oz1 * ow;
+      const surfRow = Math.min(oh - 1, gz >> 3) * ow;
+      const out = gz * W;
+      for (let gx = 0; gx < W; gx++) {
+        const o0 = ox0s[gx];
+        const o1 = ox1s[gx];
+        const tx = txs[gx];
+        const top = overview[row0 + o0] + (overview[row0 + o1] - overview[row0 + o0]) * tx;
+        const bottom = overview[row1 + o0] + (overview[row1 + o1] - overview[row1 + o0]) * tx;
+        heights[out + gx] = heightBase + (top + (bottom - top) * tz) * heightQuant;
+        surface[out + gx] = overviewSurface[surfRow + Math.min(ow - 1, gx >> 3)];
+      }
+    }
+    map.heights = heights;
+    map.surface = surface;
+    // The overview carries no groundtop deltas — start as a plain height copy
+    // (a SEPARATE array: tiles and fixups write deltas into it).
+    map.groundTops = new Float32Array(heights);
+    map.terrainStreaming = true;
+    map.#tileCells = Math.round(meta.tile / meta.grid.cellSize);
+    map.#tileReal = new Uint8Array(meta.tilesX * meta.tilesZ);
+    return map;
+  }
+
+  // ------------------------------------------------------- terrain tiling
+
+  /** Terrain tile grid index containing world (x, z), clamped to the lattice. */
+  tileIndexAt(x: number, z: number): { ix: number; iz: number } {
+    const { cellSize, width, height, minX, minZ } = this.meta.grid;
+    const cells = this.#tileCells || Math.round(this.meta.tile / cellSize);
+    const gx = Math.min(Math.max((x - minX) / cellSize, 0), width - 1);
+    const gz = Math.min(Math.max((z - minZ) / cellSize, 0), height - 1);
+    return { ix: Math.floor(gx / cells), iz: Math.floor(gz / cells) };
+  }
+
+  tileKeyAt(x: number, z: number): string {
+    const { ix, iz } = this.tileIndexAt(x, z);
+    return `${ix}_${iz}`;
+  }
+
+  /** True when tile (ix, iz) holds REAL baked data (always true on ?fullmap). */
+  isTileReal(ix: number, iz: number): boolean {
+    if (!this.terrainStreaming || !this.#tileReal) return true;
+    return this.#tileReal[iz * this.meta.tilesX + ix] === 1;
+  }
+
+  isTileRealAt(x: number, z: number): boolean {
+    if (!this.terrainStreaming) return true;
+    const { ix, iz } = this.tileIndexAt(x, z);
+    return this.isTileReal(ix, iz);
+  }
+
+  /** Terminally failed tile (404 on a stale deploy): accept the overview data
+   *  as final so ground gating and the front can never hang forever on data
+   *  that does not exist. */
+  markTileUnavailable(ix: number, iz: number): void {
+    if (!this.#tileReal) return;
+    const index = iz * this.meta.tilesX + ix;
+    if (this.#tileReal[index] === 1) return;
+    this.#tileReal[index] = 1;
+    this.#realTileCount++;
+    this.#residentCache.at = -1e9;
+  }
+
+  /** Reverse a markTileUnavailable so a transient fetch failure is not
+   *  terminal for the session. Callers (the tile streamer) must only clear
+   *  tiles THEY marked unavailable — never genuinely installed tiles. */
+  clearTileUnavailable(ix: number, iz: number): void {
+    if (!this.#tileReal) return;
+    const index = iz * this.meta.tilesX + ix;
+    if (this.#tileReal[index] !== 1) return;
+    this.#tileReal[index] = 0;
+    this.#realTileCount--;
+    this.#residentCache.at = -1e9;
+  }
+
+  get realTileCount(): number {
+    return this.#realTileCount;
+  }
+
+  /**
+   * Write a decoded 800 m tile into the BASE lattices (heights, surface,
+   * groundTops = height + delta). Runtime overlays (setGroundTopOverlay)
+   * compose at query time and are untouched; registered data fixups (Corona)
+   * re-apply over the intersecting rect. groundRevision is NOT bumped here —
+   * the streamer coalesces installs and bumps once per frame when the tile is
+   * physics-relevant (commitRevisionBump).
+   */
+  installTile(ix: number, iz: number, data: TerrainTileData): void {
+    if (!this.#tileReal) return;
+    const { width: W } = this.meta.grid;
+    const cells = this.#tileCells;
+    const gx0 = ix * cells;
+    const gz0 = iz * cells;
+    const { cellsX, cellsZ } = data;
+    for (let lz = 0; lz < cellsZ; lz++) {
+      const src = lz * cellsX;
+      const dst = (gz0 + lz) * W + gx0;
+      const heightRow = data.heights.subarray(src, src + cellsX);
+      this.heights.set(heightRow, dst);
+      this.groundTops.set(heightRow, dst);
+      this.surface.set(data.surface.subarray(src, src + cellsX), dst);
+    }
+    for (let k = 0; k < data.deltaIndices.length; k++) {
+      const local = data.deltaIndices[k];
+      const lx = local % cellsX;
+      const lz = (local - lx) / cellsX;
+      const cell = (gz0 + lz) * W + gx0 + lx;
+      this.groundTops[cell] = this.heights[cell] + data.deltaMm[k] / 1000;
+    }
+    const tileIndex = iz * this.meta.tilesX + ix;
+    if (this.#tileReal[tileIndex] !== 1) {
+      this.#tileReal[tileIndex] = 1;
+      this.#realTileCount++;
+    }
+    // Re-apply intersecting data fixups AFTER the base rows land.
+    const maxGX = gx0 + cellsX - 1;
+    const maxGZ = gz0 + cellsZ - 1;
+    for (const fixup of this.#tileFixups) {
+      const x0 = Math.max(gx0, fixup.minGX);
+      const x1 = Math.min(maxGX, fixup.maxGX);
+      const z0 = Math.max(gz0, fixup.minGZ);
+      const z1 = Math.min(maxGZ, fixup.maxGZ);
+      if (x0 <= x1 && z0 <= z1) fixup.apply(x0, z0, x1, z1);
+    }
+    this.#residentCache.at = -1e9;
+    this.#pendingRevisionBump = true;
+  }
+
+  /** Register a data-only groundTops carve to re-apply after tile installs.
+   *  Bounds are an inclusive CELL rect; `apply` receives the intersection. */
+  addTileInstallFixup(
+    minGX: number,
+    minGZ: number,
+    maxGX: number,
+    maxGZ: number,
+    apply: TileInstallFixup["apply"]
+  ): void {
+    this.#tileFixups.push({ minGX, minGZ, maxGX, maxGZ, apply });
+  }
+
+  /** Flush the coalesced revision bump for installs deemed physics-relevant. */
+  commitRevisionBump(): boolean {
+    if (!this.#pendingRevisionBump) return false;
+    this.#pendingRevisionBump = false;
+    this.groundRevision++;
+    return true;
+  }
+
+  /** Drop a pending bump for installs far from every physics consumer (the
+   *  next carpet/patch recenter samples the fresh lattice anyway). */
+  discardRevisionBump(): void {
+    this.#pendingRevisionBump = false;
+  }
+
+  /**
+   * Largest radius R around (x, z) such that every terrain tile intersecting
+   * the disc holds real data (capped; Infinity-equivalent on ?fullmap). Joins
+   * the ring coordinator's residency min so the materialize front never sweeps
+   * onto overview-only ground. Cached like tiles.residentRadiusAround.
+   */
+  terrainResidentRadiusAround(x: number, z: number): number {
+    if (!this.terrainStreaming || !this.#tileReal) return TERRAIN_RESIDENT_CAP;
+    const cache = this.#residentCache;
+    const now = performance.now();
+    if (now - cache.at < TERRAIN_RESIDENT_REFRESH_MS && Math.abs(x - cache.x) < 1 && Math.abs(z - cache.z) < 1) {
+      return cache.value;
+    }
+    cache.at = now;
+    cache.x = x;
+    cache.z = z;
+    const { cellSize, width, height, minX, minZ } = this.meta.grid;
+    const cells = this.#tileCells;
+    const tileMeters = cells * cellSize;
+    let r = TERRAIN_RESIDENT_CAP;
+    for (let iz = 0; iz < this.meta.tilesZ; iz++) {
+      const z0 = minZ + iz * tileMeters;
+      const z1 = minZ + Math.min(height, (iz + 1) * cells) * cellSize;
+      const dz = Math.max(z0 - z, z - z1, 0);
+      if (dz >= r) continue;
+      const rowIndex = iz * this.meta.tilesX;
+      for (let ix = 0; ix < this.meta.tilesX; ix++) {
+        if (this.#tileReal[rowIndex + ix] === 1) continue;
+        const x0 = minX + ix * tileMeters;
+        const x1 = minX + Math.min(width, (ix + 1) * cells) * cellSize;
+        const dx = Math.max(x0 - x, x - x1, 0);
+        const d = Math.hypot(dx, dz);
+        if (d < r) r = d;
+      }
+    }
+    cache.value = r;
+    return r;
   }
 
   /**

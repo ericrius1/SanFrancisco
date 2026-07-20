@@ -13,7 +13,8 @@
 // most two uniform writes per frame; the residency query is throttled both
 // here (every RESIDENCY_REFRESH_FRAMES frames) and inside the streamer's own
 // tick-cadence cache. No allocations per frame.
-import { materializeField } from "../render/materialize";
+import { materializeField, MATERIALIZE_DEFAULT_BAND } from "../render/materialize";
+import { frontGateClampMargin } from "../render/frontGate";
 import { tracer } from "../core/hitchTracer";
 import type { TileStreamer } from "../world/tiles";
 
@@ -66,6 +67,14 @@ export type RingCoordinatorOptions = {
    */
   liveLoadRadius?: () => number;
   /**
+   * M12: distance (from the front centre) to the nearest chunk still hidden by
+   * the front visibility gate (frontGate.clearedRadius; Infinity when nothing
+   * is hidden). The front's target clamps to it minus frontGateClampMargin()
+   * so the dissolve edge can never outpace the budgeted unhide queue — the
+   * same way it chases residency.
+   */
+  unhideClearedRadius?: () => number;
+  /**
    * Fired once per stall deadline when staged expansion has not grown
    * residency for STALL_MS while the draw ring is still below full. main.ts
    * performs the same restore the worldReady quiet-window block does
@@ -81,11 +90,13 @@ export type RingCoordinatorOptions = {
 // Front trails resident ground by this margin so the dissolve band never
 // touches a tile mid-attach.
 const FRONT_MARGIN = 60;
-// The player always keeps a revealed bubble. SAFE TODAY because only
-// terrain/sky/water consume the front (always resident); M5 may tighten this
-// clamp when streamed content joins the front, since it lets the front
-// outrun residency around a fast-moving player.
-const PLAYER_CLEAR = 150;
+// The player always keeps a revealed bubble. Deliberately TINY: the void
+// moment shows only a ~dozen-metre lit disc hugging the avatar ("immediate
+// area, even nothing at all"), and the sweep rings out from there. The term
+// still tracks a moving player so the ground underfoot is never pure void,
+// but it no longer force-jumps the front to a wide radius at spawn. Content
+// beyond the front is hidden/discarded, so a small clear bubble is safe.
+const PLAYER_CLEAR = 12;
 // Generous absolute cap: residency beyond this settles the front regardless
 // of the configured draw distance (matches the M3 interim final sweep).
 const SETTLE_CAP = 3600;
@@ -122,6 +133,16 @@ const SWEEP_MAX_AGE_S = 90;
 // radius only after residency has plateaued at it this long — never at boot,
 // where the initial bubble clamp lifts and growth resumes within seconds.
 const CAPPED_RADIUS_QUIET_MS = 12_000;
+// M15: the dissolve band (and with it the ~3-band edge-glow window every holo
+// consumer renders) SCALES with the front radius during the early bloom, so
+// the spawn moment shows a ~10-15 m lit disc instead of a band-48 glow that
+// reads ~4x wider than the actual front. Relaxes to the default band as the
+// ring grows; the settled sentinel is unaffected (band is irrelevant at
+// radius=1e9 — every amount saturates to 1).
+const BAND_MIN = 10;
+const BAND_RADIUS_SCALE = 0.4;
+const bandFor = (radius: number): number =>
+  Math.min(MATERIALIZE_DEFAULT_BAND, Math.max(BAND_MIN, radius * BAND_RADIUS_SCALE));
 
 export class RingCoordinator {
   #opts: RingCoordinatorOptions;
@@ -147,7 +168,7 @@ export class RingCoordinator {
     this.#cx = cx;
     this.#cz = cz;
     this.#state = opts.holdHolo ? "holding" : "sweeping";
-    materializeField.setFront(cx, cz, 0);
+    materializeField.setFront(cx, cz, 0, bandFor(0));
   }
 
   get state(): RingCoordinatorState {
@@ -205,7 +226,7 @@ export class RingCoordinator {
     this.#framesSinceResidency = RESIDENCY_REFRESH_FRAMES;
     this.#lastGrowthAt = performance.now();
     this.#lastNudgeAt = 0;
-    materializeField.setFront(x, z, this.#radius);
+    materializeField.setFront(x, z, this.#radius, bandFor(this.#radius));
     if (this.#state !== "holding") this.#state = "sweeping";
     // The prime path owns its own epoch/generation guards (tiles.primeAt
     // generations, primeInitialVisualAt epoch) — stale completions there
@@ -255,6 +276,20 @@ export class RingCoordinator {
     );
     if (this.#settleTarget > 0) target = Math.max(target, this.#settleTarget);
     target = Math.min(target, SETTLE_CAP + SETTLE_OVERSHOOT);
+    // M12: never outpace the visibility unhide queue. Content is revealed
+    // (visibility flip) at front + band + frontGateLead(); clamping the target
+    // to nearestHidden − frontGateClampMargin() (< lead + band) means chunks
+    // always flip visible well beyond the dissolve edge, where the holo edge
+    // window renders them near-black. A clamp below the current radius simply
+    // pauses the front (gap ≤ 0 — monotonicity preserved) until the gate's
+    // budgeted reveals catch up. Settle escapes above still terminate a sweep
+    // a stuck queue could otherwise pin. M15: both terms scale with the band
+    // (which tracks the radius during the early bloom) so nothing flips
+    // visible hundreds of metres out at the void moment.
+    const cleared = this.#opts.unhideClearedRadius?.() ?? Infinity;
+    if (Number.isFinite(cleared)) {
+      target = Math.min(target, Math.max(0, cleared - frontGateClampMargin()));
+    }
 
     // Eased, capped velocity: smooth bloom for the first BLOOM_SECONDS so the
     // edge stays visible near the player, then a fast chase outward.
@@ -270,6 +305,9 @@ export class RingCoordinator {
       this.#radius += Math.min(gap, this.#velocity * clamped);
       materializeField.frontRadius.value = this.#radius;
     }
+    // M15: keep the band tracking the radius through the early bloom (pure
+    // uniform write; monotonic like the radius, capped at the default band).
+    materializeField.frontBand.value = bandFor(this.#radius);
 
     if (this.#settleTarget > 0 && this.#radius >= this.#settleTarget - 0.5) {
       this.#state = "settled";
