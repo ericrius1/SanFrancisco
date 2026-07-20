@@ -562,11 +562,21 @@ async function boot() {
   sky.update(0, camera.position, player.renderPosition);
   syncBallGlowNight(sky.sunElevation);
   player.warmup();
+  // M17: frames PRESENTED to the canvas that carry the collapsed void front.
+  // renderFrame can be gate-held by an exclusive compile window
+  // (pipeline.compileHeld), in which case the canvas keeps whatever frame it
+  // last presented. The reveal gate below requires at least one presented
+  // void-front frame before the cover may fade, or an all-held boot presents
+  // a stale frame that then "glitches back" when presents resume. Counted
+  // from THIS warm frame onward: holo() above already collapsed the front, so
+  // every frame from here on renders the correct tiny-pool look.
+  let voidFramesPresented = 0;
   // Initialize render-target contents and the contact-shadow pass once before
   // warmup temporarily freezes render-scoped updates. Without this covered
   // frame, a production WebGPU build can retain an uninitialized (black)
   // contact/output target even though subsequent scene submissions succeed.
   renderFrame();
+  if (!pipeline.compileHeld) voidFramesPresented++;
   await pipeline.warmup("boot");
   bootMark("warmup");
   // One frame flushes the covered compile submission without an arbitrary wait.
@@ -797,6 +807,28 @@ async function boot() {
   // The real loop (P4) swaps in atomically by replacing `activeTick` between
   // frames: same timer/accumulator/player instances, no double-ticked frame.
   let voidFrames = 0;
+  // Shared by voidTick AND the real loop's afterRender: a long boot compile
+  // chain can hold every void-phase frame, pushing the first presented frame
+  // past the P4 handoff — the reveal decision must keep running there or an
+  // all-held void phase (with voidFramesPresented still 0) would never reveal.
+  const voidRevealCheck = () => {
+    if (revealed) return;
+    // compileHeld is synchronous state: reading it right after renderFrame
+    // tells whether THIS frame presented or was held by a compile window.
+    if (!pipeline.compileHeld) voidFramesPresented++;
+    // Either release path may fire first: bootArrivalTick sets
+    // bootHoldReleased when the ground carpet is ready, but a runtime
+    // relocation (worldArrival.onStateChange) can release the boot hold via
+    // initialArrivalReleased alone — after which bootArrivalTick
+    // early-returns forever and only the 15 s cap would reveal.
+    if (
+      voidFrames >= 2 &&
+      voidFramesPresented >= 1 &&
+      (bootHoldReleased || initialArrivalReleased)
+    ) {
+      revealWorld("void-ready");
+    } else if (performance.now() - settleStart > 15000) revealWorld("reveal-forced (15s cap)");
+  };
   const voidTick = (forcedDt?: number) => {
     timer.update();
     const frameDt = forcedDt ?? Math.min(timer.getDelta(), 0.09);
@@ -841,15 +873,7 @@ async function boot() {
     tracer.end("render");
     if (voidFrames === 0) bootMark("voidFrame");
     voidFrames++;
-    if (!revealed) {
-      // Either release path may fire first: bootArrivalTick sets
-      // bootHoldReleased when the ground carpet is ready, but a runtime
-      // relocation (worldArrival.onStateChange) can release the boot hold via
-      // initialArrivalReleased alone — after which bootArrivalTick
-      // early-returns forever and only the 15 s cap would reveal.
-      if (voidFrames >= 2 && (bootHoldReleased || initialArrivalReleased)) revealWorld("void-ready");
-      else if (performance.now() - settleStart > 15000) revealWorld("reveal-forced (15s cap)");
-    }
+    voidRevealCheck();
   };
   let activeTick: (forcedDt?: number) => void = voidTick;
   const adaptiveRes = createAdaptiveResolution(renderer);
@@ -4987,7 +5011,12 @@ async function boot() {
         input.endFrame();
       },
       render: renderFrame,
-      afterRender: () => diagnostics.updateStats()
+      afterRender: () => {
+        // See voidRevealCheck: reveal can still be pending here when boot
+        // compiles held every void-phase frame through the handoff.
+        voidRevealCheck();
+        diagnostics.updateStats();
+      }
     }
   });
   // ------------------------------------------------------------- P4 handoff
