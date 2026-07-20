@@ -13,6 +13,7 @@
 // stays inside a load function, so the lazy code-splitting boundaries and the
 // WHEN of each fetch are byte-for-byte the prior behavior.
 import * as THREE from "three/webgpu";
+import { warmRootPaced } from "../../render/warmStaticRegion";
 import { SiteFoliageStreamer } from "../../world/vegetation/siteFoliage";
 import { windGustValue } from "../../world/vegetation/runtime";
 import { GOLDMAN_SITE_CENTER, GOLDMAN_SUPPRESSED_BUILDINGS } from "../../world/goldenGateTennis/meta";
@@ -321,7 +322,12 @@ export function createOptionalSites({
       // subtree detached and re-check movement/arrival quiet immediately before
       // asking the WebGPU driver for pipelines.
       await stage();
-      await renderer.compileAsync(root, camera, scene);
+      // Per-signature paced warm: one small exclusive-compile window per chunk
+      // with a presented frame between, instead of one monolithic compileAsync
+      // that froze rendering ~1 s when a dense site hydrated at an arrival.
+      await warmRootPaced(renderer, camera, scene, root, async () => {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      });
     } catch (error) {
       // Compilation is a presentation optimization, never a reason to discard
       // a successfully constructed site. An abortable stage may still retire
@@ -508,7 +514,9 @@ export function createOptionalSites({
       experience.root.updateMatrixWorld(true);
       try {
         await stage();
-        await renderer.compileAsync(experience.root, camera, scene);
+        await warmRootPaced(renderer, camera, scene, experience.root, async () => {
+          await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        });
       } catch (error) {
         if (isAbortError(error)) throw error;
         console.warn("[afterlight] deferred compile failed:", error);

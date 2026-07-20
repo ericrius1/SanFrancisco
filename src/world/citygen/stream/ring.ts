@@ -130,10 +130,10 @@ interface QuerySolidHost {
   removeQuerySolid(id: number): void;
 }
 interface Tiles {
-  suppressBuilding(key: string, index: number): void;
-  unsuppressBuilding(key: string, index: number): void;
-  suppressBuildingMesh(key: string, index: number): void;
-  unsuppressBuildingMesh(key: string, index: number): void;
+  suppressBuilding(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
+  unsuppressBuilding(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
+  suppressBuildingMesh(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
+  unsuppressBuildingMesh(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
   /** Authored replacements (landmarks, bespoke sites) own these footprints and
    *  must never be materialized or revived by the procedural building ring. */
   isBuildingSuppressed?(key: string, index: number): boolean;
@@ -900,7 +900,7 @@ export async function createCityGenRing(
       if (!loaded.has(e.key) || e.state !== "coll" || e.bodies.length) return; // stale/duplicate (dropped, unloaded, or upgraded)
       if (playerInsideBB(e, 3.5)) return "again";        // anti-wedge: retry next frame
       // ATOMIC: baked collider off (R=0) + exact walls on, in this same frame
-      ctx.tiles.suppressBuilding(e.key, e.i);
+      ctx.tiles.suppressBuilding(e.key, e.i, { invalidateShadows: false });
       buildSolidWallsNow(e);
     });
   };
@@ -908,8 +908,8 @@ export async function createCityGenRing(
     if (e.state !== "coll") return;
     clearBodies(e);
     // back to LOD: baked mesh hidden (R=1) but the accurate baked collider is live
-    ctx.tiles.unsuppressBuilding(e.key, e.i);
-    ctx.tiles.suppressBuildingMesh(e.key, e.i);
+    ctx.tiles.unsuppressBuilding(e.key, e.i, { invalidateShadows: false });
+    ctx.tiles.suppressBuildingMesh(e.key, e.i, { invalidateShadows: false });
     e.state = "lod";
   };
 
@@ -944,13 +944,13 @@ export async function createCityGenRing(
     e.state = "detail";
     if (!e.bodies.length) {
       if (!playerInsideBB(e, 3.5)) {
-        ctx.tiles.suppressBuilding(e.key, e.i);
+        ctx.tiles.suppressBuilding(e.key, e.i, { invalidateShadows: false });
         buildSolidWallsNow(e, true);
       }
       else schedule("physics", () => {
         if (!loaded.has(e.key) || e.state !== "detail" || e.bodies.length) return; // stale/duplicate (dropped, unloaded, or walls landed elsewhere)
         if (playerInsideBB(e, 3.5)) return "again";          // anti-wedge: retry next frame
-        ctx.tiles.suppressBuilding(e.key, e.i);
+        ctx.tiles.suppressBuilding(e.key, e.i, { invalidateShadows: false });
         buildSolidWallsNow(e, true);
       });
     } else {
@@ -1426,8 +1426,8 @@ export async function createCityGenRing(
     clearBodies(e);
     // back to LOD: baked mesh hidden (R=1) but accurate baked collider live again.
     // If still within collider range the next scan re-swaps it to a tight "coll".
-    ctx.tiles.unsuppressBuilding(e.key, e.i);
-    ctx.tiles.suppressBuildingMesh(e.key, e.i);
+    ctx.tiles.unsuppressBuilding(e.key, e.i, { invalidateShadows: false });
+    ctx.tiles.suppressBuildingMesh(e.key, e.i, { invalidateShadows: false });
     e.state = "lod"; e.fade = 0; e.fadeDir = 0; e.doorPending = true; e.pendingBuild = false;
   };
   const advanceFades = (dt: number) => {
@@ -1572,7 +1572,7 @@ export async function createCityGenRing(
     if (e.detail || e.state === "detail") dropDetail(e);
     else if (e.state === "coll") dropExactCollider(e);
     e.pendingBuild = false; // orphan any in-flight worker build (reply is dropped)
-    ctx.tiles.unsuppressBuildingMesh(e.key, e.i); // restore baked mesh behind the chunk
+    ctx.tiles.unsuppressBuildingMesh(e.key, e.i, { invalidateShadows: false }); // restore baked mesh behind the chunk
     e.state = "lod";
     e.fade = 0;
     e.fadeDir = 0;
@@ -1750,7 +1750,7 @@ export async function createCityGenRing(
       ctx.scene.add(cell.chunk.mesh);
       if (cell.chunk.shadowMesh) ctx.scene.add(cell.chunk.shadowMesh);
       for (const e of cell.entries) if (e.state === "lod") {
-        ctx.tiles.suppressBuildingMesh(e.key, e.i);
+        ctx.tiles.suppressBuildingMesh(e.key, e.i, { invalidateShadows: false });
         suppressed.push(e);
       }
       cell.phase = "ready";
@@ -1759,7 +1759,7 @@ export async function createCityGenRing(
       // half-suppressed cell is worse than retaining its lower-quality tile.
       cell.chunk.mesh.removeFromParent();
       cell.chunk.shadowMesh?.removeFromParent();
-      for (const e of suppressed) ctx.tiles.unsuppressBuildingMesh(e.key, e.i);
+      for (const e of suppressed) ctx.tiles.unsuppressBuildingMesh(e.key, e.i, { invalidateShadows: false });
       throw error;
     }
     applyCellFrontGate(cell);

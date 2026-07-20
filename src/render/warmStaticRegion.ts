@@ -208,6 +208,73 @@ export async function warmScenePaced(
 }
 
 /**
+ * Paced variant scoped to one (possibly detached) subtree: compile a signature
+ * representative per distinct render path under `root`, yielding through
+ * `pace()` on the chunk budget. Optional-site roots used to warm through ONE
+ * monolithic compileAsync(root) — measured ~1 s of gate-held (frozen) frames
+ * when a dense site (Beach Pianist grove) hydrated at a teleport arrival.
+ * Detached roots skip the scene-membership check warmScenePaced performs (the
+ * caller owns the subtree's lifecycle for the duration).
+ */
+export async function warmRootPaced(
+  renderer: THREE.WebGPURenderer,
+  camera: THREE.Camera,
+  scene: THREE.Scene,
+  root: THREE.Object3D,
+  pace: () => Promise<void>,
+  chunkBudgetMs = 8
+): Promise<PacedSceneWarmup> {
+  const meshes: WarmupMesh[] = [];
+  root.traverse((object) => {
+    const mesh = object as WarmupMesh;
+    if (mesh.isMesh) meshes.push(mesh);
+  });
+  const coveredSignatures = new Set<string>();
+  const representatives: WarmupMesh[] = [];
+  const startedAt = performance.now();
+  let chunks = 1;
+  let chunkStartedAt = startedAt;
+  for (const mesh of meshes) {
+    const signatures = renderSignatures(mesh);
+    if (signatures.some((signature) => !coveredSignatures.has(signature))) {
+      representatives.push(mesh);
+      for (const signature of signatures) coveredSignatures.add(signature);
+    }
+    if (performance.now() - chunkStartedAt > chunkBudgetMs) {
+      await pace();
+      chunks++;
+      chunkStartedAt = performance.now();
+    }
+  }
+  for (const mesh of representatives) {
+    const visible = mesh.visible;
+    const frustumCulled = mesh.frustumCulled;
+    mesh.visible = true;
+    mesh.frustumCulled = false;
+    try {
+      await renderer.compileAsync(mesh, camera, scene);
+      tracer.count("pacedWarmCompile");
+    } catch {
+      // A failed representative compiles on first draw as before.
+    } finally {
+      mesh.visible = visible;
+      mesh.frustumCulled = frustumCulled;
+    }
+    if (performance.now() - chunkStartedAt > chunkBudgetMs) {
+      await pace();
+      chunks++;
+      chunkStartedAt = performance.now();
+    }
+  }
+  return {
+    meshes: meshes.length,
+    representatives: representatives.length,
+    chunks,
+    durationMs: performance.now() - startedAt
+  };
+}
+
+/**
  * M10: compile only the meshes among `meshes` that introduce a render
  * signature not in `seen` (which is updated in place). Used by the tile
  * streamer's finalize hook: the FIRST streamed tile's bundle materials

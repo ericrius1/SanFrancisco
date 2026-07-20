@@ -8,6 +8,7 @@ import { bootMark } from "../../core/bootMarks";
 import { materializeField } from "../../render/materialize";
 import { frontGate } from "../../render/frontGate";
 import { RingCoordinator } from "../ringCoordinator";
+import { tracer } from "../../core/hitchTracer";
 import type { TerrainTileStreamer } from "../../world/terrainTiles";
 import type { TerrainScanParticles } from "../../world/terrainScanParticles";
 import type { MainCtx } from "./ctx";
@@ -117,6 +118,7 @@ export function installVoidArrival(deps: {
   // chase its residency exactly like boot. `prime: false` — worldArrival
   // already primed tiles/regions/collision through its own epoch-guarded path.
   const onFarArrivalCut = (x: number, z: number): void => {
+    tracer.begin("arrivalCut");
     // M14: re-anchor terrain-data streaming at the destination (the arrival's
     // ground wait requires the dest tile REAL before the cover can drop).
     terrainTiles?.setAnchor(x, z);
@@ -132,6 +134,7 @@ export function installVoidArrival(deps: {
     // M15: one-off boot props (surf shack, …) re-gate against the collapsed
     // front at the destination too.
     frontGate.applyStatic();
+    tracer.end("arrivalCut");
   };
   // M7 shadow streaming hold: while fabric is held (scan + morph — casters
   // are hidden/black anyway), static shadow-domain redraws are held and

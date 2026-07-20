@@ -2486,7 +2486,7 @@ export class TileStreamer {
   }
 
   /** Permanently hide a building (mesh + colliders) — survives tile reloads. */
-  suppressBuilding(key: string, index: number) {
+  suppressBuilding(key: string, index: number, opts?: { invalidateShadows?: boolean }) {
     this.#suppressed.add(`${key}:${index}`);
     const tile = this.loaded.get(key);
     if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length) {
@@ -2495,7 +2495,12 @@ export class TileStreamer {
       this.#syncBuildingAtlasRow(tile);
     }
     this.#syncShadowBuilding(key, index);
-    this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
+    // CityGen tier swaps draw an equivalent caster in the same footprint —
+    // skipping the redraw there kills the per-swap local-shadow churn that
+    // read as movement hitches (the stale map matches the twin's silhouette).
+    if (opts?.invalidateShadows !== false) {
+      this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
+    }
     this.onBuildingAlive(key, index, false);
   }
 
@@ -2508,7 +2513,7 @@ export class TileStreamer {
 
   /** Hide only the baked MESH (alive flag → 1); the baked collider stays live so
    *  physics still sees the real footprint. Survives tile reloads. */
-  suppressBuildingMesh(key: string, index: number) {
+  suppressBuildingMesh(key: string, index: number, opts?: { invalidateShadows?: boolean }) {
     this.#meshSuppressed.add(`${key}:${index}`);
     const tile = this.loaded.get(key);
     if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length && tile.slot.data[index * 4] !== 0) {
@@ -2517,11 +2522,13 @@ export class TileStreamer {
       this.#syncBuildingAtlasRow(tile);
     }
     this.#syncShadowBuilding(key, index);
-    this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
+    if (opts?.invalidateShadows !== false) {
+      this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
+    }
   }
 
   /** Undo suppressBuildingMesh — restore the baked mesh (alive flag → 255). */
-  unsuppressBuildingMesh(key: string, index: number) {
+  unsuppressBuildingMesh(key: string, index: number, opts?: { invalidateShadows?: boolean }) {
     this.#meshSuppressed.delete(`${key}:${index}`);
     const tile = this.loaded.get(key);
     if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length && tile.slot.data[index * 4] === 1) {
@@ -2530,14 +2537,16 @@ export class TileStreamer {
       this.#syncBuildingAtlasRow(tile);
     }
     this.#syncShadowBuilding(key, index);
-    this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
+    if (opts?.invalidateShadows !== false) {
+      this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
+    }
   }
 
   /** Undo suppressBuilding — restores the baked mesh + colliders. Used by the
    *  generated-building ring: an OSM building is suppressed only while its
    *  generated replacement is streamed in, and revived when the ring unloads it
    *  so the distant baked city has no holes. (Alive sentinel is 255.) */
-  unsuppressBuilding(key: string, index: number) {
+  unsuppressBuilding(key: string, index: number, opts?: { invalidateShadows?: boolean }) {
     this.#suppressed.delete(`${key}:${index}`);
     const tile = this.loaded.get(key);
     if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length) {
@@ -2546,7 +2555,9 @@ export class TileStreamer {
       this.#syncBuildingAtlasRow(tile);
     }
     this.#syncShadowBuilding(key, index);
-    this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
+    if (opts?.invalidateShadows !== false) {
+      this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
+    }
     this.onBuildingAlive(key, index, true);
   }
 
