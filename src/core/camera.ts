@@ -115,6 +115,7 @@ export class ChaseCamera {
   #firstPersonPos = new THREE.Vector3()
   #orbitViewPos = new THREE.Vector3()
   #viewDir = new THREE.Vector3()
+  #renderForward = new THREE.Vector3()
   #target = new THREE.Vector3()
   #orbitQuat = new THREE.Quaternion()
   #heldOrbitQuat = new THREE.Quaternion()
@@ -458,6 +459,10 @@ export class ChaseCamera {
       ? this.firstPersonBlend
       : 0
     this.#applyFov(firstPersonBlend)
+    // The orbit, orientation and occlusion filters all consume the same capped
+    // render delta. Letting a streaming spike into only the heading filter made
+    // its rotation jump while the boom kept easing, which reads as a camera jerk.
+    const smoothDt = Math.min(dt, 1 / 30)
     // Hide late on entry, after the avatar nearly fills the frame, and restore
     // farther back on exit. The hysteresis avoids both clipped self-geometry and
     // a visible on/off flutter around the threshold.
@@ -473,14 +478,20 @@ export class ChaseCamera {
       // different rates is what drifted the view around to the plane's side and
       // eventually flipped it. Ease yaw/pitch toward the plane's heading so the
       // chase cam always trails the flight path, no matter how hard you turn.
-      const f = player.flyForward
+      // Hang-glider translation already anchors to Player.renderPosition. Use
+      // the matching interpolated render attitude for camera heading as well;
+      // flyForward is the newest fixed-step state and can advance on a frame in
+      // which the visible body is still between the previous two physics poses.
+      const f = player.hangGliding
+        ? this.#renderForward.set(0, 0, -1).applyQuaternion(player.renderQuaternion).normalize()
+        : player.flyForward
       const targetYaw = Math.atan2(-f.x, -f.z)
       const targetPitch = THREE.MathUtils.clamp(
         -Math.asin(THREE.MathUtils.clamp(f.y, -1, 1)),
         -0.62,
         1.2
       )
-      const follow = 1 - Math.exp(-dt * 7)
+      const follow = 1 - Math.exp(-smoothDt * (player.hangGliding ? 5.6 : 7))
       let dYaw = targetYaw - this.yaw
       dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw)) // shortest way round
       this.yaw += dYaw * follow
@@ -559,7 +570,6 @@ export class ChaseCamera {
     // stream in (worst in fly, whose floaty tail trails farthest). The anchor
     // (renderPosition) is interpolated and never jumps, so a small residual lag
     // after a spike is imperceptible and heals within a few frames.
-    const smoothDt = Math.min(dt, 1 / 30)
     const modeChanged = this.#lastMode !== player.mode
     this.#lastMode = player.mode
     if (!this.#initialized) {

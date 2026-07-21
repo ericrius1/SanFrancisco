@@ -13,7 +13,15 @@ import {
   sampleHangGlidingLift,
   type HangGlidingCourse
 } from "./layout";
-import { createHangGliderMesh } from "./mesh";
+import {
+  createHangGliderMesh,
+  type HangGliderPresentation
+} from "./mesh";
+import {
+  loadHangGliderStyle,
+  saveHangGliderStyle,
+  type HangGliderStyle
+} from "./style";
 import { HangGlidingUI, type HangGlidingResult } from "./ui";
 import { HangGlidingWorldVisuals } from "./world";
 
@@ -31,8 +39,10 @@ export class HangGlidingExperience {
   #physics: Physics;
   #scene: THREE.Scene;
   #world: HangGlidingWorldVisuals;
-  #glider = createHangGliderMesh();
-  #ui = new HangGlidingUI();
+  #glider: THREE.Group;
+  #presentation: HangGliderPresentation;
+  #style: HangGliderStyle;
+  #ui: HangGlidingUI;
   #audio = new HangGlidingAudio();
   #platformBody: number;
   #phase: HangGlidingPhase = "idle";
@@ -44,6 +54,7 @@ export class HangGlidingExperience {
   #lastPlayer: Player | null = null;
   #savedZoom: number | null = null;
   #activeChase: ChaseCamera | null = null;
+  #activeInput: Input | null = null;
   #stallAnnounced = false;
   #disposed = false;
 
@@ -53,6 +64,15 @@ export class HangGlidingExperience {
     this.#scene = scene;
     this.course = createHangGlidingCourse(map);
     this.#world = new HangGlidingWorldVisuals(this.course);
+    this.#style = loadHangGliderStyle();
+    const glider = createHangGliderMesh(this.#style);
+    this.#glider = glider.root;
+    this.#presentation = glider.presentation;
+    this.#ui = new HangGlidingUI({
+      style: this.#style,
+      onStyleChange: (style) => this.#applyStyle(style),
+      onCustomizerOpen: () => this.#activeInput?.releaseLock()
+    });
     this.root = this.#world.root;
     this.#parkGlider();
 
@@ -99,7 +119,8 @@ export class HangGlidingExperience {
       rootInScene: this.root.parent === this.#scene,
       courseVisible: this.#world.courseRoot.visible,
       playerHangGliding: this.#lastPlayer?.hangGliding ?? false,
-      telemetry: this.#lastPlayer?.hangGliderTelemetry ?? null
+      telemetry: this.#lastPlayer?.hangGliderTelemetry ?? null,
+      style: this.#style
     };
   }
 
@@ -129,6 +150,7 @@ export class HangGlidingExperience {
 
   tryInteract(player: Player, hud: HUD, input: Input, chase: ChaseCamera): boolean {
     if (this.#disposed) return false;
+    this.#activeInput = input;
     if (this.#phase === "flying") {
       this.#abortToLaunch(player, hud, chase);
       return true;
@@ -166,6 +188,7 @@ export class HangGlidingExperience {
     chase: ChaseCamera
   ): void {
     if (this.#disposed) return;
+    this.#activeInput = input;
     this.#world.update(time, this.#gate);
     if (this.#phase === "idle") {
       if (!this.#awake || player.mode !== "walk" || player.riding) {
@@ -197,6 +220,7 @@ export class HangGlidingExperience {
     this.#elapsed += dt;
     this.#lastPlayer = player;
     const telemetry = player.hangGliderTelemetry;
+    if (input.pressed("KeyK")) this.#ui.toggleCustomizer();
     this.#audio.update(telemetry.airspeed, telemetry.verticalSpeed, telemetry.lift);
     this.#ui.update({
       gate: this.#gate,
@@ -218,11 +242,7 @@ export class HangGlidingExperience {
       this.#stallAnnounced = false;
     }
 
-    const wing = this.#glider.getObjectByName("hang_glider_wing");
-    if (wing) {
-      wing.rotation.x = Math.sin(time * 2.1) * 0.006 + telemetry.pitch * 0.035;
-      wing.rotation.z = telemetry.bank * 0.035;
-    }
+    this.#presentation.update(dt, telemetry);
 
     const gate = this.course.gates[this.#gate];
     if (gate) {
@@ -268,6 +288,7 @@ export class HangGlidingExperience {
     this.#physics.removeQuerySolid(this.#platformBody);
     this.#physics.world.destroyBody(this.#platformBody);
     this.#lastPlayer = null;
+    this.#activeInput = null;
   }
 
   #begin(player: Player, hud: HUD, input: Input, chase: ChaseCamera): void {
@@ -285,7 +306,9 @@ export class HangGlidingExperience {
     this.#audio.begin();
     this.#savedZoom ??= chase.zoom;
     this.#activeChase = chase;
-    chase.zoom = Math.max(chase.zoom, 4.4);
+    // Keep the much broader canopy readable on video without inheriting an
+    // extreme plane zoom; cutTo below makes this authored framing instantaneous.
+    chase.zoom = THREE.MathUtils.clamp(chase.zoom, 1.2, 1.55);
     chase.yaw = this.course.launch.heading;
     this.#glider.removeFromParent();
     this.#glider.position.set(0, 0, 0);
@@ -298,7 +321,7 @@ export class HangGlidingExperience {
       HANG_GLIDER_PROFILE
     );
     chase.cutTo(player);
-    hud.message("Skyline Glide · A/D bank · W nose down · S pull up · Shift tuck · Space flare", 5.2);
+    hud.message("Skyline Glide · A/D bank · W/S pitch · Shift tuck · Space flare · K wing atelier", 5.8);
   }
 
   #abortToLaunch(player: Player, hud: HUD, chase: ChaseCamera): void {
@@ -387,6 +410,13 @@ export class HangGlidingExperience {
     this.#parkGlider();
     this.#ui.hide();
     this.#lastPlayer = null;
+    this.#activeInput = null;
+  }
+
+  #applyStyle(style: HangGliderStyle): void {
+    this.#style = style;
+    this.#presentation.setStyle(style);
+    saveHangGliderStyle(style);
   }
 
   #parkGlider(): void {

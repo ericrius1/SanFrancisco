@@ -15,7 +15,7 @@ import { chromium } from "playwright-core";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = path.resolve(ROOT, ".data/hang-gliding-probe");
 const BASE_URL = (process.env.SF_PROBE_URL ?? "http://127.0.0.1:5240").replace(/\/$/, "");
-const OPTIONAL_CODE = /\/src\/(?:gameplay\/hangGliding\/(?:index|experience|ui|mesh|world|audio)|vehicles\/plane\/hangGliderPhysics)\.ts(?:\?|$)/;
+const OPTIONAL_CODE = /\/src\/(?:gameplay\/hangGliding\/(?:index|experience|ui|mesh|world|audio|style|canopyMaterial)|vehicles\/plane\/hangGliderPhysics)\.ts(?:\?|$)/;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function exists(file) {
@@ -106,6 +106,9 @@ async function main() {
 
   let activeDesktop;
   let activeMobile;
+  let customizerDesktop;
+  let customizerMobile;
+  let customizerLandscape;
   let resultMobile;
   try {
     await page.goto(
@@ -193,6 +196,10 @@ async function main() {
       const sf = window.__sf;
       const plane = sf.player.meshes.plane;
       const glider = plane.getObjectByName("sutro_hang_glider");
+      const canopy = glider?.getObjectByName("hang_glider_canopy");
+      const geometry = canopy?.geometry;
+      geometry?.computeBoundingBox();
+      const size = geometry?.boundingBox?.getSize(new canopy.position.constructor());
       const siblingVisibility = plane.children
         .filter((child) => child !== glider)
         .map((child) => ({ name: child.name, visible: child.visible }));
@@ -206,12 +213,21 @@ async function main() {
         siblingVisibility,
         courseVisible: sf.hangGliding.debugState.courseVisible,
         telemetryActive: sf.player.hangGliderTelemetry.active,
-        airspeed: sf.player.hangGliderTelemetry.airspeed
+        airspeed: sf.player.hangGliderTelemetry.airspeed,
+        canopyVertices: geometry?.getAttribute("position")?.count ?? 0,
+        canopySpan: size?.x ?? 0,
+        canopyChord: size?.z ?? 0,
+        canopyNodeMaterial: Boolean(canopy?.material?.isNodeMaterial)
       };
     });
     check("flight-enters-special-plane-mode", flight.mode === "plane" && flight.hangGliding && flight.questActive, flight);
     check("authored-glider-replaces-plane", flight.gliderPresent && flight.gliderAttached && flight.normalPlaneHidden, flight);
     check("course-and-flight-telemetry-active", flight.courseVisible && flight.telemetryActive, flight);
+    check(
+      "curved-gpu-canopy-is-high-resolution-and-large",
+      flight.canopyVertices >= 800 && flight.canopySpan >= 12 && flight.canopyChord >= 5 && flight.canopyNodeMaterial,
+      flight
+    );
     const launchRequests = requests.slice(beforeLaunch);
     check("launch-needs-no-new-quest-fetches", launchRequests.filter((url) => OPTIONAL_CODE.test(url)).length === 0, launchRequests);
 
@@ -251,6 +267,31 @@ async function main() {
       bankCue
     );
 
+    const spikeCamera = await page.evaluate(() => {
+      const sf = window.__sf;
+      const player = sf.player;
+      const Vector3 = player.position.constructor;
+      const Quaternion = player.quaternion.constructor;
+      const before = sf.camera.getWorldDirection(new Vector3());
+      const renderQuaternion = player.renderQuaternion.clone();
+      const flyForward = player.flyForward.clone();
+      const yaw = sf.chase.yaw;
+      const pitch = sf.chase.pitch;
+      const turn = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 2);
+      player.renderQuaternion.premultiply(turn);
+      player.flyForward.applyQuaternion(turn);
+      sf.chase.update(0.25, player, sf.input);
+      const after = sf.camera.getWorldDirection(new Vector3());
+      const angularStep = before.angleTo(after);
+      player.renderQuaternion.copy(renderQuaternion);
+      player.flyForward.copy(flyForward);
+      sf.chase.yaw = yaw;
+      sf.chase.pitch = pitch;
+      sf.chase.cutTo(player);
+      return { angularStep };
+    });
+    check("hang-glider-camera-spike-is-bounded", spikeCamera.angularStep < 0.38, spikeCamera);
+
     await page.evaluate(() => {
       window.__sfManual(true);
       const sf = window.__sf;
@@ -270,6 +311,46 @@ async function main() {
     check("desktop-flight-hud-fits", activeDesktop.elements.every((entry) => entry.present && entry.visible && entry.inside), activeDesktop);
     await page.screenshot({ path: path.join(OUT, "flight-desktop.png"), fullPage: false });
 
+    await page.evaluate(() => document.querySelector(".hg-customizer-toggle")?.click());
+    await page.waitForFunction(() => document.querySelector(".hg-customizer")?.classList.contains("open"));
+    const liveEdit = await page.evaluate(() => {
+      const span = document.querySelector('input[aria-label^="Span:"]');
+      if (!(span instanceof HTMLInputElement)) throw new Error("span control missing");
+      span.value = "1.17";
+      span.dispatchEvent(new Event("input", { bubbles: true }));
+      const aurora = document.querySelector('button[aria-label="Aurora canopy dye"]');
+      if (!(aurora instanceof HTMLButtonElement)) throw new Error("aurora dye missing");
+      aurora.click();
+      const sf = window.__sf;
+      const wing = sf.player.meshes.plane.getObjectByName("hang_glider_wing");
+      return {
+        style: sf.hangGliding.debugState.style,
+        wingScaleX: wing?.scale.x,
+        stored: Boolean(localStorage.getItem("sf.hang-glider-style")),
+        pointerReleased: document.pointerLockElement === null
+      };
+    });
+    await page.evaluate(async () => {
+      window.__sf.tick(1 / 30);
+      await window.__sf.renderer.backend.device.queue.onSubmittedWorkDone();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    await sleep(250);
+    check(
+      "atelier-edits-live-wing-and-persists",
+      liveEdit.style.palette === "aurora" && Math.abs(liveEdit.style.span - 1.17) < 0.001 &&
+        Math.abs(liveEdit.wingScaleX - 1.17) < 0.001 && liveEdit.stored && liveEdit.pointerReleased,
+      liveEdit
+    );
+    customizerDesktop = await fitReport(page, [".hg-customizer-toggle", ".hg-customizer-panel"]);
+    check(
+      "desktop-wing-atelier-fits",
+      customizerDesktop.elements.every((entry) => entry.present && entry.visible && entry.inside),
+      customizerDesktop
+    );
+    await page.screenshot({ path: path.join(OUT, "customizer-desktop.png"), fullPage: false });
+    await page.evaluate(() => document.querySelector(".hg-customizer-toggle")?.click());
+
     await page.setViewportSize({ width: 390, height: 844 });
     await page.evaluate(() => window.__sf.tick(1 / 30));
     await sleep(250);
@@ -282,6 +363,34 @@ async function main() {
     check("mobile-flight-hud-fits", activeMobile.elements.every((entry) => entry.present && entry.visible && entry.inside), activeMobile);
     check("mobile-top-cards-do-not-overlap", topCardsSeparate, { objective, score });
     await page.screenshot({ path: path.join(OUT, "flight-mobile.png"), fullPage: false });
+
+    await page.evaluate(() => document.querySelector(".hg-customizer-toggle")?.click());
+    await page.waitForFunction(() => document.querySelector(".hg-customizer")?.classList.contains("open"));
+    await sleep(250);
+    customizerMobile = await fitReport(page, [".hg-customizer-toggle", ".hg-customizer-panel"]);
+    const touchTargets = await page.evaluate(() =>
+      [...document.querySelectorAll(".hg-palette-choice, .hg-frame-choice, .hg-customizer-reset")]
+        .map((node) => node.getBoundingClientRect().height)
+    );
+    check(
+      "mobile-wing-atelier-fits",
+      customizerMobile.elements.every((entry) => entry.present && entry.visible && entry.inside),
+      customizerMobile
+    );
+    check("mobile-atelier-touch-targets", touchTargets.every((height) => height >= 43), touchTargets);
+    await page.screenshot({ path: path.join(OUT, "customizer-mobile.png"), fullPage: false });
+
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.evaluate(() => window.__sf.tick(1 / 30));
+    await sleep(250);
+    customizerLandscape = await fitReport(page, [".hg-customizer-toggle", ".hg-customizer-panel"]);
+    check(
+      "landscape-wing-atelier-fits-and-scrolls",
+      customizerLandscape.elements.every((entry) => entry.present && entry.visible && entry.inside),
+      customizerLandscape
+    );
+    await page.screenshot({ path: path.join(OUT, "customizer-landscape.png"), fullPage: false });
+    await page.evaluate(() => document.querySelector(".hg-customizer-toggle")?.click());
 
     await page.setViewportSize({ width: 1440, height: 960 });
     const finish = await page.evaluate(() => {
@@ -335,8 +444,20 @@ async function main() {
       requestCount: requests.length,
       activeDesktop,
       activeMobile,
+      customizerDesktop,
+      customizerMobile,
+      customizerLandscape,
       resultMobile,
-      screenshots: ["launch-platform.png", "flight-desktop.png", "flight-mobile.png", "result-desktop.png", "result-mobile.png"]
+      screenshots: [
+        "launch-platform.png",
+        "flight-desktop.png",
+        "customizer-desktop.png",
+        "flight-mobile.png",
+        "customizer-mobile.png",
+        "customizer-landscape.png",
+        "result-desktop.png",
+        "result-mobile.png"
+      ]
     };
     await writeFile(path.join(OUT, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
     await browser.close();
