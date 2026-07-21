@@ -523,8 +523,8 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   // golf: friends' swings/balls/scores replay here (owner-simulated snapshots)
   net.onGolf = (id, m) => core.state.golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {
-    if (!locked && !inOrbit() && !input.freeCursor && !chat.focused) {
-      hud.message("Click the scene to capture · Esc releases · L toggles free cursor", 2.8);
+    if (!locked && !inOrbit() && !input.freeCursor && !input.momentaryCursor && !chat.focused) {
+      hud.message("Click the scene to capture · Hold ⌘ for cursor · L toggles free cursor", 2.8);
     }
   };
   // Passenger support: every mode in PASSENGER_CAPACITY publishes seat
