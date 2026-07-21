@@ -8,6 +8,7 @@ import { CAMERA_TUNING,  CONFIG,  FOLIAGE_TUNING, RENDER_TUNING, START, START_DE
 import { resetAllTweaks } from "../../core/persist";
 import {  formatInteractPrompt, localizeInteractText } from "../../core/input";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "../../world/oceanBeachWaves";
+import { tetherTreeCullFocus } from "../../world/vegetation/treeCullFocus";
 import {  SKY_TUNING } from "../../world/sky";
 import {
   GHOST_SHIP_DETAIL_WAKE_DISTANCE,
@@ -1225,9 +1226,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       // wildlands: the grass + flower rings follow the PLAYER (like the core.state.garden ring
       // above) so they stay put when you just look around — the chase camera orbits
       // the player, and anchoring the rings to it slid the whole field around you.
-      // Tree distance-culling still follows the camera so off-screen groves drop.
+      // Tree distance-culling follows the camera only once it truly leaves the
+      // player (flyover/cinematics): inside the chase tether it pins to the
+      // player so looking around never re-centres tree LOD/near rings.
       core.state.wildlands?.update(player.renderPosition, camera.position, camera);
-      core.state.buenaVistaTrees?.update(camera.position);
+      core.state.buenaVistaTrees?.update(
+        tetherTreeCullFocus(player.renderPosition, camera.position)
+      );
     }
     // Nature soundscape rides the same root vegetation gust envelope,
     // and reads the sky clock for dawn choruses / night owls. Cheap out in the
