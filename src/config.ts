@@ -235,6 +235,12 @@ export const CITYGEN_TUNING = tunables("citygen", {
  *  · clumpSize   — radius (m) of a clump when clumpiness > 0
  *  · reach       — ring radius (m) the flowers fill around the player (ring only)
  */
+export const FLOWER_REACH_DEFAULT = 1100
+export const FLOWER_REACH_MIN = 20
+// Match the default world draw distance: raising the flower reach beyond this
+// would plant work that the normal camera cannot show.
+export const FLOWER_REACH_MAX = DRAW_DISTANCE_DEFAULT
+
 export const FLOWER_TUNING = tunables("flowers", {
   // Default raised from 1 → 1.4 after per-frame GPU frustum culling landed:
   // only ~30% of the ring rasterizes per heading, so the denser meadow still
@@ -242,7 +248,16 @@ export const FLOWER_TUNING = tunables("flowers", {
   density: { v: 1.4, min: 0, max: 2.5, step: 0.05, label: "density" },
   clumpiness: { v: 0.6, min: 0, max: 1, step: 0.02, label: "clump ↔ scatter" },
   clumpSize: { v: 9, min: 2, max: 30, step: 0.5, label: "clump size (m)" },
-  reach: { v: 110, min: 30, max: 110, step: 2, label: "reach (m)" }
+  // The previous 110 m ceiling made this control unable to extend the ring.
+  // Distant sampling is progressively coarsened in flowerRing.ts, so 1.1 km is
+  // practical by default and the pane can still tune from 20 m to 3.5 km.
+  reach: {
+    v: FLOWER_REACH_DEFAULT,
+    min: FLOWER_REACH_MIN,
+    max: FLOWER_REACH_MAX,
+    step: 10,
+    label: "reach (m)"
+  }
 })
 
 /**
