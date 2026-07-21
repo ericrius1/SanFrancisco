@@ -47,6 +47,32 @@ const CZ = 3846;
  *  applyLightFrontRamps scales SUTRO_LIGHTS_INTENSITY by the front amount here,
  *  the Bay/Golden-Gate lights CPU-ramp pattern). */
 export const SUTRO_TOWER_ANCHOR = { x: CX, z: CZ };
+
+export const SUTRO_TOWER_LANDMARK_NAME = "Sutro Tower";
+
+/**
+ * Exact walk arrival on the upper observation deck. The authored collider's
+ * top is y=520; the extra metre places the walk capsule just above it so the
+ * first physics step settles onto the platform instead of intersecting it.
+ */
+export const SUTRO_TOWER_TOP_ARRIVAL = {
+  x: CX,
+  y: 521,
+  z: CZ,
+  heading: Math.PI / 2
+} as const;
+
+/** Resolve only the tower landmark itself; Mount Sutro remains a ground stop. */
+export function sutroTowerArrivalForDestination(
+  x: number,
+  z: number,
+  label?: string
+): typeof SUTRO_TOWER_TOP_ARRIVAL | null {
+  const namedTower =
+    label?.trim().toLocaleLowerCase() === SUTRO_TOWER_LANDMARK_NAME.toLocaleLowerCase();
+  const towerPin = Math.hypot(x - CX, z - CZ) <= 8;
+  return namedTower || towerPin ? { ...SUTRO_TOWER_TOP_ARRIVAL } : null;
+}
 const LEG_ROT = Math.PI / 6; // splay one bay toward the overlook, matches photo
 
 /** Radius of the candelabra shell at height h above the base (pinched waist). */
