@@ -110,6 +110,16 @@ async function setKey(c, down, code, key, vk) {
 // stashes tallies on window. `new Orig(...)` inside a plain function called with
 // `new` returns a genuine (Offline)AudioContext with the native prototype chain.
 const PROBE_INIT = `(() => {
+  // The generative lo-fi score is CONTINUOUS content: once unlocked it owns a
+  // persistent engine hold and keeps the ctx running by design. This probe
+  // tests the ENGINE's idle economy, so boot with the music slider at zero —
+  // the music facade then never loads (gated on musicAudioLevel() > 0).
+  try {
+    localStorage.setItem("sf-audio", JSON.stringify({
+      schema: 2, musicVolume: 0, effectsVolume: 0.68,
+      soundscapeVolume: 0.25, voiceVolume: 0.85, enabled: true
+    }));
+  } catch {}
   const wrapCounting = (name) => {
     const Orig = window[name];
     if (typeof Orig !== "function") return;
