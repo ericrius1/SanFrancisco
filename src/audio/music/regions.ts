@@ -32,6 +32,10 @@ export type MusicProfile = {
   pad: number;
   epiano: number;
   bass: number;
+  /** 0..1 — baked lo-fi drum groove (day/dusk kit crossfades by daylight). */
+  groove: number;
+  /** 0..1 — baked tape-dust texture bed. */
+  dust: number;
 };
 
 export type MusicRegionSpec = {
@@ -57,7 +61,9 @@ export const CITY_MUSIC_PROFILE: MusicProfile = {
   reverb: 0.45,
   pad: 0.55,
   epiano: 1,
-  bass: 0.6
+  bass: 0.6,
+  groove: 0.6,
+  dust: 0.55
 };
 
 const natureBounds = (id: string): Rect => {
@@ -84,7 +90,9 @@ export const MUSIC_REGIONS: MusicRegionSpec[] = [
       reverb: 0.6,
       pad: 0.7,
       epiano: 0.9,
-      bass: 0.5
+      bass: 0.5,
+      groove: 0.35,
+      dust: 0.4
     }
   },
   {
@@ -104,7 +112,9 @@ export const MUSIC_REGIONS: MusicRegionSpec[] = [
       reverb: 0.6,
       pad: 0.8,
       epiano: 0.75,
-      bass: 0.5
+      bass: 0.5,
+      groove: 0.3,
+      dust: 0.4
     }
   },
   {
@@ -124,7 +134,9 @@ export const MUSIC_REGIONS: MusicRegionSpec[] = [
       reverb: 0.85,
       pad: 1,
       epiano: 0.5,
-      bass: 0.45
+      bass: 0.45,
+      groove: 0.08,
+      dust: 0.5
     }
   },
   {
@@ -144,7 +156,9 @@ export const MUSIC_REGIONS: MusicRegionSpec[] = [
       reverb: 0.95,
       pad: 0.9,
       epiano: 0.55,
-      bass: 0.4
+      bass: 0.4,
+      groove: 0.12,
+      dust: 0.6
     }
   },
   {
@@ -164,7 +178,9 @@ export const MUSIC_REGIONS: MusicRegionSpec[] = [
       reverb: 0.6,
       pad: 0.6,
       epiano: 0.8,
-      bass: 0.5
+      bass: 0.5,
+      groove: 0.4,
+      dust: 0.45
     }
   }
 ];
@@ -204,7 +220,9 @@ const NUMERIC_KEYS = [
   "reverb",
   "pad",
   "epiano",
-  "bass"
+  "bass",
+  "groove",
+  "dust"
 ] as const;
 
 export type BlendedMusic = {

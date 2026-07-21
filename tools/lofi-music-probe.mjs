@@ -127,6 +127,7 @@ async function main() {
   let cdp = null;
   const errors = [];
   const musicRequests = [];
+  const stemRequests = [];
   try {
     await waitHttp(serverUrl, 60_000, "vite");
 
@@ -152,6 +153,7 @@ async function main() {
       } else if (m.method === "Network.requestWillBeSent") {
         const url = m.params.request?.url ?? "";
         if (url.includes("/src/audio/music/")) musicRequests.push(url);
+        if (url.includes("/audio/music/stems/")) stemRequests.push(url);
       }
     };
     await cdp.open();
@@ -180,6 +182,7 @@ async function main() {
       /director|theory|regions|musicBuffersWorker/.test(u)
     );
     assert.deepEqual(bootRequests, [], `music engine modules fetched at clean boot:\n${bootRequests.join("\n")}`);
+    assert.deepEqual(stemRequests, [], `baked stems fetched at clean boot:\n${stemRequests.join("\n")}`);
     const bootState = await ev(cdp, "window.__sf?.lofiMusic?.debugState ?? null");
     assert.equal(bootState?.ctx, "unloaded", `facade should be dormant pre-gesture, got ${JSON.stringify(bootState)}`);
 
@@ -205,6 +208,22 @@ async function main() {
     const engine = await ev(cdp, "window.__sf.audioEngine.debugState");
     assert(engine.levels.music > 0, `engine music group level should be up, got ${JSON.stringify(engine.levels)}`);
     assert(engine.persistent >= 1, `music should own a persistent hold while playing, got ${JSON.stringify(engine)}`);
+
+    // baked stems load on demand once their targets rise (dust is always on)
+    let stems = null;
+    const tStems = Date.now();
+    while (Date.now() - tStems < 12_000) {
+      await sleep(600);
+      stems = await ev(cdp, "window.__sf.lofiMusic.debugState.stems ?? []");
+      if (stems.some((s) => s.loaded && s.activeSources > 0)) break;
+    }
+    assert(
+      stems.some((s) => s.loaded && s.activeSources > 0),
+      `no baked stem became audible after activation: ${JSON.stringify(stems)}`
+    );
+    assert(stemRequests.length >= 1, `no stem files were fetched after activation`);
+    const failedStems = stems.filter((s) => s.failed);
+    assert.deepEqual(failedStems, [], `stems failed to load: ${JSON.stringify(failedStems)}`);
 
     // ---- phase 3: pure-data sanity via the same vite-served modules ----
     const pure = await ev(cdp, `(async () => {
@@ -265,8 +284,10 @@ async function main() {
       live,
       engineWhilePlaying: { levels: engine.levels, persistent: engine.persistent },
       pure,
+      stems,
       afterMute: after,
       musicRequests,
+      stemRequests,
       totalConsoleErrors: errors.length
     }, null, 2));
   } finally {

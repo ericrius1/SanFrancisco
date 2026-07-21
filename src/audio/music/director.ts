@@ -36,6 +36,7 @@ import {
   quietZoneDuck,
   type MusicProfile
 } from "./regions";
+import { StemPlayer } from "./stems";
 
 export const LOFI_MUSIC_TUNING = tunables("lofiMusic", {
   enabled: { v: true, label: "enabled" },
@@ -45,6 +46,8 @@ export const LOFI_MUSIC_TUNING = tunables("lofiMusic", {
   bass: { v: 0.8, min: 0, max: 1, step: 0.01, label: "bass" },
   sparkle: { v: 0.9, min: 0, max: 1, step: 0.01, label: "sparkle" },
   crackle: { v: 0.75, min: 0, max: 1, step: 0.01, label: "vinyl" },
+  beats: { v: 0.85, min: 0, max: 1, step: 0.01, label: "beats" },
+  dust: { v: 0.75, min: 0, max: 1, step: 0.01, label: "dust bed" },
   wobble: { v: 0.8, min: 0, max: 1, step: 0.01, label: "tape wow" },
   reverb: { v: 0.9, min: 0, max: 1, step: 0.01, label: "reverb" },
   pace: { v: 1, min: 0.4, max: 2, step: 0.05, label: "pace ×" }
@@ -78,6 +81,7 @@ export class LofiMusicDirector {
   #convolver!: ConvolverNode;
   #crackleGain!: GainNode;
   #crackleSrc: AudioBufferSourceNode | null = null;
+  #stemPlayer: StemPlayer | null = null;
   #vinylBuffer: AudioBuffer | null = null;
   #bufferPreparation: Promise<void> | null = null;
 
@@ -117,6 +121,7 @@ export class LofiMusicDirector {
       sparkleCount: this.#sparkleCount,
       lastChord: this.#lastChord,
       vinylReady: Boolean(this.#vinylBuffer),
+      stems: this.#stemPlayer?.debugState ?? [],
       influence: MUSIC_REGIONS.map((r, i) => ({ id: r.id, inf: +this.#inf[i].toFixed(3) })),
       nextChordIn: this.#ctx ? +(this.#nextChordT - this.#ctx.currentTime).toFixed(2) : 0
     };
@@ -163,7 +168,12 @@ export class LofiMusicDirector {
 
     this.#out.gain.setTargetAtTime(Number(T.master) * this.#presence * 0.9, now, 0.2);
 
-    if (!wantPlaying || this.#presence < 0.012) return; // silent — let tails ring, schedule nothing
+    if (!wantPlaying || this.#presence < 0.012) {
+      // silent — let tails ring, schedule nothing; stems fade out and park
+      this.#stemPlayer?.muteAll();
+      this.#stemPlayer?.update(dt, now);
+      return;
+    }
 
     // stale clocks after a quiet spell (or first start) resume near "now"
     if (this.#nextChordT < now - 0.25) this.#nextChordT = now + 0.35;
@@ -171,6 +181,17 @@ export class LofiMusicDirector {
 
     while (this.#nextChordT < now + LOOKAHEAD) this.#scheduleChord();
     while (this.#nextSparkleT < now + LOOKAHEAD) this.#scheduleSparkle();
+
+    // baked stems: the day kit crossfades to the deep half-time kit at dusk
+    if (this.#stemPlayer) {
+      const T = LOFI_MUSIC_TUNING.values;
+      const p = this.#texture;
+      const day = this.#daylight;
+      this.#stemPlayer.setTarget("beatWarm", p.groove * Number(T.beats) * day);
+      this.#stemPlayer.setTarget("beatDusk", p.groove * Number(T.beats) * (1 - day) * 0.95);
+      this.#stemPlayer.setTarget("dust", p.dust * Number(T.dust));
+      this.#stemPlayer.update(dt, now);
+    }
   }
 
   dispose(): void {
@@ -180,6 +201,8 @@ export class LofiMusicDirector {
       /* already stopped */
     }
     this.#crackleSrc = null;
+    this.#stemPlayer?.dispose();
+    this.#stemPlayer = null;
     this.#out?.disconnect();
     this.#holdRelease?.();
     this.#holdRelease = null;
@@ -261,6 +284,9 @@ export class LofiMusicDirector {
     this.#crackleGain = ctx.createGain();
     this.#crackleGain.gain.value = 0;
     this.#crackleGain.connect(this.#warm);
+
+    // baked stems ride the full lo-fi chain (wow + warmth) like the synths
+    this.#stemPlayer = new StemPlayer(ctx, this.#sum);
 
     void this.#prepareBuffers(ctx);
   }
