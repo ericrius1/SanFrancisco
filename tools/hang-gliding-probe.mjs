@@ -167,6 +167,23 @@ async function main() {
       { timeout: 15_000 }
     );
     check("service-lift-reaches-upper-flight-deck", true, null);
+    const parkedGlider = await page.evaluate(() => {
+      const quest = window.__sf.hangGliding;
+      const glider = quest.root.getObjectByName("sutro_hang_glider");
+      return {
+        present: !!glider,
+        visible: glider?.visible,
+        parkedUnderSite: glider?.parent === quest.root,
+        distanceFromLaunch: glider ? glider.position.distanceTo(quest.course.launch) : null,
+        rootInScene: quest.debugState.rootInScene
+      };
+    });
+    check(
+      "glider-visible-on-upper-platform-before-launch",
+      parkedGlider.present && parkedGlider.visible && parkedGlider.parkedUnderSite && parkedGlider.rootInScene,
+      parkedGlider
+    );
+    await page.screenshot({ path: path.join(OUT, "launch-platform.png"), fullPage: false });
 
     const beforeLaunch = requests.length;
     await page.keyboard.press("KeyE");
@@ -319,7 +336,7 @@ async function main() {
       activeDesktop,
       activeMobile,
       resultMobile,
-      screenshots: ["flight-desktop.png", "flight-mobile.png", "result-desktop.png", "result-mobile.png"]
+      screenshots: ["launch-platform.png", "flight-desktop.png", "flight-mobile.png", "result-desktop.png", "result-mobile.png"]
     };
     await writeFile(path.join(OUT, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
     await browser.close();

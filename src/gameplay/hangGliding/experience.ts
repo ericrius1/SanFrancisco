@@ -54,6 +54,7 @@ export class HangGlidingExperience {
     this.course = createHangGlidingCourse(map);
     this.#world = new HangGlidingWorldVisuals(this.course);
     this.root = this.#world.root;
+    this.#parkGlider();
 
     const deck = this.course.deck;
     this.#platformBody = physics.world.createBox({
@@ -259,9 +260,11 @@ export class HangGlidingExperience {
     this.#restoreCamera(this.#activeChase);
     this.#audio.dispose();
     this.#ui.dispose();
+    // The glider is activity-owned even while parked under the world root.
+    // Detach it before world teardown so its geometry has one disposer.
+    this.#glider.removeFromParent();
     this.#world.dispose();
     (this.#glider.userData.dispose as (() => void) | undefined)?.();
-    this.#glider.removeFromParent();
     this.#physics.removeQuerySolid(this.#platformBody);
     this.#physics.world.destroyBody(this.#platformBody);
     this.#lastPlayer = null;
@@ -284,6 +287,10 @@ export class HangGlidingExperience {
     this.#activeChase = chase;
     chase.zoom = Math.max(chase.zoom, 4.4);
     chase.yaw = this.course.launch.heading;
+    this.#glider.removeFromParent();
+    this.#glider.position.set(0, 0, 0);
+    this.#glider.rotation.set(0, 0, 0);
+    this.#glider.scale.setScalar(1);
     player.beginHangGliding(
       this.#glider,
       this.course.launch,
@@ -377,7 +384,19 @@ export class HangGlidingExperience {
     this.#score = 0;
     this.#resultRemaining = 0;
     this.#world.setCourseVisible(false);
+    this.#parkGlider();
     this.#ui.hide();
     this.#lastPlayer = null;
+  }
+
+  #parkGlider(): void {
+    if (this.#disposed) return;
+    const deck = this.course.deck;
+    const launch = this.course.launch;
+    this.#glider.position.set(launch.x, deck.y + deck.hy + 1.9, launch.z);
+    this.#glider.rotation.set(0, launch.heading, 0);
+    this.#glider.scale.setScalar(1);
+    this.#glider.visible = true;
+    this.root.add(this.#glider);
   }
 }
