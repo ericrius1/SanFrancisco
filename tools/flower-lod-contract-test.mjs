@@ -43,7 +43,12 @@ const {
   FLOWER_EDGE_FADE_BAND_METRES,
   FLOWER_EDGE_STAGGER_METRES
 } = await import("../src/world/wildlands/flowerRing.ts");
-const { FLOWER_TUNING } = await import("../src/config.ts");
+const {
+  FLOWER_REACH_DEFAULT,
+  FLOWER_REACH_MAX,
+  FLOWER_REACH_MIN,
+  FLOWER_TUNING
+} = await import("../src/config.ts");
 
 const FOCUS = { x: -4000, z: 2440 };
 const groundHeight = (x, z) => 75 + (x - FOCUS.x) * 0.22 + (z - FOCUS.z) * 0.12;
@@ -59,7 +64,9 @@ const LEGACY_DEFAULT_CLUMPS = 5337;
 const LEGACY_DEFAULT_TRIANGLES = 538116;
 const LEGACY_DEFAULT_DRAWS = 32;
 const LEGACY_RESERVED_INSTANCE_BYTES = 3_344_384;
-assert.equal(FLOWER_TUNING.values.reach, 110, "flowers should reach the full 110 m ground-cover horizon by default");
+assert.equal(FLOWER_REACH_DEFAULT, 1100, "default flower reach should be 10x the former 110 m ring");
+assert.equal(FLOWER_TUNING.values.reach, FLOWER_REACH_DEFAULT, "flower tuning should start at the 1.1 km reach");
+assert.equal(stats.reach, FLOWER_REACH_DEFAULT, "runtime reach must follow the Tweakpane value");
 assert(stats.count > 100, `expected populated test meadow, got ${stats.count}`);
 assert(stats.count > LEGACY_DEFAULT_CLUMPS, "110 m reach should populate more of the meadow than the former 80 m ring");
 assert(stats.lodInstances.hero > 0, "hero flower LOD must populate");
@@ -94,9 +101,12 @@ assert(
 const tunedDensity = FLOWER_TUNING.values.density;
 FLOWER_TUNING.values.density = 1;
 flowers.refresh();
+// The 10x reach adds only six-triangle far accents beyond the legacy 110 m
+// field. Keep that new horizon inside a narrow 3% live-geometry allowance.
+const EXTENDED_REACH_TRIANGLE_BUDGET = Math.ceil(LEGACY_DEFAULT_TRIANGLES * 1.03);
 assert(
-  flowers.stats.submittedTriangles <= LEGACY_DEFAULT_TRIANGLES,
-  `density-1 ring must stay inside the former triangle envelope (${flowers.stats.submittedTriangles} <= ${LEGACY_DEFAULT_TRIANGLES})`
+  flowers.stats.submittedTriangles <= EXTENDED_REACH_TRIANGLE_BUDGET,
+  `density-1 extended ring must stay near the former triangle envelope (${flowers.stats.submittedTriangles} <= ${EXTENDED_REACH_TRIANGLE_BUDGET})`
 );
 FLOWER_TUNING.values.density = tunedDensity;
 flowers.refresh();
@@ -172,10 +182,17 @@ for (const mesh of heroMeshes) {
 }
 assert(groundedHeroAnchors > 0, "grounding contract needs at least one hero anchor");
 
+const defaultReachCount = flowers.stats.count;
+FLOWER_TUNING.values.reach = FLOWER_REACH_MIN;
+flowers.refresh();
+assert.equal(flowers.stats.reach, FLOWER_REACH_MIN, "lowering reach must update the live flower ring");
+assert(flowers.stats.count < defaultReachCount, "lower reach should submit fewer flowers");
+
 FLOWER_TUNING.values.density = 2.5;
-FLOWER_TUNING.values.reach = 110;
+FLOWER_TUNING.values.reach = FLOWER_REACH_MAX;
 flowers.refresh();
 const stressStats = flowers.stats;
+assert.equal(stressStats.reach, FLOWER_REACH_MAX, "raising reach must update the live flower ring");
 assert.equal(stressStats.droppedByCapacity, 0, "maximum supported density/reach must not overflow a flower bucket");
 
 flowers.dispose();

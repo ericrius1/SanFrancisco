@@ -60,7 +60,12 @@ import { hash2, r2Offset, smoothstep, worleyClump } from "../groundcover/scatter
 import { flowerDriftAt, grassyGround, nearAnyWildRegion, wildRegionAt } from "./layout";
 import { releaseRendererAttribute, requireRenderer } from "../../app/rendererRegistry";
 import type { GardenTerrain } from "../garden/layout";
-import { EXPOSURE_REBASE, FLOWER_TUNING } from "../../config";
+import {
+  EXPOSURE_REBASE,
+  FLOWER_REACH_MAX,
+  FLOWER_REACH_MIN,
+  FLOWER_TUNING
+} from "../../config";
 
 type N = any;
 
@@ -750,12 +755,21 @@ function flowerMaterial(tier: FlowerRenderTier, indirect?: FlowerIndirectSource)
 
 const RESAMPLE_STEP = 9; // re-scatter after the focus moves this far (m)
 const SPACING = 1.6; // flower cell (coarser than grass — flowers are accents)
-const MAX_REACH = 110;
 // Keep one rebuild-step of invisible instances outside the visible ring. As the
 // player moves, those flowers enter through the shader fade from zero instead
 // of appearing at ~70% scale on the next deterministic re-scatter.
 const SAMPLE_OVERSCAN = RESAMPLE_STEP;
-const MAX_SAMPLE_REACH = MAX_REACH + SAMPLE_OVERSCAN;
+// Preserve the original full-density 110 m ring (plus overscan), then grow the
+// field in progressively coarser world-space bands. Each far accent represents
+// a larger patch, keeping the CPU scan and GPU instance pool nearly linear in
+// visible detail instead of making a 10x radius cost 100x as much.
+const SAMPLE_BANDS = [
+  { end: 120, spacing: SPACING },
+  { end: 360, spacing: 6 },
+  { end: 1080, spacing: 18 },
+  { end: 3240, spacing: 54 },
+  { end: FLOWER_REACH_MAX + SAMPLE_OVERSCAN, spacing: 162 }
+] as const;
 // The beauty camera sees this layer; the half-resolution ink prepass does not.
 // Tiny animated petals otherwise become unstable depth/normal outlines.
 const BEAUTY_ONLY_LAYER = 31;
@@ -954,7 +968,7 @@ type FlowerBucket = {
 // 10 sectors × 1536).
 const HERO_CAPACITY_PER_SPECIES = 640;
 const MID_CAPACITY_PER_SPECIES = 4608;
-const FAR_CAPACITY = 15360;
+const FAR_CAPACITY = 32768;
 const FLOWER_INSTANCE_BYTES = 12 * Float32Array.BYTES_PER_ELEMENT; // 3 packed vec4s
 /** World-space margin over the scaled cluster bound: wind sway + trample dip. */
 const FLOWER_CULL_SLACK = 0.9;
@@ -1126,6 +1140,13 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
 
   const sampleGround = (x: number, z: number) => map.groundHeight(x, z);
 
+  function configuredReach(): number {
+    return Math.min(
+      FLOWER_REACH_MAX,
+      Math.max(FLOWER_REACH_MIN, Number(FLOWER_TUNING.values.reach))
+    );
+  }
+
   function clearRows() {
     for (const bucket of allBuckets) bucket.rows.length = 0;
   }
@@ -1173,7 +1194,7 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
 
   function resample(fx: number, fz: number) {
     const T = FLOWER_TUNING.values;
-    const reach = Math.min(MAX_REACH, Math.max(20, T.reach as number));
+    const reach = configuredReach();
     const density = Math.max(0, T.density as number);
     const clumpiness = Math.min(1, Math.max(0, T.clumpiness as number));
     const clumpSize = Math.max(2, T.clumpSize as number);
@@ -1184,95 +1205,110 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     heads = 0;
     droppedByCapacity = 0;
     const sampleReach = reach + SAMPLE_OVERSCAN;
-    const r2 = sampleReach * sampleReach;
-    const gx0 = Math.floor((fx - sampleReach) / SPACING);
-    const gx1 = Math.ceil((fx + sampleReach) / SPACING);
-    const gz0 = Math.floor((fz - sampleReach) / SPACING);
-    const gz1 = Math.ceil((fz + sampleReach) / SPACING);
+    let bandStart = 0;
+    for (let bandIndex = 0; bandIndex < SAMPLE_BANDS.length; bandIndex++) {
+      const band = SAMPLE_BANDS[bandIndex];
+      const bandEnd = Math.min(sampleReach, band.end);
+      if (bandEnd <= bandStart) break;
+      const spacing = band.spacing;
+      const bandStart2 = bandStart * bandStart;
+      const bandEnd2 = bandEnd * bandEnd;
+      const gx0 = Math.floor((fx - bandEnd) / spacing);
+      const gx1 = Math.ceil((fx + bandEnd) / spacing);
+      const gz0 = Math.floor((fz - bandEnd) / spacing);
+      const gz1 = Math.ceil((fz + bandEnd) / spacing);
+      const saltOffset = bandIndex * 1009;
 
-    for (let gx = gx0; gx <= gx1; gx++) {
-      for (let gz = gz0; gz <= gz1; gz++) {
-        const jitter = r2Offset(gx, gz, 11);
-        const px = gx * SPACING + (jitter.ox - 0.5) * SPACING * 0.9;
-        const pz = gz * SPACING + (jitter.oz - 0.5) * SPACING * 0.9;
-        const dx = px - fx, dz = pz - fz;
-        if (dx * dx + dz * dz > r2) continue;
+      for (let gx = gx0; gx <= gx1; gx++) {
+        for (let gz = gz0; gz <= gz1; gz++) {
+          const jitter = r2Offset(gx, gz, 11 + saltOffset);
+          const px = gx * spacing + (jitter.ox - 0.5) * spacing * 0.9;
+          const pz = gz * spacing + (jitter.oz - 0.5) * spacing * 0.9;
+          const dx = px - fx, dz = pz - fz;
+          const distance2 = dx * dx + dz * dz;
+          if (distance2 < bandStart2 || distance2 > bandEnd2) continue;
 
-        // Voronoi clumping: how deep this cell sits in its nearest clump centre.
-        const wc = worleyClump(px, pz, clumpSize * 1.7, CLUMP_SALT);
-        const clumpField = smoothstep(clumpSize, 0, wc.d); // 1 at centre → 0 at rim
-        // clumpiness blends an even field against tight clumps + sparse singles.
-        const clumpyProb = CLUMP_FLOOR + (CLUMP_PEAK - CLUMP_FLOOR) * clumpField;
-        const local = EVEN_PROB * (1 - clumpiness) + clumpyProb * clumpiness;
+          // Voronoi clumping: how deep this cell sits in its nearest clump centre.
+          const wc = worleyClump(px, pz, clumpSize * 1.7, CLUMP_SALT);
+          const clumpField = smoothstep(clumpSize, 0, wc.d); // 1 at centre → 0 at rim
+          // clumpiness blends an even field against tight clumps + sparse singles.
+          const clumpyProb = CLUMP_FLOOR + (CLUMP_PEAK - CLUMP_FLOOR) * clumpField;
+          const local = EVEN_PROB * (1 - clumpiness) + clumpyProb * clumpiness;
 
-        // designed superbloom meadows: boost density where a drift covers this cell.
-        const drift = flowerDriftAt(px, pz);
-        const driftKeep = drift.boost > 0 ? density * drift.boost * 1.6 : 0;
-        const baseKeep = density * local;
-        const useDrift = driftKeep > baseKeep;
-        const keep = Math.min(1, Math.max(baseKeep, driftKeep));
-        if (hash2(gx, gz, 23) > keep) continue;
+          // designed superbloom meadows: boost density where a drift covers this cell.
+          const drift = flowerDriftAt(px, pz);
+          const driftKeep = drift.boost > 0 ? density * drift.boost * 1.6 : 0;
+          const baseKeep = density * local;
+          const useDrift = driftKeep > baseKeep;
+          const keep = Math.min(1, Math.max(baseKeep, driftKeep));
+          if (hash2(gx, gz, 23 + saltOffset) > keep) continue;
 
-        // expensive ground test only for cells that survived the keep roll
-        if (excluded?.(px, pz) || !grassyGround(map, px, pz)) continue;
+          // expensive ground test only for cells that survived the keep roll
+          if (excluded?.(px, pz) || !grassyGround(map, px, pz)) continue;
 
-        const region = wildRegionAt(px, pz);
-        const pal = (region && REGION_FLOWERS[region.id]) || DEFAULT_PAL;
-        const inClump = clumpField > 0.4;
-        let species: number;
-        if (useDrift && drift.species >= 0) species = drift.species;
-        else if (inClump) species = pal[Math.floor(wc.seed * pal.length) % pal.length]; // one dominant species per clump
-        else species = pal[Math.floor(hash2(gx, gz, 29) * pal.length) % pal.length]; // singles are mixed
-        const tint = hash2(gx, gz, 41);
-        const pal2 = PALETTES[species];
-        a.setHex(pal2.a);
-        b.setHex(pal2.b);
-        col.copy(a).lerp(b, tint).multiplyScalar(0.88 + wc.seed * 0.24); // per-clump brightness
-        const sx = (inClump ? 0.9 : 0.72) + hash2(gx, gz, 37) * 0.5;
-        const y = fitGroundY(
-          sampleGround,
-          px,
-          pz,
-          ROOT_FOOTPRINT_RADIUS[species] * sx,
-          ROOT_MAX_RISE,
-          -ROOT_SINK
-        );
-        if (y === null) continue;
+          const region = wildRegionAt(px, pz);
+          const pal = (region && REGION_FLOWERS[region.id]) || DEFAULT_PAL;
+          const inClump = clumpField > 0.4;
+          let species: number;
+          if (useDrift && drift.species >= 0) species = drift.species;
+          else if (inClump) species = pal[Math.floor(wc.seed * pal.length) % pal.length]; // one dominant species per clump
+          else species = pal[Math.floor(hash2(gx, gz, 29 + saltOffset) * pal.length) % pal.length]; // singles are mixed
+          const tint = hash2(gx, gz, 41 + saltOffset);
+          const pal2 = PALETTES[species];
+          a.setHex(pal2.a);
+          b.setHex(pal2.b);
+          col.copy(a).lerp(b, tint).multiplyScalar(0.88 + wc.seed * 0.24); // per-clump brightness
+          const sx = (inClump ? 0.9 : 0.72) + hash2(gx, gz, 37 + saltOffset) * 0.5;
+          const y = fitGroundY(
+            sampleGround,
+            px,
+            pz,
+            ROOT_FOOTPRINT_RADIUS[species] * sx,
+            ROOT_MAX_RISE,
+            -ROOT_SINK
+          );
+          if (y === null) continue;
 
-        const row: Row = {
-          x: px,
-          y,
-          z: pz,
-          yaw: hash2(gx, gz, 31) * Math.PI * 2,
-          sx,
-          sy: sx * (0.85 + tint * 0.3),
-          r: col.r,
-          g: col.g,
-          b: col.b
-        };
+          const row: Row = {
+            x: px,
+            y,
+            z: pz,
+            yaw: hash2(gx, gz, 31 + saltOffset) * Math.PI * 2,
+            sx,
+            sy: sx * (0.85 + tint * 0.3),
+            r: col.r,
+            g: col.g,
+            b: col.b
+          };
 
-        const distance = Math.hypot(dx, dz);
-        let submitted = false;
-        if (distance <= HERO_SAMPLE_END) submitted = pushRow(heroBuckets[species], row) || submitted;
-        if (distance >= MID_SAMPLE_START && distance <= MID_SAMPLE_END) {
-          submitted = pushRow(midBuckets[species], row) || submitted;
+          const distance = Math.sqrt(distance2);
+          // A far accent stands in for a progressively larger patch. Scale it
+          // continuously with distance so coarse-band boundaries never create
+          // a visible size step as the player moves through the meadow.
+          const representationScale = Math.sqrt(Math.max(1, distance / 120));
+          let submitted = false;
+          if (distance <= HERO_SAMPLE_END) submitted = pushRow(heroBuckets[species], row) || submitted;
+          if (distance >= MID_SAMPLE_START && distance <= MID_SAMPLE_END) {
+            submitted = pushRow(midBuckets[species], row) || submitted;
+          }
+          if (distance >= FAR_SAMPLE_START) {
+            const speciesHeightScale = FAR_HEIGHT_SCALE[species];
+            submitted = pushRow(farBucket, {
+              ...row,
+              sy: row.sy * speciesHeightScale * representationScale,
+              sx: row.sx * (0.88 + speciesHeightScale * 0.12) * representationScale
+            }) || submitted;
+          }
+          if (!submitted) continue;
+          count += 1;
+          heads += distance < (HERO_FADE_START + HERO_FADE_END) * 0.5
+            ? HEADS_PER_CLUMP[species]
+            : distance < (MID_FADE_OUT_START + MID_FADE_OUT_END) * 0.5
+              ? MID_HEADS_PER_CLUMP[species]
+              : 1;
         }
-        if (distance >= FAR_SAMPLE_START) {
-          const farScale = FAR_HEIGHT_SCALE[species];
-          submitted = pushRow(farBucket, {
-            ...row,
-            sy: row.sy * farScale,
-            sx: row.sx * (0.88 + farScale * 0.12)
-          }) || submitted;
-        }
-        if (!submitted) continue;
-        count += 1;
-        heads += distance < (HERO_FADE_START + HERO_FADE_END) * 0.5
-          ? HEADS_PER_CLUMP[species]
-          : distance < (MID_FADE_OUT_START + MID_FADE_OUT_END) * 0.5
-            ? MID_HEADS_PER_CLUMP[species]
-            : 1;
       }
+      bandStart = band.end;
     }
     uploadRows();
   }
@@ -1287,11 +1323,10 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
       if (dx * dx + dz * dz < RESAMPLE_STEP * RESAMPLE_STEP) return;
       last.x = focus.x;
       last.z = focus.z;
-      // Region AABB early-out: the up-to-~18k-cell Worley scan used to run every 9 m
-      // city-wide, even downtown where grassyGround rejects every cell. Outside
-      // every wild region (+reach) skip the scan; one clearing write empties
-      // the ring on the way out.
-      if (!nearAnyWildRegion(focus.x, focus.z, MAX_SAMPLE_REACH + 2)) {
+      // Region AABB early-out: the multi-band Worley scan would otherwise run
+      // every 9 m city-wide, even downtown where grassyGround rejects every cell.
+      // Outside every wild region (+live reach), one clearing write empties it.
+      if (!nearAnyWildRegion(focus.x, focus.z, configuredReach() + SAMPLE_OVERSCAN + 2)) {
         if (count > 0) {
           clearRows();
           uploadRows();
@@ -1347,6 +1382,7 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
         farBucket.rows.length * farBucket.triangles;
       const submittedInstances = heroInstances + midInstances + farInstances;
       return {
+        reach: configuredReach(),
         count,
         heads,
         submittedTriangles,

@@ -188,6 +188,7 @@ async function main() {
   if (!ready) throw new Error("lazy Wildlands owner never activated");
   console.log(`[probe] Wildlands activated in ${((Date.now() - activationStarted) / 1000).toFixed(0)}s`);
   await ev(c, `window.__sfManual&&window.__sfManual(true)`); // freeze wall clock
+  await ev(c, `(()=>{const sky=window.__sf.sky;sky.cycleEnabled=false;sky.setTimeOfDay(11);return true;})()`);
   await settle(c, 12);
 
   const summary = [];
