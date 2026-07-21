@@ -321,8 +321,9 @@ export class Minimap {
       }
     | null = null;
   #bigSuppressClick = false;
-  // Gamepad selection crosshair on the expanded map. Stays at view center
-  // (nx/ny = 0); left stick pans the map under it. A selects under it.
+  // Gamepad selection crosshair on the expanded map, in normalized canvas
+  // coordinates (−0.5..0.5). It stays centered while the view can pan, then
+  // carries the unconsumed stick motion toward finite-world edge pins.
   #padCursor: { nx: number; ny: number } | null = null;
   // expanded-map dot hit-boxes rebuilt every draw: [screenX, screenY, remote]
   #hits: [number, number, MapRemote][] = [];
@@ -1020,6 +1021,14 @@ export class Minimap {
     return {
       x: g.minX + (g.width * g.cellSize) / 2,
       z: g.minZ + (g.height * g.cellSize) / 2
+    };
+  }
+
+  #clampBigWorldPoint(point: { x: number; z: number }) {
+    const g = this.#map.meta.grid;
+    return {
+      x: Math.min(g.minX + g.width * g.cellSize, Math.max(g.minX, point.x)),
+      z: Math.min(g.minZ + g.height * g.cellSize, Math.max(g.minZ, point.z))
     };
   }
 
@@ -1738,6 +1747,7 @@ export class Minimap {
 
   #centerBigOnSelf(resetZoom = false, animate = false) {
     const self = this.#getSelf();
+    this.#padCursor = { nx: 0, ny: 0 };
     // Near the map rim a wide span can't place the player in the middle —
     // pull in just far enough that edge clamp no longer offsets them.
     const maxForCenter = this.#maxSpanForTrueCenter(self.x, self.z);
@@ -1790,41 +1800,69 @@ export class Minimap {
     this.onExpandChange(on);
   }
 
-  /** Left stick: pan the expanded map. No-op when collapsed. */
+  /** Left stick: move the map selection point. The viewport follows while it
+   *  can; at a finite-world edge the crosshair consumes the remaining motion
+   *  so every visible pin remains reachable without sacrificing map framing. */
   padPan(lx: number, ly: number, dt: number) {
     if (!this.expanded || (lx === 0 && ly === 0)) return;
     this.#cancelBigRecenterAnim();
     const { spanX, spanZ } = this.#bigView();
     const center = this.#bigCenter ?? this.#mapCenter();
-    const nextCenter = this.#clampBigCenter({
-      x: center.x + lx * spanX * PAD_PAN_SPEED * dt,
-      z: center.z + ly * spanZ * PAD_PAN_SPEED * dt
+    const cursor = this.#padCursor ?? { nx: 0, ny: 0 };
+    const selection = this.#clampBigWorldPoint({
+      x: center.x + cursor.nx * spanX + lx * spanX * PAD_PAN_SPEED * dt,
+      z: center.z + cursor.ny * spanZ + ly * spanZ * PAD_PAN_SPEED * dt
     });
-    if (nextCenter.x === center.x && nextCenter.z === center.z) return;
+    const nextCenter = this.#clampBigCenter(selection);
+    const nextCursor = {
+      nx: Math.max(-0.5, Math.min(0.5, (selection.x - nextCenter.x) / spanX)),
+      ny: Math.max(-0.5, Math.min(0.5, (selection.z - nextCenter.z) / spanZ))
+    };
+    if (
+      nextCenter.x === center.x && nextCenter.z === center.z &&
+      nextCursor.nx === cursor.nx && nextCursor.ny === cursor.ny
+    ) return;
     this.#bigCenter = nextCenter;
+    this.#padCursor = nextCursor;
     this.#bigViewDirty = true;
   }
 
-  /** Zoom the expanded map toward view center.
+  /** Zoom the expanded map toward the gamepad selection point.
    *  Positive zoomAxis zooms in — callers pass RT−LT−RY. */
   padZoom(zoomAxis: number, dt: number) {
     if (!this.expanded || Math.abs(zoomAxis) < 0.02) return;
     this.#cancelBigRecenterAnim();
+    const cursor = this.#padCursor ?? { nx: 0, ny: 0 };
+    const { center, spanX, spanZ } = this.#bigView();
+    const selection = {
+      x: center.x + cursor.nx * spanX,
+      z: center.z + cursor.ny * spanZ
+    };
     // Positive zoomAxis zooms in — matches wheel invert feel.
     const nextSpan = this.#clampBigSpan(this.#bigSpan * Math.exp(-zoomAxis * PAD_ZOOM_SPEED * dt));
     if (nextSpan === this.#bigSpan) return;
     this.#bigSpan = nextSpan;
-    // Keep the current center under the fixed crosshair while zooming.
-    this.#bigCenter = this.#clampBigCenter(this.#bigCenter ?? this.#mapCenter());
+    const nextSpanZ = nextSpan / this.#bigAspect();
+    const nextCenter = this.#clampBigCenter({
+      x: selection.x - cursor.nx * nextSpan,
+      z: selection.z - cursor.ny * nextSpanZ
+    });
+    this.#bigCenter = nextCenter;
+    // If the new span's edge clamp moved the viewport, compensate the cursor so
+    // the same selected world point remains under it throughout the zoom.
+    this.#padCursor = {
+      nx: Math.max(-0.5, Math.min(0.5, (selection.x - nextCenter.x) / nextSpan)),
+      ny: Math.max(-0.5, Math.min(0.5, (selection.z - nextCenter.z) / nextSpanZ))
+    };
     this.#bigViewDirty = true;
   }
 
-  /** A: select the pin / ground under the centered gamepad crosshair. */
+  /** A: select the pin / ground under the gamepad crosshair. */
   padSelectAtCursor() {
     if (!this.expanded || !this.#big || !this.#padCursor) return;
     const canvas = this.#big;
-    const mx = 0.5 * canvas.width;
-    const my = 0.5 * canvas.height;
+    const mx = (this.#padCursor.nx + 0.5) * canvas.width;
+    const my = (this.#padCursor.ny + 0.5) * canvas.height;
     this.#selectAtCanvasPx(mx, my);
   }
 
@@ -1879,20 +1917,34 @@ export class Minimap {
     return out;
   }
 
-  /** Pan so a pin sits under the centered crosshair (pin-cycle / focus). */
+  /** Put a pin under the crosshair, offsetting it near finite-world edges when
+   *  the normal viewport framing cannot place that pin at true center. */
   #nudgeCursorToWorld(x: number, z: number) {
     this.#cancelBigRecenterAnim();
-    this.#bigCenter = this.#clampBigCenter({ x, z });
-    this.#padCursor = { nx: 0, ny: 0 };
+    const selection = this.#clampBigWorldPoint({ x, z });
+    const center = this.#clampBigCenter(selection);
+    this.#bigCenter = center;
+    const { spanX, spanZ } = this.#bigView();
+    this.#padCursor = {
+      nx: Math.max(-0.5, Math.min(0.5, (selection.x - center.x) / spanX)),
+      ny: Math.max(-0.5, Math.min(0.5, (selection.z - center.z) / spanZ))
+    };
   }
 
   /** Read-only diagnostics used by browser probes and the existing __sf hook. */
   debugState() {
     const self = this.#getSelf();
     const { center, spanX, spanZ } = this.#bigView();
+    const cursor = this.#padCursor ?? { nx: 0, ny: 0 };
     return {
       expanded: this.expanded,
       center: { ...center },
+      cursor: { ...cursor },
+      cursorWorld: {
+        x: center.x + cursor.nx * spanX,
+        z: center.z + cursor.ny * spanZ
+      },
+      selection: this.#resolveSelected()?.name ?? null,
       self: { x: self.x, z: self.z, name: self.name },
       spanX,
       spanZ,
@@ -1908,9 +1960,9 @@ export class Minimap {
     const lm = this.#landmarks.find((l) => l.name.toLowerCase() === name.toLowerCase());
     if (!lm) return null;
     this.setExpanded(true);
-    this.#bigCenter = { x: lm.x, z: lm.z };
     this.#bigSpan = this.#clampBigSpan(1700);
     this.#selected = { kind: "fixed", x: lm.x, z: lm.z, name: lm.name, toName: lm.name };
+    this.#nudgeCursorToWorld(lm.x, lm.z);
     this.#drawBig();
     return { x: lm.x, z: lm.z };
   }
@@ -1919,8 +1971,9 @@ export class Minimap {
    * position. Normal users reach the same state by dragging and scrolling. */
   focusWorldPoint(x: number, z: number, span = 1700) {
     this.setExpanded(true);
-    this.#bigCenter = this.#clampBigCenter({ x, z });
     this.#bigSpan = this.#clampBigSpan(span);
+    this.#bigCenter = this.#clampBigCenter({ x, z });
+    this.#padCursor = { nx: 0, ny: 0 };
     this.#selected = null;
     this.#drawBig();
   }

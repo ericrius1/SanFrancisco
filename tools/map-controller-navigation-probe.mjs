@@ -148,7 +148,45 @@ async function main() {
       minimap.focusWorldPoint(384, -1952, 7200);
       minimap.update(true);
       const zoom = runFrames({ ry: -0.58 });
-      return { pan, zoom, canvas: { width: canvas.width, height: canvas.height } };
+
+      // Ocean Beach sits inside the finite world but outside the overview's
+      // center clamp. Drive the real left-stick path until the selection
+      // crosshair reaches it, then press A through the owning map method.
+      const surfTarget = minimap.focusLandmark("Ocean Beach · Surf");
+      if (!surfTarget) throw new Error("Ocean Beach surf landmark was not registered");
+      minimap.focusWorldPoint(384, -1952, 7200);
+      minimap.update(true);
+      frameDraws = 0;
+      let surfFrames = 0;
+      let surfDistancePx = Infinity;
+      for (; surfFrames < 240; surfFrames++) {
+        const state = minimap.debugState();
+        const cursorWorld = state.cursorWorld ?? state.center;
+        const dx = surfTarget.x - cursorWorld.x;
+        const dz = surfTarget.z - cursorWorld.z;
+        const dxNorm = dx / state.spanX;
+        const dzNorm = dz / state.spanZ;
+        surfDistancePx = Math.hypot(dxNorm * canvas.width, dzNorm * canvas.height);
+        if (surfDistancePx <= 6) break;
+        const magnitude = Math.hypot(dxNorm, dzNorm) || 1;
+        const strength = Math.min(1, Math.max(0.25, magnitude / 0.08));
+        window.__setMapProbePad({
+          lx: (dxNorm / magnitude) * strength,
+          ly: (dzNorm / magnitude) * strength
+        });
+        window.__sf.tick(frameDt);
+      }
+      window.__setMapProbePad({});
+      const surfNavigationDraws = frameDraws;
+      minimap.padSelectAtCursor();
+      const surf = {
+        target: surfTarget,
+        frames: surfFrames,
+        frameDraws: surfNavigationDraws,
+        distancePx: surfDistancePx,
+        state: minimap.debugState()
+      };
+      return { pan, zoom, surf, canvas: { width: canvas.width, height: canvas.height } };
     }, { frameDt: FRAME_DT, motionFrames: MOTION_FRAMES });
 
     const panCenters = result.pan.states.map((state) => state.center);
@@ -169,6 +207,15 @@ async function main() {
       zoomSpans.every((span, index) => index === 0 || span < zoomSpans[index - 1]),
       "controller zoom span did not decrease monotonically"
     );
+    assert(result.surf.distancePx <= 6, `controller stopped ${result.surf.distancePx.toFixed(1)} px from surf`);
+    assert(
+      result.surf.state.selection === "Ocean Beach · Surf",
+      `controller selected ${JSON.stringify(result.surf.state.selection)} instead of the surf pin`
+    );
+    assert(
+      result.surf.frameDraws === result.surf.frames,
+      `surf navigation drew ${result.surf.frameDraws}/${result.surf.frames} input frames`
+    );
     assert(pageErrors.length === 0, `page errors: ${pageErrors.join(" | ")}`);
     assert(consoleErrors.length === 0, `console errors: ${consoleErrors.join(" | ")}`);
 
@@ -183,6 +230,14 @@ async function main() {
       panEnd: panCenters.at(-1),
       zoomStartSpanM: zoomSpans[0],
       zoomEndSpanM: zoomSpans.at(-1),
+      surfNavigation: {
+        frames: result.surf.frames,
+        canvasDraws: result.surf.frameDraws,
+        remainingPx: result.surf.distancePx,
+        cursor: result.surf.state.cursor,
+        cursorWorld: result.surf.state.cursorWorld,
+        selection: result.surf.state.selection
+      },
       canvas: result.canvas,
       consoleErrors,
       pageErrors,
