@@ -810,8 +810,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       hud.message("Tweaks back to source defaults", 3);
     }
     if (!worldArrival.active && input.pressed("KeyC")) {
-      if (player.mode === "surf") hud.message("Surf camera locked to the wave — E to exit", 1.8);
-      else cycleViewMode();
+      cycleViewMode();
     }
     // R: wireframe overlay (unused elsewhere — retained pass override + camera).
     // Keep transient debug presentation changes behind the identity/loading gate

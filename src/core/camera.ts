@@ -38,7 +38,6 @@ const VIEW = {
   outdoorPitchMax: 1.2,
   firstPersonPitchMin: -1.45,
   firstPersonPitchMax: 1.45,
-  eyeHeight: 0.8,
   transitionRate: 7,
   firstPersonFollow: 48,
   // Wider indoor FOV reads as more room once the eye is inside the walls.
@@ -106,7 +105,7 @@ export class ChaseCamera {
   indoor = false
   /** Activities such as archery can request the same eye rig outdoors. */
   activityFirstPerson = false
-  /** User-selected first-person view (C cycle). Same eye rig as indoor/archery. */
+  /** User-selected first-person view (C cycle), available in every travel mode. */
   manualFirstPerson = false
   #indoor = 0 // smoothed 0..1
 
@@ -237,13 +236,18 @@ export class ChaseCamera {
   /** Blend the avatar's third-person muzzle into the actual eye in first person. */
   viewOrigin(out: THREE.Vector3, player: Player): THREE.Vector3 {
     out.copy(player.aimOrigin)
-    const blend = player.mode === "walk" ? this.firstPersonBlend : 0
+    const blend = this.manualFirstPerson || player.mode === "walk"
+      ? this.firstPersonBlend
+      : 0
     return out.lerp(this.camera.position, blend)
   }
 
   /** Exact rendered direction during an indoor handoff; canonical look outdoors. */
   interactionDir(out: THREE.Vector3, player: Player): THREE.Vector3 {
-    if (player.mode === "walk" && this.firstPersonBlend > 0.001)
+    if (
+      (this.manualFirstPerson || player.mode === "walk") &&
+      this.firstPersonBlend > 0.001
+    )
       return this.camera.getWorldDirection(out)
     return this.lookDir(out)
   }
@@ -335,10 +339,9 @@ export class ChaseCamera {
       }
     }
 
-    // The walk rig's eyes are ~0.78 m above the capsule centre. This endpoint is
-    // fixed to that eye line and deliberately ignores chase zoom; the local walk
-    // embodiment is hidden near the end of the blend to prevent self-clipping.
-    this.#eyePos.set(anchor.x, anchor.y + VIEW.eyeHeight, anchor.z)
+    // The endpoint is the active embodiment's animated eye (or the stock
+    // drone's nose gimbal), independent of chase zoom.
+    player.firstPersonViewPosition(this.#eyePos)
     return surfaceSwimCam
   }
 
@@ -360,11 +363,7 @@ export class ChaseCamera {
     )
     this.#orbitPos.copy(this.camera.position)
     this.#heldOrbitQuat.copy(this.camera.quaternion)
-    this.#firstPersonPos.set(
-      player.renderPosition.x,
-      player.renderPosition.y + VIEW.eyeHeight,
-      player.renderPosition.z
-    )
+    player.firstPersonViewPosition(this.#firstPersonPos)
     this.#holdOrbitPose = this.indoor && player.mode === "walk"
     this.#initialized = true
   }
@@ -373,7 +372,7 @@ export class ChaseCamera {
     this.#resume(player)
     const discontinuity = this.#cutOnResume || this.#recordAnchor(player)
     if (discontinuity) this.cutTo(player)
-    if (player.mode === "surf") {
+    if (player.mode === "surf" && !this.manualFirstPerson) {
       // Surf is a complete camera context. It deliberately consumes no Input,
       // orbit/zoom state, board roll, or Flow hero-shot rotation.
       this.#indoor = 0
@@ -385,6 +384,7 @@ export class ChaseCamera {
       this.#lastHitDistance = Infinity
       player.setFirstPersonView(false)
       clearCameraCutaway()
+      this.#applyFov(0)
       if (this.#surfCamera) {
         this.#surfCamera.update(dt, this.camera, player)
         this.yaw = this.#surfCamera.viewYaw
@@ -423,10 +423,16 @@ export class ChaseCamera {
         this.yaw = Math.atan2(-this.#viewDir.x, -this.#viewDir.z)
         this.pitch = -Math.asin(THREE.MathUtils.clamp(this.#viewDir.y, -1, 1))
       }
+      // Keep the ordinary rig histories aligned with the dedicated surf shot.
+      // Pressing C can then blend from this exact frame into the rider's eye.
+      this.#orbitPos.copy(this.camera.position)
+      player.firstPersonViewPosition(this.#eyePos)
+      this.#firstPersonPos.copy(this.#eyePos)
+      this.#initialized = true
       this.#lastMode = "surf"
       return
     }
-    const leavingSurf = this.#lastMode === "surf"
+    const leavingSurf = this.#lastMode === "surf" && player.mode !== "surf"
     if (leavingSurf) {
       this.#surfCameraLoadFailed = false
       // Reset the dedicated rig. The ordinary walk pose is snapped below because
@@ -438,21 +444,24 @@ export class ChaseCamera {
       this.#surfCamera?.reset()
     }
     const indoorTarget =
-      (this.indoor || this.activityFirstPerson || this.manualFirstPerson) &&
-      player.mode === "walk"
+      this.manualFirstPerson ||
+      (player.mode === "walk" && (this.indoor || this.activityFirstPerson))
         ? 1
         : 0
     this.#indoor +=
       (indoorTarget - this.#indoor) *
       (1 - Math.exp(-Math.min(dt, 0.1) * VIEW.transitionRate))
-    // A vehicle switch must drop the active eye rig immediately. The stored
-    // scalar may decay in the background so returning to walk remains smooth.
-    const firstPersonBlend = player.mode === "walk" ? this.firstPersonBlend : 0
+    // Indoor/activity eye requests belong to walking only. A vehicle switch
+    // therefore clears that automatic eye immediately, while an explicit C-cycle
+    // selection remains active across every embodiment.
+    const firstPersonBlend = this.manualFirstPerson || player.mode === "walk"
+      ? this.firstPersonBlend
+      : 0
     this.#applyFov(firstPersonBlend)
     // Hide late on entry, after the avatar nearly fills the frame, and restore
     // farther back on exit. The hysteresis avoids both clipped self-geometry and
     // a visible on/off flutter around the threshold.
-    if (player.mode !== "walk" || firstPersonBlend < 0.5)
+    if (firstPersonBlend < 0.5)
       this.#firstPersonAvatarHidden = false
     else if (firstPersonBlend > 0.9)
       this.#firstPersonAvatarHidden = true
@@ -515,8 +524,8 @@ export class ChaseCamera {
       )
     }
     // FPS ignores chase zoom, so do not silently mutate the outdoor boom while
-    // the wheel appears to do nothing indoors. Vehicle modes remain unaffected.
-    if (player.mode !== "walk" || (indoorTarget === 0 && firstPersonBlend < 0.001)) {
+    // the wheel appears to do nothing at the eye point.
+    if (indoorTarget === 0 && firstPersonBlend < 0.001) {
       this.zoom = THREE.MathUtils.clamp(
         this.zoom * (1 + input.wheel * 0.0009),
         0.45,
@@ -647,7 +656,17 @@ export class ChaseCamera {
       this.#lookMatrix.lookAt(this.#orbitViewPos, this.#target, this.#up)
       this.#orbitQuat.setFromRotationMatrix(this.#lookMatrix)
     }
-    if (player.mode === "board") {
+    if (player.mode === "surf") {
+      // Surf normally owns a dedicated authored camera. Manual first person is
+      // instead fixed to the live board attitude so carving and aerial rotation
+      // remain legible even though surf deliberately consumes no look input.
+      this.#firstPersonQuat.copy(player.renderQuaternion)
+      this.camera.quaternion.slerpQuaternions(
+        this.#orbitQuat,
+        this.#firstPersonQuat,
+        firstPersonBlend
+      )
+    } else if (player.mode === "board") {
       // Ease the orientation toward the live lookAt so the re-aim ("its slerp")
       // lags a touch behind the vertical trail — the view keeps the rider framed
       // but catches the jump/fall angle a beat late instead of snapping to it.
@@ -660,7 +679,13 @@ export class ChaseCamera {
         this.#boardLookQuat.copy(this.#orbitQuat)
         this.#boardLookInit = true
       }
-      this.camera.quaternion.copy(this.#boardLookQuat)
+      this.#firstPersonEuler.set(-this.pitch, this.yaw, 0, "YXZ")
+      this.#firstPersonQuat.setFromEuler(this.#firstPersonEuler)
+      this.camera.quaternion.slerpQuaternions(
+        this.#boardLookQuat,
+        this.#firstPersonQuat,
+        firstPersonBlend
+      )
     } else {
       this.#boardLookInit = false
       this.#firstPersonEuler.set(-this.pitch, this.yaw, 0, "YXZ")

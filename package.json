@@ -88,6 +88,7 @@
     "test:hmr:browser": "node tools/hmr-browser-probe.mjs",
     "test:tweakpane:browser": "node tools/tweakpane-performance-probe.mjs",
     "test:pointer-lock": "node tools/esc-pointerlock-probe.mjs",
+    "test:first-person-vehicles": "node tools/vehicle-first-person-camera-probe.mjs",
     "test:map-controller": "node tools/map-controller-navigation-probe.mjs",
     "test:avatar": "node tools/bathing-costume-zfight-test.mjs && node tools/avatar-zfight-probe.mjs",
     "test:transport-avatar": "node tools/transport-avatar-probe.mjs",
