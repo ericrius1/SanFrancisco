@@ -1,7 +1,7 @@
 /**
  * Master audio preferences (mute + a compact music/effects/world/voice mixer).
- * Stored under its own localStorage key — deliberately outside the "/" tweak
- * store, so a factory reset (".") doesn't blast the speakers back on.
+ * Stored under its own localStorage key, outside the "/" tweak store. The
+ * period-key factory reset explicitly restores this mix to the source defaults.
  * Consumers poll the matching group level; environmental beds use
  * soundscapeAudioLevel(), while player/action feedback uses effectsAudioLevel().
  * vehicle hum reads every frame, fireworks read per triggered sound, voice
@@ -56,6 +56,12 @@ export const AUDIO_PREFS: AudioPrefs = (() => {
 
 export function saveAudioPrefs() {
   localStorage.setItem(KEY, JSON.stringify({ schema: SCHEMA, ...AUDIO_PREFS }));
+}
+
+/** Restore the live mixer and discard its persisted override. */
+export function resetAudioPrefs() {
+  Object.assign(AUDIO_PREFS, DEFAULTS);
+  localStorage.removeItem(KEY);
 }
 
 /** 0 when muted; volume² otherwise (perceptual taper so mid-slider feels mid-loud). */

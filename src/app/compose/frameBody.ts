@@ -804,10 +804,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     const afterlightControlsCaptured =
       !worldArrival.active && (core.state.afterlight?.captureInput(input, frameDt, player) ?? false);
 
-    // ".": factory reset for tweaks — every tweakpane value back to its
-    // source-code default, saved tweaks wiped. Player stays put.
+    // ".": factory reset for tweaks and the audio mixer — every value back to
+    // its source-code default, saved overrides wiped. Player stays put.
     if (!worldArrival.active && input.pressed("Period")) {
       resetAllTweaks();
+      core.audioControls.resetToDefaults();
       resetCrownTweaks();
       resetBayLightsTweaks();
       resetGoldenGateLightsTweaks();
@@ -833,7 +834,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       sky.refreshFogWeatherSource();
       debugPanel.syncNow();
       citygenRing.current?.refreshInteriors();
-      hud.message("Tweaks back to source defaults", 3);
+      hud.message("Tweaks and mixer back to source defaults", 3);
     }
     if (!worldArrival.active && input.pressed("KeyC")) {
       cycleViewMode();
