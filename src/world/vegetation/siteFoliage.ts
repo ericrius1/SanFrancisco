@@ -38,6 +38,17 @@ export type SiteFoliageRegistration = {
   build(): Promise<SiteFoliagePatch>;
 };
 
+/** Thrown by an admit callback to hand the single build slot back without
+ * failing the entry: the entry returns to dormant with a short retry backoff.
+ * Used when an arrival lands mid-park so the destination's own vegetation is
+ * not stuck behind a background entry waiting out a quiet window. */
+export class SiteFoliageYieldError extends Error {
+  constructor() {
+    super("site-foliage admission yielded");
+    this.name = "SiteFoliageYieldError";
+  }
+}
+
 export type SiteFoliageDebug = Readonly<{
   id: string;
   status: "dormant" | "loading" | "ready" | "failed";
@@ -46,10 +57,16 @@ export type SiteFoliageDebug = Readonly<{
 
 export type SiteFoliageStreamerOptions = {
   scene: THREE.Scene;
-  /** Background admission gate (quiet window with a starvation cap). */
-  admit(eligibleSince: number): Promise<void>;
+  /** Background admission gate (quiet window with a starvation cap). Receives
+   * the registration so an arrival-destination lane can fast-track the
+   * vegetation the player teleported into. */
+  admit(registration: SiteFoliageRegistration, eligibleSince: number): Promise<void>;
   /** Off-frame pipeline warmup for a detached, fully built patch root. */
-  prepare(label: string, root: THREE.Object3D): Promise<void>;
+  prepare(
+    label: string,
+    root: THREE.Object3D,
+    registration: SiteFoliageRegistration
+  ): Promise<void>;
 };
 
 type EntryState = {
@@ -59,6 +76,8 @@ type EntryState = {
   eligibleSince: number;
   /** Bumps on dispose/unload so a stale in-flight build retires itself. */
   generation: number;
+  /** Set after an admission yield: skip this entry until the backoff passes. */
+  retryAt: number;
 };
 
 export class SiteFoliageStreamer {
@@ -88,7 +107,8 @@ export class SiteFoliageStreamer {
       status: "dormant",
       patch: null,
       eligibleSince: 0,
-      generation: 0
+      generation: 0,
+      retryAt: 0
     });
   }
 
@@ -117,6 +137,7 @@ export class SiteFoliageStreamer {
         continue;
       }
       if (entry.eligibleSince === 0) entry.eligibleSince = now;
+      if (now < entry.retryAt) continue;
       if (!this.#building) void this.#begin(entry);
     }
   }
@@ -162,7 +183,7 @@ export class SiteFoliageStreamer {
     const generation = entry.generation;
     const { registration } = entry;
     try {
-      await this.#options.admit(entry.eligibleSince);
+      await this.#options.admit(registration, entry.eligibleSince);
       if (this.#stale(entry, generation)) return;
       const patch = await registration.build();
       try {
@@ -172,7 +193,7 @@ export class SiteFoliageStreamer {
         patch.update(this.#focus);
         await patch.ready;
         patch.update(this.#focus);
-        await this.#options.prepare(`site-foliage:${registration.id}`, patch.group);
+        await this.#options.prepare(`site-foliage:${registration.id}`, patch.group, registration);
         // Detached root preparation temporarily exposes every descendant and
         // restores its captured visibility afterward. Close tree materials can
         // finish loading during that await, so the captured false state may be
@@ -198,6 +219,12 @@ export class SiteFoliageStreamer {
         throw error;
       }
     } catch (error) {
+      if (error instanceof SiteFoliageYieldError) {
+        // Hand the build slot to the arrival destination's entry; retry this
+        // one shortly (eligibleSince is kept, so its starvation cap holds).
+        entry.retryAt = performance.now() + 3000;
+        return;
+      }
       // Permanent: a failed build would otherwise hot-retry every cap window.
       // A later unload/dispose generation bump does not resurrect it.
       entry.status = "failed";

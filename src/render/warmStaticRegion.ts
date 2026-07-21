@@ -222,8 +222,17 @@ export async function warmRootPaced(
   scene: THREE.Scene,
   root: THREE.Object3D,
   pace: () => Promise<void>,
-  chunkBudgetMs = 8
+  chunkBudgetMs = 8,
+  // Override for the arrival priority lane (pipeline.compileAsyncPrioritized);
+  // defaults to the renderer's serialized background compile path.
+  compile?: (
+    object: THREE.Object3D,
+    camera: THREE.Camera,
+    scene: THREE.Scene
+  ) => Promise<unknown>
 ): Promise<PacedSceneWarmup> {
+  const compileRepresentative =
+    compile ?? ((object, warmCamera, warmScene) => renderer.compileAsync(object, warmCamera, warmScene));
   const meshes: WarmupMesh[] = [];
   root.traverse((object) => {
     const mesh = object as WarmupMesh;
@@ -252,7 +261,7 @@ export async function warmRootPaced(
     mesh.visible = true;
     mesh.frustumCulled = false;
     try {
-      await renderer.compileAsync(mesh, camera, scene);
+      await compileRepresentative(mesh, camera, scene);
       tracer.count("pacedWarmCompile");
     } catch {
       // A failed representative compiles on first draw as before.

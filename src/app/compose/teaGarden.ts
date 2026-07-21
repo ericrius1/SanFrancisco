@@ -49,6 +49,7 @@ export function createTeaGardenController({
   entrance,
   markLazyRegion,
   waitForWorldBackgroundWindow,
+  priorityCompile,
   nextPresentationFrame,
   waitForAbortable,
   onDebugChanged
@@ -74,12 +75,20 @@ export function createTeaGardenController({
   entrance: Readonly<{ x: number; z: number }>;
   markLazyRegion: (region: string, phase: string) => void;
   waitForWorldBackgroundWindow: (extraQuietMs?: number, deadline?: number) => Promise<void>;
+  /** pipeline.compileAsyncPrioritized: the destination-exhibit compile lane.
+   * Used for the ESSENTIAL build only, and only once a teleport/boot names the
+   * garden as its destination. */
+  priorityCompile: (
+    object: THREE.Object3D,
+    camera: THREE.Camera,
+    scene: THREE.Scene
+  ) => Promise<unknown>;
   nextPresentationFrame: () => Promise<void>;
   waitForAbortable: <T>(promise: Promise<T>, signal?: AbortSignal) => Promise<T>;
   /** Refresh __sf.japaneseTeaGarden / teaGardenBuildingSwapState after a change. */
   onDebugChanged: () => void;
 }): {
-  ensureEssential: (signal?: AbortSignal) => Promise<void>;
+  ensureEssential: (signal?: AbortSignal, opts?: { priority?: boolean }) => Promise<void>;
   maybeWakeDeferred: (pos: Readonly<{ x: number; z: number }>) => void;
   update: (
     dt: number,
@@ -116,6 +125,13 @@ export function createTeaGardenController({
   let teaGardenOptionalPromise: Promise<void> | null = null;
   let teaGardenBuildingsClaimed = false;
   let wokeDeferred = false;
+  // Latched by a destination-bound ensureEssential; an in-flight essential
+  // build upgrades mid-load, so its remaining compiles take the fast lane.
+  let essentialPriority = false;
+  const compileEssentialRoot = (root: THREE.Object3D): Promise<unknown> =>
+    essentialPriority
+      ? priorityCompile(root, camera, scene)
+      : renderer.compileAsync(root, camera, scene);
 
   const teaGardenBuildingSwapState = () => ({
     claimed: teaGardenBuildingsClaimed,
@@ -146,21 +162,29 @@ export function createTeaGardenController({
     if (teaGardenOptionalPromise) return;
     teaGardenOptionalPromise = (async () => {
       markLazyRegion("tea-garden", "optional-details-wait");
-      await waitForWorldBackgroundWindow();
+      if (essentialPriority) {
+        // Destination-bound: the garden's own trees are the player's immediate
+        // surroundings — no settled-gated quiet window, just breathe a frame
+        // after the essential attach and ride the priority compile lane.
+        await nextPresentationFrame();
+      } else {
+        await waitForWorldBackgroundWindow();
+      }
       markLazyRegion("tea-garden", "optional-trees-wait");
       await Promise.all([
         site.prepareOptionalDetails(async (detailsGroup) => {
           markLazyRegion("tea-garden", "optional-detail-compile-start");
           detailsGroup.updateMatrixWorld(true);
-          await renderer.compileAsync(detailsGroup, camera, scene);
+          await compileEssentialRoot(detailsGroup);
           markLazyRegion("tea-garden", "optional-detail-compile-end");
         }),
         site.prepareOptionalFoliage(async (treeGroup) => {
-          // Optional enrichment retains the movement/arrival quiet policy;
-          // architecture, Hiro, shrubs, grass and water are already live.
+          // Optional enrichment retains the movement/arrival quiet policy on
+          // the background path; architecture, Hiro, shrubs, grass and water
+          // are already live either way.
           markLazyRegion("tea-garden", "optional-tree-compile-start");
           treeGroup.updateMatrixWorld(true);
-          await renderer.compileAsync(treeGroup, camera, scene);
+          await compileEssentialRoot(treeGroup);
           markLazyRegion("tea-garden", "optional-tree-compile-end");
         })
       ]);
@@ -171,7 +195,11 @@ export function createTeaGardenController({
     });
   };
 
-  const ensureTeaGardenEssential = (signal?: AbortSignal): Promise<void> => {
+  const ensureTeaGardenEssential = (
+    signal?: AbortSignal,
+    opts?: { priority?: boolean }
+  ): Promise<void> => {
+    if (opts?.priority) essentialPriority = true;
     if (!teaGardenEssentialPromise) {
       const attempt = (async () => {
         markLazyRegion("tea-garden", "requested");
@@ -219,7 +247,9 @@ export function createTeaGardenController({
           site.group.updateMatrixWorld(true);
           try {
             markLazyRegion("tea-garden", "essential-compile-start");
-            await site.prepareEssential((root) => renderer.compileAsync(root, camera, scene));
+            await site.prepareEssential(async (root) => {
+              await compileEssentialRoot(root);
+            });
             markLazyRegion("tea-garden", "essential-compile-end");
           } catch (error) {
             // Compilation is a presentation optimization; the live renderer can
@@ -257,6 +287,10 @@ export function createTeaGardenController({
         if (teaGardenEssentialPromise !== attempt) return;
         teaGardenEssentialPromise = null;
         teaGardenModPromise = null;
+        // Drop the destination latch with the failed attempt: a later casual
+        // walk-up retry must not inherit the priority lane. A genuine arrival
+        // retry re-latches through its own ensureEssential call.
+        essentialPriority = false;
       });
     }
     return waitForAbortable(teaGardenEssentialPromise, signal);

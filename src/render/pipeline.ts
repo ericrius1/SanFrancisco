@@ -76,6 +76,10 @@ const GPU_MAP_MODE_READ = 0x0001;
 // a bounded per-window deadline (and the motionGate's global motion budget) so
 // a player who never stops degrades to the ungated M10 behavior, never worse.
 const COMPILE_STILL_DEADLINE_MS = 8000;
+// Destination-exhibit (priority lane) windows trade stillness camouflage for
+// latency: the player is watching an empty pad where the exhibit belongs, so
+// waiting out the full stillness deadline hurts more than a visible window.
+const COMPILE_STILL_PRIORITY_DEADLINE_MS = 250;
 // Windows longer than a frame interval are what the stillness gate exists for;
 // use the same threshold to classify hidden vs visible in the tracer.
 const COMPILE_WINDOW_VISIBLE_MS = 33;
@@ -96,6 +100,8 @@ export function createRenderPipeline(
   let waitForCompileIdle: () => Promise<void> = async () => {};
   let compileQueueDepth = () => 0;
   let compileBlocked = () => false;
+  let compileAsyncPrioritized: typeof renderer.compileAsync = (...args) =>
+    renderer.compileAsync(...args);
   // Beauty sees the ordinary world plus ephemeral hashed markers. The ink
   // prepass below deliberately stays on layer 0 so alpha-hash grain cannot
   // become a noisy normal/depth outline.
@@ -455,10 +461,86 @@ export function createRenderPipeline(
   // drawing a corrupted one, and serialize compiles so windows never overlap.
   {
     const original = renderer.compileAsync.bind(renderer);
-    let chain: Promise<unknown> = Promise.resolve();
-    type PendingCompile = { promise: Promise<unknown>; started: boolean };
+    type PendingCompile = {
+      promise: Promise<unknown>;
+      started: boolean;
+      priority: boolean;
+      run: () => Promise<void>;
+    };
     const pendingCompiles: PendingCompile[] = [];
+    // Two admission lanes over ONE serialized worker (windows never overlap):
+    // the priority lane carries the arrival destination's exhibit — it jumps
+    // ahead of queued scenery owners and bypasses the reveal blocker, so the
+    // thing the player teleported to compiles under the cover / materialize
+    // sweep instead of queueing behind the whole city fill.
+    const normalQueue: PendingCompile[] = [];
+    const priorityQueue: PendingCompile[] = [];
+    let draining = false;
     compileQueueDepth = () => pendingCompiles.length;
+    const drain = async () => {
+      draining = true;
+      try {
+        while (priorityQueue.length > 0 || normalQueue.length > 0) {
+          let pending: PendingCompile;
+          if (priorityQueue.length > 0) {
+            pending = priorityQueue.shift()!;
+          } else {
+            pending = normalQueue[0];
+            // Optional owners queued before a teleport stay queued until the
+            // full point/fog reveal settles. A run that already crossed this
+            // boundary is the sole non-cancellable owner the covered
+            // relocation waits for. Nested compiles inside an exclusive owner
+            // must proceed to avoid an outer-await/inner-block deadlock. A
+            // priority owner arriving mid-park preempts the parked owner.
+            while (
+              exclusiveCompileDepth === 0 && compileBlocked() && priorityQueue.length === 0
+            ) {
+              // rAF raced with a timeout: a hidden tab presents no frames, and
+              // an rAF-only park would freeze the whole queue — including the
+              // priority lane this park is supposed to yield to.
+              await new Promise<void>((resolve) => {
+                let settled = false;
+                const settle = () => {
+                  if (!settled) {
+                    settled = true;
+                    resolve();
+                  }
+                };
+                requestAnimationFrame(settle);
+                setTimeout(settle, 250);
+              });
+            }
+            if (priorityQueue.length > 0 && exclusiveCompileDepth === 0 && compileBlocked()) {
+              continue;
+            }
+            normalQueue.shift();
+          }
+          await pending.run();
+        }
+      } finally {
+        draining = false;
+        if (priorityQueue.length > 0 || normalQueue.length > 0) pump();
+      }
+    };
+    const pump = () => {
+      if (!draining) void drain();
+    };
+    let enqueuePriority = false;
+    compileAsyncPrioritized = ((
+      compileScene: THREE.Object3D,
+      compileCamera: THREE.Camera,
+      targetScene: THREE.Scene | null = null
+    ) => {
+      // The wrapper below reads this flag synchronously at enqueue, so only
+      // this call lands on the priority lane — not compiles that other tasks
+      // enqueue while the prioritized one is awaited.
+      enqueuePriority = true;
+      try {
+        return renderer.compileAsync(compileScene, compileCamera, targetScene);
+      } finally {
+        enqueuePriority = false;
+      }
+    }) as typeof renderer.compileAsync;
     renderer.compileAsync = ((
       compileScene: THREE.Object3D,
       compileCamera: THREE.Camera,
@@ -476,31 +558,37 @@ export function createRenderPipeline(
       const requestedMRT = renderer.getMRT();
       const requestedOpaque = renderer.opaque;
       const requestedTransparent = renderer.transparent;
-      const pending: PendingCompile = {
-        promise: Promise.resolve(),
-        started: false,
-      };
+      let resolveOuter!: (value: unknown) => void;
+      let rejectOuter!: (reason: unknown) => void;
+      const outer = new Promise<unknown>((resolve, reject) => {
+        resolveOuter = resolve;
+        rejectOuter = reject;
+      });
       const run = async () => {
-        // Optional owners queued before a teleport stay queued until the full
-        // point/fog reveal settles. A run that already crossed this boundary
-        // is the sole non-cancellable owner the covered relocation waits for.
-        // Nested compiles inside an exclusive owner must proceed to avoid an
-        // outer-await/inner-block deadlock.
-        while (exclusiveCompileDepth === 0 && compileBlocked()) {
-          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-        }
         pending.started = true;
+        try {
+          await runInner();
+        } catch (error) {
+          // A throw outside runInner's own compile handling (stillness gate,
+          // attribution) must still settle the caller's promise — an
+          // unsettled `outer` would hang the caller and waitForCompileIdle.
+          rejectOuter(error);
+        }
+      };
+      const runInner = async () => {
         // M11: start this window during stillness when possible (see
         // COMPILE_STILL_DEADLINE_MS). The wait happens BEFORE the exclusive
         // depth increments, so live frames keep presenting while we wait.
         // Nested calls (compileFullscreenQuads awaits the gated compileAsync
         // while already holding the exclusive depth) must NOT wait: frames are
-        // already frozen, so waiting only lengthens the freeze.
+        // already frozen, so waiting only lengthens the freeze. Priority
+        // owners wait only briefly — the destination exhibit outranks hiding
+        // its compile windows behind stillness.
         let stillAtStart = true;
         if (exclusiveCompileDepth === 0) {
           const gateWaitStartedAt = performance.now();
           stillAtStart = await motionGate.waitForStillness(
-            COMPILE_STILL_DEADLINE_MS,
+            pending.priority ? COMPILE_STILL_PRIORITY_DEADLINE_MS : COMPILE_STILL_DEADLINE_MS,
             // Frames became held by an outer window mid-wait: waiting can no
             // longer hide anything, it only lengthens the frozen image.
             () => exclusiveCompileDepth > 0
@@ -524,7 +612,9 @@ export function createRenderPipeline(
           renderer.setMRT(requestedMRT);
           renderer.opaque = requestedOpaque;
           renderer.transparent = requestedTransparent;
-          return await original(compileScene, compileCamera, targetScene);
+          resolveOuter(await original(compileScene, compileCamera, targetScene));
+        } catch (error) {
+          rejectOuter(error);
         } finally {
           renderer.setRenderTarget(liveRenderTarget, liveCubeFace, liveMipmapLevel);
           renderer.setMRT(liveMRT);
@@ -553,16 +643,21 @@ export function createRenderPipeline(
           }
         }
       };
-      const gated = chain.then(run, run);
-      pending.promise = gated;
-      chain = gated.catch(() => {});
+      const pending: PendingCompile = {
+        promise: outer,
+        started: false,
+        priority: enqueuePriority,
+        run
+      };
       pendingCompiles.push(pending);
+      (pending.priority ? priorityQueue : normalQueue).push(pending);
       const removePending = () => {
         const index = pendingCompiles.indexOf(pending);
         if (index >= 0) pendingCompiles.splice(index, 1);
       };
-      void gated.then(removePending, removePending);
-      return gated;
+      void outer.then(removePending, removePending);
+      pump();
+      return outer;
     }) as typeof renderer.compileAsync;
 
     // Published below for atomic relocations. A teleport paints its lightweight
@@ -1009,6 +1104,16 @@ export function createRenderPipeline(
       compileBlocked = blocker;
     },
     prepareSceneOwner,
+    /** Destination-exhibit compile lane: same exclusive-window serialization,
+     * but the request jumps queued scenery owners, bypasses the arrival/reveal
+     * compile blocker, and near-skips the stillness wait. Reserve it for the
+     * content the player is actively traveling to. */
+    compileAsyncPrioritized: ((compileScene, compileCamera, targetScene) =>
+      compileAsyncPrioritized(
+        compileScene,
+        compileCamera,
+        targetScene
+      )) as typeof renderer.compileAsync,
     /** Wait for GPU owner compilation that was already admitted before a
      * covered world relocation. Does not start or force any new work. */
     waitForCompileIdle,

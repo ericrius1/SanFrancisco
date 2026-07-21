@@ -1195,6 +1195,17 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
    * coordinator: a teleport must not wait for unrelated owners merely to begin
    * fetching its grass chunk. Defining the gate performs no request at boot.
    */
+  // Arrival vegetation lane (wildlands half): once a teleport/boot names a
+  // park as its destination, the surrounding grass/flower/tree pipelines ride
+  // pipeline.compileAsyncPrioritized — they bypass the ring-settle compile
+  // blocker and land right after the destination exhibit instead of after the
+  // whole city fill. Latched (never cleared): later background pages reuse the
+  // already-warmed layouts, so the flag only matters for first compiles.
+  let wildlandsArrivalPriority = false;
+  const wildlandsCompile = (root: THREE.Object3D): Promise<unknown> =>
+    wildlandsArrivalPriority
+      ? pipeline.compileAsyncPrioritized(root, camera, scene)
+      : renderer.compileAsync(root, camera, scene);
   const startWildlandsGroundcover = (
     focus: Readonly<{ x: number; z: number }>
   ): Promise<WildlandsGroundcoverBootstrap> => {
@@ -1243,7 +1254,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       site.update(destination, destination);
       try {
         markLazyRegion("wildlands", "groundcover-compile-start");
-        await site.prepareGroundcover((root) => renderer.compileAsync(root, camera, scene));
+        await site.prepareGroundcover(async (root) => { await wildlandsCompile(root); });
         markLazyRegion("wildlands", "groundcover-compile-end");
       } catch (error) {
         // Precompilation is an optimization. Publish the complete buffers and
@@ -1274,15 +1285,77 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     focus: Readonly<{ x: number; z: number }>,
     signal?: AbortSignal
   ): Promise<void> => {
+    wildlandsArrivalPriority = true;
     const bootstrap = await waitForAbortable(startWildlandsGroundcover(focus), signal);
     // A latest-wins teleport can supersede the focus while shared imports or a
     // previous compile finish. Recenter once more, then await only critical
     // grass/flower pipelines—not native trees or core.state.golf.
     bootstrap.site.update(focus, focus);
     await waitForAbortable(
-      bootstrap.site.prepareGroundcover((root) => renderer.compileAsync(root, camera, scene)),
+      bootstrap.site.prepareGroundcover(async (root) => { await wildlandsCompile(root); }),
       signal
     );
+  };
+
+  // Destination trees (fire-and-forget, never awaited by the travel cover):
+  // materialize + warm the native-tree ring around the arrival focus through
+  // wildlands.prepareAt, which is latest-wins internally. The group attaches
+  // before the warm so chunks reveal as their pipelines land; the later golf
+  // enrichment re-adding it is a no-op. A new arrival aborts the previous
+  // prime so a superseded park never keeps compiling on the priority lane.
+  let wildlandsTreePrimeController: AbortController | null = null;
+  const ARRIVAL_TREE_PRIME_WINDOW_MS = 60_000;
+  const primeWildlandsTreesAt = async (
+    focus: Readonly<{ x: number; z: number }>,
+    signal: AbortSignal
+  ): Promise<void> => {
+    const bootstrap = await waitForAbortable(startWildlandsGroundcover(focus), signal);
+    const site = bootstrap.site;
+    await waitForAbortable(site.ready, signal);
+    // The destination exhibit outranks its scenery: hold the tree warm until
+    // no optional site is mid-construction (bounded — builds complete/abort).
+    while (!sites.streamingIdle()) {
+      if (signal.aborted) return;
+      await nextPresentationFrame();
+    }
+    if (signal.aborted) return;
+    const [wildTreeGroup] = site.groups;
+    wildTreeGroup.visible = ctx.state.foliageOn;
+    scene.add(wildTreeGroup);
+    markLazyRegion("wildlands", "destination-trees-start");
+    // prepareAt latches this callback as the forest-wide preparer, so it keeps
+    // running for pages/chunks long after the arrival. Ride the priority lane
+    // only while this prime is live and recent; afterwards behave like the
+    // background enrichment preparer (re-admit + normal lane) so no unpaced
+    // compile train runs during ordinary play.
+    const primeStartedAt = performance.now();
+    await site.prepareAt(focus, async (unit) => {
+      try {
+        if (
+          signal.aborted ||
+          performance.now() - primeStartedAt > ARRIVAL_TREE_PRIME_WINDOW_MS
+        ) {
+          await waitForWorldBackgroundWindow();
+          await renderer.compileAsync(unit, camera, scene);
+          return;
+        }
+        await wildlandsCompile(unit);
+      } catch (err) {
+        // Non-fatal: the unit keeps its visual fallback and compiles on first
+        // draw instead of leaving the destination bare.
+        console.warn("[core.state.wildlands] destination vegetation prepare failed:", err);
+      }
+    }, signal);
+    markLazyRegion("wildlands", "destination-trees-ready");
+  };
+  const requestWildlandsTreePrime = (focus: Readonly<{ x: number; z: number }>): void => {
+    wildlandsTreePrimeController?.abort(new DOMException("superseded", "AbortError"));
+    const controller = new AbortController();
+    wildlandsTreePrimeController = controller;
+    void primeWildlandsTreesAt(focus, controller.signal).catch((error) => {
+      if (controller.signal.aborted) return;
+      console.warn("[core.state.wildlands] destination tree prime failed:", error);
+    });
   };
 
   // Walking into a park before the broader deferred coordinator reaches its
@@ -1323,6 +1396,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     entrance: JAPANESE_TEA_GARDEN_ENTRANCE,
     markLazyRegion,
     waitForWorldBackgroundWindow,
+    priorityCompile: pipeline.compileAsyncPrioritized,
     nextPresentationFrame,
     waitForAbortable,
     onDebugChanged: () => {
@@ -1349,7 +1423,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       destination.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
       destination.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
     );
-    if (teaDistance < 820) await teaGarden.ensureEssential(signal);
+    if (teaDistance < 820) await teaGarden.ensureEssential(signal, { priority: true });
 
     // Selected park groundcover starts under the travel cover even when its
     // bundle was not previously resident. The authored Tea Garden owns its own
@@ -1360,6 +1434,10 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       destination.z >= region.minZ - 320 && destination.z <= region.maxZ + 320
     );
     if (inPrimaryWildlands && teaDistance >= 820) {
+      // Fire-and-forget FIRST: the groundcover await below can outlive the
+      // supplemental 8 s abort on a cold cache, and the tree prime must not
+      // die with it (it orders itself after the exhibit internally).
+      requestWildlandsTreePrime(destination);
       await prepareWildlandsGroundcoverAt(destination, signal);
     }
   };
@@ -1377,6 +1455,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     input, hud, chase, remotes, embodiments, fx, siteGate, worldArrival,
     debugPanel, dogParkAudio, authoredRegions, worldQueries,
     waitForWorldBackgroundWindow,
+    priorityCompile: pipeline.compileAsyncPrioritized,
     revealedPromise: worldReady,
     getFoliageOn: () => ctx.state.foliageOn,
     getRevealed: () => ctx.state.revealed,
@@ -1439,6 +1518,39 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     }
   });
   ctx.state.siteFoliage = sites.siteFoliage;
+
+  // Boot spawns bypass the WorldArrivalCoordinator, so the tea garden never
+  // sees prepareDestinationEssentials there. Mirror the optional-site boot
+  // reprioritize: a spawn inside the garden's destination ring puts its
+  // ESSENTIAL build on the arrival priority lane the moment the world reveals
+  // (maybeWakeDeferred would otherwise start it on the slow background lane).
+  void worldReady.then(() => {
+    const bootTeaDistance = Math.hypot(
+      player.position.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
+      player.position.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
+    );
+    if (bootTeaDistance < 820) {
+      void teaGarden.ensureEssential(undefined, { priority: true }).catch((error) =>
+        console.warn("[tea-garden] boot destination construction failed:", error)
+      );
+    }
+    // Boot spawn inside a primary wild region (e.g. the archery range in GG
+    // Park): the spawn IS the destination, so its lawn and trees take the same
+    // arrival lane a teleport would get (the garden owns its own foliage).
+    const spawn = { x: player.position.x, z: player.position.z };
+    const bootInWildlands = WILD_REGIONS.some((region) =>
+      region.id !== "buenavista" &&
+      spawn.x >= region.minX - 320 && spawn.x <= region.maxX + 320 &&
+      spawn.z >= region.minZ - 320 && spawn.z <= region.maxZ + 320
+    );
+    if (bootInWildlands && bootTeaDistance >= 820) {
+      wildlandsArrivalPriority = true;
+      void prepareWildlandsGroundcoverAt(spawn).catch((error) =>
+        console.warn("[core.state.wildlands] boot destination groundcover failed:", error)
+      );
+      requestWildlandsTreePrime(spawn);
+    }
+  });
 
   const touchesBounds = (
     x: number,
