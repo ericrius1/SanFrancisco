@@ -186,13 +186,21 @@ async function main() {
   await c.send("Page.enable"); await c.send("Runtime.enable");
   await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
 
-  console.log("[probe] waiting for __sf...");
+  console.log("[probe] waiting for settled world...");
   const t0 = Date.now();
   let ready = false;
-  while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.sky&&window.__sf.player)`)) { ready = true; break; } } catch {} await sleep(600); }
-  if (!ready) throw new Error("__sf never ready (see [page-exception]/[page-error] above)");
-  console.log(`[probe] __sf ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
-  await ev(c, `window.__sfManual&&window.__sfManual(true)`); // freeze wall clock
+  while (Date.now() - t0 < 150000) {
+    try {
+      if (await ev(c, `!!(window.__sf?.sky&&window.__sf?.player&&window.__sf?.rings?.state&&window.__sf.rings.state()==='settled')`)) {
+        ready = true;
+        break;
+      }
+    } catch {}
+    await sleep(600);
+  }
+  if (!ready) throw new Error("world never settled (see [page-exception]/[page-error] above)");
+  console.log(`[probe] world settled in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  await ev(c, `window.__sfManual&&window.__sfManual(true)`); // freeze only after the reveal completes
 
   // Pin date and time: procedural weather is civil-date deterministic, so an
   // hour-only pin would still make screenshots change depending on run date.
@@ -204,6 +212,8 @@ async function main() {
     await ev(c, `(()=>{const v=window.__sf.WORLD_TUNING.values;Object.assign(v,${FOG});window.__sf.sky.applyFogParams();return true;})()`);
     console.log("[probe] fog overrides:", FOG);
   }
+  const fogDiagnostics = await ev(c, `(()=>{const out={};window.__sf.sky.writeFogWeatherDiagnostics(out);return out;})()`);
+  console.log("[probe] resolved fog:", JSON.stringify(fogDiagnostics));
   await settle(c, 12);
 
   let consecutiveFails = 0;

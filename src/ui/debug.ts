@@ -686,7 +686,7 @@ export class DebugPanel {
       }
     });
 
-    // MASTER fog switch — detail knobs live in the top-level fog folder.
+    // Weather-fog switch — the boot-only void wall remains independently owned.
     WORLD_TUNING.bind(meta, {
       keys: ["fogEnabled"],
       onChange: () => this.#sky.applyFogParams()
@@ -874,19 +874,11 @@ export class DebugPanel {
       }
     });
 
-    // Fog — top-level (master on/off lives in metta above).
+    // Fog — base inputs are separated from the resolved, weather-scaled output.
     const fog = pane.addFolder({ title: "fog", expanded: false });
-    WORLD_TUNING.bind(fog, {
-      keys: [
-        "fogMaster",
-        "fogWeather",
-        "fogLiveInfluence",
-        "fogTop",
-        "fogBank",
-        "fogNoise",
-        "fogDrift",
-        "fog"
-      ],
+    const fogAmount = fog.addFolder({ title: "amount + weather", expanded: true });
+    WORLD_TUNING.bind(fogAmount, {
+      keys: ["fogMaster", "fogWeather", "fogLiveInfluence"],
       onChange: (key) => {
         this.#sky.applyFogParams();
         if (key === "fogWeather" || key === "fogLiveInfluence") {
@@ -894,12 +886,26 @@ export class DebugPanel {
         }
       }
     });
+    const fogLayer = fog.addFolder({ title: "marine layer", expanded: true });
+    WORLD_TUNING.bind(fogLayer, {
+      keys: ["fogTop", "fogBank", "fogNoise", "fogDrift"],
+      onChange: () => this.#sky.applyFogParams()
+    });
+    const fogDistance = fog.addFolder({ title: "distance", expanded: true });
+    WORLD_TUNING.bind(fogDistance, {
+      keys: ["fog"],
+      onChange: () => this.#sky.applyFogParams()
+    });
+    const fogOutput = fog.addFolder({ title: "current output", expanded: true });
     this.#fogMonitorView = {};
     for (const key of [
       "driver",
       "SF date",
       "live mix",
-      "bank / haze",
+      "weather scales",
+      "effective layer",
+      "effective haze",
+      "edge veil",
       "coastal front",
       "observations",
       "detail",
@@ -908,7 +914,7 @@ export class DebugPanel {
     ]) {
       this.#fogMonitorView[key] = "pending";
       this.#monitorBindings.push(
-        fog.addBinding(this.#fogMonitorView, key, { readonly: true, label: key })
+        fogOutput.addBinding(this.#fogMonitorView, key, { readonly: true, label: key })
       );
     }
     this.#refreshFogWeatherMonitor();

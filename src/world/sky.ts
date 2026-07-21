@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu"
 import {
   Fn,
+  If,
   abs,
   cameraPosition,
   color,
@@ -62,6 +63,14 @@ import {
   type LiveFogBias
 } from "./fogWeather"
 import type { LiveFogFeedMeta } from "./liveFog"
+import {
+  distanceHazeHalfOpacityM,
+  FOG_EDGE_END_FRACTION,
+  FOG_EDGE_START_FRACTION,
+  FOG_EXTINCTION_LENGTH_M,
+  FOG_TOP_VARIATION_M,
+  resolveFogParameters
+} from "./fogParameters"
 
 export { sanFranciscoTimeOfDay }
 
@@ -177,8 +186,6 @@ const FOG_NOISE_SCALE_A = 0.005 // ~200 m macro billows
 const FOG_NOISE_SCALE_B = 0.01 // ~100 m secondary wisps
 const FOG_NOISE_SPEED = 0.2
 const FOG_NOISE_CENTER = 0.7
-const FOG_TOP_VARIATION = 22 // metres, exactly the r185 reference amplitude
-const FOG_EXTINCTION_LENGTH = 160 // metres at unit density (Beer-Lambert mean free path)
 // Void fog wall (M18): mean free path INSIDE the wall medium at unit density.
 // Short — the wall must read near-opaque ~3 lengths past the bubble edge.
 const FOG_WALL_EXTINCTION_LENGTH = 40
@@ -187,8 +194,6 @@ const FOG_WALL_EXTINCTION_LENGTH = 40
 // the same octaves read as rolling pockets over streets and water.
 const FOG_DENSITY_MIN = 0.6
 const FOG_DENSITY_MAX = 1.4
-const FOG_EDGE_START = 0.88 // narrow streamed-geometry cull fade
-const FOG_EDGE_END = 0.98
 const FOG_SKY_BLEND_HEIGHT = 0.08 // match the visible horizon over its lowest ~5°
 const FOG_GOLD_LIGHT = 0.48 // neutral dusk fog: dimmer, never orange/grey
 const FOG_NIGHT_LIGHT = 0.12 // moonlit bank without a daylight-white night seam
@@ -263,10 +268,13 @@ export class Sky {
   #uFogGateReach = uniform(1800)
   #uFogLocalScale = uniform(WORLD_TUNING.values.fogMaster)
   #uFogLight = uniform(1)
-  #uFogEdgeStart = uniform(WORLD_TUNING.values.radius * FOG_EDGE_START)
-  #uFogEdgeEnd = uniform(WORLD_TUNING.values.radius * FOG_EDGE_END)
-  #uFogEnabled = uniform(WORLD_TUNING.values.fogEnabled ? 1 : 0)
-  #uFogBackdrop = uniform(WORLD_TUNING.values.fogEnabled ? 1 : 0)
+  #uFogEdgeStart = uniform(WORLD_TUNING.values.radius * FOG_EDGE_START_FRACTION)
+  #uFogEdgeEnd = uniform(WORLD_TUNING.values.radius * FOG_EDGE_END_FRACTION)
+  #uFogEdgeStrength = uniform(0)
+  // Start neutral; the constructor resolves all controls + weather before the
+  // first live frame instead of briefly assuming a fully fogged backdrop.
+  #uFogEnabled = uniform(0)
+  #uFogBackdrop = uniform(0)
   // Void-realm ramp (docs/VOID_STREAM_REWRITE.md M2): 0 = normal sky, 1 = the
   // dark holo void. A pure uniform multiply on dome/IBL radiance and on fog
   // opacity — light-set membership and light intensities are never touched.
@@ -671,7 +679,7 @@ export class Sky {
       .add(
         fogNoise
           .sub(FOG_NOISE_CENTER)
-          .mul(FOG_TOP_VARIATION)
+          .mul(FOG_TOP_VARIATION_M)
           .mul(this.#uFogNoise as N)
       )
       .max(base.add(1))
@@ -710,7 +718,7 @@ export class Sky {
     const opticalDepth = dist
       .mul(meanRayDensity)
       .mul(this.#uFogBank as N)
-      .div(FOG_EXTINCTION_LENGTH)
+      .div(FOG_EXTINCTION_LENGTH_M)
     const bankFog = opticalDepth.negate().exp().oneMinus()
 
     // The reference exp² distance haze supplies the broad atmospheric falloff.
@@ -721,7 +729,7 @@ export class Sky {
       this.#uFogEdgeStart as N,
       this.#uFogEdgeEnd as N,
       horizontalDist
-    )
+    ).mul(this.#uFogEdgeStrength as N)
 
     // Void fog wall (M18): Beer-Lambert extinction over the analytic overlap
     // of the camera→fragment ray with the region OUTSIDE the wall circle
@@ -757,7 +765,16 @@ export class Sky {
     // build during the fill phase). Union the two, then the void ramp gates
     // everything (the scan phase is clear black; the wall arms as the dawn
     // brings the void factor down).
-    const weatherFactor = clear.oneMinus().mul(this.#uFogEnabled as N)
+    // The switch/master resolves to a uniform boolean for the whole frame. Keep
+    // the costly dual tri-noise/weather path inside a coherent GPU branch so a
+    // true zero/off state skips it instead of merely multiplying its result by 0.
+    const weatherFactor = Fn(() => {
+      const factor = float(0).toVar()
+      If((this.#uFogEnabled as N).greaterThan(0), () => {
+        factor.assign(clear.oneMinus())
+      })
+      return factor
+    })()
     const combinedFactor = float(1).sub(
       weatherFactor.oneMinus().mul(wallFog.oneMinus())
     )
@@ -817,33 +834,32 @@ export class Sky {
   applyFogParams() {
     const v = WORLD_TUNING.values
     const weather = this.#effectiveFog
-    const master = Math.max(0, v.fogMaster)
     // Atmospheric perspective is an artistic/physical property, not a streaming
     // control. Coupling density inversely to the draw radius made a smaller world
     // turn exponentially whiter, so players had to select absurd 60–300 km radii
     // just to see across an 11 km city. Only the narrow cull-edge fade follows the
     // streamed radius; broad haze and the height bank stay in physical metres.
     const edgeR = this.#cullRadiusOverride ?? this.#streamingCullRadius ?? v.radius
-    // densityFogFactor is exp², so sqrt keeps master/weather linear in optical
-    // effect. The bank is already a Beer-Lambert path integral.
-    this.#uFogDensity.value = v.fog * Math.sqrt(master * weather.hazeScale)
-    this.#uFogTop.value = v.fogTop + weather.topOffsetM
-    this.#uFogBank.value = v.fogBank * master * weather.bankScale
-    this.#uFogNoise.value = v.fogNoise * weather.billowScale
+    const resolved = resolveFogParameters(v, weather, edgeR)
+    this.#uFogDensity.value = resolved.hazeDensityPerM
+    this.#uFogTop.value = resolved.layerTopM
+    this.#uFogBank.value = resolved.bankDensity
+    this.#uFogNoise.value = resolved.billowScale
     this.#uFogFrontX.value = weather.frontX
     this.#uFogFrontWidth.value = weather.frontWidthM
     this.#uFogFrontSkew.value = weather.frontSkew
     this.#uFogMacroPhase.value = weather.macroPhase
     this.#uFogInlandFloor.value = weather.inlandFloor
     this.#uFogGateReach.value = weather.gateReachM
-    this.#uFogLocalScale.value = master * weather.bankScale
-    this.#fogDriftRate = v.fogDrift * weather.driftScale
-    this.#fogWindX = weather.windX * v.fogDrift
-    this.#fogWindZ = weather.windZ * v.fogDrift
-    this.#uFogEdgeStart.value = edgeR * FOG_EDGE_START
-    this.#uFogEdgeEnd.value = edgeR * FOG_EDGE_END
-    this.#uFogEnabled.value = v.fogEnabled ? 1 : 0
-    this.#uFogBackdrop.value = v.fogEnabled ? 1 : 0
+    this.#uFogLocalScale.value = resolved.localDensity
+    this.#fogDriftRate = resolved.motionRate
+    this.#fogWindX = resolved.windX
+    this.#fogWindZ = resolved.windZ
+    this.#uFogEdgeStart.value = resolved.edgeStartM
+    this.#uFogEdgeEnd.value = resolved.edgeEndM
+    this.#uFogEdgeStrength.value = resolved.farWeatherOpacity
+    this.#uFogEnabled.value = resolved.weatherEnabled ? 1 : 0
+    this.#uFogBackdrop.value = resolved.farWeatherOpacity
   }
 
   #fogWeatherMode(): FogWeatherMode {
@@ -1013,7 +1029,20 @@ export class Sky {
         : "procedural"
     out["SF date"] = `${civil.year}-${String(civil.month).padStart(2, "0")}-${String(civil.day).padStart(2, "0")} ${hh}:${mm}`
     out["live mix"] = `${Math.round(this.#liveFogMix * 100)}%`
-    out["bank / haze"] = `${this.#effectiveFog.bankScale.toFixed(2)}× / ${this.#effectiveFog.hazeScale.toFixed(2)}×`
+    out["weather scales"] = `bank ${this.#effectiveFog.bankScale.toFixed(2)}× · haze ${this.#effectiveFog.hazeScale.toFixed(2)}×`
+    const bankDensity = Number(this.#uFogBank.value)
+    const hazeDensity = Number(this.#uFogDensity.value)
+    const hazeHalfM = distanceHazeHalfOpacityM(hazeDensity)
+    out["effective layer"] = bankDensity > 0
+      ? `top ${Math.round(Number(this.#uFogTop.value))} m · density ${bankDensity.toFixed(3)}×`
+      : "off"
+    out["effective haze"] = hazeHalfM === null
+      ? "off"
+      : `50% at ${(hazeHalfM / 1000).toFixed(1)} km`
+    const edgeStrength = Number(this.#uFogEdgeStrength.value)
+    out["edge veil"] = edgeStrength > 0.0005
+      ? `${Math.round(edgeStrength * 100)}% · ${(Number(this.#uFogEdgeStart.value) / 1000).toFixed(1)}–${(Number(this.#uFogEdgeEnd.value) / 1000).toFixed(1)} km`
+      : "off"
     out["coastal front"] = `${Math.round(this.#effectiveFog.frontX)} m · gate ${Math.round(this.#effectiveFog.gateReachM)} m`
     out.observations = liveEligible
       ? `${this.#liveFogStatus}${ageMinutes === null ? "" : ` · ${Math.round(ageMinutes)} min old`}`

@@ -103,17 +103,17 @@ export const WORLD_TUNING = tunables("world", {
     step: 100,
     label: "draw distance (m)"
   },
-  fogEnabled: { v: true, label: "all fog" },
-  // Artistic output gain after the authored trims and living-weather driver.
-  // The default opens the entire city slightly; the streamed edge veil remains
-  // independent because it hides unloaded tiles rather than depicting weather.
+  fogEnabled: { v: true, label: "weather fog" },
+  // Overall weather-fog density after the authored trims and living-weather
+  // driver. Zero is a true clear-air state: marine bank, distance haze, matching
+  // horizon backdrop and the streamed-edge veil all resolve to zero together.
   fogMaster: {
     v: 0.11,
     min: 0,
     max: 1.5,
     step: 0.01,
     format: (v: number) => `${Math.round(v * 100)}%`,
-    label: "master density"
+    label: "overall density"
   },
   // Procedural SF is always available. Live observations are eligible only
   // while the sky follows the actual SF clock.
@@ -132,18 +132,32 @@ export const WORLD_TUNING = tunables("world", {
     max: 1,
     step: 0.05,
     format: (v: number) => `${Math.round(v * 100)}%`,
-    label: "live influence"
+    label: "blend live amount"
   },
   // The five fog controls. Shape, colour, octave scales, path accumulation and
   // cull-edge calibration live together in sky.ts beside the r185 reference graph.
   //
   // Top of the marine layer in world metres. The 95 m default socks in low
   // districts while Twin Peaks, Sutro and the bridge towers emerge above it.
-  fogTop: { v: 95, min: -20, max: 320, step: 1, label: "height (m)" },
+  fogTop: { v: 95, min: -20, max: 320, step: 1, label: "base layer top (m)" },
   // Beer-Lambert path density inside the layer; 1 is the authored reference.
-  fogBank: { v: 1, min: 0, max: 2, step: 0.02, label: "marine bank" },
+  fogBank: {
+    v: 1,
+    min: 0,
+    max: 2,
+    step: 0.02,
+    format: (v: number) => `${Math.round(v * 100)}%`,
+    label: "base bank density"
+  },
   // 1 = the official 22 m noisy-ceiling variation; 0 = a flat bank.
-  fogNoise: { v: 0.2, min: 0, max: 1.5, step: 0.02, label: "billow" },
+  fogNoise: {
+    v: 0.2,
+    min: 0,
+    max: 1.5,
+    step: 0.02,
+    format: (v: number) => `${Math.round(v * 22)} m`,
+    label: "base billow height"
+  },
   // 1 = official r185 motion; lower values make the world-anchored billows evolve
   // more slowly without turning them into a coherently scrolling texture.
   fogDrift: {
@@ -151,8 +165,8 @@ export const WORLD_TUNING = tunables("world", {
     min: 0,
     max: 2,
     step: 0.01,
-    format: (v: number) => v.toFixed(2),
-    label: "motion"
+    format: (v: number) => `${v.toFixed(2)}×`,
+    label: "base motion speed"
   },
   // The official exp² distance haze; the separate fixed edge fade hides only the
   // final streamed slice and is intentionally not an artistic control.
@@ -164,8 +178,10 @@ export const WORLD_TUNING = tunables("world", {
     min: 0,
     max: 0.0012,
     step: 0.00001,
-    format: (v: number) => v.toFixed(5),
-    label: "distance haze"
+    format: (v: number) => v <= 0
+      ? "off"
+      : `${(Math.sqrt(Math.log(2)) / v / 1000).toFixed(1)} km`,
+    label: "base haze · 50% range"
   }
 })
 
