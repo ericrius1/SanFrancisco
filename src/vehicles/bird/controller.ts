@@ -230,6 +230,11 @@ export class BirdController implements ModeController {
     // strokes — while effort and airspeed set how often the glides come and
     // how vigorous the beats are. Space refuses to wait for the next burst.
     if (this.#gaitGlide > 0) {
+      // throttle collapses a soar: powering up caps whatever multi-second
+      // coasting glide remains at about a second, so the wings answer the
+      // input instead of waiting out the full soar. Gaps rolled while already
+      // powered are short and burn in real time.
+      if (powered) this.#gaitGlide = Math.min(this.#gaitGlide, 1);
       this.#gaitGlide -= dt;
       if (climbing) this.#gaitGlide = 0;
       if (this.#gaitGlide <= 0) this.#startBurst(powered, pow);
@@ -278,12 +283,12 @@ export class BirdController implements ModeController {
         recovery = 1;
       } else if (phase < 0.52) {
         const u = smooth((phase - 0.29) / 0.23);
-        lift = THREE.MathUtils.lerp(0.58, -0.72, u);
+        lift = THREE.MathUtils.lerp(0.58, -0.8, u);
         recovery = 1 - u;
         power = Math.sin(u * Math.PI);
       } else if (phase < 0.67) {
         const u = smooth((phase - 0.52) / 0.15);
-        lift = THREE.MathUtils.lerp(-0.72, -0.035, u);
+        lift = THREE.MathUtils.lerp(-0.8, -0.035, u);
         power = 1 - u;
       } else {
         const u = (phase - 0.67) / 0.33;
@@ -311,8 +316,8 @@ export class BirdController implements ModeController {
     // Stroke amplitude eases out into a glide and flattens out of a stoop; a
     // flutter is shallower than a power beat; each beat carries its own depth.
     const strokeW = this.#beatW * (1 - this.#tuck * 0.85);
-    const drive = (0.2 + 0.64 * pow + 0.1 * speedRange) * (1 + wander * 0.055) * damp
-      * (0.12 + 0.88 * strokeW) * this.#beatAmp * (1 - this.#flutterMix * 0.5);
+    const drive = (0.24 + 0.78 * pow + 0.1 * speedRange) * (1 + wander * 0.055) * damp
+      * (0.12 + 0.88 * strokeW) * this.#beatAmp * (1 - this.#flutterMix * 0.35);
 
     // Shoulder → elbow → wrist on delayed arcs: the lag deepens down the chain
     // so the span flexes through the stroke instead of swinging as one plank.
@@ -320,11 +325,11 @@ export class BirdController implements ModeController {
     const shoulder = sampleWing(0);
     const elbow = sampleWing(0.055);
     const hand = sampleWing(0.1);
-    const rootStroke = shoulder.lift * drive * 0.72 * (1 - this.#flutterMix * 0.45);
+    const rootStroke = shoulder.lift * drive * 0.85 * (1 - this.#flutterMix * 0.3);
     const rootLiftL = rootStroke * this.#beatAmpL + sway + rock;
     const rootLiftR = rootStroke * this.#beatAmpR + sway - rock;
-    const elbowLift = elbow.lift * drive * 0.4 + tipLoad * 0.45;
-    const handLift = hand.lift * drive * 0.28 * (1 + this.#flutterMix * 0.5) + tipLoad;
+    const elbowLift = elbow.lift * drive * 0.46 + tipLoad * 0.45;
+    const handLift = hand.lift * drive * 0.34 * (1 + this.#flutterMix * 0.5) + tipLoad;
     const elbowFold = fold * 0.55 + elbow.recovery * drive * 0.28;
     const handFold = fold * 0.38 + hand.recovery * drive * 0.34;
     const feather = (-hand.power * 0.36 + hand.recovery * 0.18) * drive * (1 + this.#flutterMix * 0.6)
@@ -382,12 +387,14 @@ export class BirdController implements ModeController {
    * rest are full strokes whose count grows with effort. The tiny L/R depth
    * split keeps the wings from mirroring each other perfectly. */
   #startBurst(powered: boolean, pow: number) {
-    const flutter = !powered || Math.random() < 0.22;
+    const flutter = !powered || Math.random() < 0.15;
     this.#flutter = flutter ? 1 : 0;
     this.#beatsLeft = flutter
       ? 2 + ((Math.random() * 2) | 0)
       : 3 + ((Math.random() * (2.6 + pow * 2.6)) | 0);
-    this.#beatAmp = 0.82 + Math.random() * 0.36;
+    // A coasting adjustment is a deliberate trim flap — with the low-effort
+    // envelope shrinking the stroke it needs extra depth to read at all.
+    this.#beatAmp = powered ? 0.82 + Math.random() * 0.36 : 1.05 + Math.random() * 0.4;
     this.#beatAmpL = 1 + (Math.random() - 0.5) * 0.08;
     this.#beatAmpR = 1 + (Math.random() - 0.5) * 0.08;
     // clean stroke entry: park on the next cycle boundary so the burst opens
