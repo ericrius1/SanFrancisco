@@ -151,6 +151,8 @@ const populatedMeshes = flowers.group.children.filter(
 assert(populatedMeshes.length >= 5, "hero species + mid + far buckets should populate the test meadow");
 for (const mesh of populatedMeshes) {
   assert.equal(mesh.frustumCulled, false, `${mesh.name} visibility is owned by the GPU per-instance cull`);
+  assert.equal(mesh.material.alphaHash, true, `${mesh.name} LOD handoffs must use full-size dithered coverage`);
+  assert(mesh.material.opacityNode, `${mesh.name} must expose an LOD coverage node`);
   assert(mesh.geometry.boundingSphere, `${mesh.name} must have an explicit conservative bound`);
   assert(
     Number.isFinite(mesh.geometry.boundingSphere.radius) && mesh.geometry.boundingSphere.radius > 0,

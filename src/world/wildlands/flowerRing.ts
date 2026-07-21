@@ -724,27 +724,38 @@ function flowerMaterial(tier: FlowerRenderTier, indirect?: FlowerIndirectSource)
       : tier === "far"
         ? smoothstepNode(float(FAR_FADE_START).add(lodNoise), float(FAR_FADE_END).add(lodNoise), dist)
         : float(1);
-  const fade: N = ringFade.mul(lodFade);
+  // Reach and LOD are intentionally separate effects. The configured reach is
+  // the ONLY thing allowed to grow a flower up from its root. LOD handoffs used
+  // to multiply geometry by `lodFade`, which made the hero clumps visibly bloom
+  // at 13–19 m no matter how far the reach slider was pushed. Keep every LOD at
+  // full size and dither its coverage instead, so detail changes without a near
+  // growth ring while the real outer edge still grows at the configured reach.
+  const growthFade: N = ringFade;
+  if (indirect) {
+    mat.opacityNode = vertexStage(lodFade);
+    mat.alphaHash = true;
+  }
 
   if (indirect) {
-    // Reconstruct the instance transform from packed data: scale (fade shrinks
-    // toward the root at the geometry origin), yaw-rotate, translate to the
-    // world anchor. Wind/trample offsets are world-space and the ring meshes
-    // sit at the origin, so they apply directly.
+    // Reconstruct the instance transform from packed data: outer reach growth
+    // shrinks toward the root at the geometry origin, then yaw-rotate and
+    // translate to the world anchor. LOD coverage never changes the transform.
+    // Wind/trample offsets are world-space and the ring meshes sit at the
+    // origin, so they apply directly.
     const shaped: N = vec3(
       (positionGeometry as N).x.mul(d1.x),
       (positionGeometry as N).y.mul(d1.y),
       (positionGeometry as N).z.mul(d1.x)
-    ).mul(fade);
+    ).mul(growthFade);
     const placed: N = vec3(
       shaped.x.mul(yawCos).sub(shaped.z.mul(yawSin)).add(d0.x) as N,
       shaped.y.add(d0.y) as N,
       shaped.x.mul(yawSin).add(shaped.z.mul(yawCos)).add(d0.z) as N
     );
-    mat.positionNode = placed.add(windWorld.add(dipWorld).mul(fade));
+    mat.positionNode = placed.add(windWorld.add(dipWorld).mul(growthFade));
   } else {
-    const scaled: N = fadeAroundInstanceAnchor(positionLocal as N, anchorLocal, fade);
-    const offsetLocal: N = worldOffsetToModelLocal(windWorld.add(dipWorld).mul(fade));
+    const scaled: N = fadeAroundInstanceAnchor(positionLocal as N, anchorLocal, growthFade);
+    const offsetLocal: N = worldOffsetToModelLocal(windWorld.add(dipWorld).mul(growthFade));
     mat.positionNode = scaled.add(offsetLocal);
   }
   mat.envMapIntensity = tier === "far" ? 0.25 : 0.5;
