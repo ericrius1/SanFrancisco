@@ -12,6 +12,12 @@ import {
 } from "../src/world/fogWeather.ts"
 import { normalizeLiveFog } from "../src/world/liveFogModel.ts"
 import {
+  distanceHazeHalfOpacityM,
+  distanceHazeOpacity,
+  marineBankOpacity,
+  resolveFogParameters
+} from "../src/world/fogParameters.ts"
+import {
   addSfCivilHours,
   sanFranciscoCivilNow,
   sfCivilFromScalarDays,
@@ -91,6 +97,88 @@ function assertStateNear(actual, expected, tolerance, label) {
     assert(delta <= tolerance, `${label} ${key}: delta ${delta} > ${tolerance}`)
   }
 }
+
+const FOG_CONTROLS = {
+  fogEnabled: true,
+  fogMaster: 0.25,
+  fogTop: 100,
+  fogBank: 1.2,
+  fogNoise: 0.5,
+  fogDrift: 1.5,
+  fog: 0.0004
+}
+
+const FOG_WEATHER = {
+  bankScale: 1.1,
+  hazeScale: 0.81,
+  topOffsetM: 35,
+  billowScale: 0.8,
+  driftScale: 1.2,
+  frontX: -2000,
+  frontWidthM: 1200,
+  frontSkew: 0.1,
+  macroPhase: 1,
+  inlandFloor: 0.1,
+  gateReachM: 1800,
+  windX: 0.6,
+  windZ: -0.2,
+  season: 1,
+  regime: 0.5,
+  diurnal: 0.7
+}
+
+check("resolved fog parameters match their displayed units", () => {
+  const resolved = resolveFogParameters(FOG_CONTROLS, FOG_WEATHER, 3500)
+  assert.equal(resolved.weatherEnabled, true)
+  near(resolved.layerTopM, 135, EPS, "effective layer top")
+  near(resolved.bankDensity, 1.2 * 0.25 * 1.1, EPS, "effective bank density")
+  near(resolved.hazeDensityPerM, 0.0004 * Math.sqrt(0.25 * 0.81), EPS, "effective haze density")
+  near(resolved.billowScale, 0.5 * 0.8, EPS, "effective billow scale")
+  near(resolved.motionRate, 1.5 * 1.2, EPS, "effective motion rate")
+  near(resolved.edgeStartM, 3500 * 0.88, EPS, "edge start")
+  near(resolved.edgeEndM, 3500 * 0.98, EPS, "edge end")
+  const expectedEdgeOpacity = 1 -
+    (1 - distanceHazeOpacity(resolved.hazeDensityPerM, resolved.edgeEndM)) *
+    (1 - marineBankOpacity(resolved.bankDensity, resolved.edgeEndM))
+  near(resolved.farWeatherOpacity, expectedEdgeOpacity, EPS, "edge/backdrop opacity")
+  const halfM = distanceHazeHalfOpacityM(resolved.hazeDensityPerM)
+  assert(halfM !== null)
+  near(distanceHazeOpacity(resolved.hazeDensityPerM, halfM), 0.5, EPS, "50% haze range")
+  return resolved
+})
+
+check("zero master density is truly fog-free", () => {
+  const resolved = resolveFogParameters(
+    { ...FOG_CONTROLS, fogMaster: 0 },
+    FOG_WEATHER,
+    21000
+  )
+  assert.equal(resolved.weatherEnabled, false)
+  assert.equal(resolved.masterDensity, 0)
+  assert.equal(resolved.bankDensity, 0)
+  assert.equal(resolved.localDensity, 0)
+  assert.equal(resolved.hazeDensityPerM, 0)
+  assert.equal(resolved.billowScale, 0)
+  assert.equal(resolved.motionRate, 0)
+  assert.equal(resolved.windX, 0)
+  assert.equal(resolved.windZ, 0)
+  assert.equal(resolved.farWeatherOpacity, 0)
+  assert.equal(distanceHazeHalfOpacityM(resolved.hazeDensityPerM), null)
+  return resolved
+})
+
+check("weather fog switch zeroes every rendered weather term", () => {
+  const resolved = resolveFogParameters(
+    { ...FOG_CONTROLS, fogEnabled: false },
+    FOG_WEATHER,
+    3500
+  )
+  assert.equal(resolved.weatherEnabled, false)
+  assert.equal(resolved.bankDensity, 0)
+  assert.equal(resolved.hazeDensityPerM, 0)
+  assert.equal(resolved.farWeatherOpacity, 0)
+  return resolved
+})
 
 check("civil calendar rollover", () => {
   assertCivil(
