@@ -249,7 +249,7 @@ The cyan holo language (contour grid, scanline, edge windows, birth-holo gate)
 is GONE. The arrival experience is now a phase machine (ringCoordinator):
 
 1. **scanning** — spawn into pure black; a GPU point-cloud wave
-   (`src/world/terrainScanParticles.ts`, ~155k stateless sprites in two LOD
+   (`src/world/terrainScanParticles.ts`, ~178k stateless sprites in two LOD
    tiers) ripples to SCAN_RADIUS=1600 m (~20 terrain tiles ≈ 0.7 MB), heights
    sampled live from the clipmap height atlas in the vertex stage, radius
    clamped to terrain-tile residency. Fabric fully hidden (frontGate hold-all).
