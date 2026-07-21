@@ -31,6 +31,7 @@ import {
 } from "./detailAdmission";
 import type { CityGridIngestReply, PackedCityGrid } from "./ingestTypes";
 import { frontGate, type FrontGateHandle } from "../../../render/frontGate";
+import { MATERIALIZE_BIRTH_SECONDS, materializeField } from "../../../render/materialize";
 import { tracer } from "../../../core/hitchTracer";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
@@ -436,6 +437,12 @@ export async function createCityGenRing(
   // publication boundary that guarantees no half-warm object reaches a frame.
   const renderRoot = new THREE.Group();
   renderRoot.name = "cityGenRenderOwners";
+  // Previously-resident detail owners are city-wide batches rather than cell
+  // children. After a far-arrival gate, keep them behind the growing chunk LOD
+  // for the same one-second birth window; showing them earlier would leave
+  // full-height windows/trim floating over a rising base silhouette.
+  let sharedOwnersWereGated = frontGate.active;
+  let sharedOwnersReleaseAt = -Infinity;
   // instanced kit-of-parts windows: every detail building's panes/frames draw
   // as a handful of city-wide instanced meshes (see render/moduleLayer.ts)
   const moduleLayer = createModuleLayer(renderRoot);
@@ -1782,6 +1789,7 @@ export async function createCityGenRing(
           cell.frontGateHandle = undefined;
           // Only reveal while this cell is still the live published owner.
           if (loaded.get(cell.key) !== cell || cell.phase !== "ready" || !cell.chunk?.mesh) return;
+          cell.chunk.markVisibleBirth(materializeField.worldTime.value as number);
           cell.chunk.mesh.visible = true;
           if (cell.chunk.shadowMesh) cell.chunk.shadowMesh.visible = true;
         }
@@ -1845,7 +1853,17 @@ export async function createCityGenRing(
     },
     update(playerPos, dt) {
       if (disposed) return;
-      const sharedOwnersVisible = !frontGate.active;
+      if (frontGate.active) {
+        sharedOwnersWereGated = true;
+        sharedOwnersReleaseAt = Infinity;
+      } else if (sharedOwnersWereGated) {
+        sharedOwnersWereGated = false;
+        sharedOwnersReleaseAt =
+          (materializeField.worldTime.value as number) + MATERIALIZE_BIRTH_SECONDS;
+      }
+      const sharedOwnersVisible =
+        !frontGate.active &&
+        (materializeField.worldTime.value as number) >= sharedOwnersReleaseAt;
       if (renderRoot.visible !== sharedOwnersVisible) renderRoot.visible = sharedOwnersVisible;
       if (doorRoot.visible !== sharedOwnersVisible) doorRoot.visible = sharedOwnersVisible;
       // The complete baked city remains the fallback underneath the reveal.

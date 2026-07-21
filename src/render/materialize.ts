@@ -12,7 +12,8 @@
 //   coordinator during the morph that follows the scan. Once 1, everything is
 //   byte-identical to the normal world.
 // - The BIRTH REGISTRY: per-residency birth timestamps driving plain ~1 s
-//   dark→lit fades for streamed-in fabric (applyBirthFade / batch texels).
+//   dark→lit fades for streamed-in fabric (applyBirthFade / batch texels) and
+//   the matching base-anchored rise for city buildings.
 //
 // The old cyan holo language (contour grid, scanline, edge glow, dissolve
 // tint) is GONE — the void look is pure black + the GPU terrain-scan point
@@ -54,6 +55,13 @@ type N = any;
 
 /** Seconds for a per-residency birth ramp (markBorn → fully shaded). */
 export const MATERIALIZE_BIRTH_SECONDS = 1.0;
+
+/** Building silhouettes rise for most of the shared one-second birth window;
+ *  a short deterministic per-building delay keeps a tile from moving as one
+ *  rigid slab while still guaranteeing every roof is settled at t=1 s. */
+export const MATERIALIZE_BUILDING_GROW_SECONDS = 0.84;
+export const MATERIALIZE_BUILDING_STAGGER_SECONDS =
+  MATERIALIZE_BIRTH_SECONDS - MATERIALIZE_BUILDING_GROW_SECONDS;
 
 /** Front radius that means "the whole world is revealed". */
 export const MATERIALIZE_REVEALED_RADIUS = 1e9;
@@ -220,6 +228,27 @@ export function materializeAmount(opts: { worldPos?: N; birth?: N } = {}): N {
   return min(amt, birthAmt);
 }
 
+/**
+ * Base-anchored building growth amount for the vertex stage. `birth` is the
+ * same timestamp already used by the streamed-fabric shading fade, so this
+ * adds no CPU animation state. `staggerKey` is stable per building (usually
+ * `_bid`); hashing it produces a 0…160 ms delay and the smooth ramp reaches
+ * exactly one by the end of the existing one-second birth window.
+ */
+export function buildingGrowAmount(birth: N, staggerKey: N): N {
+  const delay = hash((staggerKey as N).add(0.731))
+    .mul(MATERIALIZE_BUILDING_STAGGER_SECONDS);
+  const t = (materializeField.worldTime as N)
+    .sub(birth)
+    .sub(delay)
+    .div(MATERIALIZE_BUILDING_GROW_SECONDS)
+    .saturate();
+  const eased = t.mul(t).mul(float(3).sub(t.mul(2)));
+  // Keep a tiny non-zero height so collapsed walls never feed degenerate
+  // triangles/normals into a driver while still reading as ground-flat.
+  return eased.max(0.001);
+}
+
 export type ApplyMaterializeOptions = {
   /** World position node (defaults to positionWorld). */
   worldPos?: N;
@@ -337,7 +366,8 @@ export function batchBirthNode(batchMesh: THREE.BatchedMesh, birthTex: THREE.Dat
 export function configureBatchBirthFade(
   material: THREE.MeshStandardNodeMaterial,
   batchMesh: THREE.BatchedMesh,
-  birthTex: THREE.DataTexture
+  birthTex: THREE.DataTexture,
+  birthNode?: N
 ): void {
-  applyBirthFade(material, { birth: batchBirthNode(batchMesh, birthTex) });
+  applyBirthFade(material, { birth: birthNode ?? batchBirthNode(batchMesh, birthTex) });
 }
