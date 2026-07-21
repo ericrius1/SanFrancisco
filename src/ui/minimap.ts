@@ -295,6 +295,9 @@ export class Minimap {
   #miniSuppressClick = false;
   #bigSpan = 0;
   #bigCenter: { x: number; z: number } | null = null;
+  /** Controller navigation invalidates the expanded canvas independently of
+   *  the deliberately throttled small-minimap repaint cadence. */
+  #bigViewDirty = false;
   /** Smooth pan+zoom toward the local player after clicking recenter. */
   #bigRecenterAnim: {
     t0: number;
@@ -1147,7 +1150,14 @@ export class Minimap {
       const r = remotes[i];
       sig = (sig ^ (Math.round(r.x * 2) * 2654435761) ^ Math.round(r.z * 2)) | 0;
     }
-    if (!force && (now - this.#lastMiniDrawAt < 33 || (sig === this.#lastMiniSig && now - this.#lastMiniDrawAt < 500))) return;
+    if (!force && (now - this.#lastMiniDrawAt < 33 || (sig === this.#lastMiniSig && now - this.#lastMiniDrawAt < 500))) {
+      // The world and player are frozen while the expanded map is open, so its
+      // controller-driven viewport changes are absent from the minimap motion
+      // signature above. Draw those changes at input cadence instead of letting
+      // the idle gate reduce visible pan/zoom motion to one frame per 500 ms.
+      if (this.expanded && (this.#bigViewDirty || this.#bigRecenterAnim)) this.#drawBig();
+      return;
+    }
     this.#lastMiniDrawAt = now;
     this.#lastMiniSig = sig;
 
@@ -1786,10 +1796,13 @@ export class Minimap {
     this.#cancelBigRecenterAnim();
     const { spanX, spanZ } = this.#bigView();
     const center = this.#bigCenter ?? this.#mapCenter();
-    this.#bigCenter = this.#clampBigCenter({
+    const nextCenter = this.#clampBigCenter({
       x: center.x + lx * spanX * PAD_PAN_SPEED * dt,
       z: center.z + ly * spanZ * PAD_PAN_SPEED * dt
     });
+    if (nextCenter.x === center.x && nextCenter.z === center.z) return;
+    this.#bigCenter = nextCenter;
+    this.#bigViewDirty = true;
   }
 
   /** Zoom the expanded map toward view center.
@@ -1803,6 +1816,7 @@ export class Minimap {
     this.#bigSpan = nextSpan;
     // Keep the current center under the fixed crosshair while zooming.
     this.#bigCenter = this.#clampBigCenter(this.#bigCenter ?? this.#mapCenter());
+    this.#bigViewDirty = true;
   }
 
   /** A: select the pin / ground under the centered gamepad crosshair. */
@@ -2281,6 +2295,7 @@ export class Minimap {
     this.#drawBigSelection(ctx, px, pz, canvas.width, canvas.height);
     this.#drawPadCursor(ctx, canvas.width, canvas.height);
     this.#syncTeleport(this.#resolveSelected());
+    this.#bigViewDirty = false;
   }
 
   #drawPadCursor(ctx: CanvasRenderingContext2D, width: number, height: number) {
