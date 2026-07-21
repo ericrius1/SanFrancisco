@@ -10,7 +10,8 @@ export { createHangGlidingCourse, sampleHangGlidingLift } from "./layout";
 export function createHangGliding(
   map: WorldMap,
   physics: Physics,
-  scene: THREE.Scene
+  scene: THREE.Scene,
+  sunElevation: () => number
 ): HangGlidingExperience {
-  return new HangGlidingExperience(map, physics, scene);
+  return new HangGlidingExperience(map, physics, scene, sunElevation);
 }

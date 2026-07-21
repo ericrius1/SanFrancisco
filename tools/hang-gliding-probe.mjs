@@ -15,7 +15,7 @@ import { chromium } from "playwright-core";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = path.resolve(ROOT, ".data/hang-gliding-probe");
 const BASE_URL = (process.env.SF_PROBE_URL ?? "http://127.0.0.1:5240").replace(/\/$/, "");
-const OPTIONAL_CODE = /\/src\/(?:gameplay\/hangGliding\/(?:index|experience|ui|mesh|world|audio|style|canopyMaterial)|vehicles\/plane\/hangGliderPhysics)\.ts(?:\?|$)/;
+const OPTIONAL_CODE = /\/src\/(?:gameplay\/hangGliding\/(?:index|experience|ui|mesh|world|oceanLights|audio|style|canopyMaterial)|vehicles\/plane\/hangGliderPhysics)\.ts(?:\?|$)/;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function exists(file) {
@@ -230,6 +230,80 @@ async function main() {
     );
     const launchRequests = requests.slice(beforeLaunch);
     check("launch-needs-no-new-quest-fetches", launchRequests.filter((url) => OPTIONAL_CODE.test(url)).length === 0, launchRequests);
+
+    await page.evaluate(() => {
+      const sf = window.__sf;
+      sf.sky.cycleEnabled = false;
+      sf.sky.setTimeOfDay(22);
+    });
+    await page.waitForFunction(
+      () => window.__sf.hangGliding.debugState.oceanLights.nightWeight > 0.95 &&
+        window.__sf.hangGliding.debugState.oceanLights.visible,
+      undefined,
+      { timeout: 15_000 }
+    );
+    const oceanLightsNight = await page.evaluate(() => {
+      const sf = window.__sf;
+      const root = sf.hangGliding.root.getObjectByName("hang_gliding_ocean_lights");
+      const surfaceCores = root?.getObjectByName("hang_gliding_ocean_surface_cores");
+      const submergedCores = root?.getObjectByName("hang_gliding_ocean_submerged_cores");
+      return {
+        ...sf.hangGliding.debugState.oceanLights,
+        rootPresent: Boolean(root),
+        surfaceInstances: surfaceCores?.count ?? 0,
+        submergedInstances: submergedCores?.count ?? 0,
+        surfaceDepthTest: surfaceCores?.material?.depthTest,
+        submergedDepthTest: submergedCores?.material?.depthTest
+      };
+    });
+    check(
+      "twilight-ocean-lights-show-only-during-flight",
+      oceanLightsNight.visible && oceanLightsNight.rootPresent &&
+        oceanLightsNight.surfaceInstances === oceanLightsNight.surfaceCount &&
+        oceanLightsNight.submergedInstances === oceanLightsNight.submergedCount,
+      oceanLightsNight
+    );
+    check(
+      "submerged-ocean-lights-diffuse-through-water",
+      oceanLightsNight.surfaceDepthTest === true && oceanLightsNight.submergedDepthTest === false,
+      oceanLightsNight
+    );
+
+    await page.evaluate(() => {
+      window.__sfFreeCam([-5750, 190, 3100], [-7050, 22, 3100]);
+      window.__sf.hud.message("", 0);
+    });
+    await page.evaluate(async () => {
+      for (let i = 0; i < 8; i++) window.__sf.tick(1 / 30);
+      await window.__sf.renderer.backend.device.queue.onSubmittedWorkDone();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    await page.screenshot({ path: path.join(OUT, "ocean-lights-night.png"), fullPage: false });
+    await page.evaluate(() => {
+      window.__sfFreeCam(null);
+      window.__sf.chase.cutTo(window.__sf.player);
+      window.__sf.sky.setTimeOfDay(12);
+    });
+    await page.waitForFunction(
+      () => !window.__sf.hangGliding.debugState.oceanLights.visible,
+      undefined,
+      { timeout: 15_000 }
+    );
+    const oceanLightsDay = await page.evaluate(() => ({
+      ...window.__sf.hangGliding.debugState.oceanLights,
+      flightActive: window.__sf.hangGliding.active
+    }));
+    check(
+      "ocean-lights-hide-in-daylight-while-still-flying",
+      oceanLightsDay.visible === false && oceanLightsDay.nightWeight < 0.002 && oceanLightsDay.flightActive,
+      oceanLightsDay
+    );
+    await page.evaluate(() => window.__sf.sky.setTimeOfDay(22));
+    await page.waitForFunction(
+      () => window.__sf.hangGliding.debugState.oceanLights.visible,
+      undefined,
+      { timeout: 15_000 }
+    );
 
     const beforeDive = flight.airspeed;
     await page.evaluate(() => window.__sfManual(true));
@@ -450,6 +524,7 @@ async function main() {
       resultMobile,
       screenshots: [
         "launch-platform.png",
+        "ocean-lights-night.png",
         "flight-desktop.png",
         "customizer-desktop.png",
         "flight-mobile.png",
