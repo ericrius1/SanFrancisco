@@ -708,12 +708,29 @@ export class Physics {
     this.map.normal(wx, wz, slabNormal, pitch * 0.5);
     slabQuat.setFromUnitVectors(slabUp, slabNormal).normalize(); // box3d traps on |q| != 1
     let sink = 0;
+    let minGround = h;
+    let maxGround = h;
+    let buried = this.map.groundTop(wx, wz) < this.map.baseGroundTop(wx, wz) - 4;
     for (const [dx, dz] of [[-ext, -ext], [ext, -ext], [-ext, ext], [ext, ext]] as const) {
+      const cornerGround = this.map.effectiveGround(wx + dx, wz + dz);
+      if (cornerGround < minGround) minGround = cornerGround;
+      if (cornerGround > maxGround) maxGround = cornerGround;
+      buried ||= this.map.groundTop(wx + dx, wz + dz) < this.map.baseGroundTop(wx + dx, wz + dz) - 4;
       const planeY = h - (slabNormal.x * dx + slabNormal.z * dz) / slabNormal.y;
-      const excess = planeY - this.map.effectiveGround(wx + dx, wz + dz);
+      const excess = planeY - cornerGround;
       // >4m is a discontinuity (bridge deck edge, seawall), not hill curvature —
       // sinking for those would drop the whole slab out from under a walker
       if (excess > sink && excess < 4) sink = excess;
+    }
+    // A cell that spans the rim of an authored-region burial (groundTop pulled
+    // far under the natural hill — e.g. the Sutro hall floor) must not keep its
+    // tilted plane: the slab conforms the 20m+ cliff and its upper corners rise
+    // through the authored plaza/deck as an invisible wall. Authored regions
+    // contractually cover every walkable surface with box colliders, so the
+    // carpet's only job here is sealing the pit floor — lie flat on the low side.
+    if (buried && maxGround - minGround > 4) {
+      this.world.setBodyTransform(handle, [wx, minGround - 1.5, wz], [0, 0, 0, 1]);
+      return 0;
     }
     this.world.setBodyTransform(handle, [wx, h - 1.5 - sink, wz], [slabQuat.x, slabQuat.y, slabQuat.z, slabQuat.w]);
     return sink;

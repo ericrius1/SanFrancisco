@@ -25,14 +25,19 @@ YAW = -0.077
 DECK_Y = 5.62
 GROUND_Y = 2.07
 
-MAIN_LEVELS = (31.02, 24.67, 18.32, 11.97, 5.62)
-MAIN_FLIGHTS = (
-    # local x, high local z, low local z
-    (35.0, 68.2, 50.2),
-    (29.5, 50.2, 68.2),
-    (24.0, 68.2, 50.2),
-    (18.5, 50.2, 68.2),
+# v5 grand gallery: four x-running flights cascade WEST from the road portal
+# toward the ocean glass, each on its own z lane marching south as it descends.
+# Levels drop 6.35 per flight: threshold 31.18 -> deck apron 5.78 (deck 5.62).
+GALLERY_LEVELS = (31.18, 24.83, 18.48, 12.13, 5.78)
+GALLERY_FLIGHTS = (
+    # lane z center, start local x (high end), end local x (low end)
+    (63.1, 36.6, 20.2),
+    (57.1, 20.2, 35.8),
+    (51.1, 35.8, 20.2),
+    (45.1, 20.2, 35.8),
 )
+GALLERY_FLIGHT_WIDTH = 5.0
+GALLERY_STEPS = 24
 
 
 def parse_args():
@@ -184,68 +189,85 @@ def add_landing(collection, colliders, parent, name, x, z, top, sx, sz, material
     add_collider(colliders, f"sutro_collider_100_{name}", x, z, top, sx, sz, bottom)
 
 
-def add_stair_flight(
+def add_rail_collider(colliders, name, x, z, base_y, top_y, size_x, size_z):
+    """Thin invisible parapet so a misstep cannot leave the gallery route."""
+    add_collider(colliders, name, x, z, top_y, size_x, size_z, base_y)
+
+
+def add_gallery_flight(
     collection,
     colliders,
     parent,
     name,
-    x,
-    high_z,
-    low_z,
+    lane_z,
+    high_x,
+    low_x,
     high_y,
     low_y,
     width,
     material,
     iron,
-    bottom=GROUND_Y,
-    steps=25,
+    steps=GALLERY_STEPS,
 ):
-    dz = low_z - high_z
+    """A flight running along local x on a constant-z lane. Treads are THIN
+    slab colliders (walkable-collider rule: slab top = walk surface) so a
+    capsule can never end up embedded inside a tall collider column."""
+    dx = low_x - high_x
     for index in range(steps):
         t = index / (steps - 1)
-        z = high_z + dz * t
+        x = high_x + dx * t
         top = high_y + (low_y - high_y) * t
-        tread = abs(dz) / (steps - 1)
+        tread = abs(dx) / (steps - 1)
         add_box(
             collection, parent, f"{name}_tread_{index:02d}",
-            x, z, top, width, tread, 0.29, material,
+            x, lane_z, top, tread, width, 0.29, material,
         )
         add_collider(
             colliders, f"sutro_collider_110_{name}_{index:02d}",
-            x, z, top, width, tread + 0.04, bottom,
+            x, lane_z, top, tread + 0.04, width, top - 0.62,
         )
 
-    # Continuous masonry stringers visually carry every tread into its landing.
-    # They sit just below the walking slabs and are visual-only, avoiding extra
-    # snag points while removing the former "floating staircase" silhouette.
+    # Continuous masonry stringers ground the silhouette; visual-only.
     for stringer_index, side in enumerate((-1, 1)):
-        stringer_x = x + side * width * 0.31
+        stringer_z = lane_z + side * width * 0.31
         add_beam(
             collection, parent, f"{name}_stringer_{stringer_index}",
-            (stringer_x, high_z, high_y - 0.45),
-            (stringer_x, low_z, low_y - 0.45),
+            (high_x, stringer_z, high_y - 0.45),
+            (low_x, stringer_z, low_y - 0.45),
             0.34, material,
         )
 
-    # Two uninterrupted handrails and low-frequency posts make the route read
-    # from the road without creating dozens of collision snag points.
+    # Handrails on both lane edges, with a thin full-length rail collider: the
+    # gallery hangs high over the deck, so every open edge must actually hold.
     for side_index, side in enumerate((-1, 1)):
-        rail_x = x + side * (width * 0.5 + 0.08)
+        rail_z = lane_z + side * (width * 0.5 + 0.08)
         add_beam(
             collection, parent, f"{name}_rail_{side_index}",
-            (rail_x, high_z, high_y + 1.05),
-            (rail_x, low_z, low_y + 1.05),
+            (high_x, rail_z, high_y + 1.05),
+            (low_x, rail_z, low_y + 1.05),
             0.13, iron,
         )
         for post_index in range(0, steps, 4):
             t = post_index / (steps - 1)
-            post_z = high_z + dz * t
+            post_x = high_x + dx * t
             post_y = high_y + (low_y - high_y) * t
             add_beam(
                 collection, parent, f"{name}_post_{side_index}_{post_index:02d}",
-                (rail_x, post_z, post_y + 0.08),
-                (rail_x, post_z, post_y + 1.08),
+                (post_x, rail_z, post_y + 0.08),
+                (post_x, rail_z, post_y + 1.08),
                 0.11, iron,
+            )
+        # rail collider follows the slope as a stack of short thin boxes
+        segments = 6
+        for seg in range(segments):
+            t0 = seg / segments
+            t1 = (seg + 1) / segments
+            seg_x = high_x + dx * (t0 + t1) * 0.5
+            seg_y = high_y + (low_y - high_y) * (t0 + t1) * 0.5
+            add_rail_collider(
+                colliders, f"sutro_collider_130_{name}_rail_{side_index}_{seg}",
+                seg_x, rail_z, seg_y + 0.02, seg_y + 1.1,
+                abs(dx) / segments + 0.05, 0.09,
             )
 
 
@@ -296,6 +318,7 @@ def main():
         "sutro_baths_player_entrances_v2",
         "sutro_baths_player_entrances_v3",
         "sutro_baths_player_entrances_v4",
+        "sutro_baths_player_entrances_v5",
     ):
         delete_hierarchy(bpy.data.objects.get(root_name))
     # This was a solid wall directly behind the decorative portal columns.
@@ -341,8 +364,8 @@ def main():
         arrival.location = local_to_blender(45.6, 63.1, 31.26)
         arrival.rotation_euler[2] = 1.942
 
-    root = visual_empty(visual, "sutro_baths_player_entrances_v4")
-    root["sf_design"] = "open-grounded-road-pavilion-switchback-and-ocean-gate"
+    root = visual_empty(visual, "sutro_baths_player_entrances_v5")
+    root["sf_design"] = "glazed-double-doors-and-ocean-facing-gallery-cascade"
 
     terracotta = materials["sutro_terracotta"]
     iron_dark = materials["sutro_iron_dark"]
@@ -359,12 +382,13 @@ def main():
     # the roof hall. The prior natural-terrain overlap was the grey wedge that
     # hid the player and made the facade appear detached.
     add_landing(visual, colliders, road, "road_promenade", 46.65, 63.1, 31.18, 15.9, 12.4, plaster, 30.0)
-    # One broad, rectangular foyer crosses the east wall and overlaps the top
-    # switchback tread. It replaces the narrow edge threshold that looked shut
-    # and could drop a capsule through its seams.
-    add_landing(visual, colliders, road, "road_entry_foyer", 35.85, 64.15, 31.18, 6.7, 10.5, terracotta, GROUND_Y)
+    # Interior threshold: a slab exactly one flight-width wide carries the walk
+    # through the doorway onto the gallery's top flight. Thin collider — the
+    # walkable-collider rule — and butt-joined to the promenade (no coplanar
+    # overlap, so no z-fighting seam across the carpet line).
+    add_landing(visual, colliders, road, "road_entry_threshold", 37.6, 63.1, 31.18, 2.2, GALLERY_FLIGHT_WIDTH, terracotta, 30.2)
     add_box(visual, road, "road_entry_runner_outer", 46.15, 63.1, 31.24, 16.2, 1.6, 0.08, terracotta)
-    add_box(visual, road, "road_entry_runner_inner", 36.1, 63.1, 31.25, 5.4, 1.8, 0.09, terracotta)
+    add_box(visual, road, "road_entry_runner_inner", 37.6, 63.1, 31.25, 2.1, 1.8, 0.09, terracotta)
     # Preserve the load-bearing wall south of the widened opening. It now ends
     # exactly at the platform edge instead of cutting through the walking line.
     add_box(visual, road, "road_hall_wall_south", 38.4, 72.7, 25.5, 0.7, 6.8, 19.88, plaster_shade)
@@ -390,8 +414,10 @@ def main():
             x = 39.1 + post_index * 1.38
             add_beam(visual, road, f"road_balustrade_post_{side_index}_{post_index}", (x, z, 31.18), (x, z, 32.36), 0.10, iron_dark)
 
-    # A single oversized rectangular portal frames a genuinely empty opening.
-    # There are deliberately no gate leaves or rail segments in its clear span.
+    # The oversized portal keeps its classical frame, but the opening now holds
+    # a real glazed entry: sidelight windows, a transom band, and a pair of
+    # iron-and-glass double doors held open toward the hall. The clear doorway
+    # is exactly the runner/gallery width so the route reads as one line.
     portal_center_z = 63.1
     portal_half_width = 4.55
     portal_top = 37.72
@@ -399,6 +425,44 @@ def main():
         add_box(visual, road, f"road_main_portal_jamb_{side_index}", 38.28, z, portal_top, 0.9, 0.92, portal_top - 31.18, plaster)
     add_box(visual, road, "road_main_portal_lintel", 38.28, portal_center_z, portal_top, 0.9, portal_half_width * 2 + 0.92, 0.82, terracotta)
     add_box(visual, road, "road_main_entrance_plaque", 38.05, portal_center_z, 38.55, 0.3, 6.9, 0.74, brass)
+
+    # -- glazed entry wall (wall plane local x = 38.28) --
+    door_clear_lo = 61.2
+    door_clear_hi = 65.0
+    head_y = 34.4
+    glaze_top = 37.3
+    # door frame posts + head beam
+    for z in (door_clear_lo, door_clear_hi):
+        add_beam(visual, road, f"entry_door_post_{int(z * 10)}", (38.28, z, 31.18), (38.28, z, head_y + 0.12), 0.2, iron_dark)
+    add_beam(visual, road, "entry_door_head", (38.28, door_clear_lo, head_y), (38.28, door_clear_hi, head_y), 0.24, iron_dark)
+    # sidelights: brass kick panel, tall glass, one mid mullion each
+    for side_index, (z_lo, z_hi) in enumerate(((59.01, door_clear_lo - 0.1), (door_clear_hi + 0.1, 67.19))):
+        z_mid = (z_lo + z_hi) * 0.5
+        width = z_hi - z_lo
+        add_box(visual, road, f"entry_sidelight_kick_{side_index}", 38.28, z_mid, 32.08, 0.22, width, 0.9, plaster_shade)
+        add_box(visual, road, f"entry_sidelight_glass_{side_index}", 38.28, z_mid, head_y, 0.1, width, head_y - 32.08, window_glass)
+        add_beam(visual, road, f"entry_sidelight_mullion_{side_index}", (38.28, z_mid, 32.08), (38.28, z_mid, head_y), 0.11, iron)
+        add_beam(visual, road, f"entry_sidelight_rail_{side_index}", (38.28, z_lo, 32.08), (38.28, z_hi, 32.08), 0.13, iron)
+        # glass never lets a walker through: one thin collider per sidelight
+        add_collider(colliders, f"sutro_collider_140_entry_sidelight_{side_index}", 38.28, z_mid, 37.6, 0.3, width + 0.2, 31.18)
+    # transom band above the door head up to the lintel
+    add_box(visual, road, "entry_transom_glass", 38.28, portal_center_z, glaze_top, 0.1, 67.19 - 59.01, glaze_top - (head_y + 0.12), window_glass)
+    for z in (door_clear_lo, portal_center_z, door_clear_hi):
+        add_beam(visual, road, f"entry_transom_mullion_{int(z * 10)}", (38.28, z, head_y + 0.12), (38.28, z, glaze_top), 0.11, iron)
+    # double door leaves held open into the hall (perpendicular to the wall),
+    # iron frames with glass insets and a brass push bar; each leaf is solid.
+    leaf_len = 1.75
+    for leaf_index, (hinge_z, leaf_dir) in enumerate(((door_clear_lo, 1), (door_clear_hi, -1))):
+        leaf_z = hinge_z + leaf_dir * 0.07
+        leaf_cx = 38.28 - 0.24 - leaf_len * 0.5
+        add_box(visual, road, f"entry_door_leaf_glass_{leaf_index}", leaf_cx, leaf_z, head_y - 0.35, leaf_len, 0.08, head_y - 0.35 - 31.3, window_glass)
+        add_beam(visual, road, f"entry_door_leaf_top_{leaf_index}", (38.28 - 0.24, leaf_z, head_y - 0.35), (38.28 - 0.24 - leaf_len, leaf_z, head_y - 0.35), 0.14, iron_dark)
+        add_beam(visual, road, f"entry_door_leaf_bottom_{leaf_index}", (38.28 - 0.24, leaf_z, 31.42), (38.28 - 0.24 - leaf_len, leaf_z, 31.42), 0.14, iron_dark)
+        add_beam(visual, road, f"entry_door_leaf_edge_{leaf_index}", (38.28 - 0.24 - leaf_len, leaf_z, 31.42), (38.28 - 0.24 - leaf_len, leaf_z, head_y - 0.35), 0.14, iron_dark)
+        add_beam(visual, road, f"entry_door_leaf_bar_{leaf_index}", (38.28 - 0.35, leaf_z - leaf_dir * 0.09, 32.28), (38.28 - 0.24 - leaf_len + 0.12, leaf_z - leaf_dir * 0.09, 32.28), 0.09, brass)
+        add_collider(colliders, f"sutro_collider_140_entry_door_leaf_{leaf_index}", leaf_cx, leaf_z, head_y - 0.35, leaf_len, 0.24, 31.18)
+    # brass threshold strip under the leaves
+    add_box(visual, road, "entry_threshold_strip", 38.28, portal_center_z, 31.22, 0.5, door_clear_hi - door_clear_lo, 0.05, brass)
     add_box(visual, road, "road_portal_sign", 48.58, 63.1, 38.35, 0.24, 7.1, 1.15, terracotta)
     # Brass sunrise reads as a welcoming landmark from a moving car.
     for index in range(9):
@@ -420,38 +484,88 @@ def main():
         for x in (38.65, 42.15, 45.65):
             add_beam(visual, road, f"road_vestibule_post_{int(z * 10)}_{int(x * 10)}", (x, z, 31.18), (x, z, 38.98), 0.18, iron)
 
-    # GRAND SWITCHBACK -----------------------------------------------------
-    switchback = visual_empty(visual, "sutro_baths_grand_switchback_v4", root)
-    for index, (x, high_z, low_z) in enumerate(MAIN_FLIGHTS):
-        add_stair_flight(
-            visual, colliders, switchback, f"main_flight_{index + 1}",
-            x, high_z, low_z, MAIN_LEVELS[index], MAIN_LEVELS[index + 1],
-            3.8, terracotta, iron_dark,
+    # GRAND GALLERY CASCADE ------------------------------------------------
+    # Four flights run along local x, cascading west toward the ocean glass on
+    # z lanes that march south as they descend. The visitor walks straight out
+    # of the doors onto flight 1 facing the whole hall, then switchbacks down.
+    gallery = visual_empty(visual, "sutro_baths_grand_gallery_v5", root)
+    flight_names = ("gallery_flight_1", "gallery_flight_2", "gallery_flight_3", "gallery_flight_4")
+    for index, (lane_z, high_x, low_x) in enumerate(GALLERY_FLIGHTS):
+        add_gallery_flight(
+            visual, colliders, gallery, flight_names[index],
+            lane_z, high_x, low_x,
+            GALLERY_LEVELS[index] - 0.16, GALLERY_LEVELS[index + 1],
+            GALLERY_FLIGHT_WIDTH, terracotta, iron_dark,
         )
 
-    add_landing(visual, colliders, switchback, "main_landing_1", 32.25, 47.7, MAIN_LEVELS[1], 9.1, 4.2, terracotta)
-    add_landing(visual, colliders, switchback, "main_landing_2", 26.75, 70.7, MAIN_LEVELS[2], 9.1, 4.2, terracotta)
-    add_landing(visual, colliders, switchback, "main_landing_3", 21.25, 47.7, MAIN_LEVELS[3], 9.1, 4.2, terracotta)
-    add_landing(visual, colliders, switchback, "main_deck_arrival", 22.3, 71.0, 5.66, 11.2, 4.8, terracotta)
+    # Landings (thin walkable slabs): west turns are generous; the east turn
+    # tucks against the hall wall; the apron steps straight onto the deck.
+    landings = (
+        ("gallery_landing_w1", 18.4, 60.1, GALLERY_LEVELS[1], 3.6, 11.0),
+        ("gallery_landing_e1", 36.8, 54.1, GALLERY_LEVELS[2], 2.0, 11.0),
+        ("gallery_landing_w2", 18.4, 49.0, GALLERY_LEVELS[3], 3.6, 9.2),
+        ("gallery_deck_apron", 37.0, 45.1, GALLERY_LEVELS[4], 2.4, 5.0),
+    )
+    for name, x, z, top, sx, sz in landings:
+        add_landing(visual, colliders, gallery, name, x, z, top, sx, sz, terracotta, top - 0.62)
+        add_box(visual, gallery, f"{name}_fascia", x, z, top - 0.28, sx, sz, 0.72, plaster_shade)
 
-    for name, x, z, top, sx, sz in (
-        ("main_landing_1", 32.25, 47.7, MAIN_LEVELS[1], 9.1, 4.2),
-        ("main_landing_2", 26.75, 70.7, MAIN_LEVELS[2], 9.1, 4.2),
-        ("main_landing_3", 21.25, 47.7, MAIN_LEVELS[3], 9.1, 4.2),
-        ("main_deck_arrival", 22.3, 71.0, 5.66, 11.2, 4.8),
-    ):
-        add_box(visual, switchback, f"{name}_fascia", x, z, top - 0.28, sx, sz, 0.72, plaster_shade)
+    # Guard rails with real (thin) colliders on every open landing edge — the
+    # gallery hangs up to 25m over the deck. Open segments are exactly the
+    # flight mouths. Each entry: (name, x, z, size_x, size_z, base_y).
+    guard_edges = (
+        # W1: west edge, north edge, south edge, east gap between lanes 1/2
+        ("w1_west", 16.55, 60.1, 0.1, 11.0, GALLERY_LEVELS[1]),
+        ("w1_north", 18.4, 65.65, 3.6, 0.1, GALLERY_LEVELS[1]),
+        ("w1_south", 18.4, 54.55, 3.6, 0.1, GALLERY_LEVELS[1]),
+        ("w1_east_gap", 20.25, 60.1, 0.1, 1.0, GALLERY_LEVELS[1]),
+        # E1: east edge (wall side), north edge, south edge, west gap lanes 2/3
+        ("e1_east", 37.85, 54.1, 0.1, 11.0, GALLERY_LEVELS[2]),
+        ("e1_north", 36.8, 59.65, 2.0, 0.1, GALLERY_LEVELS[2]),
+        ("e1_south", 36.8, 48.55, 2.0, 0.1, GALLERY_LEVELS[2]),
+        ("e1_west_gap", 35.75, 54.1, 0.1, 1.0, GALLERY_LEVELS[2]),
+        # W2: west edge, north edge, south edge, east gap lanes 3/4
+        ("w2_west", 16.55, 49.0, 0.1, 9.2, GALLERY_LEVELS[3]),
+        ("w2_north", 18.4, 53.65, 3.6, 0.1, GALLERY_LEVELS[3]),
+        ("w2_south", 18.4, 44.35, 3.6, 0.1, GALLERY_LEVELS[3]),
+        ("w2_east_gap", 20.25, 48.1, 0.1, 1.0, GALLERY_LEVELS[3]),
+    )
+    for name, x, z, sx, sz, base in guard_edges:
+        add_beam(
+            visual, gallery, f"gallery_guard_{name}",
+            (x - sx * 0.5, z - sz * 0.5, base + 1.05),
+            (x + sx * 0.5, z + sz * 0.5, base + 1.05),
+            0.13, iron_dark,
+        )
+        post_count = max(2, int(max(sx, sz) / 1.4))
+        for post_index in range(post_count + 1):
+            t = post_index / post_count
+            px = x - sx * 0.5 + sx * t
+            pz = z - sz * 0.5 + sz * t
+            add_beam(
+                visual, gallery, f"gallery_guard_{name}_post_{post_index}",
+                (px, pz, base + 0.05), (px, pz, base + 1.05), 0.1, iron_dark,
+            )
+        add_rail_collider(
+            colliders, f"sutro_collider_130_guard_{name}",
+            x, z, base + 0.02, base + 1.1, max(sx, 0.09), max(sz, 0.09),
+        )
 
-    # Tall plaster/iron supports turn the stair into an intentional piece of
-    # bathhouse architecture instead of floating treads.
-    for index, (x, z, top) in enumerate(((36.8, 47.6, 24.67), (31.3, 71.0, 18.32), (25.8, 47.6, 11.97))):
-        # Stop the pier beneath the landing slab. The old version ended on the
-        # walking plane and produced a real coplanar patch at each landing.
-        pier_top = top - 0.32
-        add_box(visual, switchback, f"switchback_pier_{index}", x, z, pier_top, 0.85, 0.85, pier_top - GROUND_Y, plaster)
-        add_box(visual, switchback, f"switchback_pier_cap_{index}", x, z, top + 0.16, 1.2, 1.2, 0.32, brass)
-    for index, (x, z, y) in enumerate(((35.8, 49.0, 24.7), (29.8, 69.4, 18.35), (24.2, 49.0, 12.0), (20.0, 70.0, 5.7))):
-        add_lantern(visual, switchback, f"landing_lantern_{index}", x, z, y + 0.25, iron_dark, lamp)
+    # Plaster piers ground each hanging landing; caps stop under the slab so
+    # no coplanar walking patch appears on the surface.
+    for index, (x, z, top) in enumerate((
+        (18.4, 56.0, GALLERY_LEVELS[1]), (18.4, 64.2, GALLERY_LEVELS[1]),
+        (36.8, 50.0, GALLERY_LEVELS[2]), (36.8, 57.6, GALLERY_LEVELS[2]),
+        (18.4, 45.6, GALLERY_LEVELS[3]), (18.4, 52.0, GALLERY_LEVELS[3]),
+    )):
+        pier_top = top - 0.34
+        add_box(visual, gallery, f"gallery_pier_{index}", x, z, pier_top, 0.85, 0.85, pier_top - GROUND_Y, plaster)
+        add_box(visual, gallery, f"gallery_pier_cap_{index}", x, z, top + 0.14, 1.2, 1.2, 0.3, brass)
+    for index, (x, z, y) in enumerate((
+        (17.2, 64.6, GALLERY_LEVELS[1]), (37.3, 49.3, GALLERY_LEVELS[2]),
+        (17.2, 45.2, GALLERY_LEVELS[3]), (37.7, 43.4, GALLERY_LEVELS[4]),
+    )):
+        add_lantern(visual, gallery, f"gallery_lantern_{index}", x, z, y + 0.25, iron_dark, lamp)
 
     # BEACH / OCEAN WINDOW GATE -------------------------------------------
     beach = visual_empty(visual, "sutro_baths_beach_gate_v4", root)
@@ -532,8 +646,8 @@ def main():
     add_collider(colliders, "sutro_collider_019a_ocean_wall_north", -38.4, -23.78, 25.5, 0.7, 104.64, 5.62)
     add_collider(colliders, "sutro_collider_019b_ocean_wall_south", -38.4, 57.075, 25.5, 0.7, 38.05, 5.62)
 
-    bpy.context.scene["sf_sutro_entrance_revision"] = 6
-    bpy.context.scene["sf_sutro_entry_routes"] = "open-grounded-road-pavilion,grand-switchback,ocean-gate"
+    bpy.context.scene["sf_sutro_entrance_revision"] = 7
+    bpy.context.scene["sf_sutro_entry_routes"] = "glazed-door-road-pavilion,gallery-cascade,ocean-gate"
     bpy.context.view_layer.update()
     bpy.ops.wm.save_as_mainfile(filepath=expected)
 

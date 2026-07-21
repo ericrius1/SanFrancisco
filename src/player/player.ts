@@ -800,8 +800,12 @@ export class Player {
     if (this.mode !== "walk" || this.riding || !this.body || !Number.isFinite(surfaceY)) return false;
     const w = this.physics.world;
     const t = w.getBodyTransform(this.body);
-    const minY = surfaceY + WALK_CAPSULE_HALF_EXTENT + 0.02;
-    if (t.position[1] >= minY) return false;
+    // Asymmetric hysteresis: the solver rests the capsule a skin-width around
+    // surfaceY + halfExtent, so a symmetric threshold fires every frame and the
+    // repeated teleport breaks ground contact — the walker freezes in place.
+    // Only recover a body clearly BELOW the surface, and lift it clearly ABOVE.
+    if (t.position[1] >= surfaceY + WALK_CAPSULE_HALF_EXTENT - 0.06) return false;
+    const minY = surfaceY + WALK_CAPSULE_HALF_EXTENT + 0.03;
     const v = w.getBodyVelocity(this.body);
     const position: [number, number, number] = [t.position[0], minY, t.position[2]];
     w.setBodyTransform(this.body, position, t.rotation);
@@ -954,9 +958,17 @@ export class Player {
     this.velocity.set(v.linear[0], v.linear[1], v.linear[2]);
     this.speed = this.velocity.length();
 
+    // Below-ground recovery must respect authored burials: inside a region that
+    // lowers groundTop far beneath the baked hill (the Sutro hall floor), the
+    // baked height alone would flag every legitimate deck visitor as "under
+    // terrain" and respawn them each update — a zone-shaped total freeze.
+    const groundReference = Math.min(
+      this.map.baseGroundTop(this.position.x, this.position.z),
+      this.map.groundTop(this.position.x, this.position.z)
+    );
     if (
       this.mode === "walk" &&
-      this.position.y < this.map.baseGroundTop(this.position.x, this.position.z) - WALK_BELOW_GROUND_RECOVERY_DEPTH
+      this.position.y < groundReference - WALK_BELOW_GROUND_RECOVERY_DEPTH
     ) {
       this.respawn({ x: this.position.x, z: this.position.z, heading: this.heading - Math.PI });
       return;

@@ -139,11 +139,13 @@ type SutroStairSurface = {
   steps: number;
 };
 
+/** v5 gallery cascade: flights run along local X on constant-z lanes, so
+ * `across` is local z and `along` is local x (the beach-stair axis swap). */
 const MAIN_ENTRY_FLIGHTS: readonly SutroStairSurface[] = [
-  { minAcross: 33.1, maxAcross: 36.9, startAlong: 68.2, endAlong: 50.2, startY: 31.02, endY: 24.67, steps: 25 },
-  { minAcross: 27.6, maxAcross: 31.4, startAlong: 50.2, endAlong: 68.2, startY: 24.67, endY: 18.32, steps: 25 },
-  { minAcross: 22.1, maxAcross: 25.9, startAlong: 68.2, endAlong: 50.2, startY: 18.32, endY: 11.97, steps: 25 },
-  { minAcross: 16.6, maxAcross: 20.4, startAlong: 50.2, endAlong: 68.2, startY: 11.97, endY: 5.62, steps: 25 }
+  { minAcross: 60.6, maxAcross: 65.6, startAlong: 36.6, endAlong: 20.2, startY: 31.02, endY: 24.83, steps: 24 },
+  { minAcross: 54.6, maxAcross: 59.6, startAlong: 20.2, endAlong: 35.8, startY: 24.67, endY: 18.48, steps: 24 },
+  { minAcross: 48.6, maxAcross: 53.6, startAlong: 35.8, endAlong: 20.2, startY: 18.32, endY: 12.13, steps: 24 },
+  { minAcross: 42.6, maxAcross: 47.6, startAlong: 20.2, endAlong: 35.8, startY: 11.97, endY: 5.78, steps: 24 }
 ] as const;
 
 const BEACH_ENTRY_STAIR: SutroStairSurface = {
@@ -194,19 +196,20 @@ export function sutroEntryWalkSurfaceY(x: number, z: number): number | null {
 
   // The road terrain is explicitly handed to a coherent pavilion floor.
   if (insideRect(local.x, local.z, 38.25, 55.05, 56.45, 69.75)) return 31.18;
-  // Wide foyer spans the full empty portal and overlaps the first stair tread.
-  if (insideRect(local.x, local.z, 32.05, 39.65, 58.45, 69.65)) return 31.18;
+  // Interior threshold slab carries the doorway onto the gallery's top flight.
+  if (insideRect(local.x, local.z, 36.5, 39.65, 60.5, 65.7)) return 31.18;
   const roadY = stairSurfaceY(local.z, local.x, ROAD_APPROACH_STAIR);
   if (roadY !== null) return roadY;
 
+  // Gallery flights run along local x, so swap the axes for the shared helper.
   for (const flight of MAIN_ENTRY_FLIGHTS) {
-    const y = stairSurfaceY(local.x, local.z, flight);
+    const y = stairSurfaceY(local.z, local.x, flight);
     if (y !== null) return y;
   }
-  if (insideRect(local.x, local.z, 27.25, 37.25, 45.15, 50.25)) return 24.67;
-  if (insideRect(local.x, local.z, 21.75, 31.75, 68.15, 73.25)) return 18.32;
-  if (insideRect(local.x, local.z, 16.25, 26.25, 45.15, 50.25)) return 11.97;
-  if (insideRect(local.x, local.z, 16.25, 28.35, 68.15, 73.85)) return 5.66;
+  if (insideRect(local.x, local.z, 16.6, 20.2, 54.6, 65.6)) return 24.83;
+  if (insideRect(local.x, local.z, 35.8, 37.8, 48.6, 59.6)) return 18.48;
+  if (insideRect(local.x, local.z, 16.6, 20.2, 44.4, 53.6)) return 12.13;
+  if (insideRect(local.x, local.z, 35.8, 38.2, 42.6, 47.6)) return 5.78;
 
   // The beach stair runs along local x, so swap the axes for the shared helper.
   const beachY = stairSurfaceY(local.z, local.x, BEACH_ENTRY_STAIR);
