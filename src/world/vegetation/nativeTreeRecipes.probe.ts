@@ -74,7 +74,7 @@ for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesInd
     assert(lod.bounds.sphereRadius > 0, `${species}/${lod.name} bounds are empty`);
     if (archetype.recipe.foliage.kind === "leaf") {
       const close = lodIndex <= 1;
-      const leafletCount = lodIndex === 0 ? 6 : lodIndex === 1 ? 4 : 0;
+      const leafletCount = lodIndex === 0 ? 8 : lodIndex === 1 ? 6 : 0;
       const verticesPerAnchor = close ? leafletCount * 4 : 8;
       const trianglesPerAnchor = close ? leafletCount * 2 : 6;
       assert(

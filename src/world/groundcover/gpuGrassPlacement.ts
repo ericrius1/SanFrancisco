@@ -52,7 +52,7 @@ const HASH_TO_UNIT = 1 / 0x1_0000_0000;
 const R2_A1 = 0.7548776662466927;
 const R2_A2 = 0.5698402909980532;
 const GROUND_FOOT = 0.6;
-const GROUND_SLOPE_CULL = 0.85;
+const GROUND_SLOPE_CULL = 1.15;
 const GROUND_SINK = 0.05;
 // Wind bend + trample push + grounding sink around the scaled cluster bound.
 const CULL_RADIUS_SLACK = 1.25;

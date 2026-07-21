@@ -71,7 +71,8 @@ export const WILD_GRASS_LAYER_SPECS = {
     gridStride: 2,
     tileSize: 80,
     visibleRadius: WILD_GRASS_RING_RADIUS,
-    fadeBand: 18,
+    // Wide dissolve band so the ring edge grows in instead of popping.
+    fadeBand: 30,
     wind: "lite",
     interactionSlots: 0,
     geometry: { kind: "micro", blades: 4, width: 0.064, radius: 0.68, lean: 0.2 }
@@ -80,7 +81,7 @@ export const WILD_GRASS_LAYER_SPECS = {
     gridStride: 1,
     tileSize: 56,
     visibleRadius: 60,
-    fadeBand: 16,
+    fadeBand: 22,
     wind: "lite",
     interactionSlots: 0,
     geometry: { kind: "micro", blades: 2, width: 0.05, radius: 0.34, lean: 0.23 }
