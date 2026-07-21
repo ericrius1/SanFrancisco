@@ -476,8 +476,8 @@ export class Input {
     const deadzone = tune.stickDeadzone;
     // Left stick: deadzone + move curve (vehicles/walk read these axes analog).
     const [lx, ly] = shapeStick(gp.axes[0] ?? 0, gp.axes[1] ?? 0, deadzone, tune.moveResponse);
-    // Right stick: deadzone only here — look curve applied when writing mouse deltas
-    // so expanded-map zoom still gets linear post-deadzone motion.
+    // Right stick: deadzone only here — look curve applied when writing mouse
+    // deltas, while expanded-map pan gets linear post-deadzone motion.
     const [rxLin, ryLin] = shapeStick(gp.axes[2] ?? 0, gp.axes[3] ?? 0, deadzone, 1);
     const lt = gp.buttons[6]?.value ?? 0;
     const rt = gp.buttons[7]?.value ?? 0;
