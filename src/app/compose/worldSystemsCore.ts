@@ -571,7 +571,9 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     hud.setMode(mode);
     toolbar.setVehicle(mode);
     input.setMode(mode); // trigger routing (fly puts them on the ↑/↓ throttle)
-    ctx.late.debugPanel!.setMode(mode); // tuning pane shows only the active mode's movement folder
+    // tuning pane shows only the active mode's movement folder; the panel is a
+    // late system, and a mode switch can land before it hydrates
+    ctx.late.debugPanel?.setMode(mode);
     applySurfCull(mode === "surf");
     if (mode === "surf") {
       leaveCameraModeForSurf();
