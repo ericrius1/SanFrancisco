@@ -152,12 +152,11 @@ export function createBackgroundAdmission({
     requestAnimationFrame(() => resolve());
   });
   /**
-   * CityGen is an enhancement over the complete baked city. Each non-cancellable
-   * driver preparation therefore waits for the reveal to settle AND for a real
-   * quiet window; if motion begins, at most the one already-admitted owner can
-   * finish before the sequence pauses again.
-   * A per-cell generation predicate lets a teleport cancel an old owner before
-   * its non-cancellable compileAsync call begins.
+   * CityGen is an enhancement over the complete baked city. Its one-time
+   * detached prototype preparations therefore wait for the reveal to settle
+   * AND for a real quiet window; if motion begins, at most the one already
+   * admitted owner can finish before the sequence pauses again. A current-owner
+   * predicate can cancel obsolete work before non-cancellable driver compilation.
    */
   const waitForCityGenRenderWindow = async (isCurrent?: () => boolean): Promise<boolean> => {
     while (isArrivalActive() || !revealSettled()) {

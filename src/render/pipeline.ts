@@ -94,6 +94,7 @@ export function createRenderPipeline(
   directionalLight: THREE.DirectionalLight | null = null
 ) {
   let waitForCompileIdle: () => Promise<void> = async () => {};
+  let compileQueueDepth = () => 0;
   let compileBlocked = () => false;
   // Beauty sees the ordinary world plus ephemeral hashed markers. The ink
   // prepass below deliberately stays on layer 0 so alpha-hash grain cannot
@@ -457,11 +458,24 @@ export function createRenderPipeline(
     let chain: Promise<unknown> = Promise.resolve();
     type PendingCompile = { promise: Promise<unknown>; started: boolean };
     const pendingCompiles: PendingCompile[] = [];
+    compileQueueDepth = () => pendingCompiles.length;
     renderer.compileAsync = ((
       compileScene: THREE.Object3D,
       compileCamera: THREE.Camera,
       targetScene: THREE.Scene | null = null
     ) => {
+      // compileAsync keys render objects by the active render context. Capture
+      // that context NOW, at the call site: the serialized run may begin many
+      // frames later, after another pass has restored a different target. This
+      // is what lets detached streamed owners warm the exact scene-pass cache
+      // instead of compiling against the default framebuffer and rebuilding
+      // synchronously on their first real frame.
+      const requestedRenderTarget = renderer.getRenderTarget();
+      const requestedCubeFace = renderer.getActiveCubeFace();
+      const requestedMipmapLevel = renderer.getActiveMipmapLevel();
+      const requestedMRT = renderer.getMRT();
+      const requestedOpaque = renderer.opaque;
+      const requestedTransparent = renderer.transparent;
       const pending: PendingCompile = {
         promise: Promise.resolve(),
         started: false,
@@ -499,9 +513,23 @@ export function createRenderPipeline(
         }
         exclusiveCompileDepth++;
         const startedAt = performance.now();
+        const liveRenderTarget = renderer.getRenderTarget();
+        const liveCubeFace = renderer.getActiveCubeFace();
+        const liveMipmapLevel = renderer.getActiveMipmapLevel();
+        const liveMRT = renderer.getMRT();
+        const liveOpaque = renderer.opaque;
+        const liveTransparent = renderer.transparent;
         try {
+          renderer.setRenderTarget(requestedRenderTarget, requestedCubeFace, requestedMipmapLevel);
+          renderer.setMRT(requestedMRT);
+          renderer.opaque = requestedOpaque;
+          renderer.transparent = requestedTransparent;
           return await original(compileScene, compileCamera, targetScene);
         } finally {
+          renderer.setRenderTarget(liveRenderTarget, liveCubeFace, liveMipmapLevel);
+          renderer.setMRT(liveMRT);
+          renderer.opaque = liveOpaque;
+          renderer.transparent = liveTransparent;
           exclusiveCompileDepth--;
           // M6 attribution: bursty compiles are the prime hitch suspect. The
           // per-frame counts land on the spiking frame in tracer.spikes.
@@ -549,6 +577,28 @@ export function createRenderPipeline(
       await admittedBeforeArrival.promise.catch(() => {});
     };
   }
+
+  /**
+   * Prepare a detached object in the exact render context used by the live
+   * beauty scene pass. Calling renderer.compileAsync() with the default target
+   * warms a different r185 NodeManager cache key and does not prevent a
+   * synchronous first-draw build inside PassNode.
+   */
+  const prepareSceneOwner = (owner: THREE.Object3D): Promise<void> => {
+    const renderTarget = renderer.getRenderTarget();
+    const activeCubeFace = renderer.getActiveCubeFace();
+    const activeMipmapLevel = renderer.getActiveMipmapLevel();
+    const renderMRT = renderer.getMRT();
+    renderer.setRenderTarget(scenePass.renderTarget);
+    renderer.setMRT(scenePass.getMRT());
+    try {
+      // The wrapper above snapshots this target synchronously before enqueuing.
+      return renderer.compileAsync(owner, camera, scene);
+    } finally {
+      renderer.setRenderTarget(renderTarget, activeCubeFace, activeMipmapLevel);
+      renderer.setMRT(renderMRT);
+    }
+  };
 
   /**
    * PassNode.compileAsync does not restore its render state if compilation
@@ -958,6 +1008,7 @@ export function createRenderPipeline(
     setCompileBlocker(blocker: () => boolean) {
       compileBlocked = blocker;
     },
+    prepareSceneOwner,
     /** Wait for GPU owner compilation that was already admitted before a
      * covered world relocation. Does not start or force any new work. */
     waitForCompileIdle,
@@ -967,6 +1018,10 @@ export function createRenderPipeline(
      * record (with their first-draw pipeline creations) in one giant frame. */
     get compileHeld() {
       return exclusiveCompileDepth > 0;
+    },
+    /** Probe/debug visibility into serialized owner preparation backlog. */
+    get compileQueueDepth() {
+      return compileQueueDepth();
     },
     /** The currently selected persistent fullscreen pipeline. */
     get pipeline() {

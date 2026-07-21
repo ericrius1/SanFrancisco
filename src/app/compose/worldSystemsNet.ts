@@ -1476,8 +1476,8 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     await waitForCityGenRenderWindow();
 
     // CityGen improves every district, so start it before fauna and authored
-    // sites. The ring yields once per detached WebGPU owner and can cancel stale
-    // cell work by generation before driver compilation starts.
+    // sites. The ring yields once per detached WebGPU prototype and can cancel
+    // stale owner work before driver compilation starts.
     // The dynamic import lives inside the builder so zone boot fetches the
     // citygen chunk only at wake, not at reveal.
     const buildCityGenRing = async () => {
@@ -1502,9 +1502,10 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
           schedule: scheduler.schedule,
           beforeRenderOwnership: (isCurrent) => waitForCityGenRenderWindow(isCurrent),
           // The ring keeps these exact owners detached and submits them one at
-          // a time, yielding a presentation frame before every compile. It is
-          // not published until every exterior driving variant is prepared.
-          prepareRenderOwner: (owner) => renderer.compileAsync(owner, camera, scene)
+          // a time. Prepare against the live beauty PassNode target—not the
+          // default framebuffer context—or r185 rebuilds the node graph on the
+          // owner's first real scene-pass frame.
+          prepareRenderOwner: (owner) => pipeline.prepareSceneOwner(owner)
         }
       );
     } catch (error) {

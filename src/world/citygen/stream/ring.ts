@@ -31,6 +31,7 @@ import {
 } from "./detailAdmission";
 import type { CityGridIngestReply, PackedCityGrid } from "./ingestTypes";
 import { frontGate, type FrontGateHandle } from "../../../render/frontGate";
+import { tracer } from "../../../core/hitchTracer";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 
@@ -225,10 +226,8 @@ interface CellState {
   iz: number;
   entries: Entry[];
   chunk: ChunkLOD | null;
-  /** A finished cell stays on the baked tile until its ACTUAL beauty owner has
-   *  been prepared in the live render context. Only `ready` may suppress baked
-   *  meshes or admit detail/collider work. */
-  phase: "building" | "awaiting-prepare" | "preparing" | "ready" | "fallback";
+  /** Only `ready` may suppress baked meshes or admit detail/collider work. */
+  phase: "building" | "ready" | "fallback";
   /** M12: set while this published cell's chunk mesh is hidden by the front
    *  visibility gate (beyond the sweeping materialize front). Publication,
    *  residency and warm are untouched — visibility only. */
@@ -419,8 +418,8 @@ export async function createCityGenRing(
     tiles: Tiles;
     schedule?: ScheduleFn;
     /** Yield to the host immediately before creating/preparing a WebGPU owner.
-     * Per-cell calls receive a current-generation predicate so a destination
-     * change can cancel work before a non-cancellable driver compile begins. */
+     * Calls may receive a current-owner predicate so a destination change can
+     * cancel work before a non-cancellable driver compile begins. */
     beforeRenderOwnership?: (isCurrent?: () => boolean) => Promise<boolean | void>;
     /** Prepare one detached render owner in the exact host render context. The
      * production host uses WebGPURenderer.compileAsync(owner, camera, scene). */
@@ -462,8 +461,8 @@ export async function createCityGenRing(
     }
     try {
       // Yield once before EVERY driver request. The host passes `isCurrent`
-      // through its arrival wait, so a teleport can abort a pending old-cell
-      // owner instead of serializing the destination behind it.
+      // through its arrival wait, so obsolete owner work can abort instead of
+      // serializing the current destination behind it.
       const admitted = await ctx.beforeRenderOwnership?.(isCurrent);
       if (admitted === false) {
         exteriorPipelinePrepareCancellations++;
@@ -759,9 +758,6 @@ export async function createCityGenRing(
   let centerTileZ = NaN;
   let activeCellLoad = 0;
   let disposed = false;
-  type ActiveChunkPrepare = { cell: CellState; token: number; generation: number };
-  let activeChunkPrepare: ActiveChunkPrepare | null = null;
-  let nextChunkPrepareToken = 1;
   const touchMaterializedCell = (key: string, entries: Entry[]): void => {
     materializedCells.delete(key);
     materializedCells.set(key, entries);
@@ -1589,10 +1585,7 @@ export async function createCityGenRing(
   };
   const finishCellRetirement = (task: CellRetirement) => {
     const { cell } = task;
-    // compileAsync is not cancellable. Do not dispose buffers/materials under
-    // an active driver request; its completion is invalidated by loaded identity
-    // and owns the final cleanup. Every non-active cell can retire immediately.
-    if (activeChunkPrepare?.cell !== cell) disposeCellChunk(cell);
+    disposeCellChunk(cell);
     retiringCells.delete(cell.key);
     trimMaterializedCells();
   };
@@ -1736,20 +1729,11 @@ export async function createCityGenRing(
     cellHydrationScheduled = true;
     schedule("build", pumpCellHydration);
   };
-  const cellWithinCurrentPrepareRing = (cell: CellState) =>
-    loaded.get(cell.key) === cell &&
-    Math.abs(cell.ix - centerTileX) <= activeCellLoad &&
-    Math.abs(cell.iz - centerTileZ) <= activeCellLoad;
-  const chunkPrepareIsCurrent = (task: ActiveChunkPrepare) =>
-    !disposed &&
-    activeChunkPrepare === task &&
-    task.generation === cellGeneration &&
-    task.cell.phase === "preparing" &&
-    cellWithinCurrentPrepareRing(task.cell);
-
-  // Publish only after the ACTUAL cell beauty owner has compiled. The shadow
-  // proxy is deliberately not part of this prepare: it remains on the app's
-  // already-booted depth-only path and attaches in the same atomic swap.
+  // The retained beauty prototype was prepared in the live scene-pass context,
+  // and the covered boot frame retained the matching static-shadow signature.
+  // Every cell shares those layouts/materials, so compiling each unique merged
+  // geometry again would only create an exclusive upload window. Publication
+  // can therefore stay synchronous and atomic over the complete baked fallback.
   const publishChunk = (cell: CellState) => {
     if (!cell.chunk?.mesh) throw new Error(`finished CityGen cell ${cell.key} has no beauty mesh`);
     const suppressed: Entry[] = [];
@@ -1761,6 +1745,7 @@ export async function createCityGenRing(
         suppressed.push(e);
       }
       cell.phase = "ready";
+      tracer.count("citygenChunkPublish");
     } catch (error) {
       // Restore the complete baked side if any step of publication fails; a
       // half-suppressed cell is worse than retaining its lower-quality tile.
@@ -1807,91 +1792,14 @@ export async function createCityGenRing(
     }
   };
 
-  const completeChunkPrepare = (task: ActiveChunkPrepare, prepared: boolean) => {
-    if (activeChunkPrepare !== task) return;
-    const current = chunkPrepareIsCurrent(task);
-    activeChunkPrepare = null;
-    const { cell } = task;
-    if (prepared && current) {
-      try {
-        publishChunk(cell);
-      } catch (error) {
-        // Keep the complete baked fallback if publication itself cannot honor
-        // the atomic swap. This cell remains ineligible for detail/colliders.
-        cell.phase = "fallback";
-        disposeCellChunk(cell);
-        console.warn(`[citygen] prepared cell publication failed (${cell.key}); retaining baked city`, error);
-      }
-    } else if (current) {
-      // A genuine prepare failure while still current is terminal for this cell.
-      // Retrying a failing owner every scan would trade one hitch for a loop.
+  const finishChunk = (cell: CellState) => {
+    try {
+      publishChunk(cell);
+    } catch (error) {
       cell.phase = "fallback";
       disposeCellChunk(cell);
-    } else if (!disposed && loaded.get(cell.key) === cell) {
-      // Teleport/latest-wins invalidated a non-cancellable compile. If the cell
-      // remains loaded, leave it detached and eligible for the newly centered
-      // nearest-first pass; otherwise retirement owns cleanup below.
-      cell.phase = "awaiting-prepare";
-    } else {
-      disposeCellChunk(cell);
+      console.warn(`[citygen] cell publication failed (${cell.key}); retaining baked city`, error);
     }
-    pumpChunkPrepare();
-  };
-
-  // Exactly one cell prepare can exist at a time. Completed cells themselves
-  // are the bounded backlog (the loaded ring); no Promise/FIFO is created for
-  // every finish. Re-selecting nearest to the current center after each result
-  // makes a teleport latest-wins without special locations or device tuning.
-  function pumpChunkPrepare() {
-    if (disposed || activeChunkPrepare || !ctx.prepareRenderOwner) return;
-    // Loop only over malformed completed cells; valid work returns immediately
-    // after starting its sole Promise. This avoids recursive failure depth.
-    while (true) {
-      let nearest: CellState | null = null;
-      let nearestD2 = Infinity;
-      for (const cell of loaded.values()) {
-        if (cell.phase !== "awaiting-prepare" || !cellWithinCurrentPrepareRing(cell)) continue;
-        const d2 = (cell.ix - centerTileX) ** 2 + (cell.iz - centerTileZ) ** 2;
-        if (d2 < nearestD2) { nearest = cell; nearestD2 = d2; }
-      }
-      if (!nearest) return;
-      const mesh = nearest.chunk?.mesh;
-      if (!mesh) {
-        nearest.phase = "fallback";
-        disposeCellChunk(nearest);
-        continue; // a malformed cell must not strand valid cells behind it
-      }
-      nearest.phase = "preparing";
-      const task: ActiveChunkPrepare = {
-        cell: nearest,
-        token: nextChunkPrepareToken++,
-        generation: cellGeneration,
-      };
-      activeChunkPrepare = task;
-      void prepareOwner(`chunk-lod:cell:${nearest.key}:${task.token}`, mesh, () => chunkPrepareIsCurrent(task))
-        .then((prepared) => completeChunkPrepare(task, prepared), (error) => {
-          // prepareOwner catches host/gate failures, but keep this terminal handler
-          // so a future implementation change cannot create an unhandled Promise.
-          if (chunkPrepareIsCurrent(task)) {
-            exteriorPipelinePrepareFailures++;
-            console.warn(`[citygen] detached cell prepare rejected (${task.cell.key})`, error);
-          }
-          completeChunkPrepare(task, false);
-        });
-      return;
-    }
-  }
-
-  // A completed cell keeps its baked tile visible while the actual beauty mesh
-  // prepares detached. Hosts without a prepare callback retain the portable,
-  // immediate atomic swap used before this WebGPU-specific convergence gate.
-  const finishChunk = (cell: CellState) => {
-    if (!ctx.prepareRenderOwner) {
-      publishChunk(cell);
-      return;
-    }
-    cell.phase = "awaiting-prepare";
-    pumpChunkPrepare();
   };
 
   return {
@@ -1959,9 +1867,6 @@ export async function createCityGenRing(
         activeCellHydration = null;
         pendingCells.clear();
         accum = SCAN_EVERY;
-        // Re-rank completed detached cells around the new destination. An
-        // in-flight old-generation prepare remains serialized but cannot publish.
-        pumpChunkPrepare();
       }
       // Smoothed player speed (m/s) throttles only NEW detail admission below.
       // Existing detail remains at the fixed authored quality/radius, so speeding
@@ -2001,7 +1906,6 @@ export async function createCityGenRing(
         ) / tile)
       );
       activeCellLoad = cellLoad;
-      pumpChunkPrepare();
       const cellUnload = cellLoad + 1;
       // Fixed visual retention/exit band: no runtime quality contraction.
       const detailR = CT.detailRadius;
@@ -2254,8 +2158,6 @@ export async function createCityGenRing(
       for (const cell of loaded.values()) {
         buildings += cell.entries.length;
         if (cell.phase === "ready") cellsReady++;
-        else if (cell.phase === "awaiting-prepare") cellsAwaitingPrepare++;
-        else if (cell.phase === "preparing") cellsPreparing++;
         for (const e of cell.entries) {
           if (e.detail) detail++;
           if (e.interior) interiors++;
@@ -2270,7 +2172,7 @@ export async function createCityGenRing(
         cellsReady,
         cellsAwaitingPrepare,
         cellsPreparing,
-        activeChunkPrepare: activeChunkPrepare !== null,
+        activeChunkPrepare: false,
         cellGeneration,
         hydrationQueued: cellQueue.length + (activeCellHydration ? 1 : 0),
         detailBuildQueued: detailBuildQueue.length,

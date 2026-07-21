@@ -212,6 +212,31 @@ async function main() {
   }
   console.log(`[probe] citygen ring ${await ev(c, `!!(window.__sf.citygenRing&&window.__sf.citygenRing.current)`) ? "ready" : "NOT ready (continuing)"}`);
 
+  // The app intentionally drains optional feature compiles after CityGen.
+  // Do not attribute one of those unrelated owners to the first driving leg:
+  // wait until the serialized compile gate has stayed idle for five seconds.
+  console.log("[probe] waiting for compile quiet...");
+  let compileQuietSince = Date.now();
+  let compileCount = -1;
+  let compileQuiet = false;
+  const compileQuietDeadline = Date.now() + 300000;
+  while (Date.now() < compileQuietDeadline) {
+    const state = await ev(c, `({
+      count: window.__sf.tracer?.summary?.().counts?.gpuCompile ?? 0,
+      held: Boolean(window.__sf.pipeline?.compileHeld),
+      queued: Number(window.__sf.pipeline?.compileQueueDepth ?? 0)
+    })`);
+    if (state.held || state.queued > 0 || state.count !== compileCount) {
+      compileCount = state.count;
+      compileQuietSince = Date.now();
+    } else if (Date.now() - compileQuietSince >= 5000) {
+      compileQuiet = true;
+      break;
+    }
+    await sleep(500);
+  }
+  console.log(`[probe] compile ${compileQuiet ? "quiet" : "quiet wait timed out"} after ${compileCount} owner prepares`);
+
   // in-page recorder: one extra rAF loop, cheap counter polls per frame
   await ev(c, `(()=>{
     const sf = window.__sf;
@@ -250,6 +275,7 @@ async function main() {
     const a0 = leg.anchors[0];
     await ev(c, `window.__tp(${a0.x}, ${a0.z}, ${a0.facing}, '${leg.mode}', ${a0.alt ?? "undefined"})`);
     await sleep(4000);
+    await ev(c, `window.__sf.tracer?.reset?.()`);
     const citygenBefore = await ev(c, `window.__sf.citygenRing?.current?.stats?.() ?? null`);
 
     // Start CDP sampling outside the measured rAF window: Chrome can spend
@@ -287,6 +313,7 @@ async function main() {
     const { profile } = await c.send("Profiler.stop");
     const rec = await ev(c, `window.__rec`);
     const citygenAfter = await ev(c, `window.__sf.citygenRing?.current?.stats?.() ?? null`);
+    const tracer = await ev(c, `window.__sf.tracer ? { summary: window.__sf.tracer.summary(), spikes: [...window.__sf.tracer.spikes] } : null`);
 
     // ---------- analyze ----------
     const t = rec.t;
@@ -339,7 +366,7 @@ async function main() {
       fpsMean: +(dts.length / secs).toFixed(1),
       p50: q(0.5), p95: q(0.95), p99: q(0.99), max: +Math.max(0, ...dts).toFixed(1),
       hitches: { over20ms: count(20), over33ms: count(33), over50ms: count(50), perMinOver33: +(count(33) / (secs / 60)).toFixed(1) },
-      spikes: spikeRows, legTop, profWall0, citygenBefore, citygenAfter
+      spikes: spikeRows, legTop, profWall0, citygenBefore, citygenAfter, tracer
     };
     legReports.push(report);
     console.log(`  frames=${report.frames} p50=${report.p50} p95=${report.p95} p99=${report.p99} max=${report.max}  >33ms:${report.hitches.over33ms} (${report.hitches.perMinOver33}/min)`);
