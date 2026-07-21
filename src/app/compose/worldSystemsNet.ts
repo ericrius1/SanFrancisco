@@ -21,6 +21,7 @@ import type {  } from "../../world/missionDolores";
 import { WILD_REGIONS } from "../../world/wildlands/regions";
 import { BUENA_VISTA_REGION } from "../../world/buenaVista";
 import { BACKGROUND_STREAM_LIMIT } from "../../world/tiles";
+import { sutroTowerArrivalForDestination } from "../../world/sutroTower";
 import type { PlayerMode } from "../../player/types";
 import {  PAINT_COLORS } from "../../fx/graffiti";
 import {  ProxySet } from "../../core/worldQueries";
@@ -656,7 +657,9 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     remotes,
     embodiments,
     arrival: worldArrival,
-    resolveAuthoredArrival: (x, z, label) => authoredRegions.arrivalForDestination(x, z, label),
+    resolveAuthoredArrival: (x, z, label) =>
+      sutroTowerArrivalForDestination(x, z, label) ??
+      authoredRegions.arrivalForDestination(x, z, label),
     releaseGameplay: releaseGameplayForNavigation
   });
   const applyPlaceHistory = (step: -1 | 1) => navigation.applyHistory(step);
