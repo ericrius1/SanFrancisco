@@ -24,6 +24,7 @@ import {
 } from "./style";
 import { HangGlidingUI, type HangGlidingResult } from "./ui";
 import { HangGlidingWorldVisuals } from "./world";
+import { HangGlidingOceanLights } from "./oceanLights";
 
 export type HangGlidingPhase = "idle" | "flying" | "result";
 
@@ -39,6 +40,8 @@ export class HangGlidingExperience {
   #physics: Physics;
   #scene: THREE.Scene;
   #world: HangGlidingWorldVisuals;
+  #oceanLights: HangGlidingOceanLights;
+  #sunElevation: () => number;
   #glider: THREE.Group;
   #presentation: HangGliderPresentation;
   #style: HangGliderStyle;
@@ -58,12 +61,15 @@ export class HangGlidingExperience {
   #stallAnnounced = false;
   #disposed = false;
 
-  constructor(map: WorldMap, physics: Physics, scene: THREE.Scene) {
+  constructor(map: WorldMap, physics: Physics, scene: THREE.Scene, sunElevation: () => number) {
     this.#map = map;
     this.#physics = physics;
     this.#scene = scene;
+    this.#sunElevation = sunElevation;
     this.course = createHangGlidingCourse(map);
     this.#world = new HangGlidingWorldVisuals(this.course);
+    this.#oceanLights = new HangGlidingOceanLights(map);
+    this.#world.root.add(this.#oceanLights.group);
     this.#style = loadHangGliderStyle();
     const glider = createHangGliderMesh(this.#style);
     this.#glider = glider.root;
@@ -119,6 +125,7 @@ export class HangGlidingExperience {
       rootInScene: this.root.parent === this.#scene,
       courseVisible: this.#world.courseRoot.visible,
       playerHangGliding: this.#lastPlayer?.hangGliding ?? false,
+      oceanLights: this.#oceanLights.debugState,
       telemetry: this.#lastPlayer?.hangGliderTelemetry ?? null,
       style: this.#style
     };
@@ -190,6 +197,7 @@ export class HangGlidingExperience {
     if (this.#disposed) return;
     this.#activeInput = input;
     this.#world.update(time, this.#gate);
+    this.#oceanLights.update(time, this.#phase === "flying", this.#sunElevation());
     if (this.#phase === "idle") {
       if (!this.#awake || player.mode !== "walk" || player.riding) {
         this.#ui.setPrompt(null);
@@ -283,6 +291,7 @@ export class HangGlidingExperience {
     // The glider is activity-owned even while parked under the world root.
     // Detach it before world teardown so its geometry has one disposer.
     this.#glider.removeFromParent();
+    this.#oceanLights.dispose();
     this.#world.dispose();
     (this.#glider.userData.dispose as (() => void) | undefined)?.();
     this.#physics.removeQuerySolid(this.#platformBody);
@@ -407,6 +416,7 @@ export class HangGlidingExperience {
     this.#score = 0;
     this.#resultRemaining = 0;
     this.#world.setCourseVisible(false);
+    this.#oceanLights.hide();
     this.#parkGlider();
     this.#ui.hide();
     this.#lastPlayer = null;

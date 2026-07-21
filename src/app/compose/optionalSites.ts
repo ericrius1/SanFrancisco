@@ -592,7 +592,7 @@ export function createOptionalSites({
   const loadHangGliding = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createHangGliding } = await import("../../gameplay/hangGliding");
     await stage();
-    const experience = createHangGliding(map, physics, scene);
+    const experience = createHangGliding(map, physics, scene, () => sky.sunElevation);
     try {
       await experience.ready;
       await prepareOptionalRoot("hang-gliding", experience.root, stage, compile);
