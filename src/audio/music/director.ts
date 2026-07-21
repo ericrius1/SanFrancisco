@@ -53,7 +53,8 @@ export const LOFI_MUSIC_TUNING = tunables("lofiMusic", {
   phrases: { v: 0.85, min: 0, max: 1, step: 0.01, label: "phrases" },
   wobble: { v: 0.8, min: 0, max: 1, step: 0.01, label: "tape wow" },
   reverb: { v: 0.9, min: 0, max: 1, step: 0.01, label: "reverb" },
-  pace: { v: 1, min: 0.4, max: 2, step: 0.05, label: "pace ×" }
+  pace: { v: 1, min: 0.4, max: 2, step: 0.05, label: "pace ×" },
+  dayCheer: { v: 1, min: 0, max: 1.5, step: 0.05, label: "day cheer" }
 });
 
 const LOOKAHEAD = 1.6; // seconds of schedule horizon
@@ -175,6 +176,13 @@ export class LofiMusicDirector {
     };
   }
 
+  /** Daylight-scaled cheer bias — exactly 0 at night, so every formula that
+   *  multiplies by it reduces to the untouched night behavior. */
+  get #cheer(): number {
+    const v = Number(LOFI_MUSIC_TUNING.values.dayCheer);
+    return this.#daylight * Math.min(1.5, Math.max(0, v));
+  }
+
   update(dt: number, o: MusicFrameInput): void {
     const T = LOFI_MUSIC_TUNING.values;
     // The HUD music level is an ACTIVITY gate here (don't keep the shared ctx
@@ -257,8 +265,9 @@ export class LofiMusicDirector {
       const p = this.#texture;
       const day = this.#daylight;
       const groove = p.groove * Number(T.beats) * this.#sectionMul.groove;
-      this.#stemPlayer.setTarget("beatWarm", groove * day * (1 - p.brush));
-      this.#stemPlayer.setTarget("beatBrush", groove * day * p.brush);
+      const grooveLift = 1 + 0.22 * Math.min(this.#cheer, 1); // day-only lift
+      this.#stemPlayer.setTarget("beatWarm", groove * day * (1 - p.brush) * grooveLift);
+      this.#stemPlayer.setTarget("beatBrush", groove * day * p.brush * grooveLift);
       this.#stemPlayer.setTarget("beatDusk", groove * (1 - day) * 0.95);
       this.#stemPlayer.setTarget("dust", p.dust * Number(T.dust) * this.#sectionMul.dust);
       this.#stemPlayer.update(dt, now);
@@ -457,10 +466,11 @@ export class LofiMusicDirector {
       1.5
     );
     const m = this.#sectionMul;
+    const cheer = Math.min(this.#cheer, 1); // 0 at night — night gains unchanged
     this.#keysBus.gain.setTargetAtTime(p.epiano * Number(T.keys) * 0.95 * m.keys, now, 1.5);
-    this.#padBus.gain.setTargetAtTime(p.pad * Number(T.pads) * m.pad, now, 1.5);
+    this.#padBus.gain.setTargetAtTime(p.pad * Number(T.pads) * m.pad * (1 - 0.22 * cheer), now, 1.5);
     this.#bassBus.gain.setTargetAtTime(p.bass * Number(T.bass) * m.bass, now, 1.5);
-    this.#sparkleBus.gain.setTargetAtTime(Number(T.sparkle) * 0.9 * m.sparkle, now, 1.5);
+    this.#sparkleBus.gain.setTargetAtTime(Number(T.sparkle) * 0.9 * m.sparkle * (1 + 0.15 * cheer), now, 1.5);
     this.#revSend.gain.setTargetAtTime(p.reverb * Number(T.reverb), now, 1.5);
     // melodic phrase presence follows the region's sparkle character
     this.#phrasePlayer?.setGain(Number(T.phrases) * (0.35 + 0.65 * p.sparkle) * m.phrases, now);
@@ -470,12 +480,13 @@ export class LofiMusicDirector {
    *  by the region's character (pad-heavy places drift, groovy places ride). */
   #pickSection(): void {
     const p = this.#texture;
+    const cheer = this.#cheer; // 0 at night — night section odds unchanged
     const weights: Record<SectionId, number> = {
-      full: 0.3,
+      full: 0.3 * (1 + 0.25 * cheer),
       keysOnly: 0.2 + 0.15 * p.epiano,
-      padDrift: 0.16 + 0.3 * p.pad,
-      beatFocus: (0.08 + 0.3 * p.groove) * 1.4,
-      breath: 0.1
+      padDrift: (0.16 + 0.3 * p.pad) * Math.max(0.2, 1 - 0.45 * cheer),
+      beatFocus: (0.08 + 0.3 * p.groove) * 1.4 * (1 + 0.5 * cheer),
+      breath: 0.1 * Math.max(0.3, 1 - 0.35 * cheer)
     };
     weights[this.#sectionId] = 0;
     if (this.#prevSectionId === "breath") weights.breath = 0;
@@ -507,15 +518,19 @@ export class LofiMusicDirector {
 
     // dawn/dusk are a probability crossfade, so the two modes interleave
     const mode = rng() < day ? this.#keyDayMode : this.#keyNightMode;
-    this.#degree = pickNextDegree(this.#degree, rng);
-    const size = rng() < 0.35 ? 5 : 4;
+    const cheer = this.#cheer; // 0 at night — night harmony untouched
+    this.#degree = pickNextDegree(this.#degree, rng, MODES[mode], cheer);
+    const size = rng() < 0.35 + 0.15 * Math.min(cheer, 1) ? 5 : 4;
     const pcs = degreeChordPcs(this.#keyRoot, MODES[mode], this.#degree, size);
     const midis = leadVoices(this.#prevVoices, pcs, KEYS_LO + this.#register, KEYS_HI + this.#register);
     this.#prevVoices = midis;
 
     const pace = Math.max(0.2, Number(LOFI_MUSIC_TUNING.values.pace));
     const dur =
-      (p.chordSeconds / pace) * (1 + 0.5 * (1 - day)) * (0.9 + rng() * 0.25);
+      (p.chordSeconds / pace) *
+      (1 + 0.5 * (1 - day)) *
+      (0.9 + rng() * 0.25) *
+      (1 - 0.12 * Math.min(cheer, 1));
 
     // the voicing window wanders a few semitones over minutes — verses sit
     // low and warm, later passages lift and open
@@ -586,7 +601,11 @@ export class LofiMusicDirector {
       if (def && this.#phrasePlayer.trigger(def, t + 0.5 + rng() * 0.9, semis + drift, 0.5 + rng() * 0.3)) {
         this.#lastPhraseId = def.id;
         this.#phrasePending = false;
-        const gap = (70 - 46 * p.sparkle) * (1 + (1 - day) * 0.6) * (0.6 + rng() * 0.8);
+        const gap =
+          (70 - 46 * p.sparkle) *
+          (1 + (1 - day) * 0.6) *
+          (0.6 + rng() * 0.8) *
+          (1 - 0.22 * Math.min(cheer, 1));
         this.#nextPhraseT = t + gap;
       }
       // a false trigger just started the fetch — stays pending for the next chord
@@ -632,7 +651,9 @@ export class LofiMusicDirector {
     const interval = 20 - p.sparkle * 15; // dense regions ping every ~5s, sparse ~20s
     const nightStretch = 1 + (1 - day) * 0.8;
     const sectionStretch = 1 / Math.max(0.3, this.#sectionMul.sparkle);
-    this.#nextSparkleT = t + interval * nightStretch * sectionStretch * (0.45 + rng() * 1.1);
+    const cheerSqueeze = 1 - 0.2 * Math.min(this.#cheer, 1); // day-only densify
+    this.#nextSparkleT =
+      t + interval * nightStretch * sectionStretch * cheerSqueeze * (0.45 + rng() * 1.1);
   }
 
   /* -------------------------------------------------------------- voices */
