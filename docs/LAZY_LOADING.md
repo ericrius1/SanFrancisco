@@ -48,6 +48,46 @@ optional decal, the shaping-room module is dynamically imported, catalog choices
 load one at a time, and remote board art is proximity-gated behind local surf
 activation.
 
+## Arrival priority ladder (destination content loads FIRST)
+
+After a teleport or boot spawn, the destination loads in this order — never
+"whole city first, destination last":
+
+1. Ground carpet + terrain + the point-materialize ripple (the arrival
+   coordinator's own work; the travel cover waits only for this).
+2. The destination exhibit (optional site / tea garden essential).
+3. Nearby vegetation — grass, flowers, trees inside the destination's own
+   residency rings.
+4. Everything else: far tile detail, background scenery, quiet-window work.
+
+Mechanics (copy these, do not reinvent):
+
+- `pipeline.compileAsyncPrioritized` is the arrival compile lane: it jumps the
+  serialized compile queue, bypasses the ring-settle/arrival compile blocker,
+  and near-skips the stillness wait. Ordinary `renderer.compileAsync` stays
+  hard-blocked until the ring settles — that is correct for background scenery
+  and wrong for destination content.
+- Optional sites get the lane automatically: `reprioritizeForArrival` flags the
+  destination site `priority`, which skips the background queue + quiet windows
+  and dispatches its `context.compile` to the priority lane. A NEW SITE NEEDS
+  NO EXTRA WORK beyond registering in `optionalWorldSites` and passing
+  `context.compile` into `prepareOptionalRoot`/`warmRootPaced`.
+- Exhibit-site vegetation (SiteFoliageStreamer) rides the arrival vegetation
+  lane when its registration ring covers the arrival focus: admission skips the
+  quiet window (still after exhibit construction idle) and the warm uses the
+  priority lane. Automatic for new registrations.
+- Wildlands destinations: `prepareDestinationEssentials` primes the lawn under
+  the cover and fires `requestWildlandsTreePrime` (wildlands.prepareAt) after
+  the exhibit; both compile on the priority lane.
+- The tea garden mirrors this with `ensureEssential(signal, {priority: true})`
+  plus lane-routed optional foliage when destination-bound.
+- Never put a destination-bound load behind `waitForWorldBackgroundWindow`:
+  its settled/arrival gates are hard and its deadline caps only the motion
+  wait. Quiet windows are for content the player did NOT travel to.
+
+QA: `node tools/arrival-priority-probe.mjs` boots at the tea garden and far-
+teleports to the archery range, asserting exhibit + near-vegetation timings.
+
 ## Zone-only boot (`?zone=`)
 
 `?zone=<id>` boots a "pocket world": a minimal substrate plus one destination

@@ -14,7 +14,7 @@
 // WHEN of each fetch are byte-for-byte the prior behavior.
 import * as THREE from "three/webgpu";
 import { warmRootPaced } from "../../render/warmStaticRegion";
-import { SiteFoliageStreamer } from "../../world/vegetation/siteFoliage";
+import { SiteFoliageStreamer, SiteFoliageYieldError } from "../../world/vegetation/siteFoliage";
 import { windGustValue } from "../../world/vegetation/runtime";
 import { GOLDMAN_SITE_CENTER, GOLDMAN_SUPPRESSED_BUILDINGS } from "../../world/goldenGateTennis/meta";
 import { CORONA_HEIGHTS_SUMMIT, CORONA_DOG_PARK } from "../../world/coronaHeights/meta";
@@ -84,6 +84,11 @@ export type OptionalSiteId =
   | "beach-pianist";
 type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
 type OptionalSiteStage = () => Promise<void>;
+type OptionalSiteCompile = (
+  object: THREE.Object3D,
+  camera: THREE.Camera,
+  scene: THREE.Scene
+) => Promise<unknown>;
 type OptionalSiteLoadContext = {
   /** Abortable stage boundary: waits for admission, then throws if the load
    * was aborted or the player left residency. Use between stages whose
@@ -92,6 +97,12 @@ type OptionalSiteLoadContext = {
   /** Admission wait without abort semantics, for stages after a
    * construction step the site cannot roll back. */
   waitStage: OptionalSiteStage;
+  /** Pipeline warm entry: dispatches to the arrival priority compile lane
+   * while the site is the teleport/boot destination, else the ordinary
+   * serialized background path. Dynamic — an in-flight load upgraded to the
+   * priority lane by a new arrival gets the fast lane for its remaining
+   * compiles. */
+  compile: OptionalSiteCompile;
   signal: AbortSignal;
 };
 type OptionalWorldSite = {
@@ -156,6 +167,7 @@ export function createOptionalSites({
   authoredRegions,
   worldQueries,
   waitForWorldBackgroundWindow,
+  priorityCompile,
   revealedPromise,
   getFoliageOn,
   getRevealed,
@@ -186,6 +198,10 @@ export function createOptionalSites({
   authoredRegions: AuthoredRegionStreamer;
   worldQueries: WorldQueries;
   waitForWorldBackgroundWindow: (extraQuietMs?: number, deadline?: number) => Promise<void>;
+  /** pipeline.compileAsyncPrioritized: the destination-exhibit compile lane
+   * (jumps queued scenery, bypasses the reveal blocker, near-skips
+   * stillness). */
+  priorityCompile: OptionalSiteCompile;
   revealedPromise: Promise<void>;
   getFoliageOn: () => boolean;
   getRevealed: () => boolean;
@@ -255,24 +271,55 @@ export function createOptionalSites({
     requestAnimationFrame(settle);
     setTimeout(settle, 250);
   });
+  // Pre-commit arrival phases: the resolver/committer own the main thread to
+  // plan the destination and cut the player over. Once the arrival reaches its
+  // loading phases the destination is fixed and its ground work is mostly
+  // async, so the exhibit's construction can overlap the cover and the
+  // materialize sweep — its compiles ride the priority lane, which bypasses
+  // the reveal blocker.
+  const ARRIVAL_PRE_COMMIT_STATES = new Set(["resolving", "committing"]);
   const optionalSiteAdmission = async (site: OptionalWorldSite): Promise<void> => {
     if (site.priority) {
-      // Destination content. The travel cover keeps the main thread for the
-      // arrival's own cells; the first frames after it lifts belong to us.
-      while (worldArrival.active) await presentationFrameOrTimeout();
+      // Destination content: start as soon as the arrival has committed the
+      // destination instead of after the whole arrival transaction ends.
+      while (
+        worldArrival.active && ARRIVAL_PRE_COMMIT_STATES.has(worldArrival.snapshot.state)
+      ) {
+        await presentationFrameOrTimeout();
+      }
       await presentationFrameOrTimeout();
       return;
     }
     const deadline = site.eligibleSince > 0
       ? site.eligibleSince + OPTIONAL_SITE_STARVATION_CAP_MS
       : Infinity;
-    await waitForWorldBackgroundWindow(700, deadline);
+    // The quiet-window park is settle-gated and uninterruptible on its own; a
+    // teleport that flags THIS site priority (or aborts it) must not leave the
+    // load stuck behind the whole city fill. Race the park against both.
+    const signal = site.controller?.signal ?? null;
+    let admissionSettled = false;
+    const interrupt = (async () => {
+      while (!admissionSettled && !site.priority && !(signal?.aborted ?? false)) {
+        await presentationFrameOrTimeout();
+      }
+    })();
+    try {
+      await Promise.race([waitForWorldBackgroundWindow(700, deadline), interrupt]);
+    } finally {
+      admissionSettled = true;
+    }
+    if (signal?.aborted) throw signal.reason ?? optionalSiteAbortError();
+    if (site.priority) return optionalSiteAdmission(site);
   };
   const optionalSiteStagesFor = (
     site: OptionalWorldSite,
     signal: AbortSignal
-  ): Pick<OptionalSiteLoadContext, "stage" | "waitStage"> => ({
+  ): Pick<OptionalSiteLoadContext, "stage" | "waitStage" | "compile"> => ({
     waitStage: () => optionalSiteAdmission(site),
+    compile: (object, warmCamera, warmScene) =>
+      site.priority
+        ? priorityCompile(object, warmCamera, warmScene)
+        : renderer.compileAsync(object, warmCamera, warmScene),
     stage: async () => {
       if (signal.aborted) throw signal.reason ?? optionalSiteAbortError();
       await optionalSiteAdmission(site);
@@ -312,7 +359,8 @@ export function createOptionalSites({
   const prepareOptionalRoot = async (
     label: string,
     root: THREE.Object3D,
-    stage: OptionalSiteStage = waitForOptionalSiteStage
+    stage: OptionalSiteStage = waitForOptionalSiteStage,
+    compile?: OptionalSiteCompile
   ): Promise<void> => {
     const parent = root.parent;
     const renderState: Array<{ object: THREE.Object3D; visible: boolean; frustumCulled: boolean }> = [];
@@ -333,7 +381,7 @@ export function createOptionalSites({
       // that froze rendering ~1 s when a dense site hydrated at an arrival.
       await warmRootPaced(renderer, camera, scene, root, async () => {
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
-      });
+      }, 8, compile);
     } catch (error) {
       // Compilation is a presentation optimization, never a reason to discard
       // a successfully constructed site. An abortable stage may still retire
@@ -372,7 +420,7 @@ export function createOptionalSites({
     refreshOptionalSiteDebug();
   };
 
-  const loadGoldman = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadGoldman = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createGoldenGateTennisSite } = await import("../../world/goldenGateTennis");
     await stage();
     let site: GoldenGateTennisSite | null = null;
@@ -382,7 +430,7 @@ export function createOptionalSites({
         physics,
         daylight: () => sky.sunElevation > 0
       });
-      await prepareOptionalRoot("goldman", site.group, stage);
+      await prepareOptionalRoot("goldman", site.group, stage, compile);
       // Swap the generic clubhouse only when its authored replacement is ready
       // to attach. Any failure restores the baked fallback immediately.
       for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
@@ -449,7 +497,7 @@ export function createOptionalSites({
     }
   };
 
-  const loadArchery = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadArchery = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createArchery } = await import("../../gameplay/archery");
     await stage();
     // Construction registers physics and gate state the site cannot yet roll
@@ -458,28 +506,28 @@ export function createOptionalSites({
       nature,
       daylight: () => sky.sunElevation > 0.05
     });
-    await prepareOptionalRoot("archery", game.root, waitStage);
+    await prepareOptionalRoot("archery", game.root, waitStage, compile);
     archery = game;
     optionalSiteGateRegistrations.archery = siteGate.register(game.siteHooks());
     refreshOptionalSiteDebug();
   };
 
-  const loadPup = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadPup = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createPupPen } = await import("../../gameplay/pup");
     await stage();
     const pen = createPupPen(map, physics, scene);
-    await prepareOptionalRoot("pup", pen.root, waitStage);
+    await prepareOptionalRoot("pup", pen.root, waitStage, compile);
     pup = pen;
     optionalSiteGateRegistrations.pup = siteGate.register(pen.siteHooks());
     refreshOptionalSiteDebug();
   };
 
-  const loadFortMasonEnsemble = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadFortMasonEnsemble = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createFortMasonEnsemble } = await import("../../gameplay/fortMasonEnsemble");
     await stage();
     const ensemble = createFortMasonEnsemble({ map, net, player, input, hud, chase });
     try {
-      await prepareOptionalRoot("fort-mason ensemble", ensemble.root, stage);
+      await prepareOptionalRoot("fort-mason ensemble", ensemble.root, stage, compile);
       fortMasonEnsemble = ensemble;
       scene.add(ensemble.root);
       sky.invalidateStaticShadows();
@@ -491,12 +539,12 @@ export function createOptionalSites({
     }
   };
 
-  const loadPalace = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadPalace = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createPalaceReverie } = await import("../../gameplay/palaceReverie");
     await stage();
     const game = createPalaceReverie(map, scene);
     try {
-      await prepareOptionalRoot("palace-reverie", game.root, stage);
+      await prepareOptionalRoot("palace-reverie", game.root, stage, compile);
       palaceReverie = game;
       optionalSiteGateRegistrations.palace = siteGate.register(game.siteHooks());
       refreshOptionalSiteDebug();
@@ -507,7 +555,7 @@ export function createOptionalSites({
     }
   };
 
-  const loadAfterlight = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadAfterlight = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createAfterlight } = await import("../../gameplay/afterlight");
     await stage();
     const experience = createAfterlight(map, scene, nature);
@@ -522,7 +570,7 @@ export function createOptionalSites({
         await stage();
         await warmRootPaced(renderer, camera, scene, experience.root, async () => {
           await new Promise<void>((r) => requestAnimationFrame(() => r()));
-        });
+        }, 8, compile);
       } catch (error) {
         if (isAbortError(error)) throw error;
         console.warn("[afterlight] deferred compile failed:", error);
@@ -541,13 +589,13 @@ export function createOptionalSites({
     }
   };
 
-  const loadHangGliding = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadHangGliding = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createHangGliding } = await import("../../gameplay/hangGliding");
     await stage();
     const experience = createHangGliding(map, physics, scene);
     try {
       await experience.ready;
-      await prepareOptionalRoot("hang-gliding", experience.root, stage);
+      await prepareOptionalRoot("hang-gliding", experience.root, stage, compile);
       hangGliding = experience;
       optionalSiteGateRegistrations["hang-gliding"] = siteGate.register(experience.siteHooks());
       refreshOptionalSiteDebug();
@@ -558,11 +606,11 @@ export function createOptionalSites({
     }
   };
 
-  const loadCorona = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadCorona = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { CoronaHeightsPark: LoadedCoronaHeightsPark } = await import("../../world/coronaHeights");
     await stage();
     const park = new LoadedCoronaHeightsPark(map, physics);
-    await prepareOptionalRoot("corona-heights", park.group, waitStage);
+    await prepareOptionalRoot("corona-heights", park.group, waitStage, compile);
     park.onDogAudioCue = (dog, cue) => dogParkAudio.cue(dog, cue);
     coronaHeights = park;
     scene.add(park.group);
@@ -570,39 +618,39 @@ export function createOptionalSites({
     refreshOptionalSiteDebug();
   };
 
-  const loadLandsEnd = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadLandsEnd = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { LandsEndRegion: LoadedLandsEndRegion } = await import("../../world/landsEnd");
     await stage();
     const region = new LoadedLandsEndRegion(map);
     // The eye-walker's GLB + rider arm later (near the labyrinth); warm their
     // pipelines off-frame when that happens.
-    region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root, waitStage);
-    await prepareOptionalRoot("lands-end", region.group, waitStage);
+    region.walker.prepareRender = (root) => prepareOptionalRoot("lands-end-walker", root, waitStage, compile);
+    await prepareOptionalRoot("lands-end", region.group, waitStage, compile);
     landsEnd = region;
     scene.add(region.group);
     sky.invalidateStaticShadows();
     refreshOptionalSiteDebug();
   };
 
-  const loadWaveOrgan = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadWaveOrgan = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { WaveOrgan: LoadedWaveOrgan } = await import("../../world/waveOrgan");
     await stage();
     const organ = new LoadedWaveOrgan(map, nature);
-    await prepareOptionalRoot("wave-organ", organ.group, waitStage);
+    await prepareOptionalRoot("wave-organ", organ.group, waitStage, compile);
     waveOrgan = organ;
     scene.add(organ.group);
     sky.invalidateStaticShadows();
     refreshOptionalSiteDebug();
   };
 
-  const loadBeachPianist = async ({ stage, waitStage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadBeachPianist = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { BeachPianist: LoadedBeachPianist } = await import("../../world/beachPianist");
     await stage();
     // The whole site is procedural; its pipelines warm off-frame at PRIME range
     // (prepareRender), so the first visible flip never compiles mid-frame.
     const site = new LoadedBeachPianist({
       map,
-      prepareRender: (root) => prepareOptionalRoot("beach-pianist", root, waitStage)
+      prepareRender: (root) => prepareOptionalRoot("beach-pianist", root, waitStage, compile)
     });
     scene.add(site.group);
     beachPianist = site;
@@ -610,7 +658,7 @@ export function createOptionalSites({
     refreshOptionalSiteDebug();
   };
 
-  const loadSutroBaths = async ({ stage }: OptionalSiteLoadContext): Promise<void> => {
+  const loadSutroBaths = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createSutroBaths } = await import("../../world/sutroBaths");
     await stage();
     let candidate: import("../../world/sutroBaths").SutroBaths | null = null;
@@ -625,7 +673,7 @@ export function createOptionalSites({
       // its optional living layer (foliage, bathers and nearby effects) here.
       candidate.setFoliageVisible(true);
       await candidate.ready;
-      await prepareOptionalRoot("sutro-baths", candidate.group, stage);
+      await prepareOptionalRoot("sutro-baths", candidate.group, stage, compile);
 
       candidate.setFoliageVisible(getFoliageOn());
       scene.add(candidate.group);
@@ -735,23 +783,77 @@ export function createOptionalSites({
       });
     }
   };
+  // Arrival vegetation lane: the grass/flowers/trees around a teleport or boot
+  // destination are the player's immediate surroundings, so they follow the
+  // destination exhibit — ahead of far tile detail and background scenery.
+  // Quiet windows hard-gate on the ring settling (the whole city fill), which
+  // is exactly the inversion this lane exists to break; entries outside the
+  // destination's ring keep the ordinary background admission.
+  const ARRIVAL_VEGETATION_WINDOW_MS = 60_000;
+  let arrivalFocus: { x: number; z: number; atMs: number } | null = null;
+  // Bumped on every arrival: parked background admissions watch it so a new
+  // destination can interrupt a quiet-window wait instead of hiding behind it.
+  let arrivalFocusEpoch = 0;
+  const noteArrivalFocus = (x: number, z: number): void => {
+    arrivalFocus = { x, z, atMs: performance.now() };
+    arrivalFocusEpoch++;
+  };
+  const onArrivalVegetationLane = (registration: {
+    x: number;
+    z: number;
+    loadDistance: number;
+  }): boolean => {
+    if (!arrivalFocus) return false;
+    if (performance.now() - arrivalFocus.atMs > ARRIVAL_VEGETATION_WINDOW_MS) return false;
+    return (
+      Math.hypot(arrivalFocus.x - registration.x, arrivalFocus.z - registration.z) <=
+      registration.loadDistance
+    );
+  };
   siteFoliage = new SiteFoliageStreamer({
     scene,
-    admit: async (eligibleSince) => {
+    admit: async (registration, eligibleSince) => {
       await optionalSiteConstructionIdle();
-      await waitForWorldBackgroundWindow(
-        700,
-        eligibleSince > 0 ? eligibleSince + OPTIONAL_SITE_STARVATION_CAP_MS : Infinity
-      );
+      // Destination-near vegetation starts right behind the exhibit instead of
+      // waiting out a quiet window the post-arrival streaming never opens.
+      if (onArrivalVegetationLane(registration)) return;
+      // Single build slot: if an arrival lands while this background entry is
+      // parked, yield the slot so the destination's own vegetation can start.
+      const epochAtPark = arrivalFocusEpoch;
+      let admissionSettled = false;
+      const interrupt = (async () => {
+        while (!admissionSettled && arrivalFocusEpoch === epochAtPark) {
+          await presentationFrameOrTimeout();
+        }
+      })();
+      try {
+        await Promise.race([
+          waitForWorldBackgroundWindow(
+            700,
+            eligibleSince > 0 ? eligibleSince + OPTIONAL_SITE_STARVATION_CAP_MS : Infinity
+          ),
+          interrupt
+        ]);
+      } finally {
+        admissionSettled = true;
+      }
+      if (arrivalFocusEpoch !== epochAtPark) {
+        if (onArrivalVegetationLane(registration)) return;
+        throw new SiteFoliageYieldError();
+      }
     },
     // The compile admission needs the same treatment as build admission: an
     // uncapped quiet window never opens for a player who keeps moving, and an
     // exhibit that started constructing meanwhile takes the GPU first.
-    prepare: (label, root) =>
-      prepareOptionalRoot(label, root, async () => {
-        await optionalSiteConstructionIdle();
-        await waitForWorldBackgroundWindow(700, performance.now() + OPTIONAL_SITE_STARVATION_CAP_MS);
-      })
+    prepare: (label, root, registration) =>
+      onArrivalVegetationLane(registration)
+        ? prepareOptionalRoot(label, root, async () => {
+            await optionalSiteConstructionIdle();
+          }, priorityCompile)
+        : prepareOptionalRoot(label, root, async () => {
+            await optionalSiteConstructionIdle();
+            await waitForWorldBackgroundWindow(700, performance.now() + OPTIONAL_SITE_STARVATION_CAP_MS);
+          })
   });
   siteFoliage.setVisible(getFoliageOn());
   const coronaFoliageRules = {
@@ -1067,8 +1169,14 @@ export function createOptionalSites({
     site.state = "queued";
     const controller = new AbortController();
     site.controller = controller;
-    const { stage, waitStage } = optionalSiteStagesFor(site, controller.signal);
-    const run = optionalSiteQueue.then(async () => {
+    const { stage, waitStage, compile } = optionalSiteStagesFor(site, controller.signal);
+    // Destination-lane sites do not wait behind the serialized background
+    // queue: an earlier site parked at a quiet-window admission (or mid-warm
+    // behind the reveal blocker) must never delay the exhibit the player is
+    // actively traveling to. Their promise still lands on the queue below, so
+    // background sites keep serializing behind them.
+    const admissionQueue = site.priority ? Promise.resolve() : optionalSiteQueue;
+    const run = admissionQueue.then(async () => {
       await revealedPromise;
       if (controller.signal.aborted) throw controller.signal.reason ?? optionalSiteAbortError();
       // Destination-lane sites start at once so their chunk fetch can overlap
@@ -1080,7 +1188,7 @@ export function createOptionalSites({
       }
       site.state = "loading";
       console.info(`[lazy-site] ${site.label} loading…`);
-      await site.load({ stage, waitStage, signal: controller.signal });
+      await site.load({ stage, waitStage, compile, signal: controller.signal });
       site.state = "ready";
       console.info(`[lazy-site] ${site.label} ready`);
       applyOptionalSitePerfGate(site);
@@ -1208,6 +1316,9 @@ export function createOptionalSites({
   const reprioritizeOptionalSitesForArrival = (
     destination: Readonly<{ x: number; z: number }>
   ): void => {
+    // Both teleports and the boot spawn route through here, so this is the one
+    // place the arrival vegetation lane learns its focus.
+    noteArrivalFocus(destination.x, destination.z);
     for (const site of optionalWorldSites) {
       const destDistance = Math.hypot(destination.x - site.x, destination.z - site.z);
       const inFlight = site.state === "queued" || site.state === "loading";

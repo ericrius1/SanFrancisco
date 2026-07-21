@@ -50,10 +50,10 @@ async function ev(c, expr) {
   return r.result?.value;
 }
 
-const SITES = `(__sf?.optionalWorldSites ?? []).map(s => ({ id: s.id, state: s.state, priority: s.priority }))`;
+const SITES = `(window.__sf?.optionalWorldSites ?? []).map(s => ({ id: s.id, state: s.state, priority: s.priority }))`;
 const siteState = async (c, id) =>
   (await ev(c, SITES)).find((s) => s.id === id)?.state ?? "missing";
-const FOLIAGE = `(__sf?.siteFoliage?.debugSnapshot() ?? [])`;
+const FOLIAGE = `(window.__sf?.siteFoliage?.debugSnapshot() ?? [])`;
 const foliageState = async (c, id) =>
   (await ev(c, FOLIAGE)).find((e) => e.id === id)?.status ?? "missing";
 
