@@ -147,10 +147,13 @@ async function main() {
       const pan = runFrames({ lx: 0.72, ly: -0.34 });
       minimap.focusWorldPoint(384, -1952, 7200);
       minimap.update(true);
-      const zoom = runFrames({ ry: -0.58 });
+      const rightPan = runFrames({ rx: -0.64, ry: 0.41 });
+      minimap.focusWorldPoint(384, -1952, 7200);
+      minimap.update(true);
+      const zoom = runFrames({ rt: 0.58 });
 
       // Ocean Beach sits inside the finite world but outside the overview's
-      // center clamp. Drive the real left-stick path until the selection
+      // center clamp. Drive the real right-stick path until the selection
       // crosshair reaches it, then press A through the owning map method.
       const surfTarget = minimap.focusLandmark("Ocean Beach · Surf");
       if (!surfTarget) throw new Error("Ocean Beach surf landmark was not registered");
@@ -171,8 +174,8 @@ async function main() {
         const magnitude = Math.hypot(dxNorm, dzNorm) || 1;
         const strength = Math.min(1, Math.max(0.25, magnitude / 0.08));
         window.__setMapProbePad({
-          lx: (dxNorm / magnitude) * strength,
-          ly: (dzNorm / magnitude) * strength
+          rx: (dxNorm / magnitude) * strength,
+          ry: (dzNorm / magnitude) * strength
         });
         window.__sf.tick(frameDt);
       }
@@ -186,10 +189,12 @@ async function main() {
         distancePx: surfDistancePx,
         state: minimap.debugState()
       };
-      return { pan, zoom, surf, canvas: { width: canvas.width, height: canvas.height } };
+      return { pan, rightPan, zoom, surf, canvas: { width: canvas.width, height: canvas.height } };
     }, { frameDt: FRAME_DT, motionFrames: MOTION_FRAMES });
 
     const panCenters = result.pan.states.map((state) => state.center);
+    const rightPanCenters = result.rightPan.states.map((state) => state.center);
+    const rightPanSpans = result.rightPan.states.map((state) => state.spanX);
     const zoomSpans = result.zoom.states.map((state) => state.spanX);
     assert(
       result.pan.frameDraws === MOTION_FRAMES,
@@ -201,7 +206,23 @@ async function main() {
     );
     assert(
       panCenters.every((center, index) => index === 0 || center.x > panCenters[index - 1].x),
-      "controller pan center did not advance monotonically"
+      "left-stick pan center did not advance monotonically"
+    );
+    assert(
+      result.rightPan.frameDraws === MOTION_FRAMES,
+      `right-stick pan drew ${result.rightPan.frameDraws}/${MOTION_FRAMES} input frames`
+    );
+    assert(
+      rightPanCenters.every(
+        (center, index) => index === 0 || (
+          center.x < rightPanCenters[index - 1].x && center.z > rightPanCenters[index - 1].z
+        )
+      ),
+      "right-stick pan center did not advance monotonically"
+    );
+    assert(
+      rightPanSpans.every((span) => Math.abs(span - rightPanSpans[0]) < 1e-6),
+      "right-stick pan changed map zoom"
     );
     assert(
       zoomSpans.every((span, index) => index === 0 || span < zoomSpans[index - 1]),
@@ -225,9 +246,13 @@ async function main() {
       url: BASE_URL,
       controllerFrames: MOTION_FRAMES,
       panCanvasDraws: result.pan.frameDraws,
+      rightPanCanvasDraws: result.rightPan.frameDraws,
       zoomCanvasDraws: result.zoom.frameDraws,
       panStart: panCenters[0],
       panEnd: panCenters.at(-1),
+      rightPanStart: rightPanCenters[0],
+      rightPanEnd: rightPanCenters.at(-1),
+      rightPanSpanM: rightPanSpans[0],
       zoomStartSpanM: zoomSpans[0],
       zoomEndSpanM: zoomSpans.at(-1),
       surfNavigation: {

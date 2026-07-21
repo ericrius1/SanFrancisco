@@ -326,10 +326,19 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // branch renders itself; minimapOpen (inlined at createGameLoop) gates it.
   const runMinimapFrame = (frameDt: number) => {
     const axes = input.mapPadAxes();
-      minimap.padPan(axes.lx, axes.ly, frameDt);
-      // RT / stick-up zoom in; LT / stick-down zoom out. The selector stays
+      // Either stick pans. Cap their combined vector so using both together is
+      // never faster than one full stick and opposing inputs cancel naturally.
+      let panX = axes.lx + axes.rx;
+      let panY = axes.ly + axes.ry;
+      const panMagnitude = Math.hypot(panX, panY);
+      if (panMagnitude > 1) {
+        panX /= panMagnitude;
+        panY /= panMagnitude;
+      }
+      minimap.padPan(panX, panY, frameDt);
+      // RT zooms in; LT zooms out. The selector stays
       // centered until the finite-world framing clamp requires an edge offset.
-      minimap.padZoom(axes.rt - axes.lt - axes.ry, frameDt);
+      minimap.padZoom(axes.rt - axes.lt, frameDt);
       if (input.pressedRaw("Space")) minimap.padSelectAtCursor();
       if (input.firePressed) minimap.padTeleport();
       if (input.pressedRaw("Enter") || input.pressedRaw("NumpadEnter")) minimap.padTeleport();

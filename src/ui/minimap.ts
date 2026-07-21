@@ -1828,7 +1828,7 @@ export class Minimap {
   }
 
   /** Zoom the expanded map toward the gamepad selection point.
-   *  Positive zoomAxis zooms in — callers pass RT−LT−RY. */
+   *  Positive zoomAxis zooms in — callers pass RT−LT. */
   padZoom(zoomAxis: number, dt: number) {
     if (!this.expanded || Math.abs(zoomAxis) < 0.02) return;
     this.#cancelBigRecenterAnim();
