@@ -89,6 +89,11 @@ const V = {
   quat: new THREE.Quaternion()
 };
 
+// Every local avatar rig uses the same head proportions. Keeping the camera
+// point just beyond the visor gives first person a true animated eye anchor
+// without letting the face, hair, or hat intersect the near plane.
+const FIRST_PERSON_EYE_LOCAL = new THREE.Vector3(0, 0.21, -0.18);
+
 const SURF_FOOT = {
   boardInverse: new THREE.Matrix4(),
   soleToBoard: new THREE.Matrix4(),
@@ -557,14 +562,80 @@ export class Player {
     this.#mocapPoseDriver = driver;
   }
 
-  /** Hide only the local walk embodiment once the camera reaches the FPS eye. */
+  /**
+   * Exact animated eye point for the active local embodiment. Vehicle rigs use
+   * the same head anchor as walking, so cockpit cameras inherit suspension,
+   * wave, flight, and rider motion instead of hovering at the physics centre.
+   */
+  firstPersonViewPosition(out: THREE.Vector3): THREE.Vector3 {
+    let rig: Rig | null = null;
+    switch (this.mode) {
+      case "walk":
+        rig = this.#walkRig;
+        break;
+      case "drive":
+        if (this.#driverRig.group.parent) rig = this.#driverRig;
+        break;
+      case "scooter":
+        rig = this.#scooterRig;
+        break;
+      case "plane":
+        rig = this.#pilotRig;
+        break;
+      case "boat":
+        rig = this.#helmRig;
+        break;
+      case "speedboat":
+        rig = this.#speedRig;
+        break;
+      case "drone":
+        if (this.#broomRigAttached && this.#riderRig.group.parent) rig = this.#riderRig;
+        break;
+      case "board":
+        if (this.#riderRig.group.parent === this.meshes.board) rig = this.#riderRig;
+        break;
+      case "surf":
+        rig = this.#surfRig;
+        break;
+      case "bird":
+        rig = this.#phoenixRiderRig;
+        break;
+    }
+    if (rig) return rig.head.localToWorld(out.copy(FIRST_PERSON_EYE_LOCAL));
+
+    const mesh = this.meshes[this.mode];
+    if (this.mode === "drone") {
+      // The stock drone is intentionally uncrewed: first person is its physical
+      // nose gimbal rather than an invented rider floating over the chassis.
+      return mesh.localToWorld(out.set(0, -0.18, -0.72));
+    }
+    const cockpit = mesh.userData.cockpit as Cockpit | undefined;
+    if (cockpit) {
+      const [x, y, z] = cockpit.seat;
+      return mesh.localToWorld(out.set(x, y + 0.79, z - 0.18));
+    }
+    return out.copy(this.renderPosition).addScaledVector(V.up, 0.8);
+  }
+
+  /** Hide the local avatar/rider once the camera reaches its animated eye. */
   setFirstPersonView(active: boolean) {
     this.#firstPersonView = active;
-    // Chase refreshes this flag every frame in every travel mode. Never let
-    // that camera-only update resurrect the parked walk rig after a vehicle
-    // switch; embodiment ownership still belongs to the active player mode.
     this.meshes.walk.visible =
       this.mode === "walk" && !active && !this.#externalEmbodimentHidden;
+    this.#riderRig.group.visible =
+      !(active && (this.mode === "board" || (this.mode === "drone" && this.#broomRigAttached)));
+    this.#surfRig.group.visible = !(active && this.mode === "surf");
+    this.#scooterRig.group.visible = !(active && this.mode === "scooter");
+    const driveCockpit = this.meshes.drive.userData.cockpit as Cockpit | undefined;
+    this.#driverRig.group.visible =
+      Boolean(this.#driverRig.group.parent && driveCockpit && !driveCockpit.hide) &&
+      !(active && this.mode === "drive");
+    this.#helmRig.group.visible = !(active && this.mode === "boat");
+    this.#speedRig.group.visible = !(active && this.mode === "speedboat");
+    this.#pilotRig.group.visible = !(active && this.mode === "plane");
+    this.#phoenixRiderRig.group.visible =
+      Boolean(this.meshes.bird.userData.phoenixAsset) &&
+      !(active && this.mode === "bird");
   }
 
   /** Let an in-world activity rig embody the local player without moving the camera target. */
@@ -591,7 +662,7 @@ export class Player {
     const p = this.position;
     // A mode switch can bypass the chase camera for a frame (cinematics/orbit).
     // Never carry the local-only FPS visibility override into another embodiment.
-    if (mode !== "walk") this.setFirstPersonView(false);
+    this.setFirstPersonView(false);
     this.#destroyBody();
     this.riding = false; // any body spawn ends a passenger ride
     this.mode = mode;
@@ -1771,7 +1842,9 @@ export class Player {
   #animate(dt: number) {
     this.#animT += dt;
     this.#phoenixRiderRig.group.visible =
-      this.mode === "bird" && Boolean(this.meshes.bird.userData.phoenixAsset);
+      this.mode === "bird" &&
+      !this.#firstPersonView &&
+      Boolean(this.meshes.bird.userData.phoenixAsset);
     if (this.mode !== "walk") applyBallGlow(this.#ballMaterial, 0);
     if (this.mode === "walk") {
       const r = this.#walkRig;
@@ -1902,7 +1975,7 @@ export class Player {
       const crouch = Math.min(1, this.speed / 28);
       poseRide(this.#riderRig, lean, crouch, this.speed > 8, this.#animT);
       this.#riderRig.group.rotation.z = lean * 0.35;
-    } else if (this.mode === "drive" && this.#driverRig.group.visible) {
+    } else if (this.mode === "drive") {
       const steer = this.#modes.drive.steerVis;
       poseDrive(this.#driverRig, steer, this.#animT, this.#hasWheel);
       this.#wheel.spin.rotation.z = steer * 2.3;

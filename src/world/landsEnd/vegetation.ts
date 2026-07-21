@@ -106,7 +106,7 @@ export function createLandsEndFoliage(map: WorldMap): LandsEndFoliage {
     visibleDistance: 1300,
     nearRadius: 96,
     nearExitRadius: 120,
-    nearMax: 8
+    nearMax: 18
   });
   group.add(trees.group);
 

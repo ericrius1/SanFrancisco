@@ -28,6 +28,7 @@ import {
   saturate,
   sin,
   smoothstep,
+  uniform,
   uv,
   vec2,
   vec3,
@@ -35,6 +36,7 @@ import {
   vertexStage
 } from "three/tsl";
 import { LIGHT_SCALE } from "../config";
+import { tunables } from "../core/persist";
 import { materializeField } from "../render/materialize";
 import type { TerrainClipmap } from "./terrainClipmap";
 
@@ -47,8 +49,9 @@ const TAU = Math.PI * 2;
 export const SCAN_FIELD_RADIUS = 1750;
 
 /** Density tiers: [outer radius, point spacing] — dense underfoot, sparse far
- *  (the far dots subtend pixels anyway). ~155k points total. */
+ *  (the far dots subtend pixels anyway). ~178k points total. */
 const TIERS: readonly [number, number][] = [
+  [90, 1],
   [150, 1.7],
   [600, 4.5],
   [SCAN_FIELD_RADIUS, 10]
@@ -61,10 +64,100 @@ const RISE_BAND = 90;
 /** Bright white-hot window hugging the wavefront. */
 const EDGE_GLOW_BAND = 70;
 
-const CYAN = new THREE.Vector3(0.2, 0.85, 0.8);
-const AMBER = new THREE.Vector3(1.0, 0.55, 0.18);
+const CYAN = new THREE.Vector3(0.055, 0.5, 0.56);
+const AMBER = new THREE.Vector3(1.0, 0.32, 0.075);
 /** Fraction of points that read as warm "data returns" (screenshot look). */
-const AMBER_FRACTION = 0.07;
+const AMBER_FRACTION = 0.018;
+
+/**
+ * Live visual controls for the scan field. The shader expresses size in world
+ * units, so `screenScale` is the distance multiplier that keeps an in-focus
+ * return close to a small screen-space point. Background points widen into
+ * dim bokeh discs after `dofStart`, approximating a focused scanner camera
+ * without paying for a fullscreen depth-of-field pass during normal play.
+ */
+export const TERRAIN_SCAN_PARTICLE_TUNING = tunables("terrainScanParticles", {
+  screenScale: {
+    v: 0.0025,
+    min: 0.0008,
+    max: 0.004,
+    step: 0.00005,
+    label: "point size"
+  },
+  closeSize: {
+    v: 0.05,
+    min: 0.006,
+    max: 0.08,
+    step: 0.002,
+    label: "close point floor"
+  },
+  dofStart: {
+    v: 180,
+    min: 80,
+    max: 800,
+    step: 10,
+    label: "DOF start (m)"
+  },
+  dofEnd: {
+    v: 850,
+    min: 300,
+    max: 1800,
+    step: 25,
+    label: "DOF full (m)"
+  },
+  backgroundBokeh: {
+    v: 3.5,
+    min: 1,
+    max: 7,
+    step: 0.1,
+    label: "background bokeh"
+  },
+  backgroundBrightness: {
+    v: 0.2,
+    min: 0.04,
+    max: 0.6,
+    step: 0.01,
+    label: "background brightness"
+  },
+  brightness: {
+    v: 1.06,
+    min: 0.2,
+    max: 1.8,
+    step: 0.02,
+    label: "field brightness"
+  },
+  edgeBoost: {
+    v: 2.4,
+    min: 0,
+    max: 5,
+    step: 0.05,
+    label: "wavefront boost"
+  }
+});
+
+const SCAN_U = {
+  screenScale: uniform(TERRAIN_SCAN_PARTICLE_TUNING.values.screenScale),
+  closeSize: uniform(TERRAIN_SCAN_PARTICLE_TUNING.values.closeSize),
+  dofStart: uniform(TERRAIN_SCAN_PARTICLE_TUNING.values.dofStart),
+  dofEnd: uniform(TERRAIN_SCAN_PARTICLE_TUNING.values.dofEnd),
+  backgroundBokeh: uniform(TERRAIN_SCAN_PARTICLE_TUNING.values.backgroundBokeh),
+  backgroundBrightness: uniform(TERRAIN_SCAN_PARTICLE_TUNING.values.backgroundBrightness),
+  brightness: uniform(TERRAIN_SCAN_PARTICLE_TUNING.values.brightness),
+  edgeBoost: uniform(TERRAIN_SCAN_PARTICLE_TUNING.values.edgeBoost)
+};
+
+/** Push persisted/pane values into the already-compiled scan shader. */
+export function applyTerrainScanParticleTuning(): void {
+  const v = TERRAIN_SCAN_PARTICLE_TUNING.values;
+  SCAN_U.screenScale.value = v.screenScale;
+  SCAN_U.closeSize.value = v.closeSize;
+  SCAN_U.dofStart.value = v.dofStart;
+  SCAN_U.dofEnd.value = Math.max(v.dofStart + 1, v.dofEnd);
+  SCAN_U.backgroundBokeh.value = v.backgroundBokeh;
+  SCAN_U.backgroundBrightness.value = v.backgroundBrightness;
+  SCAN_U.brightness.value = v.brightness;
+  SCAN_U.edgeBoost.value = v.edgeBoost;
+}
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -151,13 +244,19 @@ export function createTerrainScanParticles(clipmap: TerrainClipmap): TerrainScan
       .mul(smoothstep(bounds.minZ, bounds.minZ + 1, worldXZ.y))
       .mul(smoothstep(bounds.maxZ - 1, bounds.maxZ, worldXZ.y).oneMinus());
 
-    // Screen-presence-compensated size (Bay Lights recipe), popped in by the
-    // wave and retired by the dawn.
+    // Small, nearly screen-stable returns replace the old large nearby-orb
+    // clamp. Past the focus range the quad grows into a dim, soft bokeh disc:
+    // only the scan particles pay for the effect, and ordinary world rendering
+    // keeps its zero-DOF post-processing path.
     const camDist = (material.positionNode as N).distance(cameraPosition);
+    const backgroundBlur = smoothstep(SCAN_U.dofStart, SCAN_U.dofEnd, camDist);
+    const backgroundBlurV = vertexStage(backgroundBlur) as N;
+    const bokehScale = mix(float(1), SCAN_U.backgroundBokeh, backgroundBlur);
     const pop = smoothstep(0, 1, birth);
     material.scaleNode = camDist
-      .mul(0.006)
-      .clamp(0.55, 4.2)
+      .mul(SCAN_U.screenScale)
+      .clamp(SCAN_U.closeSize, 2.8)
+      .mul(bokehScale)
       .mul(pop)
       .mul(dawnOut)
       .mul(inBounds);
@@ -173,7 +272,7 @@ export function createTerrainScanParticles(clipmap: TerrainClipmap): TerrainScan
     const edge = saturate(
       float(1).sub((f.frontRadius as N).sub(dist).div(EDGE_GLOW_BAND))
     ).mul(birth.min(1));
-    glow = mix(glow, vec3(1.0, 1.0, 1.0), edge.mul(0.55));
+    glow = mix(glow, vec3(1.0, 1.0, 1.0), edge.mul(0.38));
 
     // Outward-drifting pulse rings across the whole field + per-point twinkle.
     const pulse = sin(dist.mul(0.055).sub(time.mul(6)))
@@ -184,18 +283,31 @@ export function createTerrainScanParticles(clipmap: TerrainClipmap): TerrainScan
     const twinkle = sin(time.mul(2.3).add(seed.mul(TAU * 9)))
       .mul(0.15)
       .add(0.9);
-    const intensity = float(1.5 * LIGHT_SCALE)
+    // Defocused background returns lose energy as their footprint grows. The
+    // live wavefront retains enough gain to remain a legible travelling ridge.
+    const backgroundGain = mix(float(1), SCAN_U.backgroundBrightness, backgroundBlur);
+    const depthGain = mix(backgroundGain, float(1), edge.mul(0.55));
+    const intensity = float(LIGHT_SCALE)
+      .mul(SCAN_U.brightness)
       .mul(twinkle.add(pulse))
-      .mul(float(1).add(edge.mul(2.4)));
+      .mul(float(1).add(edge.mul(SCAN_U.edgeBoost)))
+      .mul(depthGain);
 
     // instanceIndex-derived values must resolve in the vertex stage.
     const shaded = vertexStage(glow.mul(intensity).mul(pop).mul(dawnOut)) as N;
 
-    // Soft round point: radial falloff with a hot core (no texture).
+    // In-focus points are crisp pinpricks. Far points exchange the hot core for
+    // a wide, low-energy lens disc, making terrain behind the focus ridge read
+    // as depth rather than a flat wall of equally sharp dots.
     const d = (uv() as N).sub(0.5).length().mul(2);
-    const soft = saturate(d.oneMinus()).pow(2.2);
-    const core = saturate(d.mul(1.6).oneMinus()).pow(4).mul(0.7);
-    material.colorNode = vec4(shaded.mul(soft.add(core)), 1);
+    const crisp = saturate(d.oneMinus()).pow(2.25);
+    const bokeh = saturate(d.oneMinus()).pow(1.25).mul(0.58);
+    const profile = mix(crisp, bokeh, backgroundBlurV);
+    const core = saturate(d.mul(1.75).oneMinus())
+      .pow(5)
+      .mul(0.55)
+      .mul(backgroundBlurV.oneMinus());
+    material.colorNode = vec4(shaded.mul(profile.add(core)), 1);
 
     material.transparent = true;
     material.blending = THREE.AdditiveBlending;

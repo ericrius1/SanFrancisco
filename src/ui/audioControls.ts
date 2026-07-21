@@ -1,4 +1,4 @@
-import { AUDIO_PREFS, saveAudioPrefs } from "../core/audioSettings";
+import { AUDIO_PREFS, resetAudioPrefs, saveAudioPrefs } from "../core/audioSettings";
 
 export type MocapControlState = "off" | "loading" | "searching" | "tracking" | "error";
 
@@ -172,6 +172,12 @@ export class AudioControls {
 
   get mocapDebugCanvas(): HTMLCanvasElement {
     return this.#mocapDebug;
+  }
+
+  /** Period-key factory reset: restore the mixer model and its slider chrome. */
+  resetToDefaults(): void {
+    resetAudioPrefs();
+    this.#refresh();
   }
 
   /** A brief first-entry pointer toward opt-in voice chat. */

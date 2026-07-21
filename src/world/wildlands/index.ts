@@ -21,6 +21,9 @@ import type { GardenTerrain } from "../garden/layout";
 
 export { wildRegionAt, WILD_REGIONS } from "./layout";
 
+export { tetherTreeCullFocus } from "../vegetation/treeCullFocus";
+import { tetherTreeCullFocus } from "../vegetation/treeCullFocus";
+
 // The three wildlands layers stay separate + independently toggleable (each owns
 // its group); they only share the ground-cover infra (wind, displacers, chunked
 // LOD). Toggle a layer via `wildlands.<layer>.group.visible`.
@@ -49,8 +52,10 @@ export type Wildlands = {
    * rings — it MUST be the player, not the camera: the chase camera orbits the
    * player when you look around, so anchoring the rings to it slides the whole
    * field around you (grass swims / detaches from the ground). `cullFocus`
-   * (defaults to ringFocus) drives the tree distance-culling and legitimately
-   * wants the camera so off-screen groves drop.
+   * (defaults to ringFocus) drives the tree distance-culling; it follows the
+   * camera only once the camera genuinely leaves the player (flyover,
+   * cinematics) — inside the chase-boom tether it snaps to `ringFocus` so
+   * looking around never re-centres the tree rings.
    */
   update(
     ringFocus: { x: number; z: number },
@@ -385,7 +390,7 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
       }
     },
     update(ringFocus, cullFocus = ringFocus, cullCamera) {
-      trees.update(cullFocus); // distance-cull to what the camera sees
+      trees.update(tetherTreeCullFocus(ringFocus, cullFocus));
       flowers.update(ringFocus); // rings stay centred on the player, not the camera
       grass.update(ringFocus);
       if (cullCamera) {

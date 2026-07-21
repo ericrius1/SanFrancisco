@@ -654,7 +654,15 @@ function analyzeScenario(raw, instrumentation) {
       assert.ok(allowed,
         `${raw.label}: ${asset.kind} ${asset.key} started outside the destination minimum`);
     }
-    const sampledBeds = duringPrime.filter((resource) =>
+    // A far arrival may become interactive before its asynchronous visual
+    // minimum settles. At that point resumeBackgroundStreaming records a
+    // release request and worldArrival intentionally returns to idle, so
+    // optional audio is allowed to begin even though the required-only tile
+    // hold remains until the prime settles. Test the interaction boundary,
+    // not that later streamer bookkeeping boundary.
+    const interactionWindowEnd = prime.releaseRequestedT ?? windowEnd;
+    const sampledBeds = instrumentation.resources.filter((resource) =>
+      resource.startT >= prime.startedT && resource.startT < interactionWindowEnd &&
       /\/(?:forest-birds|wind-tree|night-crickets|wind-grass)\.mp3(?:\?|$)/.test(resource.name)
     );
     assert.equal(sampledBeds.length, 0,

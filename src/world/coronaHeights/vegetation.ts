@@ -122,7 +122,7 @@ export function createCoronaHeightsFoliage(
         visibleDistance: 1200,
         nearRadius: 84,
         nearExitRadius: 98,
-        nearMax: 12
+        nearMax: 22
       })
     : null;
   if (trees) group.add(trees.group);

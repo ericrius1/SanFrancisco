@@ -34,6 +34,10 @@ import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
 import { TERRAIN_CLIPMAP_TUNING } from "../world/terrainClipmapTuning";
+import {
+  TERRAIN_SCAN_PARTICLE_TUNING,
+  applyTerrainScanParticleTuning
+} from "../world/terrainScanParticles";
 import { WATER_ECHO_TUNING } from "../world/waterEchoes";
 import type { ContactShadowComplement } from "../render/contactShadows";
 import { OVERLAY_TUNING } from "./overlays/tuning";
@@ -446,6 +450,7 @@ export class DebugPanel {
     this.#applyWireframe(RENDER_TUNING.values.wireframe);
     this.#setFoliageVisible(Boolean(FOLIAGE_TUNING.values.visible));
     this.#tiles?.terrainClipmap?.applyTuning();
+    applyTerrainScanParticleTuning();
     this.#applyShadowTuning();
     for (const record of this.#featureTunings.values()) {
       try {
@@ -942,6 +947,10 @@ export class DebugPanel {
     const terrain = pane.addFolder({ title: "terrain", expanded: false });
     TERRAIN_CLIPMAP_TUNING.bind(terrain, {
       onChange: () => this.#tiles?.terrainClipmap?.applyTuning()
+    });
+    const terrainScan = terrain.addFolder({ title: "scan point field", expanded: false });
+    TERRAIN_SCAN_PARTICLE_TUNING.bind(terrainScan, {
+      onChange: () => applyTerrainScanParticleTuning()
     });
 
     // Scene-wide topology inspection: neutral grey remains available, while

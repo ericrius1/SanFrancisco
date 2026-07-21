@@ -379,6 +379,7 @@ export class HUD {
           { c: ["T"], label: "chat" },
           { c: ["Tab"], label: "toggle UI" },
           { c: ["Esc"], label: "release mouse" },
+          { c: ["⌘"], label: "hold — temporary cursor" },
           { c: ["L"], label: "pointer lock / free cursor" }
         ]
     const rows = allRows

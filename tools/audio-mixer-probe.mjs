@@ -27,6 +27,22 @@ assert.equal(saved.schema, 2, "saved mix omitted its current schema");
 assert.equal(saved.effectsVolume, 0.8);
 assert.equal(saved.soundscapeVolume, 0.2);
 
+audio.AUDIO_PREFS.musicVolume = 0.01;
+audio.AUDIO_PREFS.effectsVolume = 0.02;
+audio.AUDIO_PREFS.soundscapeVolume = 0.03;
+audio.AUDIO_PREFS.voiceVolume = 0.04;
+audio.AUDIO_PREFS.enabled = false;
+audio.saveAudioPrefs();
+audio.resetAudioPrefs();
+assert.deepEqual(audio.AUDIO_PREFS, {
+  musicVolume: 0.42,
+  effectsVolume: 0.68,
+  soundscapeVolume: 0.25,
+  voiceVolume: 0.85,
+  enabled: true
+}, "factory reset did not restore the complete source-default mix");
+assert.equal(store.has("sf-audio"), false, "factory reset left a persisted mixer override");
+
 console.log("audio mixer probe: PASS", {
   effects: audio.effectsAudioLevel(),
   world: audio.soundscapeAudioLevel(),

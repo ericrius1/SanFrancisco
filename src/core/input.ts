@@ -5,8 +5,9 @@ import { INPUT_TUNING } from "../config";
  * Pointer-lock game input. Clicking the canvas (not HUD/UI) re-captures the
  * mouse when unlocked; mouselook deltas accumulate only while locked. Escape is
  * left to the browser's native pointer-lock exit — this layer only syncs via
- * `pointerlockchange`. Tap L toggles free-cursor controls vs pointer-lock
- * controls (a scene click also exits free-cursor and re-locks).
+ * `pointerlockchange`. Holding Command temporarily releases the pointer and
+ * re-captures it on release; tap L toggles persistent free-cursor controls vs
+ * pointer-lock controls (a scene click also exits free-cursor and re-locks).
  * The game keeps simulating while unlocked. While `suspended` (camera-orbit mode)
  * all game inputs read as idle so the player coasts. Global holds that must
  * still work there (Z time-scrub, N look/speed) use `holding()` instead of `down()`.
@@ -177,6 +178,13 @@ export class Input {
   freeCursor = false;
   mouseNDCx = 0;
   mouseNDCy = 0;
+  /** Command is a momentary cursor release, separate from sticky L mode. */
+  #metaHeld = new Set<"MetaLeft" | "MetaRight">();
+  #resumeLockAfterMeta = false;
+
+  get momentaryCursor(): boolean {
+    return this.#metaHeld.size > 0 || this.#resumeLockAfterMeta;
+  }
 
   onLockChange: (locked: boolean) => void = () => {};
   onDeviceChange: (device: "kb" | "pad") => void = () => {};
@@ -262,6 +270,12 @@ export class Input {
     this.#el = el;
 
     window.addEventListener("keydown", (e) => {
+      // Command is a press-and-hold cursor clutch. Handle it before the DOM
+      // field guard so a focus transition during the hold cannot strand state.
+      if (this.#isMetaKey(e)) {
+        this.#beginMomentaryCursor(e);
+        return;
+      }
       // typing into a DOM field (e.g. the "/" tuning panel) must not drive the game
       const t = e.target;
       if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return;
@@ -290,11 +304,19 @@ export class Input {
       if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Slash"].includes(e.code)) e.preventDefault();
     });
     window.addEventListener("keyup", (e) => {
+      if (this.#isMetaKey(e)) {
+        this.#endMomentaryCursor(e);
+        return;
+      }
       this.keys.delete(e.code);
     });
     window.addEventListener("blur", () => {
       this.keys.clear();
       this.fireHeld = false;
+      // Command-Tab and browser chrome shortcuts can consume Meta keyup. A
+      // focus loss cancels the clutch rather than re-capturing on return.
+      this.#metaHeld.clear();
+      this.#resumeLockAfterMeta = false;
       // Drop capture on focus loss; free-cursor mode is sticky until L toggles it.
       this.#lockRequestGeneration++;
       this.#wantLocked = false;
@@ -318,6 +340,9 @@ export class Input {
       this.locked = nowLocked;
       if (!this.locked) this.fireHeld = false;
       this.onLockChange(this.locked);
+      // A very quick Command tap can release before pointerlockchange arrives.
+      // Re-capture only after the browser confirms that the old lock is gone.
+      if (!nowLocked) this.#resumeMomentaryLock();
     });
 
     el.addEventListener("mousedown", (e) => {
@@ -476,8 +501,8 @@ export class Input {
     const deadzone = tune.stickDeadzone;
     // Left stick: deadzone + move curve (vehicles/walk read these axes analog).
     const [lx, ly] = shapeStick(gp.axes[0] ?? 0, gp.axes[1] ?? 0, deadzone, tune.moveResponse);
-    // Right stick: deadzone only here — look curve applied when writing mouse deltas
-    // so expanded-map zoom still gets linear post-deadzone motion.
+    // Right stick: deadzone only here — look curve applied when writing mouse
+    // deltas, while expanded-map pan gets linear post-deadzone motion.
     const [rxLin, ryLin] = shapeStick(gp.axes[2] ?? 0, gp.axes[3] ?? 0, deadzone, 1);
     const lt = gp.buttons[6]?.value ?? 0;
     const rt = gp.buttons[7]?.value ?? 0;
@@ -598,6 +623,45 @@ export class Input {
     return this.#activityCaptured;
   }
 
+  #isMetaKey(event: KeyboardEvent): boolean {
+    return event.key === "Meta" || event.code === "MetaLeft" || event.code === "MetaRight";
+  }
+
+  #metaCode(event: KeyboardEvent): "MetaLeft" | "MetaRight" {
+    return event.code === "MetaRight" || event.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT
+      ? "MetaRight"
+      : "MetaLeft";
+  }
+
+  #beginMomentaryCursor(event: KeyboardEvent): void {
+    const wasHolding = this.#metaHeld.size > 0;
+    this.#metaHeld.add(this.#metaCode(event));
+    if (wasHolding) return;
+
+    // Only restore a lock that existed (or was already requested) before the
+    // hold. Pressing Command while normally unlocked must stay unlocked.
+    this.#resumeLockAfterMeta =
+      !this.freeCursor &&
+      (this.locked || this.#wantLocked || document.pointerLockElement === this.#el);
+    if (this.#resumeLockAfterMeta) this.#dropLock();
+  }
+
+  #endMomentaryCursor(event: KeyboardEvent): void {
+    this.#metaHeld.delete(this.#metaCode(event));
+    if (this.#metaHeld.size === 0) this.#resumeMomentaryLock();
+  }
+
+  #resumeMomentaryLock(): void {
+    if (!this.#resumeLockAfterMeta || this.#metaHeld.size > 0) return;
+    // If exitPointerLock is still in flight, pointerlockchange will call back
+    // into this method once the browser has actually released the old lock.
+    if (document.pointerLockElement === this.#el) return;
+
+    const canRelock = document.hasFocus() && !this.suspended && !this.freeCursor;
+    this.#resumeLockAfterMeta = false;
+    if (canRelock) this.requestLock();
+  }
+
   #toggleFreeCursor() {
     if (this.freeCursor) {
       this.#endFreeCursor(true);
@@ -628,6 +692,12 @@ export class Input {
   requestLock() {
     // Free-cursor mode owns the pointer until L toggles it off.
     if (this.freeCursor) return;
+    // A subsystem may ask to capture while Command is held. Defer that intent
+    // until release so the cursor remains free for the full physical hold.
+    if (this.#metaHeld.size > 0) {
+      this.#resumeLockAfterMeta = true;
+      return;
+    }
     const generation = ++this.#lockRequestGeneration;
     this.#wantLocked = true;
     // Chrome returns a promise and rejects during the post-Esc cooldown —
@@ -645,6 +715,13 @@ export class Input {
   }
 
   releaseLock() {
+    // An overlay/focus owner can release during a Command hold; that newer UI
+    // intent wins, so keyup must not unexpectedly capture the mouse again.
+    this.#resumeLockAfterMeta = false;
+    this.#dropLock();
+  }
+
+  #dropLock(): void {
     // Unconditional: `this.locked` lags reality (pointerlockchange is async) and
     // a pending requestLock grant may still be in flight — clearing the intent
     // flag makes the pointerlockchange handler drop that late grant too.

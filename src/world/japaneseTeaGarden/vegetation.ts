@@ -310,7 +310,7 @@ export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVeget
       visibleDistance: 920,
       nearRadius: 58,
       nearExitRadius: 68,
-      nearMax: 24
+      nearMax: 34
     });
     return trees;
   };

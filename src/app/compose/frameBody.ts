@@ -8,6 +8,7 @@ import { CAMERA_TUNING,  CONFIG,  FOLIAGE_TUNING, RENDER_TUNING, START, START_DE
 import { resetAllTweaks } from "../../core/persist";
 import {  formatInteractPrompt, localizeInteractText } from "../../core/input";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "../../world/oceanBeachWaves";
+import { tetherTreeCullFocus } from "../../world/vegetation/treeCullFocus";
 import {  SKY_TUNING } from "../../world/sky";
 import {
   GHOST_SHIP_DETAIL_WAKE_DISTANCE,
@@ -79,7 +80,7 @@ import type { MainCtx } from "./ctx";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
   const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
   const state = {
     cineHook: null as (((dt: number) => void) | null),
@@ -326,9 +327,19 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // branch renders itself; minimapOpen (inlined at createGameLoop) gates it.
   const runMinimapFrame = (frameDt: number) => {
     const axes = input.mapPadAxes();
-      minimap.padPan(axes.lx, axes.ly, frameDt);
-      // RT / stick-up zoom in; LT / stick-down zoom out. Selector stays centered.
-      minimap.padZoom(axes.rt - axes.lt - axes.ry, frameDt);
+      // Either stick pans. Cap their combined vector so using both together is
+      // never faster than one full stick and opposing inputs cancel naturally.
+      let panX = axes.lx + axes.rx;
+      let panY = axes.ly + axes.ry;
+      const panMagnitude = Math.hypot(panX, panY);
+      if (panMagnitude > 1) {
+        panX /= panMagnitude;
+        panY /= panMagnitude;
+      }
+      minimap.padPan(panX, panY, frameDt);
+      // RT zooms in; LT zooms out. The selector stays
+      // centered until the finite-world framing clamp requires an edge offset.
+      minimap.padZoom(axes.rt - axes.lt, frameDt);
       if (input.pressedRaw("Space")) minimap.padSelectAtCursor();
       if (input.firePressed) minimap.padTeleport();
       if (input.pressedRaw("Enter") || input.pressedRaw("NumpadEnter")) minimap.padTeleport();
@@ -346,6 +357,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         gust: windGustValue(),
         timeOfDay: sky.timeOfDay,
         allowNewLoads: !worldArrival.active
+      });
+      lofiMusic.update(frameDt, {
+        playerPos: player.renderPosition,
+        timeOfDay: sky.timeOfDay,
+        allowStart: !worldArrival.active
       });
       sendLocalPresence(0);
       sendPickleballNetwork();
@@ -412,6 +428,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         gust: windGustValue(),
         timeOfDay: sky.timeOfDay,
         allowNewLoads: !worldArrival.active
+      });
+      lofiMusic.update(frameDt, {
+        playerPos: player.renderPosition,
+        timeOfDay: sky.timeOfDay,
+        allowStart: !worldArrival.active
       });
       // stay social while frozen: peers keep moving, our keepalive keeps flowing
       sendLocalPresence(0);
@@ -537,6 +558,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         gust: windGustValue(),
         timeOfDay: sky.timeOfDay,
         allowNewLoads: !worldArrival.active
+      });
+      lofiMusic.update(frameDt, {
+        playerPos: player.renderPosition,
+        timeOfDay: sky.timeOfDay,
+        allowStart: !worldArrival.active
       });
       sendLocalPresence();
       sendPickleballNetwork();
@@ -778,10 +804,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     const afterlightControlsCaptured =
       !worldArrival.active && (core.state.afterlight?.captureInput(input, frameDt, player) ?? false);
 
-    // ".": factory reset for tweaks — every tweakpane value back to its
-    // source-code default, saved tweaks wiped. Player stays put.
+    // ".": factory reset for tweaks and the audio mixer — every value back to
+    // its source-code default, saved overrides wiped. Player stays put.
     if (!worldArrival.active && input.pressed("Period")) {
       resetAllTweaks();
+      core.audioControls.resetToDefaults();
       resetCrownTweaks();
       resetBayLightsTweaks();
       resetGoldenGateLightsTweaks();
@@ -807,11 +834,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       sky.refreshFogWeatherSource();
       debugPanel.syncNow();
       citygenRing.current?.refreshInteriors();
-      hud.message("Tweaks back to source defaults", 3);
+      hud.message("Tweaks and mixer back to source defaults", 3);
     }
     if (!worldArrival.active && input.pressed("KeyC")) {
-      if (player.mode === "surf") hud.message("Surf camera locked to the wave — E to exit", 1.8);
-      else cycleViewMode();
+      cycleViewMode();
     }
     // R: wireframe overlay (unused elsewhere — retained pass override + camera).
     // Keep transient debug presentation changes behind the identity/loading gate
@@ -1201,9 +1227,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       // wildlands: the grass + flower rings follow the PLAYER (like the core.state.garden ring
       // above) so they stay put when you just look around — the chase camera orbits
       // the player, and anchoring the rings to it slid the whole field around you.
-      // Tree distance-culling still follows the camera so off-screen groves drop.
+      // Tree distance-culling follows the camera only once it truly leaves the
+      // player (flyover/cinematics): inside the chase tether it pins to the
+      // player so looking around never re-centres tree LOD/near rings.
       core.state.wildlands?.update(player.renderPosition, camera.position, camera);
-      core.state.buenaVistaTrees?.update(camera.position);
+      core.state.buenaVistaTrees?.update(
+        tetherTreeCullFocus(player.renderPosition, camera.position)
+      );
     }
     // Nature soundscape rides the same root vegetation gust envelope,
     // and reads the sky clock for dawn choruses / night owls. Cheap out in the
@@ -1214,6 +1244,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       gust: windGustValue(),
       timeOfDay: sky.timeOfDay,
       allowNewLoads: !worldArrival.active
+    });
+    // the lo-fi score breathes alongside the nature ambience everywhere
+    lofiMusic.update(frameDt, {
+      playerPos: player.renderPosition,
+      timeOfDay: sky.timeOfDay,
+      allowStart: !worldArrival.active
     });
     // live loop only: the dogs freeze during pause, so barking there would lie
     dogParkAudio.update(frameDt, player.renderPosition);

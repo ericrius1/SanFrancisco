@@ -79,7 +79,7 @@ export async function installDebugSurfaces(
       graffiti, bubbles, setTool, setColor, sky, farOcclusion: extra.farOcclusion, debugPanel, CONFIG,
       THREE, tick, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
       audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
-      doorAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice,
+      doorAudio, nature, lofiMusic: core.lofiMusic, dogParkAudio, ballImpactAudio, net, remotes, voice,
       minimap, playerLocator, boardWake, abandonedMounts, ghostShipBeacon,
       embodiments, switchMode, paintballs, paintSkins, satchel, buildShareUrl, wakeCity: netW.wakeCity,
       tutorial, teleportToTarget, citygenRing, worldCursor, worldQueries,

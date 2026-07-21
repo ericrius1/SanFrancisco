@@ -598,7 +598,8 @@ export function grassyGround(map: GardenTerrain, x: number, z: number): boolean 
 
   const dx = Math.abs(map.groundHeight(x + 5, z) - map.groundHeight(x - 5, z));
   const dz = Math.abs(map.groundHeight(x, z + 5) - map.groundHeight(x, z - 5));
-  return dx <= 6 && dz <= 6;
+  // ≤9m rise over the 10m span keeps gentle hillsides grassy; true cliffs still reject.
+  return dx <= 9 && dz <= 9;
 }
 
 // --- Buena Vista understory ---------------------------------------------------------
