@@ -1097,13 +1097,28 @@ export function createNativeTreeForest(
           transition.horizonFraction !== chunk.horizonFraction ||
           transition.direction !== chunk.lodDirection
         ) {
-          const targetInstances = applyChunkLodTransition(
-            chunk,
-            transition.horizonFraction,
-            transition.direction
-          );
-          if (transition.transitioning && targetInstances > 0) {
-            transitionTarget = chunk.lod === LOD_LANDSCAPE ? LOD_HORIZON : LOD_LANDSCAPE;
+          const pendingTarget: NativeTreeSilhouetteLod =
+            chunk.lod === LOD_LANDSCAPE ? LOD_HORIZON : LOD_LANDSCAPE;
+          if (
+            transition.transitioning &&
+            prepareUnit &&
+            !chunk.preparedLods.has(pendingTarget)
+          ) {
+            // Starting this fade would submit a never-compiled silhouette grade
+            // to the live renderer this frame — a synchronous pipeline/upload
+            // stall on slower GPUs. Hold the settled grade and warm the (empty,
+            // hidden) transition batch off-screen; a later cull pass starts the
+            // fade once the grade is blessed.
+            queueTransitionLodPreparation(chunk, pendingTarget);
+          } else {
+            const targetInstances = applyChunkLodTransition(
+              chunk,
+              transition.horizonFraction,
+              transition.direction
+            );
+            if (transition.transitioning && targetInstances > 0) {
+              transitionTarget = pendingTarget;
+            }
           }
         }
       }
@@ -1237,6 +1252,90 @@ export function createNativeTreeForest(
     // A failed unit must not poison every later chunk in the serialized queue.
     preparationTail = tracked.catch(() => {});
     return tracked;
+  }
+
+  function transitionPreparationStillCurrent(
+    chunk: Chunk,
+    epoch: number,
+    lod: NativeTreeSilhouetteLod
+  ): boolean {
+    return (
+      !disposed &&
+      !chunk.retireRequested &&
+      chunk.wantedVisible &&
+      chunk.lod !== lod &&
+      !chunk.preparedLods.has(lod) &&
+      chunk.prepareEpoch === epoch
+    );
+  }
+
+  async function prepareTransitionLod(
+    chunk: Chunk,
+    epoch: number,
+    lod: NativeTreeSilhouetteLod
+  ): Promise<void> {
+    if (!transitionPreparationStillCurrent(chunk, epoch, lod) || !prepareUnit) return;
+    // The withheld fade guarantees both transition batches are empty and hidden
+    // here, so re-pointing them at the wanted grade and compiling them detached
+    // never blinks a live tree. Instances arrive only after the grade is
+    // blessed and applyChunkLodTransition actually starts the fade. A settle or
+    // retirement during an await bumps prepareEpoch, and every populate path
+    // re-asserts the transition batch's LOD, so a stale assignment here is
+    // corrected before any instance can reach it.
+    for (const entry of chunk.byDesign.values()) {
+      setBatchLod(entry.transitionBatch, lod);
+    }
+    for (const entry of chunk.byDesign.values()) {
+      await prepareObject(entry.transitionBatch.branch);
+      if (!transitionPreparationStillCurrent(chunk, epoch, lod)) return;
+      await prepareObject(entry.transitionBatch.foliage);
+      if (!transitionPreparationStillCurrent(chunk, epoch, lod)) return;
+    }
+    chunk.preparedLods.add(lod);
+  }
+
+  function queueTransitionLodPreparation(
+    chunk: Chunk,
+    lod: NativeTreeSilhouetteLod
+  ): void {
+    if (!prepareUnit || chunk.preparedLods.has(lod) || !chunk.wantedVisible) return;
+    if (chunk.preparing) return;
+    const epoch = chunk.prepareEpoch;
+    const queued = preparationTail.then(() => prepareTransitionLod(chunk, epoch, lod));
+    let tracked: Promise<void>;
+    tracked = queued
+      .catch((error) => {
+        console.warn(
+          `[native trees:${options.name}] transition grade prepare failed`,
+          error
+        );
+      })
+      .finally(() => {
+        if (chunk.preparing === tracked) chunk.preparing = null;
+        if (chunk.retireRequested && !disposed) {
+          const retired = disposeResidentChunk(chunk);
+          if (retired && Number.isFinite(lastFocus.x) && Math.abs(lastFocus.x) < 1e8) {
+            rebin(lastFocus.x, lastFocus.z, true);
+          }
+          return;
+        }
+        // A settle can land while this unit held the `preparing` slot, leaving
+        // the chunk hidden with its (new) current grade unprepared — and a
+        // stationary player produces no further cull passes to re-queue it.
+        // Current visuals take priority immediately, exactly like the sibling
+        // queues above.
+        if (!disposed && chunk.wantedVisible && !chunk.preparedLods.has(chunk.lod)) {
+          void queueChunkPreparation(chunk).catch((error) => {
+            console.warn(`[native trees:${options.name}] streamed chunk prepare failed`, error);
+          });
+        }
+        // The fade demand itself recurs on the next cull pass (any ≥2 m focus
+        // move) while the grade stays wanted; no explicit fade re-queue needed.
+        requestHorizonPrefetchPreparation();
+      });
+    chunk.preparing = tracked;
+    // A failed unit must not poison every later chunk in the serialized queue.
+    preparationTail = tracked.catch(() => {});
   }
 
   function hiddenHorizonStillRelevant(chunk: Chunk, epoch: number): boolean {
