@@ -327,7 +327,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   const runMinimapFrame = (frameDt: number) => {
     const axes = input.mapPadAxes();
       minimap.padPan(axes.lx, axes.ly, frameDt);
-      // RT / stick-up zoom in; LT / stick-down zoom out. Selector stays centered.
+      // RT / stick-up zoom in; LT / stick-down zoom out. The selector stays
+      // centered until the finite-world framing clamp requires an edge offset.
       minimap.padZoom(axes.rt - axes.lt - axes.ry, frameDt);
       if (input.pressedRaw("Space")) minimap.padSelectAtCursor();
       if (input.firePressed) minimap.padTeleport();
