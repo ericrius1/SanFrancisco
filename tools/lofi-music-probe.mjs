@@ -128,6 +128,7 @@ async function main() {
   const errors = [];
   const musicRequests = [];
   const stemRequests = [];
+  const phraseRequests = [];
   try {
     await waitHttp(serverUrl, 60_000, "vite");
 
@@ -154,6 +155,7 @@ async function main() {
         const url = m.params.request?.url ?? "";
         if (url.includes("/src/audio/music/")) musicRequests.push(url);
         if (url.includes("/audio/music/stems/")) stemRequests.push(url);
+        if (url.includes("/audio/music/phrases/")) phraseRequests.push(url);
       }
     };
     await cdp.open();
@@ -183,6 +185,7 @@ async function main() {
     );
     assert.deepEqual(bootRequests, [], `music engine modules fetched at clean boot:\n${bootRequests.join("\n")}`);
     assert.deepEqual(stemRequests, [], `baked stems fetched at clean boot:\n${stemRequests.join("\n")}`);
+    assert.deepEqual(phraseRequests, [], `baked phrases fetched at clean boot:\n${phraseRequests.join("\n")}`);
     const bootState = await ev(cdp, "window.__sf?.lofiMusic?.debugState ?? null");
     assert.equal(bootState?.ctx, "unloaded", `facade should be dormant pre-gesture, got ${JSON.stringify(bootState)}`);
 
@@ -224,6 +227,19 @@ async function main() {
     assert(stemRequests.length >= 1, `no stem files were fetched after activation`);
     const failedStems = stems.filter((s) => s.failed);
     assert.deepEqual(failedStems, [], `stems failed to load: ${JSON.stringify(failedStems)}`);
+
+    // hybrid conductor: the first baked phrase enters at a chord boundary
+    // (~12 s establish + fetch-then-retry), transposed into the current key
+    let phrases = null;
+    const tPhrase = Date.now();
+    while (Date.now() - tPhrase < 60_000) {
+      await sleep(1500);
+      phrases = await ev(cdp, "window.__sf.lofiMusic.debugState.phrases ?? null");
+      if (phrases && phrases.played >= 1) break;
+    }
+    assert(phrases && phrases.played >= 1, `no baked phrase played within 60s: ${JSON.stringify(phrases)}`);
+    assert(phraseRequests.length >= 1, "no phrase file was fetched after activation");
+    assert.deepEqual(phrases.failed, [], `phrases failed to load: ${JSON.stringify(phrases)}`);
 
     // ---- phase 3: pure-data sanity via the same vite-served modules ----
     const pure = await ev(cdp, `(async () => {
@@ -285,9 +301,11 @@ async function main() {
       engineWhilePlaying: { levels: engine.levels, persistent: engine.persistent },
       pure,
       stems,
+      phrases,
       afterMute: after,
       musicRequests,
       stemRequests,
+      phraseRequests,
       totalConsoleErrors: errors.length
     }, null, 2));
   } finally {

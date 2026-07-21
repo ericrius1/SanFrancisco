@@ -37,6 +37,8 @@ import {
   type MusicProfile
 } from "./regions";
 import { StemPlayer } from "./stems";
+import { PhrasePlayer } from "./phrases";
+import { PHRASE_DEFS, PHRASE_REF_ROOT, type PhraseDef } from "./phraseManifest";
 
 export const LOFI_MUSIC_TUNING = tunables("lofiMusic", {
   enabled: { v: true, label: "enabled" },
@@ -48,6 +50,7 @@ export const LOFI_MUSIC_TUNING = tunables("lofiMusic", {
   crackle: { v: 0.75, min: 0, max: 1, step: 0.01, label: "vinyl" },
   beats: { v: 0.85, min: 0, max: 1, step: 0.01, label: "beats" },
   dust: { v: 0.75, min: 0, max: 1, step: 0.01, label: "dust bed" },
+  phrases: { v: 0.85, min: 0, max: 1, step: 0.01, label: "phrases" },
   wobble: { v: 0.8, min: 0, max: 1, step: 0.01, label: "tape wow" },
   reverb: { v: 0.9, min: 0, max: 1, step: 0.01, label: "reverb" },
   pace: { v: 1, min: 0.4, max: 2, step: 0.05, label: "pace ×" }
@@ -82,6 +85,10 @@ export class LofiMusicDirector {
   #crackleGain!: GainNode;
   #crackleSrc: AudioBufferSourceNode | null = null;
   #stemPlayer: StemPlayer | null = null;
+  #phrasePlayer: PhrasePlayer | null = null;
+  #nextPhraseT = -1;
+  #phrasePending = false;
+  #lastPhraseId = "-";
   #vinylBuffer: AudioBuffer | null = null;
   #bufferPreparation: Promise<void> | null = null;
 
@@ -122,6 +129,7 @@ export class LofiMusicDirector {
       lastChord: this.#lastChord,
       vinylReady: Boolean(this.#vinylBuffer),
       stems: this.#stemPlayer?.debugState ?? [],
+      phrases: this.#phrasePlayer?.debugState ?? null,
       influence: MUSIC_REGIONS.map((r, i) => ({ id: r.id, inf: +this.#inf[i].toFixed(3) })),
       nextChordIn: this.#ctx ? +(this.#nextChordT - this.#ctx.currentTime).toFixed(2) : 0
     };
@@ -178,9 +186,13 @@ export class LofiMusicDirector {
     // stale clocks after a quiet spell (or first start) resume near "now"
     if (this.#nextChordT < now - 0.25) this.#nextChordT = now + 0.35;
     if (this.#nextSparkleT < now - 0.25) this.#nextSparkleT = now + 2.5;
+    // first melodic phrase lands once the bed has established itself
+    if (this.#nextPhraseT < now - 0.25) this.#nextPhraseT = now + 11 + Math.random() * 6;
+    if (now >= this.#nextPhraseT) this.#phrasePending = true;
 
     while (this.#nextChordT < now + LOOKAHEAD) this.#scheduleChord();
     while (this.#nextSparkleT < now + LOOKAHEAD) this.#scheduleSparkle();
+    this.#phrasePlayer?.update(dt);
 
     // baked stems: the day kit crossfades to the deep half-time kit at dusk
     if (this.#stemPlayer) {
@@ -203,6 +215,8 @@ export class LofiMusicDirector {
     this.#crackleSrc = null;
     this.#stemPlayer?.dispose();
     this.#stemPlayer = null;
+    this.#phrasePlayer?.dispose();
+    this.#phrasePlayer = null;
     this.#out?.disconnect();
     this.#holdRelease?.();
     this.#holdRelease = null;
@@ -287,6 +301,8 @@ export class LofiMusicDirector {
 
     // baked stems ride the full lo-fi chain (wow + warmth) like the synths
     this.#stemPlayer = new StemPlayer(ctx, this.#sum);
+    // baked melodic phrases join the same chain + share the score's reverb
+    this.#phrasePlayer = new PhrasePlayer(ctx, this.#sum, this.#revSend);
 
     void this.#prepareBuffers(ctx);
   }
@@ -385,6 +401,8 @@ export class LofiMusicDirector {
     this.#bassBus.gain.setTargetAtTime(p.bass * Number(T.bass), now, 1.5);
     this.#sparkleBus.gain.setTargetAtTime(Number(T.sparkle) * 0.9, now, 1.5);
     this.#revSend.gain.setTargetAtTime(p.reverb * Number(T.reverb), now, 1.5);
+    // melodic phrase presence follows the region's sparkle character
+    this.#phrasePlayer?.setGain(Number(T.phrases) * (0.35 + 0.65 * p.sparkle), now);
   }
 
   /* ------------------------------------------------------------ composer */
@@ -426,6 +444,25 @@ export class LofiMusicDirector {
     const bassMidi = 36 + pcs[0];
     this.#padChord(t, [bassMidi + 12, bassMidi + 19], dur);
     this.#bassNote(t + 0.1, bassMidi, dur);
+
+    // hybrid conductor: a pending baked phrase enters just after this chord
+    // lands, transposed into the key and matched to the chord's mode flavor
+    if (this.#phrasePending && this.#phrasePlayer) {
+      const bright = mode === "ionian" || mode === "lydian" || mode === "mixolydian";
+      const pool = PHRASE_DEFS.filter(
+        (d: PhraseDef) => d.flavor === (bright ? "bright" : "dusk") && d.id !== this.#lastPhraseId
+      );
+      const def = pool[Math.floor(rng() * pool.length)];
+      let semis = (this.#keyRoot - PHRASE_REF_ROOT + 12) % 12;
+      if (semis > 6) semis -= 12; // nearest transposition, ±6 semitones max
+      if (def && this.#phrasePlayer.trigger(def, t + 0.5 + rng() * 0.9, semis, 0.5 + rng() * 0.3)) {
+        this.#lastPhraseId = def.id;
+        this.#phrasePending = false;
+        const gap = (70 - 46 * p.sparkle) * (1 + (1 - day) * 0.6) * (0.6 + rng() * 0.8);
+        this.#nextPhraseT = t + gap;
+      }
+      // a false trigger just started the fetch — stays pending for the next chord
+    }
 
     this.#nextChordT = t + dur;
     this.#chordCount++;
