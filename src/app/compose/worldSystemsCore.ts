@@ -80,7 +80,7 @@ import { HUD } from "../../ui/hud";
 import {  setFlowPostFx } from "../../render/postfx";
 import { createBuskersSystem } from "../../app/systems/buskers";
 import { createBuskerConversation } from "../../gameplay/buskers/conversation";
-import { EmbodimentController } from "../../app/player/embodimentController";
+import { EmbodimentController, type PassengerExitPose } from "../../app/player/embodimentController";
 import { createCarLandingFeedback } from "../../app/compose/carLanding";
 import { createToolCycle } from "../../app/compose/toolCycle";
 import type {  } from "../../app/systems/pickleball";
@@ -655,7 +655,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // (state.ghostShipRideZoom hoisted to the module state record)
   // (state.ghostShipRideYaw hoisted to the module state record)
   state.switchModeFromExit = (mode) => embodiments.switchMode(mode);
-  const exitToWalk = () => {
+  const exitToWalk = (passengerExit?: PassengerExitPose) => {
     // Surf exits relocate from a live crest to the shoreline. The normal E/B
     // path and the out-of-bounds repair must use Navigation's covered preview;
     // ordinary mount dismounts remain local and immediate.
@@ -664,7 +664,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
       return true;
     }
     const leavingGhostShip = embodiments.passengerOf === GHOST_SHIP_RIDE_ID;
-    const exited = embodiments.exitToWalk();
+    const exited = embodiments.exitToWalk(passengerExit);
     if (exited && leavingGhostShip && state.ghostShipRideZoom !== null) {
       chase.zoom = state.ghostShipRideZoom;
       state.ghostShipRideZoom = null;

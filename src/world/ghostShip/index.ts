@@ -1,5 +1,19 @@
 import * as THREE from "three/webgpu";
+import type { Physics } from "../../core/physics";
 import type { DebugFeatureTuningRegistration } from "../../ui/debug";
+import { createGhostShipCollision } from "./collision";
+import {
+  GHOST_SHIP_DECK_EXIT_LOCAL,
+  GHOST_SHIP_DECK_TOP,
+  GHOST_SHIP_RAIL_INTERVALS,
+  GHOST_SHIP_STAIR_BOTTOM_Y,
+  GHOST_SHIP_STAIR_INNER_X,
+  GHOST_SHIP_STAIR_OUTER_X,
+  GHOST_SHIP_STAIR_STEPS,
+  GHOST_SHIP_STAIR_WIDTH,
+  GHOST_SHIP_STAIR_ZS,
+  ghostShipRailXAtZ
+} from "./collisionLayout";
 import { createGhostShipSteam, RainbowStarShower } from "./effects";
 import { createGhostShipHotTubWater } from "./hotTubWater";
 import {
@@ -16,8 +30,18 @@ export {
   ghostShipClaimSeat
 } from "./route";
 
-const BOARDING_LOCAL = new THREE.Vector3(9, -3.7, 13);
-const BOARDING_RADIUS = 8;
+const BOARDING_RADIUS = 6;
+const BOARDING_LOCALS = ([-1, 1] as const).flatMap((side) =>
+  GHOST_SHIP_STAIR_ZS.flatMap((z) => [
+    new THREE.Vector3(
+      side * (GHOST_SHIP_STAIR_INNER_X + GHOST_SHIP_STAIR_OUTER_X) * 0.5,
+      (GHOST_SHIP_DECK_TOP + GHOST_SHIP_STAIR_BOTTOM_Y) * 0.5,
+      z
+    ),
+    new THREE.Vector3(side * GHOST_SHIP_STAIR_OUTER_X, GHOST_SHIP_STAIR_BOTTOM_Y + 0.9, z),
+    new THREE.Vector3(side * GHOST_SHIP_STAIR_INNER_X, GHOST_SHIP_DECK_TOP + 0.9, z)
+  ])
+);
 const SEATS = [
   new THREE.Vector3(-3.2, 2.2, 15),
   new THREE.Vector3(3.2, 2.2, 15),
@@ -38,7 +62,8 @@ if (SEATS.length !== GHOST_SHIP_SEAT_COUNT) {
 }
 
 type ShipModel = {
-  ramp: THREE.Mesh | null;
+  landingStairs: THREE.Group | null;
+  flightGates: THREE.Group | null;
   fairyLights: THREE.InstancedMesh | null;
   fairyBaseHues: Float32Array;
   fairyMaterial: THREE.MeshBasicMaterial;
@@ -54,7 +79,8 @@ export type GhostShip = {
     time: number,
     pose: GhostShipPose,
     playerPosition: THREE.Vector3,
-    localRider: boolean
+    localRider: boolean,
+    walkerBody: number
   ): void;
   warmup(): Promise<void>;
   nearbyBoarding(playerPosition: THREE.Vector3): boolean;
@@ -62,6 +88,8 @@ export type GhostShip = {
   /** Map/teleport boarding — ignores gangplank proximity and landed state. */
   claimDeckSeat(occupiedSeats: readonly number[]): number;
   seatPose(seat: number, outPosition: THREE.Vector3, outQuaternion: THREE.Quaternion): boolean;
+  /** Safe on-deck dismount target; returns the ship-relative facing yaw. */
+  deckDismountPose(seat: number, outPosition: THREE.Vector3): number | null;
   tuningDescriptor(): DebugFeatureTuningRegistration;
   readonly stats: {
     backend: string;
@@ -74,6 +102,9 @@ export type GhostShip = {
     steamVisible: number;
     showerActive: boolean;
     starsVisible: number;
+    collisionBodies: number;
+    walkerAboard: boolean;
+    stairsDeployed: boolean;
   };
   dispose(): void;
 };
@@ -182,18 +213,101 @@ function addTube(
   return mesh;
 }
 
-function makeRamp(material: THREE.Material, model: ShipModel): THREE.Mesh {
-  const from = new THREE.Vector3(5.4, 1.25, 13);
-  const to = BOARDING_LOCAL;
-  const direction = to.clone().sub(from);
-  const geometry = new THREE.BoxGeometry(3.1, 0.24, direction.length());
-  const ramp = new THREE.Mesh(geometry, material);
-  ramp.name = "ghost_ship_landing_gangplank";
-  ramp.position.copy(from).add(to).multiplyScalar(0.5);
-  ramp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction.normalize());
-  ramp.visible = false;
-  model.geometries.add(geometry);
-  return ramp;
+function buildLandingAccess(
+  root: THREE.Object3D,
+  stairMaterial: THREE.Material,
+  trimMaterial: THREE.Material,
+  model: ShipModel
+): void {
+  const stairs = new THREE.Group();
+  stairs.name = "ghost_ship_landing_stairs";
+  stairs.visible = false;
+  root.add(stairs);
+
+  const stairCount = GHOST_SHIP_STAIR_ZS.length * 2 * GHOST_SHIP_STAIR_STEPS;
+  const stepGeometry = new THREE.BoxGeometry(1, 1, 1);
+  model.geometries.add(stepGeometry);
+  const steps = new THREE.InstancedMesh(stepGeometry, stairMaterial, stairCount);
+  steps.name = "ghost_ship_landing_stair_treads";
+  steps.receiveShadow = true;
+  const dummy = new THREE.Object3D();
+  const stepRun =
+    (GHOST_SHIP_STAIR_OUTER_X - GHOST_SHIP_STAIR_INNER_X) /
+    GHOST_SHIP_STAIR_STEPS;
+  let instance = 0;
+  for (const side of [-1, 1] as const) {
+    for (const z of GHOST_SHIP_STAIR_ZS) {
+      for (let step = 0; step < GHOST_SHIP_STAIR_STEPS; step++) {
+        const t0 = step / GHOST_SHIP_STAIR_STEPS;
+        const t1 = (step + 1) / GHOST_SHIP_STAIR_STEPS;
+        const t = (t0 + t1) * 0.5;
+        const surfaceY = THREE.MathUtils.lerp(GHOST_SHIP_STAIR_BOTTOM_Y, GHOST_SHIP_DECK_TOP, t1);
+        const previousY = THREE.MathUtils.lerp(GHOST_SHIP_STAIR_BOTTOM_Y, GHOST_SHIP_DECK_TOP, t0);
+        const height = Math.max(0.18, surfaceY - previousY + 0.05);
+        dummy.position.set(
+          side * THREE.MathUtils.lerp(GHOST_SHIP_STAIR_OUTER_X, GHOST_SHIP_STAIR_INNER_X, t),
+          surfaceY - height * 0.5,
+          z
+        );
+        dummy.scale.set(stepRun + 0.1, height, GHOST_SHIP_STAIR_WIDTH - 0.16);
+        dummy.updateMatrix();
+        steps.setMatrixAt(instance++, dummy.matrix);
+      }
+
+      for (const edge of [-1, 1] as const) {
+        const railZ = z + edge * GHOST_SHIP_STAIR_WIDTH * 0.5;
+        addTube(
+          stairs,
+          [
+            new THREE.Vector3(side * GHOST_SHIP_STAIR_OUTER_X, GHOST_SHIP_STAIR_BOTTOM_Y + 0.9, railZ),
+            new THREE.Vector3(
+              side * (GHOST_SHIP_STAIR_INNER_X + GHOST_SHIP_STAIR_OUTER_X) * 0.5,
+              (GHOST_SHIP_STAIR_BOTTOM_Y + GHOST_SHIP_DECK_TOP) * 0.5 + 0.9,
+              railZ
+            ),
+            new THREE.Vector3(side * GHOST_SHIP_STAIR_INNER_X, GHOST_SHIP_DECK_TOP + 0.9, railZ)
+          ],
+          0.085,
+          trimMaterial,
+          model
+        );
+        addTube(
+          stairs,
+          [
+            new THREE.Vector3(side * GHOST_SHIP_STAIR_OUTER_X, GHOST_SHIP_STAIR_BOTTOM_Y + 0.08, railZ),
+            new THREE.Vector3(side * GHOST_SHIP_STAIR_INNER_X, GHOST_SHIP_DECK_TOP + 0.08, railZ)
+          ],
+          0.11,
+          trimMaterial,
+          model
+        );
+      }
+    }
+  }
+  steps.instanceMatrix.needsUpdate = true;
+  stairs.add(steps);
+
+  const flightGates = new THREE.Group();
+  flightGates.name = "ghost_ship_flight_stair_gates";
+  root.add(flightGates);
+  const halfGap = GHOST_SHIP_STAIR_WIDTH * 0.55;
+  for (const side of [-1, 1] as const) {
+    for (const z of GHOST_SHIP_STAIR_ZS) {
+      addTube(
+        flightGates,
+        [
+          new THREE.Vector3(ghostShipRailXAtZ(side, z - halfGap), 2.05, z - halfGap),
+          new THREE.Vector3(ghostShipRailXAtZ(side, z), 2.05, z),
+          new THREE.Vector3(ghostShipRailXAtZ(side, z + halfGap), 2.05, z + halfGap)
+        ],
+        0.095,
+        trimMaterial,
+        model
+      );
+    }
+  }
+  model.landingStairs = stairs;
+  model.flightGates = flightGates;
 }
 
 function buildShip(root: THREE.Group): ShipModel {
@@ -292,7 +406,8 @@ function buildShip(root: THREE.Group): ShipModel {
   }
 
   const model: ShipModel = {
-    ramp: null,
+    landingStairs: null,
+    flightGates: null,
     fairyLights: null,
     fairyBaseHues: new Float32Array(),
     fairyMaterial,
@@ -301,13 +416,16 @@ function buildShip(root: THREE.Group): ShipModel {
     materials
   };
 
-  for (const side of [-1, 1]) {
-    const railPoints: THREE.Vector3[] = [];
-    for (let i = 0; i <= 14; i++) {
-      const t = i / 14;
-      railPoints.push(new THREE.Vector3(side * (3.5 + Math.sin(t * Math.PI) * 2.5), 2.05, -21 + t * 42));
+  for (const side of [-1, 1] as const) {
+    for (const [z0, z1] of GHOST_SHIP_RAIL_INTERVALS) {
+      const railPoints: THREE.Vector3[] = [];
+      const segments = Math.ceil((z1 - z0) / 3);
+      for (let i = 0; i <= segments; i++) {
+        const z = THREE.MathUtils.lerp(z0, z1, i / segments);
+        railPoints.push(new THREE.Vector3(ghostShipRailXAtZ(side, z), 2.05, z));
+      }
+      addTube(root, railPoints, 0.095, trimMaterial, model);
     }
-    addTube(root, railPoints, 0.095, trimMaterial, model);
   }
   addTube(
     root,
@@ -369,9 +487,7 @@ function buildShip(root: THREE.Group): ShipModel {
   addTube(root, [new THREE.Vector3(0, 0, -23), new THREE.Vector3(-3.2, 2.5, -27), new THREE.Vector3(-5, 5.4, -26)], 0.14, trimMaterial, model);
   addTube(root, [new THREE.Vector3(0, 0, -23), new THREE.Vector3(3.2, 2.5, -27), new THREE.Vector3(5, 5.4, -26)], 0.14, trimMaterial, model);
 
-  const ramp = makeRamp(deckMaterial, model);
-  root.add(ramp);
-  model.ramp = ramp;
+  buildLandingAccess(root, deckMaterial, trimMaterial, model);
   model.fairyLights = fairyLights;
   model.fairyBaseHues = fairyBaseHues;
   model.glowLights = glowLights;
@@ -381,13 +497,15 @@ function buildShip(root: THREE.Group): ShipModel {
 export function createGhostShip(options: {
   scene: THREE.Scene;
   renderer: THREE.WebGPURenderer;
+  physics: Physics;
 }): GhostShip {
-  const { scene, renderer } = options;
+  const { scene, renderer, physics } = options;
   const root = new THREE.Group();
   root.name = "the_wandering_ghost_ship";
   root.visible = false;
   scene.add(root);
   const model = buildShip(root);
+  const collision = createGhostShipCollision(physics, root);
 
   const tub = new THREE.Group();
   tub.name = "ghost_ship_hot_tub";
@@ -423,6 +541,7 @@ export function createGhostShip(options: {
   const shower = new RainbowStarShower(scene);
   const boardingWorld = new THREE.Vector3();
   const seatScratch = new THREE.Vector3();
+  const dismountScratch = new THREE.Vector3();
   const color = new THREE.Color();
   let disposed = false;
   let fairyClock = 0;
@@ -438,7 +557,10 @@ export function createGhostShip(options: {
     waterDispatches: 0,
     steamVisible: 0,
     showerActive: false,
-    starsVisible: 0
+    starsVisible: 0,
+    collisionBodies: collision.bodyCount,
+    walkerAboard: false,
+    stairsDeployed: false
   };
 
   const applyPose = (pose: GhostShipPose) => {
@@ -446,14 +568,18 @@ export function createGhostShip(options: {
     root.rotation.order = "YXZ";
     root.rotation.set(pose.pitch, pose.yaw, pose.roll);
     root.updateMatrixWorld(true);
-    if (model.ramp) model.ramp.visible = pose.landed;
+    if (model.landingStairs) model.landingStairs.visible = pose.landed;
+    if (model.flightGates) model.flightGates.visible = !pose.landed;
   };
 
   const nearbyBoarding = (playerPosition: THREE.Vector3): boolean => {
     if (!lastPose?.landed) return false;
-    boardingWorld.copy(BOARDING_LOCAL);
-    root.localToWorld(boardingWorld);
-    return boardingWorld.distanceTo(playerPosition) <= BOARDING_RADIUS;
+    for (const local of BOARDING_LOCALS) {
+      boardingWorld.copy(local);
+      root.localToWorld(boardingWorld);
+      if (boardingWorld.distanceTo(playerPosition) <= BOARDING_RADIUS) return true;
+    }
+    return false;
   };
 
   const syncFairyLights = (time: number) => {
@@ -474,11 +600,12 @@ export function createGhostShip(options: {
     async warmup() {
       await water.warmup();
     },
-    update(dt, time, pose, playerPosition, localRider) {
+    update(dt, time, pose, playerPosition, localRider, walkerBody) {
       if (disposed) return;
       lastPose = pose;
       root.visible = true;
       applyPose(pose);
+      collision.sync(dt, walkerBody, pose.landed);
       stats.horizontalDistance = Math.hypot(playerPosition.x - pose.x, playerPosition.z - pose.z);
       stats.landed = pose.landed;
       stats.landing = pose.landingName ?? "roaming";
@@ -498,6 +625,8 @@ export function createGhostShip(options: {
       stats.steamVisible = steam.visible;
       stats.showerActive = pose.showerActive;
       stats.starsVisible = shower.visible;
+      stats.walkerAboard = collision.walkerAboard;
+      stats.stairsDeployed = pose.landed;
     },
     nearbyBoarding,
     board(playerPosition, occupiedSeats) {
@@ -515,6 +644,15 @@ export function createGhostShip(options: {
       outPosition.copy(seatScratch);
       root.getWorldQuaternion(outQuaternion);
       return true;
+    },
+    deckDismountPose(seat, outPosition) {
+      const index = Math.round(seat) - 1;
+      const target = GHOST_SHIP_DECK_EXIT_LOCAL[index];
+      if (!target || !root.visible) return null;
+      dismountScratch.set(target[0], target[1], target[2]);
+      root.localToWorld(dismountScratch);
+      outPosition.copy(dismountScratch);
+      return root.rotation.y;
     },
     tuningDescriptor() {
       return {
@@ -550,7 +688,10 @@ export function createGhostShip(options: {
               debug.addBinding(stats, "waterDispatches", { readonly: true, label: "dispatches/frame" }),
               debug.addBinding(stats, "steamVisible", { readonly: true, label: "steam puffs" }),
               debug.addBinding(stats, "showerActive", { readonly: true, label: "star shower" }),
-              debug.addBinding(stats, "starsVisible", { readonly: true, label: "rainbow stars" })
+              debug.addBinding(stats, "starsVisible", { readonly: true, label: "rainbow stars" }),
+              debug.addBinding(stats, "collisionBodies", { readonly: true, label: "collision bodies" }),
+              debug.addBinding(stats, "walkerAboard", { readonly: true, label: "walker aboard" }),
+              debug.addBinding(stats, "stairsDeployed", { readonly: true, label: "landing stairs" })
             ]
           };
         },
@@ -566,6 +707,7 @@ export function createGhostShip(options: {
       water.dispose();
       steam.dispose();
       shower.dispose();
+      collision.dispose();
       root.removeFromParent();
       for (const geometry of model.geometries) geometry.dispose();
       for (const material of model.materials) material.dispose();

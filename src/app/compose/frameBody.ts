@@ -67,6 +67,7 @@ import {
 import { MENU_MODES } from "../../player/discovery";
 import { createSessionPersistence } from "../../app/sessionPersistence";
 import { createGameLoop } from "../../app/gameLoop";
+import type { PassengerExitPose } from "../player/embodimentController";
 import { isInGameScreenshotBusy, takeInGameScreenshot } from "../../app/inGameScreenshot";
 import { createTimeScrubAndTuningGestures } from "../../app/compose/timeScrub";
 import {
@@ -110,7 +111,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       ctx.state.elapsed,
       pose,
       player.renderPosition,
-      embodiments.passengerOf === GHOST_SHIP_RIDE_ID
+      embodiments.passengerOf === GHOST_SHIP_RIDE_ID,
+      player.mode === "walk" && embodiments.passengerOf === null ? player.body : 0
     );
     if (netW.state.ghostShip && embodiments.passengerOf === GHOST_SHIP_RIDE_ID) {
       const shipYaw = netW.state.ghostShip.root.rotation.y;
@@ -679,8 +681,16 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       && teaGarden.interact(player.renderPosition, player.mode);
     const hangGlidingOwnsInteract =
       interactPressed && (core.state.hangGliding?.capturesInteraction ?? false);
+    let passengerExit: PassengerExitPose | undefined;
+    if (embodiments.passengerOf === GHOST_SHIP_RIDE_ID && netW.state.ghostShip) {
+      const facing = netW.state.ghostShip.deckDismountPose(
+        embodiments.passengerSeat,
+        ridePos
+      );
+      if (facing !== null) passengerExit = { position: ridePos, facing };
+    }
     const exitedToWalk =
-      interactPressed && !teaGardenEConsumed && !hangGlidingOwnsInteract && exitToWalk();
+      interactPressed && !teaGardenEConsumed && !hangGlidingOwnsInteract && exitToWalk(passengerExit);
     if (exitedToWalk) {
       teaGardenEConsumed = teaGarden.interact(player.renderPosition, player.mode);
     }

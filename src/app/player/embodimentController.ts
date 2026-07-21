@@ -17,6 +17,11 @@ export type ReleaseMotion = {
   horizontalSpeed: number;
 };
 
+export type PassengerExitPose = Readonly<{
+  position: Readonly<{ x: number; y: number; z: number }>;
+  facing?: number;
+}>;
+
 /**
  * Owns the player's current creature/passenger attachment and every transition
  * back to an on-foot embodiment. Navigation and minigames call this narrow API
@@ -92,13 +97,17 @@ export class EmbodimentController {
   }
 
   /** E (or pad Y): leave any vehicle, creature, or passenger seat for on-foot. */
-  exitToWalk(): boolean {
+  exitToWalk(passengerExit?: PassengerExitPose): boolean {
     const player = this.#player;
     if (this.passengerOf !== null) {
       this.passengerOf = null;
       this.passengerSeat = 0;
-      player.position.x += Math.cos(player.heading) * 2.4;
-      player.position.z -= Math.sin(player.heading) * 2.4;
+      if (passengerExit) {
+        player.position.copy(passengerExit.position);
+      } else {
+        player.position.x += Math.cos(player.heading) * 2.4;
+        player.position.z -= Math.sin(player.heading) * 2.4;
+      }
       // stepping off a shared boat lands in the bay, not on a phantom floor —
       // bridge decks still count as solid ground, and a mid-air bail just falls
       const overWater =
@@ -109,7 +118,7 @@ export class EmbodimentController {
         player.position.y = sea + 0.45;
         player.swimEnter = true;
       }
-      player.endRide();
+      player.endRide(passengerExit?.facing);
       this.#hud.message("Hopped out", 1.8);
       return true;
     }
