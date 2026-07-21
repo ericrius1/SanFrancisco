@@ -698,7 +698,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
         const seat = ship.claimDeckSeat(remotes.occupiedRideSeats(GHOST_SHIP_RIDE_ID));
         if (seat <= 0) throw new Error("The ghost ship's deck stations are full");
         const pose = ghostShipBeacon.pose;
-        ship.update(0, ctx.state.elapsed, pose, player.renderPosition, true);
+        ship.update(0, ctx.state.elapsed, pose, player.renderPosition, true, 0);
         if (!ship.seatPose(seat, ridePos, rideQuat)) {
           throw new Error("The ghost ship could not seat you");
         }
@@ -839,7 +839,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     if (!state.ghostShipLoading) {
       state.ghostShipLoading = import("../../world/ghostShip")
         .then(async ({ createGhostShip }) => {
-          const candidate = createGhostShip({ scene, renderer });
+          const candidate = createGhostShip({ scene, renderer, physics });
           try {
             await candidate.warmup();
           } catch (error) {
