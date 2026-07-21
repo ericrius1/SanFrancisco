@@ -1,6 +1,33 @@
 import * as THREE from "three/webgpu";
+import { createHangGliderCanopyMaterial } from "./canopyMaterial";
+import {
+  hangGliderFrame,
+  hangGliderPalette,
+  type HangGliderStyle
+} from "./style";
 
 const UP = new THREE.Vector3(0, 1, 0);
+const HALF_SPAN = 6.7;
+const SPAN_SEGMENTS = 48;
+const CHORD_SEGMENTS = 18;
+
+export type HangGliderVisualFrame = Readonly<{
+  airspeed: number;
+  verticalSpeed: number;
+  lift: number;
+}>;
+
+export type HangGliderPresentation = Readonly<{
+  /** Live customizer edits; changes uniforms/transforms without rebuilding. */
+  setStyle(style: HangGliderStyle): void;
+  /** Flight telemetry drives cloth pressure/gust response. */
+  update(dt: number, frame: HangGliderVisualFrame): void;
+}>;
+
+export type CreatedHangGliderMesh = Readonly<{
+  root: THREE.Group;
+  presentation: HangGliderPresentation;
+}>;
 
 function tubeBetween(
   parent: THREE.Object3D,
@@ -18,115 +45,211 @@ function tubeBetween(
   return mesh;
 }
 
-function clothPanel(
+function profilePoint(span: number, chord: number): THREE.Vector3 {
+  const edge = Math.min(1, Math.abs(span));
+  const leadingZ = -3.3 + Math.pow(edge, 1.72) * 4.02;
+  const trailingZ = 2.52 - Math.pow(edge, 2.7) * 1.62;
+  const arch = 0.54 * (1 - Math.pow(edge, 1.72));
+  const belly = Math.sin(Math.PI * chord) * (0.1 + 0.12 * (1 - edge));
+  return new THREE.Vector3(
+    span * HALF_SPAN,
+    -0.18 + arch + belly,
+    THREE.MathUtils.lerp(leadingZ, trailingZ, chord)
+  );
+}
+
+function createCanopyGeometry(): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  for (let x = 0; x <= SPAN_SEGMENTS; x++) {
+    const u = x / SPAN_SEGMENTS;
+    const span = u * 2 - 1;
+    for (let z = 0; z <= CHORD_SEGMENTS; z++) {
+      const v = z / CHORD_SEGMENTS;
+      const point = profilePoint(span, v);
+      positions.push(point.x, point.y, point.z);
+      uvs.push(u, v);
+    }
+  }
+  const stride = CHORD_SEGMENTS + 1;
+  for (let x = 0; x < SPAN_SEGMENTS; x++) {
+    for (let z = 0; z < CHORD_SEGMENTS; z++) {
+      const a = x * stride + z;
+      const b = (x + 1) * stride + z;
+      const c = b + 1;
+      const d = a + 1;
+      indices.push(a, d, b, b, d, c);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+function curvedTube(
   parent: THREE.Object3D,
   material: THREE.Material,
-  a: readonly [number, number, number],
-  b: readonly [number, number, number],
-  c: readonly [number, number, number]
+  points: THREE.Vector3[],
+  radius: number,
+  name: string
 ): THREE.Mesh {
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute([...a, ...b, ...c], 3)
+  const curve = new THREE.CatmullRomCurve3(points, false, "centripetal", 0.45);
+  const mesh = new THREE.Mesh(
+    new THREE.TubeGeometry(curve, 64, radius, 8, false),
+    material
   );
-  geometry.computeVertexNormals();
-  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = name;
   mesh.castShadow = true;
-  mesh.receiveShadow = true;
   parent.add(mesh);
   return mesh;
 }
 
-/** Broad late-90s sport-wing silhouette: warm segmented sail, visible battens,
- * kingpost, A-frame control bar and a dark cocoon harness. */
-export function createHangGliderMesh(): THREE.Group {
+function edgePoints(chord: number): THREE.Vector3[] {
+  const points: THREE.Vector3[] = [];
+  for (let i = 0; i <= 24; i++) points.push(profilePoint(i / 12 - 1, chord));
+  return points;
+}
+
+/** A broad, crescent-planform sport canopy. The airframe follows the curved
+ * membrane boundaries rather than drawing a triangular delta beneath it; a
+ * lightweight TSL vertex field supplies the live pressure and trailing flutter. */
+export function createHangGliderMesh(initial: HangGliderStyle): CreatedHangGliderMesh {
   const root = new THREE.Group();
   root.name = "sutro_hang_glider";
   const wing = new THREE.Group();
   wing.name = "hang_glider_wing";
   root.add(wing);
 
-  const cream = new THREE.MeshStandardMaterial({
-    color: 0xfff0cc,
-    roughness: 0.82,
-    side: THREE.DoubleSide
+  const canopy = createHangGliderCanopyMaterial(initial);
+  const canopyMesh = new THREE.Mesh(createCanopyGeometry(), canopy.material);
+  canopyMesh.name = "hang_glider_canopy";
+  canopyMesh.castShadow = true;
+  canopyMesh.receiveShadow = true;
+  wing.add(canopyMesh);
+
+  const frameMaterial = new THREE.MeshStandardMaterial({
+    color: 0x202a31,
+    roughness: 0.24,
+    metalness: 0.76
   });
-  const saffron = new THREE.MeshStandardMaterial({
-    color: 0xf2b544,
-    roughness: 0.78,
-    side: THREE.DoubleSide
+  const frameAccent = new THREE.MeshStandardMaterial({
+    color: 0x8e9da4,
+    roughness: 0.32,
+    metalness: 0.68
   });
-  const coral = new THREE.MeshStandardMaterial({
-    color: 0xd95743,
-    roughness: 0.76,
-    side: THREE.DoubleSide
+  const cableMaterial = new THREE.MeshStandardMaterial({
+    color: 0x151a1f,
+    roughness: 0.52,
+    metalness: 0.6
   });
-  const teal = new THREE.MeshStandardMaterial({
-    color: 0x237b78,
+  const harnessMaterial = new THREE.MeshStandardMaterial({
+    color: 0x1c262e,
     roughness: 0.72,
-    side: THREE.DoubleSide
+    metalness: 0.06
   });
-  const aluminum = new THREE.MeshStandardMaterial({
-    color: 0xd8dfdf,
-    roughness: 0.28,
-    metalness: 0.72
+  const lightMaterial = new THREE.MeshStandardMaterial({
+    color: 0xbffbf0,
+    emissive: 0x57e0c0,
+    emissiveIntensity: 3.4,
+    roughness: 0.22,
+    metalness: 0.08
   });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x22282c, roughness: 0.7 });
 
-  const nose = [0, 0.03, -3.25] as const;
-  const center = [0, -0.01, 2.1] as const;
-  const leftInner = [-1.8, 0.02, 2.2] as const;
-  const leftTip = [-5.25, -0.05, 2.38] as const;
-  const rightInner = [1.8, 0.02, 2.2] as const;
-  const rightTip = [5.25, -0.05, 2.38] as const;
-  clothPanel(wing, cream, nose, center, leftInner);
-  clothPanel(wing, saffron, nose, leftInner, leftTip);
-  clothPanel(wing, coral, nose, leftTip, [-4.45, -0.04, 2.35]);
-  clothPanel(wing, cream, nose, rightInner, center);
-  clothPanel(wing, teal, nose, rightTip, rightInner);
-  clothPanel(wing, coral, nose, [4.45, -0.04, 2.35], rightTip);
-
-  const p = (v: readonly [number, number, number]) => new THREE.Vector3(...v);
-  tubeBetween(wing, aluminum, p(nose), p(leftTip), 0.055);
-  tubeBetween(wing, aluminum, p(nose), p(rightTip), 0.055);
-  tubeBetween(wing, aluminum, p(leftTip), p(rightTip), 0.048);
-  tubeBetween(wing, aluminum, p(nose), p(center), 0.05);
-  for (const x of [-3.6, -1.8, 1.8, 3.6]) {
-    tubeBetween(
-      wing,
-      aluminum,
-      new THREE.Vector3(0, 0.015, -2.8),
-      new THREE.Vector3(x, -0.025, 2.25),
-      0.018,
-      5
-    );
+  // The leading and trailing tubes inherit exactly the canopy's authored arcs.
+  curvedTube(wing, frameMaterial, edgePoints(0.015), 0.073, "hang_glider_leading_spar");
+  curvedTube(wing, frameAccent, edgePoints(0.985), 0.036, "hang_glider_trailing_spar");
+  tubeBetween(wing, frameMaterial, profilePoint(0, 0.01), profilePoint(0, 0.99), 0.054, 8);
+  for (const span of [-0.82, -0.61, -0.39, -0.18, 0.18, 0.39, 0.61, 0.82]) {
+    tubeBetween(wing, frameAccent, profilePoint(span, 0.035), profilePoint(span, 0.965), 0.02, 6);
   }
 
-  const king = new THREE.Vector3(0, 1.05, 0.15);
-  tubeBetween(root, aluminum, new THREE.Vector3(0, 0, 0.1), king, 0.034, 6);
-  tubeBetween(root, aluminum, king, p(leftTip), 0.012, 5);
-  tubeBetween(root, aluminum, king, p(rightTip), 0.012, 5);
+  // Kingpost and tension web make the machine legible without obscuring the sail.
+  const keel = profilePoint(0, 0.56);
+  const king = new THREE.Vector3(0, 1.48, -0.1);
+  tubeBetween(wing, frameMaterial, keel, king, 0.038, 7);
+  tubeBetween(wing, cableMaterial, king, profilePoint(-0.99, 0.25), 0.012, 5);
+  tubeBetween(wing, cableMaterial, king, profilePoint(0.99, 0.25), 0.012, 5);
+  tubeBetween(wing, cableMaterial, king, profilePoint(0, 0.98), 0.011, 5);
 
-  const barLeft = new THREE.Vector3(-0.82, -1.22, -0.68);
-  const barRight = new THREE.Vector3(0.82, -1.22, -0.68);
-  tubeBetween(root, aluminum, new THREE.Vector3(-2.7, -0.02, 1.05), barLeft, 0.042);
-  tubeBetween(root, aluminum, new THREE.Vector3(2.7, -0.02, 1.05), barRight, 0.042);
-  tubeBetween(root, aluminum, barLeft, barRight, 0.05);
-  tubeBetween(root, dark, new THREE.Vector3(0, -0.1, 0.3), new THREE.Vector3(0, -1.38, 0.48), 0.065);
+  // Sculpted nose fairing and compact glowing tip pods give the glider an
+  // authored vehicle identity at video distance, not just a sail plus sticks.
+  const noseFairing = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.46, 6, 12), frameAccent);
+  noseFairing.rotation.x = Math.PI / 2;
+  noseFairing.position.copy(profilePoint(0, 0)).add(new THREE.Vector3(0, 0.01, 0.06));
+  noseFairing.castShadow = true;
+  wing.add(noseFairing);
+  for (const side of [-1, 1]) {
+    const tip = new THREE.Group();
+    tip.position.copy(profilePoint(side, 0.48));
+    tip.rotation.z = side * -0.16;
+    const pod = new THREE.Mesh(new THREE.CapsuleGeometry(0.1, 0.3, 5, 10), frameAccent);
+    pod.rotation.x = Math.PI / 2;
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.105, 12, 8), lightMaterial);
+    lamp.position.z = 0.27;
+    tip.add(pod, lamp);
+    wing.add(tip);
+  }
 
-  const harness = new THREE.Mesh(new THREE.CapsuleGeometry(0.27, 1.65, 6, 10), dark);
+  // Aerodynamic A-frame and softly curved base bar remain close to the pilot,
+  // independent of the customizer's wider sail-span transform.
+  const barLeft = new THREE.Vector3(-0.92, -1.32, -0.58);
+  const barRight = new THREE.Vector3(0.92, -1.32, -0.58);
+  tubeBetween(root, frameMaterial, new THREE.Vector3(-2.45, -0.05, 0.85), barLeft, 0.045, 8);
+  tubeBetween(root, frameMaterial, new THREE.Vector3(2.45, -0.05, 0.85), barRight, 0.045, 8);
+  tubeBetween(root, frameAccent, barLeft, barRight, 0.058, 9);
+  tubeBetween(root, cableMaterial, new THREE.Vector3(0, -0.04, 0.18), new THREE.Vector3(0, -1.42, 0.48), 0.064, 7);
+
+  const harness = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.29, 1.8, 7, 12),
+    harnessMaterial
+  );
   harness.rotation.x = Math.PI / 2;
-  harness.position.set(0, -1.54, 1.05);
+  harness.position.set(0, -1.58, 1.05);
   harness.castShadow = true;
   root.add(harness);
 
+  const setStyle = (style: HangGliderStyle) => {
+    canopy.setStyle(style);
+    wing.scale.set(style.span, style.crown, 1);
+    const finish = hangGliderFrame(style.frame);
+    const palette = hangGliderPalette(style.palette);
+    frameMaterial.color.set(finish.color);
+    frameMaterial.metalness = finish.metalness;
+    frameAccent.color.set(finish.accent);
+    frameAccent.metalness = Math.max(0.55, finish.metalness - 0.08);
+    lightMaterial.color.set(palette.colors[0]);
+    lightMaterial.emissive.set(palette.colors[2]);
+  };
+
+  setStyle(initial);
+  const presentation: HangGliderPresentation = {
+    setStyle,
+    update(dt, frame) {
+      canopy.update(dt, frame);
+      const liftPulse = THREE.MathUtils.clamp(frame.lift * 0.22 + Math.abs(frame.verticalSpeed) * 0.035, 0, 1.4);
+      lightMaterial.emissiveIntensity +=
+        (3.2 + liftPulse - lightMaterial.emissiveIntensity) *
+        (1 - Math.exp(-Math.min(Math.max(dt, 0), 1 / 20) * 4));
+    }
+  };
+
+  root.userData.hangGliderPresentation = presentation;
   root.userData.dispose = () => {
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
     root.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
-      object.geometry.dispose();
+      geometries.add(object.geometry);
+      const entries = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of entries) materials.add(material);
     });
-    for (const material of [cream, saffron, coral, teal, aluminum, dark]) material.dispose();
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
   };
-  return root;
+  return { root, presentation };
 }
