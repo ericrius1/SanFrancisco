@@ -550,11 +550,11 @@ export function createNativeTreeForest(
     visibleDistance - 24,
     options.horizonDistance ?? visibleDistance * 0.58
   );
-  const nearRadius = options.nearRadius ?? 58;
-  const nearExit = Math.max(nearRadius, options.nearExitRadius ?? 66);
-  const nearMax = Math.max(0, Math.floor(options.nearMax ?? 24));
+  const nearRadius = options.nearRadius ?? 72;
+  const nearExit = Math.max(nearRadius, options.nearExitRadius ?? 82);
+  const nearMax = Math.max(0, Math.floor(options.nearMax ?? 34));
   const conventionalShadowCasting = options.conventionalShadowCasting === true;
-  const canopyRadius = nearRadius * 0.52;
+  const canopyRadius = nearRadius * 0.62;
   const prefetchDistance = visibleDistance + chunkSize * PREFETCH_CHUNK_RINGS;
   const retireDistance = visibleDistance + chunkSize * RETIRE_CHUNK_RINGS;
   // The distance ring is the primary cache bound. This generous hard ceiling
@@ -622,7 +622,7 @@ export function createNativeTreeForest(
   const active = new Map<string, ActiveNear>();
   const lastFocus = { x: 1e9, z: 1e9 };
   const lastResidencyFocus = { x: 1e9, z: 1e9 };
-  const lastRebinFocus = new THREE.Vector2(1e9, 1e9);
+  const lastRebinFocus = { x: 1e9, z: 1e9 };
   const requestedDesigns = new Set<number>();
   for (const slots of chunkSlots.values()) for (const slot of slots) requestedDesigns.add(slot.design);
   let lastRebin = 0;
@@ -711,7 +711,8 @@ export function createNativeTreeForest(
     // after a teleport, so simply leave its already-visible far copy alone.
     if (!batch || slot.index < 0) return;
     writeBatchSlot(batch, slot, slot.index, hidden, false);
-    batch.root.clearUpdateRanges();
+    // Accumulate rather than clear: one rebin can hide/show several slots of
+    // the same far batch before the next upload consumes (and clears) ranges.
     batch.root.addUpdateRange(slot.index * 4 + 3, 1);
     batch.root.needsUpdate = true;
   }
@@ -737,8 +738,54 @@ export function createNativeTreeForest(
     }
   }
 
+  // Last slot written at each packed index, per near batch. Slot data is
+  // immutable and the near batch buffers live as long as the batch, so an
+  // identity match means the buffer contents for that index are already
+  // correct and no rewrite or upload is needed.
+  const nearWrittenSlots = new Map<TreeBatch, Slot[]>();
+  const scratchPreviousKeys = new Set<string>();
+  const scratchNextKeys = new Set<string>();
+
+  function writeNearBatchEntries(batch: TreeBatch, entries: readonly ActiveNear[]): void {
+    // Diffed variant of setBatchEntries: a normal rebin moves one or two trees
+    // in or out, so only the touched slot range is rewritten and uploaded
+    // instead of re-uploading the whole instance buffer every rebin.
+    let written = nearWrittenSlots.get(batch);
+    if (!written) {
+      written = [];
+      nearWrittenSlots.set(batch, written);
+    }
+    const count = entries.length;
+    let dirtyMin = -1;
+    let dirtyMax = -1;
+    for (let index = 0; index < count; index++) {
+      const slot = entries[index].slot;
+      if (written[index] === slot) continue;
+      writeBatchSlot(batch, slot, index);
+      written[index] = slot;
+      if (dirtyMin < 0) dirtyMin = index;
+      dirtyMax = index;
+    }
+    written.length = count;
+    for (const variant of batch.variants) {
+      variant.branch.geometry.instanceCount = count;
+      variant.foliage.geometry.instanceCount = count;
+    }
+    if (dirtyMin >= 0) {
+      // Accumulate rather than clear: the WebGPU backend consumes and clears
+      // ranges on upload, and a forced rebin (detail pack arrival) can run
+      // twice between renders — clearing here would drop the pending range for
+      // slots this diff no longer rewrites.
+      const span = (dirtyMax - dirtyMin + 1) * 4;
+      batch.root.addUpdateRange(dirtyMin * 4, span);
+      batch.root.needsUpdate = true;
+      batch.yaw.addUpdateRange(dirtyMin * 4, span);
+      batch.yaw.needsUpdate = true;
+    }
+  }
+
   function setNearBatchEntries(batch: TreeBatch, entries: readonly ActiveNear[]): void {
-    setBatchEntries(batch, entries.map((entry) => entry.slot));
+    writeNearBatchEntries(batch, entries);
     const state = nearPreparations.get(batch);
     const wantedVisible = entries.length > 0;
     if (!state) {
@@ -746,8 +793,12 @@ export function createNativeTreeForest(
       batch.foliage.visible = wantedVisible;
       return;
     }
-    const previousKeys = new Set(state.entries.map((entry) => entry.slot.key));
-    const nextKeys = new Set(entries.map((entry) => entry.slot.key));
+    const previousKeys = scratchPreviousKeys;
+    previousKeys.clear();
+    for (const entry of state.entries) previousKeys.add(entry.slot.key);
+    const nextKeys = scratchNextKeys;
+    nextKeys.clear();
+    for (const entry of entries) nextKeys.add(entry.slot.key);
     if (state.farHidden) {
       for (const entry of state.entries) {
         if (!nextKeys.has(entry.slot.key)) setFarHidden(entry.chunk, entry.slot, false);
@@ -788,10 +839,15 @@ export function createNativeTreeForest(
       return;
     }
     const now = performance.now();
-    const moved = lastRebinFocus.distanceToSquared(new THREE.Vector2(x, z));
+    // Allocation-free throttle: rebin runs every frame per site and
+    // short-circuits here almost always.
+    const focusDx = x - lastRebinFocus.x;
+    const focusDz = z - lastRebinFocus.z;
+    const moved = focusDx * focusDx + focusDz * focusDz;
     if (!force && (now - lastRebin < REBIN_MS || moved < REBIN_MOVE_SQ)) return;
     lastRebin = now;
-    lastRebinFocus.set(x, z);
+    lastRebinFocus.x = x;
+    lastRebinFocus.z = z;
 
     const enterSq = nearRadius * nearRadius;
     const exitSq = nearExit * nearExit;
@@ -1607,7 +1663,7 @@ export function createNativeTreeForest(
       z: entry.slot.z,
       distance: Math.hypot(
         entry.slot.x - lastRebinFocus.x,
-        entry.slot.z - lastRebinFocus.y
+        entry.slot.z - lastRebinFocus.z
       ),
       lod: entry.lod,
       lodName: entry.lod === LOD_CANOPY ? "canopy" : "grove",
@@ -1619,13 +1675,13 @@ export function createNativeTreeForest(
       z: entry.slot.z,
       distance: Math.hypot(
         entry.slot.x - lastRebinFocus.x,
-        entry.slot.z - lastRebinFocus.y
+        entry.slot.z - lastRebinFocus.z
       ),
       design: entry.slot.design,
       detailMaterialReady: nearMaterials[entry.slot.design] !== null
     })).sort((a, b) => a.distance - b.distance)[0] ?? null;
     return {
-      focus: { x: lastRebinFocus.x, z: lastRebinFocus.y },
+      focus: { x: lastRebinFocus.x, z: lastRebinFocus.z },
       nearRadius,
       nearExit,
       canopyRadius,

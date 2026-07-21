@@ -496,12 +496,12 @@ const FLOWER_WIND_FULL_DISTANCE = 14;
 const FLOWER_WIND_ZERO_DISTANCE = 46;
 
 // A flower's existing yaw-derived colour variance also gives every clump a free,
-// deterministic edge phase. Each clump fades through an 18 m window, while that
-// window ends at a different point across the outermost 8 m. The combined 26 m
+// deterministic edge phase. Each clump fades through a 28 m window, while that
+// window ends at a different point across the outermost 8 m. The combined 36 m
 // transition dissolves into irregular singles instead of drawing a circular rim;
 // no bloom extends beyond the configured reach.
 export const FLOWER_ROTATION_SHADE_AMPLITUDE = 0.117;
-export const FLOWER_EDGE_FADE_BAND_METRES = 18;
+export const FLOWER_EDGE_FADE_BAND_METRES = 28;
 export const FLOWER_EDGE_STAGGER_METRES = 8;
 
 function flowerRotationShade(yaw: number): number {
@@ -951,10 +951,11 @@ type FlowerBucket = {
 // survivors into indirect draws, so each tier needs only one bucket per
 // distinct geometry (hero/mid per species, far shared). Capacities preserve
 // the previous reserve envelope (mid was 4 sectors × 1152 per species, far was
-// 10 sectors × 1536).
-const HERO_CAPACITY_PER_SPECIES = 640;
-const MID_CAPACITY_PER_SPECIES = 4608;
-const FAR_CAPACITY = 15360;
+// 10 sectors × 1536), raised ~35% when the default FLOWER_TUNING.density went
+// 1.4 → 1.9 — overflowed clumps drop silently, so the reserve must lead demand.
+const HERO_CAPACITY_PER_SPECIES = 864;
+const MID_CAPACITY_PER_SPECIES = 6220;
+const FAR_CAPACITY = 20736;
 const FLOWER_INSTANCE_BYTES = 12 * Float32Array.BYTES_PER_ELEMENT; // 3 packed vec4s
 /** World-space margin over the scaled cluster bound: wind sway + trample dip. */
 const FLOWER_CULL_SLACK = 0.9;

@@ -238,9 +238,10 @@ export const CITYGEN_TUNING = tunables("citygen", {
 export const FLOWER_TUNING = tunables("flowers", {
   // Default raised from 1 → 1.4 after per-frame GPU frustum culling landed:
   // only ~30% of the ring rasterizes per heading, so the denser meadow still
-  // draws fewer blooms per frame than the old uncelled default.
-  density: { v: 1.4, min: 0, max: 2.5, step: 0.05, label: "density" },
-  clumpiness: { v: 0.6, min: 0, max: 1, step: 0.02, label: "clump ↔ scatter" },
+  // draws fewer blooms per frame than the old uncelled default. Raised again
+  // 1.4 → 1.9 (with clumpiness 0.6 → 0.7) for richer superbloom patches.
+  density: { v: 1.9, min: 0, max: 2.5, step: 0.05, label: "density" },
+  clumpiness: { v: 0.7, min: 0, max: 1, step: 0.02, label: "clump ↔ scatter" },
   clumpSize: { v: 9, min: 2, max: 30, step: 0.5, label: "clump size (m)" },
   reach: { v: 110, min: 30, max: 110, step: 2, label: "reach (m)" }
 })
@@ -258,8 +259,10 @@ export const GRASS_TUNING = tunables("grass", {
   // Default raised from 1 → 1.6 after per-frame GPU frustum culling landed:
   // ~60-70% of compacted blades are behind the camera and never reach the
   // vertex shader, so the denser field still submits less work than before.
-  density: { v: 1.6, min: 0, max: 2.5, step: 0.05, label: "density" },
-  patchiness: { v: 0.5, min: 0, max: 1, step: 0.02, label: "even ↔ patchy" }
+  // Raised again 1.6 → 2.1 (patchiness 0.5 → 0.32) for a fuller lawn with
+  // fewer bald clearings; still under the 3-layer additive-density ceiling.
+  density: { v: 2.1, min: 0, max: 2.5, step: 0.05, label: "density" },
+  patchiness: { v: 0.32, min: 0, max: 1, step: 0.02, label: "even ↔ patchy" }
 })
 
 /**
