@@ -6,7 +6,8 @@
 // for a single building.
 import * as THREE from "three/webgpu";
 import {
-  attribute, normalWorld, uv, float, color, mix, step, fract, floor as tslFloor, hash,
+  attribute, normalWorld, positionGeometry, uv, float, color, mix, step, fract,
+  floor as tslFloor, hash, uniform, vec3,
 } from "three/tsl";
 import type { BuildingSpec } from "../core/types";
 import { EXPOSURE_REBASE } from "../../../config";
@@ -15,7 +16,7 @@ import { ensureCCW, triangulate } from "../core/footprint";
 import { bodyColour } from "../render";
 import { specFor } from "../theme/archetypes";
 import { cameraCutawayMask } from "../../../render/cameraCutaway";
-import { applyBirthFade } from "../../../render/materialize";
+import { applyBirthFade, buildingGrowAmount } from "../../../render/materialize";
 import {
   materialDisposeListenerCount,
   registerSharedMaterialLeakCounter,
@@ -29,6 +30,22 @@ const WIN_SPACING = 2.4;   // ~metres between window centres (column target)
 // self-lit body tint — MATCHES makeWallMaterial (theme/materials.ts), both
 // carrying the exposure re-anchor factor (config.EXPOSURE_REBASE)
 const BODY_EMISSIVE = 0.3 * EXPOSURE_REBASE;
+
+// `lodVisibility` already costs one float per vertex. Pack the building's base
+// height + a stable stagger seed into that same channel so the arrival growth
+// adds zero vertex attributes/bandwidth: 0 = selectively hidden, otherwise
+// floor(value) encodes base Y and fract(value) supplies the stagger key.
+const LOD_BASE_OFFSET = 200;
+const LOD_BASE_SCALE = 16; // 6.25 cm base precision
+const LOD_BIRTH_UNSET = -1e9;
+const packLodVisibility = (baseY: number, seed: number): number => {
+  const baseCode = Math.max(
+    1,
+    Math.min(65_534, Math.round((baseY + LOD_BASE_OFFSET) * LOD_BASE_SCALE) + 1)
+  );
+  const stagger = ((((seed >>> 0) * 1664525 + 1013904223) >>> 0) + 0.5) / 4294967296;
+  return baseCode + stagger;
+};
 
 let sharedMat: THREE.MeshStandardNodeMaterial | null = null;
 
@@ -53,9 +70,24 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   // punch their own prism away—otherwise its solid wall sits directly behind an
   // operable doorway. Per-vertex visibility + alpha test gives the streamer that
   // selective discard without rebuilding indices or splitting the chunk.
-  m.opacityNode = attribute("lodVisibility", "float");
   m.alphaTest = 0.5;
   m.maskNode = cameraCutawayMask();
+  const packedVisibility = attribute("lodVisibility", "float") as unknown as any;
+  const birth = uniform(LOD_BIRTH_UNSET).onObjectUpdate(({ object }) =>
+    (object?.userData.materializeBirthTime as number | undefined) ?? LOD_BIRTH_UNSET
+  ) as unknown as any;
+  const baseY = (tslFloor as any)(packedVisibility)
+    .sub(1)
+    .div(LOD_BASE_SCALE)
+    .sub(LOD_BASE_OFFSET);
+  const grow = buildingGrowAmount(birth, (fract as any)(packedVisibility));
+  const p = positionGeometry as unknown as any;
+  m.positionNode = (vec3 as any)(
+    p.x,
+    baseY.add(p.y.sub(baseY).mul(grow)),
+    p.z
+  );
+  m.opacityNode = (step as any)(0.5, packedVisibility);
   const body = attribute("color", "vec3") as unknown as ReturnType<typeof color>;
   const isRoof = step(0.5, normalWorld.y.abs());
   const u = uv().x, v = uv().y;              // already in window-cell units
@@ -71,16 +103,11 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   // façades don't read near-black — the near mesh's wall material does the same.
   const bodyTint = body.mul(BODY_EMISSIVE).mul(float(1).sub(winMask));
   m.emissiveNode = bodyTint.add(litWin);
-  // M5: the chunk prisms are city fabric the materialize front sweeps across —
-  // front-only holo mix (no birth: while a sweep is active the ring
-  // coordinator min's the citygen unpublished-cell distance into the residency
-  // the front chases, so a cell never publishes under the band; that min only
-  // binds once the citygen ring exists — far-arrival sweeps, since boot loads
-  // citygen post-reveal. A cell publishing after the front passed swaps with
-  // the already-shaded baked tile, not the void). M6: every chunkLod cell
-  // shares THIS material instance (no per-cell clone), so the wrap compiles
-  // exactly once.
-  applyBirthFade(m);
+  // M5/M6: every chunk shares this exact material. `birth` is object-scoped,
+  // so a cell re-shown after a far-arrival gate can fade/grow without per-cell
+  // material clones; ordinary post-reveal CityGen publication leaves the
+  // sentinel untouched and remains an atomic refinement of the baked city.
+  applyBirthFade(m, { birth });
   sharedMat = m;
   return m;
 }
@@ -123,6 +150,7 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: Pris
   const grade = conform
     ? Math.min(Math.max(conform.grade, foot), top - 1.5)
     : Math.min(Math.max(spec.grade ?? base, base), top - 1.5);
+  const lodVisibility = packLodVisibility(foot, spec.seed);
   const [br, bg, bb] = linRgb(bodyColour(spec.seed, spec.archetype));
   // tar-and-gravel grey roof (reads from the air/hills, not black) with a faint
   // body tint so a block still varies. Rides the vertex colour → also self-lit
@@ -136,7 +164,7 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: Pris
     const c: [number, number, number, number, number][] = [
       [x0, y0, z0, 0, 0], [x1, y0, z1, u1, 0], [x1, y1, z1, u1, v1], [x0, y1, z0, 0, v1],
     ];
-    for (const [px, py, pz, uu, vv] of c) { pos.push(px, py, pz); nor.push(nx, 0, nz); uvs.push(uu, vv); col.push(br, bg, bb); vis.push(1); }
+    for (const [px, py, pz, uu, vv] of c) { pos.push(px, py, pz); nor.push(nx, 0, nz); uvs.push(uu, vv); col.push(br, bg, bb); vis.push(lodVisibility); }
     // Outward winding must agree with (nx, nz). The previous inward order only
     // worked because the LOD material rendered both sides, exposing its interior.
     idx.push(v0, v0 + 2, v0 + 1, v0, v0 + 3, v0 + 2);
@@ -159,7 +187,7 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: Pris
   }
   const tris = triangulate(poly);
   const roofStart = pos.length / 3;
-  for (const [px, pz] of poly) { pos.push(px, top, pz); nor.push(0, 1, 0); uvs.push(0, 0); col.push(rr, rg, rb); vis.push(1); }
+  for (const [px, pz] of poly) { pos.push(px, top, pz); nor.push(0, 1, 0); uvs.push(0, 0); col.push(rr, rg, rb); vis.push(lodVisibility); }
   // Footprints are CCW in XZ, which is downward-facing in Three's X/Y/Z basis;
   // reverse each cap triangle so its geometric front faces +Y like its normal.
   for (let t = 0; t + 2 < tris.length; t += 3) idx.push(roofStart + tris[t], roofStart + tris[t + 2], roofStart + tris[t + 1]);

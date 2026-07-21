@@ -5,6 +5,7 @@ import {
   positionWorld,
   positionView,
   cameraProjectionMatrix,
+  modelPosition,
   modelScale,
   normalWorldGeometry,
   cameraPosition,
@@ -42,6 +43,7 @@ import {
 import { bumpNormal } from "./tslUtil";
 import { LIGHT_SCALE } from "../config";
 import { cameraCutawayMask } from "../render/cameraCutaway";
+import { buildingGrowAmount } from "../render/materialize";
 
 /** Sky-driven lit-window weight: 0 in daylight → 1 after dusk, written every
  * frame by Sky#applySun. Window emissives — here, the citygen parallax glass
@@ -427,7 +429,7 @@ function assignFacadeNodes(
   info: N,
   bid: N,
   vColor: N,
-  opts: { detail: boolean; batched: boolean }
+  opts: { detail: boolean; batched: boolean; birth?: N }
 ): void {
   // Suppressed buildings used to be hidden by moving their vertices 900 m down.
   // That left a complete second city under the playable world, still inside the
@@ -446,15 +448,34 @@ function assignFacadeNodes(
   // far beyond the camera range so the rasterizer rejects their triangles before
   // fragment work; unlike the old 900 m sink, this can never form a visible city.
   const suppressed = step(info.r, 0.5);
-  const offsetMeters = nudge.sub(vec3(0, suppressed.mul(1_000_000), 0));
+  const sinkMeters = suppressed.mul(1_000_000);
+  // Per-building base height, 16-bit fixed point in G/B. It already anchors
+  // the facade grammar, so the reveal uses the exact same street contact point.
+  const baseY = info.g.mul(255).round().mul(256).add(info.b.mul(255).round()).div(BASEY_SCALE).sub(BASEY_OFFSET);
+  const grow = opts.birth ? buildingGrowAmount(opts.birth, bid) : float(1);
   // In a batch `positionLocal` is already world-space (three's batch() applied
   // the per-instance dequant matrix) under an identity object matrix, so the
   // metre offset is added directly and stays in world units. On a per-tile mesh
   // positions are normalized [-1,1] with the dequant scale in `modelScale`, so a
-  // local-space add would be amplified by that scale (~420x) — divide it out.
-  mat.positionNode = opts.batched
-    ? positionLocal.add(offsetMeters)
-    : positionLocal.add(offsetMeters.div(modelScale));
+  // local-space add would be amplified by that scale (~420x). The ordinary path
+  // converts the world base to that normalized frame; neither path mutates an
+  // Object3D matrix or uploads transforms while the reveal runs.
+  if (opts.batched) {
+    const p = positionLocal.add(nudge);
+    mat.positionNode = vec3(
+      p.x,
+      baseY.add(p.y.sub(baseY).mul(grow)).sub(sinkMeters),
+      p.z
+    );
+  } else {
+    const p = positionLocal.add(nudge.div(modelScale));
+    const baseLocalY = baseY.sub(modelPosition.y).div(modelScale.y);
+    mat.positionNode = vec3(
+      p.x,
+      baseLocalY.add(p.y.sub(baseLocalY).mul(grow)).sub(sinkMeters.div(modelScale.y)),
+      p.z
+    );
+  }
 
   // the XZ nudge has a directional blind spot: when a pair's nudge delta runs
   // parallel to the shared wall (or the shared face is a roof/floor), the two
@@ -468,8 +489,6 @@ function assignFacadeNodes(
     positionView.mul(hash(bid.add(911)).mul(-2e-4).add(1))
   );
 
-  // per-building base height, 16-bit fixed point in G/B
-  const baseY = info.g.mul(255).round().mul(256).add(info.b.mul(255).round()).div(BASEY_SCALE).sub(BASEY_OFFSET);
   // roof height above base, 8-bit in A (255 = unknown → mask never triggers)
   const topRel = info.a.mul(255).round().mul(TOPH_SCALE);
 
@@ -504,7 +523,7 @@ function assignFacadeNodes(
 export function createFacadeMaterial(
   aliveTex: THREE.DataTexture,
   texWidth: number,
-  opts: { detail?: boolean } = {}
+  opts: { detail?: boolean; birth?: unknown } = {}
 ): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial();
   const detail = opts.detail !== false;
@@ -516,7 +535,11 @@ export function createFacadeMaterial(
   // per-tile 1-row alive texture, sampled at the building's column (bid)
   const info = texture(aliveTex, vec2(bid.add(0.5).div(uAliveW), 0.5));
 
-  assignFacadeNodes(mat, info, bid, vColor, { detail, batched: false });
+  assignFacadeNodes(mat, info, bid, vColor, {
+    detail,
+    batched: false,
+    birth: opts.birth as N | undefined
+  });
   return mat;
 }
 
@@ -543,7 +566,8 @@ export function createFacadeMaterial(
 export function configureFacadeBatchMaterial(
   mat: THREE.MeshStandardNodeMaterial,
   atlasTex: THREE.DataTexture,
-  batchMesh: THREE.BatchedMesh
+  batchMesh: THREE.BatchedMesh,
+  opts: { birth?: unknown } = {}
 ): void {
   const bid = attribute("_bid", "float") as unknown as N;
   const vColor = attribute("color", "vec3") as unknown as N;
@@ -566,5 +590,9 @@ export function configureFacadeBatchMaterial(
   }) as N)();
   const info: N = texLoad(atlasTex, ivec2(int(bid), row));
 
-  assignFacadeNodes(mat, info, bid, vColor, { detail: true, batched: true });
+  assignFacadeNodes(mat, info, bid, vColor, {
+    detail: true,
+    batched: true,
+    birth: opts.birth as N | undefined
+  });
 }

@@ -15,6 +15,7 @@ import { createRoadMaterial, createParkMaterial } from "./streets";
 import { createTileMeshBatch, type TileMeshBatch, type TileBatchHandle } from "./tileBatch";
 import {
   applyBirthFade,
+  batchBirthNode,
   configureBatchBirthFade,
   materializeField
 } from "../render/materialize";
@@ -1532,13 +1533,13 @@ export class TileStreamer {
     if (token.visualInFlight) this.#orphanTileLoads.add(token);
   }
 
-  #takeSlot(): FacadeSlot {
+  #takeSlot(birth: ReturnType<typeof materializeField.birthOf>): FacadeSlot {
     const pooled = this.#slotPool.pop();
     if (pooled) {
       // Recreate node graphs only for a slot that is actually being reused.
       // Retirement itself stays allocation-free after disposal.
-      pooled.matNear = createFacadeMaterial(pooled.tex, this.#aliveW, { detail: true });
-      pooled.matFar = createFacadeMaterial(pooled.tex, this.#aliveW, { detail: false });
+      pooled.matNear = createFacadeMaterial(pooled.tex, this.#aliveW, { detail: true, birth });
+      pooled.matFar = createFacadeMaterial(pooled.tex, this.#aliveW, { detail: false, birth });
       return pooled;
     }
     const data = new Uint8Array(this.#aliveW * 4);
@@ -1546,8 +1547,8 @@ export class TileStreamer {
     return {
       tex,
       data,
-      matNear: createFacadeMaterial(tex, this.#aliveW, { detail: true }),
-      matFar: createFacadeMaterial(tex, this.#aliveW, { detail: false }),
+      matNear: createFacadeMaterial(tex, this.#aliveW, { detail: true, birth }),
+      matFar: createFacadeMaterial(tex, this.#aliveW, { detail: false, birth }),
       far: false
     };
   }
@@ -1658,7 +1659,7 @@ export class TileStreamer {
       // RGBA per building: R = alive flag, G/B = base height (16-bit fixed point)
       // so the facade anchors storefronts and floor lines to each building's street.
       // the slot is pooled — reset the whole texture, not just this tile's nB entries
-      slot = this.#takeSlot();
+      slot = this.#takeSlot(birth);
       const aliveData = slot.data;
       aliveData.fill(255);
       const enc0 = Math.round(BASEY_OFFSET * BASEY_SCALE); // baseY = 0 fallback
@@ -2098,11 +2099,12 @@ export class TileStreamer {
       maxIndices: BUILDING_BATCH_MAX_INDICES,
       receiveShadow: true
     });
-    configureFacadeBatchMaterial(mat, atlas, batch.mesh);
     // M5 per-instance birth: wired after the facade graph, before the
     // onBatchCreated warm, so the compiled pipeline is the final one (C2/C7).
     this.#buildingBirth = createBatchBirth(cap);
-    configureBatchBirthFade(mat, batch.mesh, this.#buildingBirth.tex);
+    const birth = batchBirthNode(batch.mesh, this.#buildingBirth.tex);
+    configureFacadeBatchMaterial(mat, atlas, batch.mesh, { birth });
+    configureBatchBirthFade(mat, batch.mesh, this.#buildingBirth.tex, birth);
     this.#buildingBatch = batch;
     this.onBatchCreated(batch.mesh);
     return batch;
@@ -2279,7 +2281,18 @@ export class TileStreamer {
     return [cx, cz, this.manifest.tile * Math.SQRT2 * 0.5];
   }
 
-  #showTileVisuals(tile: LoadedTile): void {
+  #showTileVisuals(tile: LoadedTile, replayBirth = false): void {
+    if (replayBirth) {
+      // Residency can finish several seconds before the scan/morph gate lets a
+      // tile draw. Re-stamp at the actual visible boundary so the one-second
+      // birth/growth window has not already elapsed behind `visible=false`.
+      materializeField.markBorn(`tile:${tile.key}`);
+      if (this.#buildingBirth && tile.buildingBatchHandles) {
+        for (const handle of tile.buildingBatchHandles) {
+          stampBatchBirth(this.#buildingBirth, handle.instanceId);
+        }
+      }
+    }
     tile.group.visible = true;
     this.#setTileRoadVisible(tile, true);
     this.#setTileBuildingVisible(tile, true);
@@ -2310,7 +2323,7 @@ export class TileStreamer {
       this.#hideTileVisuals(tile);
       tile.frontGateHandle = frontGate.hide(cx, cz, r, () => {
         tile.frontGateHandle = undefined;
-        this.#showTileVisuals(tile);
+        this.#showTileVisuals(tile, true);
       });
     } else {
       this.#showTileVisuals(tile);

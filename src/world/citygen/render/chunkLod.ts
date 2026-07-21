@@ -37,6 +37,8 @@ export interface ChunkLOD {
   pump(budget: number): void;
   /** Selectively discard/restore one merged prism without splitting the draw. */
   setBuildingVisible(index: number, visible: boolean): void;
+  /** Restart this cell's shared-material birth/growth at an actual gate show. */
+  markVisibleBirth(time: number): void;
   dispose(): void;
 }
 
@@ -92,7 +94,7 @@ export function createChunkLODBeautyWarmup(): { object: THREE.Mesh; dispose(): v
 export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): ChunkLOD {
   const arr: PrismArrays = emptyArrays();
   const ground = opts?.groundHeight;
-  const vertexRanges = new Map<number, { start: number; count: number }>();
+  const vertexRanges = new Map<number, { start: number; count: number; visibleValue: number }>();
   const hidden = new Set<number>();
   let cursor = 0;
   let beautyMaterial: THREE.Material | null = null;
@@ -110,7 +112,11 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
         // conform to live terrain when a sampler was provided; else legacy path
         if (ground) appendPrism(s, arr, footprintGrade(s.poly, s.base, s.top, ground));
         else appendPrism(s, arr);
-        vertexRanges.set(s.i, { start, count: arr.pos.length / 3 - start });
+        vertexRanges.set(s.i, {
+          start,
+          count: arr.pos.length / 3 - start,
+          visibleValue: arr.vis[start] ?? 1,
+        });
       }
       if (cursor >= specs.length) {
         const g = geometryFrom(arr);
@@ -159,9 +165,12 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
       const range = vertexRanges.get(index);
       const attr = chunk.mesh?.geometry.getAttribute("lodVisibility") as THREE.BufferAttribute | undefined;
       if (!range || !attr) return;
-      (attr.array as Float32Array).fill(visible ? 1 : 0, range.start, range.start + range.count);
+      (attr.array as Float32Array).fill(visible ? range.visibleValue : 0, range.start, range.start + range.count);
       attr.addUpdateRange(range.start, range.count);
       attr.needsUpdate = true;
+    },
+    markVisibleBirth(time) {
+      if (chunk.mesh) chunk.mesh.userData.materializeBirthTime = time;
     },
     dispose() {
       // M9: release BOTH meshes' RenderObjects (beauty + shadow pass entries)
