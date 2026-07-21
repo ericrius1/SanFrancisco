@@ -24,5 +24,13 @@ export const PHRASE_DEFS: PhraseDef[] = [
   { id: "turn-dusk", url: "/audio/music/phrases/turn-dusk.mp3", flavor: "dusk", voice: "rhodes", gainTrim: 0.8 },
   { id: "ask-dusk", url: "/audio/music/phrases/ask-dusk.mp3", flavor: "dusk", voice: "rhodes", gainTrim: 0.8 },
   { id: "swell-bright", url: "/audio/music/phrases/swell-bright.mp3", flavor: "bright", voice: "ks", gainTrim: 0.7 },
-  { id: "swell-dusk", url: "/audio/music/phrases/swell-dusk.mp3", flavor: "dusk", voice: "ks", gainTrim: 0.7 }
+  { id: "swell-dusk", url: "/audio/music/phrases/swell-dusk.mp3", flavor: "dusk", voice: "ks", gainTrim: 0.7 },
+  { id: "drift-bright", url: "/audio/music/phrases/drift-bright.mp3", flavor: "bright", voice: "rhodes", gainTrim: 0.8 },
+  { id: "high-bright", url: "/audio/music/phrases/high-bright.mp3", flavor: "bright", voice: "rhodes", gainTrim: 0.8 },
+  { id: "step-bright", url: "/audio/music/phrases/step-bright.mp3", flavor: "bright", voice: "rhodes", gainTrim: 0.8 },
+  { id: "swell2-bright", url: "/audio/music/phrases/swell2-bright.mp3", flavor: "bright", voice: "ks", gainTrim: 0.7 },
+  { id: "fall-dusk", url: "/audio/music/phrases/fall-dusk.mp3", flavor: "dusk", voice: "rhodes", gainTrim: 0.8 },
+  { id: "float-dusk", url: "/audio/music/phrases/float-dusk.mp3", flavor: "dusk", voice: "rhodes", gainTrim: 0.8 },
+  { id: "step-dusk", url: "/audio/music/phrases/step-dusk.mp3", flavor: "dusk", voice: "rhodes", gainTrim: 0.8 },
+  { id: "swell2-dusk", url: "/audio/music/phrases/swell2-dusk.mp3", flavor: "dusk", voice: "ks", gainTrim: 0.7 }
 ];

@@ -43,6 +43,11 @@ export class PhrasePlayer {
     this.#bus.gain.setTargetAtTime(target, now, 1.2);
   }
 
+  /** Whether a phrase is decoded and would sound immediately on trigger(). */
+  isReady(id: string): boolean {
+    return this.#buffers.has(id);
+  }
+
   /**
    * Schedule `def` at ctx-time `when`, transposed by `semitones`. Returns true
    * if it sounded; false kicks off the fetch — the caller retries at a later

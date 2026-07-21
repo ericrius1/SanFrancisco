@@ -178,6 +178,56 @@ def render_groove(
     return mix.astype(np.float32)
 
 
+def render_brush(
+    *,
+    bpm: float = 66,
+    bars: int = 8,
+    seed: int = 41,
+    tail: float = 2.5,
+) -> np.ndarray:
+    """Organic brush kit for park regions: airy swung 16th shaker, sparse wood
+    clicks, and a very soft deep kick on every other bar's downbeat only --
+    no backbeat snare. Same humanize/tail contract as render_groove."""
+    rng = np.random.default_rng(seed)
+    beat = 60.0 / bpm
+    loop = bars * 4 * beat
+    canvas = np.zeros((seconds(loop + tail), 2), dtype=np.float64)
+    swing = 0.585  # position of the off-16th inside a 16th pair
+
+    def human(t: float, first: bool = False) -> float:
+        jitter = 0.0 if first else float(rng.normal(0, 0.008))
+        return max(0.002 if first else 0.0, t + jitter)
+
+    for bar in range(bars):
+        t0 = bar * 4 * beat
+        # --- very soft deep kick, only beat 1 of every other bar
+        if bar % 2 == 0:
+            place(canvas, kick(rng, deep=True), seconds(human(t0, first=(bar == 0))), 0.35, -0.05)
+        # --- sparse wood clicks at swung positions
+        for frac in (1.5, 2.75, 3.25):
+            if rng.random() < 0.5:
+                when = t0 + frac * beat
+                gain = 0.25 + 0.10 * rng.random()
+                place(canvas, rim(rng, soft=True), seconds(human(when)), gain, 0.2)
+        # --- dense brushy shaker: swung 16ths
+        for s in range(16):
+            if rng.random() > 0.85:
+                continue
+            frac = s * 0.25 + ((swing - 0.5) * 0.5 if s % 2 == 1 else 0.0)
+            when = t0 + frac * beat
+            vel = 0.19 + 0.09 * np.sin(s * 1.1 + bar) + 0.05 * rng.random()
+            place(canvas, shaker(rng), seconds(human(when)), min(0.28, max(0.1, vel)), 0.35)
+        # --- one open-shaker swirl per bar at a random beat
+        swirl_when = t0 + rng.random() * 4 * beat
+        place(canvas, shaker(rng, open_=True), seconds(human(swirl_when)), 0.4, 0.35)
+
+    mix = canvas
+    mix = saturate(mix, 1.15)
+    mix = np.stack([lowpass(mix[:, 0], 3200), lowpass(mix[:, 1], 3200)], axis=1)
+    mix *= 0.5 / max(1e-9, np.max(np.abs(mix)))  # peak -6 dBFS
+    return mix.astype(np.float32)
+
+
 def render_dust(*, loop_s: float = 20.0, overlap_s: float = 4.0, seed: int = 11) -> np.ndarray:
     """Tape-dust texture: pink hiss waves, soft crackle clusters, slow reversed
     swells. Equal-power fades of `overlap_s` baked at both ends."""
@@ -249,8 +299,10 @@ def main() -> None:
     # manifest contract: loopSeconds derived from bpm/bars EXACTLY as below
     write_mp3("beat-warm", render_groove(bpm=72, bars=8, seed=7, deep=False, density=1.0))
     write_mp3("beat-dusk", render_groove(bpm=58, bars=8, seed=23, deep=True, density=0.8))
+    write_mp3("beat-brush", render_brush())
     write_mp3("dust", render_dust())
-    print("\nloopSeconds: beat-warm =", 8 * 4 * 60 / 72, " beat-dusk =", 8 * 4 * 60 / 58, " dust = 20.0")
+    print("\nloopSeconds: beat-warm =", 8 * 4 * 60 / 72, " beat-dusk =", 8 * 4 * 60 / 58,
+          " beat-brush =", 8 * 4 * 60 / 66, " dust = 20.0")
 
 
 if __name__ == "__main__":

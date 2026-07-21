@@ -34,6 +34,9 @@ export type MusicProfile = {
   bass: number;
   /** 0..1 — baked lo-fi drum groove (day/dusk kit crossfades by daylight). */
   groove: number;
+  /** 0..1 — how much of the day groove is the brushed organic kit (parks)
+   *  versus the swung city kit. */
+  brush: number;
   /** 0..1 — baked tape-dust texture bed. */
   dust: number;
 };
@@ -63,6 +66,7 @@ export const CITY_MUSIC_PROFILE: MusicProfile = {
   epiano: 1,
   bass: 0.6,
   groove: 0.6,
+  brush: 0.12,
   dust: 0.55
 };
 
@@ -91,7 +95,8 @@ export const MUSIC_REGIONS: MusicRegionSpec[] = [
       pad: 0.7,
       epiano: 0.9,
       bass: 0.5,
-      groove: 0.35,
+      groove: 0.45,
+      brush: 0.75,
       dust: 0.4
     }
   },
@@ -113,7 +118,8 @@ export const MUSIC_REGIONS: MusicRegionSpec[] = [
       pad: 0.8,
       epiano: 0.75,
       bass: 0.5,
-      groove: 0.3,
+      groove: 0.4,
+      brush: 0.7,
       dust: 0.4
     }
   },
@@ -135,7 +141,8 @@ export const MUSIC_REGIONS: MusicRegionSpec[] = [
       pad: 1,
       epiano: 0.5,
       bass: 0.45,
-      groove: 0.08,
+      groove: 0.15,
+      brush: 0.6,
       dust: 0.5
     }
   },
@@ -158,6 +165,7 @@ export const MUSIC_REGIONS: MusicRegionSpec[] = [
       epiano: 0.55,
       bass: 0.4,
       groove: 0.12,
+      brush: 0.5,
       dust: 0.6
     }
   },
@@ -180,6 +188,7 @@ export const MUSIC_REGIONS: MusicRegionSpec[] = [
       epiano: 0.8,
       bass: 0.5,
       groove: 0.4,
+      brush: 0.4,
       dust: 0.45
     }
   }
@@ -222,6 +231,7 @@ const NUMERIC_KEYS = [
   "epiano",
   "bass",
   "groove",
+  "brush",
   "dust"
 ] as const;
 

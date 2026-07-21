@@ -61,6 +61,34 @@ const KEY_SWITCH_SECONDS = 5; // hysteresis before a region takes the key
 const KEYS_LO = 50; // chord voicing register (MIDI)
 const KEYS_HI = 74;
 
+// ---- arrangement sections -------------------------------------------------
+// The cure for statistical flatness: a slow arrangement brain. Each section
+// holds for 30–90 s and scales the layers, so the score breathes through
+// keys-forward passages, beatless pad drifts, groove-led stretches and short
+// near-silent "breaths" instead of playing everything all the time.
+type SectionId = "full" | "keysOnly" | "padDrift" | "beatFocus" | "breath";
+type SectionMul = {
+  keys: number;
+  pad: number;
+  bass: number;
+  groove: number;
+  sparkle: number;
+  phrases: number;
+  dust: number;
+};
+const SECTIONS: Record<SectionId, SectionMul & { minS: number; maxS: number }> = {
+  full: { keys: 1, pad: 1, bass: 1, groove: 1, sparkle: 1, phrases: 1, dust: 1, minS: 45, maxS: 90 },
+  keysOnly: { keys: 1.1, pad: 0.45, bass: 0.7, groove: 0.1, sparkle: 0.9, phrases: 1.2, dust: 1, minS: 35, maxS: 70 },
+  padDrift: { keys: 0.15, pad: 1.2, bass: 0.5, groove: 0, sparkle: 0.7, phrases: 0.8, dust: 1.2, minS: 40, maxS: 80 },
+  beatFocus: { keys: 0.5, pad: 0.6, bass: 1.15, groove: 1.25, sparkle: 0.5, phrases: 0.7, dust: 0.9, minS: 35, maxS: 70 },
+  breath: { keys: 0.06, pad: 0.3, bass: 0, groove: 0, sparkle: 0.35, phrases: 0, dust: 1.3, minS: 10, maxS: 22 }
+};
+const SECTION_IDS = Object.keys(SECTIONS) as SectionId[];
+
+// City key wanders slowly through friendly roots (D→A→G→C…) so hours in the
+// city never sit in one tonal center. Region keys stay fixed.
+const CITY_ROOTS = [2, 9, 7, 0]; // D A G C
+
 export type MusicFrameInput = {
   playerPos: { x: number; y: number; z: number };
   /** hours 0..24 (sky clock) */
@@ -89,6 +117,14 @@ export class LofiMusicDirector {
   #nextPhraseT = -1;
   #phrasePending = false;
   #lastPhraseId = "-";
+  // arrangement state
+  #sectionId: SectionId = "full";
+  #prevSectionId: SectionId = "full";
+  #sectionT = 55;
+  #sectionMul: SectionMul = { ...SECTIONS.full };
+  #register = 0; // slow voicing-window wander, semitones
+  #cityRoot = CITY_MUSIC_PROFILE.root;
+  #cityKeyT = 300;
   #vinylBuffer: AudioBuffer | null = null;
   #bufferPreparation: Promise<void> | null = null;
 
@@ -123,6 +159,10 @@ export class LofiMusicDirector {
       daylight: +this.#daylight.toFixed(3),
       keyOwner: this.#keyOwnerId,
       keyRoot: this.#keyRoot,
+      cityRoot: this.#cityRoot,
+      section: this.#sectionId,
+      sectionIn: +this.#sectionT.toFixed(1),
+      register: this.#register,
       degree: this.#degree,
       chordCount: this.#chordCount,
       sparkleCount: this.#sparkleCount,
@@ -183,6 +223,22 @@ export class LofiMusicDirector {
       return;
     }
 
+    // arrangement: advance the section clock and ease layer multipliers
+    this.#sectionT -= dt;
+    if (this.#sectionT <= 0) this.#pickSection();
+    const sectionTarget = SECTIONS[this.#sectionId];
+    for (const k of Object.keys(this.#sectionMul) as (keyof SectionMul)[]) {
+      this.#sectionMul[k] = approach(this.#sectionMul[k], sectionTarget[k], dt, 0.35);
+    }
+    // the city's tonal center wanders every few minutes; regions keep theirs
+    this.#cityKeyT -= dt;
+    if (this.#cityKeyT <= 0) {
+      const pool = CITY_ROOTS.filter((r) => r !== this.#cityRoot);
+      this.#cityRoot = pool[Math.floor(Math.random() * pool.length)];
+      this.#cityKeyT = 240 + Math.random() * 180;
+      if (this.#keyOwnerId === "city") this.#keyRoot = this.#cityRoot; // next chord modulates
+    }
+
     // stale clocks after a quiet spell (or first start) resume near "now"
     if (this.#nextChordT < now - 0.25) this.#nextChordT = now + 0.35;
     if (this.#nextSparkleT < now - 0.25) this.#nextSparkleT = now + 2.5;
@@ -194,14 +250,17 @@ export class LofiMusicDirector {
     while (this.#nextSparkleT < now + LOOKAHEAD) this.#scheduleSparkle();
     this.#phrasePlayer?.update(dt);
 
-    // baked stems: the day kit crossfades to the deep half-time kit at dusk
+    // baked stems: daylight crossfades city kit ↔ brush kit, night takes the
+    // deep half-time kit; the section's groove multiplier lets beats leave
     if (this.#stemPlayer) {
       const T = LOFI_MUSIC_TUNING.values;
       const p = this.#texture;
       const day = this.#daylight;
-      this.#stemPlayer.setTarget("beatWarm", p.groove * Number(T.beats) * day);
-      this.#stemPlayer.setTarget("beatDusk", p.groove * Number(T.beats) * (1 - day) * 0.95);
-      this.#stemPlayer.setTarget("dust", p.dust * Number(T.dust));
+      const groove = p.groove * Number(T.beats) * this.#sectionMul.groove;
+      this.#stemPlayer.setTarget("beatWarm", groove * day * (1 - p.brush));
+      this.#stemPlayer.setTarget("beatBrush", groove * day * p.brush);
+      this.#stemPlayer.setTarget("beatDusk", groove * (1 - day) * 0.95);
+      this.#stemPlayer.setTarget("dust", p.dust * Number(T.dust) * this.#sectionMul.dust);
       this.#stemPlayer.update(dt, now);
     }
   }
@@ -376,8 +435,9 @@ export class LofiMusicDirector {
     const owner =
       MUSIC_REGIONS.find((r) => r.id === candidate)?.profile ?? CITY_MUSIC_PROFILE;
     // committed here, sounded at the next chord boundary — voice-leading walks
-    // the old voicing into the new key, so there is never a hard modulation
-    this.#keyRoot = owner.root;
+    // the old voicing into the new key, so there is never a hard modulation.
+    // The city's root comes from the slow session drift, not the static profile.
+    this.#keyRoot = candidate === "city" ? this.#cityRoot : owner.root;
     this.#keyDayMode = owner.dayMode;
     this.#keyNightMode = owner.nightMode;
   }
@@ -396,13 +456,44 @@ export class LofiMusicDirector {
       now,
       1.5
     );
-    this.#keysBus.gain.setTargetAtTime(p.epiano * Number(T.keys) * 0.95, now, 1.5);
-    this.#padBus.gain.setTargetAtTime(p.pad * Number(T.pads), now, 1.5);
-    this.#bassBus.gain.setTargetAtTime(p.bass * Number(T.bass), now, 1.5);
-    this.#sparkleBus.gain.setTargetAtTime(Number(T.sparkle) * 0.9, now, 1.5);
+    const m = this.#sectionMul;
+    this.#keysBus.gain.setTargetAtTime(p.epiano * Number(T.keys) * 0.95 * m.keys, now, 1.5);
+    this.#padBus.gain.setTargetAtTime(p.pad * Number(T.pads) * m.pad, now, 1.5);
+    this.#bassBus.gain.setTargetAtTime(p.bass * Number(T.bass) * m.bass, now, 1.5);
+    this.#sparkleBus.gain.setTargetAtTime(Number(T.sparkle) * 0.9 * m.sparkle, now, 1.5);
     this.#revSend.gain.setTargetAtTime(p.reverb * Number(T.reverb), now, 1.5);
     // melodic phrase presence follows the region's sparkle character
-    this.#phrasePlayer?.setGain(Number(T.phrases) * (0.35 + 0.65 * p.sparkle), now);
+    this.#phrasePlayer?.setGain(Number(T.phrases) * (0.35 + 0.65 * p.sparkle) * m.phrases, now);
+  }
+
+  /** Weighted next section — no self-repeat, no back-to-back breaths, biased
+   *  by the region's character (pad-heavy places drift, groovy places ride). */
+  #pickSection(): void {
+    const p = this.#texture;
+    const weights: Record<SectionId, number> = {
+      full: 0.3,
+      keysOnly: 0.2 + 0.15 * p.epiano,
+      padDrift: 0.16 + 0.3 * p.pad,
+      beatFocus: (0.08 + 0.3 * p.groove) * 1.4,
+      breath: 0.1
+    };
+    weights[this.#sectionId] = 0;
+    if (this.#prevSectionId === "breath") weights.breath = 0;
+    let total = 0;
+    for (const id of SECTION_IDS) total += weights[id];
+    let r = Math.random() * total;
+    let next: SectionId = "full";
+    for (const id of SECTION_IDS) {
+      r -= weights[id];
+      if (r <= 0) {
+        next = id;
+        break;
+      }
+    }
+    this.#prevSectionId = this.#sectionId;
+    this.#sectionId = next;
+    const spec = SECTIONS[next];
+    this.#sectionT = spec.minS + Math.random() * (spec.maxS - spec.minS);
   }
 
   /* ------------------------------------------------------------ composer */
@@ -419,24 +510,55 @@ export class LofiMusicDirector {
     this.#degree = pickNextDegree(this.#degree, rng);
     const size = rng() < 0.35 ? 5 : 4;
     const pcs = degreeChordPcs(this.#keyRoot, MODES[mode], this.#degree, size);
-    const midis = leadVoices(this.#prevVoices, pcs, KEYS_LO, KEYS_HI);
+    const midis = leadVoices(this.#prevVoices, pcs, KEYS_LO + this.#register, KEYS_HI + this.#register);
     this.#prevVoices = midis;
 
     const pace = Math.max(0.2, Number(LOFI_MUSIC_TUNING.values.pace));
     const dur =
       (p.chordSeconds / pace) * (1 + 0.5 * (1 - day)) * (0.9 + rng() * 0.25);
 
-    // rolled keys — a lazy upward strum, every voice its own touch
-    let offset = 0.02 + rng() * 0.05;
-    for (const midi of midis) {
-      this.#epianoNote(t + offset, midi, 0.14 + rng() * 0.08, dur);
-      offset += 0.055 + rng() * 0.1;
+    // the voicing window wanders a few semitones over minutes — verses sit
+    // low and warm, later passages lift and open
+    if (rng() < 0.3) {
+      this.#register = Math.max(-4, Math.min(7, this.#register + (rng() < 0.5 ? -2 : 2)));
     }
-    // occasional half-time echo of the top of the chord, quieter
-    if (rng() < 0.4 && midis.length >= 2) {
-      const echoT = t + dur * (0.45 + rng() * 0.15);
-      for (const midi of midis.slice(-2)) {
-        this.#epianoNote(echoT + rng() * 0.12, midi, 0.07 + rng() * 0.04, dur * 0.5);
+
+    // gesture variety: how this chord is touched, not just which chord it is.
+    // Sections with keys pulled far down skip the notes entirely (the pad
+    // carries the harmony) instead of scheduling inaudible voices.
+    if (this.#sectionMul.keys > 0.12) {
+      const g = rng();
+      if (g < 0.1) {
+        // rest — the pad holds the room for one change
+      } else {
+        let picked = midis;
+        let offsets: number[];
+        if (g < 0.48) {
+          // lazy upward roll (the classic touch)
+          let acc = 0.02 + rng() * 0.05;
+          offsets = midis.map(() => (acc += 0.055 + rng() * 0.1) - 0.055);
+        } else if (g < 0.66) {
+          // block chord — all voices land almost together
+          offsets = midis.map(() => 0.008 + rng() * 0.025);
+        } else if (g < 0.84) {
+          // slow broken arpeggio spread across the bar
+          let acc = 0.05;
+          offsets = midis.map(() => (acc += 0.35 + rng() * 0.45) - 0.35);
+        } else {
+          // sparse — just the outer voices, wide open
+          picked = midis.length > 2 ? [midis[0], midis[midis.length - 1]] : midis;
+          offsets = picked.map((_, i) => 0.03 + i * (0.25 + rng() * 0.3));
+        }
+        picked.forEach((midi, i) => {
+          this.#epianoNote(t + offsets[i], midi, 0.14 + rng() * 0.08, dur);
+        });
+        // occasional half-time echo of the top of the chord, quieter
+        if (rng() < 0.4 && picked.length >= 2) {
+          const echoT = t + dur * (0.45 + rng() * 0.15);
+          for (const midi of picked.slice(-2)) {
+            this.#epianoNote(echoT + rng() * 0.12, midi, 0.07 + rng() * 0.04, dur * 0.5);
+          }
+        }
       }
     }
 
@@ -446,16 +568,22 @@ export class LofiMusicDirector {
     this.#bassNote(t + 0.1, bassMidi, dur);
 
     // hybrid conductor: a pending baked phrase enters just after this chord
-    // lands, transposed into the key and matched to the chord's mode flavor
-    if (this.#phrasePending && this.#phrasePlayer) {
+    // lands, transposed into the key and matched to the chord's mode flavor.
+    // Sections that silence phrases (breath) hold the pending flag instead.
+    if (this.#phrasePending && this.#phrasePlayer && this.#sectionMul.phrases > 0.3) {
       const bright = mode === "ionian" || mode === "lydian" || mode === "mixolydian";
       const pool = PHRASE_DEFS.filter(
         (d: PhraseDef) => d.flavor === (bright ? "bright" : "dusk") && d.id !== this.#lastPhraseId
       );
-      const def = pool[Math.floor(rng() * pool.length)];
+      // prefer a phrase that is already decoded — otherwise each retry would
+      // roll a fresh random pick, fetch it, and never converge on playback
+      const ready = pool.filter((d) => this.#phrasePlayer!.isReady(d.id));
+      const pick = ready.length > 0 ? ready : pool;
+      const def = pick[Math.floor(rng() * pick.length)];
       let semis = (this.#keyRoot - PHRASE_REF_ROOT + 12) % 12;
       if (semis > 6) semis -= 12; // nearest transposition, ±6 semitones max
-      if (def && this.#phrasePlayer.trigger(def, t + 0.5 + rng() * 0.9, semis, 0.5 + rng() * 0.3)) {
+      const drift = (rng() - 0.5) * 0.5; // ±¼-semitone tape drift per take
+      if (def && this.#phrasePlayer.trigger(def, t + 0.5 + rng() * 0.9, semis + drift, 0.5 + rng() * 0.3)) {
         this.#lastPhraseId = def.id;
         this.#phrasePending = false;
         const gap = (70 - 46 * p.sparkle) * (1 + (1 - day) * 0.6) * (0.6 + rng() * 0.8);
@@ -479,20 +607,32 @@ export class LofiMusicDirector {
     const mode = rng() < day ? this.#keyDayMode : this.#keyNightMode;
     const penta = pentatonicPcs(this.#keyRoot, MODES[mode]);
     const pc = penta[Math.floor(rng() * penta.length)];
-    const midi = 79 + ((pc - 79 + 1200) % 12) + (rng() < 0.4 ? 12 : 0);
+    // register varies: mostly high music-box, sometimes an octave higher,
+    // and at night an occasional low, felt-muted answer
+    const base = day < 0.5 && rng() < 0.3 ? 67 : 79;
+    const midi = base + ((pc - base + 1200) % 12) + (rng() < 0.4 && base === 79 ? 12 : 0);
     this.#sparkleNote(t, midi, 0.09 + rng() * 0.08);
-    // little two-note motif now and then — a thought completing itself
-    if (rng() < 0.4) {
-      const idx = penta.indexOf(pc);
-      const next = penta[(idx + (rng() < 0.5 ? 1 : 4)) % penta.length];
-      this.#sparkleNote(t + 0.28 + rng() * 0.3, 79 + ((next - 79 + 1200) % 12), 0.06 + rng() * 0.05);
+    // sometimes a double-stop (two penta tones together), sometimes a soft
+    // echo of the same note, sometimes a two-note motif completing itself
+    const v = rng();
+    if (v < 0.2) {
+      const other = penta[(penta.indexOf(pc) + (rng() < 0.5 ? 2 : 3)) % penta.length];
+      this.#sparkleNote(t + 0.01, base + ((other - base + 1200) % 12) + 12, 0.05 + rng() * 0.04);
+      this.#sparkleCount++;
+    } else if (v < 0.45) {
+      this.#sparkleNote(t + 0.4 + rng() * 0.25, midi, 0.045 + rng() * 0.03);
+      this.#sparkleCount++;
+    } else if (v < 0.75) {
+      const next = penta[(penta.indexOf(pc) + (rng() < 0.5 ? 1 : 4)) % penta.length];
+      this.#sparkleNote(t + 0.28 + rng() * 0.3, base + ((next - base + 1200) % 12), 0.06 + rng() * 0.05);
       this.#sparkleCount++;
     }
     this.#sparkleCount++;
 
-    const base = 20 - p.sparkle * 15; // dense regions ping every ~5s, sparse ~20s
+    const interval = 20 - p.sparkle * 15; // dense regions ping every ~5s, sparse ~20s
     const nightStretch = 1 + (1 - day) * 0.8;
-    this.#nextSparkleT = t + base * nightStretch * (0.45 + rng() * 1.1);
+    const sectionStretch = 1 / Math.max(0.3, this.#sectionMul.sparkle);
+    this.#nextSparkleT = t + interval * nightStretch * sectionStretch * (0.45 + rng() * 1.1);
   }
 
   /* -------------------------------------------------------------- voices */

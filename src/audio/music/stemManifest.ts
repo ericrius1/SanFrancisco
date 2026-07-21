@@ -4,7 +4,7 @@
 // musical schedule period; files carry extra ringing tail past it, and the
 // player overlap-schedules repeats so codec padding can't open gaps.
 
-export type StemId = "beatWarm" | "beatDusk" | "dust";
+export type StemId = "beatWarm" | "beatDusk" | "beatBrush" | "dust";
 
 export type StemDef = {
   id: StemId;
@@ -33,6 +33,14 @@ export const STEM_DEFS: Record<StemId, StemDef> = {
     loopSeconds: (8 * 4 * 60) / 58,
     detectLead: true,
     gainTrim: 0.55
+  },
+  // 66 BPM brushed organic kit — parks
+  beatBrush: {
+    id: "beatBrush",
+    url: "/audio/music/stems/beat-brush.mp3",
+    loopSeconds: (8 * 4 * 60) / 66,
+    detectLead: true,
+    gainTrim: 0.5
   },
   // tape-dust texture bed; 4 s equal-power fades baked at both ends
   dust: {
