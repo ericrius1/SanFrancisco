@@ -117,7 +117,12 @@ function clampOctave(m: number, lo: number, hi: number): number {
  * the gentle circular drift that keeps a lo-fi bed moving without ever
  * arriving anywhere dramatic.
  */
-export function pickNextDegree(prev: number, rng: () => number): number {
+export function pickNextDegree(
+  prev: number,
+  rng: () => number,
+  mode?: readonly number[],
+  brightness = 0
+): number {
   const base = [3, 2, 1.4, 3, 1.8, 2.6, 0.35]; // I ii iii IV V vi vii°
   let total = 0;
   const w: number[] = [];
@@ -126,6 +131,15 @@ export function pickNextDegree(prev: number, rng: () => number): number {
     if (d === prev) weight *= 0.12;
     const interval = Math.min((d - prev + 7) % 7, (prev - d + 7) % 7);
     if (interval === 1 || interval === 3) weight *= 1.5; // steps + fourths flow
+    // brightness 0 (the default) leaves the classic walk untouched; above 0
+    // it leans toward major-triad degrees and away from minor/diminished ones
+    if (mode && brightness > 0) {
+      const third = (mode[(d + 2) % 7] - mode[d] + 12) % 12;
+      const fifth = (mode[(d + 4) % 7] - mode[d] + 12) % 12;
+      if (fifth === 6) weight *= Math.max(0.2, 1 - 0.5 * brightness);
+      else if (third === 4) weight *= 1 + 0.5 * brightness;
+      else if (third === 3 && fifth === 7) weight *= Math.max(0.3, 1 - 0.28 * brightness);
+    }
     w.push(weight);
     total += weight;
   }
