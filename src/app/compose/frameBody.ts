@@ -79,7 +79,7 @@ import type { MainCtx } from "./ctx";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
   const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
   const state = {
     cineHook: null as (((dt: number) => void) | null),
@@ -357,6 +357,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         timeOfDay: sky.timeOfDay,
         allowNewLoads: !worldArrival.active
       });
+      lofiMusic.update(frameDt, {
+        playerPos: player.renderPosition,
+        timeOfDay: sky.timeOfDay,
+        allowStart: !worldArrival.active
+      });
       sendLocalPresence(0);
       sendPickleballNetwork();
       remotes.selfId = net.selfId;
@@ -422,6 +427,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         gust: windGustValue(),
         timeOfDay: sky.timeOfDay,
         allowNewLoads: !worldArrival.active
+      });
+      lofiMusic.update(frameDt, {
+        playerPos: player.renderPosition,
+        timeOfDay: sky.timeOfDay,
+        allowStart: !worldArrival.active
       });
       // stay social while frozen: peers keep moving, our keepalive keeps flowing
       sendLocalPresence(0);
@@ -547,6 +557,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         gust: windGustValue(),
         timeOfDay: sky.timeOfDay,
         allowNewLoads: !worldArrival.active
+      });
+      lofiMusic.update(frameDt, {
+        playerPos: player.renderPosition,
+        timeOfDay: sky.timeOfDay,
+        allowStart: !worldArrival.active
       });
       sendLocalPresence();
       sendPickleballNetwork();
@@ -1223,6 +1238,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       gust: windGustValue(),
       timeOfDay: sky.timeOfDay,
       allowNewLoads: !worldArrival.active
+    });
+    // the lo-fi score breathes alongside the nature ambience everywhere
+    lofiMusic.update(frameDt, {
+      playerPos: player.renderPosition,
+      timeOfDay: sky.timeOfDay,
+      allowStart: !worldArrival.active
     });
     // live loop only: the dogs freeze during pause, so barking there would lie
     dogParkAudio.update(frameDt, player.renderPosition);
