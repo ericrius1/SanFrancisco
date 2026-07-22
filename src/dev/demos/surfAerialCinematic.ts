@@ -126,6 +126,7 @@ export const surfAerialCinematic: Demo = {
     let baseLaunchSerial = 0;
     let baseLandingSerial = 0;
     let launchAt: number | null = null;
+    let popRequested = false;
     let spinReleasedAt: number | null = null;
     let landedAt: number | null = null;
     let maxAbsAirSpin = 0;
@@ -164,6 +165,7 @@ export const surfAerialCinematic: Demo = {
       baseLaunchSerial = telemetry.launchSerial;
       baseLandingSerial = telemetry.landingSerial;
       launchAt = null;
+      popRequested = false;
       spinReleasedAt = null;
       landedAt = null;
       maxAbsAirSpin = 0;
@@ -298,10 +300,14 @@ export const surfAerialCinematic: Demo = {
         let stage: SurfAerialStage;
         if (launchAt === null) {
           // First establish a pumped line, then carve up the steep face until
-          // the controller's own lip-energy telemetry commits takeoff.
+          // the explicit pop indicator says the authored Space jump is ready.
           stage = "approach";
           if (time < HIGH_LINE_START_SECONDS) hold("KeyW");
           else hold("KeyW", "KeyA");
+          if (!popRequested && telemetry.lipReadiness > 0.78) {
+            ctx.player.requestSurfJump();
+            popRequested = true;
+          }
         } else if (telemetry.phase === "air") {
           // The production now captures the same restrained natural pop as
           // live play. Release the takeoff carve immediately so no cinematic

@@ -47,7 +47,7 @@ export class SurfExperience {
       <div class="surf-combo" data-surf-combo>x1</div>
       <div class="surf-status" data-surf-status>DROP IN</div>
       <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>X</b></div>
-      <div class="surf-meter surf-launch-meter"><span>LIP</span><i data-surf-launch></i><b>AUTO</b></div>
+      <div class="surf-meter surf-launch-meter"><span>LIP</span><i data-surf-launch></i><b>SPACE</b></div>
       <div class="surf-controls">A/D CARVE · W CLIMB + PUMP · S STALL FOR BARREL · SPACE JUMP · E EXIT</div>`;
     this.#scoreEl = this.root.querySelector("[data-surf-score]")!;
     this.#comboEl = this.root.querySelector("[data-surf-combo]")!;
@@ -193,8 +193,8 @@ export class SurfExperience {
       this.#status(`AIR ${surf.airTime.toFixed(1)}s`, "air");
     } else if (surf.flowReady) {
       this.#status("X — FLOW READY", "flow");
-    } else if (surf.autoLaunchCharge > 0.08) {
-      this.#status(`LIP ENERGY ${Math.round(surf.autoLaunchCharge * 100)}%`, "air");
+    } else if (surf.lipReadiness > 0.82) {
+      this.#status("SPACE — POP THE LIP", "air");
     } else if (surf.stalling) {
       this.#status("CARVE TOWARD THE BEACH FOR SPEED", "");
     } else if (surf.lip > 0.56) {
@@ -212,7 +212,7 @@ export class SurfExperience {
       ? clamp01(surf.flowTimeRemaining / this.#flowDuration)
       : surf.flow;
     this.#meterEl.style.transform = `scaleX(${clamp01(flowFill)})`;
-    this.#launchEl.style.transform = `scaleX(${clamp01(surf.autoLaunchCharge)})`;
+    this.#launchEl.style.transform = `scaleX(${clamp01(surf.lipReadiness)})`;
     this.root.classList.toggle("flow-ready", surf.flowReady && !surf.flowActive);
     this.root.classList.toggle("flow-active", surf.flowActive);
     this.root.classList.toggle(

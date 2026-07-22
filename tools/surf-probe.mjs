@@ -9,7 +9,7 @@
 //   - neutral input survives a deterministic endless-wave run,
 //   - mouse and right-stick look cannot move the authored surf camera,
 //   - keyboard E and gamepad Y exit onto the shack apron without abandoning a board,
-//   - standard-gamepad LS/triggers/A map to carve/pump/stall/Flow,
+//   - standard-gamepad LS/triggers/A/X map to carve/pump/stall/jump/Flow,
 //   - the shaping room and each cosmetic image remain first-use lazy,
 //   - desktop active play and the mobile shaping panel render nonblank.
 //
@@ -544,7 +544,11 @@ async function main() {
 
     // Player-facing activation: no direct position write and no trySwitch call.
     const activationRequestStart = cdp.requests.length;
-    await pressKey(cdp, "KeyE", "e", 69);
+    // The start class can precede the destination collision handoff by a few
+    // frames on a cold streamed boot. Wait for that input hold to release, then
+    // use the same bounded E retry path as later covered surf transitions.
+    await waitEval(cdp, "window.__sf.worldArrival?.active===false", 30_000, "Ocean Beach input release");
+    await pressEUntilMode(cdp, "surf", 60, "keyboard-E initial ride");
     await waitEval(
       cdp,
       `(()=>{const s=window.__sf,t=s.player.surfTelemetry;
@@ -707,8 +711,8 @@ async function main() {
       tubeRide.camera
     );
 
-    // W always climbs, independent of line direction. Reaching the lip with
-    // pace can arm an auto-launch, so ride-only contact metrics accept either.
+    // W always climbs, independent of line direction, but never chooses the
+    // takeoff. Space/A is the only jump action.
     const climbKey = { code: "KeyW", key: "w", vk: 87 };
     const climbStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
       return {crestDistance:t.crestDistance,launch:t.launchSerial};})()`);
@@ -722,18 +726,16 @@ async function main() {
           maxSupportError=Math.max(maxSupportError,Math.abs(t.supportError));
           allContact&&=t.railContact;
         }
-        if(t.crestDistance<=3.2&&frames>12)break;
-        if(t.launchSerial>${climbStart.launch})break;
       }
       const t=s.player.surfTelemetry;
       return {frames,minCrest,maxSupportError,allContact,endCrest:t.crestDistance,
-        faceLine:t.faceLine,launched:t.launchSerial>${climbStart.launch},
+        faceLine:t.faceLine,phase:t.phase,launched:t.launchSerial>${climbStart.launch},
         relativeFaceSpeed:t.relativeFaceSpeed};})()`);
     await setKey(cdp, false, climbKey.code, climbKey.key, climbKey.vk);
     check(
-      (carveHigh.minCrest < climbStart.crestDistance - 1.4 || carveHigh.launched) &&
-        carveHigh.maxSupportError < 0.18 && carveHigh.allContact,
-      "W climbs the face with clean rail contact until takeoff",
+      carveHigh.minCrest < climbStart.crestDistance - 1.4 && !carveHigh.launched &&
+        carveHigh.maxSupportError < 0.18 && carveHigh.allContact && carveHigh.phase === "ride",
+      "W climbs the face with clean rail contact and never auto-jumps",
       { start: climbStart, carveHigh }
     );
     // Settle back onto a supported ride before the roundhouse test.
@@ -783,7 +785,7 @@ async function main() {
       tubeShot
     );
 
-    // Real-control lip launch: pump the face with W bursts (the KSPS rhythm),
+    // Real-control lip launch: pump the face with W, then explicitly press Space,
     // keep steering held through the aerial to prove takeoff input cannot turn
     // into a trick rotation, then prove the five-point hull returns to
     // supported ride contact.
@@ -793,19 +795,20 @@ async function main() {
       return {launch:t.launchSerial,landing:t.landingSerial,crest:t.crestDistance};})()`);
     const takeoff = await evaluate(cdp, `(()=>{const s=window.__sf;
       s.input.keys.add('${climbKey.code}');
-      let frames=0,minCrest=Infinity,minHull=Infinity,maxCharge=0,minFoot=Infinity,maxFoot=-Infinity;
+      let frames=0,minCrest=Infinity,minHull=Infinity,maxReadiness=0,minFoot=Infinity,maxFoot=-Infinity,popRequested=false;
       for(;frames<520;frames++){
         s.tick(${DT});const t=s.player.surfTelemetry;
         const f=s.player.surfFootDeckClearance;
         minCrest=Math.min(minCrest,t.crestDistance);
         if(t.phase!=='air')minHull=Math.min(minHull,t.hullClearance);
-        maxCharge=Math.max(maxCharge,t.autoLaunchCharge);
+        maxReadiness=Math.max(maxReadiness,t.lipReadiness);
         minFoot=Math.min(minFoot,f.left,f.right);maxFoot=Math.max(maxFoot,f.left,f.right);
+        if(!popRequested&&t.lipReadiness>0.72){s.player.requestSurfJump();popRequested=true;}
         if(t.launchSerial>${aerialStart.launch})break;
       }
       s.input.keys.delete('${climbKey.code}');
       const t=s.player.surfTelemetry;
-      return {frames,minCrest,minHull,maxCharge,phase:t.phase,launch:t.launchSerial,
+      return {frames,minCrest,minHull,maxReadiness,popRequested,phase:t.phase,launch:t.launchSerial,
         crest:t.crestDistance,airTime:t.airTime,clearance:t.clearance,minFoot,maxFoot};})()`);
     const spin = await evaluate(cdp, `(()=>{const s=window.__sf;
       s.input.keys.add('KeyA');
@@ -856,9 +859,9 @@ async function main() {
     await renderCurrentFrame(cdp);
     const aerialShot = await capture(cdp, "surf-aerial-desktop.png");
     check(
-      takeoff.launch === aerialStart.launch + 1 && takeoff.phase === "air" &&
+      takeoff.popRequested && takeoff.launch === aerialStart.launch + 1 && takeoff.phase === "air" &&
         takeoff.minCrest < aerialStart.crest - 2 && takeoff.minHull >= -0.001,
-      "carving up the face launches once off the lip without hull penetration",
+      "Space launches once from the climbed lip without hull penetration",
       { aerialStart, takeoff }
     );
     check(
@@ -893,12 +896,14 @@ async function main() {
       return {launch:t.launchSerial,landing:t.landingSerial};})()`);
     const flipAir = await evaluate(cdp, `(()=>{const s=window.__sf;
       s.input.keys.add('${climbKey.code}');
-      let frames=0;
+      let frames=0,popRequested=false;
       for(;frames<620&&s.player.surfTelemetry.launchSerial<=${flipStart.launch};frames++){
         s.tick(${DT});
+        const t=s.player.surfTelemetry;
+        if(!popRequested&&t.lipReadiness>0.72){s.player.requestSurfJump();popRequested=true;}
       }
       s.input.keys.delete('${climbKey.code}');
-      if(s.player.surfTelemetry.launchSerial<=${flipStart.launch})return {launched:false,frames};
+      if(s.player.surfTelemetry.launchSerial<=${flipStart.launch})return {launched:false,frames,popRequested};
       s.input.keys.add('KeyS');s.input.keys.add('ShiftLeft');
       let grabFrames=0,maxFlip=0,maxGrab=0;
       for(let i=0;i<240&&s.player.surfTelemetry.phase==='air';i++){
@@ -911,7 +916,7 @@ async function main() {
       for(let i=0;i<240&&s.player.surfTelemetry.landingSerial<=${flipStart.landing};i++)s.tick(${DT});
       for(let i=0;i<30;i++)s.tick(${DT});
       const t=s.player.surfTelemetry;
-      return {launched:true,frames,maxFlip,maxGrab,landing:t.landingSerial,
+      return {launched:true,frames,popRequested,maxFlip,maxGrab,landing:t.landingSerial,
         landedFlip:t.landedFlip,landedGrab:t.landedGrab,quality:t.landingQuality,phase:t.phase};})()`);
     check(
       flipAir.launched === true && flipAir.landing === flipStart.landing + 1 &&
@@ -1117,16 +1122,18 @@ async function main() {
     await setProbePad(cdp);
     await evaluate(cdp, `(()=>{const s=window.__sf;for(let i=0;i<300&&s.player.surfTelemetry.phase==='air';i++)s.tick(${DT});return true})()`);
     await evaluate(cdp, `(()=>{const s=window.__sf;for(let i=0;i<420&&s.player.surfTelemetry.phase!=='ride';i++)s.tick(${DT});return true})()`);
+    const padClimbLaunch = await evaluate(cdp, "window.__sf.player.surfTelemetry.launchSerial");
     await setProbePad(cdp, { axes: [0, -0.85, 0, 0] });
     await tickFrames(cdp, 60);
     const padStall = await evaluate(cdp, `(()=>{const s=window.__sf,t=s.player.surfTelemetry;
       return {faceAxis:s.input.axis('KeyS','KeyW'),faceLine:t.faceLine,speed:t.speed,
-        crest:t.crestDistance,phase:t.phase,pump:t.pump};})()`);
+        crest:t.crestDistance,phase:t.phase,pump:t.pump,launch:t.launchSerial};})()`);
     await setProbePad(cdp);
     check(
       padStall.faceAxis > 0.6 &&
-        (padStall.faceLine < -0.3 || padStall.phase === "air" || padStall.crest < 4.5),
-      "standard-gamepad vertical stick climbs the face",
+        (padStall.faceLine < -0.3 || padStall.crest < 4.5) &&
+        padStall.phase === "ride" && padStall.launch === padClimbLaunch,
+      "standard-gamepad vertical stick climbs without auto-jumping",
       { dropState: padPump, climbState: padStall }
     );
 
