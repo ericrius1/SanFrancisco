@@ -1,4 +1,5 @@
 import type * as THREE from "three/webgpu";
+import { Vector2, Vector3 } from "three/webgpu";
 import {
   Fn,
   float,
@@ -139,8 +140,43 @@ const U = {
   // exposed in Tweakpane: gameplay owns the envelope and every cached post-FX
   // graph reads the same uniforms without recompilation.
   flowAmount: uniform(0),
-  flowPhase: uniform(0)
+  flowPhase: uniform(0),
+  // Underwater package (fx/underwaterRig.ts drives these per frame). All of
+  // them default to the exact "dry" identity so the permanently-present nodes
+  // cost only coherent arithmetic while the camera is above the surface, and
+  // submerging never selects a different pipeline.
+  uwSubmersion: uniform(0),
+  uwSigma: uniform(new Vector3(0.38, 0.085, 0.05)), // per-channel extinction /m
+  uwSigmaScale: uniform(1), // artist "visibility" scalar over sigma
+  uwScatterAmbient: uniform(new Vector3(0, 0, 0)), // linear, pre-scaled CPU-side
+  uwSunScatter: uniform(new Vector3(0, 0, 0)), // sun-forward in-scatter colour
+  uwSunViewDir: uniform(new Vector3(0, 0, 1)), // view-space dir toward refracted sun
+  uwSunScreen: uniform(new Vector2(0.5, 0.35)), // refracted sun anchor in screen UV
+  uwRayAmount: uniform(0) // god-ray gain (0 = exact identity)
 };
+
+/**
+ * Per-frame underwater driver contract. The vectors are copied, never
+ * retained. Everything here is a live uniform — no pipeline reselection.
+ */
+export function setUnderwaterPostFx(s: {
+  submersion: number;
+  sigmaScale: number;
+  scatterAmbient: THREE.Vector3;
+  sunScatter: THREE.Vector3;
+  sunViewDir: THREE.Vector3;
+  sunScreenX: number;
+  sunScreenY: number;
+  rayAmount: number;
+}) {
+  U.uwSubmersion.value = Math.min(1, Math.max(0, s.submersion));
+  U.uwSigmaScale.value = Math.max(0.05, s.sigmaScale);
+  (U.uwScatterAmbient.value as THREE.Vector3).copy(s.scatterAmbient);
+  (U.uwSunScatter.value as THREE.Vector3).copy(s.sunScatter);
+  (U.uwSunViewDir.value as THREE.Vector3).copy(s.sunViewDir);
+  (U.uwSunScreen.value as THREE.Vector2).set(s.sunScreenX, s.sunScreenY);
+  U.uwRayAmount.value = Math.max(0, s.rayAmount);
+}
 
 export function setFlowPostFx(amount: number, phase: number) {
   U.flowAmount.value = Math.min(1, Math.max(0, amount));
@@ -202,6 +238,16 @@ export function createPostFx(deps: {
   const normalAt = (uv: any) => unpackRGBToNormal(normalTex.sample(uv)).normalize();
   const viewZAt = (uv: any) => getViewPosition(uv, depthTex.sample(uv).r, projInv).z;
 
+  // Underwater fog needs FULL-RES scene depth (the outline prepass depth above
+  // is half-res, opaque-layer-0 only, and referencing it in the zero-style
+  // variant would force the whole prepass to render every frame). The scene
+  // colour node is a PassTextureNode, so reach its owning PassNode for the
+  // already-rendered beauty depth attachment — no pipeline.ts contract change,
+  // no extra pass, just one more binding of an existing texture.
+  const uwDepthTex =
+    (sceneTex as { passNode?: { getTextureNode?: (name: string) => any } }).passNode
+      ?.getTextureNode?.("depth") ?? null;
+
   const variants = new Map<number, any>();
 
   /** Build one immutable specialization. The public getter retains the result. */
@@ -260,6 +306,46 @@ export function createPostFx(deps: {
         lin = sourceTexture.sample(sampleUv).rgb;
       }
       if (contactFactorAt) lin = lin.mul(contactFactorAt(uv));
+
+      // ---- underwater package: per-channel Beer-Lambert fog + refracted-sun
+      // god rays, in linear light before tone mapping. Present in EVERY cached
+      // variant so submerging never selects a new pipeline; when dry the fog
+      // mixes by exactly 0 and the ray gain is exactly 0, and the ray step
+      // collapses to zero so all taps hit the same texel (cache-coherent).
+      // Branchless throughout — see the mx_noise/If() hazard note above.
+      if (uwDepthTex) {
+        const uwViewPos = getViewPosition(uv, uwDepthTex.sample(uv).r, projInv);
+        // Camera is submerged, so water starts at the near plane: the fog path
+        // is simply the per-pixel view distance. Clamp for sky/far pixels —
+        // transmittance is already ~0 well before 240 m of water.
+        const uwDist = uwViewPos.length().min(240.0);
+        const uwSigma = U.uwSigma.mul(U.uwSigmaScale);
+        const uwTrans = uwDist.negate().mul(uwSigma).exp();
+        const uwViewDir = uwViewPos.normalize();
+        // In-scatter: ambient term (depth-graded on the CPU) plus a forward
+        // lobe toward the refracted sun for that silty light-in-water glow.
+        const uwSunAlign = uwViewDir.dot(U.uwSunViewDir).max(0.0);
+        const uwScatter = U.uwScatterAmbient.add(U.uwSunScatter.mul(uwSunAlign.pow(6.0)));
+        const uwFogged = lin.mul(uwTrans).add(uwScatter.mul(uwTrans.oneMinus()));
+        lin = mix(lin, uwFogged, U.uwSubmersion);
+
+        // God rays: 16 fixed radial taps of the bright scene toward the
+        // refracted sun's screen anchor. Weights decay away from the pixel;
+        // the luminance gate keeps only genuinely bright sources (sun disc,
+        // bright surface shimmer) so the veil doesn't lift the whole frame.
+        const uwRayStep = U.uwSunScreen.sub(uv).mul(U.uwSubmersion.mul(0.052));
+        let uwRays: any = vec3(0);
+        let uwWeightSum = 0;
+        for (let i = 1; i <= 16; i++) {
+          const w = Math.pow(0.86, i);
+          uwWeightSum += w;
+          const s = sourceTexture.sample(uv.add(uwRayStep.mul(i))).rgb;
+          uwRays = uwRays.add(s.mul(smoothstep(0.3, 1.1, luminance(s))).mul(w));
+        }
+        lin = lin.add(
+          uwRays.mul(U.uwRayAmount.div(uwWeightSum)).mul(vec3(0.5, 0.82, 1.0))
+        );
+      }
 
       const c = renderOutput(vec4(lin, 1)).rgb.toVar();
 

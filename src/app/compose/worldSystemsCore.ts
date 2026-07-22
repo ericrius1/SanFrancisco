@@ -175,7 +175,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     highUp: false as any,
     uiOpen: true as any,
   };
-  const water = new Water(scene, map);
+  const water = new Water(scene, map, renderer);
   voidRealm.attachWater(water);
   // Compile the water sheets detached before their first visible frame — the
   // void loop is LIVE now; an uncompiled sheet would stall a whole frame on

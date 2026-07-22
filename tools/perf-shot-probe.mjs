@@ -33,7 +33,10 @@ const STOPS = {
   teaBridge: { x: -2280, z: 2195, facing: -1.25 },
   teaInterior: { x: -2272, z: 2168.2, facing: -2.53 },
   teaMotion: { x: -2282.4, z: 2171.4, facing: -1.57 },
-  teaServe: { x: -2282.4, z: 2171.4, facing: -1.57 }
+  teaServe: { x: -2282.4, z: 2171.4, facing: -1.57 },
+  // Spectral-ocean stops: bay shoreline + Pacific surf strip views.
+  baywater: { x: -700, z: -2440, facing: Math.PI },
+  oceanbeach: { x: -6180, z: 3200, facing: Math.PI / 2 }
 };
 const STOP = WHERE === "spawn" ? null : (STOPS[WHERE] ?? STOPS.downtown);
 
