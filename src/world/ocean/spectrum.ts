@@ -24,6 +24,11 @@ export interface CascadeSpec {
   /** How much this band's Jacobian folding contributes to foam. The finest
    *  band folds constantly at texel scale — it must not paint foam alone. */
   foamWeight: number;
+  /** Physics band: the spectrum is SPARSIFIED to its top `heroPairs` ±k pairs
+   *  (renormalized to keep the band's variance) so the CPU can sum the exact
+   *  same waves analytically — boats/boards/swimmers then ride precisely what
+   *  the GPU renders. See heroWaves.ts. */
+  physicsBand?: boolean;
 }
 
 export interface OceanSpectrumConfig {
@@ -71,9 +76,15 @@ export const DEFAULT_OCEAN_SPECTRUM: OceanSpectrumConfig = {
   amplitude: 1.4,
   seed: 1337,
   cascades: [
-    { patchSize: 210.7, maxWavelength: HERO_MAX_WAVELENGTH, minWavelength: 9.7, choppiness: 0.8, foamWeight: 1 },
+    // Physics band: sparse + choppiness kept low so the CPU height (which has
+    // no horizontal warp) and the rendered crests stay registered.
+    { patchSize: 210.7, maxWavelength: HERO_MAX_WAVELENGTH, minWavelength: 9.7, choppiness: 0.55, foamWeight: 1, physicsBand: true },
     { patchSize: 51.37, maxWavelength: 9.7, minWavelength: 2.31, choppiness: 0.88, foamWeight: 0.55 },
-    { patchSize: 12.129, maxWavelength: 2.31, minWavelength: 0.55, choppiness: 0.92, foamWeight: 0.18 }
+    { patchSize: 12.129, maxWavelength: 2.31, minWavelength: 0.55, choppiness: 0.92, foamWeight: 0.18 },
+    // Micro band: pure close-up normal sparkle (sub-half-metre ripples). No
+    // foam (folds constantly at texel scale), tight fade distance in
+    // CASCADE_FADE_DIST — this is what keeps zoomed-in water crisp.
+    { patchSize: 3.033, maxWavelength: 0.55, minWavelength: 0.14, choppiness: 0.9, foamWeight: 0 }
   ]
 };
 
@@ -87,7 +98,23 @@ export interface CascadeSpectrum {
   slopeVariance: number;
   /** Σ E[|h|²] — height variance (metres², for debug/bounds). */
   heightVariance: number;
+  /** physicsBand only: the exact travelling-cosine decomposition of the
+   *  sparsified spectrum — h(x,z,t) = Σ amp·cos(kx·x + kz·z + sign·ω·t + phase).
+   *  Summing these on the CPU reproduces the GPU heightfield bit-for-nearly. */
+  heroComponents?: HeroWaveComponent[];
 }
+
+export interface HeroWaveComponent {
+  kx: number;
+  kz: number;
+  omega: number;
+  amp: number;
+  phase: number;
+  sign: 1 | -1;
+}
+
+/** ±k pairs kept in the physics band (2 cosines each → 2×this on the CPU). */
+export const HERO_PAIRS = 28;
 
 const G = 9.81;
 
@@ -203,6 +230,69 @@ export function buildCascadeSpectra(config: OceanSpectrumConfig): CascadeSpectru
       heightVariance = amplitude * amplitude;
     }
 
+    // Physics band: keep only the top HERO_PAIRS ±k pairs, renormalized so the
+    // band keeps its variance. The CPU (heroWaves.ts) sums exactly these
+    // cosines, so everything that floats rides precisely the rendered waves.
+    let heroComponents: HeroWaveComponent[] | undefined;
+    if (spec.physicsBand && !config.debugDelta) {
+      const pairs: Array<{ i: number; j: number; e: number }> = [];
+      for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+          const mi = (N - i) % N;
+          const mj = (N - j) % N;
+          // canonical representative of each ±k pair (skip self-paired bins)
+          if (mj < j || (mj === j && mi <= i)) continue;
+          const a = (j * N + i) * 2;
+          const b = (mj * N + mi) * 2;
+          const e =
+            amps[a] * amps[a] + amps[a + 1] * amps[a + 1] +
+            amps[b] * amps[b] + amps[b + 1] * amps[b + 1];
+          if (e > 0) pairs.push({ i, j, e });
+        }
+      }
+      pairs.sort((p, q) => q.e - p.e);
+      const kept = pairs.slice(0, HERO_PAIRS);
+      const totalE = pairs.reduce((s, p) => s + p.e, 0);
+      const keptE = kept.reduce((s, p) => s + p.e, 0);
+      const renorm = Math.min(1.6, Math.sqrt(totalE / Math.max(keptE, 1e-12)));
+
+      const sparse = new Float32Array(N * N * 2);
+      heroComponents = [];
+      for (const p of kept) {
+        const { i, j } = p;
+        const mi = (N - i) % N;
+        const mj = (N - j) % N;
+        for (const [bi, bj, sign] of [[i, j, 1], [mi, mj, -1]] as Array<[number, number, 1 | -1]>) {
+          const idx = (bj * N + bi) * 2;
+          const re = amps[idx] * renorm;
+          const im = amps[idx + 1] * renorm;
+          sparse[idx] = re;
+          sparse[idx + 1] = im;
+          const a = Math.hypot(re, im);
+          if (a < 1e-9) continue;
+          // Pair (k,−k) of a Hermitian-evolved field renders as
+          // 2|h0(k)|cos(k·x + ωt + arg h0(k)) — one travelling cosine per bin,
+          // the mirrored bin carrying the opposite time sign at +k. Emit the
+          // mirrored bin's wave at the CANONICAL k so both cosines share one
+          // spatial frequency (matches 2Re[h̃(k,t)e^{ik·x}]).
+          const kx = (i - N / 2) * dk;
+          const kz = (j - N / 2) * dk;
+          const omega = Math.sqrt(G * Math.hypot(kx, kz));
+          heroComponents.push({
+            kx,
+            kz,
+            omega,
+            amp: 2 * a,
+            phase: sign === 1 ? Math.atan2(im, re) : -Math.atan2(im, re),
+            sign
+          });
+        }
+      }
+      amps.set(sparse);
+      slopeVariance *= renorm * renorm * (keptE / Math.max(totalE, 1e-12));
+      heightVariance *= renorm * renorm * (keptE / Math.max(totalE, 1e-12));
+    }
+
     // Second pass: pack with the mirrored conjugate partner for the evolve
     // kernel — h(k,t) = h0(k)e^{iωt} + conj(h0(−k))e^{−iωt}.
     const h0 = new Float32Array(N * N * 4);
@@ -219,7 +309,7 @@ export function buildCascadeSpectra(config: OceanSpectrumConfig): CascadeSpectru
       }
     }
 
-    return { spec, h0, slopeVariance, heightVariance };
+    return { spec, h0, slopeVariance, heightVariance, heroComponents };
   });
 }
 

@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { oceanBeachWaveHeight } from "./oceanBeachWaves";
+import { heroWaveHeight } from "./ocean/heroWaves";
 
 type BridgeDef = {
   name: string;
@@ -679,5 +680,9 @@ export function waterHeight(x: number, z: number, t: number): number {
   h += oceanBeachWaveHeight(x, z, t);
   const lagoon = palaceLagoonMask(x, z);
   if (lagoon > 0.001) return PALACE_LAGOON.surfaceY + h * (0.35 + lagoon * 0.3);
-  return h;
+  // Spectral physics band (ocean/heroWaves): the exact sparse-FFT waves the
+  // GPU displaces, summed analytically. Focus-faded + surf-strip-gated inside;
+  // contributes 0 until the ocean module wires it at P3. Deliberately outside
+  // the lagoon branch — the sheltered pond never sees open-sea swell.
+  return h + heroWaveHeight(x, z, t);
 }

@@ -30,7 +30,8 @@ import { materializeAmount } from "../render/materialize";
 import { bumpNormal, chopZoneMask, oceanBeachSurfField, oceanBeachSwell, swellBase, swellChop } from "./tslUtil";
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 import { WaterEchoes } from "./waterEchoes";
-import { OceanCascades, oceanDetail, cascadeUv } from "./ocean/oceanSim";
+import { OceanCascades, oceanDetail, cascadeUv, HERO_STRIP_GATE } from "./ocean/oceanSim";
+import { setHeroFocus } from "./ocean/heroWaves";
 import { SUN_DIR } from "./sky";
 
 const PALACE_LAGOON_SEGMENTS = 112;
@@ -41,6 +42,13 @@ const NEAR_PATCH_SIZE = 560;
 const NEAR_PATCH_SEGMENTS = 128;
 const NEAR_PATCH_MASK_OUTER = 276;
 const NEAR_PATCH_MASK_INNER = 210;
+// Hi-res hero patch: 0.75 m vertex spacing in arm's reach of the player so
+// zoomed-in water shows real wave geometry (the coarse patch's 4.4 m grid
+// reads soft up close). ~51k tris — negligible.
+const HERO_PATCH_SIZE = 120;
+const HERO_PATCH_SEGMENTS = 160;
+const HERO_PATCH_MASK_OUTER = 56;
+const HERO_PATCH_MASK_INNER = 44;
 const NEAR_PATCH_FADE_START_HEIGHT = 5;
 const NEAR_PATCH_FADE_END_HEIGHT = 12;
 const TAU = Math.PI * 2;
@@ -71,6 +79,7 @@ function wavelets(p: any, t: any): any {
 export class Water {
   far: THREE.Mesh;
   near: THREE.Mesh;
+  heroNear: THREE.Mesh;
   palaceLagoon: THREE.Mesh;
   underside!: THREE.Mesh; // the surface seen from below — only shown when submerged
   readonly echoes: WaterEchoes;
@@ -84,9 +93,11 @@ export class Water {
   // fade; #uReveal stays the void-phase outer multiplier.
   #uReveal = uniform(1);
   #uNearRect = uniform(new THREE.Vector3(0, 0, NEAR_PATCH_MASK_OUTER));
+  #uHeroRect = uniform(new THREE.Vector3(0, 0, HERO_PATCH_MASK_OUTER));
   #uNearVisibility = uniform(1);
   #uSurfing = uniform(0);
   #uOrigin = uniform(new THREE.Vector2());
+  #uHeroOrigin = uniform(new THREE.Vector2());
   #uCamXZ = uniform(new THREE.Vector2());
   #uCamY = uniform(0);
   // Spectral detail cascades (world/ocean/): FFT wind sea layered over the
@@ -110,7 +121,7 @@ export class Water {
     const w = g.width * g.cellSize + 8000;
     const h = g.height * g.cellSize + 8000;
 
-    const makeMaterial = (displace: number, holed: boolean) => {
+    const makeMaterial = (displace: number, holed: boolean, heroRes = false, originU = this.#uOrigin) => {
       // Both sheets are MeshStandard, not Physical. Water is the biggest surface
       // on screen and the shader is fragment-bound on lighter GPUs (an M2 Air
       // sputters over open bay); the physical fragment path (ior/specular BRDF)
@@ -136,8 +147,8 @@ export class Water {
       // world xz = baked-rotation local xz + mesh origin (kept in a uniform so we
       // never read positionWorld inside positionNode, which would be circular)
       if (displace > 0) {
-        const lx = positionLocal.x.add(this.#uOrigin.x);
-        const lz = positionLocal.z.add(this.#uOrigin.y);
+        const lx = positionLocal.x.add(originU.x);
+        const lz = positionLocal.z.add(originU.y);
         // zone chop faded out toward the patch rim so the displaced edge never
         // steps off the flat far sheet (nothing physical reads water height
         // that far from the player)
@@ -152,27 +163,36 @@ export class Water {
         const swell = swellBase(lx, lz, t)
           .add(swellChop(lx, lz, t).mul(chopZoneMask(lx, lz).mul(rim)))
           .add(oceanBeachSwell(lx, lz, t).mul(surfRim));
-        // FFT wind-sea displacement (cascades 0+1; the finest band is normal-
-        // only). Rim-faded so the displaced edge still meets the flat far
-        // sheet, and pulled down while surfing so board rails stay glued to
-        // the CPU surface the physics rides.
         const wxz = vec2(lx, lz);
-        // Calm ring: the FFT detail is visual-only, so within arm's reach of
-        // the player (hull contact, board rails, the swimmer's waterline) the
-        // vertex displacement fades to the exact CPU surface. Normals keep
-        // full detail — lighting stays wavy, contact stays honest. The patch
-        // is player-centred, so local-vertex radius IS player distance.
-        const calmRing = smoothstep(16, 34, positionLocal.xz.length());
+        // Physics band (cascade 0): FULL amplitude, never art-scaled — the CPU
+        // twin (ocean/heroWaves) sums these exact cosines, so hulls, rails and
+        // swimmers ride precisely this surface. Rim-faded identically to the
+        // CPU focus fade, and gated out of the authored Ocean Beach strip
+        // (same rectangle+feather as heroStripMask on the CPU).
+        const gate = HERO_STRIP_GATE;
+        const stripMask = smoothstep(gate.minX - gate.feather, gate.minX, lx)
+          .mul(smoothstep(gate.maxX, gate.maxX + gate.feather, lx).oneMinus())
+          .mul(smoothstep(gate.minZ - gate.feather, gate.minZ, lz))
+          .mul(smoothstep(gate.maxZ, gate.maxZ + gate.feather, lz).oneMinus());
+        const c0 = this.ocean.cascades[0];
+        const physDisp = textureLevel(c0.dispTex, cascadeUv(wxz, c0.spec), float(0)).xyz
+          .mul(rim)
+          .mul(stripMask.oneMinus());
+        // Visual-only detail bands (c1, + c2 on the hi-res hero patch): a small
+        // calm ring keeps their ≤15 cm of unmatched displacement away from
+        // hull contact; pulled down while surfing so rails stay glued.
+        const calmRing = smoothstep(9, 22, positionLocal.xz.length());
         const detailAmp = this.#uDetailAmp
           .mul(mix(float(1), float(0.3), this.#uSurfing))
           .mul(rim)
           .mul(calmRing);
         let fftDisp: any = vec3(0);
-        for (const c of this.ocean.cascades.slice(0, 2)) {
+        for (const c of this.ocean.cascades.slice(1, heroRes ? 3 : 2)) {
           fftDisp = fftDisp.add(textureLevel(c.dispTex, cascadeUv(wxz, c.spec), float(0)).xyz);
         }
         mat.positionNode = positionLocal
           .add(vec3(0, swell.mul(displace), 0))
+          .add(physDisp)
           .add(fftDisp.mul(detailAmp));
       }
 
@@ -206,11 +226,23 @@ export class Water {
             vec2(p.x.sub(rect.x), p.y.sub(rect.y)).length()
           ).mul(this.#uNearVisibility)
         : smoothstep(
-            float(NEAR_PATCH_MASK_OUTER),
-            float(NEAR_PATCH_MASK_INNER),
+            heroRes ? float(HERO_PATCH_MASK_OUTER) : float(NEAR_PATCH_MASK_OUTER),
+            heroRes ? float(HERO_PATCH_MASK_INNER) : float(NEAR_PATCH_MASK_INNER),
             positionLocal.xz.length()
           ).mul(this.#uNearVisibility);
-      const waterVisibility = holed ? followMask.oneMinus() : followMask;
+      let waterVisibility = holed ? followMask.oneMinus() : followMask;
+      // The hi-res hero patch cuts a complementary hole in the coarse near
+      // patch (same alpha-tested handoff as near-vs-far, one level down).
+      if (displace > 0 && !heroRes) {
+        const heroRect = this.#uHeroRect;
+        waterVisibility = waterVisibility.mul(
+          smoothstep(
+            float(HERO_PATCH_MASK_INNER),
+            heroRect.z,
+            vec2(p.x.sub(heroRect.x), p.y.sub(heroRect.y)).length()
+          )
+        );
+      }
 
       const viewDist = positionView.z.negate();
       const detail = clamp(float(1).sub(viewDist.div(1900)), 0, 1).toVar();
@@ -228,7 +260,7 @@ export class Water {
       // cost went down (texture fetches vs gradient-noise ALU). The far sheet
       // pays for two cascades only: the finest band's fade distance sits
       // inside the near patch.
-      const det = oceanDetail(this.ocean.cascades, pxz, viewDist, displace > 0 ? 3 : 2);
+      const det = oceanDetail(this.ocean.cascades, pxz, viewDist, heroRes ? 4 : displace > 0 ? 3 : 2);
       const oceanFoam = det.foam.toVar();
       // shore lapping keeps its depth-driven band; the FFT foam field now
       // supplies the irregularity the old FBM provided (plus a slow spatial
@@ -431,6 +463,16 @@ export class Water {
     this.near.position.y = 0.02;
     this.near.frustumCulled = false;
 
+    // hero patch: the same surface at 0.75 m vertex spacing right around the
+    // player (plus the micro cascade in both vertex and normal), feathered
+    // into the coarse near patch through the #uHeroRect hole.
+    const heroGeo = new THREE.PlaneGeometry(HERO_PATCH_SIZE, HERO_PATCH_SIZE, HERO_PATCH_SEGMENTS, HERO_PATCH_SEGMENTS);
+    heroGeo.rotateX(-Math.PI / 2);
+    this.heroNear = new THREE.Mesh(heroGeo, makeMaterial(1, false, true, this.#uHeroOrigin));
+    this.heroNear.renderOrder = 11.2;
+    this.heroNear.position.y = 0.035;
+    this.heroNear.frustumCulled = false;
+
     // Underside of the surface — the "ceiling" you see when diving. The top
     // sheets are single-sided, so from below you'd otherwise stare straight
     // through to the sky (pillars stabbing into "air"). This downward-facing
@@ -495,7 +537,7 @@ export class Water {
     this.palaceLagoon.name = "palace_fine_arts_lagoon";
     this.palaceLagoon.renderOrder = 10.5;
 
-    scene.add(this.far, this.near, this.palaceLagoon, this.underside);
+    scene.add(this.far, this.near, this.heroNear, this.palaceLagoon, this.underside);
     this.echoes = new WaterEchoes(scene, map);
   }
 
@@ -514,16 +556,16 @@ export class Water {
     // Context profile → sim throttle. All uniform/mask-side (never a material
     // or pipeline swap):
     //   surface play — every band, every frame (boats/boards read the detail).
-    //   airborne     — the finest band is sub-pixel from altitude: off; the
+    //   airborne     — the fine bands are sub-pixel from altitude: off; the
     //                  mid band halves its rate; the 42 m band stays live
     //                  (it IS the flyover texture).
     //   underwater   — surface is a wobbling ceiling: alternate the two
-    //                  coarse bands at half rate, finest off.
+    //                  coarse bands at half rate, fine bands off.
     this.#frame++;
     const airborne = !surfing && camPos.y - waterHeight(playerPos.x, playerPos.z, t) > 60;
-    let mask = 0b111;
-    if (camUnder) mask = this.#frame % 2 ? 0b001 : 0b010;
-    else if (airborne) mask = this.#frame % 2 ? 0b001 : 0b011;
+    let mask = 0b1111;
+    if (camUnder) mask = this.#frame % 2 ? 0b0001 : 0b0010;
+    else if (airborne) mask = this.#frame % 2 ? 0b0001 : 0b0011;
     this.simMask = mask;
 
     // Advance the spectral cascades (~18 tiny compute dispatches, ≲0.3 ms GPU
@@ -547,12 +589,21 @@ export class Water {
     this.near.position.z = Math.round(playerPos.z / snap) * snap;
     this.#uOrigin.value.set(this.near.position.x, this.near.position.z);
     this.#uNearRect.value.set(this.near.position.x, this.near.position.z, NEAR_PATCH_MASK_OUTER);
+    // hero patch: finer snap grid, own origin/hole uniforms; and tell the CPU
+    // physics twin where the rendered focus fade is centred this frame.
+    const heroSnap = HERO_PATCH_SIZE / HERO_PATCH_SEGMENTS;
+    this.heroNear.position.x = Math.round(playerPos.x / heroSnap) * heroSnap;
+    this.heroNear.position.z = Math.round(playerPos.z / heroSnap) * heroSnap;
+    this.#uHeroOrigin.value.set(this.heroNear.position.x, this.heroNear.position.z);
+    this.#uHeroRect.value.set(this.heroNear.position.x, this.heroNear.position.z, HERO_PATCH_MASK_OUTER);
+    setHeroFocus(this.near.position.x, this.near.position.z);
     // Tall Ocean Beach faces put the board ~12 m above sea level; that clearance
     // used to fade the near patch to the flat far sheet mid-ride. Keep it fully
     // visible while surfing so CPU floor and GPU swell stay matched.
     if (surfing) {
       this.#uNearVisibility.value = 1;
       this.near.visible = true;
+      this.heroNear.visible = true;
       return;
     }
     const clearance = playerPos.y - waterHeight(playerPos.x, playerPos.z, t);
@@ -567,6 +618,7 @@ export class Water {
     // underneath, so there's nothing to see; this is pure fragment savings while
     // airborne. Re-shown the instant you drop back toward the surface.
     this.near.visible = this.#uNearVisibility.value > 0.001;
+    this.heroNear.visible = this.near.visible;
   }
 }
 

@@ -36,7 +36,9 @@ const STOPS = {
   teaServe: { x: -2282.4, z: 2171.4, facing: -1.57 },
   // Spectral-ocean stops: bay shoreline + Pacific surf strip views.
   baywater: { x: -700, z: -2440, facing: Math.PI },
-  oceanbeach: { x: -6180, z: 3200, facing: Math.PI / 2 }
+  oceanbeach: { x: -6180, z: 3200, facing: Math.PI / 2 },
+  // open Pacific south of the authored surf strip: full spectral band active
+  pacific: { x: -6200, z: 5600, facing: Math.PI / 2 }
 };
 const STOP = WHERE === "spawn" ? null : (STOPS[WHERE] ?? STOPS.downtown);
 
