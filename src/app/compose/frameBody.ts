@@ -63,6 +63,7 @@ import {
 } from "../../vehicles/car";
 import {
   setLocalSurfboardConfig,
+  type SurfboardConfig,
 } from "../../vehicles/surf";
 import { MENU_MODES } from "../../player/discovery";
 import { createSessionPersistence } from "../../app/sessionPersistence";
@@ -597,6 +598,138 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // Live-frame input: mode/tool/teleport keys, interact chain, click-tool fire,
   // time scrub, fly steering + latched jumps, ending at chase.lookDir. Advances
   // the world clock too — this is the only path that increments ctx.state.elapsed.
+  const startSurfFromShack = (config: SurfboardConfig) => {
+    ctx.state.surfboardConfig = config;
+    setLocalSurfboardConfig(config);
+    player.setSurfboardConfig(config);
+    const request = ++netW.state.surfEntryRequest;
+    // Full preparation (camera + runtime + a fresh embodiment compile if the
+    // grabbed board differs) so the first ridden frame is stall-free.
+    void prepareSurfEntry().then(() => {
+      if (request !== netW.state.surfEntryRequest || player.mode !== "walk") return;
+      navigation.switchMode("surf");
+    });
+  };
+
+  type NearbyRideInteraction = {
+    key: string;
+    prompt: string;
+    perform: () => void;
+  };
+
+  /**
+   * Resolve the walk-up interaction once, in the exact priority shared by the
+   * prompt and KeyE. Broad location fallbacks (notably Ocean Beach surfing)
+   * deliberately live outside this resolver so they can never steal a press
+   * from a visible, specific action.
+   */
+  const resolveNearbyRideInteraction = (): NearbyRideInteraction | null => {
+    if (worldArrival.active || player.mode !== "walk" || embodiments.passengerOf !== null) return null;
+
+    const nearGhostShip = netW.state.ghostShip?.nearbyBoarding(player.position) ?? false;
+    if (nearGhostShip) {
+      return {
+        key: "ghost-ship",
+        prompt: formatInteractPrompt("board the wandering ghost ship", input.device),
+        perform: () => {
+          const seat = netW.state.ghostShip?.board(
+            player.position,
+            remotes.occupiedRideSeats(GHOST_SHIP_RIDE_ID)
+          ) ?? 0;
+          if (seat > 0) {
+            core.state.ghostShipRideZoom ??= chase.zoom;
+            chase.zoom = Math.max(chase.zoom, 3.2);
+            embodiments.startPassengerRide(GHOST_SHIP_RIDE_ID, seat);
+            hud.message(`Aboard the wandering ghost ship · deck station ${seat} · E to step off`, 3.2);
+          } else {
+            hud.message("The ghost ship's deck stations are full", 2.2);
+          }
+        }
+      };
+    }
+
+    const driver = remotes.nearestDriver(player.position, 5.5);
+    if (driver) {
+      if (driver.mode === "bird") core.state.setRemoteBirdAssetsActive!(true);
+      return {
+        key: `driver:${driver.id}`,
+        prompt: formatInteractPrompt(`ride with ${driver.name}`, input.device),
+        perform: () => {
+          if (driver.mode === "bird") core.state.setRemoteBirdAssetsActive!(true);
+          embodiments.startPassengerRide(driver.id, driver.seat);
+          hud.message(`Riding with ${driver.name} — E to hop out`, 2.6);
+        }
+      };
+    }
+
+    const forest = core.state.forest;
+    const animal = forest?.nearest(player.position, 5) ?? null;
+    if (animal && forest && core.state.ANIMALS) {
+      return {
+        key: `animal:${animal.label}`,
+        prompt: formatInteractPrompt(`ride the ${animal.label}`, input.device),
+        perform: () => {
+          const info = forest.consume(animal);
+          embodiments.currentAnimal = info.kind;
+          player.setDriveStyle(forest.buildRiddenMesh(info.kind), core.state.ANIMALS![info.kind].spec);
+          player.position.set(info.x, player.position.y, info.z);
+          player.heading = info.heading + Math.PI; // storage convention is facing+π
+          player.trySwitch("drive");
+          hud.message(
+            info.kind === "raccoon" ? "You're riding the raccoon! Left click — gummy bears" : "You're riding the bear!",
+            3
+          );
+        }
+      };
+    }
+
+    const mount = abandonedMounts.nearest(player.position.x, player.position.z, 5.5);
+    if (mount) {
+      return {
+        key: `mount:${mount.mode}`,
+        prompt: formatInteractPrompt(ABANDONED_MOUNT_PROMPT[mount.mode], input.device),
+        perform: () => {
+          const boarded = abandonedMounts.boardNearest(player.position.x, player.position.z, 5.5);
+          if (!boarded) return;
+          if (boarded.mode === "drive") player.setDriveStyle(null);
+          player.boardMount(boarded);
+          hud.message("Back on board — E to hop off", 2.4);
+        }
+      };
+    }
+
+    const surfBoardPrompt = core.state.surfShack?.nearbyPrompt(
+      player.position.x,
+      player.position.z,
+      input.device
+    ) ?? null;
+    if (surfBoardPrompt) {
+      return {
+        key: `surf-board:${surfBoardPrompt}`,
+        prompt: surfBoardPrompt,
+        perform: () => {
+          core.state.surfShack?.tryInteract(player, hud, startSurfFromShack);
+        }
+      };
+    }
+
+    const reveriePrompt = core.state.palaceReverie?.nearbyPrompt(
+      player.position.x,
+      player.position.z
+    ) ?? null;
+    if (reveriePrompt) {
+      return {
+        key: `palace-reverie:${reveriePrompt}`,
+        prompt: localizeInteractText(reveriePrompt, input.device),
+        perform: () => {
+          core.state.palaceReverie?.tryInteract(player, hud);
+        }
+      };
+    }
+
+    return null;
+  };
+
   const liveInput = (frameDt: number) => {
     ctx.state.elapsed += frameDt;
     ctx.state.accumulator += frameDt;
@@ -704,107 +837,59 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !core.state.golf?.tryStartAtTee(player, hud) &&
       !core.state.archery?.tryInteract(player, hud, chase) &&
       !netW.state.fortMasonEnsemble?.tryInteract(player.renderPosition, player.mode) &&
-      !core.state.palaceReverie?.tryInteract(player, hud) &&
       !core.state.landsEnd?.keeper.tryInteract(player, hud) &&
       !core.state.waveOrgan?.tryInteract(player, hud) &&
       !core.state.missionDolores?.tryInteract(player.position, player.mode, hud) &&
       !core.state.hangGliding?.tryInteract(player, hud, input, chase) &&
-      !core.state.afterlight?.tryInteract(player, hud) &&
-      !(
-        core.state.surfShack?.tryInteract(player, hud, (config) => {
-          ctx.state.surfboardConfig = config;
-          setLocalSurfboardConfig(config);
-          player.setSurfboardConfig(config);
-          const request = ++netW.state.surfEntryRequest;
-          // Full preparation (camera + runtime + a fresh embodiment compile if
-          // the grabbed board differs) so the first ridden frame is stall-free.
-          void prepareSurfEntry().then(() => {
-            if (request !== netW.state.surfEntryRequest || player.mode !== "walk") return;
-            navigation.switchMode("surf");
-          });
-        }) ?? false
-      )
+      !core.state.afterlight?.tryInteract(player, hud)
     ) {
-      const nearGhostShip = player.mode === "walk" && (netW.state.ghostShip?.nearbyBoarding(player.position) ?? false);
-      if (nearGhostShip) {
-        const seat = netW.state.ghostShip?.board(
-          player.position,
-          remotes.occupiedRideSeats(GHOST_SHIP_RIDE_ID)
-        ) ?? 0;
-        if (seat > 0) {
-          core.state.ghostShipRideZoom ??= chase.zoom;
-          chase.zoom = Math.max(chase.zoom, 3.2);
-          embodiments.startPassengerRide(GHOST_SHIP_RIDE_ID, seat);
-          hud.message(`Aboard the wandering ghost ship · deck station ${seat} · E to step off`, 3.2);
-        } else {
-          hud.message("The ghost ship's deck stations are full", 2.2);
-        }
-      } else {
-        const nearOceanBeach = player.mode === "walk" && nearOceanBeachShore(player.position.x, player.position.z);
-        if (nearOceanBeach) {
-        // Load both exclusive camera and activity runtime before changing
-        // embodiment, so the first visible surf frame is already complete.
-        const request = ++netW.state.surfEntryRequest;
-        void prepareSurfEntry().then((ready) => {
-          if (!ready || request !== netW.state.surfEntryRequest || player.mode !== "walk") return;
-          if (!nearOceanBeachShore(player.position.x, player.position.z)) return;
-          player.trySwitch("surf");
-          // The persistent surf HUD already carries controls; keep this as a
-          // quick entry confirmation so it is gone before a fast tube line.
-          hud.message("You're surfing — A/D carve · W climb + pump · S stall · E exits", 1);
-        });
-        } else if (!core.state.fetchBall?.tryPickup(player.position)) {
-        const drv = remotes.nearestDriver(player.position, 5.5);
-        const animal = drv ? null : core.state.forest?.nearest(player.position, 5);
-        if (drv) {
-          if (drv.mode === "bird") core.state.setRemoteBirdAssetsActive!(true);
-          embodiments.startPassengerRide(drv.id, drv.seat);
-          hud.message(`Riding with ${drv.name} — E to hop out`, 2.6);
-        } else if (animal && core.state.forest && core.state.ANIMALS) {
-          const info = core.state.forest.consume(animal);
-          embodiments.currentAnimal = info.kind;
-          player.setDriveStyle(core.state.forest.buildRiddenMesh(info.kind), core.state.ANIMALS[info.kind].spec);
-          player.position.set(info.x, player.position.y, info.z);
-          player.heading = info.heading + Math.PI; // storage convention is facing+π
-          player.trySwitch("drive");
-          hud.message(
-            info.kind === "raccoon" ? "You're riding the raccoon! Left click — gummy bears" : "You're riding the bear!",
-            3
-          );
-        } else {
-          // re-board a vehicle/creature you left behind — walk up, press E,
-          // just like a parked mount (the phoenix, a crashed plane, a hoverboard…)
-          const mount = abandonedMounts.boardNearest(player.position.x, player.position.z, 5.5);
-          if (mount) {
-            if (mount.mode === "drive") player.setDriveStyle(null);
-            player.boardMount(mount);
-            hud.message("Back on board — E to hop off", 2.4);
-          } else if (player.mode === "walk" && citygenRing.current) {
-            // front doors: on foot, E toggles the nearest generated-building
-            // door (the ring owns the state — swing + collider swap live there)
-            const d = citygenRing.current.nearestDoor(player.position);
-            if (d && d.dist < 2.6) {
-              const r = citygenRing.current.toggleDoor(d.id);
-              if (r === "opened" || r === "closed" || r === "blocked") {
-                const dx = d.x - camera.position.x;
-                const dz = d.z - camera.position.z;
-                const distance = Math.hypot(dx, dz) || 1;
-                const pan = ((dx * Math.cos(chase.yaw) - dz * Math.sin(chase.yaw)) / distance) * 0.5;
-                doorAudio.event(r, {
-                  sourceId: d.id,
-                  pan,
-                  room: player.indoor ? 0.42 : 0.24,
-                  intensity: r === "blocked" ? 0.64 : 0.78,
-                  weight: 0.68
-                });
-              }
-              if (r === "opened") hud.message("Door's open — step inside", 2.4);
-              else if (r === "closed") hud.message("Door closed", 1.6);
-              else if (r === "blocked") hud.message("Step out of the doorway first", 2);
+      const nearbyRide = resolveNearbyRideInteraction();
+      if (nearbyRide) {
+        // A specific prompted action owns this press. Even if its target
+        // disappears during the frame, do not fall through into surf mode.
+        nearbyRide.perform();
+      } else if (!core.state.fetchBall?.tryPickup(player.position)) {
+        let doorHandled = false;
+        if (player.mode === "walk" && citygenRing.current) {
+          // Front doors outrank the unprompted beach-zone fallback too.
+          const d = citygenRing.current.nearestDoor(player.position);
+          if (d && d.dist < 2.6) {
+            doorHandled = true;
+            const r = citygenRing.current.toggleDoor(d.id);
+            if (r === "opened" || r === "closed" || r === "blocked") {
+              const dx = d.x - camera.position.x;
+              const dz = d.z - camera.position.z;
+              const distance = Math.hypot(dx, dz) || 1;
+              const pan = ((dx * Math.cos(chase.yaw) - dz * Math.sin(chase.yaw)) / distance) * 0.5;
+              doorAudio.event(r, {
+                sourceId: d.id,
+                pan,
+                room: player.indoor ? 0.42 : 0.24,
+                intensity: r === "blocked" ? 0.64 : 0.78,
+                weight: 0.68
+              });
             }
+            if (r === "opened") hud.message("Door's open — step inside", 2.4);
+            else if (r === "closed") hud.message("Door closed", 1.6);
+            else if (r === "blocked") hud.message("Step out of the doorway first", 2);
           }
         }
-      }
+
+        const nearOceanBeach =
+          !doorHandled &&
+          player.mode === "walk" &&
+          nearOceanBeachShore(player.position.x, player.position.z);
+        if (nearOceanBeach) {
+          // With no specific nearby action, E keeps the convenient broad beach
+          // entry. Load camera + activity runtime before the first surf frame.
+          const request = ++netW.state.surfEntryRequest;
+          void prepareSurfEntry().then((ready) => {
+            if (!ready || request !== netW.state.surfEntryRequest || player.mode !== "walk") return;
+            if (!nearOceanBeachShore(player.position.x, player.position.z)) return;
+            player.trySwitch("surf");
+            hud.message("You're surfing — A/D carve · W climb + pump · S stall · E exits", 1);
+          });
+        }
       }
     }
 
@@ -1337,40 +1422,15 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (surfPrimeDx * surfPrimeDx + surfPrimeDz * surfPrimeDz < 90 * 90) void prepareSurfEntry();
     }
 
-    // "hop in" nudge when standing near a ride (friend → wildlife → parked mount)
+    // "hop in" nudge. The exact same resolver owns KeyE above, so the action
+    // named here cannot diverge from the action performed by the next press.
     if (!worldArrival.active && player.mode === "walk" && embodiments.passengerOf === null) {
-      const nearGhostShip = netW.state.ghostShip?.nearbyBoarding(player.position) ?? false;
-      const drv = nearGhostShip ? null : remotes.nearestDriver(player.position, 5.5);
-      if (drv?.mode === "bird") core.state.setRemoteBirdAssetsActive!(true);
-      const nearAnimal = drv ? null : core.state.forest?.nearest(player.position, 5);
-      const nearMount =
-        !drv && !nearAnimal
-          ? abandonedMounts.nearest(player.position.x, player.position.z, 5.5)
-          : null;
-      const surfBoardPrompt =
-        !drv && !nearAnimal && !nearMount
-          ? core.state.surfShack?.nearbyPrompt(player.position.x, player.position.z, input.device) ?? null
-          : null;
-      const reveriePrompt =
-        !drv && !nearAnimal && !nearMount && !surfBoardPrompt
-          ? core.state.palaceReverie?.nearbyPrompt(player.position.x, player.position.z) ?? null
-          : null;
-      if ((nearGhostShip || drv || nearAnimal || nearMount || surfBoardPrompt || reveriePrompt) && !core.state.ridePromptShown) {
-        const rideCopy = nearGhostShip
-          ? formatInteractPrompt("board the wandering ghost ship", input.device)
-          : drv
-          ? formatInteractPrompt(`ride with ${drv.name}`, input.device)
-          : nearAnimal
-            ? formatInteractPrompt(`ride the ${nearAnimal.label}`, input.device)
-            : nearMount
-              ? formatInteractPrompt(ABANDONED_MOUNT_PROMPT[nearMount.mode], input.device)
-              : surfBoardPrompt
-                ? surfBoardPrompt
-                : localizeInteractText(reveriePrompt as string, input.device);
-        hud.message(rideCopy, 1.8);
-        core.state.ridePromptShown = true;
+      const nearbyRide = resolveNearbyRideInteraction();
+      const promptKey = nearbyRide?.key ?? null;
+      if (nearbyRide && promptKey !== core.state.ridePromptKey) {
+        hud.message(nearbyRide.prompt, 1.8);
       }
-      if (!nearGhostShip && !drv && !nearAnimal && !nearMount && !surfBoardPrompt && !reveriePrompt) core.state.ridePromptShown = false;
+      core.state.ridePromptKey = promptKey;
       // "open the door" nudge — same one-shot pattern; the ride prompt wins
       // when both are in range. nearestDoor is alloc-light but not free, so
       // it runs every 6th frame (prompt latency ~0.1 s) and only on foot.
@@ -1380,13 +1440,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       }
       const door = core.state.doorScanHit;
       const nearClosedDoor = !!door && !door.open && door.dist < 3.2;
-      if (nearClosedDoor && !nearGhostShip && !drv && !nearAnimal && !nearMount && !core.state.doorPromptShown) {
+      if (nearClosedDoor && !nearbyRide && !core.state.doorPromptShown) {
         hud.message(formatInteractPrompt("open the door", input.device), 1.8);
         core.state.doorPromptShown = true;
       }
-      if (!nearClosedDoor) core.state.doorPromptShown = false;
+      if (!nearClosedDoor || nearbyRide) core.state.doorPromptShown = false;
     } else {
-      core.state.ridePromptShown = false;
+      core.state.ridePromptKey = null;
       core.state.doorPromptShown = false;
     }
     chase.activityFirstPerson = core.state.archery?.firstPersonActive ?? false;

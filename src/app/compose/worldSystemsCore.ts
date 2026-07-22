@@ -170,7 +170,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     afterlight: null as (AfterlightExperience | null),
     hangGliding: null as (HangGlidingExperience | null),
     goldenGateLights: null as (ReturnType<typeof createGoldenGateLights>),
-    ridePromptShown: false as any,
+    ridePromptKey: null as (string | null),
     doorPromptShown: false as any,
     doorScanCountdown: 0 as any,
     doorScanHit: null as (ReturnType<CityGenRing["nearestDoor"]>),
@@ -930,7 +930,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // song (shared NPC conversation system — gameplay/agents/conversation.ts).
   const buskerTalk = createBuskerConversation(buskers);
   await constructionSlice();
-  // (state.ridePromptShown hoisted to the module state record)
+  // (state.ridePromptKey hoisted to the module state record)
   // (state.doorPromptShown hoisted to the module state record)
   // (state.doorScanCountdown hoisted to the module state record)
   // (state.doorScanHit hoisted to the module state record)
