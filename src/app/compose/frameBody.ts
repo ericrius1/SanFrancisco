@@ -1307,6 +1307,9 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // Mission Dolores: dynamic code gate first, then shell/art proximity gates.
     if (!worldArrival.active) ensureMissionDolores(player.position);
     if (!worldArrival.active) core.state.missionDolores?.update(frameDt, ctx.state.elapsed, player.position, player.mode, hud);
+    // Grace Cathedral: the authored GLB owns the physical glass; this nested
+    // runtime only animates bounded colored shafts while a visitor is inside.
+    if (!worldArrival.active) core.state.graceCathedral?.update(player.position, ctx.state.elapsed);
     const museumFloorHandoff = worldArrival.active
       ? null
       : core.state.missionDolores?.takeFloorHandoffHeight(player.position, player.mode);

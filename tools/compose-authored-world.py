@@ -1,4 +1,9 @@
-"""Append every authored region into the human-facing Blender master scene."""
+"""Compose every available authored region into the Blender master scene.
+
+Normal sources are appended for historical compatibility. Regions declaring
+``composition: link`` stay live-linked to their independent .blend project.
+Git-LFS pointer stubs are skipped without disturbing an already composed copy.
+"""
 
 from __future__ import annotations
 
@@ -26,10 +31,23 @@ def collection_tree(root):
     return result
 
 
+def unlink_collection_everywhere(collection):
+    for scene in bpy.data.scenes:
+        if collection.name in {child.name for child in scene.collection.children}:
+            scene.collection.children.unlink(collection)
+    for parent in bpy.data.collections:
+        if collection.name in {child.name for child in parent.children}:
+            parent.children.unlink(collection)
+
+
 def remove_composed_region(region_id):
     roots = [collection for collection in bpy.data.collections
              if collection.get("sf_composed_region") == region_id]
     for root in roots:
+        if root.get("sf_composition_mode") == "link":
+            unlink_collection_everywhere(root)
+            bpy.data.collections.remove(root)
+            continue
         tree = collection_tree(root)
         objects = {obj for collection in tree for obj in collection.objects}
         for obj in objects:
@@ -39,6 +57,13 @@ def remove_composed_region(region_id):
                 bpy.data.collections.remove(collection)
     if roots:
         bpy.data.orphans_purge(do_recursive=True)
+
+
+def is_lfs_pointer(path):
+    if not os.path.isfile(path) or os.path.getsize(path) > 1024:
+        return False
+    with open(path, "rb") as handle:
+        return handle.read(80).startswith(b"version https://git-lfs.github.com/spec/v1")
 
 
 def main():
@@ -58,13 +83,33 @@ def main():
 
     composed = []
     for region in manifest["regions"]:
-        remove_composed_region(region["id"])
         source = os.path.realpath(os.path.join(repo, region["source"]))
-        with bpy.data.libraries.load(source, link=False) as (data_from, data_to):
+        if is_lfs_pointer(source):
+            existing = next(
+                (collection for collection in bpy.data.collections
+                 if collection.get("sf_composed_region") == region["id"]),
+                None,
+            )
+            if existing is not None:
+                composed.append(region["id"])
+                print(f"[authored-world] preserving {region['id']}; source is an LFS pointer")
+            else:
+                print(f"[authored-world] skipping {region['id']}; source is an LFS pointer")
+            continue
+        remove_composed_region(region["id"])
+        linked = region.get("composition") == "link"
+        with bpy.data.libraries.load(source, link=linked) as (data_from, data_to):
             if region["collection"] not in data_from.collections:
                 raise RuntimeError(f"{source} has no {region['collection']} collection")
             data_to.collections = [region["collection"]]
-        root = data_to.collections[0]
+        source_root = data_to.collections[0]
+        if linked:
+            root = bpy.data.collections.new(f"AUTHORED_{region['id'].replace('-', '_')}_LINK")
+            root.children.link(source_root)
+            root["sf_composition_mode"] = "link"
+        else:
+            root = source_root
+            root["sf_composition_mode"] = "append"
         root["sf_composed_region"] = region["id"]
         root["sf_source"] = region["source"]
         bpy.context.scene.collection.children.link(root)

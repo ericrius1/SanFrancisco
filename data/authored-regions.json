@@ -105,6 +105,53 @@
           }
         ]
       }
+    },
+    {
+      "id": "grace-cathedral",
+      "label": "Grace Cathedral · Nob Hill",
+      "source": "assets-src/world/sites/grace-cathedral/grace-cathedral.blend",
+      "collection": "SITE_grace_cathedral",
+      "rootName": "grace_cathedral_authored_landmark",
+      "composition": "link",
+      "optimize": "static-batch",
+      "asset": "/regions/grace-cathedral.glb",
+      "tile": "12_10",
+      "colliderBase": 130000,
+      "bounds": {
+        "centerX": 2687.5,
+        "centerZ": -205.2,
+        "halfX": 54.5,
+        "halfZ": 27,
+        "yaw": 0.153
+      },
+      "arrival": {
+        "spawnKey": "graceCathedral",
+        "x": 2747.8,
+        "y": 91.2,
+        "z": -214.6,
+        "heading": 1.418
+      },
+      "arrivalDistance": 240,
+      "loadDistance": 1200,
+      "unloadDistance": 1700,
+      "replaces": [
+        { "tile": "12_10", "index": 1 }
+      ],
+      "terrain": {
+        "mode": "flat-ownership",
+        "groundY": 89.5,
+        "footprints": [
+          {
+            "id": "cathedral-foundation",
+            "centerX": 2687.5,
+            "centerZ": -205.2,
+            "halfX": 51.5,
+            "halfZ": 24.8,
+            "yaw": 0.153,
+            "feather": 0.2
+          }
+        ]
+      }
     }
   ]
 }
