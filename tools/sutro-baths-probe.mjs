@@ -4,8 +4,9 @@
 // unambiguous:
 //   1. clean boot at the normal saved/default spawn: the cheap layout contract
 //      may be in main, but no optional Sutro module/chunk may be requested;
-//   2. a cold `spawn=sutroBaths` visit: the hall, static WebGPU water, and steam
-//      boundaries must all cross, then produce a nonblank rendered scene;
+//   2. a cold `spawn=sutroBaths` visit: the hall and its prewarmed static
+//      WebGPU water must become visible atomically, then the close steam boundary
+//      must cross and produce a nonblank rendered scene;
 //   3. movement into the great plunge: the existing GPU field must continue to
 //      animate without compute work or another Sutro request.
 //
@@ -330,6 +331,32 @@ async function main() {
     const context = await createContext();
     const page = await context.newPage();
     instrument(page);
+    await page.addInitScript(() => {
+      const audit = {
+        visibleSiteFrames: 0,
+        missingWaterFrames: 0,
+        firstMissingAtMs: null
+      };
+      window.__sutroWaterResidencyAudit = audit;
+      const sample = () => {
+        const scene = window.__sf?.scene;
+        const site = scene?.getObjectByName("sutro_baths_restored_1896");
+        if (site?.visible) {
+          audit.visibleSiteFrames++;
+          const water = scene.getObjectByName("sutro_baths_static_water_surface");
+          let waterVisible = Boolean(water);
+          for (let object = water; waterVisible && object && object !== scene; object = object.parent) {
+            waterVisible = object.visible;
+          }
+          if (!waterVisible) {
+            audit.missingWaterFrames++;
+            audit.firstMissingAtMs ??= Math.round(performance.now());
+          }
+        }
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
     const activationUrl = `${BASE_URL}/?autostart=1&fullfps=1&profile=1&spawn=sutroBaths`;
     await page.goto(activationUrl, { waitUntil: "domcontentloaded", timeout: 120_000 });
     await page.waitForFunction(
@@ -376,6 +403,7 @@ async function main() {
           z: Number(sf.player.position.z.toFixed(2))
         },
         debug,
+        waterResidency: window.__sutroWaterResidencyAudit,
         waveAudio: sf.waveAudio.debugState,
         authoredRegion: sf.authoredRegions.debugSnapshot(),
         backgroundStreaming: sf.tiles.backgroundStreamingDebug,
@@ -467,6 +495,12 @@ async function main() {
         activationState.debug.water?.stats?.triangles > 1000 &&
         activationState.debug.water?.stats?.animated === true,
       activationState.debug.water
+    );
+    expect(
+      "activation-visible-pools-never-miss-water",
+      activationState.waterResidency.visibleSiteFrames > 0 &&
+        activationState.waterResidency.missingWaterFrames === 0,
+      activationState.waterResidency
     );
     expect(
       "activation-steam-awake",

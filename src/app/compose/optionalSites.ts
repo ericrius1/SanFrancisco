@@ -680,9 +680,10 @@ export function createOptionalSites({
       sutroBaths = candidate;
       refreshOptionalSiteDebug();
 
-      // Let the feature cross its nested close-water gate only after the hall is
-      // warm. The scheduler and render-idle checks below observe that private
-      // warmup flag before admitting nearby Lands End or a probe capture.
+      // Let the feature cross its nested close-steam gate only after the base
+      // site (including water) is warm. The scheduler and render-idle checks
+      // below observe that private warmup flag before admitting nearby Lands
+      // End or a probe capture.
       candidate.update(
         0,
         performance.now() * 0.001,
@@ -1374,9 +1375,9 @@ export function createOptionalSites({
         }
       }
     }
-    // Sutro owns an internal, closer GPU gate whose promise is intentionally
-    // private. Treat its observable warmup as render-busy before admitting the
-    // neighboring Lands End site to this serialized scheduler.
+    // Sutro owns an internal, closer steam GPU gate whose promise is
+    // intentionally private. Treat its observable warmup as render-busy before
+    // admitting the neighboring Lands End site to this serialized scheduler.
     if (sutroBaths?.debugState().nearEffectsLoading) return;
     if (optionalWorldSites.some((site) => site.state === "queued" || site.state === "loading")) return;
     let nearest: OptionalWorldSite | null = null;
@@ -1421,8 +1422,8 @@ export function createOptionalSites({
     reprioritizeForArrival: reprioritizeOptionalSitesForArrival,
     perfAllowed: optionalSitePerfAllowed,
     liftZoneRestriction,
-    // renderIdle's site half: no site queued/loading and Sutro's private close-
-    // water GPU gate is quiet. main ANDs this with modulesReady.
+    // renderIdle's site half: no site queued/loading and Sutro's private steam
+    // GPU gate is quiet. main ANDs this with modulesReady.
     streamingIdle: () =>
       !optionalWorldSites.some(
         (site) => site.state === "queued" || site.state === "loading"

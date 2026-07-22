@@ -13,12 +13,15 @@ import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
 import { createSutroBathsVegetation } from "./vegetation";
 import { createSutroBathers } from "./bathers";
 import type { SutroBathsSteam } from "./steam";
-import type { SutroBathsStaticWater } from "./staticWater";
+import {
+  createSutroBathsStaticWater,
+  type SutroBathsStaticWater
+} from "./staticWater";
 import { createSutroStaticAmbience } from "./staticAmbience";
 
 const WAKE_DISTANCE = 760;
 const SLEEP_DISTANCE = 900;
-const NEAR_EFFECTS_LOAD_DISTANCE = 170;
+const STEAM_LOAD_DISTANCE = 170;
 
 export type SutroBathsPlayerPosition = { x: number; y?: number; z: number };
 
@@ -42,7 +45,7 @@ export type SutroBathsDebugState = {
   nearEffectsLoading: boolean;
   nearEffectsLoaded: boolean;
   nearEffectsFailed: boolean;
-  water: ReturnType<SutroBathsStaticWater["debugState"]> | null;
+  water: ReturnType<SutroBathsStaticWater["debugState"]>;
   steam: SutroBathsSteam["stats"] | null;
 };
 
@@ -81,7 +84,7 @@ export type SutroBathsOptions = {
 };
 
 type MonitorState = {
-  nearEffectsLoaded: boolean;
+  steamLoaded: boolean;
   backend: string;
   triangles: number;
   computeDispatches: number;
@@ -100,10 +103,15 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   group.name = "sutro_baths_restored_1896";
   group.visible = false;
 
+  // Water is an essential part of the authored pools, not a close-range effect.
+  // Construct it with the lazy site root so prepareOptionalRoot prewarms its
+  // WebGPU pipeline before the root can become visible. Steam stays behind the
+  // tighter proximity gate below.
+  const water = createSutroBathsStaticWater({ renderer: options.renderer });
   const ambience = createSutroStaticAmbience(options.authoredRegions);
   const vegetation = createSutroBathsVegetation();
   const bathers = createSutroBathers();
-  group.add(ambience.group, vegetation.group, bathers.group);
+  group.add(ambience.group, vegetation.group, bathers.group, water.group);
 
   const stats: SutroBathsStats = {
     architectureMeshes: 57,
@@ -118,7 +126,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   };
 
   const monitors: MonitorState = {
-    nearEffectsLoaded: false,
+    steamLoaded: false,
     backend: "sleeping · not allocated",
     triangles: 0,
     computeDispatches: 0,
@@ -127,7 +135,6 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     steamVisible: 0
   };
 
-  let water: SutroBathsStaticWater | null = null;
   let steam: SutroBathsSteam | null = null;
   let nearEffectsLoading: Promise<void> | null = null;
   let nearEffectsFailed = false;
@@ -148,16 +155,14 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
 
   const syncTuning = () => {
     ambience.applyTuning(SUTRO_BATHS_TUNING.values);
-    water?.syncTuning();
+    water.syncTuning();
   };
 
   const loadNearEffects = (camera: THREE.Camera): void => {
-    if (water || nearEffectsLoading || nearEffectsFailed || disposed) return;
-    nearEffectsLoading = Promise.all([import("./staticWater"), import("./steam")])
-      .then(async ([waterModule, steamModule]) => {
+    if (steam || nearEffectsLoading || nearEffectsFailed || disposed) return;
+    nearEffectsLoading = import("./steam")
+      .then(async (steamModule) => {
         try {
-          let nextWater: SutroBathsStaticWater | null =
-            waterModule.createSutroBathsStaticWater({ renderer: options.renderer });
           let nextSteam: SutroBathsSteam | null = null;
           try {
             nextSteam = steamModule.createSutroBathsSteam();
@@ -165,27 +170,22 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
             syncTuning();
             try {
               // WebGPURenderer compilation can encode render passes while it
-              // builds async pipelines. Keep those passes serialized, and
-              // reveal the detached steam root so Three actually traverses it.
-              await options.renderer.compileAsync(nextWater.group, camera, options.scene);
+              // builds async pipelines. Reveal the detached steam root so
+              // Three actually traverses it.
               nextSteam.group.visible = true;
               await options.renderer.compileAsync(nextSteam.group, camera, options.scene);
             } catch (error) {
-              console.warn("[sutro-baths] near effects render warmup failed:", error);
+              console.warn("[sutro-baths] steam render warmup failed:", error);
             } finally {
               nextSteam.group.visible = false;
             }
             if (disposed) return;
-            water = nextWater;
             steam = nextSteam;
-            nextWater = null;
             nextSteam = null;
-            group.add(water.group, steam.group);
-            water.setEnabled(awake);
+            group.add(steam.group);
             steam.setEnabled(awake);
-            monitors.nearEffectsLoaded = true;
+            monitors.steamLoaded = true;
           } finally {
-            nextWater?.dispose();
             nextSteam?.dispose();
           }
         } catch (error) {
@@ -197,7 +197,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         }
       })
       .catch((error) => {
-        console.warn("[sutro-baths] static water/steam unavailable:", error);
+        console.warn("[sutro-baths] steam unavailable:", error);
       })
       .finally(() => {
         nearEffectsLoading = null;
@@ -208,7 +208,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     if (awake === next) return;
     awake = next;
     group.visible = next;
-    water?.setEnabled(next);
+    water.setEnabled(next);
     steam?.setEnabled(next);
   };
 
@@ -240,7 +240,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       else if (awake && distanceToBaths >= SLEEP_DISTANCE) setAwake(false);
 
       const waterDistance = distanceToSutroWater(player.x, player.z);
-      if (waterDistance <= NEAR_EFFECTS_LOAD_DISTANCE) loadNearEffects(camera);
+      if (waterDistance <= STEAM_LOAD_DISTANCE) loadNearEffects(camera);
       if (!awake) return;
 
       ambience.update(time, SUTRO_BATHS_TUNING.values);
@@ -249,18 +249,14 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       const py = player.y ?? SUTRO_BATHS.waterY;
       batherPlayer.position.set(player.x, py, player.z);
       bathers.update(dt, time, batherPlayer);
-      water?.update(dt, time, player);
+      water.update(dt, time, player);
       steam?.update(dt, time, player, camera, gust);
 
-      if (water) {
-        monitors.backend = water.stats.backend;
-        monitors.triangles = water.stats.triangles;
-        monitors.computeDispatches = water.stats.computeDispatches;
-        monitors.simulated = water.stats.simulated;
-        monitors.playerDistance = water.stats.playerDistance;
-      } else {
-        monitors.playerDistance = waterDistance;
-      }
+      monitors.backend = water.stats.backend;
+      monitors.triangles = water.stats.triangles;
+      monitors.computeDispatches = water.stats.computeDispatches;
+      monitors.simulated = water.stats.simulated;
+      monitors.playerDistance = water.stats.playerDistance;
       monitors.steamVisible = steam?.stats.visible ?? 0;
     },
     isPlayerInside(player) {
@@ -290,7 +286,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
           const debug = folder.addFolder({ title: "WebGPU visual water · debug" });
           return {
             monitors: [
-              debug.addBinding(monitors, "nearEffectsLoaded", { readonly: true, label: "near effects loaded" }),
+              debug.addBinding(monitors, "steamLoaded", { readonly: true, label: "steam loaded" }),
               debug.addBinding(monitors, "backend", { readonly: true, label: "backend" }),
               debug.addBinding(monitors, "triangles", { readonly: true, label: "water triangles" }),
               debug.addBinding(monitors, "computeDispatches", { readonly: true, label: "compute dispatches" }),
@@ -315,16 +311,16 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         foliageVisible,
         distanceToBaths,
         nearEffectsLoading: nearEffectsLoading !== null,
-        nearEffectsLoaded: water !== null,
+        nearEffectsLoaded: steam !== null,
         nearEffectsFailed,
-        water: water?.debugState() ?? null,
+        water: water.debugState(),
         steam: steam?.stats ?? null
       };
     },
     dispose() {
       if (disposed) return;
       disposed = true;
-      water?.dispose();
+      water.dispose();
       steam?.dispose();
       bathers.dispose();
       vegetation.dispose();
