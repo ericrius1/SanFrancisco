@@ -9,7 +9,7 @@ import { chromium } from "playwright-core";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = path.resolve(ROOT, process.env.SF_PROBE_OUT ?? ".data/fort-mason-ensemble");
 const URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5244/?autostart=1&profile=1&fullfps=1";
-const CENTER = { x: 1284, z: -1846 };
+const CENTER = { x: 1300, z: -1846 };
 const CHROME = [
   process.env.CHROME_BIN,
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -90,6 +90,33 @@ try {
   if (!initial.npcTicks.every((tick) => tick >= 0) || !initial.npcVisible.every(Boolean)) {
     throw new Error(`NPC autoplay did not activate all three parts: ${JSON.stringify(initial)}`);
   }
+  if (initial.stage.deckBottom - initial.stage.groundHigh < 0.075) {
+    throw new Error(`bandstand is buried in the terrain: ${JSON.stringify(initial.stage)}`);
+  }
+  const pianoLayout = await page.evaluate(() => {
+    const sf = window.__sf;
+    const piano = sf.fortMasonEnsemble.root.getObjectByName("fort-mason-piano");
+    const pianist = piano?.getObjectByName("fort-mason-piano-npc");
+    const pianoCase = piano?.getObjectByName("fort-mason-piano-case");
+    const keyboard = piano?.getObjectByName("fort-mason-piano-keyboard");
+    if (!piano || !pianist || !pianoCase || !keyboard) return null;
+    const toPiano = pianoCase.position.clone().sub(pianist.position).normalize();
+    const pianistFront = new sf.THREE.Vector3(0, 0, -1).applyQuaternion(pianist.quaternion);
+    return {
+      pianistZ: pianist.position.z,
+      keyboardZ: keyboard.position.z,
+      pianoCaseZ: pianoCase.position.z,
+      facingDot: pianistFront.dot(toPiano)
+    };
+  });
+  if (
+    !pianoLayout ||
+    pianoLayout.keyboardZ <= pianoLayout.pianoCaseZ ||
+    pianoLayout.keyboardZ >= pianoLayout.pianistZ ||
+    pianoLayout.facingDot < 0.9
+  ) {
+    throw new Error(`pianist is not facing the keyboard/piano: ${JSON.stringify(pianoLayout)}`);
+  }
 
   const ground = await page.evaluate(({ x, z }) => window.__sf.map.groundTop(x, z), CENTER);
   await page.evaluate(({ x, z, ground }) => {
@@ -97,12 +124,31 @@ try {
     const hud = document.getElementById("hud");
     if (hud) hud.style.display = "none";
   }, { ...CENTER, ground });
-  for (let i = 0; i < 8; i++) await page.evaluate(() => window.__sf.tick(1 / 30));
+  // Manual ticks advance the world state, while WebGPU presents on real
+  // animation frames. Interleave both so the just-admitted root reaches the
+  // actual camera-facing render before capture.
+  for (let i = 0; i < 20; i++) {
+    await page.evaluate(() => window.__sf.tick(1 / 30));
+    await sleep(30);
+  }
   await page.screenshot({ path: path.join(OUT, "ensemble-wide.png") });
+
+  await page.evaluate(() => {
+    const sf = window.__sf;
+    const root = sf.fortMasonEnsemble.root;
+    const eye = root.localToWorld(new sf.THREE.Vector3(-6.2, 3.0, 4.8));
+    const target = root.localToWorld(new sf.THREE.Vector3(-2.75, 1.0, -0.12));
+    window.__sfFreeCam(eye.toArray(), target.toArray());
+  });
+  for (let i = 0; i < 12; i++) {
+    await page.evaluate(() => window.__sf.tick(1 / 30));
+    await sleep(30);
+  }
+  await page.screenshot({ path: path.join(OUT, "ensemble-piano-close.png") });
 
   // Move beside the piano and use the public interaction seam. Vite's relay can
   // be online, so allow a short claim round trip before checking the local slot.
-  await page.evaluate(({ x, z, online }) => {
+  await page.evaluate(({ online }) => {
     const sf = window.__sf;
     // By default the shared developer relay on :8787 may belong to another
     // worktree and not know this protocol yet. The online end-to-end pass sets
@@ -111,10 +157,16 @@ try {
       sf.net.status = "offline";
       sf.net.selfId = 0;
     }
-    const y = sf.map.groundTop(x, z);
-    sf.player.restoreState({ mode: "walk", x: x - 2.75, y: y + 0.62, z: z + 1.32, heading: Math.PI });
+    const pianoSeat = sf.fortMasonEnsemble.debugState().stationWorld[0];
+    sf.player.restoreState({
+      mode: "walk",
+      x: pianoSeat.x,
+      y: pianoSeat.y + 0.62,
+      z: pianoSeat.z,
+      heading: Math.PI
+    });
     sf.fortMasonEnsemble.tryInteract(sf.player.renderPosition, "walk");
-  }, { ...CENTER, online: process.env.SF_PROBE_ONLINE === "1" });
+  }, { online: process.env.SF_PROBE_ONLINE === "1" });
   for (let i = 0; i < 90; i++) {
     await page.evaluate(() => window.__sf.tick(1 / 60));
     if ((await page.evaluate(() => window.__sf.fortMasonEnsemble.debugState().localSlot)) === 0) break;
@@ -147,6 +199,7 @@ try {
     activationFeatureRequests: activationRequests,
     requestCountAfterNote: afterNoteRequests.length,
     initial,
+    pianoLayout,
     claimed,
     released,
     pageErrors
