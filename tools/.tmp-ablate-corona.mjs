@@ -177,11 +177,6 @@ async function main() {
   await run("wildlands_flowers hidden");
   await ev(c, `(()=>{const sf=window.__sf; sf.scene.traverse(o=>{ if(o.name==="wildlands_flowers"){o.visible=true;} }); return true;})()`);
 
-  // 5: road markings hidden
-  await ev(c, `(()=>{const sf=window.__sf; let n=0; sf.scene.traverse(o=>{ if(/RoadMarkings/.test(o.name)){o.visible=false;n++;} }); return n;})()`);
-  await run("roadMarkings hidden");
-  await ev(c, `(()=>{const sf=window.__sf; sf.scene.traverse(o=>{ if(/RoadMarkings/.test(o.name)){o.visible=true;} }); return true;})()`);
-
   // 6: all shadow casters off scene-wide (upper bound of shadow-pass encode)
   await ev(c, `(()=>{const sf=window.__sf; sf.__abl2=[]; sf.scene.traverse(o=>{ if(o.castShadow){ sf.__abl2.push(o); o.castShadow=false; } }); return sf.__abl2.length;})()`);
   await run("ALL castShadow OFF");

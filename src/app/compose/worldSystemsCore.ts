@@ -13,7 +13,6 @@ import type {  } from "../../world/ghostShip";
 import { Water } from "../../world/water";
 import { frontGate } from "../../render/frontGate";
 import { UnderwaterOverlay } from "../../fx/underwater";
-import { createRoadMarkings } from "../../world/roadMarkings";
 import { RoadGraph } from "../../world/traffic/roadGraph";
 import { TrafficLightView } from "../../world/traffic/trafficLights";
 import { createBayLights } from "../../world/bayLights";
@@ -191,14 +190,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     ).then(() => waterRoots.forEach((m, i) => (m.visible = restore[i])));
   }
   const underwater = new UnderwaterOverlay(app, map);
-  // off-boot-path lane markings (attaches whenever the fetch lands)
-  ctx.state.auxPending++;
-  void createRoadMarkings(scene, map)
-    .then((group) => {
-      ctx.state.roadMarkings = group;
-    })
-    .catch((err) => console.warn("[roads] lane markings unavailable", err))
-    .finally(() => ctx.state.auxPending--);
   await constructionSlice();
 
   progress(62, "waking up san francisco");

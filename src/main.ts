@@ -186,11 +186,10 @@ async function boot() {
     primeInitialVisual: primeInitialVisualAt
   });
 
-  // off-boot-path loads (lane markings, the road graph's signals + lamps)
-  // never block boot; their fetches now kick off in P3 so nothing optional
-  // races the void essentials. auxPending only feeds boot log lines today.
+  // Off-boot-path road-graph signals and lamps never block boot; their fetch
+  // kicks off in P3 so nothing optional races the void essentials. auxPending
+  // only feeds boot log lines today.
   let auxPending = 0;
-  let roadMarkings: THREE.Group | null = null;
 
   // Physics comes online in parallel with initial-arrival resolution and chains
   // the far-occlusion field onto its tile-collider callbacks (extracted to
@@ -926,8 +925,6 @@ async function boot() {
       set oceanBeachWaves(v) { oceanBeachWaves = v as never; },
       get auxPending() { return auxPending; },
       set auxPending(v) { auxPending = v as never; },
-      get roadMarkings() { return roadMarkings; },
-      set roadMarkings(v) { roadMarkings = v as never; },
       get customized() { return customized; },
       set customized(v) { customized = v as never; },
       get carCustomized() { return carCustomized; },

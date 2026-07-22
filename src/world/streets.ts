@@ -19,8 +19,7 @@ import { terrainCutoutMask } from "./terrainCutouts";
  * Street asphalt in the spirit of the reference city generator's road material:
  * warm-grey patchwork pours, oily wear stains, low-frequency wet patches that go
  * glossy and mirror the sky, and fine aggregate grit that only resolves near the
- * camera. Painted lane markings are rendered as an OSM-derived overlay so they
- * can follow curved ribbons and one-way/two-way metadata instead of a grid.
+ * camera. Roads intentionally stay as continuous, unpainted asphalt ribbons.
  */
 export function createRoadMaterial(): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial();

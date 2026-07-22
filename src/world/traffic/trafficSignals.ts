@@ -9,7 +9,6 @@ export type SignalApproachSeed = {
   tangentX: number;
   tangentZ: number;
   roadClass: number;
-  lanes: number;
   halfWidth: number;
 };
 
@@ -61,7 +60,6 @@ export type TrafficSignalSystemSnapshot = {
   approachDirs: Int8Array;
   approachValues: Float64Array;
   approachRoadClasses: Uint8Array;
-  approachLanes: Uint8Array;
   approachAxes: Uint8Array;
   approachKeys: Uint32Array;
   approachStarts: Uint32Array;
@@ -115,7 +113,6 @@ export class TrafficSignalSystem {
   #approachDirs: Int8Array;
   #approachValues: Float64Array;
   #approachRoadClasses: Uint8Array;
-  #approachLanes: Uint8Array;
   #approachAxes: Uint8Array;
   #signalCache: Array<TrafficSignal | undefined>;
   #materializedSignals: TrafficSignal[] | null;
@@ -135,7 +132,6 @@ export class TrafficSignalSystem {
       this.#approachDirs = prepared.approachDirs;
       this.#approachValues = prepared.approachValues;
       this.#approachRoadClasses = prepared.approachRoadClasses;
-      this.#approachLanes = prepared.approachLanes;
       this.#queryApproachAxes = prepared.queryApproachAxes;
       this.#signalCache = new Array(prepared.signalCount);
       this.#materializedSignals = null;
@@ -160,7 +156,6 @@ export class TrafficSignalSystem {
     this.#approachDirs = packedSignals.approachDirs;
     this.#approachValues = packedSignals.approachValues;
     this.#approachRoadClasses = packedSignals.approachRoadClasses;
-    this.#approachLanes = packedSignals.approachLanes;
     this.#approachAxes = packedSignals.approachAxes;
     this.#signalCache = signals;
     this.#materializedSignals = signals;
@@ -186,7 +181,6 @@ export class TrafficSignalSystem {
       approachDirs: this.#approachDirs,
       approachValues: this.#approachValues,
       approachRoadClasses: this.#approachRoadClasses,
-      approachLanes: this.#approachLanes,
       approachAxes: this.#approachAxes,
       approachKeys: this.#approachKeys,
       approachStarts: this.#approachStarts,
@@ -290,7 +284,6 @@ export class TrafficSignalSystem {
     | "approachDirs"
     | "approachValues"
     | "approachRoadClasses"
-    | "approachLanes"
     | "approachAxes"
   > {
     const signalValues = new Float64Array(signals.length * 5);
@@ -313,7 +306,6 @@ export class TrafficSignalSystem {
     const approachDirs = new Int8Array(approachCount);
     const approachValues = new Float64Array(approachCount * 6);
     const approachRoadClasses = new Uint8Array(approachCount);
-    const approachLanes = new Uint8Array(approachCount);
     const approachAxes = new Uint8Array(approachCount);
     let cursor = 0;
     for (const signal of signals) {
@@ -328,7 +320,6 @@ export class TrafficSignalSystem {
         approachValues[base + 4] = approach.tangentZ;
         approachValues[base + 5] = approach.halfWidth;
         approachRoadClasses[cursor] = approach.roadClass;
-        approachLanes[cursor] = approach.lanes;
         approachAxes[cursor] = approach.axis;
         cursor++;
       }
@@ -340,7 +331,6 @@ export class TrafficSignalSystem {
       approachDirs,
       approachValues,
       approachRoadClasses,
-      approachLanes,
       approachAxes
     };
   }
@@ -363,7 +353,6 @@ export class TrafficSignalSystem {
         tangentX: this.#approachValues[base + 3],
         tangentZ: this.#approachValues[base + 4],
         roadClass: this.#approachRoadClasses[i],
-        lanes: this.#approachLanes[i],
         halfWidth: this.#approachValues[base + 5],
         signalId: id,
         axis: this.#approachAxes[i] as 0 | 1
@@ -461,14 +450,14 @@ export function chooseSignalNodes(candidates: SignalNodeSeed[]): SignalNodeSeed[
   return accepted;
 }
 
-export function signalCandidateScore(x: number, z: number, arms: number, maxClass: number, maxLanes: number): number {
+export function signalCandidateScore(x: number, z: number, arms: number, maxClass: number, maxHalfWidth: number): number {
   const downtown = x > 1700 && x < 5200 && z > -900 && z < 2600 ? 1 : 0;
   const somaMission = x > 1200 && x < 4300 && z >= 1800 && z < 4300 ? 0.55 : 0;
   const denseCore = Math.max(downtown, somaMission);
   const armScore = arms >= 4 ? 0.24 : 0.08;
   const classScore = Math.min(1, maxClass / 4) * 0.2;
-  const laneScore = Math.min(1, maxLanes / 4) * 0.12;
-  const base = 0.16 + denseCore * 0.44 + armScore + classScore + laneScore;
+  const widthScore = Math.min(1, maxHalfWidth / 7) * 0.12;
+  const base = 0.16 + denseCore * 0.44 + armScore + classScore + widthScore;
   const p = Math.max(0.18, Math.min(denseCore > 0.5 ? 0.94 : 0.62, base));
   if (hash01(x + 19.7, z - 41.3) > p) return -1;
   return p + arms * 0.03 + maxClass * 0.035 + denseCore * 0.25;

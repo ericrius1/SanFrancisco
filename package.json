@@ -73,7 +73,6 @@
     "test:roof-collision": "node tools/roof-collision-probe.mjs",
     "test:roof-visuals": "node tools/citygen-roof-visual-probe.mjs",
     "test:citygen:lamps": "node tools/citygen-lamp-probe.mjs",
-    "test:road-markings": "node tools/road-markings-depth-contract-test.mjs",
     "test:shadows:analysis": "node tools/shadow-temporal-analysis-test.mjs && node --experimental-strip-types tools/shadow-edge-contract-test.mjs",
     "test:shadows:temporal": "node tools/shadow-temporal-probe.mjs",
     "test:shadows:far-field": "node tools/far-occlusion-field-test.mjs",

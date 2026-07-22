@@ -10,17 +10,16 @@ import {
 export type RoadSegmentJson = {
   p: number[];
   w: number;
-  l?: number;
   d?: number;
   k?: number;
-  f?: number;
-  b?: number;
 };
 
 export type RoadsJson = {
   v: number;
   segs: RoadSegmentJson[];
 };
+
+export const ROAD_DATA_VERSION = 4;
 
 export type PackedRoadCellIndex = {
   minCx: number;
@@ -35,7 +34,7 @@ export type PackedRoadCellIndex = {
 /** Fully preprocessed, read-only road-network state. All O(points/edges)
  * construction happens before this snapshot crosses the worker boundary. */
 export type RoadGraphSnapshot = {
-  version: 1;
+  version: 2;
   segCount: number;
   px: Float32Array;
   pz: Float32Array;
@@ -45,9 +44,6 @@ export type RoadGraphSnapshot = {
   segNum: Int32Array;
   segTotal: Float32Array;
   segW: Float32Array;
-  segLanes: Int8Array;
-  segForwardLanes: Int8Array;
-  segBackwardLanes: Int8Array;
   segDir: Int8Array;
   segClass: Int8Array;
   edgeCells: PackedRoadCellIndex;
@@ -141,7 +137,6 @@ function buildSignalNodes(snapshot: {
   segStart: Int32Array;
   segNum: Int32Array;
   segW: Float32Array;
-  segLanes: Int8Array;
   segDir: Int8Array;
   segClass: Int8Array;
 }): SignalNodeSeed[] {
@@ -185,7 +180,6 @@ function buildSignalNodes(snapshot: {
           tangentX: tx,
           tangentZ: tz,
           roadClass: snapshot.segClass[seg],
-          lanes: snapshot.segLanes[seg],
           halfWidth: snapshot.segW[seg] * 0.5
         });
       }
@@ -205,7 +199,6 @@ function buildSignalNodes(snapshot: {
           tangentX: tx,
           tangentZ: tz,
           roadClass: snapshot.segClass[seg],
-          lanes: snapshot.segLanes[seg],
           halfWidth: snapshot.segW[seg] * 0.5
         });
       }
@@ -217,7 +210,7 @@ function buildSignalNodes(snapshot: {
     if (group.approaches.length < 3) continue;
     const angles: number[] = [];
     let maxClass = 0;
-    let maxLanes = 1;
+    let maxHalfWidth = 0;
     const seen = new Set<string>();
     const approaches: SignalApproachSeed[] = [];
     for (const app of group.approaches) {
@@ -226,7 +219,7 @@ function buildSignalNodes(snapshot: {
       seen.add(id);
       approaches.push(app);
       maxClass = Math.max(maxClass, app.roadClass);
-      maxLanes = Math.max(maxLanes, app.lanes);
+      maxHalfWidth = Math.max(maxHalfWidth, app.halfWidth);
       const angle = Math.atan2(app.tangentX, app.tangentZ);
       let fresh = true;
       for (const previous of angles) {
@@ -240,7 +233,7 @@ function buildSignalNodes(snapshot: {
     if (angles.length < 3) continue;
     const x = group.sx / group.n;
     const z = group.sz / group.n;
-    const score = signalCandidateScore(x, z, angles.length, maxClass, maxLanes);
+    const score = signalCandidateScore(x, z, angles.length, maxClass, maxHalfWidth);
     if (score < 0) continue;
     candidates.push({ x, z, score, approaches });
   }
@@ -248,6 +241,9 @@ function buildSignalNodes(snapshot: {
 }
 
 export function buildRoadGraphSnapshot(json: RoadsJson): RoadGraphSnapshot {
+  if (json.v !== ROAD_DATA_VERSION) {
+    throw new Error(`RoadGraph: expected roads schema v${ROAD_DATA_VERSION}, got v${json.v}`);
+  }
   const segs = json.segs;
   const segCount = segs.length;
   let pointCount = 0;
@@ -261,9 +257,6 @@ export function buildRoadGraphSnapshot(json: RoadsJson): RoadGraphSnapshot {
   const segNum = new Int32Array(segCount);
   const segTotal = new Float32Array(segCount);
   const segW = new Float32Array(segCount);
-  const segLanes = new Int8Array(segCount);
-  const segForwardLanes = new Int8Array(segCount);
-  const segBackwardLanes = new Int8Array(segCount);
   const segDir = new Int8Array(segCount);
   const segClass = new Int8Array(segCount);
   const endX = new Float32Array(segCount * 2);
@@ -279,31 +272,8 @@ export function buildRoadGraphSnapshot(json: RoadsJson): RoadGraphSnapshot {
     segStart[seg] = g;
     segNum[seg] = n;
     segW[seg] = segment.w;
-    const lanes = Math.max(1, Math.min(8, Math.round(segment.l ?? Math.max(1, segment.w / 4))));
     const dir = segment.d === 1 ? 1 : segment.d === -1 ? -1 : 0;
-    segLanes[seg] = lanes;
     segDir[seg] = dir;
-    if (dir === 1) {
-      segForwardLanes[seg] = lanes;
-      segBackwardLanes[seg] = 0;
-    } else if (dir === -1) {
-      segForwardLanes[seg] = 0;
-      segBackwardLanes[seg] = lanes;
-    } else {
-      let forward = Math.max(1, Math.min(8, Math.round(segment.f ?? Math.ceil(lanes / 2))));
-      let backward = Math.max(1, Math.min(8, Math.round(segment.b ?? Math.max(1, lanes - forward))));
-      while (forward + backward < lanes) {
-        if (forward <= backward) forward++;
-        else backward++;
-      }
-      while (forward + backward > lanes) {
-        if (forward >= backward && forward > 1) forward--;
-        else if (backward > 1) backward--;
-        else break;
-      }
-      segForwardLanes[seg] = forward;
-      segBackwardLanes[seg] = backward;
-    }
     segClass[seg] = Math.max(0, Math.min(5, Math.round(segment.k ?? (segment.w >= 14 ? 4 : segment.w >= 10 ? 3 : 1))));
 
     let acc = 0;
@@ -375,14 +345,13 @@ export function buildRoadGraphSnapshot(json: RoadsJson): RoadGraphSnapshot {
     segStart,
     segNum,
     segW,
-    segLanes,
     segDir,
     segClass
   });
   const signalSystem = new TrafficSignalSystem(signalNodes).toSnapshot();
 
   return {
-    version: 1,
+    version: 2,
     segCount,
     px,
     pz,
@@ -392,9 +361,6 @@ export function buildRoadGraphSnapshot(json: RoadsJson): RoadGraphSnapshot {
     segNum,
     segTotal,
     segW,
-    segLanes,
-    segForwardLanes,
-    segBackwardLanes,
     segDir,
     segClass,
     edgeCells: packCellIndex(edgeCellLists),
@@ -417,9 +383,6 @@ export function roadGraphSnapshotTransferList(snapshot: RoadGraphSnapshot): Arra
     snapshot.segNum.buffer as ArrayBuffer,
     snapshot.segTotal.buffer as ArrayBuffer,
     snapshot.segW.buffer as ArrayBuffer,
-    snapshot.segLanes.buffer as ArrayBuffer,
-    snapshot.segForwardLanes.buffer as ArrayBuffer,
-    snapshot.segBackwardLanes.buffer as ArrayBuffer,
     snapshot.segDir.buffer as ArrayBuffer,
     snapshot.segClass.buffer as ArrayBuffer,
     snapshot.edgeCells.slots.buffer as ArrayBuffer,
@@ -438,7 +401,6 @@ export function roadGraphSnapshotTransferList(snapshot: RoadGraphSnapshot): Arra
     snapshot.signalSystem.approachDirs.buffer as ArrayBuffer,
     snapshot.signalSystem.approachValues.buffer as ArrayBuffer,
     snapshot.signalSystem.approachRoadClasses.buffer as ArrayBuffer,
-    snapshot.signalSystem.approachLanes.buffer as ArrayBuffer,
     snapshot.signalSystem.approachAxes.buffer as ArrayBuffer,
     snapshot.signalSystem.approachKeys.buffer as ArrayBuffer,
     snapshot.signalSystem.approachStarts.buffer as ArrayBuffer,
