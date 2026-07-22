@@ -71,8 +71,8 @@ export type SurfTelemetry = {
   /** Deliberate roundhouse reversals (double-tap a carve side). */
   cutbackSerial: number;
 
-  /** Automatic launch / landing / VFX event bridge. */
-  autoLaunchCharge: number;
+  /** 0..1 indication that an explicit Space/A press will pop from the lip. */
+  lipReadiness: number;
   launchSerial: number;
   splashSerial: number;
   splashEnergy: number;
@@ -168,7 +168,7 @@ export class SurfController implements ModeController {
     stalling: false,
     faceLine: 0,
     cutbackSerial: 0,
-    autoLaunchCharge: 0,
+    lipReadiness: 0,
     launchSerial: 0,
     splashSerial: 0,
     splashEnergy: 0,
@@ -215,7 +215,7 @@ export class SurfController implements ModeController {
   #lineDirection = 1;
   /** Smoothed A/D rail swing relative to travel, clamped short of vertical. */
   #steerSwing = 0;
-  /** Smoothed 0..1 climb effort (for HUD/pose + launch charge). */
+  /** Smoothed 0..1 climb effort for HUD and rider pose. */
   #climbEffort = 0;
   /** Smoothed face placement: +1 climbs/pumps, -1 settles toward the pocket. */
   #faceControl = 0;
@@ -233,7 +233,7 @@ export class SurfController implements ModeController {
   /** Flow's velocity scale is applied once per air, not per step. */
   #airFlowApplied = false;
   #landingCompression = 0;
-  #launchCharge = 0;
+  #lipReadiness = 0;
   #launchCooldown = 0;
   /** Seconds a Space/A press stays pending for a lip pop (or Flow fallback). */
   #popRequest = 0;
@@ -318,7 +318,7 @@ export class SurfController implements ModeController {
     this.#airVy = 0;
     this.#airTime = 0;
     this.#landingCompression = 0;
-    this.#launchCharge = 0;
+    this.#lipReadiness = 0;
     this.#launchCooldown = 0;
     this.#popRequest = 0;
     this.#recoveryTimer = 0;
@@ -606,42 +606,43 @@ export class SurfController implements ModeController {
     // the frame speed cannot gate takeoff — the board is still carrying its
     // pumped line speed. Launch off that.
     const launchSpeed = Math.max(totalSpeed, speed);
-    const fastEnough = launchSpeed >= tb.launchMinSpeed * (2 - shape.launch);
-    const lipEnergy = THREE.MathUtils.clamp(
-      (sample.lip - tb.autoLaunchLip) / Math.max(0.05, 1 - tb.autoLaunchLip),
-      0,
-      1
-    );
-    // Nose committed toward the wall + dwelling near the lip arms auto-launch.
-    const highLineIntent = this.#faceControl > 0.5;
-    const approachingLip =
-      this.#relativeFaceSpeed < -tb.launchFacewardSpeed ||
-      (highLineIntent && sample.crestDistance <= 6.5);
-    const speedEnergy = THREE.MathUtils.clamp(
-      (launchSpeed - tb.launchMinSpeed) / Math.max(1, tb.maxTrim - tb.launchMinSpeed),
-      0,
-      1
-    );
     // Faceward speed (m/s) while climbing — carried into the launch as vert.
     const climbVertical = Math.max(0, -this.#relativeFaceSpeed) * 0.6;
+
+    // W owns face placement and pumping only. Reaching the lip advertises an
+    // explicit Space/A pop but never changes phase by itself; the former charge
+    // path repeatedly launched anyone who naturally held W to surf the wave.
+    const manualLip = THREE.MathUtils.clamp(
+      (sample.lip - tb.manualLaunchLip) / Math.max(0.05, 1 - tb.manualLaunchLip),
+      0,
+      1
+    );
+    const highLineIntent = this.#faceControl > 0.5;
+    const nearLip =
+      manualLip > 0 ||
+      sample.crestDistance <= tb.manualLaunchCrest ||
+      (highLineIntent && sample.crestDistance <= 7.2);
+    const requiredPopSpeed = tb.manualLaunchMinSpeed * (2 - shape.launch);
+    const popFastEnough = launchSpeed >= requiredPopSpeed;
+    const crestReadiness = THREE.MathUtils.clamp(
+      (tb.manualLaunchCrest + 1.5 - sample.crestDistance) / 1.5,
+      0,
+      1
+    );
+    const speedReadiness = THREE.MathUtils.clamp(
+      (launchSpeed - requiredPopSpeed + 3) / 3,
+      0,
+      1
+    );
+    this.#lipReadiness = Math.max(manualLip, crestReadiness) * speedReadiness;
 
     // Space/A always jumps: a big pop off the lip when you're there with
     // speed, otherwise a small chop hop — never a dead button. Flow lives on
     // its own bind (keyboard/pad X).
     if (this.#popRequest > 0 && this.#launchCooldown <= 0) {
-      const manualLip = THREE.MathUtils.clamp(
-        (sample.lip - tb.manualLaunchLip) / Math.max(0.05, 1 - tb.manualLaunchLip),
-        0,
-        1
-      );
-      const nearLip =
-        manualLip > 0 ||
-        sample.crestDistance <= tb.manualLaunchCrest ||
-        (highLineIntent && sample.crestDistance <= 7.2);
-      const popFastEnough = launchSpeed >= tb.manualLaunchMinSpeed * (2 - shape.launch);
       this.#popRequest = 0;
       if (nearLip && popFastEnough) {
-        this.#beginAutoLaunch(launchSpeed, Math.max(sample.lip, 0.35), shape, climbVertical);
+        this.#beginLipLaunch(launchSpeed, Math.max(sample.lip, 0.35), shape, climbVertical);
       } else {
         this.#beginOllie(launchSpeed, shape);
       }
@@ -651,42 +652,12 @@ export class SurfController implements ModeController {
       return;
     }
 
-    if (
-      fastEnough &&
-      lipEnergy > 0 &&
-      this.#launchCooldown <= 0 &&
-      (this.#climbEffort > 0.15 || speedEnergy > 0.3) &&
-      highLineIntent &&
-      approachingLip
-    ) {
-      // Carried momentum charges the lip like an active climb: drop for
-      // speed, then riding high with pace alone arms the launch.
-      this.#launchCharge = Math.min(
-        1,
-        this.#launchCharge +
-          dt *
-            tb.launchChargeRate *
-            (0.18 + Math.max(this.#climbEffort, speedEnergy) * 0.82) *
-            (0.4 + lipEnergy * 0.8 + speedEnergy)
-      );
-    } else {
-      this.#launchCharge = Math.max(0, this.#launchCharge - dt * tb.launchChargeDecay);
-    }
-
     this.#chargeFlow(
       dt,
       totalSpeed,
       sample.face,
       Math.max(Math.abs(this.#carve), Math.abs(this.#faceControl))
     );
-    if (this.#launchCharge >= 1 && this.#launchCooldown <= 0) {
-      this.#beginAutoLaunch(launchSpeed, sample.lip, shape, climbVertical);
-      this.#orientRide(ctx, motionDt, steer, vx, vz, vy, sample);
-      this.#commit(ctx, y, vx, this.#airVy * riderRate, vz);
-      this.#syncTelemetry(ctx, frame, sample, totalSpeed, y, riderRate);
-      return;
-    }
-
     this.grounded = true;
     this.#orientRide(ctx, motionDt, steer, vx, vz, vy, sample);
     this.#commit(ctx, y, vx, vy, vz);
@@ -710,6 +681,7 @@ export class SurfController implements ModeController {
     this.#resetTapState();
     this.#airTime = 0;
     this.#landingCompression = 0;
+    this.#lipReadiness = 0;
     this.#airVy = (tb.ollieVelocity + speed * tb.ollieSpeedLift) * shape.launch;
     // Launching during Flow: the ride commit already carried the scaled speed.
     this.#airFlowApplied = this.#flowTimer > 0;
@@ -718,7 +690,7 @@ export class SurfController implements ModeController {
     this.#emitSplash(0.45);
   }
 
-  #beginAutoLaunch(
+  #beginLipLaunch(
     speed: number,
     lip: number,
     shape: SurfboardHandlingProfile,
@@ -737,7 +709,7 @@ export class SurfController implements ModeController {
         climbVertical * tb.launchClimbLift) *
       shape.launch;
     this.#airFlowApplied = this.#flowTimer > 0;
-    this.#launchCharge = 0;
+    this.#lipReadiness = 0;
     this.#launchCooldown = tb.launchCooldown;
     this.telemetry.launchSerial++;
     this.#emitSplash(THREE.MathUtils.clamp(0.35 + speed / tb.maxTrim + lip * 0.35, 0.3, 1.6));
@@ -872,7 +844,7 @@ export class SurfController implements ModeController {
     this.#phase = "recover";
     this.#recoveryTimer = SURF_TUNING.values.recoveryDuration * THREE.MathUtils.lerp(0.7, 1.25, severity);
     this.#lineSpeed = Math.max(SURF_TUNING.values.recoverySpeed, this.#lineSpeed * 0.62);
-    this.#launchCharge = 0;
+    this.#lipReadiness = 0;
     this.#launchCooldown = Math.max(this.#launchCooldown, SURF_TUNING.values.recoveryLaunchLock);
     this.grounded = true;
     this.telemetry.assistSerial++;
@@ -1219,7 +1191,7 @@ export class SurfController implements ModeController {
     this.#airVy = 0;
     this.#airTime = 0;
     this.#landingCompression = 0;
-    this.#launchCharge = 0;
+    this.#lipReadiness = 0;
     this.#launchCooldown = Math.max(this.#launchCooldown, nextWave ? 0.45 : 0);
     this.#popRequest = 0;
     this.#relativeFaceSpeed = 0;
@@ -1252,7 +1224,7 @@ export class SurfController implements ModeController {
     tm.lineDirection = this.#lineDirection;
     tm.pump = 0;
     tm.stalling = false;
-    tm.autoLaunchCharge = 0;
+    tm.lipReadiness = 0;
     tm.inBreak = sample.mask > 0.025;
     tm.crestDistance = sample.crestDistance;
     tm.slopeX = sample.slopeX;
@@ -1316,7 +1288,7 @@ export class SurfController implements ModeController {
     tm.pump = this.#climbEffort;
     tm.faceLine = -this.#faceControl;
     tm.stalling = this.#phase === "ride" && this.#stallIntent > 0.35;
-    tm.autoLaunchCharge = this.#launchCharge;
+    tm.lipReadiness = this.#lipReadiness;
     tm.flow = this.#flow;
     tm.flowReady = this.#flow >= SURF_TUNING.values.flowReadyThreshold;
     tm.flowActive = this.#flowTimer > 0;

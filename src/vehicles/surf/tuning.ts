@@ -67,16 +67,11 @@ export const SURF_TUNING = tunables("movement.surf", {
   pitchFollow: { v: 1, min: 0, max: 1.5, step: 0.02, label: "pitch follow" },
   pitchResponse: { v: 8, min: 2, max: 18, step: 0.25, label: "pitch response" },
 
-  // Lip pop: Space/A ollies when the board is on the lip; W + high line still
-  // auto-charges a launch. Manual pop is intentionally more forgiving.
-  launchMinSpeed: { v: 14, min: 7, max: 34, step: 0.5, label: "launch min speed" },
+  // Lip pop is explicit: W climbs/pumps and Space/A chooses when to leave the
+  // water. The lip thresholds keep the larger pop more forgiving than a sim.
   manualLaunchMinSpeed: { v: 11, min: 5, max: 28, step: 0.5, label: "Space pop min speed" },
-  autoLaunchLip: { v: 0.28, min: 0.15, max: 0.9, step: 0.02, label: "auto launch lip" },
   manualLaunchLip: { v: 0.18, min: 0.05, max: 0.8, step: 0.02, label: "Space pop lip" },
   manualLaunchCrest: { v: 6.8, min: 3, max: 12, step: 0.1, label: "Space pop crest dist" },
-  launchChargeRate: { v: 5.2, min: 0.2, max: 8, step: 0.05, label: "auto launch charge" },
-  launchChargeDecay: { v: 1.1, min: 0, max: 3, step: 0.05, label: "launch decay" },
-  launchFacewardSpeed: { v: 0.2, min: 0, max: 6, step: 0.05, label: "lip approach speed" },
   // Pop height: readable aerial without flinging the chase cam into the sky.
   launchVelocity: { v: 6.5, min: 2, max: 18, step: 0.2, label: "launch lift" },
   launchSpeedLift: { v: 0.16, min: 0, max: 0.5, step: 0.01, label: "speed lift" },
