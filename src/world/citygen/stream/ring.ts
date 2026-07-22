@@ -705,7 +705,7 @@ export async function createCityGenRing(
       // Equal-clearance candidates should face a real street, not merely the
       // marginally longer side/rear yard. surface.bin is intentionally coarse,
       // so road evidence is a bounded tiebreak: march a full capsule corridor,
-      // accept road only across all three lanes, and stop if any lane meets a
+      // accept road only across all three sample tracks, and stop if any track meets a
       // neighbour first. This distinguishes a legitimate building across the
       // street (road comes first) from a courtyard/alley ending at another wall.
       let roadDistance = Infinity;

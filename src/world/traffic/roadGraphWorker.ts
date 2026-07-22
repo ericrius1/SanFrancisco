@@ -7,9 +7,7 @@ import type { RoadGraphWorkerReply, RoadGraphWorkerRequest } from "./roadGraphWo
 
 const FETCH_TIMEOUT_MS = 20_000;
 
-// Both the raw markings request and the packed graph request share this exact
-// promise. Parsing therefore happens once per browser worker session, even when
-// the two consumers initialize concurrently.
+// Parsing happens once per road-data URL in the worker session.
 const loads = new Map<string, Promise<RoadsJson>>();
 
 function loadRoads(url: string): Promise<RoadsJson> {
@@ -48,23 +46,17 @@ self.onmessage = async (event: MessageEvent<RoadGraphWorkerRequest>) => {
   const request = event.data;
   try {
     const json = await loadRoads(request.url);
-    if (request.kind === "json") {
-      post({ id: request.id, ok: true, kind: "json", json });
-      return;
-    }
-
     const started = performance.now();
     const snapshot = buildRoadGraphSnapshot(json);
     const buildMs = performance.now() - started;
     post(
-      { id: request.id, ok: true, kind: "graph", snapshot, buildMs },
+      { id: request.id, ok: true, snapshot, buildMs },
       roadGraphSnapshotTransferList(snapshot)
     );
   } catch (error) {
     post({
       id: request.id,
       ok: false,
-      kind: request.kind,
       error: error instanceof Error ? error.message : String(error)
     });
   }

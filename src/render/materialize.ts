@@ -91,7 +91,7 @@ export class MaterializeField {
   readonly frontBand = uniform(MATERIALIZE_DEFAULT_BAND);
   /** Global dawn ramp: 0 = void black, 1 = normal world. The ring coordinator
    *  eases this during the post-scan morph; every amount-driven consumer
-   *  (terrain, water, road markings, traffic lights, CPU light ramps) rides
+   *  (terrain, water, traffic lights, CPU light ramps) rides
    *  it, so the whole world dawns on one uniform. */
   readonly worldReveal = uniform(1);
   /** Field-local clock (seconds). Drives birth ramps; advanced by update(). */

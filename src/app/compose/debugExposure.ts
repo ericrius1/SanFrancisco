@@ -164,7 +164,6 @@ export async function installDebugSurfaces(
       citygen: () => core.state.citygen,
       oceanBeachWaves: () => ctx.state.oceanBeachWaves,
       surfExperience: () => core.state.surfExperience,
-      roadMarkings: () => ctx.state.roadMarkings,
       ensureSurfboardCustomizer: () => core.state.ensureSurfboardCustomizer,
       palaceReverie: () => core.state.palaceReverie,
       landsEnd: () => core.state.landsEnd,
