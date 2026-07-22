@@ -386,7 +386,7 @@ async function main() {
       const names = [
         "sutro_baths_restored_1896",
         "sutro_baths_restored_architecture",
-        "sutro_baths_player_entrances_v4",
+        "sutro_baths_player_entrances_v5",
         "sutro_baths_beach_gate_v4",
         "sutro_baths_glass_barrel_roof",
         "sutro_baths_ocean_window_seating_gallery",
@@ -394,6 +394,46 @@ async function main() {
         "sutro_baths_static_water_surface",
         "sutro_baths_thermal_steam"
       ];
+      const siteLocalPoint = (x, y, z) => {
+        const c = Math.cos(-0.077);
+        const s = Math.sin(-0.077);
+        return new sf.THREE.Vector3(-6125 + c * x + s * z, y, 1117 - s * x + c * z);
+      };
+      // Player-height ray through the centre of the road doorway. The retained
+      // full-hall Mesh_13.016 crossrail used to hit this segment at local
+      // x=35.614; the split side runs must leave the whole 5 m route clear.
+      const doorwayOrigin = siteLocalPoint(40.5, 31.78, 63.1);
+      const doorwayTarget = siteLocalPoint(33.0, 31.78, 63.1);
+      const doorwayDirection = doorwayTarget.clone().sub(doorwayOrigin);
+      const doorwayDistance = doorwayDirection.length();
+      const architectureRoot = sf.scene.getObjectByName("sutro_baths_restored_architecture");
+      const doorwayHits = (architectureRoot ? new sf.THREE.Raycaster(
+        doorwayOrigin,
+        doorwayDirection.normalize(),
+        0.02,
+        doorwayDistance
+      ).intersectObject(architectureRoot, true) : []).filter((hit) => {
+        let object = hit.object;
+        while (object && object !== sf.scene) {
+          if (!object.visible) return false;
+          object = object.parent;
+        }
+        const materials = Array.isArray(hit.object.material)
+          ? hit.object.material
+          : hit.object.material
+            ? [hit.object.material]
+            : [];
+        const materialIndex = hit.face?.materialIndex ?? 0;
+        const material = materials[materialIndex] ?? materials[0];
+        return !material || (material.visible !== false && !material.transparent && material.opacity >= 0.8);
+      }).map((hit) => ({
+        name: hit.object.name,
+        material: Array.isArray(hit.object.material)
+          ? hit.object.material[hit.face?.materialIndex ?? 0]?.name ?? null
+          : hit.object.material?.name ?? null,
+        distance: Number(hit.distance.toFixed(3)),
+        instanceId: hit.instanceId ?? null
+      }));
       return {
         backend: sf.renderer.backend?.constructor?.name ?? null,
         webgpu: sf.renderer.backend?.isWebGPUBackend === true,
@@ -409,6 +449,11 @@ async function main() {
         backgroundStreaming: sf.tiles.backgroundStreamingDebug,
         stats: site.stats,
         namedObjects: Object.fromEntries(names.map((name) => [name, Boolean(sf.scene.getObjectByName(name))])),
+        doorwayClearance: {
+          clear: doorwayHits.length === 0,
+          distance: doorwayDistance,
+          hits: doorwayHits
+        },
         renderer: {
           calls: sf.renderer.info.render.drawCalls ?? sf.renderer.info.render.calls ?? 0,
           triangles: sf.renderer.info.render.triangles ?? 0,
@@ -475,6 +520,11 @@ async function main() {
       "activation-all-signature-groups-present",
       Object.values(activationState.namedObjects).every(Boolean),
       activationState.namedObjects
+    );
+    expect(
+      "activation-road-doorway-player-height-clear",
+      activationState.doorwayClearance.clear,
+      activationState.doorwayClearance
     );
     expect(
       "activation-restoration-detail-present",

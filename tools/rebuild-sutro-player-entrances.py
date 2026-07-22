@@ -303,7 +303,7 @@ def main():
         raise RuntimeError("Sutro authoring collections are incomplete")
 
     materials = {name: bpy.data.materials.get(name) for name in (
-        "sutro_terracotta", "sutro_iron_dark", "sutro_iron", "sutro_brass",
+        "sutro_terracotta", "sutro_iron_dark", "sutro_iron", "sutro_iron_light", "sutro_brass",
         "sutro_lamp", "sutro_plaster", "sutro_plaster_shade", "sutro_window_glass",
     )}
     missing = [name for name, value in materials.items() if value is None]
@@ -333,6 +333,11 @@ def main():
     # The original east hall wall closed across the road-to-switchback
     # threshold. Rebuild only its southern remainder after the entrance opens.
     delete_named("Mesh_37.001")
+    # This retained transverse gallery rail ran across the complete 152.9 m hall
+    # at player height, including straight through the road doorway and the top
+    # stair flight. Preserve its long side runs below, split around the full
+    # five-metre player route.
+    delete_named("Mesh_13.016")
 
     # Open the z=33.29 ocean-window bay: remove its glass and bench, then split
     # the low horizontal mullion around the clear 9 m doorway.
@@ -370,6 +375,7 @@ def main():
     terracotta = materials["sutro_terracotta"]
     iron_dark = materials["sutro_iron_dark"]
     iron = materials["sutro_iron"]
+    iron_light = materials["sutro_iron_light"]
     brass = materials["sutro_brass"]
     lamp = materials["sutro_lamp"]
     plaster = materials["sutro_plaster"]
@@ -378,6 +384,9 @@ def main():
 
     # ROAD PAVILION ---------------------------------------------------------
     road = visual_empty(visual, "sutro_baths_road_pavilion_v4", root)
+    portal_center_z = 63.1
+    route_clear_lo = portal_center_z - GALLERY_FLIGHT_WIDTH * 0.5 - 0.12
+    route_clear_hi = portal_center_z + GALLERY_FLIGHT_WIDTH * 0.5 + 0.12
     # One crisp plaza passes through the historic columns and physically meets
     # the roof hall. The prior natural-terrain overlap was the grey wedge that
     # hid the player and made the facade appear detached.
@@ -393,6 +402,27 @@ def main():
     # exactly at the platform edge instead of cutting through the walking line.
     add_box(visual, road, "road_hall_wall_south", 38.4, 72.7, 25.5, 0.7, 6.8, 19.88, plaster_shade)
     add_collider(colliders, "sutro_collider_022_road_hall_wall_south", 38.4, 72.7, 25.5, 0.7, 6.8, DECK_Y)
+
+    # Rebuild the retained hall crossrail as two side segments. Its original
+    # bounds were x 35.524..35.704, z -76.45..76.45, y 31.676..31.876.
+    # The centre gap deliberately exceeds the whole gallery flight width so a
+    # player and the approach camera both get a genuinely clear aperture.
+    for side, z0, z1 in (
+        ("north", -76.45, route_clear_lo),
+        ("south", route_clear_hi, 76.45),
+    ):
+        add_box(
+            visual,
+            road,
+            f"road_hall_crossrail_{side}",
+            35.614,
+            (z0 + z1) * 0.5,
+            31.876,
+            0.18,
+            z1 - z0,
+            0.2,
+            iron_light,
+        )
 
     # Shallow ceremonial steps meet the surveyed road grade at the outer edge.
     approach_tops = (31.44, 31.70, 31.96, 32.22, 32.48)
@@ -418,7 +448,6 @@ def main():
     # a real glazed entry: sidelight windows, a transom band, and a pair of
     # iron-and-glass double doors held open toward the hall. The clear doorway
     # is exactly the runner/gallery width so the route reads as one line.
-    portal_center_z = 63.1
     portal_half_width = 4.55
     portal_top = 37.72
     for side_index, z in enumerate((portal_center_z - portal_half_width, portal_center_z + portal_half_width)):
@@ -646,7 +675,7 @@ def main():
     add_collider(colliders, "sutro_collider_019a_ocean_wall_north", -38.4, -23.78, 25.5, 0.7, 104.64, 5.62)
     add_collider(colliders, "sutro_collider_019b_ocean_wall_south", -38.4, 57.075, 25.5, 0.7, 38.05, 5.62)
 
-    bpy.context.scene["sf_sutro_entrance_revision"] = 7
+    bpy.context.scene["sf_sutro_entrance_revision"] = 8
     bpy.context.scene["sf_sutro_entry_routes"] = "glazed-door-road-pavilion,gallery-cascade,ocean-gate"
     bpy.context.view_layer.update()
     bpy.ops.wm.save_as_mainfile(filepath=expected)
