@@ -26,7 +26,12 @@ export const ENSEMBLE_LABELS = ["piano", "steel drum", "pan pipes"] as const;
 const SCALE_MIDI = [60, 62, 64, 67, 69, 72, 74, 76] as const;
 const STATION_X = [-2.75, 0, 2.75] as const;
 const PLAYER_Z = 1.32;
-const ROOT_YAW = -0.28;
+// Aim the performers west-northwest across Fort Mason toward the Marin hills.
+const ROOT_YAW = 1.08;
+const STAGE_RADIUS = 5.55;
+const STAGE_HEIGHT = 0.22;
+const STAGE_SURFACE_Y = 0.055;
+const STAGE_GROUND_CLEARANCE = 0.08;
 const INTERACT_RADIUS = 3.15;
 const SHOW_RADIUS = 260;
 const HIDE_RADIUS = 320;
@@ -67,6 +72,22 @@ type EnsembleOptions = {
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 const midiHz = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
+
+function highestStageGround(map: WorldMap, x: number, z: number): number {
+  let highest = map.groundTop(x, z);
+  // The overlook lip slopes sharply just west of the bandstand. Sample the
+  // whole circular footprint so no edge can be swallowed by that grade.
+  for (const radius of [STAGE_RADIUS * 0.5, STAGE_RADIUS]) {
+    for (let i = 0; i < 16; i++) {
+      const angle = (i / 16) * Math.PI * 2;
+      highest = Math.max(
+        highest,
+        map.groundTop(x + Math.cos(angle) * radius, z + Math.sin(angle) * radius)
+      );
+    }
+  }
+  return highest;
+}
 
 class EnsembleAudio {
   #ctx: AudioContext | null = null;
@@ -266,6 +287,7 @@ export class FortMasonEnsemble {
   #networkHandlers: NetworkHandlers | null = null;
   #up = new THREE.Vector3(0, 1, 0);
   #poseQuaternion = new THREE.Quaternion();
+  #stageGroundHigh = 0;
   #audible = false;
   #disposed = false;
 
@@ -276,9 +298,14 @@ export class FortMasonEnsemble {
     this.#hud = options.hud;
     this.#chase = options.chase;
     this.root.name = "fort-mason-linked-ensemble";
+    this.#stageGroundHigh = highestStageGround(
+      options.map,
+      FORT_MASON_ENSEMBLE_CENTER.x,
+      FORT_MASON_ENSEMBLE_CENTER.z
+    );
     this.root.position.set(
       FORT_MASON_ENSEMBLE_CENTER.x,
-      options.map.groundTop(FORT_MASON_ENSEMBLE_CENTER.x, FORT_MASON_ENSEMBLE_CENTER.z) + 0.04,
+      this.#stageGroundHigh + STAGE_HEIGHT - STAGE_SURFACE_Y + STAGE_GROUND_CLEARANCE,
       FORT_MASON_ENSEMBLE_CENTER.z
     );
     this.root.rotation.y = ROOT_YAW;
@@ -407,6 +434,16 @@ export class FortMasonEnsemble {
       owners: [...this.#net.ensembleSlots],
       scale: [...SCALE_MIDI],
       labels: [...ENSEMBLE_LABELS],
+      stage: {
+        groundHigh: this.#stageGroundHigh,
+        deckBottom: this.root.position.y + STAGE_SURFACE_Y - STAGE_HEIGHT,
+        deckTop: this.root.position.y + STAGE_SURFACE_Y
+      },
+      stationWorld: this.#stationWorld.map((position) => ({
+        x: position.x,
+        y: position.y,
+        z: position.z
+      })),
       npcTicks: this.#stations.map((station) => station.autoTick),
       npcVisible: this.#stations.map((station) => station.rig.group.visible)
     };
@@ -430,8 +467,13 @@ export class FortMasonEnsemble {
   #buildStage() {
     const deckMat = this.#material(new THREE.MeshStandardMaterial({ color: 0x916a46, roughness: 0.92 }));
     const edgeMat = this.#material(new THREE.MeshStandardMaterial({ color: 0x39555c, roughness: 0.78 }));
-    const deck = new THREE.Mesh(this.#geometry(new THREE.CylinderGeometry(5.35, 5.55, 0.09, 32)), deckMat);
-    deck.position.y = 0;
+    const deck = new THREE.Mesh(
+      this.#geometry(new THREE.CylinderGeometry(5.35, STAGE_RADIUS, STAGE_HEIGHT, 32)),
+      deckMat
+    );
+    // Grow the thicker deck downward so all existing instrument/foot contact
+    // heights stay registered to the same stage surface.
+    deck.position.y = STAGE_SURFACE_Y - STAGE_HEIGHT * 0.5;
     // Nearby historic buildings cast a very broad cached shadow here. Let the
     // low platform keep its warm wood value while the performers/instruments
     // still receive and cast the detailed hero shadows that sell their contact.
@@ -439,14 +481,14 @@ export class FortMasonEnsemble {
     this.root.add(deck);
     const rim = new THREE.Mesh(this.#geometry(new THREE.TorusGeometry(5.42, 0.055, 6, 48)), edgeMat);
     rim.rotation.x = Math.PI / 2;
-    rim.position.y = 0.065;
+    rim.position.y = STAGE_SURFACE_Y + 0.01;
     this.root.add(rim);
 
     const stripeGeo = this.#geometry(new THREE.BoxGeometry(0.045, 0.012, 1));
     const stripeMat = this.#material(new THREE.MeshStandardMaterial({ color: 0xc7a978, roughness: 0.9 }));
     for (let x = -4.8; x <= 4.8; x += 0.34) {
       const stripe = new THREE.Mesh(stripeGeo, stripeMat);
-      stripe.position.set(x, 0.055, 0);
+      stripe.position.set(x, STAGE_SURFACE_Y + 0.008, 0);
       // Chord length of the circular deck: every board terminates inside the
       // rim instead of poking out as a rectangular comb at the east/west edge.
       stripe.scale.z = Math.sqrt(Math.max(0.1, 5.12 * 5.12 - x * x)) * 2;
@@ -464,6 +506,7 @@ export class FortMasonEnsemble {
     group.name = `fort-mason-${ENSEMBLE_LABELS[slot].replaceAll(" ", "-")}`;
     group.position.x = STATION_X[slot];
     const rig = buildRig(avatarFromSeed(seed));
+    rig.group.name = `${group.name}-npc`;
     rig.group.position.set(0, 0.93, 0.92);
     group.add(rig.group);
     this.#collectRigMaterials(rig);
@@ -487,6 +530,7 @@ export class FortMasonEnsemble {
     const woodMat = this.#material(new THREE.MeshStandardMaterial({ color: 0x543421, roughness: 0.72 }));
     const goldMat = this.#material(new THREE.MeshStandardMaterial({ color: 0xc7a65a, roughness: 0.32, metalness: 0.72 }));
     const body = new THREE.Mesh(this.#geometry(new THREE.BoxGeometry(1.75, 1.28, 0.48)), bodyMat);
+    body.name = "fort-mason-piano-case";
     body.position.set(0, 0.72, -0.48);
     body.castShadow = true;
     station.group.add(body);
@@ -496,7 +540,10 @@ export class FortMasonEnsemble {
     top.castShadow = true;
     station.group.add(top);
     const keyboard = new THREE.Group();
-    keyboard.position.set(0, 0.82, -0.78);
+    keyboard.name = "fort-mason-piano-keyboard";
+    // The pianist sits on +Z and faces local -Z. Put the keybed on that near
+    // side of the case so the player, bench, keys and piano all agree.
+    keyboard.position.set(0, 0.82, -0.08);
     station.group.add(keyboard);
     const keyGeo = this.#geometry(new THREE.BoxGeometry(0.195, 0.055, 0.42));
     for (let i = 0; i < 8; i++) {
@@ -510,7 +557,7 @@ export class FortMasonEnsemble {
     const blackGeo = this.#geometry(new THREE.BoxGeometry(0.12, 0.075, 0.26));
     for (const i of [0, 1, 3, 4, 5]) {
       const key = new THREE.Mesh(blackGeo, bodyMat);
-      key.position.set((i - 2.5) * 0.205 + 0.102, 0.055, 0.07);
+      key.position.set((i - 2.5) * 0.205 + 0.102, 0.055, -0.08);
       keyboard.add(key);
     }
     const pedal = new THREE.Mesh(this.#geometry(new THREE.BoxGeometry(0.16, 0.035, 0.28)), goldMat);
