@@ -93,17 +93,38 @@ async function main() {
     const w = window.__sf?.water;
     if (!w) return { ok: false };
     const o = w.ocean;
+    const p = window.__sf.player;
     return {
       ok: true,
       cascades: o?.cascades?.map((c) => ({
         patch: c.spec.patchSize,
-        slopeVar: c.slopeVariance,
+        slopeVar: +c.slopeVariance.toFixed(4),
         texW: c.dispTex?.image?.width
       })),
-      simMask: w.simMask
+      simMask: w.simMask,
+      near: { vis: w.near.visible, x: +w.near.position.x.toFixed(1), z: +w.near.position.z.toFixed(1) },
+      hero: w.heroNear ? { vis: w.heroNear.visible, x: +w.heroNear.position.x.toFixed(1), z: +w.heroNear.position.z.toFixed(1) } : null,
+      player: { x: +p.position.x.toFixed(1), y: +p.position.y.toFixed(2), z: +p.position.z.toFixed(1), mode: p.mode }
     };
   })()`);
   console.log("[check] state:", JSON.stringify(state, null, 1));
+  try {
+    const rb = await evaluate(cdp, "window.__sf.water.ocean.debugReadback(window.__sf.renderer)");
+    console.log("[check] cascade bufA readback:", JSON.stringify(rb));
+  } catch (e) { console.log("[check] readback failed:", String(e).split("\n")[0]); }
+
+  // Frozen deterministic view: camera 9 m above the bay looking down-forward,
+  // fixed time of day — screenshot comparable across code variants.
+  await evaluate(cdp, `(()=>{const s=window.__sf;s.sky.cycleEnabled=false;s.sky.setTimeOfDay(15);
+    const c=s.camera;if(!window.__fixedCam){window.__fixedCam=true;s.chase.update=()=>{c.position.set(-700,9,-2410);c.up.set(0,1,0);c.lookAt(-700,0,-2470);c.updateMatrixWorld();};}
+    document.body.classList.add('started');return true;})()`);
+  await sleep(2500);
+  const shotTag = process.env.SF_TAG ?? "check";
+  const r = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+  const { writeFileSync, mkdirSync: mk } = await import("node:fs");
+  mk(path.resolve(ROOT, ".data/ocean-game-check"), { recursive: true });
+  writeFileSync(path.resolve(ROOT, `.data/ocean-game-check/${shotTag}.png`), Buffer.from(r.data, "base64"));
+  console.log(`[check] shot -> .data/ocean-game-check/${shotTag}.png`);
   console.log(`[check] ${msgs.length} console errors/warnings:`);
   const uniq = [...new Set(msgs)];
   for (const m of uniq.slice(0, 30)) console.log("   " + m);

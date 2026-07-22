@@ -27,6 +27,19 @@ import {
   type CascadeSpec,
   type OceanSpectrumConfig
 } from "./spectrum";
+import { setHeroWaves, type HeroStripGate } from "./heroWaves";
+import { OCEAN_BEACH_SURF } from "../oceanBeachWaves";
+
+/** Ocean Beach strip gate: the spectral physics band yields to the authored
+ *  surf train inside it. CPU (heroWaves) and GPU (water.ts vertex) both apply
+ *  this exact rectangle+feather — keep them identical. */
+export const HERO_STRIP_GATE: HeroStripGate = {
+  minX: OCEAN_BEACH_SURF.minX,
+  maxX: OCEAN_BEACH_SURF.maxX,
+  minZ: OCEAN_BEACH_SURF.minZ,
+  maxZ: OCEAN_BEACH_SURF.maxZ,
+  feather: 60
+};
 
 /**
  * GPU spectral ocean: 3 FFT cascades of wind-sea detail simulated in compute
@@ -83,6 +96,7 @@ export class OceanCascades {
 
   #uTime = uniform(0);
   #passes: Array<{ evolve: any; ffts: any[]; assemble: any }> = [];
+  #bufAs: any[] = [];
   #disposed = false;
 
   constructor(config: OceanSpectrumConfig = DEFAULT_OCEAN_SPECTRUM) {
@@ -91,6 +105,11 @@ export class OceanCascades {
     const logN = Math.log2(N);
     if (!Number.isInteger(logN)) throw new Error(`ocean: size ${N} must be a power of two`);
     const spectra = buildCascadeSpectra(config);
+
+    // Hand the physics band's exact cosine decomposition to the CPU twin —
+    // from here on waterHeight() rides the rendered waves.
+    const physSpectrum = spectra.find((s) => s.heroComponents);
+    if (physSpectrum?.heroComponents) setHeroWaves(physSpectrum.heroComponents, HERO_STRIP_GATE);
 
     this.cascades = [];
     for (const { spec, h0, slopeVariance } of spectra) {
@@ -206,6 +225,7 @@ export class OceanCascades {
 
       this.cascades.push({ spec, dispTex, derivTex, slopeVariance });
       this.#passes.push({ evolve, ffts, assemble });
+      this.#bufAs.push(bufA);
     }
   }
 
@@ -214,7 +234,7 @@ export class OceanCascades {
    * throttles far/irrelevant bands by skipping frames; a skipped cascade keeps
    * its last textures — the ocean just advances at a lower rate there).
    */
-  update(renderer: THREE.WebGPURenderer, timeSec: number, dtSec: number, activeMask = 0b111) {
+  update(renderer: THREE.WebGPURenderer, timeSec: number, dtSec: number, activeMask = -1) {
     if (this.#disposed) return;
     this.#uTime.value = timeSec;
     this.uFoamKeep.value = Math.exp(-this.foamDecayRate * Math.max(dtSec, 0));
@@ -233,6 +253,25 @@ export class OceanCascades {
       c.dispTex.dispose();
       c.derivTex.dispose();
     }
+  }
+
+  /** Dev diagnostics: read each cascade's post-FFT buffer back and report
+   *  min/max/NaN counts — ground truth for "is the sim producing data". */
+  async debugReadback(renderer: THREE.WebGPURenderer): Promise<Array<Record<string, number>>> {
+    const out: Array<Record<string, number>> = [];
+    for (const b of this.#bufAs) {
+      const ab = await (renderer as any).getArrayBufferAsync(b.value);
+      const f = new Float32Array(ab);
+      let min = Infinity, max = -Infinity, nan = 0;
+      for (let i = 0; i < f.length; i++) {
+        const v = f[i];
+        if (Number.isNaN(v) || !Number.isFinite(v)) { nan++; continue; }
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      out.push({ min: +min.toFixed(4), max: +max.toFixed(4), nan, len: f.length });
+    }
+    return out;
   }
 }
 
@@ -311,8 +350,8 @@ export function cascadeUv(worldXZ: any, spec: CascadeSpec): any {
 /** Per-cascade view-distance where its detail normal has fully faded (m).
  *  Beyond it the band's energy folds into roughness instead (LEADR-lite) —
  *  spectral anti-shimmer: distant water gets a wider stable highlight, never
- *  texel crawl. */
-export const CASCADE_FADE_DIST = [3400, 950, 260];
+ *  texel crawl. The micro band lives only in arm's reach. */
+export const CASCADE_FADE_DIST = [3400, 950, 260, 72];
 
 export interface OceanDetailNodes {
   /** Σ faded slopes (vec2) — build the surface normal from this. */

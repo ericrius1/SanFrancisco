@@ -182,7 +182,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // void loop is LIVE now; an uncompiled sheet would stall a whole frame on
   // its pipeline build (contract C2/C3).
   {
-    const waterRoots = [water.far, water.near, water.palaceLagoon, water.underside];
+    const waterRoots = [water.far, water.near, water.heroNear, water.palaceLagoon, water.underside];
     const restore = waterRoots.map((m) => m.visible);
     for (const m of waterRoots) m.visible = false;
     void Promise.all(
