@@ -14,7 +14,6 @@ import {
   step,
   smoothstep,
   clamp,
-  cos,
   sin,
   exp,
   max,
@@ -22,13 +21,17 @@ import {
   uv,
   vec4,
   mx_fractal_noise_float,
-  mx_noise_float
+  mx_noise_float,
+  textureLevel,
+  saturate
 } from "three/tsl";
 import { PALACE_LAGOON, palaceLagoonMask, waterHeight, type WorldMap } from "./heightmap";
 import { materializeAmount } from "../render/materialize";
 import { bumpNormal, chopZoneMask, oceanBeachSurfField, oceanBeachSwell, swellBase, swellChop } from "./tslUtil";
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 import { WaterEchoes } from "./waterEchoes";
+import { OceanCascades, oceanDetail, cascadeUv } from "./ocean/oceanSim";
+import { SUN_DIR } from "./sky";
 
 const PALACE_LAGOON_SEGMENTS = 112;
 const PALACE_LAGOON_RINGS = 18;
@@ -86,7 +89,22 @@ export class Water {
   #uOrigin = uniform(new THREE.Vector2());
   #uCamXZ = uniform(new THREE.Vector2());
   #uCamY = uniform(0);
-  constructor(scene: THREE.Scene, map: WorldMap) {
+  // Spectral detail cascades (world/ocean/): FFT wind sea layered over the
+  // analytic hero swell. VISUAL-only by contract — physics keeps reading
+  // waterHeight(); the vertex add is amplitude-capped detail (see #uDetailAmp)
+  // so hulls/rails never drift more than ripple scale from the CPU surface.
+  readonly ocean: OceanCascades;
+  #renderer: THREE.WebGPURenderer;
+  /** Vertex displacement scale for the FFT bands (director/profile lever). */
+  #uDetailAmp = uniform(0.85);
+  /** Sim throttle mask (bit per cascade) + rate, driven by the profile. */
+  simMask = 0b111;
+  #uSunDir = uniform(SUN_DIR);
+  #lastSimT: number | null = null;
+  #frame = 0;
+  constructor(scene: THREE.Scene, map: WorldMap, renderer: THREE.WebGPURenderer) {
+    this.#renderer = renderer;
+    this.ocean = new OceanCascades();
     const { tex, scale } = map.buildFloorTexture();
     const g = map.meta.grid;
     const w = g.width * g.cellSize + 8000;
@@ -134,7 +152,28 @@ export class Water {
         const swell = swellBase(lx, lz, t)
           .add(swellChop(lx, lz, t).mul(chopZoneMask(lx, lz).mul(rim)))
           .add(oceanBeachSwell(lx, lz, t).mul(surfRim));
-        mat.positionNode = positionLocal.add(vec3(0, swell.mul(displace), 0));
+        // FFT wind-sea displacement (cascades 0+1; the finest band is normal-
+        // only). Rim-faded so the displaced edge still meets the flat far
+        // sheet, and pulled down while surfing so board rails stay glued to
+        // the CPU surface the physics rides.
+        const wxz = vec2(lx, lz);
+        // Calm ring: the FFT detail is visual-only, so within arm's reach of
+        // the player (hull contact, board rails, the swimmer's waterline) the
+        // vertex displacement fades to the exact CPU surface. Normals keep
+        // full detail — lighting stays wavy, contact stays honest. The patch
+        // is player-centred, so local-vertex radius IS player distance.
+        const calmRing = smoothstep(16, 34, positionLocal.xz.length());
+        const detailAmp = this.#uDetailAmp
+          .mul(mix(float(1), float(0.3), this.#uSurfing))
+          .mul(rim)
+          .mul(calmRing);
+        let fftDisp: any = vec3(0);
+        for (const c of this.ocean.cascades.slice(0, 2)) {
+          fftDisp = fftDisp.add(textureLevel(c.dispTex, cascadeUv(wxz, c.spec), float(0)).xyz);
+        }
+        mat.positionNode = positionLocal
+          .add(vec3(0, swell.mul(displace), 0))
+          .add(fftDisp.mul(detailAmp));
       }
 
       // --- fragment: depth-graded colour, foam, visibility -----------------
@@ -182,24 +221,27 @@ export class Water {
       // uniformity miscompile around the mx_noise library — see facade.ts),
       // so the water stack runs unbranched like it always had, with foamBand/
       // detail as plain multipliers.
-      // shore foam: soft lapping band + speckle. FBM trimmed 3→2 octaves — foam
-      // only reads in the shallows/chop, so the third octave never paid for
-      // itself on a fragment-bound GPU.
-      // near patch drives the lapping band with real FBM; the full-screen far
-      // sheet uses a cheap sine instead (build-time branch, not a shader If()) —
-      // its foam only reads faintly at distant shorelines, never worth 2 octaves
-      // across the whole horizon.
-      const nA =
-        displace > 0
-          ? mx_fractal_noise_float(vec3(pxz.mul(0.11), t.mul(0.05)), 2).mul(0.5).add(0.5)
-          : sin(pxz.x.mul(0.09).add(pxz.y.mul(0.07)).add(t.mul(0.4))).mul(0.5).add(0.5);
-      const lap = sin(t.mul(1.1).add(depth.mul(9)).add(nA.mul(6))).mul(0.5).add(0.5);
-      const foamNoise = mx_fractal_noise_float(vec3(pxz.mul(0.9), t.mul(0.12)), 2).mul(0.5).add(0.5);
-      // chop-zone whitecaps: scattered speckle so rough patches read from afar
+      // Spectral detail composite (world/ocean/): one fetch per cascade gives
+      // slopes + persistent Jacobian foam + crest mask. This REPLACED the old
+      // 2×FBM(2) foam noise on the biggest fragment surface in the game — foam
+      // now appears exactly where crests physically fold, and the per-pixel
+      // cost went down (texture fetches vs gradient-noise ALU). The far sheet
+      // pays for two cascades only: the finest band's fade distance sits
+      // inside the near patch.
+      const det = oceanDetail(this.ocean.cascades, pxz, viewDist, displace > 0 ? 3 : 2);
+      const oceanFoam = det.foam.toVar();
+      // shore lapping keeps its depth-driven band; the FFT foam field now
+      // supplies the irregularity the old FBM provided (plus a slow spatial
+      // phase so flat-calm shorelines still lap unevenly).
+      const lap = sin(
+        t.mul(1.1).add(depth.mul(9)).add(oceanFoam.mul(4)).add(pxz.x.mul(0.043)).add(pxz.y.mul(0.051))
+      ).mul(0.5).add(0.5);
+      // chop-zone whitecaps: the analytic chop zones whip the same spectral
+      // foam harder instead of drawing their own speckle.
       const zoneF = chopZoneMask(pxz.x, pxz.y).toVar();
-      const foam = foamBand.mul(smoothstep(0.45, 0.75, foamNoise.mul(0.75).add(lap.mul(0.35)))).mul(0.85)
-        .add(zoneF.mul(smoothstep(0.6, 0.86, foamNoise)).mul(0.34))
-        .toVar();
+      const shoreFoam = foamBand.mul(smoothstep(0.3, 0.78, oceanFoam.mul(0.55).add(lap.mul(0.45)))).mul(0.85);
+      const seaFoam = saturate(oceanFoam.mul(zoneF.mul(0.6).add(0.55)));
+      const foam = saturate(shoreFoam.add(seaFoam)).toVar();
       // Ocean Beach face tint: the tall authored swell keeps the same water
       // shader, but its lifted green wall and breaking crown need to read
       // against the darker Pacific at a glance.
@@ -220,9 +262,9 @@ export class Water {
       // emerald wall beneath it for the rider to carve against.
       const crestRipple = sin(pxz.y.mul(0.47).sub(t.mul(2.1))).mul(0.5).add(0.5);
       const crestBreakup = smoothstep(
-        0.68,
+        0.5,
         0.9,
-        foamNoise.mul(0.66).add(crestRipple.mul(0.34))
+        oceanFoam.mul(0.5).add(crestRipple.mul(0.5))
       );
       const surfCrest = displace > 0
         ? smoothstep(0.66, 0.96, surfField.lip)
@@ -235,41 +277,17 @@ export class Water {
         0,
         1
       ).toVar();
-      // ripple bump: stylized directional wavelets (sum of sines) replace the old
-      // 2×3-octave FBM — a fraction of the per-pixel ALU on the biggest surface on
-      // screen, while reading crisper/wavier. Still faded out with distance to kill
-      // shimmer, and dug harder inside chop zones. bumpNormal is only screen-space
-      // derivatives of this height, so a cheaper height = a cheaper bump.
+      // Surface normal straight from the cascades' analytic slopes (spectral
+      // i·k derivatives — not screen derivatives, so nothing can expose the
+      // mesh topology, and the per-cascade distance fades in oceanDetail()
+      // kill shimmer exactly where each band drops below pixel footprint.
+      // Chop zones dig the slopes a little harder, like the old ripple did.
       // NO If() gates here (see the branch-hazard note above).
-      const rippleStrength = detail.mul(zoneF.mul(0.9).add(1));
-      const rippleH = wavelets(p, t).mul(0.3).mul(rippleStrength);
-      if (displace > 0) {
-        // The low surf camera makes screen-derivative bump mapping unstable on
-        // this large displaced grid: dFdx/dFdy reset at primitive boundaries
-        // and light the tessellation like wireframe. These are the exact
-        // derivatives of wavelets() instead, so the ripple normal remains
-        // continuous across triangles and cannot expose the mesh topology.
-        const waveA: any = p.x.mul(0.13).add(p.y.mul(0.07)).add(t.mul(1.15));
-        const waveB: any = p.x.mul(-0.052).add(p.y.mul(0.164)).sub(t.mul(0.93));
-        const waveC: any = p.x.mul(0.093).sub(p.y.mul(0.121)).add(t.mul(1.45));
-        const waveD: any = p.x.mul(0.205).add(p.y.mul(0.178)).add(t.mul(1.95));
-        const dhdx: any = cos(waveA).mul(0.065)
-          .add(cos(waveB).mul(-0.02184))
-          .add(cos(waveC).mul(0.02976))
-          .add(cos(waveD).mul(0.041))
-          .mul(0.3)
-          .mul(rippleStrength);
-        const dhdz: any = cos(waveA).mul(0.035)
-          .add(cos(waveB).mul(0.06888))
-          .add(cos(waveC).mul(-0.03872))
-          .add(cos(waveD).mul(0.0356))
-          .mul(0.3)
-          .mul(rippleStrength);
-        const rippleNormal = normalize(vec3(dhdx.negate(), 1, dhdz.negate()));
-        mat.normalNode = normalize(cameraViewMatrix.mul(vec4(rippleNormal, 0)).xyz);
-      } else {
-        mat.normalNode = bumpNormal(rippleH);
-      }
+      const slopeK = zoneF.mul(0.35).add(1);
+      const rippleNormal = normalize(
+        vec3(det.slope.x.mul(slopeK).negate(), 1, det.slope.y.mul(slopeK).negate())
+      );
+      mat.normalNode = normalize(cameraViewMatrix.mul(vec4(rippleNormal, 0)).xyz);
 
       // sun sparkle: occasional near-field flecks only; the env-mapped Fresnel
       // reflection carries the broad sunset sheen, so this stays subtle on top.
@@ -287,8 +305,17 @@ export class Water {
             .mul(this.#uSurfing)
             .mul(0.5 * LIGHT_SCALE)
         : vec3(0);
+      // Crest subsurface glow (SoT trick): folding crests are thin — light
+      // leaks through them. The crest mask is the cascades' 1−Jacobian, so the
+      // glow rides exactly the pitching tops, day-gated by sun height.
+      const daylight = saturate(this.#uSunDir.y.mul(4));
+      const crestGlow = vec3(0.05, 0.4, 0.32)
+        .mul(det.crest.mul(det.crest))
+        .mul(daylight)
+        .mul(0.055 * LIGHT_SCALE);
       mat.emissiveNode = vec3(1.0, 0.95, 0.82).mul(spark.mul(0.035 * LIGHT_SCALE))
         .add(vec3(0.03, 0.42, 0.2).mul(emeraldVein.mul(0.13 * LIGHT_SCALE)))
+        .add(crestGlow)
         .add(surfWallGlow);
 
       // Ocean Beach gets an absorptive blue-green body. Brightness belongs to
@@ -296,9 +323,15 @@ export class Water {
       // globally cyan swell made every set dissolve into marine fog.
       const faceCol = mix(waterCol, color(0x075940), surfFaceTint);
       mat.colorNode = mix(faceCol, color(0xb8cecc), foamTotal);
-      // roughness rises as the ripple bump fades (Toksvig-style): distant water
-      // spreads the sun path into a soft band instead of a mirror streak
-      const baseRough = mix(float(0.76), float(0.42), detail);
+      // LEADR-lite roughness: whatever spectral slope energy was faded out of
+      // the normal at this distance comes back as microfacet variance, so the
+      // distant sun path spreads into a stable soft band (no shimmer, no
+      // hand-tuned "detail" ramp — the spectrum itself says how rough far
+      // water is). varToRough maps the cascades' true variance to a roughness
+      // add peaking ≈0.36 when every band has faded.
+      const totalVar = this.ocean.cascades.reduce((s, c) => s + c.slopeVariance, 0);
+      const varToRough = 0.36 / Math.max(totalVar, 1e-6);
+      const baseRough = clamp(float(0.36).add(det.cutVariance.mul(varToRough)), 0.3, 0.8);
       mat.roughnessNode = mix(baseRough, float(0.78), foamTotal);
 
       // Interior water is fully opaque. opacityNode carries coverage only:
@@ -423,7 +456,13 @@ export class Water {
       // near-white and just looked like open sky. NB: TSL smoothstep(lo,hi,x)
       // needs lo<hi — reversed edges silently return 0, so invert with oneMinus().
       const winR = depthY.mul(0.9);
-      const win = smoothstep(winR.mul(0.3), winR, horiz).oneMinus().toVar(); // 1 overhead → 0 grazing
+      // The window edge rides the real simulated surface: one coarse-cascade
+      // fetch warps the radius so the bright circle wobbles with the waves
+      // overhead instead of sitting glass-still.
+      const lidCascade = this.ocean.cascades[0];
+      const lidSlope = texture(lidCascade.derivTex, cascadeUv(pw.xz, lidCascade.spec));
+      const wobble = lidSlope.x.add(lidSlope.y).mul(depthY.mul(0.7));
+      const win = smoothstep(winR.mul(0.3), winR, horiz.add(wobble)).oneMinus().toVar(); // 1 overhead → 0 grazing
       const rip = sin(pw.x.mul(0.09).add(t.mul(1.2)))
         .mul(sin(pw.z.mul(0.075).sub(t.mul(0.95))))
         .mul(0.5)
@@ -470,9 +509,32 @@ export class Water {
     this.#uTime.value = t;
     this.#uSurfing.value = surfing ? 1 : 0;
 
+    const camUnder = camPos.y < waterHeight(camPos.x, camPos.z, t) - 0.35;
+
+    // Context profile → sim throttle. All uniform/mask-side (never a material
+    // or pipeline swap):
+    //   surface play — every band, every frame (boats/boards read the detail).
+    //   airborne     — the finest band is sub-pixel from altitude: off; the
+    //                  mid band halves its rate; the 42 m band stays live
+    //                  (it IS the flyover texture).
+    //   underwater   — surface is a wobbling ceiling: alternate the two
+    //                  coarse bands at half rate, finest off.
+    this.#frame++;
+    const airborne = !surfing && camPos.y - waterHeight(playerPos.x, playerPos.z, t) > 60;
+    let mask = 0b111;
+    if (camUnder) mask = this.#frame % 2 ? 0b001 : 0b010;
+    else if (airborne) mask = this.#frame % 2 ? 0b001 : 0b011;
+    this.simMask = mask;
+
+    // Advance the spectral cascades (~18 tiny compute dispatches, ≲0.3 ms GPU
+    // all-in at full rate). A skipped cascade keeps its last textures — the
+    // ocean just advances at a lower rate there.
+    const dt = this.#lastSimT === null ? 1 / 60 : Math.min(Math.max(t - this.#lastSimT, 0), 0.1);
+    this.#lastSimT = t;
+    this.ocean.update(this.#renderer, t, dt, this.simMask);
+
     // show the underside ceiling only while the camera is below the surface,
     // parked at the camera's XZ so its Snell window stays centred overhead
-    const camUnder = camPos.y < waterHeight(camPos.x, camPos.z, t) - 0.35;
     this.underside.visible = camUnder;
     if (camUnder) {
       this.underside.position.set(camPos.x, -0.05, camPos.z);

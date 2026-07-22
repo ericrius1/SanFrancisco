@@ -1,0 +1,112 @@
+// In-game spectral-ocean smoke check: boots headless, captures EVERY console
+// message + exception during boot and settle, then inspects __sf.water.ocean.
+//   node tools/ocean-game-check.mjs
+import { spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function freePort() {
+  return new Promise((res, rej) => {
+    const s = createServer();
+    s.once("error", rej);
+    s.listen(0, "127.0.0.1", () => { const a = s.address(); s.close(() => res(a.port)); });
+  });
+}
+async function waitHttp(url, ms) {
+  const t = Date.now();
+  while (Date.now() - t < ms) { try { if ((await fetch(url)).ok) return; } catch { } await sleep(300); }
+  throw new Error("timeout " + url);
+}
+class Cdp {
+  #ws; #id = 1; #p = new Map(); #l = new Map();
+  constructor(u) { this.#ws = new WebSocket(u); }
+  async open() {
+    await new Promise((res, rej) => { this.#ws.addEventListener("open", res, { once: true }); this.#ws.addEventListener("error", rej, { once: true }); });
+    this.#ws.addEventListener("message", (e) => {
+      const m = JSON.parse(e.data.toString());
+      if (m.id) { const p = this.#p.get(m.id); if (!p) return; this.#p.delete(m.id); m.error ? p.rej(new Error(m.error.message)) : p.res(m.result ?? {}); return; }
+      for (const l of this.#l.get(m.method) ?? []) l(m.params ?? {});
+    });
+  }
+  on(m, l) { const a = this.#l.get(m) ?? []; a.push(l); this.#l.set(m, a); }
+  send(method, params = {}) { const id = this.#id++; this.#ws.send(JSON.stringify({ id, method, params })); return new Promise((res, rej) => this.#p.set(id, { res, rej })); }
+}
+const evaluate = async (cdp, expression) => {
+  const r = await cdp.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+  return r.result?.value;
+};
+
+async function main() {
+  const vitePort = await freePort();
+  const relay = await freePort();
+  const vite = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1", "--port", String(vitePort), "--strictPort"], {
+    cwd: ROOT, env: { ...process.env, SF_RELAY_PORT: String(relay) }, stdio: ["ignore", "ignore", "ignore"], detached: true
+  });
+  process.on("exit", () => { try { process.kill(-vite.pid, "SIGTERM"); } catch { } });
+  await waitHttp(`http://127.0.0.1:${vitePort}/`, 60000);
+
+  const debugPort = await freePort();
+  const profile = path.join(tmpdir(), `sf-ocean-check-${process.pid}`);
+  mkdirSync(profile, { recursive: true });
+  const chrome = spawn("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", [
+    `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, "--headless=new",
+    "--no-first-run", "--mute-audio", "--enable-unsafe-webgpu", "--enable-gpu", "--use-angle=metal",
+    "--window-size=1200,800", "about:blank"
+  ], { stdio: ["ignore", "ignore", "ignore"], detached: true });
+  process.on("exit", () => { try { process.kill(-chrome.pid, "SIGTERM"); } catch { } });
+
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000) { try { if ((await fetch(`http://127.0.0.1:${debugPort}/json/version`)).ok) break; } catch { } await sleep(200); }
+  const page = await (await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`, { method: "PUT" })).json();
+  const cdp = new Cdp(page.webSocketDebuggerUrl);
+  await cdp.open();
+  await cdp.send("Page.enable");
+  await cdp.send("Runtime.enable");
+  await cdp.send("Log.enable");
+  const msgs = [];
+  cdp.on("Runtime.consoleAPICalled", (p) => {
+    if (p.type === "error" || p.type === "warning")
+      msgs.push(`console.${p.type}: ${(p.args ?? []).map((a) => a.value ?? a.description ?? "").join(" ").slice(0, 300)}`);
+  });
+  cdp.on("Log.entryAdded", (p) => {
+    if (p.entry?.level === "error" || p.entry?.level === "warning")
+      msgs.push(`log.${p.entry.level}: ${String(p.entry.text).slice(0, 300)}`);
+  });
+  cdp.on("Runtime.exceptionThrown", (p) => {
+    msgs.push(`EXCEPTION: ${(p.exceptionDetails?.exception?.description || p.exceptionDetails?.text || "").split("\n")[0]}`);
+  });
+
+  await cdp.send("Page.navigate", { url: `http://127.0.0.1:${vitePort}/?autostart=1&fullfps=1&j=-700,1,-2440,3.14,walk` });
+  const tBoot = Date.now();
+  while (Date.now() - tBoot < 180000) {
+    try { if (await evaluate(cdp, "Boolean(window.__sf?.water)")) break; } catch { }
+    await sleep(500);
+  }
+  await sleep(6000);
+  const state = await evaluate(cdp, `(() => {
+    const w = window.__sf?.water;
+    if (!w) return { ok: false };
+    const o = w.ocean;
+    return {
+      ok: true,
+      cascades: o?.cascades?.map((c) => ({
+        patch: c.spec.patchSize,
+        slopeVar: c.slopeVariance,
+        texW: c.dispTex?.image?.width
+      })),
+      simMask: w.simMask
+    };
+  })()`);
+  console.log("[check] state:", JSON.stringify(state, null, 1));
+  console.log(`[check] ${msgs.length} console errors/warnings:`);
+  const uniq = [...new Set(msgs)];
+  for (const m of uniq.slice(0, 30)) console.log("   " + m);
+  process.exit(0);
+}
+main().catch((e) => { console.error("[check] fatal", e); process.exit(1); });

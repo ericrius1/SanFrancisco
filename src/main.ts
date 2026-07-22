@@ -1039,7 +1039,18 @@ async function boot() {
   });
 }
 
-boot().catch((err) => {
-  console.error("[boot] fatal:", err);
-  bootScreen.fail(err);
-});
+if (new URLSearchParams(location.search).has("oceanlab")) {
+  // Spectral-ocean lab (`?oceanlab=1[&fft=test]`): a standalone FFT-sim probe
+  // page — no world boot at all. See world/ocean/lab.ts.
+  void import("./world/ocean/lab")
+    .then((m) => m.runOceanLab())
+    .catch((err) => {
+      console.error("[oceanlab] fatal:", err);
+      bootScreen.fail(err);
+    });
+} else {
+  boot().catch((err) => {
+    console.error("[boot] fatal:", err);
+    bootScreen.fail(err);
+  });
+}

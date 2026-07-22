@@ -19,6 +19,7 @@ import type {  } from "../../world/ghostShip";
 import { materializeField } from "../../render/materialize";
 import { emitEmbodimentWaterEcho } from "../../world/waterEchoes";
 import { syncBallGlowNight } from "../../fx/ballGlow";
+import { updateUnderwaterFx } from "../../fx/underwaterRig";
 import { updateCrownDisplay, resetCrownTweaks } from "../../world/salesforceCrown";
 import {  updateBayLights, resetBayLightsTweaks } from "../../world/bayLights";
 import {  updateGoldenGateLights, resetGoldenGateLightsTweaks } from "../../world/goldenGateLights";
@@ -1511,6 +1512,17 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       releaseSurfVisual();
     }
     underwater.update(camera, ctx.state.elapsed);
+    // GPU underwater package: drives the permanent post-FX fog/god-ray
+    // uniforms and lazily loads/prewarms the marine-snow + caustics volume on
+    // first near-water approach (identity + early-return while dry).
+    updateUnderwaterFx({
+      camera,
+      map,
+      renderer,
+      scene,
+      time: ctx.state.elapsed,
+      dt: frameDt
+    });
     fx.update(frameDt);
     bubbles.update(frameDt, ctx.state.elapsed);
     wake.update(frameDt, surfaceTime, player);
