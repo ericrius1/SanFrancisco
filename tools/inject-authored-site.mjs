@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeIO } from "@gltf-transform/core";
 import { ALL_EXTENSIONS } from "@gltf-transform/extensions";
-import { meshopt, prune } from "@gltf-transform/functions";
+import { dedup, flatten, join, meshopt, prune } from "@gltf-transform/functions";
 import { MeshoptDecoder, MeshoptEncoder } from "meshoptimizer";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,6 +38,13 @@ const countVertices = (document) => document.getRoot().listMeshes().reduce((tota
 const sourceRegionPath = path.join(ROOT, ".data", "authored-sites", `${site}.glb`);
 const regionDoc = await io.readBinary(await fs.readFile(sourceRegionPath));
 const regionVerticesBefore = countVertices(regionDoc);
+// Grace Cathedral is one cohesive, distance-gated architectural owner. Its
+// editable Blender source intentionally preserves hundreds of semantic pieces,
+// while the browser delivery batches compatible siblings by material so those
+// artist-friendly objects do not become hundreds of WebGPU draw submissions.
+if (sourceDefinition.optimize === "static-batch") {
+  await regionDoc.transform(dedup(), flatten(), join({ keepNamed: false }));
+}
 await regionDoc.transform(meshopt({ encoder: MeshoptEncoder, level: "high", quantizePosition: 16 }));
 const regionOutput = await io.writeBinary(regionDoc);
 const verifiedRegion = await io.readBinary(regionOutput);

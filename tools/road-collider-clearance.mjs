@@ -7,7 +7,7 @@ const ROAD_MARGIN = 0.9;
 // be dropped WHOLE (audit R4): a real, street-facing building wall could lose
 // its entire collider over a ~1m corner overlap, leaving a visibly solid wall
 // walk/drive-through right at the sidewalk line. ROAD_MARGIN exists so baked
-// boxes don't block AI traffic lanes — it isn't meant to veto any box that so
+// boxes don't block the drivable road corridor — it isn't meant to veto any box that so
 // much as brushes it. So filterRoadOverlappingColliders below only drops a
 // box once a real chunk of ITS OWN footprint sits inside the road corridor,
 // measured as a sampled area fraction rather than "any point is within
@@ -30,7 +30,7 @@ const ROAD_MARGIN = 0.9;
 // sub-boxes — a 220m-long box is not unusual there) can sit at a LOW area
 // fraction while still poking several metres past the corridor edge at their
 // nearest point, because the same fraction represents a much bigger absolute
-// distance on a much bigger box. That poke is a genuine lane blocker, not a
+// distance on a much bigger box. That poke is a genuine road blocker, not a
 // shallow graze. So a box is dropped if EITHER the sampled fraction is high
 // OR its closest point still penetrates more than ROAD_DROP_DEPTH_M past the
 // corridor boundary — the fraction gate protects small/typical boxes from
@@ -144,7 +144,7 @@ export async function loadRoadClearanceIndexFromRoadsJson(url, margin = ROAD_MAR
 
 // Roads near a collider, transformed into the box's own LOCAL frame (origin
 // at the box center, box axis-aligned — matches the runtime collider frame,
-// see collider-lib.mjs toLocal/toWorld) with each road's lane-clearance
+// see collider-lib.mjs toLocal/toWorld) with each road's clearance
 // half-width attached. Shared by the cheap "touches at all" test and the
 // fractional-area sampler below so both agree on exactly which roads are in
 // play, and so the (identical) cell scan only runs once per box.
@@ -176,7 +176,7 @@ function localRoadCandidates(collider, index) {
   return out;
 }
 
-/** Nearest road whose clearance margin the box's closest point falls inside, or null. A cheap coarse "touches at all" test — necessary but not sufficient for real lane overlap, see filterRoadOverlappingColliders. */
+/** Nearest road whose clearance margin the box's closest point falls inside, or null. A cheap coarse "touches at all" test — necessary but not sufficient for real road overlap, see filterRoadOverlappingColliders. */
 export function colliderOverlapsRoad(collider, index) {
   for (const c of localRoadCandidates(collider, index)) {
     if (segmentRectDistance(c.ax, c.az, c.bx, c.bz, collider.hx, collider.hz) <= c.roadHalf) return c.road;

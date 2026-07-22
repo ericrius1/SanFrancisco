@@ -11,7 +11,7 @@ const MAX_VISIBLE = 120;
 const VIEW_R = 260;
 
 // --- rig anatomy (metres) — a simplified US mast-arm signal, sized to read
-// next to a ~1.8 m player. Pole at the corner, arm out over the lanes, heads
+// next to a ~1.8 m player. Pole at the corner, arm out over the roadway, heads
 // hanging under the arm with visored 3-lens stacks. -----------------------------
 const POLE_H = 5.6;
 const POLE_R_BOT = 0.16;
@@ -253,7 +253,7 @@ export class TrafficLightView {
     const poleLz = best.lz;
     const sgn = poleLx >= 0 ? 1 : -1;
 
-    // arm runs from the pole back over the lanes, a touch past the centreline
+    // arm runs from the pole back over the roadway, a touch past the centreline
     const armFarLx = -sgn * 0.15 * thisHalf;
     const armLen = Math.abs(poleLx - armFarLx);
     const armCx = (poleLx + armFarLx) * 0.5;

@@ -96,7 +96,6 @@ export interface MainCtx {
   state: {
     oceanBeachWaves: import("../../gameplay/surfing/waves").OceanBeachWaves | null;
     auxPending: number;
-    roadMarkings: THREE.Group | null;
     customized: boolean;
     carCustomized: boolean;
     boardCustomized: boolean;

@@ -1,4 +1,4 @@
-// Semantic audit for AI-car road rules, procedural signals, and lane metadata.
+// Semantic audit for the lane-free road graph and procedural signals.
 //
 // This complements runtime checkpoint checks by proving the current road graph
 // has the traffic-control structure the trainer is learning against.
@@ -42,7 +42,7 @@ function segLengthAndCenter(seg) {
   return { len, x: sx / Math.max(1, n), z: sz / Math.max(1, n) };
 }
 
-if (roads.v !== 3) failures.push(`roads schema v${roads.v}, expected v3`);
+if (roads.v !== 4) failures.push(`roads schema v${roads.v}, expected v4`);
 if (!Array.isArray(roads.segs) || roads.segs.length < 9000) {
   failures.push(`roads segment count ${roads.segs?.length ?? 0} is unexpectedly low`);
 }
@@ -50,15 +50,11 @@ if (!Array.isArray(roads.segs) || roads.segs.length < 9000) {
 let oneWay = 0;
 let twoWay = 0;
 let malformed = 0;
-let badTwoWayLanes = 0;
-let badOneWayLanes = 0;
-let expectedYellowSegments = 0;
-let expectedWhiteSegments = 0;
+let legacyLaneMetadata = 0;
 let denseKm = 0;
 let outsideKm = 0;
 
 for (const seg of roads.segs ?? []) {
-  const lanes = Math.max(1, Math.min(8, Math.round(seg.l ?? Math.max(1, seg.w / 4))));
   const dir = seg.d === 1 || seg.d === -1 ? seg.d : 0;
   const { len, x, z } = segLengthAndCenter(seg);
   if (denseCore(x, z)) denseKm += len / 1000;
@@ -67,27 +63,18 @@ for (const seg of roads.segs ?? []) {
     malformed++;
     continue;
   }
+  if ("l" in seg || "f" in seg || "b" in seg) legacyLaneMetadata++;
   if (dir) {
     oneWay++;
-    if (lanes < 1) badOneWayLanes++;
-    expectedWhiteSegments++;
   } else {
     twoWay++;
-    expectedYellowSegments++;
-    const f = Math.round(seg.f ?? 0);
-    const b = Math.round(seg.b ?? 0);
-    if (f < 1 || b < 1 || f + b !== lanes) badTwoWayLanes++;
-    if (lanes > 2) expectedWhiteSegments++;
   }
 }
 
 if (malformed) failures.push(`${malformed} malformed road segments`);
 if (oneWay < 1000) failures.push(`only ${oneWay} one-way segments found`);
 if (twoWay < 1000) failures.push(`only ${twoWay} two-way segments found`);
-if (badOneWayLanes) failures.push(`${badOneWayLanes} one-way segments have invalid lane counts`);
-if (badTwoWayLanes) failures.push(`${badTwoWayLanes} two-way segments have inconsistent directional lane counts`);
-if (expectedYellowSegments === 0) failures.push("no two-way yellow-centerline candidates found");
-if (expectedWhiteSegments === 0) failures.push("no white lane-strip candidates found");
+if (legacyLaneMetadata) failures.push(`${legacyLaneMetadata} road segments still carry lane metadata`);
 
 const signals = graph.signals.signals;
 let denseSignals = 0;
@@ -132,8 +119,7 @@ const summary = {
   segments: roads.segs?.length ?? 0,
   oneWay,
   twoWay,
-  expectedYellowSegments,
-  expectedWhiteSegments,
+  legacyLaneMetadata,
   signals: signals.length,
   denseSignals,
   outsideSignals,

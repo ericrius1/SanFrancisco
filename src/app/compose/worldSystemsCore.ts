@@ -13,7 +13,6 @@ import type {  } from "../../world/ghostShip";
 import { Water } from "../../world/water";
 import { frontGate } from "../../render/frontGate";
 import { UnderwaterOverlay } from "../../fx/underwater";
-import { createRoadMarkings } from "../../world/roadMarkings";
 import { RoadGraph } from "../../world/traffic/roadGraph";
 import { TrafficLightView } from "../../world/traffic/trafficLights";
 import { createBayLights } from "../../world/bayLights";
@@ -24,6 +23,7 @@ import { warmHiddenRoot } from "../../render/warmHiddenRoot";
 import type { CoronaHeightsPark } from "../../world/coronaHeights";
 import type { MissionDoloresMuseum } from "../../world/missionDolores";
 import { MD_CENTER as MISSION_DOLORES_CENTER } from "../../world/missionDolores/layout";
+import type { GraceCathedralRuntime } from "../../world/graceCathedral";
 import type { PlayerMode } from "../../player/types";
 import { FX } from "../../fx/fx";
 import { BoardWake, WakeRipples } from "../../fx/wake";
@@ -88,7 +88,7 @@ import type { MainCtx } from "./ctx";
 
 
 export async function composeWorldSystemsCore(ctx: MainCtx) {
-  const { player, input, camera, scene, chase, map, physics, renderer, sky, tiles, app, voidRealm, audioEngine, modeDiscovery, constructionSlice, progress, waitForWorldBackgroundWindow } = ctx;
+  const { player, input, camera, scene, chase, map, physics, renderer, sky, tiles, authoredRegions, app, voidRealm, audioEngine, modeDiscovery, constructionSlice, progress, waitForWorldBackgroundWindow } = ctx;
   const state = {
     garden: null as {
     group: THREE.Group;
@@ -155,6 +155,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     wakeDeferredWildlandsGolf: null as ((() => void) | null),
     coronaHeights: null as (CoronaHeightsPark | null),
     missionDolores: null as (MissionDoloresMuseum | null),
+    graceCathedral: null as (GraceCathedralRuntime | null),
     sutroBaths: null as (import("../../world/sutroBaths").SutroBaths | null),
     museumBookOpen: false as any,
     citygen: null as ({ update?: (dt: number) => void; [k: string]: unknown } | null),
@@ -168,7 +169,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     afterlight: null as (AfterlightExperience | null),
     hangGliding: null as (HangGlidingExperience | null),
     goldenGateLights: null as (ReturnType<typeof createGoldenGateLights>),
-    ridePromptShown: false as any,
+    ridePromptKey: null as (string | null),
     doorPromptShown: false as any,
     doorScanCountdown: 0 as any,
     doorScanHit: null as (ReturnType<CityGenRing["nearestDoor"]>),
@@ -189,14 +190,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     ).then(() => waterRoots.forEach((m, i) => (m.visible = restore[i])));
   }
   const underwater = new UnderwaterOverlay(app, map);
-  // off-boot-path lane markings (attaches whenever the fetch lands)
-  ctx.state.auxPending++;
-  void createRoadMarkings(scene, map)
-    .then((group) => {
-      ctx.state.roadMarkings = group;
-    })
-    .catch((err) => console.warn("[roads] lane markings unavailable", err))
-    .finally(() => ctx.state.auxPending--);
   await constructionSlice();
 
   progress(62, "waking up san francisco");
@@ -731,6 +724,38 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
         console.warn("[boot] Mission Dolores museum unavailable:", err);
       });
   };
+  // Grace Cathedral's editable Blender source streams through the generic
+  // authored-region gate. Its atmosphere code is a nested lazy boundary: no
+  // beam/dust module or procedural texture joins clean boot, and unload tears
+  // down every GPU owner together with the region GLB.
+  let graceCathedralEpoch = 0;
+  const unwatchGraceCathedral = authoredRegions.watch(
+    "grace-cathedral",
+    (root: THREE.Object3D) => {
+      const epoch = ++graceCathedralEpoch;
+      void import("../../world/graceCathedral")
+        .then(({ createGraceCathedralRuntime }) => {
+          if (epoch !== graceCathedralEpoch || !root.parent) return;
+          state.graceCathedral?.dispose();
+          const runtime = createGraceCathedralRuntime(scene);
+          state.graceCathedral = runtime;
+          void warmHiddenRoot(renderer, camera, scene, runtime.group).catch((error) => {
+            console.warn("[grace-cathedral] atmosphere warmup failed", error);
+          });
+        })
+        .catch((error) => console.warn("[grace-cathedral] atmosphere unavailable", error));
+    },
+    () => {
+      graceCathedralEpoch++;
+      state.graceCathedral?.dispose();
+      state.graceCathedral = null;
+    }
+  );
+  import.meta.hot?.dispose(() => {
+    unwatchGraceCathedral();
+    state.graceCathedral?.dispose();
+    state.graceCathedral = null;
+  });
   const gardenDisplacer: GroundDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
   // Master foliage switch (bound at the top of the "/" panel): `ctx.state.foliageOn`,
@@ -896,7 +921,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // song (shared NPC conversation system — gameplay/agents/conversation.ts).
   const buskerTalk = createBuskerConversation(buskers);
   await constructionSlice();
-  // (state.ridePromptShown hoisted to the module state record)
+  // (state.ridePromptKey hoisted to the module state record)
   // (state.doorPromptShown hoisted to the module state record)
   // (state.doorScanCountdown hoisted to the module state record)
   // (state.doorScanHit hoisted to the module state record)

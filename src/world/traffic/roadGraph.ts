@@ -27,7 +27,6 @@ import {
 import { loadRoadGraphSnapshot } from "./roadGraphLoader.ts";
 
 export type { RoadsJson } from "./roadGraphCore.ts";
-export { loadRoadsJson } from "./roadGraphLoader.ts";
 
 export type Projection = {
   segId: number;
@@ -36,9 +35,6 @@ export type Projection = {
   tangentX: number; // unit tangent at the projected point
   tangentZ: number;
   halfWidth: number; // half the road width (m)
-  lanes: number;
-  forwardLanes: number;
-  backwardLanes: number;
   oneWayDir: -1 | 0 | 1;
   roadClass: number;
 };
@@ -77,9 +73,6 @@ export class RoadGraph {
   private segNum: Int32Array; // segId → point count
   private segTotal: Float32Array; // segId → total polyline length
   private segW: Float32Array; // segId → road width
-  private segLanes: Int8Array; // segId → lane count
-  private segForwardLanes: Int8Array; // segId → lanes along stored point order
-  private segBackwardLanes: Int8Array; // segId → lanes against stored point order
   private segDir: Int8Array; // segId → one-way dir (-1,0,+1)
   private segClass: Int8Array; // segId → coarse road class
 
@@ -111,9 +104,6 @@ export class RoadGraph {
     this.segNum = snapshot.segNum;
     this.segTotal = snapshot.segTotal;
     this.segW = snapshot.segW;
-    this.segLanes = snapshot.segLanes;
-    this.segForwardLanes = snapshot.segForwardLanes;
-    this.segBackwardLanes = snapshot.segBackwardLanes;
     this.segDir = snapshot.segDir;
     this.segClass = snapshot.segClass;
     this.cells = snapshot.edgeCells;
@@ -254,9 +244,6 @@ export class RoadGraph {
       tangentX: ex,
       tangentZ: ez,
       halfWidth: this.segW[seg] * 0.5,
-      lanes: this.segLanes[seg],
-      forwardLanes: this.segForwardLanes[seg],
-      backwardLanes: this.segBackwardLanes[seg],
       oneWayDir: this.segDir[seg] as -1 | 0 | 1,
       roadClass: this.segClass[seg]
     };
@@ -329,9 +316,6 @@ export class RoadGraph {
       tangentX: ex,
       tangentZ: ez,
       halfWidth: this.segW[seg] * 0.5,
-      lanes: this.segLanes[seg],
-      forwardLanes: this.segForwardLanes[seg],
-      backwardLanes: this.segBackwardLanes[seg],
       oneWayDir: this.segDir[seg] as -1 | 0 | 1,
       roadClass: this.segClass[seg]
     };
@@ -380,18 +364,12 @@ export class RoadGraph {
   segmentMeta(segId: number): {
     total: number;
     halfWidth: number;
-    lanes: number;
-    forwardLanes: number;
-    backwardLanes: number;
     oneWayDir: -1 | 0 | 1;
     roadClass: number;
   } {
     return {
       total: this.segTotal[segId] ?? 0,
       halfWidth: (this.segW[segId] ?? 0) * 0.5,
-      lanes: this.segLanes[segId] ?? 1,
-      forwardLanes: this.segForwardLanes[segId] ?? 1,
-      backwardLanes: this.segBackwardLanes[segId] ?? 1,
       oneWayDir: (this.segDir[segId] ?? 0) as -1 | 0 | 1,
       roadClass: this.segClass[segId] ?? 1
     };

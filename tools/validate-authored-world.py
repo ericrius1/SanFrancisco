@@ -25,6 +25,14 @@ def collection_objects_recursive(collection):
     return result
 
 
+def is_materialized_blend(path):
+    """Worktrees may contain Git-LFS pointer stubs for older authored sources."""
+    if not os.path.isfile(path):
+        return False
+    with open(path, "rb") as handle:
+        return not handle.read(80).startswith(b"version https://git-lfs.github.com/spec/v1")
+
+
 def main():
     args = parse_args()
     master = os.path.realpath(args.master)
@@ -32,14 +40,23 @@ def main():
         raise RuntimeError(f"Expected {master}, opened {bpy.data.filepath}")
     with open(os.path.join(args.repo, "data", "authored-regions.json"), "r", encoding="utf8") as handle:
         manifest = json.load(handle)
-    expected = {region["id"] for region in manifest["regions"]}
+    registered = {region["id"] for region in manifest["regions"]}
+    available = {
+        region["id"]
+        for region in manifest["regions"]
+        if is_materialized_blend(os.path.join(args.repo, region["source"]))
+    }
     composed = {
         collection.get("sf_composed_region"): collection
         for collection in bpy.data.collections
         if collection.get("sf_composed_region")
     }
-    if set(composed) != expected:
-        raise RuntimeError(f"Master authored regions {set(composed)} != {expected}")
+    unexpected = set(composed) - registered
+    missing = available - set(composed)
+    if unexpected or missing:
+        raise RuntimeError(
+            f"Master authored regions have unexpected={unexpected}, missing available={missing}"
+        )
     for region_id, collection in composed.items():
         objects = collection_objects_recursive(collection)
         meshes = [obj for obj in objects if obj.type == "MESH"]
@@ -54,7 +71,12 @@ def main():
             if not arrival:
                 raise RuntimeError(f"Master region {region_id} has no ARRIVAL guide")
         print(json.dumps({"region": region_id, "meshes": len(meshes), "bounds": bounds.name}))
-    print(json.dumps({"master": master, "authoredRegions": sorted(expected)}))
+    unavailable = sorted(registered - available)
+    print(json.dumps({
+        "master": master,
+        "authoredRegions": sorted(composed),
+        "unmaterializedSources": unavailable,
+    }))
 
 
 main()

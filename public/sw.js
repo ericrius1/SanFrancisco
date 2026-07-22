@@ -1,5 +1,5 @@
 /* Bump the version to invalidate every cached asset after a breaking layout change. */
-const CACHE = "sf-world-v3";
+const CACHE = "sf-world-v4";
 const MAX_ENTRIES = 500;
 
 /* Content-hashed or content-stable between rebakes: safe to serve from cache forever. */
