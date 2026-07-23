@@ -5,6 +5,7 @@
 // bootMark("tiles") immediately after this resolves.
 import * as THREE from "three/webgpu";
 import { TileStreamer } from "../../world/tiles";
+import { prepareFacadeTextures } from "../../world/facade";
 import { AuthoredRegionStreamer } from "../../world/authoredRegions";
 import { warmStaticRegion, warmUnseenMeshSignatures } from "../../render/warmStaticRegion";
 import type { WorldMap } from "../../world/heightmap";
@@ -24,6 +25,7 @@ export interface BootTilesResult {
 }
 
 export async function bootTiles({ scene, camera, renderer, map, sky }: BootTilesDeps): Promise<BootTilesResult> {
+  await prepareFacadeTextures();
   const tiles = new TileStreamer(scene);
   tiles.onShadowCastersChanged = (scope) => sky.invalidateStaticShadows(scope);
   // Tile batches (buildings/roads/parks) are created lazily on first fold-in;

@@ -41,11 +41,24 @@ export function startFrameDriver(opts: {
   let pageVisible = document.visibilityState === "visible";
   let loopRunning = false;
   let ticks = 0;
+  let quietParity = 0;
 
   const loop = () => {
     // setAnimationLoop(null) is the primary background gate. Keep this guard as
     // a hard backstop in case a queued callback crosses the visibility edge.
     if (!pageVisible || manual) return;
+    // Battery/quiet mode: render every 2nd rAF (~30 fps). Skip the ENTIRE tick —
+    // tick() derives its dt from a clamped wall-clock timer, so the next rendered
+    // frame simply sees a ~33 ms delta (the same gap handling as a resumed tab).
+    // Do NOT advance lastLoop on a skipped frame, so the tracer/governor measure
+    // the true render-to-render interval on the frame that does run.
+    const quiet = RENDER_TUNING.values.quietMode;
+    if (quiet) {
+      quietParity ^= 1;
+      if (quietParity) return;
+    } else {
+      quietParity = 0;
+    }
     const now = performance.now();
     if (throttleRaf && now - lastLoop < 50) return;
     const frameMs = now - lastLoop;
@@ -54,7 +67,10 @@ export function startFrameDriver(opts: {
     tick();
     if (isRevealed()) {
       tracer.frame(frameMs);
-      adaptiveRes?.update(tracer.ema);
+      // Quiet mode roughly doubles the render-to-render interval by design; feed
+      // the governor the halved EMA so a capped-but-healthy frame reads as its
+      // true per-frame cost and never triggers a spurious downscale.
+      adaptiveRes?.update(quiet ? tracer.ema * 0.5 : tracer.ema);
     }
   };
 

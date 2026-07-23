@@ -22,6 +22,7 @@ import {
   type GhostShipPose
 } from "./route";
 import { GHOST_SHIP_TUNING } from "./tuning";
+import { batchStaticSiblings } from "../staticBatch";
 
 export {
   GHOST_SHIP_LANDMARK_NAME,

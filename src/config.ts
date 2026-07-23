@@ -35,6 +35,10 @@ export const RENDER_TUNING = tunables("render", {
   // grey-card calibration chart (src/ui/calibrationChart.ts): camera-locked row
   // of matte spheres at 5/18/50/90% albedo — the referee for any grading change.
   greyCards: { v: false, label: "grey cards (5·18·50·90%)" },
+  // Battery/quiet mode: the frame driver renders every 2nd rAF (~30 fps cap) to
+  // cut GPU/thermal load. Read live each frame in app/frameDriver.ts; no side
+  // effect on change, so it needs no onChange when bound.
+  quietMode: { v: false, label: "battery saver (30 fps)" },
   wireframe: { v: false, label: "wireframe mode (R)" },
   wireframeLodGradient: { v: true, label: "resolution gradient" }
 });

@@ -23,6 +23,7 @@ import {
   POSTFX_PIANO_GOD_RAY_KEYS,
   applyPostFxParams
 } from "../render/postfx";
+import { governorEffects } from "../render/adaptiveResolution";
 import { VOICE_TUNING } from "../net/voice";
 import { NATURE_AUDIO_TUNING } from "../audio";
 import { TEE_BEACON_TUNING } from "../gameplay/golf/tuning";
@@ -209,6 +210,7 @@ export class DebugPanel {
   #monitorBindings: DebugMonitorBinding[] = [];
   #featureTunings = new Map<string, DebugFeatureTuningRecord>();
   #fogMonitorView: Record<string, string> | null = null;
+  #governorMonitorView: { governor: string } | null = null;
   #syncingFromSky = false;
   #syncingPane = false;
   #overlayContext: OverlayContextFlags = { teaGardenWater: false };
@@ -416,6 +418,7 @@ export class DebugPanel {
     try {
       withTweakBindingEventsSuppressed(() => {
         this.#refreshFogWeatherMonitor();
+        this.#refreshGovernorMonitor();
         for (const binding of this.#lightingBindings) binding.refresh();
         for (const binding of this.#monitorBindings) binding.refresh();
       });
@@ -427,6 +430,12 @@ export class DebugPanel {
 
   #refreshFogWeatherMonitor() {
     if (this.#fogMonitorView) this.#sky.writeFogWeatherDiagnostics(this.#fogMonitorView);
+  }
+
+  #refreshGovernorMonitor() {
+    if (!this.#governorMonitorView) return;
+    const e = governorEffects();
+    this.#governorMonitorView.governor = `L${e.level} · scale ${e.renderScale.toFixed(2)}`;
   }
 
   /** Push one coherent shadow state across projection maps and contact pass. */
@@ -946,6 +955,15 @@ export class DebugPanel {
         this.#renderer.setSize(window.innerWidth, window.innerHeight);
       }
     });
+    // Battery/quiet mode — the frame driver reads this live each frame; no side
+    // effect on change, so a plain persisted binding is enough.
+    RENDER_TUNING.bind(rendering, { keys: ["quietMode"] });
+    // Live adaptive-resolution governor readout (level + applied render scale).
+    this.#governorMonitorView = { governor: "L0 · scale 1.00" };
+    this.#refreshGovernorMonitor();
+    this.#monitorBindings.push(
+      rendering.addBinding(this.#governorMonitorView, "governor", { readonly: true, label: "governor" })
+    );
     const waterEchoes = rendering.addFolder({ title: "water echoes", expanded: false });
     WATER_ECHO_TUNING.bind(waterEchoes, { onChange: () => {} });
     await checkpoint();
