@@ -25,6 +25,7 @@ import { SHADOW_TUNING } from "./tuning"
 import { composeRasterAtlasVisibility } from "./visibilityComposition"
 import { tracer } from "../../core/hitchTracer"
 import { motionGate } from "../../core/motionGate"
+import { governorEffects } from "../../render/adaptiveResolution"
 
 // M6 hitch closure: streamed caster attaches arrive in bursts (a ring sweep or
 // a citygen district publish invalidates every frame for seconds — pre-M6 that
@@ -446,7 +447,18 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       let reason: ShadowUpdateReason = 0
 
       if (!domain.initialized) reason |= SHADOW_UPDATE_REASON.INITIAL
-      if (domain.id === "hero") reason |= SHADOW_UPDATE_REASON.EVERY_FRAME
+      // The hero domain re-renders its dynamic silhouettes every displayed frame.
+      // Under sustained GPU load the governor halves that cadence: the EVERY_FRAME
+      // redraw is gated to even frames so hero dynamic shadows update at ~30 Hz.
+      // This ONLY suppresses the parity-skipped EVERY_FRAME contribution — every
+      // correctness reason (INITIAL above, plus anchor/teleport/sun/stream below)
+      // still accumulates independently and forces the redraw the same frame.
+      if (
+        domain.id === "hero" &&
+        (!governorEffects().heroShadowHalfRate || (this.#frame & 1) === 0)
+      ) {
+        reason |= SHADOW_UPDATE_REASON.EVERY_FRAME
+      }
 
       const movedSq = focus.distanceToSquared(domain.lastAnchor)
       if (domain.initialized && domain.config.anchorStep > 0 && movedSq >= domain.config.anchorStep ** 2) {
@@ -508,7 +520,10 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
     const farField = this.#farOcclusion?.replacementSampleNode() ?? null
     return Fn((builder: any) => {
       this.setupShadowPosition(builder)
-      const visibility = (vec4(1) as N).toVar()
+      // Scalar: every term composed below is a float, so a vec4 accumulator
+      // would run each multiply four wide for one useful lane. The vec4 shape
+      // only matters at the return, where three expects a colour.
+      const visibility = (float(1) as N).toVar()
 
       // Use a radial metric in the light's projection plane. All samples retire
       // inside the square texture, but the transition has no square isocontour
@@ -526,7 +541,15 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       ).oneMinus()
       // This continuous weight is already zero inside the valid map boundary;
       // no branch or out-of-domain edge texel can become a visible hard line.
-      visibility.mulAssign(mix(1, hero as N, heroEdgeWeight))
+      // Gate the read on that same boundary (see the sampling-gate note below):
+      // heroEdgeWeight is exactly 0 past heroFadeEnd, so skipping the PCF read
+      // there is bit-identical and drops four gather-compares plus the hero
+      // shadow-coordinate transform on every fragment beyond ~16 m.
+      const heroSample = float(1).toVar()
+      If(heroRadius.lessThan(heroFadeEnd), () => {
+        heroSample.assign(hero as N)
+      })
+      visibility.mulAssign(mix(1, heroSample, heroEdgeWeight))
 
       // Representation handoffs use the same projection-plane radius. A broad
       // local feather makes the composition stable for every caster set and sun
@@ -572,10 +595,20 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       If(localRadius.lessThan(localFadeEnd), () => {
         localSample.assign(local as N)
       })
+      // Both halves of the gate are exact, not approximate: below
+      // localFadeStart the far raster is composed at weight 0 (farWeight), and
+      // at or past farFadeEnd it is composed at weight 0 (farEdgeFade). Reading
+      // it in either region is pure waste — four gather-compares plus the far
+      // shadow-coordinate transform — so skipping both is bit-identical. The
+      // outer half matters most at distance-heavy stops (bay, bridge, far city),
+      // where the majority of lit pixels sit beyond the 508 m far map.
       const farSample = float(1).toVar()
-      If(localRadius.greaterThan(localFadeStart), () => {
-        farSample.assign(far as N)
-      })
+      If(
+        localRadius.greaterThan(localFadeStart).and(farRadius.lessThan(farFadeEnd)),
+        () => {
+          farSample.assign(far as N)
+        }
+      )
       const farVisible = mix(1, farSample, farEdgeFade)
 
       const farFieldVisibility = farField
@@ -620,7 +653,7 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
         ))
       }
 
-      return mix(vec4(1), visibility, enabled)
+      return mix(vec4(1), vec4(visibility), enabled)
     })()
   }
 

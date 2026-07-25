@@ -22,7 +22,6 @@ import {
   smoothstep,
   step,
   time,
-  triNoise3D,
   uniform,
   vec3
 } from "three/tsl"
@@ -97,7 +96,7 @@ export const SKY_TUNING = tunables("sky", {
     label: "24h cycle length",
     format: (v: number) => (v < 60 ? `${Math.round(v)}s` : `${(v / 60).toFixed(v % 60 === 0 ? 0 : 1)} min`)
   },
-  // scales the low-sun/night fill (moon key, hemi fill, sky/IBL night palette,
+  // scales the low-sun/night fill (moon key, sky/IBL night palette,
   // moon disc) so full dark and late twilight stay readable; 1 = authored look
   nightBrightness: {
     v: 1.55,
@@ -117,13 +116,19 @@ export const SKY_TUNING = tunables("sky", {
   // lands the grey card ~+0.8 stop — still a sunny grade, but with real tonal
   // separation. Referee: "/" grey cards + tools/calibration-probe.mjs.
   sunDay: { v: 3.6, min: 0.6, max: 16, step: 0.1, label: "sun strength" },
-  hemiDay: { v: 0.9, min: 0, max: 2.6, step: 0.05, label: "day sky fill" }
+  // The persisted key remains `hemiDay` for tuning compatibility, but the fill
+  // now comes from the analytic sky environment rather than a scene light.
+  hemiDay: { v: 0.9, min: 0, max: 2.6, step: 0.05, label: "day sky fill (IBL)" }
 })
 
 // The dome/IBL counter-boost: authored 0..1 sky colours were graded to read
 // as-authored under the reference exposure (7 ≈ 1/0.13 pre-rebase, carried
 // through the exposure re-anchor so the dome renders identically).
 const SKY_DOME_BOOST = 7.0 * EXPOSURE_REBASE
+// Analytic-environment intensity that replaces the old 0.9 HemisphereLight at
+// the reference day grade. This gives matte materials soft sky/ground bounce
+// without spending one of the scene's two actual light slots.
+const SKY_IBL_REFERENCE_INTENSITY = 0.24
 
 // Live light direction (world space, pointing toward the dominant light — the sun
 // by day, the moon by night). Mutated by Sky; other modules (water) hold a
@@ -137,38 +142,6 @@ type N = any
 const smooth01 = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)))
   return t * t * (3 - 2 * t)
-}
-
-// three-way palette blend for the JS-side lights (shader does its own)
-const blend3 = (() => {
-  const tmp = new THREE.Color()
-  return (
-    out: THREE.Color,
-    day: THREE.Color,
-    gold: THREE.Color,
-    night: THREE.Color,
-    dw: number,
-    gw: number,
-    nw: number
-  ) => {
-    out.copy(day).multiplyScalar(dw)
-    out.add(tmp.copy(gold).multiplyScalar(gw))
-    out.add(tmp.copy(night).multiplyScalar(nw))
-    return out
-  }
-})()
-
-const PALETTE = {
-  hemiSky: {
-    day: new THREE.Color(0xa9c4d9),
-    gold: new THREE.Color(0x8087a8),
-    night: new THREE.Color(0x3a4f7e)
-  },
-  hemiGround: {
-    day: new THREE.Color(0x9c8468),
-    gold: new THREE.Color(0x4a3f42),
-    night: new THREE.Color(0x30364a)
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +159,18 @@ const FOG_NOISE_SCALE_A = 0.005 // ~200 m macro billows
 const FOG_NOISE_SCALE_B = 0.01 // ~100 m secondary wisps
 const FOG_NOISE_SPEED = 0.2
 const FOG_NOISE_CENTER = 0.7
+// Octave budget for the two fog fields. Three's stock triNoise3D runs four
+// domain-warped octaves, and this graph calls it twice — ~280 ALU per fragment
+// compiled into EVERY fogged material in the world, at every overdraw layer.
+// Octaves 3 and 4 land at 12–42 m features, well under what the
+// smoothstep(0.25, 0.9) billow ramp and the distance-integrated opacity can
+// resolve, so fogTriNoise stops at two and remaps the result back onto the
+// four-octave distribution. Measured over 60k world samples at three phases:
+// gain/bias reproduce the reference mean (0.286) and sd (0.091) exactly, the
+// fields correlate 0.91, and the billow term differs by a median of 0.07.
+const FOG_NOISE_OCTAVES = 2
+const FOG_NOISE_GAIN = 1.094
+const FOG_NOISE_BIAS = 0.0695
 // Void fog wall (M18): mean free path INSIDE the wall medium at unit density.
 // Short — the wall must read near-opaque ~3 lengths past the bubble edge.
 const FOG_WALL_EXTINCTION_LENGTH = 40
@@ -201,6 +186,84 @@ const FOG_WEATHER_UPDATE_SECONDS = 0.2
 const LIVE_FOG_BLEND_HALFLIFE_SECONDS = 90
 const LIVE_FOG_TARGET_HALFLIFE_SECONDS = 180
 const LIVE_FOG_EXIT_HALFLIFE_SECONDS = 2.5
+
+// Two-octave fork of three's triNoise3D (node_modules/three/src/nodes/math/
+// TriNoise3D.js) — same tri/tri3 domain warp, same 1.8/1.5/1.2 lacunarity, it
+// just stops early and rescales; see the FOG_NOISE_* constants above for the
+// measurement. The octave loop is unrolled at graph-build time, so no Loop node
+// reaches WGSL. One shared graph feeds scene.fogNode, so this adds no material
+// variants — it only shrinks the function every fogged shader already calls.
+const fogTri = Fn(([x]: [N]) => x.fract().sub(0.5).abs()).setLayout({
+  name: "fogTri",
+  type: "float",
+  inputs: [{ name: "x", type: "float" }]
+})
+
+const fogTri3 = Fn(([p]: [N]) =>
+  vec3(
+    fogTri(p.z.add(fogTri(p.y))),
+    fogTri(p.z.add(fogTri(p.x))),
+    fogTri(p.y.add(fogTri(p.x)))
+  )
+).setLayout({
+  name: "fogTri3",
+  type: "vec3",
+  inputs: [{ name: "p", type: "vec3" }]
+})
+
+const fogTriNoise = Fn(([position, time]: [N, N]) => {
+  const p = vec3(position).toVar()
+  const bp = vec3(position).toVar()
+  const rz = float(0).toVar()
+  // z is the reference's per-octave amplitude divisor (1.4 × 1.5^n). Unrolled it
+  // is a compile-time constant, so it stays a JS number rather than a shader var.
+  let z = 1.4
+  for (let i = 0; i < FOG_NOISE_OCTAVES; i++) {
+    const dg = vec3(fogTri3(bp.mul(2))).toVar()
+    p.addAssign(dg.add(time.mul(0.1 * FOG_NOISE_SPEED)))
+    bp.mulAssign(1.8)
+    z *= 1.5
+    p.mulAssign(1.2)
+    rz.addAssign(fogTri(p.z.add(fogTri(p.x.add(fogTri(p.y))))).div(z))
+    bp.addAssign(0.14)
+  }
+  return rz.mul(FOG_NOISE_GAIN).add(FOG_NOISE_BIAS)
+}).setLayout({
+  name: "fogTriNoise",
+  type: "float",
+  inputs: [
+    { name: "position", type: "vec3" },
+    { name: "time", type: "float" }
+  ]
+})
+
+// The dome is camera-locked and its shader is direction-only (it normalises
+// positionLocal), so the radius is not a look decision — it is purely how the
+// dome sorts against depth. Sizing it above every distance the scene can contain
+// lets it be depth-tested safely: the map diagonal is ~20.5 km, which is how far
+// water's map-wide `horizon` sheet can sit from a camera at the opposite corner,
+// and CONFIG.camera.far is 24 km.
+const SKY_DOME_RADIUS = 23000
+// Three r185's RenderList.sort() sorts the opaque list ASCENDING by renderOrder
+// (painterSortStable) and then REVERSES the whole list when the camera runs a
+// reversed depth buffer — so renderOrder effectively resolves DESCENDING here.
+// A large negative order therefore draws the dome LAST, so depth rejects every
+// pixel the city, terrain and water already own and the radiance shader's four
+// pow() lobes, star hash and fog backdrop mix run only on real sky.
+//
+// THE SIGN IS LOAD-BEARING, and it rests on TWO facts about renderCore.ts —
+// verify BOTH before trusting it:
+//   1. createRenderCore constructs the renderer with `reversedDepthBuffer: true`
+//      (renderCore.ts). That is the reverse's ONLY trigger: Renderer._updateCamera
+//      copies it to camera._reversedDepth, and RenderList.sort() reverses only
+//      when that flag is set. Turning reversed-z OFF silently sends the dome back
+//      to drawing FIRST — no visual change, just the lost win.
+//   2. It installs no custom opaque comparator (no setOpaqueSort anywhere in
+//      src/), so painterSortStable is what runs.
+// If either changes, flip this to a large POSITIVE order above water's 11.2
+// ladder. The fog backdrop is a term inside the dome shader, not a draw-order
+// effect, so it is unaffected either way.
+const SKY_DOME_RENDER_ORDER = -1000
 
 /**
  * A custom analytic sky driving both the backdrop and the image-based lighting.
@@ -219,7 +282,6 @@ const LIVE_FOG_EXIT_HALFLIFE_SECONDS = 2.5
 export class Sky {
   mesh: THREE.Mesh
   sun: THREE.DirectionalLight
-  hemi: THREE.HemisphereLight
   timeOfDay = SKY_TUNING.values.timeOfDay
   /** Degrees above the horizon; negative when the sun is down. */
   sunElevation = 0
@@ -247,6 +309,15 @@ export class Sky {
     const now = sanFranciscoCivilNow()
     return sfUtcOffsetHours({ ...now, hour: 12 })
   })()
+  // Real-clock read cadence. sanFranciscoCivilNow() is Intl.formatToParts — ~4 µs
+  // and ~40 transient objects per call, and solarPosition's DST solve calls it
+  // once or twice more. Re-reading it every frame bought 0.017° of sun travel, so
+  // the wall clock is sampled at 4 Hz instead. -Infinity makes the first frame apply.
+  #lastRealClockMs = -Infinity
+  // Pacific UTC offset for the real-time path, cached per civil hour and handed to
+  // solarPosition so it skips its own civil→UTC DST solve. Hourly (not daily)
+  // keeps the two annual DST transitions correct to within the transition hour.
+  #realOffsetCache: { hourKey: number; hours: number } | null = null
 
   // sky shader uniforms
   #uSun = uniform(new THREE.Vector3(0, 1, 0))
@@ -290,6 +361,23 @@ export class Sky {
   #uWallCenter = uniform(new THREE.Vector2(0, 0))
   #uWallRadius = uniform(1e9)
   #uWallDensity = uniform(0)
+  // Uniform-only half of the analytic sky gradient, resolved on the CPU by
+  // #applySkyPalette on exactly the same cadence as #uSun itself. three wraps
+  // scene.environmentNode in an EnvironmentNode that builds the node TWICE per
+  // lit material — a radiance context and an irradiance context, each inside
+  // its own isolate(), so nothing is shared — which meant every lit fragment in
+  // the world re-derived four smoothstep phase weights and two vec3 palette
+  // blends twice, for values that cannot vary across a draw. Plain Vector3s,
+  // not Colors: the shader literals these replace are raw vec3, so a Color
+  // uniform's working-colour-space conversion would shift the palette.
+  #uSkyZenith = uniform(new THREE.Vector3())
+  #uSkyHorizon = uniform(new THREE.Vector3())
+  /** mix(hor, zen, 0.35) — the hemispheric mean the soften path collapses toward. */
+  #uSkyMean = uniform(new THREE.Vector3())
+  /** The night-brightness twilight lift, already folded to a colour. */
+  #uSkyTwilight = uniform(new THREE.Vector3())
+  /** Golden-hour weight; still needed per fragment by the warm horizon wedge. */
+  #uSkyGold = uniform(0)
   #fogNode: N | null = null
 
   #proceduralFog = sampleProceduralFog(sfCivilFromScalarDays(this.#civilDay))
@@ -354,7 +442,7 @@ export class Sky {
 
   constructor(scene: THREE.Scene, farOcclusion: FarOcclusionField | null = null) {
     this.#scene = scene
-    scene.environmentIntensity = 0.075 // a hint of sky in the reflections; the diffuse fill is the hemi's job
+    scene.environmentIntensity = SKY_IBL_REFERENCE_INTENSITY
 
     // Covered-boot shadow warmup for streamed merged-proxy vertex layouts.
     // This stays shadow-only and degenerate, but retains both static-domain
@@ -365,8 +453,9 @@ export class Sky {
       new THREE.SphereGeometry(1, 48, 24),
       this.#buildMaterial()
     )
-    this.mesh.scale.setScalar(12000)
+    this.mesh.scale.setScalar(SKY_DOME_RADIUS)
     this.mesh.frustumCulled = false
+    this.mesh.renderOrder = SKY_DOME_RENDER_ORDER
     scene.add(this.mesh)
 
     // analytic IBL: evaluate the sky gradient directly per reflection/normal ray
@@ -393,11 +482,6 @@ export class Sky {
     this.#shadowNode = new ClipmapShadowNode(this.sun, farOcclusion)
     ;(this.sun.shadow as any).shadowNode = this.#shadowNode
 
-    // warm ground-bounce fill: stands in for light-probe GI. Intensity and colour
-    // follow the phase of day in #applySun
-    this.hemi = new THREE.HemisphereLight(0xa9c4d9, 0x9c8468, 14)
-    scene.add(this.hemi)
-
     this.#fogNode = this.#buildFogNode()
     scene.fog = null
     scene.fogNode = this.#fogNode
@@ -406,6 +490,10 @@ export class Sky {
     if (this.realTime) this.followRealTime()
     else this.cycleEnabled = true
     this.#updateFogWeather(true)
+    // Idempotent, and the only guarantee that the resolved palette matches
+    // #uSun before the first update(): the cycle branch above defers #applySun
+    // to the first frame, and a dome drawn from a zeroed palette would be black.
+    this.#applySkyPalette()
   }
 
   /**
@@ -429,43 +517,25 @@ export class Sky {
     // read behind the holo grid (a multiply, never a branch).
     const voidDim = mix(float(1), float(0.018), this.#uVoid as N)
     const voidKeep = (this.#uVoid as N).oneMinus()
+    // The phase weights (day/night/golden/low-sun), the zenith and horizon
+    // palettes they blend, the twilight lift and the hemispheric mean are all
+    // functions of the sun elevation and the night-brightness slider alone —
+    // uniform for an entire draw. #applySkyPalette resolves them on the CPU, so
+    // what remains below is only the genuinely direction-dependent maths. The
+    // raw weights survive in the shader for the point-feature path only, and
+    // that path compiles into the camera-locked dome material alone (one draw,
+    // depth-rejected behind everything else).
+    const zen = this.#uSkyZenith as N
+    const hor = this.#uSkyHorizon as N
+    const goldW = this.#uSkyGold as N
     return Fn(() => {
       const mu = dot(d, uSun)
-      const el = uSun.y // sun elevation, sin-scaled
-
-      // phase weights: day fades out as the sun drops, night fades in below ~-6°,
-      // golden hour owns the gap
-      const dayW = smoothstep(0.02, 0.32, el)
-      const nightW = smoothstep(-0.1, -0.3, el)
-      const goldW = dayW.oneMinus().mul(nightW.oneMinus())
-      // The foreground can read as night before the sky reaches the formal
-      // night band. Let the slider lift low-sun twilight too, otherwise the
-      // control appears dead around 18:00-18:30.
-      const lowSunW = smoothstep(0.02, -0.16, el)
-      const lowSunLift = mix(float(1), uLift, lowSunW)
-
-      // moonlit night: the night palette carries a faint starlight/moonglow floor
-      // (feeds the IBL too, so surfaces pick it up), scaled by the night
-      // brightness slider — a multiply, never a branch (see SHADER-BRANCH HAZARD)
-      const zen = vec3(0.12, 0.34, 0.8)
-        .mul(dayW)
-        .add(vec3(0.1, 0.15, 0.33).mul(goldW))
-        .add(vec3(0.022, 0.032, 0.062).mul(nightW).mul(lowSunLift))
-      const hor = vec3(0.58, 0.75, 0.9)
-        .mul(dayW)
-        .add(vec3(0.55, 0.34, 0.26).mul(goldW))
-        .add(vec3(0.07, 0.098, 0.15).mul(nightW).mul(lowSunLift))
 
       // horizon-heavy gradient; below the horizon fall off toward ground haze
       const grad = mix(hor, zen, pow(saturate(d.y), 0.55))
       const below = smoothstep(0.0, -0.12, d.y)
       const sky = grad.mul(mix(float(1), float(0.35), below)).toVar()
-      sky.addAssign(
-        vec3(0.014, 0.02, 0.038)
-          .mul(goldW)
-          .mul(lowSunW)
-          .mul(uLift.sub(1))
-      )
+      sky.addAssign(this.#uSkyTwilight as N)
 
       // warm wedge gathering around the sun while it grazes the horizon
       const wedge = pow(saturate(mu), 3.5)
@@ -474,6 +544,16 @@ export class Sky {
       sky.addAssign(vec3(1.0, 0.42, 0.16).mul(wedge).mul(0.85))
 
       if (opts.pointFeatures) {
+        // Dome only: the discs, moon and starfield still need the raw weights.
+        const el = uSun.y // sun elevation, sin-scaled
+        const dayW = smoothstep(0.02, 0.32, el)
+        const nightW = smoothstep(-0.1, -0.3, el)
+        const lowSunW = smoothstep(0.02, -0.16, el)
+        // The foreground can read as night before the sky reaches the formal
+        // night band. Let the slider lift low-sun twilight too, otherwise the
+        // control appears dead around 18:00-18:30.
+        const lowSunLift = mix(float(1), uLift, lowSunW)
+
         // sun disc + halo (visible slightly past sunset while the limb sinks)
         const sunVis = smoothstep(-0.06, 0.04, el)
         const discCol = mix(vec3(1.6, 0.95, 0.55), vec3(1.35, 1.28, 1.15), dayW)
@@ -515,7 +595,7 @@ export class Sky {
       if (opts.soften) {
         // roughness blur stand-in: collapse toward the hemispheric mean, keeping a
         // touch of up/down directionality so rough down-facing surfaces stay dimmer
-        const mean = mix(hor, zen, 0.35).mul(
+        const mean = (this.#uSkyMean as N).mul(
           mix(float(1), float(0.5), smoothstep(0.2, -0.6, d.y))
         )
         return mix(sky, mean, saturate(opts.soften).mul(0.8))
@@ -574,16 +654,8 @@ export class Sky {
     // the entire texture by rate × total session time.
     const nTime = this.#uFogPhase as N
     const fogPosition = (positionWorld as N).sub(this.#uFogAdvection as N)
-    const noiseA = triNoise3D(
-      fogPosition.mul(FOG_NOISE_SCALE_A),
-      FOG_NOISE_SPEED,
-      nTime
-    )
-    const noiseB = triNoise3D(
-      fogPosition.mul(FOG_NOISE_SCALE_B),
-      FOG_NOISE_SPEED,
-      nTime.mul(1.2)
-    )
+    const noiseA = fogTriNoise(fogPosition.mul(FOG_NOISE_SCALE_A), nTime)
+    const noiseB = fogTriNoise(fogPosition.mul(FOG_NOISE_SCALE_B), nTime.mul(1.2))
     const fogNoise = noiseA.add(noiseB)
 
     // Stable macro coverage: a west-to-east Pacific front plus a soft tongue
@@ -627,51 +699,88 @@ export class Sky {
     // from Corona Heights. The rotated footprint follows the park's long axis,
     // the existing two fog octaves leave clear gaps between wisps, and the
     // summit carve keeps the opening readable during the high orbit.
-    const mistX = (positionWorld as N).x.sub(BUENA_VISTA_MIST.x)
-    const mistZ = (positionWorld as N).z.sub(BUENA_VISTA_MIST.z)
-    const mistCos = Math.cos(BUENA_VISTA_MIST.rotation)
-    const mistSin = Math.sin(BUENA_VISTA_MIST.rotation)
-    const mistAlong = mistX.mul(mistCos).add(mistZ.mul(mistSin))
-    const mistAcross = mistX.mul(-mistSin).add(mistZ.mul(mistCos))
-    const mistEllipse = pow(mistAlong.div(BUENA_VISTA_MIST.radiusAlong), 2).add(
-      pow(mistAcross.div(BUENA_VISTA_MIST.radiusAcross), 2)
-    )
-    const mistFootprint = smoothstep(float(1.08), float(0.72), mistEllipse)
-
-    const clearingX = (positionWorld as N).x
-      .sub(BUENA_VISTA_SUMMIT_CLEARING.x)
-      .div(BUENA_VISTA_SUMMIT_CLEARING.radiusX * 1.18)
-    const clearingZ = (positionWorld as N).z
-      .sub(BUENA_VISTA_SUMMIT_CLEARING.z)
-      .div(BUENA_VISTA_SUMMIT_CLEARING.radiusZ * 1.18)
-    const summitClearing = smoothstep(
-      float(1.08),
-      float(0.68),
-      pow(clearingX, 2).add(pow(clearingZ, 2))
-    )
-    const mistPockets = smoothstep(
-      float(0.27),
-      float(0.52),
-      mix(noiseA, noiseB, 0.38)
-    )
-    const mistHeight = smoothstep(
-      float(BUENA_VISTA_MIST.minY),
-      float(BUENA_VISTA_MIST.fullY),
-      y
-    ).mul(
-      smoothstep(
-        float(BUENA_VISTA_MIST.maxY),
-        float(BUENA_VISTA_MIST.fadeY),
+    //
+    // It is a BOUNDED world feature — a 305x238 m ellipse living between y 72
+    // and 222 — but it is unioned into the global `clear` below, so until this
+    // gate every fogged fragment on an ~11 km map paid its ~60 ALU. Both bounds
+    // are hard zeros in the maths itself (mistHeight's two smoothsteps retire
+    // outside [minY, maxY]; mistFootprint's smoothstep is 0 at or past 1.08),
+    // so skipping on them is bit-identical rather than an approximation. The
+    // altitude test is outermost because it is three ops with no setup; the
+    // ellipse test nests inside it so inland towers and hilltops still skip the
+    // summit carve, the pocket ramp and the height ramp. Both tests vary per
+    // fragment, but they are extremely coherent in screen space — a wave only
+    // pays when it genuinely straddles the park.
+    //
+    // Scope note (same rule as clipmapShadowNode.ts): `noiseA`/`noiseB`/`dist`
+    // are read INSIDE this block, so they must already be materialized in the
+    // enclosing scope. They are: `clear` builds bankFog first (left operand of
+    // the chain below), and bankFog consumes both the noise pair and `dist`.
+    const buenaVistaMist = Fn(() => {
+      const mist = float(0).toVar()
+      If(
         y
+          .greaterThan(float(BUENA_VISTA_MIST.minY))
+          .and(y.lessThan(float(BUENA_VISTA_MIST.maxY))),
+        () => {
+          const mistX = (positionWorld as N).x.sub(BUENA_VISTA_MIST.x)
+          const mistZ = (positionWorld as N).z.sub(BUENA_VISTA_MIST.z)
+          const mistCos = Math.cos(BUENA_VISTA_MIST.rotation)
+          const mistSin = Math.sin(BUENA_VISTA_MIST.rotation)
+          const mistAlong = mistX.mul(mistCos).add(mistZ.mul(mistSin))
+          const mistAcross = mistX.mul(-mistSin).add(mistZ.mul(mistCos))
+          const mistEllipse = pow(
+            mistAlong.div(BUENA_VISTA_MIST.radiusAlong),
+            2
+          ).add(pow(mistAcross.div(BUENA_VISTA_MIST.radiusAcross), 2))
+
+          If(mistEllipse.lessThan(float(1.08)), () => {
+            const mistFootprint = smoothstep(
+              float(1.08),
+              float(0.72),
+              mistEllipse
+            )
+            const clearingX = (positionWorld as N).x
+              .sub(BUENA_VISTA_SUMMIT_CLEARING.x)
+              .div(BUENA_VISTA_SUMMIT_CLEARING.radiusX * 1.18)
+            const clearingZ = (positionWorld as N).z
+              .sub(BUENA_VISTA_SUMMIT_CLEARING.z)
+              .div(BUENA_VISTA_SUMMIT_CLEARING.radiusZ * 1.18)
+            const summitClearing = smoothstep(
+              float(1.08),
+              float(0.68),
+              pow(clearingX, 2).add(pow(clearingZ, 2))
+            )
+            const mistPockets = smoothstep(
+              float(0.27),
+              float(0.52),
+              mix(noiseA, noiseB, 0.38)
+            )
+            const mistHeight = smoothstep(
+              float(BUENA_VISTA_MIST.minY),
+              float(BUENA_VISTA_MIST.fullY),
+              y
+            ).mul(
+              smoothstep(
+                float(BUENA_VISTA_MIST.maxY),
+                float(BUENA_VISTA_MIST.fadeY),
+                y
+              )
+            )
+            mist.assign(
+              mistFootprint
+                .mul(summitClearing.oneMinus())
+                .mul(mistHeight)
+                .mul(mistPockets)
+                .mul(smoothstep(float(24), float(210), dist))
+                .mul(BUENA_VISTA_MIST.strength)
+                .mul(this.#uFogLocalScale as N)
+            )
+          })
+        }
       )
-    )
-    const buenaVistaMist = mistFootprint
-      .mul(summitClearing.oneMinus())
-      .mul(mistHeight)
-      .mul(mistPockets)
-      .mul(smoothstep(float(24), float(210), dist))
-      .mul(BUENA_VISTA_MIST.strength)
-      .mul(this.#uFogLocalScale as N)
+      return mist
+    })()
 
     // The official noisy ceiling: a fixed-altitude marine bank whose upper edge
     // continually reforms into 100–200 m billows while hills and towers rise clear.
@@ -736,21 +845,51 @@ export class Sky {
     // (2D XZ ray-vs-circle, branch-free: a missed circle yields zero inside
     // length via sqrt(max(disc, 0))). Radius 1e9 → the whole ray is "inside"
     // → zero optical depth → the term collapses when the wall is down.
-    const wallL = horizontalDist.max(0.001)
-    const wallDir = (positionWorld as N).xz.sub((cameraPosition as N).xz).div(wallL)
-    const wallM = (this.#uWallCenter as N).sub((cameraPosition as N).xz)
-    const wallB = wallM.dot(wallDir)
-    const wallC = wallM.dot(wallM).sub((this.#uWallRadius as N).mul(this.#uWallRadius as N))
-    const wallS = wallB.mul(wallB).sub(wallC).max(0).sqrt()
-    const wallT0 = wallB.sub(wallS).clamp(0, wallL)
-    const wallT1 = wallB.add(wallS).clamp(0, wallL)
-    const wallOutside = wallL.sub(wallT1.sub(wallT0))
-    const wallFog = wallOutside
-      .mul(this.#uWallDensity as N)
-      .div(FOG_WALL_EXTINCTION_LENGTH)
-      .negate()
-      .exp()
-      .oneMinus()
+    //
+    // The wall is armed only during the M18 fill phase (#uWallDensity defaults
+    // to 0), so in all settled play this resolved to exactly 0 — after paying a
+    // sqrt and an exp on every fogged fragment in the world. A uniform If skips
+    // it instead; the condition is a uniform-buffer read, so it is uniform
+    // control flow for the whole draw and the skip is bit-identical at density
+    // 0 (exp(0) - 1 === 0).
+    //
+    // The block deliberately recomputes its own horizontal ray length rather
+    // than sharing `horizontalDist` with the edge fade. `horizontalDist` is
+    // consumed inside the weather branch, and WGSL materializes a multiply-used
+    // node in the FIRST branch that builds it (clipmapShadowNode.ts:576-582) —
+    // reading it from this sibling branch would read a zero-initialized var
+    // whenever fog is enabled, which is exactly the case the wall must survive.
+    // A distinct node is six ops inside a branch that is off in normal play.
+    const wallL = (cameraPosition as N).xz
+      .sub((positionWorld as N).xz)
+      .length()
+      .max(0.001)
+    const wallFog = Fn(() => {
+      const wall = float(0).toVar()
+      If((this.#uWallDensity as N).greaterThan(0), () => {
+        const wallDir = (positionWorld as N).xz
+          .sub((cameraPosition as N).xz)
+          .div(wallL)
+        const wallM = (this.#uWallCenter as N).sub((cameraPosition as N).xz)
+        const wallB = wallM.dot(wallDir)
+        const wallC = wallM
+          .dot(wallM)
+          .sub((this.#uWallRadius as N).mul(this.#uWallRadius as N))
+        const wallS = wallB.mul(wallB).sub(wallC).max(0).sqrt()
+        const wallT0 = wallB.sub(wallS).clamp(0, wallL)
+        const wallT1 = wallB.add(wallS).clamp(0, wallL)
+        wall.assign(
+          wallL
+            .sub(wallT1.sub(wallT0))
+            .mul(this.#uWallDensity as N)
+            .div(FOG_WALL_EXTINCTION_LENGTH)
+            .negate()
+            .exp()
+            .oneMinus()
+        )
+      })
+      return wall
+    })()
 
     // Probabilistic union, identical to the reference for bank + haze and extended
     // by only the narrow cull fade: 1 - (1-bank)(1-haze)(1-edge)(1-mist).
@@ -805,8 +944,9 @@ export class Sky {
   /**
    * Void-realm ramp (docs/VOID_STREAM_REWRITE.md M2): 0 = normal sky, 1 = the
    * dark holo void. Darkens the dome + analytic IBL and disables marine fog via
-   * uniforms only. Sun/hemi stay at their normal intensity so the avatar reads
-   * — the light set never changes (C1). Driven by VoidRealm.update().
+   * uniforms only. The sun and contextual point light stay at their normal
+   * intensity so the avatar reads — the light set never changes (C1). Driven
+   * by VoidRealm.update().
    */
   setVoidFactor(v: number) {
     this.#uVoid.value = Math.min(1, Math.max(0, v))
@@ -1059,7 +1199,7 @@ export class Sky {
     return this.#skyRadiance(dir, { pointFeatures: false, soften: level })
   }
 
-  /** Re-run the sun/hemi pass after a day-grade tunable (sunDay/hemiDay)
+  /** Re-run the sun/IBL pass after a day-grade tunable (sunDay/hemiDay)
    *  changes — the "/" panel calls this so the sliders re-grade live even
    *  while the time of day is pinned. */
   applyLightGrade() {
@@ -1123,6 +1263,8 @@ export class Sky {
     this.realTime = true
     this.cycleEnabled = false
     const now = sanFranciscoCivilNow()
+    // this IS the 4 Hz sample, so update() does not immediately repeat it
+    this.#lastRealClockMs = performance.now()
     this.#simulatedUtcOffsetHours = sfUtcOffsetHours({ ...now, hour: 12 })
     this.#civilDay = sfCivilScalarDays(now)
     this.timeOfDay = now.hour
@@ -1132,18 +1274,83 @@ export class Sky {
     this.#reconcileStarlinkSky()
   }
 
+  /** Pacific offset for the live clock, resolved at most once per civil hour.
+   *  Passing it to solarPosition removes its iterative civil→UTC DST solve, which
+   *  is another one or two Intl.formatToParts calls per evaluation. */
+  #realUtcOffsetHours(civil: SfCivilTime): number {
+    const hourKey = Math.floor(this.#civilDay * 24)
+    let cached = this.#realOffsetCache
+    if (!cached || cached.hourKey !== hourKey) {
+      cached = { hourKey, hours: sfUtcOffsetHours(civil) }
+      this.#realOffsetCache = cached
+    }
+    return cached.hours
+  }
+
+  /**
+   * CPU transcription of the uniform-only half of #skyRadiance — see the
+   * #uSky* uniform declarations for why. Runs on exactly the same cadence as
+   * #uSun (4 Hz in real-time mode, per-frame while a cycle scrubs), which is
+   * the only input besides the night-brightness slider.
+   *
+   * EVERY edge pair, constant and multiply below must stay byte-for-byte the
+   * same expression as the shader it replaced, or the sky and the IBL drift
+   * apart across the day. `smooth01` is the same clamp((x - a) / (b - a)) form
+   * WGSL's smoothstep uses, which is what makes the deliberately DESCENDING
+   * pairs (night, low sun) ramp as authored.
+   */
+  #applySkyPalette() {
+    const el = (this.#uSun.value as THREE.Vector3).y // sun elevation, sin-scaled
+    const lift = this.#nightLift
+    // phase weights: day fades out as the sun drops, night fades in below ~-6°,
+    // golden hour owns the gap
+    const dayW = smooth01(0.02, 0.32, el)
+    const nightW = smooth01(-0.1, -0.3, el)
+    const goldW = (1 - dayW) * (1 - nightW)
+    const lowSunW = smooth01(0.02, -0.16, el)
+    // mix(1, lift, lowSunW) — the slider lifts low-sun twilight, not just night
+    const lowSunLift = 1 + (lift - 1) * lowSunW
+    // moonlit night: the night palette carries a faint starlight/moonglow floor
+    // (feeds the IBL too, so surfaces pick it up), scaled by the night
+    // brightness slider
+    const nightLit = nightW * lowSunLift
+    const zen = this.#uSkyZenith.value as THREE.Vector3
+    zen.set(
+      0.12 * dayW + 0.1 * goldW + 0.022 * nightLit,
+      0.34 * dayW + 0.15 * goldW + 0.032 * nightLit,
+      0.8 * dayW + 0.33 * goldW + 0.062 * nightLit
+    )
+    const hor = this.#uSkyHorizon.value as THREE.Vector3
+    hor.set(
+      0.58 * dayW + 0.55 * goldW + 0.07 * nightLit,
+      0.75 * dayW + 0.34 * goldW + 0.098 * nightLit,
+      0.9 * dayW + 0.26 * goldW + 0.15 * nightLit
+    )
+    ;(this.#uSkyMean.value as THREE.Vector3).lerpVectors(hor, zen, 0.35)
+    const twilight = goldW * lowSunW * (lift - 1)
+    ;(this.#uSkyTwilight.value as THREE.Vector3).set(
+      0.014 * twilight,
+      0.02 * twilight,
+      0.038 * twilight
+    )
+    this.#uSkyGold.value = goldW
+  }
+
   #applySun() {
     const civil = this.civilTime
     const pos = solarPosition(
       civil,
       undefined,
       undefined,
-      this.realTime ? undefined : this.#simulatedUtcOffsetHours
+      this.realTime
+        ? this.#realUtcOffsetHours(civil)
+        : this.#simulatedUtcOffsetHours
     )
     this.sunElevation = pos.elevation
     this.sunAzimuth = pos.azimuth
     this.#sunVec.set(pos.x, pos.y, pos.z)
     ;(this.#uSun.value as THREE.Vector3).copy(this.#sunVec)
+    this.#applySkyPalette()
 
     const elevation = pos.elevation
     const dayW = smooth01(1.5, 18, elevation)
@@ -1158,6 +1365,11 @@ export class Sky {
     // exposure re-anchor factor; the day terms are the live day-grade sliders.
     const nb = this.#nightLift
     const lowSunLift = 1 + (nb - 1) * lowSunW
+    const skyFill =
+      SKY_TUNING.values.hemiDay * dayW +
+      EXPOSURE_REBASE * lowSunLift * (3.8 * goldW + 3.1 * nightW)
+    this.#scene.environmentIntensity =
+      SKY_IBL_REFERENCE_INTENSITY * skyFill / 0.9
     // Keep the official fog hue neutral at every hour. Only incident-light
     // energy falls with the sun, and the dome uses this same value so fully
     // fogged geometry has no horizon seam. Midday remains the exact reference.
@@ -1179,28 +1391,6 @@ export class Sky {
         6.2 * EXPOSURE_REBASE * lowSunLift * smooth01(1.5, 10, -elevation)
       SUN_DIR.copy(this.#sunVec).negate() // the moon is the light source now
     }
-
-    this.hemi.intensity =
-      SKY_TUNING.values.hemiDay * dayW +
-      EXPOSURE_REBASE * lowSunLift * (3.8 * goldW + 3.1 * nightW)
-    blend3(
-      this.hemi.color,
-      PALETTE.hemiSky.day,
-      PALETTE.hemiSky.gold,
-      PALETTE.hemiSky.night,
-      dayW,
-      goldW,
-      nightW
-    )
-    blend3(
-      this.hemi.groundColor,
-      PALETTE.hemiGround.day,
-      PALETTE.hemiGround.gold,
-      PALETTE.hemiGround.night,
-      dayW,
-      goldW,
-      nightW
-    )
 
     // the crown display holds its proportion to the ambient light: brilliant at
     // noon, eased down after dark so emissive landmarks do not blow out
@@ -1245,11 +1435,17 @@ export class Sky {
     }
 
     if (this.realTime) {
-      // default: mirror the real San-Francisco date + clock, wherever the player is
-      const now = sanFranciscoCivilNow()
-      this.#civilDay = sfCivilScalarDays(now)
-      this.timeOfDay = now.hour
-      this.#applySun() // the analytic env reads #uSun, so the IBL tracks for free
+      // default: mirror the real San-Francisco date + clock, wherever the player is.
+      // Sampled at 4 Hz — see #lastRealClockMs — because the ephemeris read is ICU
+      // work and the sun moves 0.0042° per frame.
+      const nowMs = performance.now()
+      if (nowMs - this.#lastRealClockMs >= 250) {
+        this.#lastRealClockMs = nowMs
+        const now = sanFranciscoCivilNow()
+        this.#civilDay = sfCivilScalarDays(now)
+        this.timeOfDay = now.hour
+        this.#applySun() // the analytic env reads #uSun, so the IBL tracks for free
+      }
     } else if (this.cycleEnabled && this.dayCycleSeconds > 0 && dt > 0) {
       this.#civilDay += dt / this.dayCycleSeconds
       this.timeOfDay = this.civilTime.hour

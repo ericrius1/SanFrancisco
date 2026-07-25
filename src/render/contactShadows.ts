@@ -19,6 +19,7 @@ import {
   vec4
 } from "three/tsl"
 import { SHADOW_DEFAULTS } from "../world/shadows/defaults.ts"
+import { governorEffects, onGovernorChange } from "./adaptiveResolution"
 
 /**
  * A deliberately small complement to the clipmap shadows. It covers the
@@ -197,7 +198,12 @@ export class ContactShadowPassNode extends THREE.TempNode {
   readonly fadeEnd = uniform(CONTACT_SHADOW_DEFAULTS.fadeEnd)
   readonly normalBias = uniform(CONTACT_SHADOW_DEFAULTS.normalBias)
 
+  /** Effective width/height scale applied to the R8 target (read by updateBefore). */
   resolutionScale: number
+  /** User ceiling from defaults/tweakpane; the governor never raises above it. */
+  #resolutionCeiling: number
+  /** Governor's contact-shadow allowance (0.5 normally, 0.35 under load). */
+  #governorContactScale = clamp(governorEffects().contactShadowScale, 0.25, 1)
 
   readonly #depthNode: any
   readonly #normalNode: any | null
@@ -232,7 +238,8 @@ export class ContactShadowPassNode extends THREE.TempNode {
     this.#normalEncoding = normalEncoding
     this.#light = light
     this.#sampleCount = options.samples
-    this.resolutionScale = options.resolutionScale
+    this.#resolutionCeiling = options.resolutionScale
+    this.resolutionScale = Math.min(this.#resolutionCeiling, this.#governorContactScale)
 
     // Object-reference uniforms track matrices mutated in place by Three.
     this.#cameraViewMatrix = uniform(camera.matrixWorldInverse)
@@ -267,7 +274,7 @@ export class ContactShadowPassNode extends THREE.TempNode {
 
   configure(options: Partial<ContactShadowRuntimeOptions>) {
     const normalized = normalizeContactShadowOptions({
-      resolutionScale: options.resolutionScale ?? this.resolutionScale,
+      resolutionScale: options.resolutionScale ?? this.#resolutionCeiling,
       maxDistance: options.maxDistance ?? Number(this.maxDistance.value),
       thickness: options.thickness ?? Number(this.thickness.value),
       intensity: options.intensity ?? Number(this.intensity.value),
@@ -276,13 +283,29 @@ export class ContactShadowPassNode extends THREE.TempNode {
       normalBias: options.normalBias ?? Number(this.normalBias.value),
       samples: this.#sampleCount
     })
-    this.resolutionScale = normalized.resolutionScale
+    // The tweakpane value is the user CEILING; the governor axis composes below.
+    this.#resolutionCeiling = normalized.resolutionScale
+    this.#applyResolution()
     this.maxDistance.value = normalized.maxDistance
     this.thickness.value = normalized.thickness
     this.intensity.value = normalized.intensity
     this.fadeStart.value = normalized.fadeStart
     this.fadeEnd.value = normalized.fadeEnd
     this.normalBias.value = normalized.normalBias
+  }
+
+  /** Set the governor's contact-shadow allowance; composes as a ceiling (min of
+   *  the user value and this), mirroring how the resolution governor caps
+   *  pixelRatio. updateBefore() resizes the R8 target from the result safely. */
+  setGovernorContactScale(scale: number) {
+    const next = clamp(scale, 0.25, 1)
+    if (next === this.#governorContactScale) return
+    this.#governorContactScale = next
+    this.#applyResolution()
+  }
+
+  #applyResolution() {
+    this.resolutionScale = Math.min(this.#resolutionCeiling, this.#governorContactScale)
   }
 
   setEnabled(enabled: boolean) {
@@ -383,6 +406,15 @@ export class ContactShadowPassNode extends THREE.TempNode {
         0.22,
         receiverNormal.dot(lightDirection)
       )
+      // smoothstep clamps, so `facing` is EXACTLY 0 at or below its lower edge,
+      // and the return multiplies the whole march by it — such a pixel always
+      // resolved to neutral 1. Retiring it here instead of after the march is
+      // therefore bit-identical (the target is cleared to neutral white for the
+      // sky/far discards above) and drops six screen-space taps plus their
+      // projection round-trips. It pays off hardest exactly where the pass is
+      // hottest: dense foliage, where the derivative-reconstructed receiver
+      // normal on sub-pixel blades points away from the key on most fragments.
+      facing.lessThanEqual(0).discard()
 
       const rayStart = receiverPosition
         .add(receiverNormal.mul(this.normalBias))
@@ -536,6 +568,13 @@ export function createContactShadowComplement(
     options,
     dependencies.normalEncoding ?? "packed-rgb"
   )
+  // Compose the adaptive-resolution governor's contact-shadow axis as a live
+  // ceiling on the R8 target size. The current level applies immediately; the
+  // subscription keeps it in step, and drops when the complement disposes.
+  pass.setGovernorContactScale(governorEffects().contactShadowScale)
+  const unsubscribeGovernor = onGovernorChange((effects) =>
+    pass.setGovernorContactScale(effects.contactShadowScale)
+  )
   const textureNode = pass.getTextureNode()
   const factorNode = textureNode.r
   const sample = (sampleUv?: any) =>
@@ -554,6 +593,9 @@ export function createContactShadowComplement(
       sceneColor.mul(vec4(vec3(sample(sampleUv)), 1)),
     configure: (runtimeOptions) => pass.configure(runtimeOptions),
     setEnabled: (enabled) => pass.setEnabled(enabled),
-    dispose: () => pass.dispose()
+    dispose: () => {
+      unsubscribeGovernor()
+      pass.dispose()
+    }
   }
 }

@@ -2,6 +2,7 @@ import type * as THREE from "three/webgpu";
 import { Vector2, Vector3 } from "three/webgpu";
 import {
   Fn,
+  If,
   float,
   vec2,
   vec3,
@@ -41,8 +42,13 @@ import type { PianoGodRaysParams } from "./pianoGodRaysTypes";
  * Everything runs AFTER tone mapping (the pipeline hands us display-referred
  * sRGB via renderOutput), so quantize/grain/vignette work on the 0..1 image
  * the eye actually sees. Toggles select one of eight cached shader graphs;
- * sliders are uniforms and live-update for free. No If() anywhere: build-time
- * JS branches only, so the mx_noise branch-corruption hazard never applies.
+ * sliders are uniforms and live-update for free. Style stages use build-time JS
+ * branches only — never If() — so the mx_noise branch-corruption hazard never
+ * applies to the noise-bearing code. The only two exceptions are the underwater
+ * package and the surf flow grade, each skipped by one uniform-driven If();
+ * neither contains noise nodes, and both conditions are uniform-buffer reads,
+ * so the branches are uniform control flow and the textureSample calls inside
+ * them stay legal WGSL.
  */
 export const POSTFX_TUNING = tunables("postfx", {
   fxaa: { v: false, label: "FXAA" },
@@ -142,9 +148,10 @@ const U = {
   flowAmount: uniform(0),
   flowPhase: uniform(0),
   // Underwater package (fx/underwaterRig.ts drives these per frame). All of
-  // them default to the exact "dry" identity so the permanently-present nodes
-  // cost only coherent arithmetic while the camera is above the surface, and
-  // submerging never selects a different pipeline.
+  // them default to the exact "dry" identity, and uwSubmersion doubles as the
+  // uniform branch condition that skips the whole package's taps while the
+  // camera is above the surface — so dry frames pay nothing and submerging
+  // still never selects a different pipeline.
   uwSubmersion: uniform(0),
   uwSigma: uniform(new Vector3(0.38, 0.085, 0.05)), // per-channel extinction /m
   uwSigmaScale: uniform(1), // artist "visibility" scalar over sigma
@@ -308,43 +315,54 @@ export function createPostFx(deps: {
       if (contactFactorAt) lin = lin.mul(contactFactorAt(uv));
 
       // ---- underwater package: per-channel Beer-Lambert fog + refracted-sun
-      // god rays, in linear light before tone mapping. Present in EVERY cached
-      // variant so submerging never selects a new pipeline; when dry the fog
-      // mixes by exactly 0 and the ray gain is exactly 0, and the ray step
-      // collapses to zero so all taps hit the same texel (cache-coherent).
-      // Branchless throughout — see the mx_noise/If() hazard note above.
+      // god rays, in linear light before tone mapping. Still present in EVERY
+      // cached variant so submerging never selects a new pipeline — but the
+      // whole package (one full-res depth tap + 16 radial scene taps + ~220
+      // ALU) now sits behind a UNIFORM branch instead of running dry. The
+      // condition is a uniform-buffer read, so the branch is uniform for the
+      // entire draw: the GPU skips the block outright rather than masking it,
+      // and textureSample inside uniform control flow is legal WGSL.
+      //
+      // The skip is bit-identical to the old branchless form: underwaterRig
+      // drives rayAmount as `ease * …`, so submersion === 0 implies rayAmount
+      // === 0, and latchDry() zeroes both. At submersion 0 the fog mixed by
+      // exactly 0 and the rays added exactly 0.
       if (uwDepthTex) {
-        const uwViewPos = getViewPosition(uv, uwDepthTex.sample(uv).r, projInv);
-        // Camera is submerged, so water starts at the near plane: the fog path
-        // is simply the per-pixel view distance. Clamp for sky/far pixels —
-        // transmittance is already ~0 well before 240 m of water.
-        const uwDist = uwViewPos.length().min(240.0);
-        const uwSigma = U.uwSigma.mul(U.uwSigmaScale);
-        const uwTrans = uwDist.negate().mul(uwSigma).exp();
-        const uwViewDir = uwViewPos.normalize();
-        // In-scatter: ambient term (depth-graded on the CPU) plus a forward
-        // lobe toward the refracted sun for that silty light-in-water glow.
-        const uwSunAlign = uwViewDir.dot(U.uwSunViewDir).max(0.0);
-        const uwScatter = U.uwScatterAmbient.add(U.uwSunScatter.mul(uwSunAlign.pow(6.0)));
-        const uwFogged = lin.mul(uwTrans).add(uwScatter.mul(uwTrans.oneMinus()));
-        lin = mix(lin, uwFogged, U.uwSubmersion);
+        const linUw = lin.toVar();
+        If(U.uwSubmersion.greaterThan(0), () => {
+          const uwViewPos = getViewPosition(uv, uwDepthTex.sample(uv).r, projInv);
+          // Camera is submerged, so water starts at the near plane: the fog path
+          // is simply the per-pixel view distance. Clamp for sky/far pixels —
+          // transmittance is already ~0 well before 240 m of water.
+          const uwDist = uwViewPos.length().min(240.0);
+          const uwSigma = U.uwSigma.mul(U.uwSigmaScale);
+          const uwTrans = uwDist.negate().mul(uwSigma).exp();
+          const uwViewDir = uwViewPos.normalize();
+          // In-scatter: ambient term (depth-graded on the CPU) plus a forward
+          // lobe toward the refracted sun for that silty light-in-water glow.
+          const uwSunAlign = uwViewDir.dot(U.uwSunViewDir).max(0.0);
+          const uwScatter = U.uwScatterAmbient.add(U.uwSunScatter.mul(uwSunAlign.pow(6.0)));
+          const uwFogged = linUw.mul(uwTrans).add(uwScatter.mul(uwTrans.oneMinus()));
+          linUw.assign(mix(linUw, uwFogged, U.uwSubmersion));
 
-        // God rays: 16 fixed radial taps of the bright scene toward the
-        // refracted sun's screen anchor. Weights decay away from the pixel;
-        // the luminance gate keeps only genuinely bright sources (sun disc,
-        // bright surface shimmer) so the veil doesn't lift the whole frame.
-        const uwRayStep = U.uwSunScreen.sub(uv).mul(U.uwSubmersion.mul(0.052));
-        let uwRays: any = vec3(0);
-        let uwWeightSum = 0;
-        for (let i = 1; i <= 16; i++) {
-          const w = Math.pow(0.86, i);
-          uwWeightSum += w;
-          const s = sourceTexture.sample(uv.add(uwRayStep.mul(i))).rgb;
-          uwRays = uwRays.add(s.mul(smoothstep(0.3, 1.1, luminance(s))).mul(w));
-        }
-        lin = lin.add(
-          uwRays.mul(U.uwRayAmount.div(uwWeightSum)).mul(vec3(0.5, 0.82, 1.0))
-        );
+          // God rays: 16 fixed radial taps of the bright scene toward the
+          // refracted sun's screen anchor. Weights decay away from the pixel;
+          // the luminance gate keeps only genuinely bright sources (sun disc,
+          // bright surface shimmer) so the veil doesn't lift the whole frame.
+          const uwRayStep = U.uwSunScreen.sub(uv).mul(U.uwSubmersion.mul(0.052));
+          let uwRays: any = vec3(0);
+          let uwWeightSum = 0;
+          for (let i = 1; i <= 16; i++) {
+            const w = Math.pow(0.86, i);
+            uwWeightSum += w;
+            const s = sourceTexture.sample(uv.add(uwRayStep.mul(i))).rgb;
+            uwRays = uwRays.add(s.mul(smoothstep(0.3, 1.1, luminance(s))).mul(w));
+          }
+          linUw.addAssign(
+            uwRays.mul(U.uwRayAmount.div(uwWeightSum)).mul(vec3(0.5, 0.82, 1.0))
+          );
+        });
+        lin = linUw;
       }
 
       const c = renderOutput(vec4(lin, 1)).rgb.toVar();
@@ -467,20 +485,37 @@ export function createPostFx(deps: {
 
       // Sea-glass tri-tone, pearlescent caustic ring and a warm sun flash.
       // Presentation time stays unscaled while only the local rider slows.
+      //
+      // Every term here is multiplied by flowAmount, so at the default 0 the
+      // block already contributed exactly nothing — it just did so at ~60 ALU
+      // per OUTPUT pixel of the fullscreen composite, in every variant, at
+      // every stop. Same uniform-If treatment as the underwater package above:
+      // the condition is a uniform-buffer read, so the whole draw skips it
+      // rather than masking it, and the skip is bit-identical at amount 0
+      // (mix(c, ·, 0) === c, and every added term carries a `flow` factor).
+      //
+      // The tri-tone mix deliberately stays OUTSIDE the branch. It is the one
+      // unconditional read of `c` in the default (no ink/ukiyo/dream/retro)
+      // variant, so it is what materialises `c`'s var in the base flow rather
+      // than inside a conditional; the branch below then only ever reads and
+      // reassigns an already-live var. `flowDist`/`flowFall` are likewise
+      // materialised by the lens UV block above, which still runs.
       const flow = U.flowAmount;
       const flowGrade = c
         .mul(vec3(0.9, 1.075, 1.045))
         .add(vec3(0.025, 0.045, 0.032));
       c.assign(mix(c, flowGrade, flow.mul(0.78)));
-      c.assign(saturation(c, float(1).add(flow.mul(0.14))));
-      const ringRadius = U.flowPhase.mul(0.11).fract().mul(0.72).add(0.08);
-      const pearlRing = smoothstep(0.0, 0.065, flowDist.sub(ringRadius).abs())
-        .oneMinus()
-        .mul(flowFall)
-        .mul(flow);
-      c.addAssign(vec3(0.2, 0.88, 0.72).mul(pearlRing).mul(0.17));
-      const sunPulse = U.flowPhase.mul(2.3).sin().mul(0.5).add(0.5).pow(5).mul(flow);
-      c.addAssign(vec3(1.0, 0.52, 0.22).mul(sunPulse).mul(0.045));
+      If(flow.greaterThan(0), () => {
+        c.assign(saturation(c, float(1).add(flow.mul(0.14))));
+        const ringRadius = U.flowPhase.mul(0.11).fract().mul(0.72).add(0.08);
+        const pearlRing = smoothstep(0.0, 0.065, flowDist.sub(ringRadius).abs())
+          .oneMinus()
+          .mul(flowFall)
+          .mul(flow);
+        c.addAssign(vec3(0.2, 0.88, 0.72).mul(pearlRing).mul(0.17));
+        const sunPulse = U.flowPhase.mul(2.3).sin().mul(0.5).add(0.5).pow(5).mul(flow);
+        c.addAssign(vec3(1.0, 0.52, 0.22).mul(sunPulse).mul(0.045));
+      });
 
       // ---- retro crt: dithered quantize on the virtual grid + scanlines
       if (retro) {
