@@ -176,6 +176,46 @@ async function main() {
       await sleep(700);
     }
 
+    // The fixed settle above is NOT enough for regional foliage or a full
+    // citygen prepare. Measuring before they land silently benchmarks an empty
+    // meadow — that is how this probe once reported 0.9 ms at the botanical
+    // meadow and 12.9 ms on another run of the same build. Keep ticking until
+    // residency actually reports ready (or the budget expires, which is logged
+    // loudly rather than folded into the numbers).
+    const residencyT0 = Date.now();
+    let resident = false;
+    while (Date.now() - residencyT0 < 120000) {
+      await ev(c, `(async()=>{for(let i=0;i<20;i++){window.__sf.tick(1/60);} return true;})()`);
+      try {
+        resident = await ev(c, `(()=>{
+          const sf = window.__sf;
+          // Regional foliage: the garden owns the ground wherever it exists, and
+          // a wildlands site is deliberately absent at some stops — so only
+          // require an owner that is actually present.
+          const g = sf.garden;
+          const gardenReady = !g || !!g.group?.parent;
+          const w = sf.wildlands;
+          const wildReady = !w || (w.groups?.length && w.groups.every((group) => group.parent));
+          // Citygen: no cell may still be waiting on or inside a prepare.
+          const cg = sf.citygenRing?.stats?.() ?? sf.citygen?.stats ?? null;
+          const cityReady = !cg || (cg.cellsAwaitingPrepare === 0 && !cg.activeChunkPrepare && cg.cellsPreparing === 0);
+          return gardenReady && wildReady && cityReady;
+        })()`);
+      } catch { resident = false; }
+      if (resident) break;
+      await sleep(500);
+    }
+    if (!resident) console.warn(`  [${stop.name}] WARNING: residency gate timed out — numbers below may benchmark a partially streamed scene`);
+
+    // KNOWN REMAINING FLAW — read before trusting a single tier row.
+    // WARM below is not enough to drain the work a tier switch kicks off
+    // (pipeline rebuilds, render-target reallocation, shadow-map refill), so
+    // the FIRST tier measured at a stop absorbs it and reads far too slow.
+    // The tell is a row where a HIGHER dpr is faster: e.g. downtown once
+    // reported 20.8 ms at dpr1 and 1.3 ms at dpr1.5 in the same run. Compare
+    // stops only within the same tier index, treat tier[0] as a throwaway, and
+    // prefer a row that is stable across all four tiers (as the meadow's
+    // 28-36 ms is) over any single number.
     const stopRow = { name: stop.name, tiers: {} };
     for (const tier of TIERS) {
       await ev(c, `window.__tier(${tier.dpr}, "${tier.shadows}")`);

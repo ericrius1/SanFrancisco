@@ -9,6 +9,12 @@ type FrameTracer = {
 
 export type FrameDriver = {
   setManual(enabled: boolean): void;
+  /**
+   * The entry point every deterministic/manual tick MUST use (probes, cinematic
+   * capture, calibration). Identical to the wall-clock loop's tick except that
+   * it advances the node frame token itself — see advanceNodeFrame below.
+   */
+  manualTick(forcedDt?: number): void;
   resize(): void;
   readonly debugState: {
     manual: boolean;
@@ -17,6 +23,28 @@ export type FrameDriver = {
     ticks: number;
   };
   dispose(): void;
+};
+
+/** three's node frame token, reached through the renderer's private `_nodes`. */
+type NodeFrameHost = { _nodes?: { nodeFrame?: { update(): void } } };
+
+/**
+ * Advance three's node frame token by hand.
+ *
+ * `PassNode.updateBeforeType` is `NodeUpdateType.FRAME`, so the post chain's
+ * scene pass re-renders ONLY when `nodeFrame.frameId` changed since it last ran
+ * (NodeFrame.updateBeforeNode). That token is bumped in exactly one place —
+ * `Animation.start()`'s rAF callback (`nodes.nodeFrame.update()`) — which is
+ * the renderer's own loop, NOT `renderer.render()`.
+ *
+ * A manual tick therefore composites without re-rendering the scene: the
+ * post-processing pass runs, samples the PREVIOUS scene texture, and presents a
+ * stale frame. It goes unnoticed whenever a manual tick loop happens to be slow
+ * enough for rAF to interleave (or whenever something calls `compileAsync`,
+ * which also bumps the token) — which is why cheaper frames made it visible.
+ */
+const advanceNodeFrame = (renderer: THREE.WebGPURenderer) => {
+  (renderer as unknown as NodeFrameHost)._nodes?.nodeFrame?.update();
 };
 
 /**
@@ -139,6 +167,14 @@ export function startFrameDriver(opts: {
 
   return {
     setManual,
+    manualTick(forcedDt?: number) {
+      // Only when the renderer's loop is parked: a live frame already got its
+      // token from Animation's rAF callback, and a second bump there would make
+      // every FRAME-scoped node (the scene pass above all) run twice per frame.
+      if (manual) advanceNodeFrame(renderer);
+      ticks++;
+      tick(forcedDt);
+    },
     resize,
     get debugState() {
       return { manual, pageVisible, loopRunning, ticks };

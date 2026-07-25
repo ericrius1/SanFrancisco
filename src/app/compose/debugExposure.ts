@@ -23,7 +23,7 @@ export async function installDebugSurfaces(
   frameB: Awaited<ReturnType<typeof import("./frameBody").composeFrameBody>>,
   extra: {
     dynRes: unknown;
-    frameDriver: unknown;
+    frameDriver: import("../frameDriver").FrameDriver;
     farOcclusion: unknown;
     ringCoordinator: import("../ringCoordinator").RingCoordinator;
     terrainTiles: import("../../world/terrainTiles").TerrainTileStreamer | null;
@@ -33,7 +33,13 @@ export async function installDebugSurfaces(
   const { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, scheduler, chase, map, input, sky, worldArrival, voidRealm, audioEngine } = ctx;
   const { hud, fx, fireworks, graffiti, bubbles, setTool, setColor, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, nature, dogParkAudio, ballImpactAudio, boardWake, abandonedMounts, embodiments, paintballs, paintSkins, satchel, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, ensureSurfRuntime, setFoliageVisible, buskers, buskerTalk, siteGate } = core;
   const { debugPanel, net, remotes, voice, minimap, playerLocator, ghostShipBeacon, switchMode, buildShareUrl, tutorial, teleportToTarget, debugOverlays, calibrationChart, ensureCarCustomizer, lazyRegionTimings, sites, teaGarden, oceanKite, board, car, applyBoardConfig } = netW;
-  const { tick } = frameB;
+  // `__sf.tick` is the deterministic-capture entry (perf/calibration probes,
+  // cinematic reels), so it must go through the frame driver's manual tick: a
+  // tick that replaces the renderer's animation loop has to advance three's
+  // node frame token itself, or the post chain re-presents the previous scene
+  // texture (frameDriver.ts, advanceNodeFrame). While the wall-clock loop is
+  // running this is byte-identical to calling frameB.tick directly.
+  const tick = extra.frameDriver.manualTick;
 
   // Dev/profile-only free camera for headless render probes: locks the camera
   // to a fixed eye→target via the cine hook (owns pose+camera, so chase can't
