@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { attribute, int, uniformArray } from "three/tsl";
 import {
   avatarFromSeed,
   CLOTHING_COLORS,
@@ -241,7 +242,15 @@ export function applyAvatarToRig(rig: Rig, avatar: AvatarTraits) {
   }
 }
 
-export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
+/**
+ * Classic rig: ~73 individual box meshes with ~12 tintable MeshLambert slots.
+ * Kept verbatim for NPC customizers that do per-part surgery the merged rig
+ * can't express — reassigning a named block's `.material` (bathingCostume),
+ * swapping `headBlock.geometry`, hunting meshes by material identity, or hiding
+ * the shades by opacity (buskers, tea master, pianist). Those callers pass
+ * `{ merged: false }`; everyone else gets the single-SkinnedMesh build.
+ */
+function buildRigClassic(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
   const materials = makeAvatarMaterials();
   const group = new THREE.Group();
   const hair: RigAvatarState["hair"] = { short: [], bob: [], mohawk: [], buzz: [], long: [] };
@@ -437,6 +446,424 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
   };
   applyAvatarToRig(rig, avatar);
   return rig;
+}
+
+/* ------------------------------------------------ merged skinned rig */
+
+// One SkinnedMesh per character instead of ~73 box meshes. Every classic part
+// becomes a rigidly-skinned box (100% weight to one bone); every joint/part is
+// a THREE.Bone mirroring the classic Group hierarchy 1:1 (same names, same
+// neutral transforms), so the pose/IK/attachment code that only mutates those
+// named objects keeps working untouched. Per-part tint is a per-vertex palette
+// index into a per-rig uniform colour array — one shared MeshLambert node
+// material definition (no pipeline permutations, no light-count change), just
+// different uniform values per rig. Variant parts (hair/hat/outfit sets) hide
+// by collapsing their bone to ZERO_SCALE (the tree-forest trick), so the bind
+// geometry never depends on avatar traits and is baked once and shared.
+
+const SLOT_NAMES = [
+  "jacket", "sleeve", "shirt", "pants", "shoe", "sole",
+  "skin", "hat", "visor", "pack", "hair", "trim"
+] as const;
+type SlotName = (typeof SLOT_NAMES)[number];
+const SLOT = Object.fromEntries(SLOT_NAMES.map((n, i) => [n, i])) as Record<SlotName, number>;
+
+const RIG_ZERO_SCALE = 1e-6; // collapse a bone to hide its box (tree-forest trick)
+
+// TSL node type escape hatch (same convention as src/fx/* and the shadow nodes).
+type N = any;
+
+// The bind geometry is avatar-independent (variants, tints and silhouette are
+// all runtime bone-scale + palette uniforms), so it is baked once against the
+// neutral skeleton and shared by every rig; each rig owns only its skeleton,
+// node material and palette. Its dispose() is a no-op — this is app-lifetime
+// shared state (like the boxGeo cache) that blanket teardown traversals must
+// never free out from under other live rigs.
+let MERGED_RIG_GEO: THREE.BufferGeometry | null = null;
+
+/** Toggle a part bone's visibility by collapsing/restoring its scale — keeps the
+ *  classic `item.visible = false` API working on a SkinnedMesh, where a bone's
+ *  own `.visible` flag cannot hide its skinned vertices. Only applied to variant
+ *  parts (never the silhouette-scaled base blocks). */
+function makeToggleable(bone: THREE.Object3D): void {
+  let shown = true;
+  Object.defineProperty(bone, "visible", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return shown;
+    },
+    set(value: boolean) {
+      shown = value;
+      bone.scale.setScalar(value ? 1 : RIG_ZERO_SCALE);
+    }
+  });
+}
+
+/** One shared MeshLambert node material definition; the per-rig palette lives in
+ *  a uniform colour array indexed by a per-vertex slot attribute. Two rigs'
+ *  materials are structurally identical → one compiled pipeline, different
+ *  uniform values. Lambert lighting is unchanged from the classic per-part
+ *  MeshLambertMaterial; only the diffuse colour is sourced from the palette. */
+function makeRigPaletteMaterial(paletteColors: THREE.Color[]): THREE.MeshLambertNodeMaterial {
+  const material = new THREE.MeshLambertNodeMaterial();
+  const palette = uniformArray(paletteColors);
+  // +0.5 then truncate: the attribute is constant across each face (all a box's
+  // verts carry one slot), so this rounds it back to the exact integer index.
+  const slotIndex = int((attribute("paletteIndex", "float") as N).add(0.5));
+  material.colorNode = palette.element(slotIndex) as N;
+  return material;
+}
+
+function makeMergedMaterials(paletteColors: THREE.Color[], disposeMaterial: () => void): AvatarMaterials {
+  const slot = (name: SlotName) => ({ color: paletteColors[SLOT[name]], dispose: disposeMaterial });
+  // Structural shim: applyAvatarToRig and NPC recolours only touch `.color`
+  // (writes flow straight into the palette uniform array), and dispose routes to
+  // the one node material. Cast because it is not a real MeshLambertMaterial.
+  return {
+    jacket: slot("jacket"), sleeve: slot("sleeve"), shirt: slot("shirt"), pants: slot("pants"),
+    shoe: slot("shoe"), sole: slot("sole"), skin: slot("skin"), hat: slot("hat"),
+    visor: slot("visor"), pack: slot("pack"), hair: slot("hair"), trim: slot("trim")
+  } as unknown as AvatarMaterials;
+}
+
+type MergedPartBox = { bone: THREE.Bone; index: number; w: number; h: number; d: number; slot: number };
+
+/** Bake every part box into one buffer geometry in bind (neutral) space, each
+ *  vertex rigidly weighted (weight 1) to its part bone. Called once; the result
+ *  is shared by every rig (the bind pose is avatar-independent). */
+function bakeMergedGeometry(partBoxes: MergedPartBox[]): THREE.BufferGeometry {
+  const position: number[] = [];
+  const normal: number[] = [];
+  const skinIndex: number[] = [];
+  const skinWeight: number[] = [];
+  const paletteIndex: number[] = [];
+  const indices: number[] = [];
+  const nm = new THREE.Matrix3();
+  const v = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  for (const part of partBoxes) {
+    const src = boxGeo(part.w, part.h, part.d);
+    const srcPos = src.attributes.position;
+    const srcNor = src.attributes.normal;
+    const srcIdx = src.index;
+    const world = part.bone.matrixWorld;
+    nm.getNormalMatrix(world);
+    const base = position.length / 3;
+    for (let i = 0; i < srcPos.count; i++) {
+      v.fromBufferAttribute(srcPos, i).applyMatrix4(world);
+      n.fromBufferAttribute(srcNor, i).applyMatrix3(nm).normalize();
+      position.push(v.x, v.y, v.z);
+      normal.push(n.x, n.y, n.z);
+      skinIndex.push(part.index, 0, 0, 0);
+      skinWeight.push(1, 0, 0, 0);
+      paletteIndex.push(part.slot);
+    }
+    if (srcIdx) {
+      for (let i = 0; i < srcIdx.count; i++) indices.push(base + srcIdx.getX(i));
+    } else {
+      for (let i = 0; i < srcPos.count; i++) indices.push(base + i);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(position, 3));
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normal, 3));
+  geometry.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(skinIndex, 4));
+  geometry.setAttribute("skinWeight", new THREE.Float32BufferAttribute(skinWeight, 4));
+  geometry.setAttribute("paletteIndex", new THREE.Float32BufferAttribute(paletteIndex, 1));
+  geometry.setIndex(indices);
+  // Generous static bounds so a consumer that re-enables frustum culling (e.g.
+  // coronaHeights.tunePropRendering) can never wrongly cull an animated pose.
+  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, -0.1, 0), 3);
+  geometry.boundingBox = new THREE.Box3(new THREE.Vector3(-1.6, -2.2, -1.6), new THREE.Vector3(1.6, 2.2, 1.6));
+  // App-lifetime shared: neutralise dispose so a rig-teardown traversal can't
+  // free the geometry every other live rig still renders from.
+  geometry.dispose = () => {};
+  return geometry;
+}
+
+function buildRigMerged(avatar: AvatarTraits): Rig {
+  const group = new THREE.Group();
+
+  // per-rig palette: applyAvatarToRig overwrites the tinted slots; the fixed
+  // slots (shoe/sole/visor) carry the same constants the classic mats used.
+  const paletteColors = SLOT_NAMES.map(() => new THREE.Color(0xffffff));
+  paletteColors[SLOT.shoe].set(0xe8e4da);
+  paletteColors[SLOT.sole].set(0x1b1d22);
+  paletteColors[SLOT.visor].set(0x14181e);
+  const material = makeRigPaletteMaterial(paletteColors);
+  let materialDisposed = false;
+  const disposeMaterial = () => {
+    if (materialDisposed) return;
+    materialDisposed = true;
+    material.dispose();
+  };
+  const materials = makeMergedMaterials(paletteColors, disposeMaterial);
+
+  const bones: THREE.Bone[] = [];
+  const partBoxes: MergedPartBox[] = [];
+
+  const joint = (parent: THREE.Object3D, name: string, x = 0, y = 0, z = 0): THREE.Bone => {
+    const b = new THREE.Bone();
+    b.name = name;
+    b.position.set(x, y, z);
+    parent.add(b);
+    bones.push(b);
+    return b;
+  };
+  // A visual box: its own bone at the box centre (so it scales/hides/moves
+  // exactly like the classic mesh) with the box baked in, weighted 100% to it.
+  const box = (
+    parent: THREE.Object3D, mat: SlotName, w: number, h: number, d: number,
+    x: number, y: number, z: number
+  ): THREE.Bone => {
+    const b = new THREE.Bone();
+    b.position.set(x, y, z);
+    parent.add(b);
+    partBoxes.push({ bone: b, index: bones.length, w, h, d, slot: SLOT[mat] });
+    bones.push(b);
+    return b;
+  };
+
+  // buckets (mirror buildRigClassic exactly)
+  const hair: RigAvatarState["hair"] = { short: [], bob: [], mohawk: [], buzz: [], long: [] };
+  const hairCrowns: THREE.Object3D[] = [];
+  const hats: RigAvatarState["hats"] = { none: [], cap: [], beanie: [], visor: [], crown: [] };
+  const outfits: RigAvatarState["outfits"] = { jacket: [], hoodie: [], tee: [], overalls: [], dress: [] };
+  const allHair: THREE.Object3D[] = [];
+  const allHats: THREE.Object3D[] = [];
+  const allOutfits: THREE.Object3D[] = [];
+  const armBlocks: THREE.Bone[] = [];
+  const legBlocks: THREE.Bone[] = [];
+  const crown = <T extends THREE.Object3D>(item: T): T => {
+    hairCrowns.push(item);
+    return item;
+  };
+
+  const hips = joint(group, "hips"); // re-parented under the mesh below
+  const hipBlock = box(hips, "pants", 0.36, 0.22, 0.24, 0, 0.01, 0);
+
+  const torso = joint(hips, "torso", 0, 0.12, 0);
+  const torsoBlock = box(torso, "jacket", 0.44, 0.42, 0.26, 0, 0.22, 0);
+  push(outfits.jacket, box(torso, "shirt", 0.1, 0.38, 0.03, 0, 0.22, -0.135));
+  push(outfits.jacket, box(torso, "pack", 0.34, 0.34, 0.14, 0, 0.2, 0.2));
+  push(outfits.jacket, box(torso, "sole", 0.06, 0.3, 0.02, -0.12, 0.24, -0.14));
+  push(outfits.jacket, box(torso, "sole", 0.06, 0.3, 0.02, 0.12, 0.24, -0.14));
+  push(outfits.hoodie, box(torso, "trim", 0.25, 0.13, 0.08, 0, 0.42, 0.12));
+  push(outfits.hoodie, box(torso, "shirt", 0.24, 0.08, 0.035, 0, 0.11, -0.15));
+  push(outfits.hoodie, box(torso, "shirt", 0.16, 0.04, 0.03, 0, 0.31, -0.15));
+  push(outfits.tee, box(torso, "trim", 0.18, 0.16, 0.035, 0, 0.25, -0.15));
+  push(outfits.tee, box(torso, "jacket", 0.14, 0.12, 0.15, -0.29, 0.33, 0));
+  push(outfits.tee, box(torso, "jacket", 0.14, 0.12, 0.15, 0.29, 0.33, 0));
+  push(outfits.overalls, box(torso, "pants", 0.08, 0.36, 0.035, -0.1, 0.22, -0.15));
+  push(outfits.overalls, box(torso, "pants", 0.08, 0.36, 0.035, 0.1, 0.22, -0.15));
+  push(outfits.overalls, box(torso, "trim", 0.27, 0.1, 0.04, 0, 0.12, -0.155));
+  push(outfits.dress, box(torso, "shirt", 0.16, 0.2, 0.035, 0, 0.29, -0.15));
+  push(outfits.dress, box(torso, "trim", 0.38, 0.05, 0.29, 0, 0.02, 0));
+  push(outfits.dress, box(hips, "jacket", 0.52, 0.38, 0.3, 0, -0.17, 0));
+  push(outfits.dress, box(hips, "trim", 0.54, 0.055, 0.31, 0, -0.34, -0.01));
+  allOutfits.push(...outfits.jacket, ...outfits.hoodie, ...outfits.tee, ...outfits.overalls, ...outfits.dress);
+
+  const head = joint(torso, "head", 0, 0.46, 0);
+  box(head, "skin", 0.12, 0.1, 0.12, 0, 0.04, 0); // neck
+  const headBlock = box(head, "skin", 0.26, 0.26, 0.26, 0, 0.2, 0);
+  box(head, "visor", 0.24, 0.07, 0.03, 0, 0.23, -0.145); // shades
+  box(head, "skin", 0.05, 0.06, 0.05, 0, 0.15, -0.15); // nose
+  push(hair.short, crown(box(head, "hair", 0.29, 0.05, 0.28, 0, 0.365, 0)));
+  push(hair.buzz, crown(box(head, "hair", 0.28, 0.024, 0.28, 0, 0.342, 0)));
+  push(hair.bob, crown(box(head, "hair", 0.3, 0.05, 0.28, 0, 0.365, 0)));
+  push(hair.bob, box(head, "hair", 0.07, 0.22, 0.12, -0.17, 0.21, 0.03));
+  push(hair.bob, box(head, "hair", 0.07, 0.22, 0.12, 0.17, 0.21, 0.03));
+  push(hair.long, crown(box(head, "hair", 0.3, 0.05, 0.28, 0, 0.365, 0)));
+  push(hair.long, box(head, "hair", 0.24, 0.28, 0.08, 0, 0.16, 0.16));
+  push(hair.long, box(head, "hair", 0.055, 0.24, 0.08, -0.17, 0.18, 0.08));
+  push(hair.long, box(head, "hair", 0.055, 0.24, 0.08, 0.17, 0.18, 0.08));
+  push(hair.mohawk, crown(box(head, "hair", 0.09, 0.18, 0.32, 0, 0.39, 0)));
+  allHair.push(...hair.short, ...hair.bob, ...hair.mohawk, ...hair.buzz, ...hair.long);
+  push(hats.cap, box(head, "hat", 0.28, 0.1, 0.28, 0, 0.355, 0));
+  push(hats.cap, box(head, "hat", 0.26, 0.03, 0.16, 0, 0.32, -0.2)); // brim
+  push(hats.beanie, box(head, "hat", 0.29, 0.12, 0.29, 0, 0.365, 0));
+  push(hats.beanie, box(head, "trim", 0.31, 0.04, 0.3, 0, 0.305, 0));
+  push(hats.visor, box(head, "hat", 0.3, 0.045, 0.29, 0, 0.318, 0));
+  push(hats.visor, box(head, "hat", 0.28, 0.03, 0.18, 0, 0.305, -0.2));
+  push(hats.crown, box(head, "hat", 0.3, 0.045, 0.3, 0, 0.42, 0));
+  for (const x of [-0.11, 0, 0.11]) push(hats.crown, box(head, "trim", 0.055, 0.13, 0.055, x, 0.48, -0.08));
+  allHats.push(...hats.cap, ...hats.beanie, ...hats.visor, ...hats.crown);
+
+  const arm = (side: 1 | -1) => {
+    const shoulder = joint(torso, side === 1 ? "shoulder-L" : "shoulder-R", side * 0.28, 0.38, 0);
+    armBlocks.push(box(shoulder, "sleeve", 0.12, 0.3, 0.14, 0, -0.13, 0));
+    const fore = joint(shoulder, side === 1 ? "fore-L" : "fore-R", 0, -0.3, 0);
+    armBlocks.push(box(fore, "sleeve", 0.1, 0.16, 0.12, 0, -0.07, 0));
+    box(fore, "skin", 0.09, 0.12, 0.1, 0, -0.2, 0); // wrist
+    const hand = joint(fore, side === 1 ? "hand-L" : "hand-R", 0, -0.3, -0.01);
+    box(hand, "skin", 0.09, 0.1, 0.11, 0, 0, 0); // palm
+    const fingers = joint(hand, side === 1 ? "fingers-L" : "fingers-R", -side * 0.016, -0.038, -0.05);
+    box(fingers, "skin", 0.056, 0.028, 0.06, 0, -0.006, -0.022);
+    const fingersTip = joint(fingers, side === 1 ? "fingersTip-L" : "fingersTip-R", 0, -0.006, -0.05);
+    box(fingersTip, "skin", 0.052, 0.026, 0.048, 0, 0, -0.018);
+    const index = joint(hand, side === 1 ? "index-L" : "index-R", side * 0.028, -0.038, -0.05);
+    box(index, "skin", 0.026, 0.028, 0.062, 0, -0.006, -0.023);
+    const indexTip = joint(index, side === 1 ? "indexTip-L" : "indexTip-R", 0, -0.006, -0.052);
+    box(indexTip, "skin", 0.024, 0.026, 0.05, 0, 0, -0.019);
+    const thumb = joint(hand, side === 1 ? "thumb-L" : "thumb-R", side * 0.045, -0.025, -0.04);
+    box(thumb, "skin", 0.028, 0.032, 0.055, side * 0.004, -0.004, -0.02);
+    return { shoulder, fore, hand, fingers, fingersTip, index, indexTip, thumb };
+  };
+  const aL = arm(1);
+  const aR = arm(-1);
+
+  const leg = (side: 1 | -1) => {
+    const hip = joint(hips, side === 1 ? "leg-L" : "leg-R", side * 0.13, -0.08, 0);
+    legBlocks.push(box(hip, "pants", 0.16, 0.36, 0.18, 0, -0.19, 0));
+    const shin = joint(hip, side === 1 ? "shin-L" : "shin-R", 0, -0.4, 0);
+    legBlocks.push(box(shin, "pants", 0.14, 0.3, 0.15, 0, -0.15, 0));
+    box(shin, "shoe", 0.15, 0.09, 0.3, 0, -0.35, -0.06); // toe
+    box(shin, "sole", 0.16, 0.03, 0.31, 0, -0.41, -0.06); // baked visible sole
+    // Invisible measurement proxy at the same spot (surf sole-to-deck clearance
+    // reads sole.geometry.boundingBox + matrixWorld). Own geometry AND material
+    // so a teardown traversal that disposes them can't touch shared state — the
+    // proxy never renders, so two extra state-free materials per rig are free.
+    const sole = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.03, 0.31), new THREE.MeshBasicMaterial());
+    sole.position.set(0, -0.41, -0.06);
+    sole.visible = false;
+    sole.name = side === 1 ? "sole-L" : "sole-R";
+    shin.add(sole);
+    return { hip, shin, sole };
+  };
+  const lL = leg(1);
+  const lR = leg(-1);
+
+  // Hide-by-collapse for every variant part (base blocks stay untouched so
+  // applyAvatarToRig's silhouette scaling keeps working on them).
+  for (const item of allHair) makeToggleable(item);
+  for (const item of allHats) makeToggleable(item);
+  for (const item of allOutfits) makeToggleable(item);
+
+  // bake / reuse the shared bind geometry (see MERGED_RIG_GEO)
+  hips.updateMatrixWorld(true);
+  const geometry = MERGED_RIG_GEO ?? bakeMergedGeometry(partBoxes);
+  MERGED_RIG_GEO = geometry;
+
+  const mesh = new THREE.SkinnedMesh(geometry, material);
+  mesh.name = "rig-skin";
+  mesh.add(hips); // root bone under the mesh
+  mesh.updateMatrixWorld(true);
+  mesh.bind(new THREE.Skeleton(bones)); // no parent yet → bindMatrix = identity
+  // Cull against an explicit generous sphere, never the pose. Frustum.intersectsObject
+  // prefers `object.boundingSphere` when the property exists, and SkinnedMesh declares
+  // it (null), so leaving it null would make three compute a one-shot sphere frozen at
+  // whatever pose was current on the first test — the exact failure this rig has to
+  // avoid. Seeding it with the bind geometry's own generous bounds keeps every animated
+  // pose inside, and lets a rig hundreds of metres away stop submitting a draw to the
+  // hero shadow pass.
+  mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, -0.1, 0), 3);
+  mesh.frustumCulled = true;
+  mesh.castShadow = true;
+  enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+  mesh.receiveShadow = true;
+  group.add(mesh);
+
+  const asGroup = (b: THREE.Bone) => b as unknown as THREE.Group;
+  const asMesh = (b: THREE.Bone) => b as unknown as THREE.Mesh;
+  const rig: Rig = {
+    group,
+    hips: asGroup(hips),
+    torso: asGroup(torso),
+    head: asGroup(head),
+    armL: asGroup(aL.shoulder),
+    armR: asGroup(aR.shoulder),
+    foreL: asGroup(aL.fore),
+    foreR: asGroup(aR.fore),
+    handL: asGroup(aL.hand),
+    handR: asGroup(aR.hand),
+    fingersL: asGroup(aL.fingers),
+    fingersR: asGroup(aR.fingers),
+    fingersTipL: asGroup(aL.fingersTip),
+    fingersTipR: asGroup(aR.fingersTip),
+    indexL: asGroup(aL.index),
+    indexR: asGroup(aR.index),
+    indexTipL: asGroup(aL.indexTip),
+    indexTipR: asGroup(aR.indexTip),
+    thumbL: asGroup(aL.thumb),
+    thumbR: asGroup(aR.thumb),
+    legL: asGroup(lL.hip),
+    legR: asGroup(lR.hip),
+    shinL: asGroup(lL.shin),
+    shinR: asGroup(lR.shin),
+    soleL: lL.sole,
+    soleR: lR.sole,
+    avatar: {
+      materials,
+      torsoBlock: asMesh(torsoBlock),
+      hipBlock: asMesh(hipBlock),
+      headBlock: asMesh(headBlock),
+      armBlocks: armBlocks.map(asMesh),
+      legBlocks: legBlocks.map(asMesh),
+      hair,
+      hairCrowns,
+      hats,
+      outfits,
+      allHair,
+      allHats,
+      allOutfits
+    }
+  };
+  // The base blocks are Bones cast to Mesh: `.scale` is real (silhouette work),
+  // but `.visible`, `.material` and `.geometry` are properties a SkinnedMesh
+  // never reads, so writing them is a silent no-op instead of an error. Make
+  // that loud in dev rather than leaving the contract to call-site comments.
+  warnOnMergedBlockSurgery([
+    rig.avatar.torsoBlock, rig.avatar.hipBlock, rig.avatar.headBlock,
+    ...rig.avatar.armBlocks, ...rig.avatar.legBlocks
+  ]);
+  applyAvatarToRig(rig, avatar);
+  return rig;
+}
+
+/** DEV-only tripwire: keeps the (no-op) assignment behaviour, but reports the
+ *  first per-part write to a merged rig's base block and names the way out. */
+function warnOnMergedBlockSurgery(blocks: THREE.Mesh[]): void {
+  if (!import.meta.env.DEV) return;
+  for (const block of blocks) {
+    for (const key of ["visible", "material", "geometry"] as const) {
+      let value: unknown = (block as unknown as Record<string, unknown>)[key];
+      let warned = false;
+      Object.defineProperty(block, key, {
+        configurable: true,
+        enumerable: true,
+        get: () => value,
+        set: (next: unknown) => {
+          value = next;
+          if (warned) return;
+          warned = true;
+          console.error(
+            `[rig] .${key} on a merged rig's base block does nothing — the block is a Bone of one SkinnedMesh. ` +
+              "Pass { merged: false } to buildRig for per-part surgery."
+          );
+        }
+      });
+    }
+  }
+}
+
+export type BuildRigOptions = {
+  /** `false` → the classic ~73-mesh rig (per-part material/geometry surgery).
+   *  Defaults to the single-SkinnedMesh build. */
+  merged?: boolean;
+};
+
+/** Build a character rig. Defaults to one SkinnedMesh (~1 draw); NPC customizers
+ *  that reassign per-part materials or swap part geometry pass `{ merged: false }`
+ *  for the classic per-mesh rig. Both return the same {@link Rig} API.
+ *
+ *  Merged-rig contract: `rig.avatar` parts are Bones, not meshes. Variant parts
+ *  (hair/hats/outfits) keep working through `.visible` because they hide by
+ *  collapsing their bone scale, but on the BASE blocks (torso/hip/head/arm/leg)
+ *  only `.scale` and `.position` are real — `.visible`, `.material` and
+ *  `.geometry` are silently ignored. Need any of those? Pass `{ merged: false }`. */
+export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR, opts: BuildRigOptions = {}): Rig {
+  return opts.merged === false ? buildRigClassic(avatar) : buildRigMerged(avatar);
 }
 
 /** Per-finger closure for a stylized mitt. Each channel is 0 (extended) → 1

@@ -8,6 +8,8 @@ import { createCanticleBook, type CanticleBook } from "../../ui/canticleBook";
 import { MD_CENTER, mdInsideFootprint, mdInsideInterior, mdToWorldXZ } from "./layout";
 import { createExhibits, type MdExhibit } from "./exhibits";
 import type { RadialLightSource } from "../../render/radialLightTypes";
+import { batchStaticSiblings } from "../staticBatch";
+import { createOcclusionGate, type OcclusionGate } from "../../render/occlusionGate";
 
 export * from "./layout";
 
@@ -49,6 +51,15 @@ export class MissionDoloresMuseum {
   #exhibits: MdExhibit[] = [];
   #shell: THREE.Group | null = null;
   #floorHandoffPending = false;
+  // Occlusion gate for the interior exhibit content (see #build). Null until the
+  // shell is built; the shell walls themselves are never gated — they are the
+  // occluders. `#cameraWorld` is a reusable scratch for the force-visible test.
+  #occlusionGate: OcclusionGate | null = null;
+  #cameraWorld = new THREE.Vector3();
+  // Geometries created by the post-build static merge. They are freshly
+  // allocated and not tracked by the shell/exhibit disposal paths, so the
+  // museum owns freeing them on teardown.
+  #batchGeometries: THREE.BufferGeometry[] = [];
 
   constructor(map: WorldMap, physics: Physics, options: MissionDoloresOptions) {
     this.#map = map;
@@ -74,8 +85,18 @@ export class MissionDoloresMuseum {
     for (const box of shell.colliders) this.#registerStaticBox(box);
     this.#overlay = (x, z, base) => shell.groundTopAt(x, z, base) ?? base;
     this.#map.setGroundTopOverlay(this.#overlay);
+    // The pedestal + exhibit content builds straight into an `interior` group so
+    // its render visibility can be gated as one draw switch, occluded by the
+    // shell whenever the visitor is outside. The shell (walls/roof/floor/glass)
+    // stays put — it is the occluder. `interior` is also the ctx root, so an
+    // exhibit's `ctx.root.add/remove(grp)` pair stays symmetric: reparenting the
+    // content after construction turned every exhibit's detach into a no-op and
+    // left them disposing geometry while still attached to the scene.
+    const interior = new THREE.Group();
+    interior.name = "md_interior_content";
+    shell.group.add(interior);
     this.#ctx = new MuseumCtx({
-      root: shell.group,
+      root: interior,
       map: this.#map,
       floorTop: shell.floorTop,
       registerCollider: (b) => this.#registerStaticBox(b)
@@ -87,6 +108,31 @@ export class MissionDoloresMuseum {
     } catch (err) {
       console.warn("[mission dolores] exhibits unavailable:", err);
     }
+    // The shell already authors itself as a few merged meshes, but the pedestal
+    // and the six exhibits add hundreds of small primitives — statue limbs,
+    // altar blocks, flocks, sconces — that share a handful of emissive
+    // materials. Collapse those inert same-material siblings into one draw each.
+    // Sibling-only pass: every animated element here moves via a group transform
+    // (bird/friar/tail/brazier groups) whose static children merge harmlessly
+    // within it, or carries a unique material (candle/brazier flames) so it never
+    // buckets. Deferred art panes and stained glass are invisible-at-build or
+    // reused by reference (radial proxies), so the pass skips them automatically.
+    const staticBatch = batchStaticSiblings(shell.group, {
+      keepKey: "keepMissionDoloresMesh",
+      siblingFallbackName: "md_static",
+      landmarkPass: false
+    });
+    this.#batchGeometries = staticBatch.batches.map((batch) => batch.geometry);
+    // Gate the interior draws behind a hardware occlusion query. The proxy hangs
+    // off the (static) shell group; the shell walls occlude it from outside, and
+    // the visitor stepping inside forces it visible. Exhibit update()/art-wake
+    // keep running regardless — only the interior's pixels are gated.
+    this.#occlusionGate = createOcclusionGate({
+      renderer: this.#opts.renderer,
+      content: interior,
+      proxyParent: shell.group,
+      name: "mission_dolores"
+    });
     this.#built = true;
     this.#floorHandoffPending = true;
     // compile the hidden-until-now geometry off the critical path so the first
@@ -96,8 +142,14 @@ export class MissionDoloresMuseum {
 
   #teardown() {
     if (!this.#built) return;
+    this.#occlusionGate?.dispose();
+    this.#occlusionGate = null;
     for (const ex of this.#exhibits) ex.dispose?.();
     this.#exhibits = [];
+    // The exhibit/shell disposal paths only know their own source geometries;
+    // the merged batch geometries are ours to free.
+    for (const geometry of this.#batchGeometries) geometry.dispose();
+    this.#batchGeometries = [];
     this.#ctx?.dispose();
     this.#ctx = null;
     if (this.#shell) {
@@ -240,6 +292,13 @@ export class MissionDoloresMuseum {
     if (!near) this.#promptShown = false;
     this.#ctx?.updateArt(playerPos);
     for (const ex of this.#exhibits) ex.update?.(dt, elapsed, playerPos);
+    // Render-visibility gate only; the exhibit sims above always run. The render
+    // camera position (not the player capsule) drives the force-visible test so
+    // an interior chase-cam never blinks the exhibits off at the doorway.
+    if (this.#occlusionGate) {
+      this.#opts.camera.getWorldPosition(this.#cameraWorld);
+      this.#occlusionGate.update(this.#cameraWorld);
+    }
   }
 
   dispose(): void {

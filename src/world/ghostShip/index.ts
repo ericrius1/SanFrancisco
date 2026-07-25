@@ -23,6 +23,12 @@ import {
 } from "./route";
 import { GHOST_SHIP_TUNING } from "./tuning";
 import { batchStaticSiblings } from "../staticBatch";
+import { createOcclusionGate } from "../../render/occlusionGate";
+import {
+  lightAnchor,
+  registerAmbientLightAnchor,
+  type LightAnchorSpec
+} from "../../player/lightPool";
 
 export {
   GHOST_SHIP_LANDMARK_NAME,
@@ -68,7 +74,8 @@ type ShipModel = {
   fairyLights: THREE.InstancedMesh | null;
   fairyBaseHues: Float32Array;
   fairyMaterial: THREE.MeshBasicMaterial;
-  glowLights: THREE.PointLight[];
+  glowAnchors: THREE.Object3D[];
+  glowSpecs: LightAnchorSpec[];
   geometries: Set<THREE.BufferGeometry>;
   materials: Set<THREE.Material>;
 };
@@ -372,6 +379,9 @@ function buildShip(root: THREE.Group): ShipModel {
   geometries.add(ghostShellGeometry);
   const ghostShell = new THREE.Mesh(ghostShellGeometry, ghostMaterial);
   ghostShell.renderOrder = 9;
+  // The additive spectral shell renders back-faced with depthWrite off; keep it
+  // its own draw so the static merge never folds it into the opaque hull.
+  ghostShell.userData.keepGhostShipMesh = true;
   root.add(ghostShell);
 
   const deckGeometry = createDeckGeometry();
@@ -412,7 +422,8 @@ function buildShip(root: THREE.Group): ShipModel {
     fairyLights: null,
     fairyBaseHues: new Float32Array(),
     fairyMaterial,
-    glowLights: [],
+    glowAnchors: [],
+    glowSpecs: [],
     geometries,
     materials
   };
@@ -468,15 +479,17 @@ function buildShip(root: THREE.Group): ShipModel {
   if (fairyLights.instanceColor) fairyLights.instanceColor.needsUpdate = true;
   root.add(fairyLights);
 
-  const glowLights = [
-    new THREE.PointLight(0x65ebff, 16, 44, 2),
-    new THREE.PointLight(0xff6ee1, 12, 34, 2),
-    new THREE.PointLight(0xffd270, 10, 30, 2)
+  const glowSpecs: LightAnchorSpec[] = [
+    { color: 0x65ebff, intensity: 16, distance: 44, range: 100 },
+    { color: 0xff6ee1, intensity: 12, distance: 34, range: 100 },
+    { color: 0xffd270, intensity: 10, distance: 30, range: 100 }
   ];
-  glowLights[0].position.set(0, 7, -6);
-  glowLights[1].position.set(0, 4, 18);
-  glowLights[2].position.set(0, 4, -14);
-  root.add(...glowLights);
+  const glowAnchors = [
+    lightAnchor(glowSpecs[0], 0, 7, -6),
+    lightAnchor(glowSpecs[1], 0, 4, 18),
+    lightAnchor(glowSpecs[2], 0, 4, -14)
+  ];
+  root.add(...glowAnchors);
 
   // Ornate forward crystal and antler-like spectral figurehead.
   const crystalGeometry = new THREE.OctahedronGeometry(1.6, 1);
@@ -484,6 +497,8 @@ function buildShip(root: THREE.Group): ShipModel {
   const crystal = new THREE.Mesh(crystalGeometry, sailMaterial);
   crystal.position.set(0, 1.4, -25.3);
   crystal.rotation.z = Math.PI / 4;
+  // The forward figurehead crystal stays its own draw (feature landmark).
+  crystal.userData.keepGhostShipMesh = true;
   root.add(crystal);
   addTube(root, [new THREE.Vector3(0, 0, -23), new THREE.Vector3(-3.2, 2.5, -27), new THREE.Vector3(-5, 5.4, -26)], 0.14, trimMaterial, model);
   addTube(root, [new THREE.Vector3(0, 0, -23), new THREE.Vector3(3.2, 2.5, -27), new THREE.Vector3(5, 5.4, -26)], 0.14, trimMaterial, model);
@@ -491,7 +506,8 @@ function buildShip(root: THREE.Group): ShipModel {
   buildLandingAccess(root, deckMaterial, trimMaterial, model);
   model.fairyLights = fairyLights;
   model.fairyBaseHues = fairyBaseHues;
-  model.glowLights = glowLights;
+  model.glowAnchors = glowAnchors;
+  model.glowSpecs = glowSpecs;
   return model;
 }
 
@@ -506,6 +522,7 @@ export function createGhostShip(options: {
   root.visible = false;
   scene.add(root);
   const model = buildShip(root);
+  const unregisterGlowLights = model.glowAnchors.map(registerAmbientLightAnchor);
   const collision = createGhostShipCollision(physics, root);
 
   const tub = new THREE.Group();
@@ -539,6 +556,53 @@ export function createGhostShip(options: {
   const steam = createGhostShipSteam();
   steam.group.position.y = 0.08;
   tub.add(steam.group);
+
+  // Collapse the ~two dozen inert hull/deck/mast/sail/tube/rim meshes that share
+  // a handful of MeshStandardMaterials into one draw per material+render state.
+  // The animated GPU-water and camera-facing steam are exempt via subtree flags;
+  // the ghost shell, crystal, and instanced fairy-lights/stair-treads stay out
+  // on their own (flagged or instanced). Landing stairs / flight gates keep their
+  // toggled groups — only the tube pieces inside them merge. Sibling-only pass:
+  // the landmark cross-group merge would otherwise flatten the moving tub group.
+  water.group.userData.keepGhostShipMesh = true;
+  steam.group.userData.keepGhostShipMesh = true;
+  const staticBatch = batchStaticSiblings(root, {
+    keepKey: "keepGhostShipMesh",
+    siblingFallbackName: "ghost_ship_static",
+    landmarkPass: false
+  });
+  // The pass disposed the source geometries it replaced; drop those stale
+  // references and register the freshly merged geometries so ship disposal frees
+  // them. Water/steam geometries are owned by their own subsystems (never here).
+  const liveGeometries = new Set<THREE.BufferGeometry>();
+  root.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (mesh.isMesh) liveGeometries.add(mesh.geometry);
+  });
+  for (const geometry of [...model.geometries]) {
+    if (!liveGeometries.has(geometry)) model.geometries.delete(geometry);
+  }
+  for (const batch of staticBatch.batches) model.geometries.add(batch.geometry);
+
+  // Occlusion gate: the ship is a large moving landmark that is fully hidden
+  // whenever the player is deep in the city with buildings between. Wrap every
+  // visual child in a `visuals` group so its `.visible` can be gated as one draw
+  // switch, and hang the query proxy off `root` (a sibling of `visuals`) so the
+  // proxy keeps rendering — and the query keeps resolving — even while the
+  // visuals are hidden. root itself, collision, the hot-tub fluid, steam, the
+  // route sim and the star shower are all driven by explicit update() calls and
+  // never gated; only the ship's on-screen pixels are.
+  const visuals = new THREE.Group();
+  visuals.name = "ghost_ship_visuals";
+  for (const child of [...root.children]) visuals.add(child);
+  root.add(visuals);
+  const occlusionGate = createOcclusionGate({
+    renderer,
+    content: visuals,
+    proxyParent: root,
+    name: "ghost_ship"
+  });
+
   const shower = new RainbowStarShower(scene);
   const boardingWorld = new THREE.Vector3();
   const seatScratch = new THREE.Vector3();
@@ -591,8 +655,8 @@ export function createGhostShip(options: {
       model.fairyLights?.setColorAt(i, color);
     }
     if (model.fairyLights?.instanceColor) model.fairyLights.instanceColor.needsUpdate = true;
-    for (let i = 0; i < model.glowLights.length; i++) {
-      model.glowLights[i].intensity = (9 + i * 2.2) * brightness;
+    for (let i = 0; i < model.glowSpecs.length; i++) {
+      model.glowSpecs[i].intensity = (9 + i * 2.2) * brightness;
     }
   };
 
@@ -628,6 +692,10 @@ export function createGhostShip(options: {
       stats.starsVisible = shower.visible;
       stats.walkerAboard = collision.walkerAboard;
       stats.stairsDeployed = pose.landed;
+      // Render-visibility gate only. A local rider (camera aboard) always forces
+      // the ship visible; otherwise a viewer standing inside the hull bounds does
+      // too, and the occlusion query governs from a distance.
+      occlusionGate.update(playerPosition, localRider);
     },
     nearbyBoarding,
     board(playerPosition, occupiedSeats) {
@@ -692,7 +760,9 @@ export function createGhostShip(options: {
               debug.addBinding(stats, "starsVisible", { readonly: true, label: "rainbow stars" }),
               debug.addBinding(stats, "collisionBodies", { readonly: true, label: "collision bodies" }),
               debug.addBinding(stats, "walkerAboard", { readonly: true, label: "walker aboard" }),
-              debug.addBinding(stats, "stairsDeployed", { readonly: true, label: "landing stairs" })
+              debug.addBinding(stats, "stairsDeployed", { readonly: true, label: "landing stairs" }),
+              debug.addBinding(occlusionGate.stats, "contentVisible", { readonly: true, label: "ship drawn" }),
+              debug.addBinding(occlusionGate.stats, "occludedFrames", { readonly: true, label: "occluded frames" })
             ]
           };
         },
@@ -705,6 +775,8 @@ export function createGhostShip(options: {
     dispose() {
       if (disposed) return;
       disposed = true;
+      occlusionGate.dispose();
+      for (const unregister of unregisterGlowLights) unregister();
       water.dispose();
       steam.dispose();
       shower.dispose();

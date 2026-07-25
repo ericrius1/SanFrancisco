@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import type { WorldMap } from "../heightmap";
-import { MD_YAW } from "./layout";
+import { MD_YAW, mdToWorldXZ } from "./layout";
 import { loadTexture } from "../../render/textures";
 import type { RadialLightSource } from "../../render/radialLightTypes";
 import { CANVAS_FONT_FAMILY } from "../../core/typography";
@@ -79,9 +79,12 @@ interface RadialSourceState {
 /**
  * MuseumCtx — the frozen toolkit every Mission Dolores exhibit builds against.
  * Add your meshes to `ctx.root` in LOCAL coordinates (see layout.ts for the
- * frame). Never add a THREE light — the app runs a fixed LightPool, so anything
- * that must read in the dim nave self-lights via emissive materials (use
- * `glowMat`, or the plaques, which are emissive already).
+ * frame) and detach them from the same `ctx.root` on dispose. `root` is the
+ * site's gated interior content group, NOT the basilica shell, so never assume
+ * its transform carries the museum offset — use `toWorld` for that. Never add a
+ * THREE light — the app runs a fixed LightPool, so anything that must read in
+ * the dim nave self-lights via emissive materials (use `glowMat`, or the
+ * plaques, which are emissive already).
  */
 export class MuseumCtx {
   readonly THREE = THREE;
@@ -111,15 +114,12 @@ export class MuseumCtx {
     this.#registerCollider = opts.registerCollider;
   }
 
-  /** Museum-local point → WORLD Vector3 (for colliders / raycasts). */
+  /** Museum-local point → WORLD Vector3 (for colliders / raycasts). Reads the
+   *  frame from layout, not from `root` — `root` is a nested content group whose
+   *  own transform is identity, and the offset belongs to the basilica shell. */
   toWorld(lx: number, ly: number, lz: number): THREE.Vector3 {
-    const c = Math.cos(MD_YAW);
-    const s = Math.sin(MD_YAW);
-    return new THREE.Vector3(
-      this.root.position.x + lx * c + lz * s,
-      this.floorTop + ly,
-      this.root.position.z - lx * s + lz * c
-    );
+    const { x, z } = mdToWorldXZ(lx, lz);
+    return new THREE.Vector3(x, this.floorTop + ly, z);
   }
 
   /** Load /francis/art/<name> as a GPU-compressed KTX2 texture (WebP fallback).

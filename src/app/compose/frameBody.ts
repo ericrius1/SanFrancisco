@@ -9,6 +9,7 @@ import { resetAllTweaks } from "../../core/persist";
 import {  formatInteractPrompt, localizeInteractText } from "../../core/input";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "../../world/oceanBeachWaves";
 import { tetherTreeCullFocus } from "../../world/vegetation/treeCullFocus";
+import { renderNativeTreeForestFarCulls } from "../../world/nativeTreeForest/farCullRegistry";
 import {  SKY_TUNING } from "../../world/sky";
 import {
   GHOST_SHIP_DETAIL_WAKE_DISTANCE,
@@ -1315,11 +1316,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // envelope (cheap CPU math, no rendering) because the nature soundscape below
     // reads its gust value for wind audio.
     if (ctx.state.foliageOn && !worldArrival.active) {
-      // Garden moves its near-grass detail ring to the player. Shared wind and
+      // Garden retargets its player-following GPU grass field to the player and
+      // runs the per-frame frustum cull against the render camera. Shared wind and
       // displacement were already advanced by the root vegetation runtime above.
-      // Cheap when the player is nowhere near the core.state.garden
-      // (updateFocus distance-culls base chunks and skips the near ring).
-      core.state.garden?.update(player.renderPosition);
+      // Cheap when the player is nowhere near the core.state.garden (the whole
+      // garden group is distance-gated, which parks the grass field).
+      core.state.garden?.update(player.renderPosition, camera);
       // wildlands: the grass + flower rings follow the PLAYER (like the core.state.garden ring
       // above) so they stay put when you just look around — the chase camera orbits
       // the player, and anchoring the rings to it slid the whole field around you.
@@ -1331,6 +1333,16 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         tetherTreeCullFocus(player.renderPosition, camera.position)
       );
     }
+    // Every NativeTreeForest with GPU far tiers self-registers a cull; dispatch
+    // them all once here against the render camera (frustum) — each uses its own
+    // tethered focus (LOD band). Runs after the forest updates above so every
+    // forest's focus is current; a no-op when none has far tiers resident.
+    // Deliberately OUTSIDE the arrival gate (but still inside the master foliage
+    // toggle): chunk residency keeps paging during an arrival — primeWildlandsTreesAt
+    // is fire-and-forget and the travel cover never awaits it — so a frozen cull
+    // would keep drawing the pre-arrival survivor set out of arena slots the
+    // destination has already reused, then pop the whole far field in at the end.
+    if (ctx.state.foliageOn) renderNativeTreeForestFarCulls(camera);
     // Nature soundscape rides the same root vegetation gust envelope,
     // and reads the sky clock for dawn choruses / night owls. Cheap out in the
     // city (suspends), so it's safe to tick unconditionally.
