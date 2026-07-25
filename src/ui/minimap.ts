@@ -55,7 +55,6 @@ const BIG_RECENTER_MS = 420;
 const PAD_PAN_SPEED = 0.7; // view-spans per second at full stick
 const PAD_ZOOM_SPEED = 1.6; // exp rate per second at full trigger / stick
 const DOT_HIT_PX = 14; // expanded-map click tolerance around a player dot
-const PLACE_HIT_PX = 13;
 const GROUND_TARGET_NAME = "Selected spot";
 const LANDMARK_DOT_COLOR = "#6fd7c4";
 // Bridge decks are painted on the map in their real colour so the spans read at
@@ -65,7 +64,6 @@ const BRIDGE_COLORS: Record<string, string> = {
   gray: "#9aa6af"
 };
 const BRIDGE_FALLBACK_COLOR = "#c85a2a";
-const LAYERS_ENABLED = false; // art/science/music layers parked for now
 // OSM road classes: living street, residential, tertiary, secondary,
 // primary/trunk, motorway. The warm progression belongs to the historical
 // survey-map treatment while keeping the hierarchy readable under player pins.
@@ -90,6 +88,17 @@ const HISTORICAL_DETAIL_BOUNDS = {
 } as const;
 const HISTORICAL_REGIONAL_LOAD_SPAN = 6800;
 const HISTORICAL_DETAIL_LOAD_SPAN = 900;
+/** How many regional plates may stay resident. Each is a full-resolution canvas
+ *  (~6 MB of backing store), and panning the expanded map across the city would
+ *  otherwise pin all nine for the rest of the session. Six is the floor: a
+ *  portrait viewport at HISTORICAL_REGIONAL_LOAD_SPAN can straddle two columns
+ *  and three rows of cores at once, and a tighter budget would re-decode a
+ *  visible plate on every pan. */
+const HISTORICAL_REGION_BUDGET = 6;
+/** Dwell before the plates the expanded map pulled in are released. The map is
+ *  toggled open/closed constantly, so an immediate release would re-decode ten
+ *  WebPs on the next open — a visible hitch for no benefit. */
+const HISTORICAL_TRIM_DELAY_MS = 30_000;
 
 type HistoricalBounds = { minX: number; maxX: number; minZ: number; maxZ: number };
 type HistoricalTileSpec = {
@@ -159,6 +168,19 @@ const HISTORICAL_REGION_TILES: readonly HistoricalTileSpec[] = [
   }
 ] as const;
 
+function boundsOverlap(a: HistoricalBounds, b: HistoricalBounds) {
+  return !(a.maxX <= b.minX || a.minX >= b.maxX || a.maxZ <= b.minZ || a.minZ >= b.maxZ);
+}
+
+/** Zeroing the dimensions is what actually hands a canvas' backing store back —
+ *  dropping the JS reference alone leaves several MB to GC timing while its 2D
+ *  context still holds the surface. The caller must drop the reference in the
+ *  same breath: drawImage() throws on a zero-sized canvas. */
+function releaseCanvas(canvas: HTMLCanvasElement) {
+  canvas.width = 0;
+  canvas.height = 0;
+}
+
 type RoadPaintGroup = { path: Path2D; width: number; roadClass: number };
 
 const LANDMARK_LABELS: Record<string, string> = {
@@ -170,66 +192,6 @@ const LANDMARK_LABELS: Record<string, string> = {
   sutro: "Sutro Tower",
   coronaHeights: "Corona Heights Park"
 };
-
-type MapLayerDefinition = {
-  id: MapLayerId;
-  label: string;
-  color: string;
-  count: number;
-  titles: readonly string[];
-};
-type MapLayer = MapLayerDefinition & { enabled: boolean; points: MapLayerPoint[] };
-
-const MAP_LAYER_DEFS: readonly MapLayerDefinition[] = [
-  {
-    id: "art",
-    label: "Art",
-    color: "#ff6b5e",
-    count: 12,
-    titles: [
-      "Mural Wall",
-      "Gallery Pop-up",
-      "Sculpture Yard",
-      "Ceramic Window",
-      "Print Studio",
-      "Neon Stair",
-      "Street Sketch",
-      "Textile Room"
-    ]
-  },
-  {
-    id: "science",
-    label: "Science",
-    color: "#43dce7",
-    count: 11,
-    titles: [
-      "Fog Sensor",
-      "Maker Bench",
-      "Telescope Demo",
-      "Robotics Lab",
-      "Bay Model",
-      "Bio Booth",
-      "Wind Tunnel",
-      "Light Table"
-    ]
-  },
-  {
-    id: "music",
-    label: "Music",
-    color: "#9a6bff",
-    count: 10,
-    titles: [
-      "Jazz Corner",
-      "Synth Stage",
-      "Vinyl Kiosk",
-      "Drum Circle",
-      "Choir Steps",
-      "Ambient Room",
-      "Busker Loop",
-      "Tape Deck"
-    ]
-  }
-];
 
 export class Minimap {
   /** Fires with a world position when the user asks to teleport. `playerId`
@@ -253,10 +215,13 @@ export class Minimap {
   // minimap repaint gate (30 Hz cap + idle-signature skip; see update())
   #lastMiniDrawAt = 0;
   #lastMiniSig = 0;
+  // Resident atlas plates, in least-recently-drawn order — Map insertion order
+  // doubles as the LRU queue (see #touchHistoricalRegion).
   #historicalRegions = new Map<string, HTMLCanvasElement>();
   #historicalRegionsStarted = new Set<string>();
   #historicalDetail: HTMLCanvasElement | null = null;
   #historicalDetailStarted = false;
+  #historicalTrimTimer: number | null = null;
   #mini!: HTMLCanvasElement;
   #count!: HTMLSpanElement;
   #teleWrap!: HTMLDivElement;
@@ -270,15 +235,12 @@ export class Minimap {
   #pinHintKey: string | null = null;
   #device: "kb" | "pad" = "kb";
   #dpr = 1;
-  #layers: MapLayer[] = [];
-  #layerButtons = new Map<MapLayerId, HTMLButtonElement>();
   // Roads off by default — the parchment already shows the street grid, and
   // Big Map use is landmark-oriented (toggle still available in the side tray).
   #overlays = new Map<MapOverlayId, boolean>(
     MAP_OVERLAY_DEFS.map((d) => [d.id, d.id !== "roads"])
   );
   #overlayButtons = new Map<MapOverlayId, HTMLButtonElement>();
-  #selectedPlaceId: string | null = null;
   expanded = false;
   #miniSpan = MINI_SPAN;
   #miniCenter: { x: number; z: number } | null = null; // null means follow self
@@ -327,8 +289,6 @@ export class Minimap {
   #padCursor: { nx: number; ny: number } | null = null;
   // expanded-map dot hit-boxes rebuilt every draw: [screenX, screenY, remote]
   #hits: [number, number, MapRemote][] = [];
-  #miniPlaceHits: [number, number, MapLayerPoint][] = [];
-  #bigPlaceHits: [number, number, MapLayerPoint][] = [];
   #bigLandmarkHits: [number, number, MiniLandmark][] = [];
   // collapsed-map hit-boxes rebuilt every draw, for click-to-select-then-teleport
   #miniPlayerHits: [number, number, MapRemote][] = [];
@@ -408,11 +368,6 @@ export class Minimap {
       { name: "Downtown", x: 2412, z: -796 }         // commercial mid-rise
     ];
     for (const a of CITYGEN_ANCHORS) this.#landmarks.push({ x: a.x, z: a.z, name: a.name });
-    this.#layers = MAP_LAYER_DEFS.map((def) => ({
-      ...def,
-      enabled: false,
-      points: LAYERS_ENABLED ? this.#fakeLayerPoints(def) : []
-    }));
     this.#bigSpan = this.#bigMaxSpan();
     this.#buildMini();
   }
@@ -524,6 +479,9 @@ export class Minimap {
       },
       { once: true }
     );
+    // A failed fetch must not poison the guard for the rest of the session —
+    // clear it so the next map open retries.
+    image.addEventListener("error", () => (this.#historicalOverviewStarted = false), { once: true });
     image.src = HISTORICAL_OVERVIEW_URL;
   }
 
@@ -536,10 +494,12 @@ export class Minimap {
       "load",
       () => {
         this.#historicalRegions.set(tile.id, this.#featherHistoricalImage(image, 0.055));
+        this.#evictHistoricalRegions();
         this.update(true);
       },
       { once: true }
     );
+    image.addEventListener("error", () => this.#historicalRegionsStarted.delete(tile.id), { once: true });
     image.src = tile.url;
   }
 
@@ -556,7 +516,75 @@ export class Minimap {
       },
       { once: true }
     );
+    image.addEventListener("error", () => (this.#historicalDetailStarted = false), { once: true });
     image.src = HISTORICAL_DETAIL_URL;
+  }
+
+  /** World footprint of the collapsed minimap. Plates under it stay resident
+   *  even when the expanded map has panned to the far side of the city — the
+   *  minimap is always on screen, and re-decoding under it would pop. */
+  #miniViewBounds(): HistoricalBounds {
+    const center = this.#miniCenter ?? this.#getSelf();
+    const half = this.#miniSpan / 2;
+    return {
+      minX: center.x - half,
+      maxX: center.x + half,
+      minZ: center.z - half,
+      maxZ: center.z + half
+    };
+  }
+
+  #evictHistoricalRegion(id: string) {
+    const canvas = this.#historicalRegions.get(id);
+    if (canvas) releaseCanvas(canvas);
+    this.#historicalRegions.delete(id);
+    // Drop the load guard too, so the plate can come back when it is needed.
+    this.#historicalRegionsStarted.delete(id);
+  }
+
+  /** Move a plate to the most-recently-drawn end of the residency order. */
+  #touchHistoricalRegion(id: string) {
+    const canvas = this.#historicalRegions.get(id);
+    if (!canvas) return;
+    this.#historicalRegions.delete(id);
+    this.#historicalRegions.set(id, canvas);
+  }
+
+  /** Keep residency inside HISTORICAL_REGION_BUDGET, dropping least-recently-
+   *  drawn plates first and never one the minimap is currently showing. */
+  #evictHistoricalRegions() {
+    if (this.#historicalRegions.size <= HISTORICAL_REGION_BUDGET) return;
+    const keep = this.#miniViewBounds();
+    for (const id of [...this.#historicalRegions.keys()]) {
+      if (this.#historicalRegions.size <= HISTORICAL_REGION_BUDGET) break;
+      const spec = HISTORICAL_REGION_TILES.find((t) => t.id === id);
+      if (spec && boundsOverlap(keep, spec.bounds)) continue;
+      this.#evictHistoricalRegion(id);
+    }
+  }
+
+  /** Release every plate the collapsed minimap cannot show, armed once the
+   *  expanded map has been closed long enough that reopening it is no longer a
+   *  toggle. Panning the big map across the city leaves up to six plates
+   *  resident; the minimap only ever needs the one or two under its viewport. */
+  #trimHistoricalTiles() {
+    if (this.expanded) return;
+    const keep = this.#miniViewBounds();
+    for (const spec of HISTORICAL_REGION_TILES) {
+      if (!this.#historicalRegions.has(spec.id) || boundsOverlap(keep, spec.bounds)) continue;
+      this.#evictHistoricalRegion(spec.id);
+    }
+    if (this.#historicalDetail && !boundsOverlap(keep, HISTORICAL_DETAIL_BOUNDS)) {
+      releaseCanvas(this.#historicalDetail);
+      this.#historicalDetail = null;
+      this.#historicalDetailStarted = false;
+    }
+  }
+
+  #cancelHistoricalTrim() {
+    if (this.#historicalTrimTimer === null) return;
+    clearTimeout(this.#historicalTrimTimer);
+    this.#historicalTrimTimer = null;
   }
 
   #featherHistoricalImage(image: HTMLImageElement, verticalFade: number) {
@@ -635,7 +663,11 @@ export class Minimap {
     pz: (z: number) => number
   ) {
     for (const spec of HISTORICAL_REGION_TILES) {
-      this.#drawHistoricalTile(ctx, this.#historicalRegions.get(spec.id) ?? null, spec.bounds, px, pz);
+      const tile = this.#historicalRegions.get(spec.id);
+      if (!tile) continue;
+      // A plate that lands entirely off-canvas is neither drawn nor counted as
+      // recently used, so panning away from it makes it the next eviction.
+      if (this.#drawHistoricalTile(ctx, tile, spec.bounds, px, pz)) this.#touchHistoricalRegion(spec.id);
     }
   }
 
@@ -647,6 +679,7 @@ export class Minimap {
     this.#drawHistoricalTile(ctx, this.#historicalDetail, HISTORICAL_DETAIL_BOUNDS, px, pz);
   }
 
+  /** Returns whether the plate actually landed on the canvas. */
   #drawHistoricalTile(
     ctx: CanvasRenderingContext2D,
     tile: HTMLCanvasElement | null,
@@ -654,12 +687,17 @@ export class Minimap {
     px: (x: number) => number,
     pz: (z: number) => number
   ) {
-    if (!tile) return;
+    // A released plate is zero-sized, and drawImage() throws on those.
+    if (!tile || !tile.width) return false;
     const x = px(bounds.minX);
     const y = pz(bounds.minZ);
     const w = px(bounds.maxX) - x;
     const h = pz(bounds.maxZ) - y;
+    // The minimap only ever shows one or two of the nine plates; skipping the
+    // rest saves a fully-clipped scaled drawImage each at the 30 Hz cadence.
+    if (x + w <= 0 || y + h <= 0 || x >= ctx.canvas.width || y >= ctx.canvas.height) return false;
     ctx.drawImage(tile, x, y, w, h);
+    return true;
   }
 
   /** Add fine screen-resolution ink when regional source pixels become larger
@@ -745,7 +783,6 @@ export class Minimap {
       const s = this.#selected;
       if (s?.kind === "fixed" && this.#landmarks.some((lm) => lm.name === s.name)) {
         this.#selected = null;
-        this.#selectedPlaceId = null;
       }
     }
     this.update(true);
@@ -874,40 +911,11 @@ export class Minimap {
     this.#teleWrap = tele;
     this.#teleName = teleName;
 
-    const layers = document.createElement("div");
-    layers.className = "mm-layers";
-    layers.setAttribute("role", "group");
-    layers.setAttribute("aria-label", "Map layers");
-    for (const layer of this.#layers) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "mm-layer on";
-      button.setAttribute("aria-pressed", "true");
-      button.style.setProperty("--layer-color", layer.color);
-      const dot = document.createElement("span");
-      dot.className = "mm-layer-dot";
-      const label = document.createElement("span");
-      label.className = "mm-layer-label";
-      label.textContent = layer.label;
-      button.appendChild(dot);
-      button.appendChild(label);
-      button.addEventListener("click", (e) => {
-        e.stopPropagation();
-        layer.enabled = !layer.enabled;
-        if (!layer.enabled && layer.points.some((p) => p.id === this.#selectedPlaceId)) this.#selectedPlaceId = null;
-        this.#syncLayerButton(layer);
-        this.update(true);
-      });
-      layers.appendChild(button);
-      this.#layerButtons.set(layer.id, button);
-    }
-
     wrap.appendChild(card);
     wrap.appendChild(tele);
-    if (LAYERS_ENABLED) wrap.appendChild(layers);
     hud.appendChild(wrap);
-    // Plain clicks on the map now select a teleport target (player, landmark or
-    // layer dot) instead of expanding — expanding lives on the corner button.
+    // Plain clicks on the map now select a teleport target (player or landmark)
+    // instead of expanding — expanding lives on the corner button.
     card.addEventListener("click", (e) => {
       if (this.#miniSuppressClick) {
         this.#miniSuppressClick = false;
@@ -1209,7 +1217,6 @@ export class Minimap {
       miniPz,
       pxPerM
     );
-    if (LAYERS_ENABLED) this.#drawMiniPlaces(ctx, center, pxPerM, size);
     this.#drawMiniLandmarks(ctx, center, pxPerM, size);
 
     // remote dots, rim-clamped when out of view
@@ -1297,83 +1304,6 @@ export class Minimap {
     ctx.lineWidth = rad * 0.55;
     ctx.strokeStyle = hollow ? `hsl(${hue} 78% 62%)` : "rgba(6,14,20,0.85)";
     ctx.stroke();
-  }
-
-  #syncLayerButton(layer: MapLayer) {
-    const button = this.#layerButtons.get(layer.id);
-    if (!button) return;
-    button.classList.toggle("on", layer.enabled);
-    button.setAttribute("aria-pressed", String(layer.enabled));
-  }
-
-  #fakeLayerPoints(layer: MapLayerDefinition): MapLayerPoint[] {
-    const self = this.#getSelf();
-    const nearby = Math.ceil(layer.count * 0.45);
-    return Array.from({ length: layer.count }, (_, i) => {
-      const nearPlayer = i < nearby;
-      const pos = this.#randomLandPosition(nearPlayer ? self : null, nearPlayer ? MINI_SPAN * 0.44 : 0);
-      return {
-        id: `${layer.id}-${i}-${Math.random().toString(36).slice(2, 8)}`,
-        layer: layer.id,
-        title: layer.titles[i % layer.titles.length],
-        x: pos.x,
-        z: pos.z
-      };
-    });
-  }
-
-  #randomLandPosition(center: { x: number; z: number } | null, radius: number) {
-    const g = this.#map.meta.grid;
-    const minX = g.minX;
-    const minZ = g.minZ;
-    const maxX = minX + g.width * g.cellSize;
-    const maxZ = minZ + g.height * g.cellSize;
-    for (let i = 0; i < 90; i++) {
-      let x: number;
-      let z: number;
-      if (center) {
-        const a = Math.random() * Math.PI * 2;
-        const r = radius * (0.18 + Math.random() * 0.82);
-        x = center.x + Math.cos(a) * r;
-        z = center.z + Math.sin(a) * r;
-      } else {
-        x = minX + Math.random() * (maxX - minX);
-        z = minZ + Math.random() * (maxZ - minZ);
-      }
-      if (x < minX || x > maxX || z < minZ || z > maxZ) continue;
-      const surface = this.#surfaceAt(x, z);
-      if (surface !== undefined && surface !== 3) return { x, z };
-    }
-    return {
-      x: Math.min(maxX, Math.max(minX, center?.x ?? minX + Math.random() * (maxX - minX))),
-      z: Math.min(maxZ, Math.max(minZ, center?.z ?? minZ + Math.random() * (maxZ - minZ)))
-    };
-  }
-
-  #surfaceAt(x: number, z: number) {
-    const g = this.#map.meta.grid;
-    const gx = Math.floor((x - g.minX) / g.cellSize);
-    const gz = Math.floor((z - g.minZ) / g.cellSize);
-    if (gx < 0 || gz < 0 || gx >= g.width || gz >= g.height) return undefined;
-    if (this.#map.isWater(x, z)) return 3;
-    return this.#map.surface[gz * g.width + gx];
-  }
-
-  #drawMiniPlaces(ctx: CanvasRenderingContext2D, center: { x: number; z: number }, pxPerM: number, size: number) {
-    const dpr = this.#dpr;
-    const c = size / 2;
-    const margin = 10 * dpr;
-    this.#miniPlaceHits = [];
-    for (const layer of this.#layers) {
-      if (!layer.enabled) continue;
-      for (const place of layer.points) {
-        const x = c + (place.x - center.x) * pxPerM;
-        const y = c + (place.z - center.z) * pxPerM;
-        if (x < margin || y < margin || x > size - margin || y > size - margin) continue;
-        this.#placeDot(ctx, x, y, layer, place.id === this.#selectedPlaceId, 4.8 * dpr);
-        this.#miniPlaceHits.push([x, y, place]);
-      }
-    }
   }
 
   #landmarkSelected(name: string) {
@@ -1622,46 +1552,10 @@ export class Minimap {
     ctx.textBaseline = "alphabetic";
   }
 
-  #placeDot(ctx: CanvasRenderingContext2D, x: number, y: number, layer: MapLayer, selected: boolean, rad: number) {
-    ctx.save();
-    ctx.shadowColor = layer.color;
-    ctx.shadowBlur = selected ? 18 * this.#dpr : 10 * this.#dpr;
-    ctx.beginPath();
-    ctx.arc(x, y, rad, 0, Math.PI * 2);
-    ctx.fillStyle = layer.color;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.lineWidth = selected ? 2.3 * this.#dpr : 1.4 * this.#dpr;
-    ctx.strokeStyle = selected ? "rgba(255,255,255,0.95)" : "rgba(5,12,18,0.78)";
-    ctx.stroke();
-    if (selected) {
-      ctx.beginPath();
-      ctx.arc(x, y, rad + 4.5 * this.#dpr, 0, Math.PI * 2);
-      ctx.lineWidth = 1.2 * this.#dpr;
-      ctx.strokeStyle = layer.color;
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  #placeHit(mx: number, my: number, hits: [number, number, MapLayerPoint][]) {
-    const hitRadius = PLACE_HIT_PX * this.#dpr;
-    let best: MapLayerPoint | null = null;
-    let bestDist = Infinity;
-    for (const [hx, hy, place] of hits) {
-      const d = Math.hypot(mx - hx, my - hy);
-      if (d < hitRadius && d < bestDist) {
-        best = place;
-        bestDist = d;
-      }
-    }
-    return best;
-  }
-
   /* -------------------------------- collapsed-map select + teleport */
 
-  /** Click on the collapsed map: pick a player / landmark / layer dot (in that
-   * priority order) as the teleport target, or clear on an empty-space click. */
+  /** Click on the collapsed map: pick a player or landmark (in that priority
+   * order) as the teleport target, or clear on an empty-space click. */
   #tryMiniSelect(e: MouseEvent, canvas: HTMLCanvasElement) {
     const rect = canvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
@@ -1685,21 +1579,9 @@ export class Minimap {
       }
     }
     if (best) {
-      this.#selectedPlaceId = null;
       this.#selected = best;
       this.update(true);
       return;
-    }
-
-    if (LAYERS_ENABLED) {
-      const place = this.#placeHit(mx, my, this.#miniPlaceHits);
-      if (place) {
-        this.#selectedPlaceId = place.id;
-        this.#selected = { kind: "fixed", x: place.x, z: place.z, name: place.title, toName: place.title };
-        this.onPlaceClick(place);
-        this.update(true);
-        return;
-      }
     }
     this.#clearSelection();
   }
@@ -1719,7 +1601,6 @@ export class Minimap {
 
   #clearSelection() {
     this.#selected = null;
-    this.#selectedPlaceId = null;
     this.update(true);
   }
 
@@ -1784,6 +1665,7 @@ export class Minimap {
     if (on === this.expanded) return;
     this.expanded = on;
     if (on) {
+      this.#cancelHistoricalTrim();
       // The GPT-painted atlas is optional map art. Keep it out of the clean
       // boot waterfall and request only its overview on first map activation.
       this.#loadHistoricalOverview();
@@ -1796,6 +1678,11 @@ export class Minimap {
       this.#cancelBigRecenterAnim();
       this.#bigWrap.style.display = "none";
       this.#padCursor = null;
+      this.#cancelHistoricalTrim();
+      this.#historicalTrimTimer = window.setTimeout(() => {
+        this.#historicalTrimTimer = null;
+        this.#trimHistoricalTiles();
+      }, HISTORICAL_TRIM_DELAY_MS);
     }
     this.onExpandChange(on);
   }
@@ -1891,10 +1778,8 @@ export class Minimap {
     }
     const next = pins[(idx + dir + pins.length * 8) % pins.length]!;
     if (next.kind === "player") {
-      this.#selectedPlaceId = null;
       this.#selected = { kind: "player", id: next.id, name: next.name };
     } else {
-      this.#selectedPlaceId = null;
       this.#selected = { kind: "fixed", x: next.x, z: next.z, name: next.name, toName: next.name };
     }
     this.#nudgeCursorToWorld(next.x, next.z);
@@ -1949,7 +1834,10 @@ export class Minimap {
       spanX,
       spanZ,
       centered: Math.hypot(center.x - self.x, center.z - self.z) < 0.5,
-      roadsPainted: this.#roadsPainted
+      roadsPainted: this.#roadsPainted,
+      // Resident atlas plates — capped at HISTORICAL_REGION_BUDGET, then trimmed
+      // to what the collapsed minimap needs once the big map has been shut.
+      atlasPlates: this.#historicalRegions.size
     };
   }
 
@@ -2160,7 +2048,6 @@ export class Minimap {
       }
     }
     if (bestPlayer) {
-      this.#selectedPlaceId = null;
       this.#selected = { kind: "player", id: bestPlayer.id, name: bestPlayer.name };
       this.update(true);
       return;
@@ -2176,7 +2063,6 @@ export class Minimap {
       }
     }
     if (bestLandmark) {
-      this.#selectedPlaceId = null;
       this.#selected = {
         kind: "fixed",
         x: bestLandmark.x,
@@ -2188,17 +2074,6 @@ export class Minimap {
       return;
     }
 
-    if (LAYERS_ENABLED) {
-      const place = this.#placeHit(mx, my, this.#bigPlaceHits);
-      if (place) {
-        this.#selectedPlaceId = place.id;
-        this.#selected = { kind: "fixed", x: place.x, z: place.z, name: place.title, toName: place.title };
-        this.onPlaceClick(place);
-        this.update(true);
-        return;
-      }
-    }
-
     const pos = this.#bigScreenToWorld(canvas, mx, my);
     const grid = this.#map.meta.grid;
     const maxX = grid.minX + grid.width * grid.cellSize;
@@ -2206,7 +2081,6 @@ export class Minimap {
     // Edge-centered views can show a little backdrop beyond the finite world.
     // Keep that margin inert so it can never become an out-of-bounds teleport.
     if (pos.x < grid.minX || pos.x > maxX || pos.z < grid.minZ || pos.z > maxZ) return;
-    this.#selectedPlaceId = null;
     this.#selected = { kind: "fixed", x: pos.x, z: pos.z, name: GROUND_TARGET_NAME };
     this.update(true);
   }
@@ -2303,8 +2177,6 @@ export class Minimap {
       ctx.textAlign = "left";
       ctx.textBaseline = "alphabetic";
     }
-
-    if (LAYERS_ENABLED) this.#drawBigPlaces(ctx, px, pz, canvas.width, canvas.height);
 
     // remote players with name labels (canvas text — no HTML injection path)
     this.#hits = [];
@@ -2428,30 +2300,6 @@ export class Minimap {
     return text.slice(0, low) + ellipsis;
   }
 
-  #drawBigPlaces(
-    ctx: CanvasRenderingContext2D,
-    px: (x: number) => number,
-    pz: (z: number) => number,
-    width: number,
-    height: number
-  ) {
-    const dpr = this.#dpr;
-    this.#bigPlaceHits = [];
-    for (const layer of this.#layers) {
-      if (!layer.enabled) continue;
-      for (const place of layer.points) {
-        const x = px(place.x);
-        const y = pz(place.z);
-        const margin = 16 * dpr;
-        if (x < -margin || y < -margin || x > width + margin || y > height + margin) continue;
-        const selected = place.id === this.#selectedPlaceId;
-        this.#placeDot(ctx, x, y, layer, selected, 4.8 * dpr);
-        this.#bigPlaceHits.push([x, y, place]);
-        if (selected) this.#placeLabel(ctx, x, y, `${layer.label}: ${place.title}`, layer.color, width, height);
-      }
-    }
-  }
-
   #drawBigSelection(
     ctx: CanvasRenderingContext2D,
     px: (x: number) => number,
@@ -2545,39 +2393,5 @@ export class Minimap {
     el.style.left = `${cssX}px`;
     el.style.top = `${cssY}px`;
     el.hidden = false;
-  }
-
-  #placeLabel(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    text: string,
-    color: string,
-    width: number,
-    height: number
-  ) {
-    const dpr = this.#dpr;
-    ctx.save();
-    ctx.font = `700 ${11.5 * dpr}px ${MAP_FONT}`;
-    const padX = 7 * dpr;
-    const padY = 4 * dpr;
-    const tw = ctx.measureText(text).width;
-    const boxW = tw + padX * 2;
-    const boxH = 21 * dpr;
-    let bx = x + 9 * dpr;
-    let by = y - boxH - 7 * dpr;
-    if (bx + boxW > width - 5 * dpr) bx = x - boxW - 9 * dpr;
-    if (by < 5 * dpr) by = y + 9 * dpr;
-    if (by + boxH > height - 5 * dpr) by = height - boxH - 5 * dpr;
-    ctx.fillStyle = "#081018";
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.2 * dpr;
-    ctx.beginPath();
-    ctx.roundRect(bx, by, boxW, boxH, 8 * dpr);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = "rgba(238,248,252,0.96)";
-    ctx.fillText(text, bx + padX, by + padY + 11.5 * dpr);
-    ctx.restore();
   }
 }

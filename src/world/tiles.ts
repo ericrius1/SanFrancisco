@@ -200,6 +200,65 @@ const BUILDING_BATCH_INITIAL_INDICES = 5_242_880;
 const BUILDING_BATCH_MAX_VERTICES = 4_718_592;
 const BUILDING_BATCH_MAX_INDICES = 8_388_608;
 
+/** Store a quantized tile attribute in the layout WebGPU already uploads it in.
+ *
+ *  A vertex buffer's array stride must be a 4-byte multiple, so the backend pads
+ *  every tight 3-component quantized attribute on upload — position Int16x3 → 8 B
+ *  (`snorm16x4`), normal Int8x3 → 4 B (`snorm8x4`), colour Uint8x3 → 4 B
+ *  (`unorm8x4`). The GPU bytes and the vertex format are IDENTICAL either way;
+ *  what differs is who owns the padded copy. With a tight itemSize the r185
+ *  update hotfix (render/paddedAttributePatch) has to keep a persistent padded CPU
+ *  mirror per attribute, which on the shared building arena is a THIRD
+ *  full-capacity copy (~50 MB at 3.1M vertices) whose first build pads ~28M
+ *  elements on the main thread in one shot, on the frame the first city tile
+ *  attaches. Widening the source attribute to the padded item size makes the
+ *  arena attributes 4-byte aligned, so the backend uploads dirty ranges straight
+ *  out of the arena array: no mirror, no one-shot pad, no per-tile pad span.
+ *
+ *  Net on the building arena: −50.3 MB of mirrors for +12.6 MB of wider arena
+ *  arrays. Only attributes whose stride is not already a multiple of 4 are
+ *  touched, and the extra lane is zero — exactly what the backend's own padding
+ *  writes there today. */
+function alignQuantizedAttributes(geometry: THREE.BufferGeometry): void {
+  for (const name of Object.keys(geometry.attributes)) {
+    const src = geometry.getAttribute(name);
+    const itemSize = src.itemSize;
+    const bytesPerElement = src.array.BYTES_PER_ELEMENT;
+    const stride = itemSize * bytesPerElement;
+    if (itemSize <= 1 || stride % 4 === 0) continue;
+    const paddedItemSize = (Math.ceil(stride / 4) * 4) / bytesPerElement;
+    if (!Number.isInteger(paddedItemSize)) continue;
+    // Mirror the backend's own guards exactly, so this only ever runs where it
+    // would have padded: NON-normalized narrow ints are widened to 32-bit arrays
+    // instead of padded, and a Float16 attribute's format comes from its
+    // attribute class (a plain BufferAttribute would decode as unorm16).
+    const ArrayType = src.array.constructor;
+    const narrowInt =
+      ArrayType === Int8Array || ArrayType === Uint8Array ||
+      ArrayType === Int16Array || ArrayType === Uint16Array;
+    if (!src.normalized && narrowInt) continue;
+    if (src instanceof THREE.Float16BufferAttribute) continue;
+    const count = src.count;
+    const ArrayCtor = ArrayType as unknown as new (length: number) => THREE.TypedArray;
+    const paddedArray = new ArrayCtor(count * paddedItemSize);
+    const dst = paddedArray as unknown as Record<number, number>;
+    // Raw component copy — never getComponent(), which denormalizes. Handles a
+    // meshopt-interleaved source as well as a tight one.
+    const interleaved = (src as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute
+      ? (src as THREE.InterleavedBufferAttribute)
+      : null;
+    const source = (interleaved ? interleaved.data.array : src.array) as unknown as Record<number, number>;
+    const sourceStride = interleaved ? interleaved.data.stride : itemSize;
+    const sourceOffset = interleaved ? interleaved.offset : 0;
+    for (let i = 0; i < count; i++) {
+      const s = i * sourceStride + sourceOffset;
+      const d = i * paddedItemSize;
+      for (let c = 0; c < itemSize; c++) dst[d + c] = source[s + c];
+    }
+    geometry.setAttribute(name, new THREE.BufferAttribute(paddedArray, paddedItemSize, src.normalized));
+  }
+}
+
 // A parsed tile waiting for its main-thread finalize (materials, scene add = GPU
 // upload). Collider decode is intentionally independent: destination visuals must
 // never wait for physics data.
@@ -2110,6 +2169,34 @@ export class TileStreamer {
     return batch;
   }
 
+  /** QA surface for arena sizing: how much of each shared batch arena a residency
+   *  actually occupies. The reserves above are authored against a measured
+   *  city-centre worst case and every reserved byte is resident from the first
+   *  attach, so shrinking them needs a peak `usedVertices/usedIndices` reading
+   *  across the probe stops (plus a maxed-draw-distance downtown stand), not a
+   *  guess — an undersized reserve costs a mid-play setGeometrySize grow, which is
+   *  worse than the steady-state footprint it saves. */
+  batchArenaUsage(): Record<"building" | "road", {
+    usedVertices: number;
+    vertexCapacity: number;
+    usedIndices: number;
+    indexCapacity: number;
+    instances: number;
+  } | null> {
+    const read = (batch: TileMeshBatch | null) => {
+      if (!batch) return null;
+      const stats = batch.stats();
+      return {
+        usedVertices: stats.vertexCapacity - batch.mesh.unusedVertexCount,
+        vertexCapacity: stats.vertexCapacity,
+        usedIndices: stats.indexCapacity - batch.mesh.unusedIndexCount,
+        indexCapacity: stats.indexCapacity,
+        instances: stats.instances
+      };
+    };
+    return { building: read(this.#buildingBatch), road: read(this.#roadBatch) };
+  }
+
   /** Copy a batched tile's per-building alive data (its FacadeSlot authoring
    *  buffer) into its atlas ROW and mark the atlas for one re-upload. No-op for a
    *  tile that is not (yet) batched or has no slot. */
@@ -2133,6 +2220,9 @@ export class TileStreamer {
     if (mesh.geometry.getAttribute("_bid") && mesh.geometry.getAttribute("_BID")) {
       mesh.geometry.deleteAttribute("_BID");
     }
+    // Widen position/normal/colour to the stride the backend uploads anyway, so
+    // the 3.1M-vertex arena never grows a padded CPU mirror (see the helper).
+    alignQuantizedAttributes(mesh.geometry);
     mesh.updateWorldMatrix(true, false);
     const handle = batch.add(mesh.geometry, mesh.matrixWorld);
     if (handle) {
@@ -2195,6 +2285,8 @@ export class TileStreamer {
       this.#roadBatchAnnounced = true;
       this.onBatchCreated(this.#roadBatch.mesh);
     }
+    // Same 4-byte-aligned arena layout as the building batch (see the helper).
+    alignQuantizedAttributes(mesh.geometry);
     mesh.updateWorldMatrix(true, false);
     const handle = this.#roadBatch.add(mesh.geometry, mesh.matrixWorld);
     if (handle) {
