@@ -2,7 +2,7 @@
 // ANGLE-metal), enables the grey-card chart (src/ui/calibrationChart.ts), pins a
 // set of times of day over Marina Green, and for each one samples the rendered
 // pixels of every calibration sphere. Prints measured display values next to a
-// textbook prediction (sun+hemi Lambert → three's ACES fit → sRGB), plus how many
+// textbook prediction (sun-only Lambert → three's ACES fit → sRGB), plus how many
 // stops the 18% card sits above/below photographic neutral. This is the referee
 // for any exposure / light-ratio / grading change.
 //
@@ -17,9 +17,9 @@
 // sun, so each sphere's sun-facing spot is visible. Two readings per sphere:
 //   max   — brightest pixel on the disc ≈ the fully sunlit point (NdotL ≈ 1)
 //   center— mean 3×3 at the sphere centre (normal points at the camera)
-// Predictions ignore the analytic sky IBL (env ×0.075) and the 4% specular term,
-// so measured should sit a few percent ABOVE predicted; big gaps mean the mental
-// model of the pipeline is wrong somewhere.
+// Predictions ignore the analytic sky IBL and the 4% specular term, so measured
+// should sit ABOVE predicted; big gaps beyond the configured IBL fill mean the
+// mental model of the pipeline is wrong somewhere.
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -62,13 +62,11 @@ const srgbDecode = (x) => (x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.0
 const lum = (rgb) => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
 const linLum = (srgbRgb) => lum(srgbRgb.map(srgbDecode));
 
-/** Lambert prediction for a normal n: (sun·NdotL + hemi(n)) · albedo/π → ACES → sRGB. */
-function predict(state, albedo, ndl, ny) {
-  const hemiT = ny * 0.5 + 0.5;
+/** Sun-only Lambert prediction; measured-minus-predicted contains analytic IBL. */
+function predict(state, albedo, ndl) {
   const rad = [0, 1, 2].map((i) => {
     const sun = state.sunC[i] * state.sunI * ndl;
-    const hemi = (state.hemiGround[i] + (state.hemiSky[i] - state.hemiGround[i]) * hemiT) * state.hemiI;
-    return ((sun + hemi) * albedo) / Math.PI;
+    return (sun * albedo) / Math.PI;
   });
   return acesToneMap(rad, state.exposure).map(srgbEncode);
 }
@@ -131,7 +129,7 @@ const STATE_EXPR = `(()=>{const s=window.__sf.sky,sun=s.sun;
   const d=sun.position.clone().sub(sun.target.position).normalize();
   return {exposure:window.__sf.renderer.toneMappingExposure,
     sunI:sun.intensity,sunC:sun.color.toArray(),sunDir:d.toArray(),
-    hemiI:s.hemi.intensity,hemiSky:s.hemi.color.toArray(),hemiGround:s.hemi.groundColor.toArray(),
+    environmentI:window.__sf.scene.environmentIntensity,
     elev:s.sunElevation};})()`;
 
 // Each sphere's screen-space disc + camera-facing normal terms. Pixel sampling
@@ -298,13 +296,13 @@ async function main() {
 
     const rows = geom.spheres.map((s) => {
       const m = sampleDisc(png, s.cx * scale, s.cy * scale, s.pr * scale);
-      const predMax = predict(state, s.albedo, 1, state.sunDir[1]); // sun-facing point: NdotL=1, n = sunDir
-      const predCenter = predict(state, s.albedo, s.ndl, s.ny);
+      const predMax = predict(state, s.albedo, 1);
+      const predCenter = predict(state, s.albedo, s.ndl);
       return { ...s, ...m, predMax, predCenter };
     });
     report.push({ time: t, state, spheres: rows });
 
-    console.log(`\n== t=${t.toFixed(2)}h  sun-elev=${state.elev.toFixed(1)}°  key=${state.sunI.toFixed(1)}  hemi=${state.hemiI.toFixed(1)}  exposure=${state.exposure}`);
+    console.log(`\n== t=${t.toFixed(2)}h  sun-elev=${state.elev.toFixed(1)}°  key=${state.sunI.toFixed(1)}  IBL=${state.environmentI.toFixed(3)}  exposure=${state.exposure}`);
     console.log("   albedo | sunlit-max sRGB (pred) | centre sRGB (pred)");
     for (const r of rows) {
       const m = lum(r.max), pm = lum(r.predMax), cJ = lum(r.center), pc = lum(r.predCenter);

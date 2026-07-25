@@ -63,10 +63,13 @@ export type BotanicalGarden = {
   stats: GardenVegetation["stats"];
   /**
    * Call once per frame.
-   *  • moves the near-grass detail ring to `focus` (usually the camera/player)
+   *  • retargets the player-following GPU grass field to `focus` (the player)
+   *  • when `camera` is supplied, runs the grass's per-frame GPU frustum cull
+   *    against the RENDER camera (indirect draw counts written by compute, no
+   *    CPU readback) — omit it and the grass keeps last frame's visibility set.
    * Tree LOD self-drives off the render loop — nothing else to tick.
    */
-  update(focus: { x: number; z: number }): void;
+  update(focus: { x: number; z: number }, camera?: THREE.Camera): void;
   /** Release every tree, shrub, flower, grass, and proxy GPU resource. */
   dispose(): void;
 };
@@ -100,13 +103,13 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
     grass: veg.grass,
     colliders: veg.colliders,
     stats: veg.stats,
-    update(focus) {
+    update(focus, camera) {
       // Whole-garden distance gate (see GARDEN_GATE). Hiding the group stops the
       // far-tier trees from rendering AND parks the self-driven tree LOD rebin
       // (its driver meshes no longer render, so onBeforeRender stops firing); the
-      // rebin resumes cleanly on re-entry off the live camera. Also zero grass
-      // draw ranges so a stale visible flag can't leak tris while gated out
-      // (Corona Heights / FiDi must never pay for GG Park blades).
+      // rebin resumes cleanly on re-entry off the live camera. Also park the GPU
+      // grass so a stale visible flag can't leak tris while gated out (Corona
+      // Heights / FiDi must never pay for GG Park blades).
       updateGate(focus);
       applyVisibility();
       if (!enabled || gatedOut) {
@@ -114,7 +117,11 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
         return;
       }
 
+      // Field/placement retarget follows the PLAYER (focus); the per-frame GPU
+      // frustum cull follows the RENDER camera — only in-view blades reach the
+      // vertex shader. Mirrors how wildlands drives grass.update()/cullFrame().
       veg.grass.updateFocus(focus);
+      if (camera) veg.grass.cullFrame(camera);
       veg.update(focus);
     },
     dispose: veg.dispose

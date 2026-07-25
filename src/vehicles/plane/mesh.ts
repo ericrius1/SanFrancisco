@@ -230,8 +230,8 @@ export function buildPlaneMesh(): THREE.Group {
   skidWheel.position.set(0, -0.6, 2.85);
   g.add(skidWheel);
 
-  // lamps from the shared LightPool (4 anchors): warm cockpit glow, one wash
-  // per wing (warm starboard / cool port, lighting the solar decks), tail beacon
+  // Contextual-light candidates in priority order. The one-slot scene pool uses
+  // the cockpit glow; the remaining markers document graceful fallback choices.
   g.add(lightAnchor({ color: 0xffe2b8, intensity: 16, distance: 9 }, 0, 0.95, 0.25));
   g.add(lightAnchor({ color: 0xffd9a0, intensity: 10, distance: 12 }, 2.6, 0.5, -0.6));
   g.add(lightAnchor({ color: 0xcdd8ff, intensity: 10, distance: 12 }, -2.6, 0.5, -0.6));

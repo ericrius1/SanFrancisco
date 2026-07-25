@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Offline renderer for the baked lo-fi music stems.
+"""Offline renderer for the baked day-adventure / lo-fi-night music stems.
 
 Renders the unpitched stem layer that sits under the generative score:
-two humanized lo-fi drum grooves (day / dusk) and a dusty tape-texture bed.
+two brisk humanized daytime grooves, a deep dusk groove, and a dusty
+tape-texture bed.
 Stems are deliberately non-harmonic — no pitched content — so they can never
 clash with the runtime chord walk, whatever key a region is in.
 
@@ -18,6 +19,7 @@ Output contract (consumed by src/audio/music/stemManifest.ts):
 Deterministic (fixed seeds) — re-running reproduces identical files.
 
   python3 tools/music/render_stems.py
+  python3 tools/music/render_stems.py --stem beat-warm --stem beat-brush
 
 Requires numpy + scipy + ffmpeg (loudness targets are peak-normalized here,
 final level lives in the manifest gainTrim / runtime mixer).
@@ -25,6 +27,8 @@ final level lives in the manifest gainTrim / runtime mixer).
 
 from __future__ import annotations
 
+import argparse
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -36,6 +40,7 @@ from scipy.io import wavfile
 SR = 48_000
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "public" / "audio" / "music" / "stems"
+FFMPEG = os.environ.get("FFMPEG_BINARY", "ffmpeg")
 
 
 # ----------------------------------------------------------------- helpers
@@ -180,14 +185,13 @@ def render_groove(
 
 def render_brush(
     *,
-    bpm: float = 66,
+    bpm: float = 92,
     bars: int = 8,
     seed: int = 41,
     tail: float = 2.5,
 ) -> np.ndarray:
-    """Organic brush kit for park regions: airy swung 16th shaker, sparse wood
-    clicks, and a very soft deep kick on every other bar's downbeat only --
-    no backbeat snare. Same humanize/tail contract as render_groove."""
+    """Playful organic park kit: airy swung 16ths, a light walking kick and
+    woody backbeat clicks. Same humanize/tail contract as render_groove."""
     rng = np.random.default_rng(seed)
     beat = 60.0 / bpm
     loop = bars * 4 * beat
@@ -200,15 +204,16 @@ def render_brush(
 
     for bar in range(bars):
         t0 = bar * 4 * beat
-        # --- very soft deep kick, only beat 1 of every other bar
-        if bar % 2 == 0:
-            place(canvas, kick(rng, deep=True), seconds(human(t0, first=(bar == 0))), 0.35, -0.05)
-        # --- sparse wood clicks at swung positions
-        for frac in (1.5, 2.75, 3.25):
-            if rng.random() < 0.5:
-                when = t0 + frac * beat
-                gain = 0.25 + 0.10 * rng.random()
-                place(canvas, rim(rng, soft=True), seconds(human(when)), gain, 0.2)
+        # --- light walking kick: every downbeat plus an occasional pickup
+        place(canvas, kick(rng, deep=False), seconds(human(t0, first=(bar == 0))), 0.48, -0.08)
+        if bar % 2 == 1 or rng.random() < 0.55:
+            place(canvas, kick(rng, deep=False), seconds(human(t0 + 2.5 * beat)), 0.3, -0.08)
+        # --- friendly wooden backbeat, with one syncopated answer
+        for frac in (1.0, 3.0):
+            when = t0 + frac * beat
+            place(canvas, rim(rng, soft=True), seconds(human(when)), 0.3 + 0.08 * rng.random(), 0.18)
+        if rng.random() < 0.65:
+            place(canvas, rim(rng, soft=True), seconds(human(t0 + 2.75 * beat)), 0.18, 0.28)
         # --- dense brushy shaker: swung 16ths
         for s in range(16):
             if rng.random() > 0.85:
@@ -285,7 +290,7 @@ def write_mp3(name: str, data: np.ndarray) -> None:
     wavfile.write(wav_path, SR, (np.clip(data, -1, 1) * 32767).astype(np.int16))
     mp3_path = OUT_DIR / f"{name}.mp3"
     subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav_path),
+        [FFMPEG, "-y", "-loglevel", "error", "-i", str(wav_path),
          "-codec:a", "libmp3lame", "-q:a", "4", str(mp3_path)],
         check=True,
     )
@@ -296,13 +301,26 @@ def write_mp3(name: str, data: np.ndarray) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--stem",
+        action="append",
+        choices=("beat-warm", "beat-dusk", "beat-brush", "dust"),
+        help="render only the selected stem (repeatable); default renders all",
+    )
+    selected = set(parser.parse_args().stem or ("beat-warm", "beat-dusk", "beat-brush", "dust"))
+
     # manifest contract: loopSeconds derived from bpm/bars EXACTLY as below
-    write_mp3("beat-warm", render_groove(bpm=72, bars=8, seed=7, deep=False, density=1.0))
-    write_mp3("beat-dusk", render_groove(bpm=58, bars=8, seed=23, deep=True, density=0.8))
-    write_mp3("beat-brush", render_brush())
-    write_mp3("dust", render_dust())
-    print("\nloopSeconds: beat-warm =", 8 * 4 * 60 / 72, " beat-dusk =", 8 * 4 * 60 / 58,
-          " beat-brush =", 8 * 4 * 60 / 66, " dust = 20.0")
+    if "beat-warm" in selected:
+        write_mp3("beat-warm", render_groove(bpm=92, bars=8, seed=7, deep=False, density=1.0))
+    if "beat-dusk" in selected:
+        write_mp3("beat-dusk", render_groove(bpm=58, bars=8, seed=23, deep=True, density=0.8))
+    if "beat-brush" in selected:
+        write_mp3("beat-brush", render_brush(bpm=92))
+    if "dust" in selected:
+        write_mp3("dust", render_dust())
+    print("\nloopSeconds: beat-warm =", 8 * 4 * 60 / 92, " beat-dusk =", 8 * 4 * 60 / 58,
+          " beat-brush =", 8 * 4 * 60 / 92, " dust = 20.0")
 
 
 if __name__ == "__main__":

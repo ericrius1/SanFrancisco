@@ -2,10 +2,11 @@
 //
 // Rides the shared AudioEngine "music" group (the HUD music slider + mute are
 // applied by the engine group gain; nothing here reads a *AudioLevel() into its
-// own gains). Four synthesized layers — soft e-piano chords, a slow pad, a sub
-// bass and pentatonic sparkles — run through a tape-wow delay, a warmth
-// lowpass and vinyl crackle, so the whole mix reads as a worn record rather
-// than a synth demo.
+// own gains). At night, soft e-piano chords, a slow pad, sub bass and
+// pentatonic sparkles run through the worn-record chain. Daylight opens a
+// different face of the same score: brisk mallet-like chord pulses, clearer
+// melodic phrases and a stronger groove turn it into playful exploration
+// music without replacing the night palette.
 //
 // The brain is a slow chord walk (theory.ts) voiced with minimal motion.
 // Region data (regions.ts) blends texture continuously as the listener moves;
@@ -54,13 +55,15 @@ export const LOFI_MUSIC_TUNING = tunables("lofiMusic", {
   wobble: { v: 0.8, min: 0, max: 1, step: 0.01, label: "tape wow" },
   reverb: { v: 0.9, min: 0, max: 1, step: 0.01, label: "reverb" },
   pace: { v: 1, min: 0.4, max: 2, step: 0.05, label: "pace ×" },
-  dayCheer: { v: 1, min: 0, max: 1.5, step: 0.05, label: "day cheer" }
+  dayCheer: { v: 1, min: 0, max: 1.5, step: 0.05, label: "day adventure" }
 });
 
 const LOOKAHEAD = 1.6; // seconds of schedule horizon
 const KEY_SWITCH_SECONDS = 5; // hysteresis before a region takes the key
 const KEYS_LO = 50; // chord voicing register (MIDI)
 const KEYS_HI = 74;
+const DAY_PULSE_BPM = 92;
+const DAY_PULSE_BEAT = 60 / DAY_PULSE_BPM;
 
 // ---- arrangement sections -------------------------------------------------
 // The cure for statistical flatness: a slow arrangement brain. Each section
@@ -150,6 +153,7 @@ export class LofiMusicDirector {
   // debug
   #chordCount = 0;
   #sparkleCount = 0;
+  #adventurePulseCount = 0;
   #lastChord = "-";
 
   get debugState() {
@@ -167,10 +171,14 @@ export class LofiMusicDirector {
       degree: this.#degree,
       chordCount: this.#chordCount,
       sparkleCount: this.#sparkleCount,
+      adventurePulseCount: this.#adventurePulseCount,
+      dayAdventure: +this.#cheer.toFixed(3),
       lastChord: this.#lastChord,
       vinylReady: Boolean(this.#vinylBuffer),
       stems: this.#stemPlayer?.debugState ?? [],
       phrases: this.#phrasePlayer?.debugState ?? null,
+      phrasePending: this.#phrasePending,
+      nextPhraseIn: this.#ctx ? +(this.#nextPhraseT - this.#ctx.currentTime).toFixed(2) : 0,
       influence: MUSIC_REGIONS.map((r, i) => ({ id: r.id, inf: +this.#inf[i].toFixed(3) })),
       nextChordIn: this.#ctx ? +(this.#nextChordT - this.#ctx.currentTime).toFixed(2) : 0
     };
@@ -265,11 +273,12 @@ export class LofiMusicDirector {
       const p = this.#texture;
       const day = this.#daylight;
       const groove = p.groove * Number(T.beats) * this.#sectionMul.groove;
-      const grooveLift = 1 + 0.22 * Math.min(this.#cheer, 1); // day-only lift
+      const grooveLift = 1 + 0.5 * Math.min(this.#cheer, 1); // day-only lift
       this.#stemPlayer.setTarget("beatWarm", groove * day * (1 - p.brush) * grooveLift);
       this.#stemPlayer.setTarget("beatBrush", groove * day * p.brush * grooveLift);
       this.#stemPlayer.setTarget("beatDusk", groove * (1 - day) * 0.95);
-      this.#stemPlayer.setTarget("dust", p.dust * Number(T.dust) * this.#sectionMul.dust);
+      const dayClarity = 1 - 0.62 * Math.min(this.#cheer, 1);
+      this.#stemPlayer.setTarget("dust", p.dust * Number(T.dust) * this.#sectionMul.dust * dayClarity);
       this.#stemPlayer.update(dt, now);
     }
   }
@@ -457,21 +466,22 @@ export class LofiMusicDirector {
     const day = this.#daylight;
     const warmHz = (3200 + (1 - p.warmth) * 5200) * (0.62 + 0.38 * day);
     this.#warm.frequency.setTargetAtTime(warmHz, now, 1.2);
-    this.#wowLfoGain.gain.setTargetAtTime(0.0022 * Number(T.wobble), now, 1);
-    this.#flutterLfoGain.gain.setTargetAtTime(0.00013 * Number(T.wobble), now, 1);
+    const cheer = Math.min(this.#cheer, 1); // 0 at night — night gains unchanged
+    const dayFocus = 1 - 0.42 * cheer;
+    this.#wowLfoGain.gain.setTargetAtTime(0.0022 * Number(T.wobble) * dayFocus, now, 1);
+    this.#flutterLfoGain.gain.setTargetAtTime(0.00013 * Number(T.wobble) * dayFocus, now, 1);
     // the record surface leans in as night settles — cozier, closer
     this.#crackleGain.gain.setTargetAtTime(
-      p.crackle * Number(T.crackle) * (0.72 + 0.28 * (1 - day)),
+      p.crackle * Number(T.crackle) * (0.72 + 0.28 * (1 - day)) * (1 - 0.5 * cheer),
       now,
       1.5
     );
     const m = this.#sectionMul;
-    const cheer = Math.min(this.#cheer, 1); // 0 at night — night gains unchanged
-    this.#keysBus.gain.setTargetAtTime(p.epiano * Number(T.keys) * 0.95 * m.keys, now, 1.5);
-    this.#padBus.gain.setTargetAtTime(p.pad * Number(T.pads) * m.pad * (1 - 0.22 * cheer), now, 1.5);
+    this.#keysBus.gain.setTargetAtTime(p.epiano * Number(T.keys) * 0.95 * m.keys * (1 + 0.12 * cheer), now, 1.5);
+    this.#padBus.gain.setTargetAtTime(p.pad * Number(T.pads) * m.pad * (1 - 0.48 * cheer), now, 1.5);
     this.#bassBus.gain.setTargetAtTime(p.bass * Number(T.bass) * m.bass, now, 1.5);
-    this.#sparkleBus.gain.setTargetAtTime(Number(T.sparkle) * 0.9 * m.sparkle * (1 + 0.15 * cheer), now, 1.5);
-    this.#revSend.gain.setTargetAtTime(p.reverb * Number(T.reverb), now, 1.5);
+    this.#sparkleBus.gain.setTargetAtTime(Number(T.sparkle) * 0.9 * m.sparkle * (1 + 0.24 * cheer), now, 1.5);
+    this.#revSend.gain.setTargetAtTime(p.reverb * Number(T.reverb) * (1 - 0.34 * cheer), now, 1.5);
     // melodic phrase presence follows the region's sparkle character
     this.#phrasePlayer?.setGain(Number(T.phrases) * (0.35 + 0.65 * p.sparkle) * m.phrases, now);
   }
@@ -482,11 +492,11 @@ export class LofiMusicDirector {
     const p = this.#texture;
     const cheer = this.#cheer; // 0 at night — night section odds unchanged
     const weights: Record<SectionId, number> = {
-      full: 0.3 * (1 + 0.25 * cheer),
-      keysOnly: 0.2 + 0.15 * p.epiano,
-      padDrift: (0.16 + 0.3 * p.pad) * Math.max(0.2, 1 - 0.45 * cheer),
-      beatFocus: (0.08 + 0.3 * p.groove) * 1.4 * (1 + 0.5 * cheer),
-      breath: 0.1 * Math.max(0.3, 1 - 0.35 * cheer)
+      full: 0.3 * (1 + 0.8 * cheer),
+      keysOnly: (0.2 + 0.15 * p.epiano) * (1 + 0.15 * cheer),
+      padDrift: (0.16 + 0.3 * p.pad) * Math.max(0.08, 1 - 0.82 * cheer),
+      beatFocus: (0.08 + 0.3 * p.groove) * 1.4 * (1 + 1.35 * cheer),
+      breath: 0.1 * Math.max(0.08, 1 - 0.82 * cheer)
     };
     weights[this.#sectionId] = 0;
     if (this.#prevSectionId === "breath") weights.breath = 0;
@@ -504,7 +514,8 @@ export class LofiMusicDirector {
     this.#prevSectionId = this.#sectionId;
     this.#sectionId = next;
     const spec = SECTIONS[next];
-    this.#sectionT = spec.minS + Math.random() * (spec.maxS - spec.minS);
+    const dayTurnover = 1 - 0.3 * Math.min(cheer, 1);
+    this.#sectionT = (spec.minS + Math.random() * (spec.maxS - spec.minS)) * dayTurnover;
   }
 
   /* ------------------------------------------------------------ composer */
@@ -530,7 +541,7 @@ export class LofiMusicDirector {
       (p.chordSeconds / pace) *
       (1 + 0.5 * (1 - day)) *
       (0.9 + rng() * 0.25) *
-      (1 - 0.12 * Math.min(cheer, 1));
+      (1 - 0.36 * Math.min(cheer, 1));
 
     // the voicing window wanders a few semitones over minutes — verses sit
     // low and warm, later passages lift and open
@@ -577,6 +588,25 @@ export class LofiMusicDirector {
       }
     }
 
+    // Daytime's defining exploration pulse. It outlines the current chord on
+    // a steady 92 BPM grid with short, dry, mallet-like notes. The velocity is
+    // daylight-scaled, so dusk naturally hands back to the untouched ambient
+    // night arrangement instead of switching palettes abruptly.
+    if (cheer > 0.02 && this.#sectionMul.keys > 0.12) {
+      const pulse = [0, 2, 1, 3, 0, 2, 4, 3];
+      const steps = Math.min(12, Math.max(4, Math.floor((dur - 0.3) / DAY_PULSE_BEAT)));
+      const pulseVel = (0.055 + 0.045 * Math.min(cheer, 1)) * Math.min(1, cheer);
+      for (let i = 0; i < steps; i++) {
+        // A small breath before beat four keeps the loop buoyant instead of
+        // reading as a mechanical sequencer.
+        if (i % 8 === 6) continue;
+        const midi = midis[pulse[i % pulse.length] % midis.length] + (i % 8 >= 4 ? 12 : 0);
+        const accent = i % 4 === 0 ? 1.22 : i % 2 === 0 ? 1.05 : 0.82;
+        this.#adventureNote(t + 0.12 + i * DAY_PULSE_BEAT, midi, pulseVel * accent);
+        this.#adventurePulseCount++;
+      }
+    }
+
     // pad + bass under the chord root
     const bassMidi = 36 + pcs[0];
     this.#padChord(t, [bassMidi + 12, bassMidi + 19], dur);
@@ -605,7 +635,7 @@ export class LofiMusicDirector {
           (70 - 46 * p.sparkle) *
           (1 + (1 - day) * 0.6) *
           (0.6 + rng() * 0.8) *
-          (1 - 0.22 * Math.min(cheer, 1));
+          (1 - 0.42 * Math.min(cheer, 1));
         this.#nextPhraseT = t + gap;
       }
       // a false trigger just started the fetch — stays pending for the next chord
@@ -651,7 +681,7 @@ export class LofiMusicDirector {
     const interval = 20 - p.sparkle * 15; // dense regions ping every ~5s, sparse ~20s
     const nightStretch = 1 + (1 - day) * 0.8;
     const sectionStretch = 1 / Math.max(0.3, this.#sectionMul.sparkle);
-    const cheerSqueeze = 1 - 0.2 * Math.min(this.#cheer, 1); // day-only densify
+    const cheerSqueeze = 1 - 0.34 * Math.min(this.#cheer, 1); // day-only densify
     this.#nextSparkleT =
       t + interval * nightStretch * sectionStretch * cheerSqueeze * (0.45 + rng() * 1.1);
   }
@@ -730,6 +760,45 @@ export class LofiMusicDirector {
     osc.connect(g).connect(this.#bassBus);
     osc.start(t);
     osc.stop(t + dur + 5);
+  }
+
+  /** Short, clear daytime pluck: triangle body + wooden octave knock. */
+  #adventureNote(t: number, midi: number, vel: number): void {
+    const ctx = this.#ctx!;
+    const f = midiToFreq(midi);
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = Math.min(9600, f * 8);
+    filter.Q.value = 0.45;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = (Math.random() * 2 - 1) * 0.34;
+    filter.connect(pan).connect(this.#keysBus);
+    const send = ctx.createGain();
+    send.gain.value = 0.16;
+    pan.connect(send).connect(this.#revSend);
+
+    const body = ctx.createOscillator();
+    body.type = "triangle";
+    body.frequency.value = f;
+    const bodyGain = ctx.createGain();
+    bodyGain.gain.setValueAtTime(0.0001, t);
+    bodyGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, vel), t + 0.006);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+    body.connect(bodyGain).connect(filter);
+
+    const knock = ctx.createOscillator();
+    knock.type = "sine";
+    knock.frequency.value = f * 2.003;
+    const knockGain = ctx.createGain();
+    knockGain.gain.setValueAtTime(0.0001, t);
+    knockGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, vel * 0.34), t + 0.004);
+    knockGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+    knock.connect(knockGain).connect(filter);
+
+    body.start(t);
+    knock.start(t);
+    body.stop(t + 0.5);
+    knock.stop(t + 0.14);
   }
 
   /** High pentatonic ping with a heavy reverb send — the "music box" layer. */

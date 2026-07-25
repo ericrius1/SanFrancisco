@@ -189,7 +189,11 @@ async function main() {
     const bootState = await ev(cdp, "window.__sf?.lofiMusic?.debugState ?? null");
     assert.equal(bootState?.ctx, "unloaded", `facade should be dormant pre-gesture, got ${JSON.stringify(bootState)}`);
 
-    // ---- phase 2: first gesture — director loads, the score starts ----
+    // Pin noon so this lifecycle probe exercises the daytime adventure palette
+    // regardless of the real SF wall clock when CI happens to run.
+    await ev(cdp, "(()=>{const s=window.__sf.sky;s.cycleEnabled=false;s.setTimeOfDay(12);return true;})()");
+
+    // ---- phase 2: first gesture — director loads, the day score starts ----
     await setKey(cdp, true, "KeyW", "w", 87);
     await sleep(1600);
     await setKey(cdp, false, "KeyW", "w", 87);
@@ -206,6 +210,13 @@ async function main() {
     assert.equal(live?.ctx, "running", `music ctx should be running after gesture, got ${JSON.stringify(live)}`);
     assert(live.presence > 0.05, `presence should be fading in, got ${live.presence}`);
     assert(live.chordCount >= 1, `no chords scheduled: ${JSON.stringify(live)}`);
+    if (live.daylight > 0.9) {
+      assert(live.dayAdventure > 0.9, `day adventure mix should be fully up: ${JSON.stringify(live)}`);
+      assert(
+        live.adventurePulseCount >= 4,
+        `daytime score scheduled no exploration pulse: ${JSON.stringify(live)}`
+      );
+    }
     assert.equal(live.vinylReady, true, `worker buffers (vinyl/reverb) never arrived: ${JSON.stringify(live)}`);
     assert.equal(live.keyOwner, "city", `downtown spawn should sit in the city key, got ${live.keyOwner}`);
     const engine = await ev(cdp, "window.__sf.audioEngine.debugState");
@@ -227,6 +238,11 @@ async function main() {
     assert(stemRequests.length >= 1, `no stem files were fetched after activation`);
     const failedStems = stems.filter((s) => s.failed);
     assert.deepEqual(failedStems, [], `stems failed to load: ${JSON.stringify(failedStems)}`);
+    assert.equal(
+      stems.find((s) => s.id === "beatDusk")?.loaded,
+      false,
+      `noon activation should not fetch the night groove: ${JSON.stringify(stems)}`
+    );
 
     // hybrid conductor: the first baked phrase enters at a chord boundary
     // (~12 s establish + fetch-then-retry), transposed into the current key
@@ -237,11 +253,52 @@ async function main() {
       phrases = await ev(cdp, "window.__sf.lofiMusic.debugState.phrases ?? null");
       if (phrases && phrases.played >= 1) break;
     }
-    assert(phrases && phrases.played >= 1, `no baked phrase played within 60s: ${JSON.stringify(phrases)}`);
+    const phraseMusic = await ev(cdp, "window.__sf.lofiMusic.debugState");
+    assert(
+      phrases && phrases.played >= 1,
+      `no baked phrase played within 60s: phrases=${JSON.stringify(phrases)} music=${JSON.stringify(phraseMusic)}`
+    );
     assert(phraseRequests.length >= 1, "no phrase file was fetched after activation");
     assert.deepEqual(phrases.failed, [], `phrases failed to load: ${JSON.stringify(phrases)}`);
+    assert.match(phrases.last, /-bright$/, `noon should choose a bright phrase, got ${phrases.last}`);
+    assert(
+      phraseRequests.every((url) => /-bright\.mp3(?:\?|$)/.test(url)),
+      `noon fetched a dusk phrase: ${phraseRequests.join(", ")}`
+    );
 
-    // ---- phase 3: pure-data sanity via the same vite-served modules ----
+    // ---- phase 3: hand off to night without carrying the day pulse across ----
+    const beforeNight = await ev(cdp, "window.__sf.lofiMusic.debugState");
+    await ev(cdp, "(()=>{window.__sf.sky.setTimeOfDay(0);return true;})()");
+    let night = null;
+    const tNight = Date.now();
+    while (Date.now() - tNight < 15_000) {
+      await sleep(700);
+      night = await ev(cdp, "window.__sf.lofiMusic.debugState");
+      const duskLoaded = night?.stems?.find((s) => s.id === "beatDusk")?.loaded;
+      if (night?.daylight === 0 && duskLoaded && night.chordCount > beforeNight.chordCount) break;
+    }
+    assert.equal(night?.dayAdventure, 0, `night should remove the adventure mix: ${JSON.stringify(night)}`);
+    assert.equal(
+      night?.adventurePulseCount,
+      beforeNight.adventurePulseCount,
+      `day pulse kept scheduling after nightfall: before=${JSON.stringify(beforeNight)} after=${JSON.stringify(night)}`
+    );
+    assert.equal(
+      night?.stems?.find((s) => s.id === "beatWarm")?.target,
+      0,
+      `day groove stayed up at night: ${JSON.stringify(night?.stems)}`
+    );
+    assert(
+      (night?.stems?.find((s) => s.id === "beatDusk")?.target ?? 0) > 0,
+      `night groove did not take over: ${JSON.stringify(night?.stems)}`
+    );
+    assert.equal(
+      stemRequests.filter((url) => /beat-dusk\.mp3(?:\?|$)/.test(url)).length,
+      1,
+      `night action should request exactly the newly needed dusk stem: ${stemRequests.join(", ")}`
+    );
+
+    // ---- phase 4: pure-data sanity via the same vite-served modules ----
     const pure = await ev(cdp, `(async () => {
       const R = await import("/src/audio/music/regions.ts");
       const T = await import("/src/audio/music/theory.ts");
@@ -270,7 +327,7 @@ async function main() {
       `voice-leading motion too large (${pure.motion} semitones total): ${JSON.stringify(pure)}`
     );
 
-    // ---- phase 4: mute economy — zero slider releases the persistent hold ----
+    // ---- phase 5: mute economy — zero slider releases the persistent hold ----
     await ev(cdp, `(() => {
       const btn = document.querySelector('#hud .mute-btn');
       if (btn) btn.click(); // full mute is the cleanest exported path

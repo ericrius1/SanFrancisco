@@ -143,7 +143,7 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   // Ginger folk dude in a mossy trail fleece: the jacket rig supplies cloth
   // all the way to each wrist; its stock city pack/zip details are replaced
   // below by a high collar, quarter zip, shoulder yoke and chest-pocket tab.
-  const rig = buildRig({ skin: 0, hair: "short", hat: "none", outfit: "jacket", color: 5, accent: 1 });
+  const rig = buildRig({ skin: 0, hair: "short", hat: "none", outfit: "jacket", color: 5, accent: 1 }, { merged: false }); // reassigns the shades mesh material
   rig.avatar.materials.hair.color.set(GINGER_HAIR);
   rig.avatar.materials.jacket.color.set(0x3d4b35);
   rig.avatar.materials.sleeve.color.set(0x35422f);

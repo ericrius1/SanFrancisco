@@ -35,6 +35,13 @@ import {
   type NativeTreeSilhouetteLod
 } from "./lodTransition";
 import { growTemplate, type GrownTemplate, type NativeTreeDesignSpec } from "./templates";
+import {
+  createNativeTreeGpuFarTiers,
+  registerForestFarCull,
+  type FarChunkHandle,
+  type NativeTreeFarDesign,
+  type NativeTreeGpuFarTiers
+} from "./gpuFarTiers";
 
 export type { NativeTreeDesignSpec } from "./templates";
 
@@ -133,6 +140,16 @@ const LOD_GROVE = 1;
 const LOD_LANDSCAPE = 2;
 const LOD_HORIZON = 3;
 
+// A/B flag for the landscape+horizon (far) tiers. When true, those grades render
+// through the shared GPU indirect core (gpuFarTiers.ts): per-design arenas, one
+// per-frame cull compute that frustum-tests every live slot and hash-dithers it
+// into a landscape or horizon indirect draw. Far draw count becomes a fixed
+// designs × 2 tiers × 2 meshes, and the per-chunk far batches / rebin sort / LOD
+// transition fade batches below are bypassed. Flip to false to fall back to the
+// legacy per-chunk far batch path (kept fully intact for A/B and regression).
+// The near close pool (canopy/grove) and CPU chunk residency are unaffected.
+const GPU_FAR_TIERS = true;
+
 const superseded = () => new DOMException("Native tree destination superseded", "AbortError");
 
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -177,8 +194,11 @@ type TreeBatch = {
 
 type ChunkDesign = {
   slots: Slot[];
-  batch: TreeBatch;
-  transitionBatch: TreeBatch;
+  // Legacy per-chunk far batches (undefined on the GPU far-tier path).
+  batch?: TreeBatch;
+  transitionBatch?: TreeBatch;
+  // GPU far-tier path: this chunk-design's contiguous arena range.
+  farHandle?: FarChunkHandle;
 };
 
 type Chunk = {
@@ -328,6 +348,7 @@ function setBatchLod(batch: TreeBatch, lod: number): void {
 
 function settleChunkLod(chunk: Chunk, lod: NativeTreeSilhouetteLod): void {
   for (const entry of chunk.byDesign.values()) {
+    if (!entry.batch || !entry.transitionBatch) continue;
     setBatchLod(entry.batch, lod);
     setPrimaryBatchEntries(entry.batch, entry.slots, entry.slots);
     setBatchLod(
@@ -348,6 +369,7 @@ function applyChunkLodTransition(
 ): number {
   let targetInstances = 0;
   for (const entry of chunk.byDesign.values()) {
+    if (!entry.batch || !entry.transitionBatch) continue;
     const primarySlots: Slot[] = [];
     const transitionSlots: Slot[] = [];
     for (const slot of entry.slots) {
@@ -616,6 +638,8 @@ export function createNativeTreeForest(
   const chunkDescriptors: ChunkDescriptor[] = [];
   const descriptorsByKey = new Map<string, ChunkDescriptor>();
   const usedDesigns = new Set<number>();
+  // Authored instance count per design (GPU far arena sizing).
+  const designTotals = new Map<number, number>();
   const allNearSlots: { slot: Slot; chunk: Chunk }[] = [];
   const nearPools = new Map<number, NearPool>();
   const nearPreparations = new Map<TreeBatch, NearPreparation>();
@@ -634,6 +658,10 @@ export function createNativeTreeForest(
   let residencyEpoch = 0;
   let residencyTail: Promise<void> = Promise.resolve();
   let horizonPrefetchPump: Promise<void> | null = null;
+  // GPU far-tier path state (built in `ready`, driven from frameBody per frame).
+  let farTiers: NativeTreeGpuFarTiers | null = null;
+  let unregisterFarCull: (() => void) | null = null;
+  let farPrepared = false;
 
   function ensureNearMaterials(design: number): Promise<void> {
     if (disposed || nearMaterials[design] || nearLoadFailures.has(design)) {
@@ -705,7 +733,16 @@ export function createNativeTreeForest(
   }
 
   function setFarHidden(chunk: Chunk, slot: Slot, hidden: boolean): void {
-    const batch = chunk.byDesign.get(slot.design)?.batch;
+    const entry = chunk.byDesign.get(slot.design);
+    if (GPU_FAR_TIERS) {
+      // Near-pool takeover / restore: dark or re-show the far arena instance the
+      // same frame (a one-float scale write + tiny uploadRange). No double-draw —
+      // the cull rejects any slot whose scale is zero.
+      if (!farTiers || !entry?.farHandle || slot.index < 0) return;
+      farTiers.setInstanceHidden(entry.farHandle, slot.index, slot.scale, hidden);
+      return;
+    }
+    const batch = entry?.batch;
     // A slot assigned to the transition batch cannot be close enough for a
     // near-detail takeover. A stale near rebin can briefly observe that state
     // after a teleport, so simply leave its already-visible far copy alone.
@@ -949,36 +986,45 @@ export function createNativeTreeForest(
         slot.index = index;
         slot.key = `${slot.chunk}:${slot.design}:${index}`;
       });
-      // Chunk meshes borrow the forest-owned material pack. Object/geometry
-      // disposal still retires each WebGPU RenderObject, while keeping one
-      // material identity per design/LOD lets pipeline compilation be reused
-      // instead of paying it again for every streamed residency.
-      const batch = createBatch(
-        template,
-        materialPack,
-        [LOD_LANDSCAPE, LOD_HORIZON],
-        designSlots.length,
-        `${options.name}_${designs[design].species}_${descriptor.key}`,
-        descriptor.sphere,
-        chunk.group,
-        false,
-        true
-      );
-      const transitionBatch = createBatch(
-        template,
-        materialPack,
-        [LOD_LANDSCAPE, LOD_HORIZON],
-        designSlots.length,
-        `${options.name}_${designs[design].species}_${descriptor.key}_lod_transition`,
-        descriptor.sphere,
-        chunk.group,
-        false,
-        true
-      );
-      setPrimaryBatchEntries(batch, designSlots, designSlots);
-      setBatchLod(transitionBatch, LOD_HORIZON);
-      setTransitionBatchEntries(transitionBatch, []);
-      chunk.byDesign.set(design, { slots: designSlots, batch, transitionBatch });
+      if (GPU_FAR_TIERS) {
+        // Far rendering is delegated to the shared per-design GPU arena: page this
+        // chunk-design's slots in (one contiguous range) instead of building a
+        // per-chunk far batch. slot.index (assigned above) is the range-local
+        // index the near-pool takeover addresses through setFarHidden.
+        const farHandle = farTiers?.admitChunk(design, designSlots) ?? undefined;
+        chunk.byDesign.set(design, { slots: designSlots, farHandle });
+      } else {
+        // Chunk meshes borrow the forest-owned material pack. Object/geometry
+        // disposal still retires each WebGPU RenderObject, while keeping one
+        // material identity per design/LOD lets pipeline compilation be reused
+        // instead of paying it again for every streamed residency.
+        const batch = createBatch(
+          template,
+          materialPack,
+          [LOD_LANDSCAPE, LOD_HORIZON],
+          designSlots.length,
+          `${options.name}_${designs[design].species}_${descriptor.key}`,
+          descriptor.sphere,
+          chunk.group,
+          false,
+          true
+        );
+        const transitionBatch = createBatch(
+          template,
+          materialPack,
+          [LOD_LANDSCAPE, LOD_HORIZON],
+          designSlots.length,
+          `${options.name}_${designs[design].species}_${descriptor.key}_lod_transition`,
+          descriptor.sphere,
+          chunk.group,
+          false,
+          true
+        );
+        setPrimaryBatchEntries(batch, designSlots, designSlots);
+        setBatchLod(transitionBatch, LOD_HORIZON);
+        setTransitionBatchEntries(transitionBatch, []);
+        chunk.byDesign.set(design, { slots: designSlots, batch, transitionBatch });
+      }
 
       for (const slot of designSlots) {
         if (
@@ -1015,8 +1061,9 @@ export function createNativeTreeForest(
       if (allNearSlots[index].chunk === chunk) allNearSlots.splice(index, 1);
     }
     for (const entry of chunk.byDesign.values()) {
-      disposeBatch(entry.batch);
-      disposeBatch(entry.transitionBatch);
+      if (entry.farHandle) farTiers?.releaseChunk(entry.farHandle);
+      if (entry.batch) disposeBatch(entry.batch);
+      if (entry.transitionBatch) disposeBatch(entry.transitionBatch);
     }
     chunk.group.removeFromParent();
     chunk.group.clear();
@@ -1112,6 +1159,11 @@ export function createNativeTreeForest(
     if (chunks.length > 0) hasCullFocus = true;
     lastFocus.x = x;
     lastFocus.z = z;
+    // GPU far path: distance-based landscape/horizon selection and visibility are
+    // owned by the per-frame cull compute (per instance, hash-dithered). All this
+    // function still owes is the current focus (read by that cull dispatch) — the
+    // per-chunk LOD transition / prepare-before-reveal machinery below is bypassed.
+    if (GPU_FAR_TIERS) return;
     for (const chunk of chunks) {
       const firstChunkCull = firstCull || !chunk.hasCullState;
       chunk.hasCullState = true;
@@ -1339,9 +1391,10 @@ export function createNativeTreeForest(
     // re-asserts the transition batch's LOD, so a stale assignment here is
     // corrected before any instance can reach it.
     for (const entry of chunk.byDesign.values()) {
-      setBatchLod(entry.transitionBatch, lod);
+      if (entry.transitionBatch) setBatchLod(entry.transitionBatch, lod);
     }
     for (const entry of chunk.byDesign.values()) {
+      if (!entry.transitionBatch) continue;
       await prepareObject(entry.transitionBatch.branch);
       if (!transitionPreparationStillCurrent(chunk, epoch, lod)) return;
       await prepareObject(entry.transitionBatch.foliage);
@@ -1436,6 +1489,7 @@ export function createNativeTreeForest(
     // grade. No near-detail material or KTX2 request is reachable from this path.
     const restoreLods = new Map<TreeBatch, number>();
     for (const entry of chunk.byDesign.values()) {
+      if (!entry.batch) continue;
       restoreLods.set(entry.batch, entry.batch.currentLod);
       setBatchLod(entry.batch, LOD_HORIZON);
     }
@@ -1455,6 +1509,7 @@ export function createNativeTreeForest(
     } finally {
       if (!disposed && !chunk.retireRequested && chunks.includes(chunk)) {
         for (const entry of chunk.byDesign.values()) {
+          if (!entry.batch) continue;
           setBatchLod(
             entry.batch,
             chunk.wantedVisible ? chunk.lod : (restoreLods.get(entry.batch) ?? chunk.lod)
@@ -1499,6 +1554,9 @@ export function createNativeTreeForest(
   }
 
   function requestHorizonPrefetchPreparation(): void {
+    // The GPU far path has no per-chunk horizon render objects to warm — the four
+    // per-design far pipelines are compiled once in prepareWantedUnits.
+    if (GPU_FAR_TIERS) return;
     if (!prepareUnit || disposed || horizonPrefetchPump) return;
     let tracked: Promise<void>;
     tracked = (async () => {
@@ -1534,6 +1592,16 @@ export function createNativeTreeForest(
 
   async function prepareWantedUnits(expectedResidencyEpoch?: number): Promise<void> {
     if (!prepareUnit || disposed) return;
+    // GPU far path: the far tier is a fixed, always-resident set of per-design
+    // indirect meshes (no per-chunk far render objects). Compile those four
+    // pipelines once, detached, so the first reveal never stalls on them.
+    if (GPU_FAR_TIERS && farTiers && !farPrepared) {
+      // Set before awaiting so a concurrent prepareWantedUnits (overlapping
+      // teleports) can't detach/compile the far group twice.
+      farPrepared = true;
+      await farTiers.prepare(prepareObject);
+      if (disposed) return;
+    }
     // An in-flight unit can belong to the focus that was just superseded. Loop
     // until the *current* wanted set is prepared rather than merely awaiting the
     // stale promise returned by its first queue lookup.
@@ -1603,6 +1671,9 @@ export function createNativeTreeForest(
       let transitionDraws = 0;
       let triangles = 0;
       for (const entry of chunk.byDesign.values()) {
+        // GPU far path: far draws are owned by the shared per-design indirect
+        // meshes, not per-chunk batches — this chunk has no batch to report.
+        if (!entry.batch || !entry.transitionBatch) continue;
         const primary = batchSubmission(entry.batch, chunk.group.visible);
         const transition = batchSubmission(entry.transitionBatch, chunk.group.visible);
         primaryInstances += primary.instances;
@@ -1753,6 +1824,7 @@ export function createNativeTreeForest(
         if (!template || !materials[slot.design]) continue;
         validDesigns.add(slot.design);
         usedDesigns.add(slot.design);
+        designTotals.set(slot.design, (designTotals.get(slot.design) ?? 0) + 1);
         stats.instances++;
         stats.farTriangles += template.geometry.lods[LOD_LANDSCAPE].triangles;
         stats.horizonTriangles += template.geometry.lods[LOD_HORIZON].triangles;
@@ -1780,6 +1852,50 @@ export function createNativeTreeForest(
       if (disposed) return;
     }
     descriptorsInitialized = true;
+
+    if (GPU_FAR_TIERS && usedDesigns.size > 0) {
+      // One arena per design, sized to its authored total (+ fragmentation
+      // headroom). Built here at forest-ready — arenas allocate on forest build,
+      // never at import (massive-app loading policy). The four per-design far
+      // pipelines compile lazily on first render / prepare, not now.
+      const farDesigns: NativeTreeFarDesign[] = [];
+      for (const design of usedDesigns) {
+        const template = templates[design];
+        const materialAssets = assets[design];
+        if (!template || !materialAssets) continue;
+        const lods = template.geometry.lods;
+        const bounds = template.geometry.bounds;
+        farDesigns.push({
+          design,
+          landscapeBranch: lods[LOD_LANDSCAPE].branch,
+          landscapeFoliage: lods[LOD_LANDSCAPE].foliage,
+          horizonBranch: lods[LOD_HORIZON].branch,
+          horizonFoliage: lods[LOD_HORIZON].foliage,
+          style: template.archetype.style,
+          assets: materialAssets,
+          canopyCenter: template.geometry.canopy.center,
+          canopyRadii: template.geometry.canopy.radii,
+          boundsCenterY: bounds.sphereCenter[1],
+          boundsRadius: bounds.sphereRadius,
+          total: designTotals.get(design) ?? 0
+        });
+      }
+      if (farDesigns.length > 0) {
+        farTiers = createNativeTreeGpuFarTiers(farDesigns, {
+          name: options.name,
+          horizonDistance,
+          visibleDistance
+        });
+        group.add(farTiers.group);
+        // Self-register the per-frame cull; frameBody drives it once per frame for
+        // every forest (see renderNativeTreeForestFarCulls). The distance band
+        // follows the forest's tethered focus, the frustum the render camera.
+        unregisterFarCull = registerForestFarCull((renderer, camera) => {
+          if (disposed || !farTiers) return;
+          farTiers.dispatch(renderer, camera, lastFocus.x, lastFocus.z);
+        });
+      }
+    }
 
     if (nearMax > 0) {
       for (const design of usedDesigns) {
@@ -1843,8 +1959,11 @@ export function createNativeTreeForest(
 
     stats.designs = usedDesigns.size;
     stats.chunks = chunkDescriptors.length;
-    stats.draws = chunkDescriptors.reduce((sum, descriptor) => sum + descriptor.designs.length * 2, 0)
-      + nearPools.size * 4;
+    // GPU far path: far draws are FIXED (designs × 2 tiers × 2 meshes) rather than
+    // scaling with resident chunks. Near pool remains 4 batch draws per design.
+    stats.draws = (farTiers ? farTiers.farDraws : chunkDescriptors.reduce(
+      (sum, descriptor) => sum + descriptor.designs.length * 2, 0
+    )) + nearPools.size * 4;
     stats.prototypeBytes = Array.from(usedDesigns).reduce(
       (sum, design) => sum + (
         templates[design]?.geometry.stats.lods.reduce((lodSum, lod) => lodSum + lod.byteLength, 0) ?? 0
@@ -1971,6 +2090,9 @@ export function createNativeTreeForest(
     dispose() {
       if (disposed) return;
       disposed = true;
+      // Stop the per-frame far cull dispatch before any GPU teardown.
+      unregisterFarCull?.();
+      unregisterFarCull = null;
       for (const entry of active.values()) setFarHidden(entry.chunk, entry.slot, false);
       active.clear();
       for (const pool of nearPools.values()) {
@@ -1982,6 +2104,9 @@ export function createNativeTreeForest(
       for (const chunk of [...chunks]) disposeResidentChunk(chunk, true);
       chunkDescriptors.length = 0;
       descriptorsByKey.clear();
+      // Frees every far arena, visible buffer, indirect draw set and cull pass.
+      farTiers?.dispose();
+      farTiers = null;
       for (let index = 0; index < materials.length; index++) {
         materials[index]?.dispose();
         const materialAssets = assets[index];

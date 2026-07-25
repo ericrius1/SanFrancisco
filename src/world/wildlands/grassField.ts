@@ -22,6 +22,7 @@ import {
   type FoliageFieldStats
 } from "../groundcover/foliageField";
 import { requireRenderer } from "../../app/rendererRegistry";
+import { governorEffects, onGovernorChange } from "../../render/adaptiveResolution";
 import type { GardenTerrain } from "../garden/layout";
 import { grassyGround, nearAnyWildRegion } from "./layout";
 import { GRASS_TUNING } from "../../config";
@@ -271,6 +272,10 @@ export function createWildGrass(
       // visible-index indirection, so only surviving blades reach the vertex shader.
       materialFor(source: GrassIndirectSource) {
         const material = createGrassMaterial({
+          // SSS only where its translucency reads: the near/hero layers. Mid/far
+          // fall back to a standard blade (same tip gradient) — the top shading
+          // lever on the GPU-bound meadow, near-imperceptible at those distances.
+          sss: name === "near" || name === "hero",
           wind: spec.wind,
           interactionSlots: spec.interactionSlots,
           fadeMode: "rank",
@@ -387,7 +392,12 @@ export function createWildGrass(
         return;
       }
       gpu.focus.set(destination.x, destination.z);
-      gpu.density.value = THREE.MathUtils.clamp(Number(GRASS_TUNING.values.density), 0, 2.5);
+      gpu.cullFocus.set(destination.x, destination.z);
+      // Effective density = authored ceiling × governor foliage scale (1.0, or
+      // 0.7 at L4). The tweakpane slider stays the ceiling; this only ever trims.
+      gpu.density.value =
+        THREE.MathUtils.clamp(Number(GRASS_TUNING.values.density), 0, 2.5) *
+        governorEffects().foliageScale;
       gpu.patchiness.value = THREE.MathUtils.clamp(Number(GRASS_TUNING.values.patchiness), 0, 1);
       for (const material of materials) material.focus.set(destination.x, destination.z);
 
@@ -425,6 +435,22 @@ export function createWildGrass(
     }
   };
 
+  const refresh = (): void => {
+    if (lastFocus.x >= 1e8) return;
+    if (!nearAnyWildRegion(lastFocus.x, lastFocus.z, WILD_GRASS_RING_RADIUS + 2)) return;
+    requestGeneration(lastFocus, true);
+  };
+
+  // Governor foliage axis: the L4 rung drops effective density to 0.7×. Re-scatter
+  // only when the multiplier actually changes — the governor already enforces an
+  // ~8 s dwell around L4 entry/exit, so this never churns on ordinary level steps.
+  let lastFoliageScale = governorEffects().foliageScale;
+  const unsubscribeGovernor = onGovernorChange((effects) => {
+    if (effects.foliageScale === lastFoliageScale) return;
+    lastFoliageScale = effects.foliageScale;
+    refresh();
+  });
+
   return {
     group,
     update(focus) {
@@ -446,20 +472,20 @@ export function createWildGrass(
     },
     cullFrame(camera) {
       if (disposed || !group.visible) return;
+      // The per-instance rank fade tracks the live player focus, matching the
+      // material's shrink; keep the cull reading the same point every frame.
+      gpu.cullFocus.set(lastFocus.x, lastFocus.z);
       gpu.updateCullCamera(camera);
       renderer.compute(gpu.cullPasses);
     },
-    refresh() {
-      if (lastFocus.x >= 1e8) return;
-      if (!nearAnyWildRegion(lastFocus.x, lastFocus.z, WILD_GRASS_RING_RADIUS + 2)) return;
-      requestGeneration(lastFocus, true);
-    },
+    refresh,
     whenSettled: waitForLatest,
     whenCriticalReady: waitForLatest,
     dispose() {
       if (disposed) return;
       disposed = true;
       generation++;
+      unsubscribeGovernor();
       field.dispose();
       gpu.dispose();
       for (const material of materials) material.material.dispose();

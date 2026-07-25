@@ -1,11 +1,16 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
+import {
+  lightAnchor,
+  registerAmbientLightAnchor,
+  type LightAnchorSpec
+} from "../../player/lightPool";
 import { REVERIE_CENTER, REVERIE_TUNING } from "./layout";
 
 /**
  * Soft firefly field around the lagoon shore + peristyle. Population grows
- * with quest progress; one fixed PointLight for face/column fill (WebGPU
- * light-count stability).
+ * with quest progress; its face/column fill competes for the one contextual
+ * scene-light slot.
  */
 
 type Bug = {
@@ -39,7 +44,15 @@ function makeBugTexture(): THREE.CanvasTexture {
 export class ReverieFireflies {
   readonly group = new THREE.Group();
   #bugs: Bug[] = [];
-  #light: THREE.PointLight;
+  #lightAnchor: THREE.Object3D;
+  #lightColor = new THREE.Color();
+  #lightSpec: LightAnchorSpec = {
+    color: 0xffe8a0,
+    intensity: 0,
+    distance: 18,
+    range: 90
+  };
+  #unregisterLight: () => void;
   #tex: THREE.CanvasTexture;
   #progress = 0;
   #active = 0;
@@ -47,10 +60,15 @@ export class ReverieFireflies {
   constructor() {
     this.group.name = "palace-reverie-fireflies";
     this.#tex = makeBugTexture();
-    this.#light = new THREE.PointLight(0xffe8a0, 0, 18, 2);
-    this.#light.position.set(REVERIE_CENTER.x, 6, REVERIE_CENTER.z);
-    this.#light.castShadow = false;
-    this.group.add(this.#light);
+    this.#lightAnchor = lightAnchor(
+      this.#lightSpec,
+      REVERIE_CENTER.x,
+      6,
+      REVERIE_CENTER.z
+    );
+    this.#lightAnchor.name = "palace-reverie-firefly-fill";
+    this.group.add(this.#lightAnchor);
+    this.#unregisterLight = registerAmbientLightAnchor(this.#lightAnchor);
 
     const cap = REVERIE_TUNING.fireflyBase + REVERIE_TUNING.fireflyPerLamp * 5;
     for (let i = 0; i < cap; i++) {
@@ -122,9 +140,11 @@ export class ReverieFireflies {
       const size = 0.2 + (i % 4) * 0.05 + this.#progress * 0.08;
       b.sprite.scale.set(size, size, 1);
     }
-    this.#light.intensity = (0.55 + this.#progress * 3.8) * LIGHT_SCALE * 0.35;
-    this.#light.color.setHSL(0.12 + this.#progress * 0.42, 0.55, 0.72);
-    this.#light.position.set(
+    this.#lightSpec.intensity = (0.55 + this.#progress * 3.8) * LIGHT_SCALE * 0.35;
+    this.#lightSpec.color = this.#lightColor
+      .setHSL(0.12 + this.#progress * 0.42, 0.55, 0.72)
+      .getHex();
+    this.#lightAnchor.position.set(
       REVERIE_CENTER.x + Math.sin(timeSec * 0.25) * 6,
       4.5 + this.#progress * 4,
       REVERIE_CENTER.z + Math.cos(timeSec * 0.25) * 6
@@ -132,6 +152,7 @@ export class ReverieFireflies {
   }
 
   dispose() {
+    this.#unregisterLight();
     this.#tex.dispose();
     for (const b of this.#bugs) b.mat.dispose();
   }

@@ -143,14 +143,22 @@ async function main() {
 
   // The new massive-world boot intentionally starts regional foliage only
   // after destination-critical streaming and a quiet background window. A
-  // meadow benchmark is meaningful only once both regional owners have
-  // finished their detached compile and joined the live scene.
+  // meadow benchmark is meaningful only once the resident foliage owner has
+  // finished its detached compile and joined the live scene.
+  //
+  // The `meadow` stop is GARDEN_MEADOW (-2260,2450): inside the SF Botanical
+  // Garden AND within 820 m of the Japanese Tea Garden entrance, where the
+  // wildlands groundcover site is DELIBERATELY not created (the garden owns the
+  // ground there — see worldSystemsNet prepareDestinationEssentials' teaDistance
+  // gate). Require the garden, and only require wildlands residency when a
+  // wildlands site actually exists for this stop; otherwise this gate hangs
+  // forever waiting on a site that is intentionally absent.
   if (WHERE === "meadow") {
     const foliageT0 = Date.now();
     let foliageReady = false;
     while (Date.now() - foliageT0 < 300000) {
       try {
-        if (await ev(c, `(()=>{const sf=window.__sf;return !!(sf.garden?.group?.parent&&sf.wildlands?.groups?.length&&sf.wildlands.groups.every((group)=>group.parent));})()`)) {
+        if (await ev(c, `(()=>{const sf=window.__sf;const gardenReady=!!sf.garden?.group?.parent;const w=sf.wildlands;const wildReady=!w||(w.groups?.length&&w.groups.every((group)=>group.parent));return gardenReady&&wildReady;})()`)) {
           foliageReady = true;
           break;
         }

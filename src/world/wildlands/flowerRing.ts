@@ -23,16 +23,13 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {
-  abs,
   atomicAdd,
-  atomicStore,
   attribute,
   cameraPosition,
   cameraViewMatrix,
   cos,
   float,
   Fn,
-  If,
   instanceIndex,
   int,
   Loop,
@@ -59,6 +56,15 @@ import { fitGroundY } from "../groundcover/grounding";
 import { hash2, r2Offset, smoothstep, worleyClump } from "../groundcover/scatter";
 import { flowerDriftAt, grassyGround, nearAnyWildRegion, wildRegionAt } from "./layout";
 import { releaseRendererAttribute, requireRenderer } from "../../app/rendererRegistry";
+import {
+  buildCullPass,
+  createCullCamera,
+  createIndirectDrawSet,
+  createInstanceArena,
+  createVisibleBuffer,
+  INDIRECT_STRIDE
+} from "../../render/gpuIndirect";
+import { governorEffects, onGovernorChange } from "../../render/adaptiveResolution";
 import type { GardenTerrain } from "../garden/layout";
 import {
   EXPOSURE_REBASE,
@@ -1033,116 +1039,117 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
   ];
   const totalCapacity = bucketSpecs.reduce((sum, spec) => sum + spec.capacity, 0);
 
-  // Shared packed instance storage + the compacted visible-index buffer. CPU
-  // rescatters rewrite the staging arrays every RESAMPLE_STEP metres; the cull
-  // pass rewrites visibility every frame with zero readback.
-  const data0Attr = new THREE.StorageInstancedBufferAttribute(totalCapacity, 4);
-  const data1Attr = new THREE.StorageInstancedBufferAttribute(totalCapacity, 4);
-  const data2Attr = new THREE.StorageInstancedBufferAttribute(totalCapacity, 4);
-  const visibleAttr = new THREE.StorageBufferAttribute(new Uint32Array(totalCapacity), 1);
+  // Shared instance arena (data0/1/2 planes), the compacted visible buffer, and
+  // the indirect draw set all come from the GPU indirect core; CPU rescatters
+  // stream the arena host arrays, the per-frame cull rewrites visibility. Planes:
+  // data0 = anchor xyz+yaw; data1 = scale xz/scale y/rotation shade/bucket id;
+  // data2 = bloom rgb + cull radius.
+  const arena = createInstanceArena(
+    [{ name: "data0", format: "vec4" }, { name: "data1", format: "vec4" }, { name: "data2", format: "vec4" }],
+    totalCapacity
+  );
+  const sharedVisible = createVisibleBuffer(totalCapacity);
+  // Base-lookup indexed by the data-driven bucket id: the single cull dispatch
+  // routes each live slot into its bucket's region of the shared visible buffer.
   const bucketBaseAttr = new THREE.StorageBufferAttribute(new Uint32Array(bucketSpecs.length), 1);
-  const indirectData = new Uint32Array(bucketSpecs.length * 5);
-  for (let index = 0; index < bucketSpecs.length; index++) {
-    const geometry = bucketSpecs[index].geometry;
-    indirectData[index * 5] = geometry.index?.count ?? geometry.getAttribute("position").count;
-  }
-  const indirect = new THREE.IndirectStorageBufferAttribute(indirectData, 1);
-  const indirectStorage = storage(indirect, "uint", indirectData.length).toAtomic();
-  const data0Read = storage(data0Attr, "vec4", totalCapacity).toReadOnly();
-  const data1Read = storage(data1Attr, "vec4", totalCapacity).toReadOnly();
-  const data2Read = storage(data2Attr, "vec4", totalCapacity).toReadOnly();
-  const visibleRead = storage(visibleAttr, "uint", totalCapacity).toReadOnly();
-  const visibleWrite = storage(visibleAttr, "uint", totalCapacity);
   const bucketBaseRead = storage(bucketBaseAttr, "uint", bucketSpecs.length).toReadOnly();
+  const cullCamera = createCullCamera();
 
+  // Pass 1: give each bucket its arena region + indirect material (materials must
+  // exist before the shared draw set can build their meshes).
   const materialStates: FlowerMaterialState[] = [];
   let runningBase = 0;
-  const allBuckets = bucketSpecs.map((spec, index): FlowerBucket => {
+  const builds = bucketSpecs.map((spec, index) => {
     const base = runningBase;
     runningBase += spec.capacity;
     (bucketBaseAttr.array as Uint32Array)[index] = base;
     if (!spec.geometry.boundingSphere) spec.geometry.computeBoundingSphere();
     const state = flowerMaterial(spec.tier, {
-      data0: data0Read,
-      data1: data1Read,
-      data2: data2Read,
-      visibleIndices: visibleRead,
+      data0: arena.read("data0"),
+      data1: arena.read("data1"),
+      data2: arena.read("data2"),
+      visibleIndices: sharedVisible.read,
       base: uniform(base, "uint")
     });
     materialStates.push(state);
+    return {
+      spec,
+      base,
+      material: state.material,
+      triangles: (spec.geometry.index?.count ?? spec.geometry.getAttribute("position").count) / 3,
+      localRadius: spec.geometry.boundingSphere?.radius ?? 1 // unscaled; scaled per instance at cull
+    };
+  });
 
-    const geometry = new THREE.InstancedBufferGeometry();
-    if (spec.geometry.index) geometry.setIndex(spec.geometry.index);
-    for (const [attributeName, value] of Object.entries(spec.geometry.attributes)) {
-      geometry.setAttribute(attributeName, value);
-    }
-    geometry.instanceCount = spec.capacity;
-    geometry.setIndirect(indirect, index * 5 * Uint32Array.BYTES_PER_ELEMENT);
-    geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 24_000);
+  // Pass 2: one InstancedBufferGeometry draw per bucket, all sharing the single
+  // indirect buffer + single visible buffer at per-bucket base offsets.
+  const drawSet = createIndirectDrawSet(
+    builds.map((build) => ({
+      geometry: build.spec.geometry,
+      material: build.material,
+      capacity: build.spec.capacity,
+      visible: sharedVisible,
+      visibleBase: build.base,
+      name: build.spec.name
+    })),
+    "wildlands_flowers"
+  );
+  // Source clumps have been cloned into the draw meshes (counts + bounds captured).
+  for (const geometry of [...heroGeometries, ...midGeometries, farGeometry]) geometry.dispose();
 
-    const mesh = new THREE.Mesh(geometry, state.material);
-    mesh.name = spec.name;
-    mesh.frustumCulled = false;
+  // Pass 3: expose each record as a bucket carrying its live-row staging list.
+  const allBuckets = builds.map((build, index): FlowerBucket => {
+    const mesh = drawSet.records[index].mesh;
     mesh.layers.set(BEAUTY_ONLY_LAYER);
     // Empty streaming pools stay out of the render list so WebGPU does not
     // compile every flower-tier pipeline during the initial world reveal.
     mesh.visible = false;
-    // QA surface: contracts/probes read packed instance data through these
-    // instead of the former per-mesh instanced attributes.
-    mesh.userData.flowerBase = base;
-    mesh.userData.flowerCapacity = spec.capacity;
+    // QA surface: contracts/probes read packed instance data through these.
+    mesh.userData.flowerBase = build.base;
+    mesh.userData.flowerCapacity = build.spec.capacity;
     mesh.userData.flowerCount = 0;
     group.add(mesh);
-    return {
-      mesh,
-      rows: [],
-      capacity: spec.capacity,
-      base,
-      index,
-      triangles: (spec.geometry.index?.count ?? spec.geometry.getAttribute("position").count) / 3,
-      localRadius: spec.geometry.boundingSphere?.radius ?? 1
-    };
+    return { mesh, rows: [], capacity: build.spec.capacity, base: build.base, index, triangles: build.triangles, localRadius: build.localRadius };
   });
   const heroBuckets = allBuckets.slice(0, 4);
   const midBuckets = allBuckets.slice(4, 8);
   const farBucket = allBuckets[8];
-  group.userData.flowerData0 = data0Attr.array;
+  group.userData.flowerData0 = arena.hostArray("data0");
   // QA surface: probes read the per-frame culled draw counts from this shared
   // indirect buffer (renderer.getArrayBufferAsync) to verify GPU frustum culling.
-  group.userData.flowerIndirect = indirect;
+  group.userData.flowerIndirect = drawSet.indirect;
   const reservedInstances = totalCapacity;
   const capPerSpecies =
     HERO_CAPACITY_PER_SPECIES +
     MID_CAPACITY_PER_SPECIES +
     Math.ceil(FAR_CAPACITY / PALETTES.length);
 
-  // Per-frame culling: zero the draw counts, then route every live clump that
-  // survives the frustum test into its bucket's compacted visible region.
-  const cullViewProjection = uniform(new THREE.Matrix4());
-  const cullProjScale = uniform(new THREE.Vector2(1, 1));
-  const drawReset = Fn(() => {
-    atomicStore(indirectStorage.element(instanceIndex.mul(uint(5)).add(uint(1))), uint(0));
-  })().compute(bucketSpecs.length, [64]).setName("flowers draw reset");
-  const cull = Fn(() => {
-    const d1 = (data1Read.element(instanceIndex) as N).toVar();
-    const bucket = int(d1.w);
-    If(bucket.greaterThanEqual(int(0)), () => {
-      const d0 = (data0Read.element(instanceIndex) as N).toVar();
-      const radius = (data2Read.element(instanceIndex) as N).w.toVar();
-      const center = vec3(d0.x, d0.y.add(radius.mul(0.5)), d0.z);
-      const clip = ((cullViewProjection as N).mul(vec4(center, float(1))) as N).toVar();
-      // Left/right/top/bottom planes with a projection-scaled world margin; no
-      // near/far test (reversed-z safe — the ring reach already bounds range).
-      const inFront = clip.w.greaterThan(radius.negate());
-      const xIn = abs(clip.x).lessThan(clip.w.add(radius.mul(cullProjScale.x)));
-      const yIn = abs(clip.y).lessThan(clip.w.add(radius.mul(cullProjScale.y)));
-      If(inFront.and(xIn).and(yIn), () => {
-        const slot = atomicAdd(indirectStorage.element(uint(bucket).mul(uint(5)).add(uint(1))), uint(1));
-        visibleWrite.element(bucketBaseRead.element(uint(bucket)).add(slot)).assign(instanceIndex);
-      });
-    });
-  })().compute(totalCapacity, [256]).setName("flowers cull");
-  const cullPasses = [drawReset, cull];
+  // Per-frame cull: the core drawReset zeroes the draw counts, then one dispatch
+  // over the whole arena frustum-tests every live clump. A negative bucket id
+  // (data1.w) marks a dead slot, rejected by accept; survivors route dynamically —
+  // emit publishes to the shared indirect count + visible buffer by runtime bucket
+  // (record.append can't be used because the bucket is only known from slot data).
+  const cull = buildCullPass({
+    name: "flowers cull",
+    dispatch: totalCapacity,
+    camera: cullCamera,
+    instance: (idx: N) => {
+      const bucket = int((arena.read("data1").element(idx) as N).w).toVar();
+      const d0 = (arena.read("data0").element(idx) as N).toVar();
+      const radius = (arena.read("data2").element(idx) as N).w.toVar();
+      return {
+        center: vec3(d0.x, d0.y.add(radius.mul(0.5)), d0.z),
+        radius,
+        accept: bucket.greaterThanEqual(int(0)),
+        emit: () => {
+          const slot = atomicAdd(drawSet.indirectStorage.element(uint(bucket).mul(uint(INDIRECT_STRIDE)).add(uint(1))), uint(1));
+          const target = (bucketBaseRead.element(uint(bucket)) as N).add(slot);
+          (sharedVisible.write.element(target) as N).assign(idx);
+        }
+      };
+    }
+  });
+  const cullPasses = [drawSet.drawReset, cull];
 
   const col = new THREE.Color();
   const a = new THREE.Color();
@@ -1166,9 +1173,9 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
   }
 
   function uploadRows() {
-    const stage0 = data0Attr.array as Float32Array;
-    const stage1 = data1Attr.array as Float32Array;
-    const stage2 = data2Attr.array as Float32Array;
+    const stage0 = arena.hostArray("data0");
+    const stage1 = arena.hostArray("data1");
+    const stage2 = arena.hostArray("data2");
     // A negative bucket id marks a dead slot; the cull pass skips them, so no
     // per-bucket live counters are needed.
     for (let slot = 0; slot < totalCapacity; slot++) stage1[slot * 4 + 3] = -1;
@@ -1192,9 +1199,9 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
       bucket.mesh.visible = bucket.rows.length > 0;
       bucket.mesh.userData.flowerCount = bucket.rows.length;
     }
-    data0Attr.needsUpdate = true;
-    data1Attr.needsUpdate = true;
-    data2Attr.needsUpdate = true;
+    arena.markDirty("data0");
+    arena.markDirty("data1");
+    arena.markDirty("data2");
   }
 
   function pushRow(bucket: FlowerBucket, row: Row): boolean {
@@ -1209,7 +1216,9 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
   function resample(fx: number, fz: number) {
     const T = FLOWER_TUNING.values;
     const reach = configuredReach();
-    const density = Math.max(0, T.density as number);
+    // Effective density = authored ceiling × governor foliage scale (1.0, or 0.7
+    // at L4). The tweakpane slider stays the ceiling; this multiplier only trims.
+    const density = Math.max(0, T.density as number) * governorEffects().foliageScale;
     const clumpiness = Math.min(1, Math.max(0, T.clumpiness as number));
     const clumpSize = Math.max(2, T.clumpSize as number);
     for (const state of materialStates) state.reach.value = reach;
@@ -1327,6 +1336,16 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     uploadRows();
   }
 
+  // Governor foliage axis: the L4 rung drops effective density to 0.7×. Re-scatter
+  // only when the multiplier actually changes — the governor already enforces an
+  // ~8 s dwell around L4 entry/exit, so this never churns on ordinary level steps.
+  let lastFoliageScale = governorEffects().foliageScale;
+  const unsubscribeGovernor = onGovernorChange((effects) => {
+    if (effects.foliageScale === lastFoliageScale) return;
+    lastFoliageScale = effects.foliageScale;
+    if (last.x < 1e8) resample(last.x, last.z);
+  });
+
   return {
     group,
     update(focus) {
@@ -1355,34 +1374,22 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
       // Nothing live and already-cleared draw counts: skip the dispatch.
       if (count === 0) return;
       renderer ??= requireRenderer();
-      camera.updateMatrixWorld();
-      cullViewProjection.value.multiplyMatrices(
-        camera.projectionMatrix,
-        camera.matrixWorldInverse
-      );
-      cullProjScale.value.set(
-        camera.projectionMatrix.elements[0],
-        camera.projectionMatrix.elements[5]
-      );
+      cullCamera.update(camera);
       renderer.compute(cullPasses);
     },
     refresh() {
       if (last.x < 1e8) resample(last.x, last.z);
     },
     dispose() {
-      drawReset.dispose();
+      unsubscribeGovernor();
       cull.dispose();
-      for (const bucket of allBuckets) {
-        bucket.mesh.geometry.setIndirect(null);
-        bucket.mesh.geometry.dispose();
-      }
-      for (const geometry of heroGeometries) geometry.dispose();
-      for (const geometry of midGeometries) geometry.dispose();
-      farGeometry.dispose();
+      // Releases the shared indirect buffer, every record geometry (setIndirect
+      // null + dispose + detach) and the draw-reset compute.
+      drawSet.dispose();
+      arena.dispose();
+      sharedVisible.dispose();
+      releaseRendererAttribute(bucketBaseAttr);
       for (const state of materialStates) state.material.dispose();
-      for (const attribute of [data0Attr, data1Attr, data2Attr, visibleAttr, bucketBaseAttr, indirect]) {
-        releaseRendererAttribute(attribute);
-      }
       group.removeFromParent();
       group.clear();
     },

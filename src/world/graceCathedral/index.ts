@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { batchStaticSiblings } from "../staticBatch";
 
 const CENTER_X = 2687.5;
 const CENTER_Z = -205.2;
@@ -162,6 +163,19 @@ export function createGraceCathedralRuntime(scene: THREE.Scene): GraceCathedralR
   dust.name = "Grace Cathedral colored dust motes";
   dust.renderOrder = 5;
   group.add(dust);
+
+  // Run the shared static-merge pass over the atmosphere layer. Today it
+  // collapses nothing: every beam and floor pool carries its own additive
+  // material instance (each animated independently through the `materials` set),
+  // so no two siblings share a material to merge, and the dust is a Points cloud.
+  // The pass is wired here so any future inert, same-material decoration folds
+  // into one draw automatically; the sibling-only mode keeps the flat group's
+  // per-mesh identity, and dispose() already frees any merged geometry it makes.
+  batchStaticSiblings(group, {
+    keepKey: "keepGraceCathedralMesh",
+    siblingFallbackName: "grace_static",
+    landmarkPass: false
+  });
 
   let visible = false;
   return {

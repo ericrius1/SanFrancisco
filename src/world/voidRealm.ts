@@ -2,7 +2,7 @@
 //
 // Couples the sky dome/fog and the water sheets to the materialize front with
 // two uniform-driven ramps — no lights are added, removed, or re-membered
-// (sun + hemi + LightPool stay resident; C1). The "void factor" is 1 when the
+// (sun + contextual LightPool stay resident; C1). The "void factor" is 1 when the
 // front is collapsed (whole world holo: near-black dome, fog off, water
 // hidden) and eases to 0 as the front expands past VOID_FADE_RADIUS, restoring
 // the normal sky/fog/water shading byte-identically (their graphs are plain

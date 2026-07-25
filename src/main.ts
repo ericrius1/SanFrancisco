@@ -236,7 +236,8 @@ async function boot() {
   // ------------------------------------------------------ P1 void essentials
   // (docs/VOID_STREAM_REWRITE.md M3.) Only what the first live void frame
   // needs is constructed before the provisional loop starts: input, the
-  // player (all embodiments + the 4-slot LightPool — the light set never
+  // player (all embodiments + the one-slot contextual LightPool — together
+  // with the sun this is the complete two-light scene budget, and the set never
   // changes size after this), the chase camera, the render pipeline and the
   // materialize/void-realm coupling. Everything else builds in P3 as
   // frame-budget-sliced construction UNDER the live void render.

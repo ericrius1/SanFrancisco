@@ -4,6 +4,7 @@ import {
   attribute,
   color,
   float,
+  instanceIndex,
   materialReference,
   mix,
   normalLocal,
@@ -15,7 +16,8 @@ import {
   uniform,
   vec2,
   vec3,
-  vec4
+  vec4,
+  vertexStage
 } from "three/tsl";
 import { instanceAnchorWorld, worldOffsetToModelLocal } from "../groundcover/instanceDeform";
 import { groundSway, groundSwayLite, WIND_DIR } from "../groundcover/sway";
@@ -105,9 +107,9 @@ const silhouetteCanopyRadii: N = materialReference("nativeTreeCanopyRadii", "vec
 const DEFAULT_CANOPY_CENTER: readonly [number, number, number] = [0, 5, 0];
 const DEFAULT_CANOPY_RADII: readonly [number, number, number] = [4, 5, 4];
 
-function domeFoliageNormal(): N {
+function domeFoliageNormal(src: TreeInstanceSource): N {
   const anchor: N = attribute("aTreeAnchor", "vec3");
-  const yaw: N = attribute("aTreeYaw", "vec4"); // sin, cos, palette, dryness
+  const yaw: N = src.yawFrag; // sin, cos, palette, dryness
   const radial = anchor.sub(silhouetteCanopyCenter);
   const radii = silhouetteCanopyRadii.max(vec3(1e-3));
   // Gradient of (x/a)^2 + (y/b)^2 + (z/c)^2 = 1. This produces the
@@ -145,17 +147,64 @@ function applySilhouetteStyle(
   target.nativeTreeCanopyRadii = new THREE.Vector3(canopyRadii[0], canopyRadii[1], canopyRadii[2]);
 }
 
-function treeInstanceNodes(): Readonly<{
+/**
+ * Storage handles for a GPU-culled indirect far tier. The vertex shader resolves
+ * the real arena instance through `visibleIndices[instanceIndex]` — a per-frame
+ * cull compute (see gpuFarTiers.ts) decides which arena slots rasterize at all,
+ * exactly like the grass `GrassIndirectSource` pattern. All three are read-only
+ * storage nodes; the arena root/yaw are shared per design, the visible-index
+ * buffer is per design × tier.
+ */
+export type NativeTreeIndirectSource = Readonly<{
+  /** storage vec4 read-only — arena root (local xyz + uniform scale). */
+  root: N;
+  /** storage vec4 read-only — arena yaw (sin, cos, palette, dryness). */
+  yaw: N;
+  /** storage uint read-only — compacted visible arena indices for this tier. */
+  visibleIndices: N;
+}>;
+
+// The two per-instance vec4s (root, yaw) reach the shaders either as classic
+// instanced vertex attributes or — on the GPU far path — through the visible
+// index indirection. `yawFrag` is a fragment-safe form: the raw attribute
+// (auto-varied by TSL) in classic mode, or an explicit vertexStage() varying in
+// indirect mode, since storage reads keyed by instanceIndex are vertex-only.
+type TreeInstanceSource = Readonly<{
   root: N;
   yaw: N;
+  yawFrag: N;
   rootWorld: N;
-}> {
+}>;
+
+function classicInstanceSource(): TreeInstanceSource {
   // Both attributes are StorageInstancedBufferAttributes at runtime, staying
   // in two aligned vec4 slots and comfortably under default WebGPU limits.
   const root: N = attribute("aTreeRoot", "vec4"); // local xyz, uniform scale
   const yaw: N = attribute("aTreeYaw", "vec4"); // sin, cos, palette, dryness
-  return { root, yaw, rootWorld: instanceAnchorWorld(root.xyz) };
+  return { root, yaw, yawFrag: yaw, rootWorld: instanceAnchorWorld(root.xyz) };
 }
+
+function indirectInstanceSource(source: NativeTreeIndirectSource): TreeInstanceSource {
+  // One storage fetch per vec4, hoisted into vars so reuse across the
+  // position/normal/colour graphs doesn't re-emit buffer loads (TSL re-emits
+  // unhoisted element() reads at every use site).
+  const trueIndex = (source.visibleIndices.element(instanceIndex) as N).toVar();
+  const root = (source.root.element(trueIndex) as N).toVar();
+  const yaw = (source.yaw.element(trueIndex) as N).toVar();
+  return {
+    root,
+    yaw,
+    // Fragment consumers (leaf/bark colour, the dome normal) read the
+    // vertex-stage varying; per-instance data is constant across a triangle, so
+    // the interpolated varying is exact.
+    yawFrag: vertexStage(yaw) as N,
+    rootWorld: instanceAnchorWorld(root.xyz)
+  };
+}
+
+// One shared classic source for every module-scope silhouette node graph, so
+// the landscape/horizon attribute path keeps a single reused node identity.
+const silhouetteClassicSource = classicInstanceSource();
 
 /** Recreates the instance matrix's Y rotation + uniform scale for a raw anchor attribute. */
 function foliageAnchorLocal(anchor: N, root: N, yaw: N): N {
@@ -197,8 +246,8 @@ function structuralSway(shared: N, height01: N): N {
  * world-space wind vector is transformed back through the mesh-world inverse
  * (w=0) before being added to the named-attribute placement.
  */
-function branchPositionNode(style: NativeTreeStyleNodes, gradeIndex: number): N {
-  const { root, yaw, rootWorld } = treeInstanceNodes();
+function branchPositionNode(style: NativeTreeStyleNodes, gradeIndex: number, src: TreeInstanceSource): N {
+  const { root, yaw, rootWorld } = src;
   const wind: N = attribute("aTreeWind", "vec4"); // phase, bend, height01, level01
   const shared = gradeIndex === 0 ? groundSway(rootWorld.xz) : groundSwayLite(rootWorld.xz);
   // Every point at a branch junction receives the same height-based offset.
@@ -211,8 +260,8 @@ function branchPositionNode(style: NativeTreeStyleNodes, gradeIndex: number): N 
   return nativeInstancePosition(positionLocal, root, yaw).add(worldOffsetToModelLocal(windWorld));
 }
 
-function foliagePositionNode(style: NativeTreeStyleNodes, gradeIndex: number): N {
-  const { root, yaw, rootWorld } = treeInstanceNodes();
+function foliagePositionNode(style: NativeTreeStyleNodes, gradeIndex: number, src: TreeInstanceSource): N {
+  const { root, yaw, rootWorld } = src;
   const anchor: N = attribute("aTreeAnchor", "vec3");
   const wind: N = attribute("aTreeWind", "vec4"); // phase, stiffness, height01, leaf tip weight
   const anchorWorld = instanceAnchorWorld(foliageAnchorLocal(anchor, root, yaw));
@@ -242,8 +291,8 @@ function packedNormalNode(surfaceSample: N, strength: number): N {
   return node;
 }
 
-function foliageColorNode(style: NativeTreeStyleNodes, texel: N | null): N {
-  const yaw: N = attribute("aTreeYaw", "vec4");
+function foliageColorNode(style: NativeTreeStyleNodes, texel: N | null, src: TreeInstanceSource): N {
+  const yaw: N = src.yawFrag;
   const material: N = attribute("aTreeMaterial", "vec2"); // palette, crown opening
   const palette = material.x.mul(0.58).add(yaw.z.mul(0.42)).clamp(0, 1);
   const authored = mix(style.foliageColor, style.foliageAccent, palette);
@@ -256,8 +305,8 @@ function foliageColorNode(style: NativeTreeStyleNodes, texel: N | null): N {
   return mix(mapped, DRY_FOLIAGE, dry.mul(0.52)).mul(opening).mul(foliageBrightness as N);
 }
 
-function branchColorNode(style: NativeTreeStyleNodes, texel: N | null): N {
-  const yaw: N = attribute("aTreeYaw", "vec4");
+function branchColorNode(style: NativeTreeStyleNodes, texel: N | null, src: TreeInstanceSource): N {
+  const yaw: N = src.yawFrag;
   const heightAndLevel: N = attribute("aTreeWind", "vec4");
   const authored = mix(
     style.barkColor,
@@ -285,22 +334,23 @@ function texturedBranchMaterial(
   const material = new THREE.MeshStandardNodeMaterial();
   configureCommon(material, `native-tree:${assets.id}:branch:${NATIVE_TREE_MATERIAL_GRADES[gradeIndex]}`);
   const styleNodes = literalStyleNodes(style, gradeIndex);
+  const src = classicInstanceSource();
   const colorSample: N = texture(assets.barkColor);
   const surfaceSample: N = texture(assets.barkSurface);
-  material.colorNode = branchColorNode(styleNodes, colorSample);
+  material.colorNode = branchColorNode(styleNodes, colorSample, src);
   material.normalNode = packedNormalNode(surfaceSample, gradeIndex === 0 ? 0.82 : 0.56);
   material.roughnessNode = surfaceSample.b.clamp(0.42, 1);
   material.metalnessNode = float(0);
-  material.positionNode = branchPositionNode(styleNodes, gradeIndex);
+  material.positionNode = branchPositionNode(styleNodes, gradeIndex, src);
   material.envMapIntensity = gradeIndex === 0 ? 0.58 : 0.42;
   return material;
 }
 
 const silhouetteBranchNodes = Object.freeze({
-  color: branchColorNode(silhouetteStyleNodes, null),
+  color: branchColorNode(silhouetteStyleNodes, null, silhouetteClassicSource),
   // Landscape and horizon use the same lightweight sway structure; their
   // exact 0.34/0.08 strengths are per-material uniforms.
-  position: branchPositionNode(silhouetteStyleNodes, 2)
+  position: branchPositionNode(silhouetteStyleNodes, 2, silhouetteClassicSource)
 });
 
 function cheapBranchMaterial(
@@ -327,7 +377,8 @@ function texturedFoliageMaterial(
   material.side = assets.leafStyle.twoSided ? THREE.DoubleSide : THREE.FrontSide;
   const colorSample: N = texture(assets.leafColor);
   const surfaceSample: N = texture(assets.leafSurface);
-  const leafColor = foliageColorNode(styleNodes, colorSample);
+  const src = classicInstanceSource();
+  const leafColor = foliageColorNode(styleNodes, colorSample, src);
   // Leaf alpha rides in colorNode rather than opacityNode: conventional
   // shadow passes derive their coverage from colorNode.a and never read
   // opacityNode, and the beauty result is identical either way. Without this,
@@ -344,7 +395,7 @@ function texturedFoliageMaterial(
   material.normalNode = packedNormalNode(surfaceSample, gradeIndex === 0 ? 0.72 : 0.46);
   material.roughnessNode = surfaceSample.b.clamp(0.34, 1);
   material.metalnessNode = float(0);
-  material.positionNode = foliagePositionNode(styleNodes, gradeIndex);
+  material.positionNode = foliagePositionNode(styleNodes, gradeIndex, src);
   const translucency = surfaceSample.a.mul(assets.leafStyle.translucency);
   material.thicknessColorNode = leafColor.mul(translucency).mul(gradeIndex === 0 ? 1 : 0.68);
   material.thicknessDistortionNode = uniform(gradeIndex === 0 ? 0.42 : 0.3);
@@ -357,26 +408,26 @@ function texturedFoliageMaterial(
 }
 
 // One shared dome normal for both silhouette grades (identical graph → one pipeline).
-const silhouetteFoliageNormal = domeFoliageNormal();
+const silhouetteFoliageNormal = domeFoliageNormal(silhouetteClassicSource);
 
 const silhouetteFoliageNodes = Object.freeze({
   2: (() => {
-    const leafColor = foliageColorNode(silhouetteStyleNodes, null);
+    const leafColor = foliageColorNode(silhouetteStyleNodes, null, silhouetteClassicSource);
     return Object.freeze({
       color: leafColor,
       // Keep far crowns scene-lit; high self-lighting reads as a flat cartoon
       // cutout even though the shared node graph is intentionally lightweight.
       emissive: leafColor.mul(0.025),
-      position: foliagePositionNode(silhouetteStyleNodes, 2),
+      position: foliagePositionNode(silhouetteStyleNodes, 2, silhouetteClassicSource),
       normal: silhouetteFoliageNormal
     });
   })(),
   3: (() => {
-    const leafColor = foliageColorNode(silhouetteStyleNodes, null);
+    const leafColor = foliageColorNode(silhouetteStyleNodes, null, silhouetteClassicSource);
     return Object.freeze({
       color: leafColor,
       emissive: leafColor.mul(0.012),
-      position: foliagePositionNode(silhouetteStyleNodes, 3),
+      position: foliagePositionNode(silhouetteStyleNodes, 3, silhouetteClassicSource),
       normal: silhouetteFoliageNormal
     });
   })()
@@ -461,6 +512,108 @@ export function createNativeTreeMaterials(
       if (disposed) return;
       disposed = true;
       for (const material of [...branch, ...foliage]) material.dispose();
+    }
+  });
+}
+
+export type NativeTreeIndirectFarMaterials = Readonly<{
+  branch: Readonly<{ landscape: THREE.Material; horizon: THREE.Material }>;
+  foliage: Readonly<{ landscape: THREE.Material; horizon: THREE.Material }>;
+  /** Disposes material/pipeline state only. Shared texture assets stay leased. */
+  dispose(): void;
+}>;
+
+/** The per-design arena planes every far material resolves an instance from.
+ *  Both vec4 storage read nodes are shared across all four of a design's far
+ *  materials — one arena per design, streamed from the host as chunks page in. */
+export type NativeTreeIndirectArena = Readonly<{
+  /** storage vec4 read-only — arena root (local xyz + uniform scale; scale 0 hides). */
+  root: N;
+  /** storage vec4 read-only — arena yaw (sin, cos, palette, dryness). */
+  yaw: N;
+}>;
+
+/** The compacted visible-index buffer each of a design's four far records draws
+ *  through. A tier's branch + foliage keep INDEPENDENT visible buffers (the cull
+ *  appends the same survivor index to both): order-independent and correct with
+ *  no shared-counter coordination (gpuIndirect's "each record its own buffer"). */
+export type NativeTreeIndirectVisible = Readonly<{
+  branchLandscape: N;
+  foliageLandscape: N;
+  branchHorizon: N;
+  foliageHorizon: N;
+}>;
+
+/**
+ * GPU far-tier variant of the landscape/horizon materials. The WGSL is
+ * structurally identical to the shared silhouette grades — style still flows
+ * through materialReference nodes — but each per-instance root/yaw is fetched
+ * from the design's arena through the tier's visible-index indirection instead
+ * of an instanced vertex attribute, so a per-frame cull compute (gpuFarTiers.ts)
+ * decides which arena slots rasterize at all. One material set per design × tier;
+ * because designs differ only in storage/uniform bindings (bind groups, not
+ * shader code) the WebGPU render pipeline is shared with every other design's
+ * same-tier material, exactly as the attribute path collapses to one pipeline
+ * per grade today. No new material permutations beyond this indirect read.
+ */
+export function createNativeTreeIndirectFarMaterials(
+  style: NativeTreeStyle,
+  assets: NativeTreeMaterialAssets,
+  arena: NativeTreeIndirectArena,
+  visible: NativeTreeIndirectVisible,
+  canopyCenter: readonly [number, number, number] = DEFAULT_CANOPY_CENTER,
+  canopyRadii: readonly [number, number, number] = DEFAULT_CANOPY_RADII
+): NativeTreeIndirectFarMaterials {
+  // One instance source per record: shared arena planes, per-record visible
+  // buffer. Building the same node graph four times still collapses to the same
+  // WGSL (the storage buffer only changes the bind group), so the pipeline count
+  // is unchanged — branch shares one graph across grades, foliage differs only
+  // where grade 3 drops leaf flutter, exactly like the classic silhouette path.
+  const source = (visibleIndices: N): TreeInstanceSource =>
+    indirectInstanceSource({ root: arena.root, yaw: arena.yaw, visibleIndices });
+
+  const branchMaterial = (gradeIndex: 2 | 3, visibleIndices: N): THREE.MeshLambertNodeMaterial => {
+    const src = source(visibleIndices);
+    const material = new THREE.MeshLambertNodeMaterial();
+    configureCommon(material, `native-tree:${assets.id}:branch:${NATIVE_TREE_MATERIAL_GRADES[gradeIndex]}:indirect`);
+    applySilhouetteStyle(material, style, gradeIndex, canopyCenter, canopyRadii);
+    material.colorNode = branchColorNode(silhouetteStyleNodes, null, src);
+    material.positionNode = branchPositionNode(silhouetteStyleNodes, 2, src);
+    return material;
+  };
+
+  const foliageMaterial = (gradeIndex: 2 | 3, visibleIndices: N): THREE.MeshLambertNodeMaterial => {
+    const src = source(visibleIndices);
+    const material = new THREE.MeshLambertNodeMaterial();
+    configureCommon(material, `native-tree:${assets.id}:foliage:${NATIVE_TREE_MATERIAL_GRADES[gradeIndex]}:indirect`);
+    applySilhouetteStyle(material, style, gradeIndex, canopyCenter, canopyRadii);
+    material.side = THREE.DoubleSide;
+    const leafColor = foliageColorNode(silhouetteStyleNodes, null, src);
+    material.colorNode = leafColor;
+    (material as N).emissiveNode = leafColor.mul(gradeIndex === 2 ? 0.025 : 0.012);
+    material.positionNode = foliagePositionNode(silhouetteStyleNodes, gradeIndex, src);
+    material.normalNode = domeFoliageNormal(src);
+    return material;
+  };
+
+  const branch = Object.freeze({
+    landscape: branchMaterial(2, visible.branchLandscape),
+    horizon: branchMaterial(3, visible.branchHorizon)
+  });
+  const foliage = Object.freeze({
+    landscape: foliageMaterial(2, visible.foliageLandscape),
+    horizon: foliageMaterial(3, visible.foliageHorizon)
+  });
+  let disposed = false;
+  return Object.freeze({
+    branch,
+    foliage,
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      for (const material of [branch.landscape, branch.horizon, foliage.landscape, foliage.horizon]) {
+        material.dispose();
+      }
     }
   });
 }

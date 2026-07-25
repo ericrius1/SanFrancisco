@@ -1,5 +1,10 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
+import {
+  lightAnchor,
+  registerAmbientLightAnchor,
+  type LightAnchorSpec
+} from "../../player/lightPool";
 import { PALACE_LAGOON } from "../../world/heightmap";
 import {
   createSurfaceSoftSpriteMaterial,
@@ -7,7 +12,7 @@ import {
   SURFACE_SOFT_SPRITE
 } from "./surfaceSoftSprite";
 
-/** A quiet skiff drifting on the lagoon — one more warm light on the water. */
+/** A quiet skiff drifting on the lagoon with a contextual warm fill. */
 export class LagoonSkiff {
   readonly group = new THREE.Group();
   #hull: THREE.Group;
@@ -18,7 +23,13 @@ export class LagoonSkiff {
   #wake: THREE.Mesh;
   #trailMat: THREE.MeshBasicNodeMaterial;
   #trail: THREE.Mesh;
-  #light: THREE.PointLight;
+  #lightSpec: LightAnchorSpec = {
+    color: 0xffb070,
+    intensity: 0.55 * LIGHT_SCALE,
+    distance: 22,
+    range: 55
+  };
+  #unregisterLight: () => void;
   #progress = 0;
 
   constructor() {
@@ -72,9 +83,8 @@ export class LagoonSkiff {
     this.#glow.position.set(0.3, 1.85, 0);
     this.#glow.renderOrder = SURFACE_SOFT_SPRITE.renderOrder;
 
-    this.#light = new THREE.PointLight(0xffb070, 0.55 * LIGHT_SCALE, 22, 2);
-    this.#light.position.set(0.3, 1.85, 0);
-    this.#light.castShadow = false;
+    const skiffLightAnchor = lightAnchor(this.#lightSpec, 0.3, 1.85, 0);
+    skiffLightAnchor.name = "palace-reverie-skiff-fill";
 
     this.#wakeMat = new THREE.MeshBasicNodeMaterial({
       color: new THREE.Color(0xffc878).convertSRGBToLinear(),
@@ -100,9 +110,10 @@ export class LagoonSkiff {
     this.#trail.rotation.x = -Math.PI / 2;
     this.#trail.position.set(-1.6, -0.03, 0);
 
-    this.#hull.add(body, bow, seat, mast, lamp, this.#glow, this.#light, this.#wake, this.#trail);
+    this.#hull.add(body, bow, seat, mast, lamp, this.#glow, skiffLightAnchor, this.#wake, this.#trail);
     this.group.add(this.#hull);
     this.#hull.position.set(PALACE_LAGOON.x + 22, PALACE_LAGOON.surfaceY + 0.15, PALACE_LAGOON.z - 18);
+    this.#unregisterLight = registerAmbientLightAnchor(skiffLightAnchor);
   }
 
   setProgress(p: number) {
@@ -122,7 +133,7 @@ export class LagoonSkiff {
     this.#glowMat.opacity = 0.4 + this.#progress * 0.55;
     const g = 2.1 + this.#progress * 1.6;
     this.#glow.scale.set(g, g, 1);
-    this.#light.intensity = (0.45 + this.#progress * 1.35) * pulse * LIGHT_SCALE;
+    this.#lightSpec.intensity = (0.45 + this.#progress * 1.35) * pulse * LIGHT_SCALE;
     this.#wakeMat.opacity = 0.18 + this.#progress * 0.32 + Math.sin(timeSec * 1.4) * 0.04;
     const ws = 1.6 + this.#progress * 1.2 + Math.sin(timeSec * 0.9) * 0.12;
     this.#wake.scale.set(ws * 1.4, ws, 1);
@@ -131,6 +142,7 @@ export class LagoonSkiff {
   }
 
   dispose() {
+    this.#unregisterLight();
     this.#hull.traverse((o) => {
       // Sprites share three's module-global quad geometry — disposing it would
       // destroy the GPU buffer under every sprite still alive in the app.
@@ -143,6 +155,5 @@ export class LagoonSkiff {
     this.#glowMat.dispose();
     this.#wakeMat.dispose();
     this.#trailMat.dispose();
-    this.#light.dispose();
   }
 }

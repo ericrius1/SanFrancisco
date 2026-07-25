@@ -268,8 +268,9 @@ export function buildBoatMesh(): THREE.Group {
   );
   heel.add(pennant);
 
-  // Lamps come from the shared LightPool (4 slots — see player/lightPool.ts),
-  // so the old 9-fixture layout condenses to 4 anchors:
+  // Lamp candidates come from the one-slot contextual LightPool (see
+  // player/lightPool.ts). The old 9-fixture layout condenses to four ordered
+  // anchors, with the first available candidate owning the single slot:
   // - one warm cockpit lamp standing in for the helm/cockpit/stern trio
   // - the bow lamp for the foredeck pool
   // - one wash lamp per side for the sails. The canvas lies in the centreline

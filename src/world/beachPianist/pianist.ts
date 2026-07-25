@@ -112,7 +112,7 @@ const MIN_FINGER_LANE_GAP = 0.011;
 
 /** Build the pianist and seat him in `stage`. */
 export function buildPianist(stage: THREE.Group): Pianist {
-  const rig = buildRig({ skin: 0, hair: "buzz", hat: "none", outfit: "tee", color: 5, accent: 5 });
+  const rig = buildRig({ skin: 0, hair: "buzz", hat: "none", outfit: "tee", color: 5, accent: 5 }, { merged: false }); // per-part material identity + swaps
   const m = rig.avatar.materials;
   m.skin.color.set(SKIN);
   m.hair.color.set(BLACK_HAIR_AND_BEARD);

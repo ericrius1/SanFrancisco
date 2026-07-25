@@ -67,7 +67,7 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   // ---- figure: cool black stagewear, long dirty-blonde hair, no hat, bare arms.
   // Per-rig overrides keep this look local to the performer instead of adding a
   // special case to the shared player-avatar palette.
-  const rig = buildRig({ skin: 5, hair: "long", hat: "none", outfit: "tee", color: 5, accent: 3 });
+  const rig = buildRig({ skin: 5, hair: "long", hat: "none", outfit: "tee", color: 5, accent: 3 }, { merged: false }); // swaps head/arm geometry + per-part recolour
   rig.avatar.materials.jacket.color.set(0x11141a); // black tee + sleeve caps
   rig.avatar.materials.sleeve.color.copy(rig.avatar.materials.skin.color); // bare arms
   rig.avatar.materials.shirt.color.set(0x343b4b);

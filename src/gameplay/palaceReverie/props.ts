@@ -1,5 +1,10 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
+import {
+  lightAnchor,
+  registerAmbientLightAnchor,
+  type LightAnchorSpec
+} from "../../player/lightPool";
 import type { WorldMap } from "../../world/heightmap";
 import { NPC_LAYOUT } from "./layout";
 
@@ -11,7 +16,13 @@ export class ReverieProps {
   #canvasTex: THREE.CanvasTexture;
   #rookLampMat: THREE.MeshStandardNodeMaterial;
   #rookHaloMat: THREE.SpriteMaterial;
-  #rookLight: THREE.PointLight;
+  #rookLightSpec: LightAnchorSpec = {
+    color: 0xffb060,
+    intensity: 0.7 * LIGHT_SCALE,
+    distance: 16,
+    range: 45
+  };
+  #unregisterRookLight: () => void;
   #paintMat: THREE.MeshStandardNodeMaterial;
   #progress = 0;
 
@@ -124,13 +135,13 @@ export class ReverieProps {
     halo.position.y = 2.15;
     halo.scale.set(2.2, 2.2, 1);
 
-    this.#rookLight = new THREE.PointLight(0xffb060, 0.7 * LIGHT_SCALE, 16, 2);
-    this.#rookLight.position.y = 2.15;
-    this.#rookLight.castShadow = false;
+    const rookLightAnchor = lightAnchor(this.#rookLightSpec, 0, 2.15, 0);
+    rookLightAnchor.name = "palace-reverie-rook-fill";
 
-    post.add(pole, lamp, halo, this.#rookLight);
+    post.add(pole, lamp, halo, rookLightAnchor);
     post.position.set(rook.x - 1.2, map.groundTop(rook.x - 1.2, rook.z + 0.4), rook.z + 0.4);
     this.group.add(post);
+    this.#unregisterRookLight = registerAmbientLightAnchor(rookLightAnchor);
   }
 
   setProgress(p: number) {
@@ -144,16 +155,16 @@ export class ReverieProps {
     this.#paintMat.emissiveIntensity = (0.15 + this.#progress * 0.5) * pulse * LIGHT_SCALE;
     this.#rookLampMat.emissiveIntensity = (1.0 + this.#progress * 1.2) * pulse * LIGHT_SCALE;
     this.#rookHaloMat.opacity = 0.4 + this.#progress * 0.45;
-    this.#rookLight.intensity = (0.55 + this.#progress * 1.1) * pulse * LIGHT_SCALE;
+    this.#rookLightSpec.intensity = (0.55 + this.#progress * 1.1) * pulse * LIGHT_SCALE;
   }
 
   dispose() {
+    this.#unregisterRookLight();
     this.#canvasTex.dispose();
     this.#canvasMat.dispose();
     this.#paintMat.dispose();
     this.#rookLampMat.dispose();
     this.#rookHaloMat.map?.dispose();
     this.#rookHaloMat.dispose();
-    this.#rookLight.dispose();
   }
 }

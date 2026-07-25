@@ -18,11 +18,11 @@ export type StemDef = {
 };
 
 export const STEM_DEFS: Record<StemId, StemDef> = {
-  // 72 BPM swung lo-fi kit — the daytime city groove
+  // 92 BPM swung kit — the playful daytime city groove
   beatWarm: {
     id: "beatWarm",
     url: "/audio/music/stems/beat-warm.mp3",
-    loopSeconds: (8 * 4 * 60) / 72,
+    loopSeconds: (8 * 4 * 60) / 92,
     detectLead: true,
     gainTrim: 0.5
   },
@@ -34,11 +34,11 @@ export const STEM_DEFS: Record<StemId, StemDef> = {
     detectLead: true,
     gainTrim: 0.55
   },
-  // 66 BPM brushed organic kit — parks
+  // 92 BPM brushed organic kit — daytime parks and trails
   beatBrush: {
     id: "beatBrush",
     url: "/audio/music/stems/beat-brush.mp3",
-    loopSeconds: (8 * 4 * 60) / 66,
+    loopSeconds: (8 * 4 * 60) / 92,
     detectLead: true,
     gainTrim: 0.5
   },

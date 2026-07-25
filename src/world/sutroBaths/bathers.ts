@@ -212,7 +212,7 @@ export function createSutroBathers(_opts: Record<string, never> = {}): SutroBath
 
   for (const spec of BATHERS) {
     const pool = spec.pool === "deck" ? null : poolById(spec.pool) ?? null;
-    const rig = buildRig(avatarFromSeed(spec.seed));
+    const rig = buildRig(avatarFromSeed(spec.seed), { merged: false }); // bathingCostume reassigns per-block materials
     const costume = applyBathingCostume(rig, spec.seed);
 
     const world = sutroLocalToWorld(spec.lx, spec.lz);

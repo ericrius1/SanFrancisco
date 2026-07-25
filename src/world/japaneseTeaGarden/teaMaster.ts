@@ -120,7 +120,7 @@ function hideStockFaceAndCostume(rig: Rig): void {
 }
 
 export function createTeaMasterVisual(): TeaMasterVisual {
-  const rig = buildRig({ skin: 2, hair: "buzz", hat: "none", outfit: "jacket", color: 5, accent: 6 });
+  const rig = buildRig({ skin: 2, hair: "buzz", hat: "none", outfit: "jacket", color: 5, accent: 6 }, { merged: false }); // per-part material identity + custom head
   hideStockFaceAndCostume(rig);
   rig.avatar.materials.skin.color.set(PALETTE.skin);
   rig.avatar.materials.jacket.color.set(PALETTE.navy);

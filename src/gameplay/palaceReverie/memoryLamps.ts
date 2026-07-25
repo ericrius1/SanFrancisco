@@ -1,5 +1,10 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
+import {
+  lightAnchor,
+  registerAmbientLightAnchor,
+  type LightAnchorSpec
+} from "../../player/lightPool";
 import type { WorldMap } from "../../world/heightmap";
 import { LAMP_LAYOUT, REVERIE_TUNING } from "./layout";
 import {
@@ -26,7 +31,9 @@ export type MemoryLamp = {
   flameMat: THREE.MeshStandardNodeMaterial;
   haloMat: THREE.SpriteNodeMaterial;
   surfacePlane: THREE.Vector4;
-  light: THREE.PointLight;
+  lightAnchor: THREE.Object3D;
+  lightSpec: LightAnchorSpec;
+  unregisterLight: () => void;
   sparkBurst: number; // 1 → 0 after lighting
 };
 
@@ -164,17 +171,22 @@ export class MemoryLamps {
       puddle.position.set(0, 0.08, 0.15);
       puddle.name = "lamp-puddle";
 
-      const light = new THREE.PointLight(hue.getHex(), 0, 14, 2);
-      light.position.y = 0.95;
-      light.castShadow = false;
-      light.visible = true;
+      const lightSpec: LightAnchorSpec = {
+        color: hue.getHex(),
+        intensity: 0,
+        distance: 14,
+        range: 45
+      };
+      const lampLightAnchor = lightAnchor(lightSpec, 0, 0.95, 0);
+      lampLightAnchor.name = "palace-reverie-memory-lamp-fill";
 
       const root = new THREE.Group();
       root.position.set(spec.x, ground, spec.z);
       // Face wash toward palace center roughly
       root.rotation.y = Math.atan2(-(spec.x + 388), -(spec.z + 1426));
-      root.add(pedestal, bowl, flame, halo, wash, puddle, light);
+      root.add(pedestal, bowl, flame, halo, wash, puddle, lampLightAnchor);
       this.group.add(root);
+      const unregisterLight = registerAmbientLightAnchor(lampLightAnchor);
 
       this.lamps.push({
         x: spec.x,
@@ -189,7 +201,9 @@ export class MemoryLamps {
         flameMat,
         haloMat,
         surfacePlane,
-        light
+        lightAnchor: lampLightAnchor,
+        lightSpec,
+        unregisterLight
       });
     }
   }
@@ -234,9 +248,8 @@ export class MemoryLamps {
         lamp.flameMat.emissiveIntensity =
           (0.06 + pulse * 1.9) * (0.85 + 0.15 * Math.sin(timeSec * 5 + lamp.x)) * LIGHT_SCALE;
         if (invited) {
-          lamp.light.visible = true;
-          lamp.light.intensity = pulse * 2.2 * LIGHT_SCALE;
-          lamp.light.distance = 10 + pulse * 8;
+          lamp.lightSpec.intensity = pulse * 2.2 * LIGHT_SCALE;
+          lamp.lightSpec.distance = 10 + pulse * 8;
         }
       }
     }
@@ -352,15 +365,15 @@ export class MemoryLamps {
         c.scale.set(ps, ps, 1);
       }
     }
-    lamp.light.intensity = t * 6.4 * flicker;
-    lamp.light.distance = 15 + t * 8;
-    lamp.light.visible = t > 0.02;
+    lamp.lightSpec.intensity = t > 0.02 ? t * 6.4 * flicker : 0;
+    lamp.lightSpec.distance = 15 + t * 8;
   }
 
   dispose() {
     this.#glowTex.dispose();
     this.#stoneMat.dispose();
     for (const lamp of this.lamps) {
+      lamp.unregisterLight();
       lamp.flameMat.dispose();
       lamp.haloMat.dispose();
       lamp.root.traverse((o) => {

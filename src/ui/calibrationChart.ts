@@ -4,9 +4,9 @@
 // "/" panel (advanced → lighting → "grey cards"); tools/calibration-probe.mjs
 // samples it headless across the day cycle and prints measured-vs-predicted
 // values. The spheres are ordinary lit standard materials on purpose: they
-// measure what a matte surface does in THIS pipeline (sun + hemi + analytic
-// IBL + CSM shadows + tone mapping), not an idealized Lambert term — expect a
-// few percent of IBL/specular on top of the textbook prediction.
+// measure what a matte surface does in THIS pipeline (sun + analytic IBL + CSM
+// shadows + tone mapping), not an idealized Lambert term — expect the sky fill
+// and specular response on top of the textbook prediction.
 import * as THREE from "three/webgpu";
 
 /** Linear albedos, darkest → brightest, left → right on screen. */
