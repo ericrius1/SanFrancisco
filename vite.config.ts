@@ -238,7 +238,10 @@ export default defineConfig({
     dedupe: ["three", "three/webgpu", "three/tsl"]
   },
   optimizeDeps: {
-    exclude: ["box3d-wasm"],
+    // `box3d-wasm` was the old vendored wrapper and no longer resolves to
+    // anything; the installed package is `box3d.js`. Keep its ~1 MB inline
+    // WASM build out of the dep-optimizer bundle.
+    exclude: ["box3d.js"],
     include: ["camera-controls", "three/webgpu", "three/tsl", "lil-gui", "tweakpane"]
   },
   build: {
@@ -248,14 +251,27 @@ export default defineConfig({
         // the debug tooling separately from app code. three.js changes only on
         // dependency bumps, so returning players hit a warm cache for the
         // biggest chunk; the app chunk shrinks to what actually changes.
+        //
+        // This is an explicit *eager* allowlist, not a catch-all: a `return
+        // "vendor"` for every node_modules id force-hoisted lazily-imported
+        // dependencies into a chunk the entry statically imports. box3d.js's
+        // inline build (a ~1 MB WASM JavaScript literal) and satellite.js were
+        // both landing there, so the entry could not even discover main+three
+        // until vendor had downloaded and executed. Anything not named here
+        // falls through to Rollup's own splitting, which honours the dynamic
+        // import boundaries the app already declares.
         manualChunks(id: string) {
           if (id.includes("node_modules")) {
             // Webcam pose capture is first-use only. Keep LiteRT out of the
             // shared vendor chunk so a clean city boot never downloads it.
             if (id.includes("/@litertjs/")) return "litert-webgpu";
-            if (id.includes("/three/")) return "three";
+            // three core is boot-critical and cache-stable; its addons
+            // (GLTFLoader, KTX2Loader, SkyMesh…) are not all boot-critical, so
+            // let Rollup place them next to whoever actually imports them.
+            if (id.includes("/three/") && !id.includes("/examples/jsm/")) return "three";
             if (id.includes("tweakpane") || id.includes("lil-gui")) return "debug-ui";
-            return "vendor";
+            if (id.includes("camera-controls")) return "vendor";
+            return undefined;
           }
           if (id.includes("/addons/inspector/")) return "debug-ui";
           return undefined;

@@ -11,8 +11,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
-const COMPRESSIBLE = new Set([".html", ".js", ".css", ".json", ".bin", ".svg", ".mjs", ".cjs"]);
+// .glb and .wasm are raw (uncompressed) container formats and brotli them at
+// ~76-83%, which is the single biggest win on the streamed tile bandwidth.
+// Cost: they add ~47 MB of newly-eligible source, i.e. roughly +2 min of build
+// time. Do NOT add .tflite/.webp/.ktx2/.mp3 — those are already compressed.
+const COMPRESSIBLE = new Set([".html", ".js", ".css", ".json", ".bin", ".svg", ".mjs", ".cjs", ".glb", ".wasm"]);
 const MIN_SIZE = 1024; // skip tiny files — overhead > saving
+// Every browser that can run this app (WebGPU-only) supports brotli, so the .gz
+// sibling is a legacy safety net only. Skip it for large payloads rather than
+// pay level-9 deflate over tens of MB of tiles and wasm.
+const GZIP_MAX_SIZE = 2 * 1024 * 1024;
 
 async function* walk(dir) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -34,6 +42,7 @@ let gzCount = 0;
 let brBytes = 0;
 let gzBytes = 0;
 let srcBytes = 0;
+let gzSrcBytes = 0;
 
 for await (const file of walk(DIST)) {
   // skip already-compressed siblings
@@ -54,16 +63,19 @@ for await (const file of walk(DIST)) {
   brBytes += brSt.size;
   brCount++;
 
-  const gzPath = file + ".gz";
-  await compress(file, gzPath, () => createGzip({ level: 9 }));
-  const gzSt = await stat(gzPath);
-  gzBytes += gzSt.size;
-  gzCount++;
+  if (st.size <= GZIP_MAX_SIZE) {
+    gzSrcBytes += st.size;
+    const gzPath = file + ".gz";
+    await compress(file, gzPath, () => createGzip({ level: 9 }));
+    const gzSt = await stat(gzPath);
+    gzBytes += gzSt.size;
+    gzCount++;
+  }
 }
 
 const pct = (n, d) => d ? ((100 * n) / d).toFixed(1) : "0";
 console.log(
   `[precompress] wrote ${brCount} .br (${(brBytes / 1e6).toFixed(1)}MB, ${pct(brBytes, srcBytes)}% of src) ` +
-  `+ ${gzCount} .gz (${(gzBytes / 1e6).toFixed(1)}MB, ${pct(gzBytes, srcBytes)}% of src) ` +
+  `+ ${gzCount} .gz (${(gzBytes / 1e6).toFixed(1)}MB, ${pct(gzBytes, gzSrcBytes)}% of ${(gzSrcBytes / 1e6).toFixed(1)}MB eligible) ` +
   `from ${(srcBytes / 1e6).toFixed(1)}MB source`
 );

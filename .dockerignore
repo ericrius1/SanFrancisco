@@ -7,3 +7,18 @@ perf-profile*.png
 Dockerfile
 README.md
 ios
+# Agent scratch, source assets and capture output — ~1.5 GB that is tarred to
+# the daemon and materialized in the build layer for nothing (the runtime stage
+# only copies dist, server and node_modules/ws). Docker ignores .gitignore, so
+# these have to be listed here explicitly; `data` above does not match `.data`.
+.data
+assets-src
+output
+.playwright-mcp
+feature-research
+rl
+.cursor
+.github
+docs
+*.md
+.gitattributes

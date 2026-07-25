@@ -25,7 +25,12 @@ export interface BootTilesResult {
 }
 
 export async function bootTiles({ scene, camera, renderer, map, sky }: BootTilesDeps): Promise<BootTilesResult> {
-  await prepareFacadeTextures();
+  // Kick the facade atlas chain off without blocking: it pulls the KTX2 loader,
+  // the 527 KB Basis transcoder and a 379 KB atlas transcode, and nothing below
+  // touches a facade texture. TileStreamer's constructor and init() only start
+  // the landmarks.glb / collider fetches, so hoisting this lets those ~810 KB
+  // begin downloading a full facade chain earlier instead of after it.
+  const facades = prepareFacadeTextures();
   const tiles = new TileStreamer(scene);
   tiles.onShadowCastersChanged = (scope) => sky.invalidateStaticShadows(scope);
   // Tile batches (buildings/roads/parks) are created lazily on first fold-in;
@@ -53,7 +58,11 @@ export async function bootTiles({ scene, camera, renderer, map, sky }: BootTiles
     void warmUnseenMeshSignatures(renderer, camera, scene, meshes, seenTileSignatures)
       .catch(() => {});
   };
-  await tiles.init(map);
+  // Both must be settled before batches can be folded in (facade materials
+  // throw if the atlases are missing). Promise.all attaches its rejection
+  // handler in the same synchronous run as the hoist above, so the facade
+  // promise never has an unhandled-rejection window.
+  await Promise.all([facades, tiles.init(map)]);
   const authoredRegions = new AuthoredRegionStreamer({
     scene,
     map,
