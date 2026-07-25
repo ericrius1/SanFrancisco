@@ -10,10 +10,17 @@
 // (the false-earth architecture: cull → atomicAdd → index indirection). The
 // vertex shader resolves instances through that indirection, so blades behind
 // the camera never reach vertex shading, with zero CPU readback in the loop.
+//
+// This module is now a thin grass-specific layer over the shared GPU indirect
+// runtime (../../render/gpuIndirect): the instance arenas, indirect draw meshes,
+// visible-index buffers, cull-camera uniforms, clip-space frustum test and
+// disposal are generic and shared with other instanced systems. What stays here
+// is grass's own placement/compaction ("false-earth") stage, its density layers,
+// the per-consumer styling hook, and the rank-fade acceptance that keeps the cull
+// in lockstep with the blade material's edge dissolve.
 
 import * as THREE from "three/webgpu";
 import {
-  abs,
   atomicAdd,
   atomicLoad,
   atomicStore,
@@ -40,6 +47,16 @@ import {
   type FoliageField
 } from "./foliageField";
 import { releaseRendererAttribute } from "../../app/rendererRegistry";
+import {
+  buildCullPass,
+  createCullCamera,
+  createIndirectDrawSet,
+  createInstanceArena,
+  createVisibleBuffer,
+  type IndirectDrawEntry,
+  type InstanceArena,
+  type VisibleBuffer
+} from "../../render/gpuIndirect";
 import type { GrassIndirectSource, GrassMaterialState, GrassMesh } from "./bladeGrass";
 
 type N = any;
@@ -62,6 +79,19 @@ export type GpuGrassLayerSpec = Readonly<{
   gridStride: number;
   visibleRadius: number;
   fadeBand: number;
+  /** Inner hole radius. Layers that share a gridStride (and therefore scatter at
+   *  BIT-IDENTICAL anchors — same cell, same R2 offset, same yaw/height/rank) are
+   *  otherwise additive clones: every cluster inside the inner layer's disc is
+   *  drawn twice with two geometries. Set this on the OUTER member of such a pair
+   *  and it becomes a real LOD ladder — the inner layer owns the hero ring, this
+   *  one grows in across `innerBand` by the same per-instance rank the outer
+   *  dissolve already uses, so the handoff is a stochastic crossfade, not a ring.
+   *  Pick `minRadius = innerRadius - innerFadeBand * (1 + 2 * RANK_FADE_SOFT)` so
+   *  this layer is at full size before the inner layer starts shrinking. */
+  minRadius?: number;
+  /** Width of the inner grow-in band. Match the inner layer's `fadeBand` so the
+   *  two ramps are exact complements. Defaults to this layer's `fadeBand`. */
+  innerBand?: number;
 }>;
 
 export type GpuGrassLayer = Readonly<{
@@ -87,10 +117,52 @@ export type GpuGrassPlacement = Readonly<{
   /** Point the per-frame culls at the render camera (call before dispatch). */
   updateCullCamera(camera: THREE.Camera): void;
   focus: THREE.Vector2;
+  /** Live field focus for the per-instance rank fade; set before each cull. */
+  cullFocus: THREE.Vector2;
   density: { value: number };
   patchiness: { value: number };
   dispose(): void;
 }>;
+
+/** Everything a per-consumer styling hook needs to turn one accepted candidate
+ *  into a blade's shape/colour. All fields are TSL nodes evaluated inside the
+ *  placement compute pass; `hash01(gx, gz, salt)` and `saltF` (the density-layer
+ *  dither) reproduce the canonical per-candidate randomness. */
+export type GpuGrassStyleContext = Readonly<{
+  /** Canonical world grid cell for this candidate (int nodes). */
+  gx: N;
+  gz: N;
+  /** Density-layer salt as uint / float — fold into hashes to decorrelate layers. */
+  salt: N;
+  saltF: N;
+  /** World XZ (vec2) and fitted ground Y (float) of the candidate. */
+  world: N;
+  groundY: N;
+  /** Bilinearly-sampled field texel: R height · G density · B style · A vigour. */
+  eco: N;
+  /** Renormalized vigour patch (0..1) and clamped style channel (0..1). */
+  patch: N;
+  style: N;
+  /** Placement patchiness uniform node. */
+  patchiness: N;
+  /** Canonical integer hash → [0,1). */
+  hash01: (gx: N, gz: N, salt: number) => N;
+  /** The layer this candidate belongs to. */
+  spec: GpuGrassLayerSpec;
+}>;
+
+/** Per-blade visual output of a styling hook. Fade `rank` stays owned by the
+ *  placement pass (it must match the cull threshold), so hooks never emit it. */
+export type GpuGrassStyle = Readonly<{
+  height: N;
+  spread: N;
+  yaw: N;
+  wind: N;
+  /** Linear RGB tint (vec3). */
+  color: N;
+}>;
+
+export type GpuGrassStyleHook = (ctx: GpuGrassStyleContext) => GpuGrassStyle;
 
 export type GpuGrassLayerInput = Readonly<{
   spec: GpuGrassLayerSpec;
@@ -98,6 +170,8 @@ export type GpuGrassLayerInput = Readonly<{
   /** Build the layer material against the culled storage-read indirection. */
   materialFor(source: GrassIndirectSource): GrassMaterialState;
   trianglesPerCluster: number;
+  /** Optional per-consumer styling. Omit for the shared wildlands meadow look. */
+  style?: GpuGrassStyleHook;
 }>;
 
 const uintHash = (gx: N, gz: N, salt: number): N => {
@@ -142,43 +216,75 @@ const nearestField = (field: FoliageField, world: N): N => {
   return fieldTexel(field, int(cell.x), int(cell.y));
 };
 
-function cloneGrassGeometry(
-  source: THREE.BufferGeometry,
-  capacity: number,
-  material: THREE.Material,
-  name: string,
-  indirect: THREE.IndirectStorageBufferAttribute,
-  indirectOffset: number
-): GrassMesh {
-  const geometry = new THREE.InstancedBufferGeometry();
-  if (source.index) geometry.setIndex(source.index.clone());
-  for (const [attributeName, attribute] of Object.entries(source.attributes)) {
-    geometry.setAttribute(attributeName, attribute.clone());
-  }
-  for (const group of source.groups) geometry.addGroup(group.start, group.count, group.materialIndex);
+// The shared wildlands meadow styling — extracted verbatim so it is the default
+// hook when a consumer passes no `style`. Output is bit-identical to the former
+// inline block; consumers (e.g. the botanical garden) supply their own hook.
+const defaultGrassStyle: GpuGrassStyleHook = ({ gx, gz, saltF, eco, patch, style, patchiness, hash01 }) => {
+  const vigour = mix(float(1), eco.w, patchiness.clamp(0, 1));
+  const tallChance = float(0.23).mul(float(0.78).add(patch.mul(0.48)));
+  const tall = hash01(gx, gz, 31).add(saltF.mul(0.0000002980232239)).fract()
+    .lessThan(tallChance);
+  const tallHeight = float(0.9).add(
+    hash01(gx, gz, 37).add(saltF.mul(0.0000003576278687)).fract().mul(0.7)
+  );
+  const shortHeight = float(0.45).add(
+    hash01(gx, gz, 41).add(saltF.mul(0.0000004172325134)).fract().mul(0.4)
+  );
+  const height = select(tall, tallHeight, shortHeight)
+    .mul(vigour)
+    .mul(float(0.94).add(style.mul(0.12)));
+  const spread = select(tall, float(1.04), float(0.86))
+    .mul(float(0.86).add(
+      hash01(gx, gz, 43).add(saltF.mul(0.0000004768371582)).fract().mul(0.32)
+    ))
+    .mul(float(0.94).add(vigour.mul(0.06)));
+  const brightness = float(0.86).add(
+    hash01(gx, gz, 29).add(saltF.mul(0.000000536441803)).fract().mul(0.24)
+  );
+  const dry = float(1).sub(patch).mul(float(0.12).add(patchiness.mul(0.1)))
+    .add(style.sub(0.5).mul(0.035)).clamp(0, 1);
+  const yaw = hash01(gx, gz, 47).add(saltF.mul(0.0000006556510925)).fract()
+    .mul(Math.PI * 2);
+  const wind = float(0.72).add(height.mul(0.34)).mul(select(tall, float(1.08), float(1)));
+  const color = vec3(
+    brightness.mul(float(0.6).add(dry.mul(0.28))),
+    brightness.mul(float(0.92).sub(dry.mul(0.14))),
+    brightness.mul(float(0.4).sub(dry.mul(0.06)))
+  );
+  return { height, spread, yaw, wind, color };
+};
 
-  // Instance data lives in storage buffers read through the visible-index
-  // indirection — deliberately NOT vertex attributes, so the culled draw only
-  // fetches instances that survived and the pipeline stays under the
-  // vertex-buffer slot budget.
-  geometry.instanceCount = capacity;
-  geometry.setIndirect(indirect, indirectOffset);
-  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 24_000);
+// Per-layer state assembled in the first pass, consumed once the shared indirect
+// draw set (which needs every material up front) exists.
+type LayerBuild = {
+  input: GpuGrassLayerInput;
+  arena: InstanceArena;
+  visible: VisibleBuffer;
+  material: GrassMaterialState;
+  capacity: number;
+  candidateSide: number;
+  reach: number;
+  step: number;
+  planeCandidates: number;
+  localRadius: number;
+  styleHook: GpuGrassStyleHook;
+  name: string;
+};
 
-  const mesh = new THREE.Mesh(geometry, material) as GrassMesh;
-  mesh.name = name;
-  mesh.frustumCulled = false;
-  mesh.userData.grassCapacity = capacity;
-  mesh.userData.grassGpuGenerated = true;
-  mesh.userData.grassIndirectOffset = indirectOffset;
-  return mesh;
-}
+// The three vec4 instance planes every grass layer writes: anchorXYZ+yaw,
+// spread/height/wind/fadeRadius, and normalized RGB tint + fade rank.
+const GRASS_ARENA_ATTRS = [
+  { name: "transforms", format: "vec4" },
+  { name: "shapes", format: "vec4" },
+  { name: "colors", format: "vec4" }
+] as const;
 
 export function createGpuGrassPlacement(
   field: FoliageField,
   inputs: readonly GpuGrassLayerInput[],
   spacing: number,
-  maxDensityLayers: number
+  maxDensityLayers: number,
+  namePrefix = "wildlands"
 ): GpuGrassPlacement {
   const focus = new THREE.Vector2();
   const focusU = uniform(focus);
@@ -186,13 +292,6 @@ export function createGpuGrassPlacement(
   const patchinessU = uniform(0.5);
   const densityNode = densityU as N;
   const patchinessNode = patchinessU as N;
-  const indirectData = new Uint32Array(inputs.length * 5);
-  for (let index = 0; index < inputs.length; index++) {
-    indirectData[index * 5] = inputs[index].geometry.index?.count ??
-      inputs[index].geometry.getAttribute("position").count;
-  }
-  const indirect = new THREE.IndirectStorageBufferAttribute(indirectData, 1);
-  const indirectStorage = storage(indirect, "uint", indirectData.length).toAtomic();
 
   // Live compaction counters are separate from the draw counts: placement
   // rewrites them only when the field retargets, while the frustum pass
@@ -204,54 +303,78 @@ export function createGpuGrassPlacement(
     atomicStore(liveStorage.element(instanceIndex), uint(0));
   })().compute(inputs.length, [64]).setName("grass live reset");
 
-  const drawReset = Fn(() => {
-    atomicStore(indirectStorage.element(instanceIndex.mul(uint(5)).add(uint(1))), uint(0));
-  })().compute(inputs.length, [64]).setName("grass draw reset");
+  // Live field focus for the per-instance rank fade. Kept separate from the
+  // placement `focus` (which only retargets every stream step): the material's
+  // fade tracks the player every frame, so the cull must read the SAME live
+  // focus to stay in lockstep with the material's shrink.
+  const cullFocus = new THREE.Vector2();
+  const cullFocusU = uniform(cullFocus);
+  const cullCamera = createCullCamera();
 
-  // Frustum-cull camera state, shared by every layer's per-frame pass.
-  const cullViewProjection = uniform(new THREE.Matrix4());
-  const cullProjScale = uniform(new THREE.Vector2(1, 1));
-
-  const releasable: unknown[] = [indirect, liveCounts];
-
-  const layers = inputs.map((input, layerIndex): GpuGrassLayer => {
+  // Pass 1: build each layer's arena, visible buffer and material. The material
+  // reads the arena/visible buffers through the culled indirection, and the
+  // shared indirect draw set (pass 2) needs every material to make its mesh.
+  const builds: LayerBuild[] = inputs.map((input): LayerBuild => {
     const step = spacing * input.spec.gridStride;
     const reach = Math.ceil(input.spec.visibleRadius / step) + 1;
     const candidateSide = reach * 2 + 1;
     const planeCandidates = candidateSide * candidateSide;
     const capacity = planeCandidates * maxDensityLayers;
+    const styleHook = input.style ?? defaultGrassStyle;
 
-    const transformAttr = new THREE.StorageInstancedBufferAttribute(capacity, 4);
-    const shapeAttr = new THREE.StorageInstancedBufferAttribute(capacity, 4);
-    const colorAttr = new THREE.StorageInstancedBufferAttribute(capacity, 4);
-    const visibleAttr = new THREE.StorageBufferAttribute(new Uint32Array(capacity), 1);
-    releasable.push(transformAttr, shapeAttr, colorAttr, visibleAttr);
-    const transforms = storage(transformAttr, "vec4", capacity);
-    const shapes = storage(shapeAttr, "vec4", capacity);
-    const colors = storage(colorAttr, "vec4", capacity);
-    const visibleWrite = storage(visibleAttr, "uint", capacity);
-
+    const arena = createInstanceArena(GRASS_ARENA_ATTRS, capacity);
+    const visible = createVisibleBuffer(capacity);
     const material = input.materialFor({
-      transforms: storage(transformAttr, "vec4", capacity).toReadOnly(),
-      shapes: storage(shapeAttr, "vec4", capacity).toReadOnly(),
-      colors: storage(colorAttr, "vec4", capacity).toReadOnly(),
-      visibleIndices: storage(visibleAttr, "uint", capacity).toReadOnly()
+      transforms: arena.read("transforms"),
+      shapes: arena.read("shapes"),
+      colors: arena.read("colors"),
+      visibleIndices: visible.read
     });
-    const mesh = cloneGrassGeometry(
-      input.geometry,
+    return {
+      input,
+      arena,
+      visible,
+      material,
       capacity,
-      material.material,
-      `wildlands_grass_${input.spec.name}_gpu`,
-      indirect,
-      layerIndex * 5 * Uint32Array.BYTES_PER_ELEMENT
-    );
+      candidateSide,
+      reach,
+      step,
+      planeCandidates,
+      // Conservative local-space bound for one cluster of this layer, scaled per
+      // instance by its spread/height at cull time.
+      localRadius: input.geometry.boundingSphere?.radius ?? 1.4,
+      styleHook,
+      name: `${namePrefix}_grass_${input.spec.name}_gpu`
+    };
+  });
+
+  const entries: IndirectDrawEntry[] = builds.map((build) => ({
+    geometry: build.input.geometry,
+    material: build.material.material,
+    capacity: build.capacity,
+    visible: build.visible,
+    name: build.name
+  }));
+  const drawSet = createIndirectDrawSet(entries, `${namePrefix}_grass`);
+
+  // Pass 2: build each layer's placement/compaction compute and per-frame cull.
+  const layers = builds.map((build, layerIndex): GpuGrassLayer => {
+    const { input, arena, capacity, candidateSide, reach, step, planeCandidates, localRadius, styleHook } = build;
+    const record = drawSet.records[layerIndex];
+    const mesh = record.mesh as GrassMesh;
+    mesh.userData.grassCapacity = capacity;
+    mesh.userData.grassGpuGenerated = true;
+    mesh.userData.grassIndirectOffset = layerIndex * 5 * Uint32Array.BYTES_PER_ELEMENT;
     mesh.userData.grassLayer = input.spec.name;
     // QA surface: probes read packed instance/visibility planes directly.
-    mesh.userData.grassTransformAttr = transformAttr;
-    mesh.userData.grassVisibleAttr = visibleAttr;
-    mesh.userData.grassColorAttr = colorAttr;
-    mesh.userData.grassShapeAttr = shapeAttr;
+    mesh.userData.grassTransformAttr = arena.attribute("transforms");
+    mesh.userData.grassVisibleAttr = build.visible.attribute;
+    mesh.userData.grassColorAttr = arena.attribute("colors");
+    mesh.userData.grassShapeAttr = arena.attribute("shapes");
 
+    const transforms = arena.write("transforms");
+    const shapes = arena.write("shapes");
+    const colors = arena.write("colors");
     const liveCounter = liveStorage.element(uint(layerIndex));
 
     const compute = Fn(() => {
@@ -311,76 +434,71 @@ export function createGpuGrassPlacement(
       If(accepted, () => {
         const outputIndex = atomicAdd(liveCounter, uint(1));
         If(outputIndex.lessThan(uint(capacity)), () => {
-          const vigour = mix(float(1), eco.w, patchinessNode.clamp(0, 1));
-          const tallChance = float(0.23).mul(float(0.78).add(patch.mul(0.48)));
-          const tall = hash01(gx, gz, 31).add(float(salt).mul(0.0000002980232239)).fract()
-            .lessThan(tallChance);
-          const tallHeight = float(0.9).add(
-            hash01(gx, gz, 37).add(float(salt).mul(0.0000003576278687)).fract().mul(0.7)
-          );
-          const shortHeight = float(0.45).add(
-            hash01(gx, gz, 41).add(float(salt).mul(0.0000004172325134)).fract().mul(0.4)
-          );
-          const height = select(tall, tallHeight, shortHeight)
-            .mul(vigour)
-            .mul(float(0.94).add(style.mul(0.12)));
-          const spread = select(tall, float(1.04), float(0.86))
-            .mul(float(0.86).add(
-              hash01(gx, gz, 43).add(float(salt).mul(0.0000004768371582)).fract().mul(0.32)
-            ))
-            .mul(float(0.94).add(vigour.mul(0.06)));
-          const brightness = float(0.86).add(
-            hash01(gx, gz, 29).add(float(salt).mul(0.000000536441803)).fract().mul(0.24)
-          );
-          const dry = float(1).sub(patch).mul(float(0.12).add(patchinessNode.mul(0.1)))
-            .add(style.sub(0.5).mul(0.035)).clamp(0, 1);
+          const styled = styleHook({
+            gx,
+            gz,
+            salt,
+            saltF: float(salt),
+            world,
+            groundY,
+            eco,
+            patch,
+            style,
+            patchiness: patchinessNode,
+            hash01,
+            spec: input.spec
+          });
+          // Fade rank stays here (not in the hook): the per-frame cull pass reads
+          // the SAME expression as its extinction threshold, so styling can never
+          // desynchronize the edge dissolve.
           const rank = hash01(gx, gz, 59).add(float(salt).mul(0.0000005960464478)).fract()
             .mul(0.996).add(0.002);
-          const yaw = hash01(gx, gz, 47).add(float(salt).mul(0.0000006556510925)).fract()
-            .mul(Math.PI * 2);
-          const wind = float(0.72).add(height.mul(0.34)).mul(select(tall, float(1.08), float(1)));
-
-          transforms.element(outputIndex).assign(vec4(world.x, groundY, world.y, yaw));
-          shapes.element(outputIndex).assign(vec4(spread, height, wind, input.spec.visibleRadius));
-          colors.element(outputIndex).assign(vec4(
-            brightness.mul(float(0.6).add(dry.mul(0.28))),
-            brightness.mul(float(0.92).sub(dry.mul(0.14))),
-            brightness.mul(float(0.4).sub(dry.mul(0.06))),
-            rank
-          ));
+          transforms.element(outputIndex).assign(vec4(world.x, groundY, world.y, styled.yaw));
+          shapes.element(outputIndex).assign(vec4(styled.spread, styled.height, styled.wind, input.spec.visibleRadius));
+          colors.element(outputIndex).assign(vec4(styled.color, rank));
         });
       });
     })().compute(capacity, [256]).setName(`grass compact ${input.spec.name}`);
 
-    // Conservative local-space bound for one cluster of this layer, scaled per
-    // instance by its spread/height at cull time.
-    const localRadius = input.geometry.boundingSphere?.radius ?? 1.4;
-    const drawCounter = indirectStorage.element(uint(layerIndex * 5 + 1));
-
-    const cull = Fn(() => {
-      If(instanceIndex.lessThan(atomicLoad(liveCounter)), () => {
-        const t = (transforms.element(instanceIndex) as N).toVar();
-        const s = (shapes.element(instanceIndex) as N).toVar();
+    // Per-instance rank fade — the extra acceptance the shared frustum cull can't
+    // own: a cluster survives only while its distance fade to the field focus
+    // still exceeds its stable rank. The material shrinks the near-band clusters
+    // to nothing just before this rejection, so the edge dissolves without a pop.
+    // A layer with `minRadius` also carries the mirrored INNER rejection, which
+    // is what keeps co-located layers from drawing the same anchor twice.
+    const minRadius = Math.max(0, Number(input.spec.minRadius ?? 0));
+    const innerBand = Math.max(1, Number(input.spec.innerBand ?? input.spec.fadeBand));
+    const cull = buildCullPass({
+      name: `grass cull ${input.spec.name}`,
+      dispatch: capacity,
+      camera: cullCamera,
+      activeCount: () => atomicLoad(liveCounter),
+      instance: (idx: N) => {
+        const t = (transforms.element(idx) as N).toVar();
+        const s = (shapes.element(idx) as N).toVar();
+        const rank = (colors.element(idx) as N).w;
+        const dist = t.xz.sub(cullFocusU).length();
+        const fade = float(input.spec.visibleRadius).sub(dist)
+          .div(float(Math.max(1, input.spec.fadeBand))).clamp(0, 1);
+        // Inner acceptance is the outer test read backwards: rank r survives the
+        // outer edge longest and the inner edge shortest, so the two bands of a
+        // co-located pair partition the clusters instead of doubling them.
+        const accept = minRadius > 0
+          ? fade.greaterThanEqual(rank).and(
+            dist.sub(float(minRadius)).div(float(innerBand)).clamp(0, 1)
+              .greaterThanEqual(float(1).sub(rank))
+          )
+          : fade.greaterThanEqual(rank);
         const radius = s.x.max(s.y).mul(float(localRadius)).add(CULL_RADIUS_SLACK);
         const center = vec3(t.x, t.y.add(s.y.mul(0.55)), t.z);
-        const clip = (cullViewProjection as N).mul(vec4(center, float(1)));
-        // Left/right/top/bottom planes with a projection-scaled world margin;
-        // no near/far test — reversed-z safe, and the placement radius already
-        // bounds distance.
-        const inFront = clip.w.greaterThan(radius.negate());
-        const xIn = abs(clip.x).lessThan(clip.w.add(radius.mul(cullProjScale.x)));
-        const yIn = abs(clip.y).lessThan(clip.w.add(radius.mul(cullProjScale.y)));
-        If(inFront.and(xIn).and(yIn), () => {
-          const slot = atomicAdd(drawCounter, uint(1));
-          visibleWrite.element(slot).assign(instanceIndex);
-        });
-      });
-    })().compute(capacity, [256]).setName(`grass cull ${input.spec.name}`);
+        return { center, radius, accept, emit: () => record.append(idx) };
+      }
+    });
 
     return {
       spec: input.spec,
       mesh,
-      material,
+      material: build.material,
       capacity,
       candidateSide,
       trianglesPerCluster: input.trianglesPerCluster,
@@ -389,39 +507,35 @@ export function createGpuGrassPlacement(
     };
   });
 
-  const cullPasses = [drawReset, ...layers.map((layer) => layer.cull)];
+  const cullPasses = [drawSet.drawReset, ...layers.map((layer) => layer.cull)];
 
   return {
     layers,
-    indirect,
+    indirect: drawSet.indirect,
     liveCounts,
     reset,
     cullPasses,
     updateCullCamera(camera: THREE.Camera) {
-      camera.updateMatrixWorld();
-      cullViewProjection.value.multiplyMatrices(
-        camera.projectionMatrix,
-        camera.matrixWorldInverse
-      );
-      cullProjScale.value.set(
-        camera.projectionMatrix.elements[0],
-        camera.projectionMatrix.elements[5]
-      );
+      cullCamera.update(camera);
     },
     focus,
+    cullFocus,
     density: densityU,
     patchiness: patchinessU,
     dispose() {
       reset.dispose();
-      drawReset.dispose();
       for (const layer of layers) {
         layer.compute.dispose();
         layer.cull.dispose();
-        layer.mesh.geometry.setIndirect(null);
-        layer.mesh.geometry.dispose();
-        layer.mesh.removeFromParent();
       }
-      for (const attribute of releasable) releaseRendererAttribute(attribute);
+      // Releases the shared indirect buffer, every layer geometry (setIndirect
+      // null + dispose + detach) and the draw-reset compute.
+      drawSet.dispose();
+      for (const build of builds) {
+        build.arena.dispose();
+        build.visible.dispose();
+      }
+      releaseRendererAttribute(liveCounts);
     }
   };
 }

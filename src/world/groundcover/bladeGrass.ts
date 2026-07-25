@@ -28,7 +28,6 @@ import {
   normalGeometry,
   positionGeometry,
   sin,
-  step,
   uniform,
   vec2,
   vec3,
@@ -52,6 +51,11 @@ export type GrassEntry = {
 };
 
 const GRASS_FADE_BAND = 0.16;
+// Softening window for the rank fade, as a fraction of a layer's fade band. The
+// hard per-instance rank rejection now happens in the GPU cull pass; each blade
+// shrinks toward its anchor across this window just before it is culled, so the
+// band dissolves gradually instead of popping (decorrelated ranks stagger it).
+const RANK_FADE_SOFT = 0.25;
 
 export type GrassMaterialState = {
   material: THREE.Material;
@@ -74,6 +78,11 @@ export type GrassIndirectSource = {
 };
 
 export type GrassMaterialOptions = {
+  /** Subsurface translucency for the backlit blade look. Near/hero layers keep
+   *  it on; mid/far layers pass `false` for a cheaper MeshStandardNodeMaterial
+   *  that still carries the root→tip colour gradient (near-imperceptible at
+   *  those distances, but skips the per-pixel SSS the far field can't afford). */
+  sss?: boolean;
   /** Full layered noise nearby; one coherent sine for mid/far tiles. */
   wind?: "full" | "lite";
   /** Compile-time interaction budget. Far grass uses zero; nearby grass keeps all 12. */
@@ -82,6 +91,12 @@ export type GrassMaterialOptions = {
   fadeMode?: "scale" | "rank";
   /** Absolute world-space width of a rank fade. Only used by `fadeMode: "rank"`. */
   fadeBand?: number;
+  /** Inner hole radius, mirroring the layer spec's `minRadius`: the cluster grows
+   *  in from its anchor across `innerBand` exactly as the outer band dissolves
+   *  out, so a layer stacked on a co-located inner layer hands off instead of
+   *  double-drawing. Must match the cull's spec values or the two desynchronize. */
+  minRadius?: number;
+  innerBand?: number;
   /** Read instance data through a GPU-culled visible-index indirection instead
    *  of instanced attributes. Fragment-stage consumers of instance data must go
    *  through vertexStage(): storage reads keyed by instanceIndex are only valid
@@ -265,7 +280,13 @@ export function createMicroBladeClusterGeometry({
  *  position graph reconstructs the transform explicitly and keeps all wind,
  *  interaction, and anchor-fade operations in their declared coordinate space. */
 export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMaterialState {
-  const mat = new THREE.MeshSSSNodeMaterial();
+  // Per-layer material choice (not a shader branch): each layer owns its own
+  // mesh/material/pipeline, so near/hero take the translucent SSS blade while
+  // mid/far take a plain standard blade that keeps the identical tip gradient.
+  const useSss = options.sss !== false;
+  const mat: THREE.MeshSSSNodeMaterial | THREE.MeshStandardNodeMaterial = useSss
+    ? new THREE.MeshSSSNodeMaterial()
+    : new THREE.MeshStandardNodeMaterial();
   mat.side = THREE.DoubleSide;
   mat.roughness = 0.94;
   mat.metalness = 0;
@@ -305,20 +326,36 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
   const fadeBand = rankFade
     ? float(Math.max(1, Number(options.fadeBand ?? 12)))
     : fadeRadius.mul(GRASS_FADE_BAND).max(1);
-  const fade = fadeRadius.sub(dist).div(fadeBand).clamp(0, 1);
+  const fadeRaw = fadeRadius.sub(dist).div(fadeBand);
+  const fade = fadeRaw.clamp(0, 1);
 
-  // A moving field must not visibly sink into the floor. Streamed layers use a
-  // deterministic rank carried by the instance byte plus a constant rank on
-  // each authored blade. Coverage removes whole full-height blades in a broad,
-  // spatially staggered band; no screen-space dither crawls while wind moves.
+  // A moving field must not visibly sink into the floor. Streamed layers dissolve
+  // whole clusters by a stable per-instance rank. That hard rank/distance
+  // rejection now lives in the GPU cull compute pass, so the blade material stays
+  // fully OPAQUE — no per-fragment alphaTest discard, which on Apple's TBDR GPUs
+  // would otherwise defeat hidden-surface removal on every blade of every layer.
+  // Here we only soften the band edge: a cluster shrinks toward its ground anchor
+  // as its (unclamped) distance fade approaches its instance rank, dissolving to
+  // nothing just before the cull drops it. `RANK_FADE_SOFT` is measured in the
+  // same units as the cull threshold, so the two stay in lockstep.
   let deformationFade: TslNode = fade;
   if (rankFade) {
-    const authoredRank = attribute("aGrassBladeRank", "float") as TslNode;
-    const stableRank = tint.w.mul(0.754877666).add(authoredRank).fract().mul(0.996).add(0.002);
-    const fragmentFade = indirect ? (vertexStage(fade) as TslNode) : fade;
-    mat.opacityNode = step(stableRank, fragmentFade);
-    mat.alphaTestNode = float(0.5);
-    deformationFade = float(1);
+    const rank = tintVertex.w; // per-instance rank; identical to the cull-pass threshold
+    deformationFade = fadeRaw.sub(rank).div(RANK_FADE_SOFT).clamp(0, 1);
+    // Inner band (co-located LOD pair): the same shrink run backwards. The cull
+    // admits this cluster at innerFade >= 1 - rank, so softening the approach to
+    // that threshold grows it out of the ground instead of popping it in. At the
+    // spec's recommended minRadius (two soft windows inside the inner layer's own
+    // dissolve) this reaches full size exactly where the inner layer starts to
+    // shrink, so the pair crossfades with no gap and no double-scale dip.
+    const minRadius = Math.max(0, Number(options.minRadius ?? 0));
+    if (minRadius > 0) {
+      const innerBand = float(Math.max(1, Number(options.innerBand ?? options.fadeBand ?? 12)));
+      const innerRaw = dist.sub(float(minRadius)).div(innerBand);
+      deformationFade = deformationFade.min(
+        innerRaw.sub(float(1).sub(rank)).div(RANK_FADE_SOFT).clamp(0, 1)
+      );
+    }
   }
 
   // Compact instance transform: position/rotation + shape replace a 16-float
@@ -332,7 +369,10 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
     shaped.y.add(anchorLocal.y),
     shaped.x.mul(yawSin).add(shaped.z.mul(yawCos)).add(anchorLocal.z)
   );
-  const scaled = rankFade ? placed : fadeAroundInstanceAnchor(placed, anchorLocal, fade);
+  // Both fade modes collapse the cluster toward its anchor by `deformationFade`:
+  // the legacy `fade` for scale-mode site grass, the rank shrink for the streamed
+  // field. A central cluster has deformationFade == 1, so `scaled` == `placed`.
+  const scaled = fadeAroundInstanceAnchor(placed, anchorLocal, deformationFade);
 
   // Trample: accumulate world-space push away from each displacer plus a
   // "crush" factor that flattens blades and damps their wind response.
@@ -406,12 +446,17 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
   mat.normalNode = indirect
     ? normalize(vertexStage(shadedNormal) as TslNode)
     : normalize(shadedNormal);
-  mat.thicknessColorNode = tint.y.mul(bladeT.mul(0.72).add(0.28)).mul(uniform(new THREE.Color(0.42, 0.68, 0.24)));
-  mat.thicknessDistortionNode = uniform(0.38);
-  mat.thicknessAmbientNode = uniform(0.08);
-  mat.thicknessAttenuationNode = uniform(1.0);
-  mat.thicknessPowerNode = uniform(5.0);
-  mat.thicknessScaleNode = uniform(2.35);
+  // Translucency is SSS-only: mid/far standard blades skip it and lean on the
+  // root→tip colour gradient to approximate the backlit read at distance.
+  if (useSss) {
+    const sss = mat as THREE.MeshSSSNodeMaterial;
+    sss.thicknessColorNode = tint.y.mul(bladeT.mul(0.72).add(0.28)).mul(uniform(new THREE.Color(0.42, 0.68, 0.24)));
+    sss.thicknessDistortionNode = uniform(0.38);
+    sss.thicknessAmbientNode = uniform(0.08);
+    sss.thicknessAttenuationNode = uniform(1.0);
+    sss.thicknessPowerNode = uniform(5.0);
+    sss.thicknessScaleNode = uniform(2.35);
+  }
   return { material: mat, focus };
 }
 
