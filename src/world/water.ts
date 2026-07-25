@@ -30,9 +30,10 @@ import { materializeAmount } from "../render/materialize";
 import { bumpNormal, chopZoneMask, oceanBeachSurfField, oceanBeachSwell, swellBase, swellChop } from "./tslUtil";
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 import { WaterEchoes } from "./waterEchoes";
-import { OceanCascades, oceanDetail, cascadeUv, HERO_STRIP_GATE } from "./ocean/oceanSim";
+import { OceanCascades, oceanDetail, cascadeUv, CASCADE_FADE_DIST, HERO_STRIP_GATE } from "./ocean/oceanSim";
 import { setHeroFocus } from "./ocean/heroWaves";
 import { SUN_DIR } from "./sky";
+import { governorEffects } from "../render/adaptiveResolution";
 
 const PALACE_LAGOON_SEGMENTS = 112;
 const PALACE_LAGOON_RINGS = 18;
@@ -51,7 +52,71 @@ const HERO_PATCH_MASK_OUTER = 56;
 const HERO_PATCH_MASK_INNER = 44;
 const NEAR_PATCH_FADE_START_HEIGHT = 5;
 const NEAR_PATCH_FADE_END_HEIGHT = 12;
+// Far flat-sheet split (GPU-load): the far material's fragment path runs
+// map-wide + an 8 km apron, but every one of its detail contributions has faded
+// to ~zero within ~2 km of the camera — spark/glint dies at viewDist/1900, the
+// FFT foam/crest feature fade at 760 m, and the mid band's slope at 950 m, so by
+// ~1.9 km only cascade 0's broad swell normal survives. We keep the expensive
+// material only on a camera-following DISC out to this ring ("inner annulus",
+// still the public `far` mesh) and cover everything beyond it with a cheap
+// horizon sheet. Fade out over 1900→2100 m (err generous per the plan); the
+// horizon keeps that same cascade-0 normal + roughness ramp, so the seam is
+// carried only by the constant-vs-graded body colour, which fog dominates here.
+const FAR_ANNULUS_FADE_INNER = 1900;
+const FAR_ANNULUS_FADE_OUTER = 2100;
+// Square plane whose inscribed radius (SIZE/2 = 2200 m) covers the fade disc.
+const FAR_ANNULUS_SIZE = 4400;
 const TAU = Math.PI * 2;
+
+// --- coarse water-proximity field (see #buildWaterField) -------------------
+// A 128 m-cell distance-to-water map over the height grid, built once at boot
+// (~13k cells, ~50 KB). Everything below gates off it; nothing queries the
+// height grid per frame.
+const WATER_FIELD_CELL = 128;
+// The shader's dry mask is `floorH > 0.55`. The CPU field runs a touch higher
+// because map.heights is an 8× box-averaged overview until tiles stream in
+// (shoreline blocks average land back in), and over-estimating the wet set can
+// only keep water alive, never hide it.
+const WATER_FIELD_WET_FLOOR = 1.0;
+// Optimal 3×3 chamfer weights (Borgefors) — within ~4 % of true Euclidean, so
+// queries scale by 0.96 to stay on the under-estimating side.
+const CHAMFER_ORTHO = 0.9552;
+const CHAMFER_DIAG = 1.3507;
+// Dry-land gate for the two displaced patches. Their fragments are all killed
+// by the `dry` mask inland, but WGSL discard only demotes to a helper
+// invocation: 42.6k displaced vertices still transform and the whole ocean
+// composite still evaluates before anything is thrown away. Park both sheets
+// once the nearest water is well past the patch rim (NEAR_PATCH_MASK_OUTER =
+// 276 m); the band between the two thresholds is hysteresis so a shoreline
+// walk can't flip the gate frame to frame.
+// 300/380 against a 276 m mask: the patch's own fragment feather has already
+// closed by 276 m, so anything past that is shaded-then-discarded water plus
+// 32k displaced triangles. The old 460 m release carried a 1.7× margin on a
+// sheet whose coverage is decided by an exact per-pixel test anyway.
+const NEAR_PATCH_WATER_ON = 300;
+const NEAR_PATCH_WATER_OFF = 380;
+// Same idea one level down, for the hi-res hero patch — but the 128 m field
+// above is far too blunt for a 56 m disc (it reads 0 anywhere within one cell
+// of water, so the whole Embarcadero reads 0 while the bay sits ~140 m out
+// behind the seawall). The hero gate therefore runs an exact lattice probe
+// (#waterWithin) instead, with the same on/off hysteresis shape. 80 m leaves
+// 24 m over HERO_PATCH_MASK_OUTER; the release ring is another 30 m out.
+const HERO_PATCH_WATER_ON = 80;
+const HERO_PATCH_WATER_OFF = 110;
+// Per-cascade FFT dispatch gate. Cascade i's on-screen weight is
+// saturate(1 − viewDist / CASCADE_FADE_DIST[i]) (oceanSim.oceanDetail), i.e.
+// EXACTLY zero past its fade distance — so a band whose nearest water is
+// further off than that contributes nothing to any sheet and can stop
+// dispatching entirely. Two paddings keep the gate provably conservative:
+//   • viewDist is view-space depth, not horizontal range — a fragment out at
+//     the frustum corner sits at ~0.7× its euclidean distance, hence the 1.5×.
+//   • the near/hero patches displace vertices out to 276 m around the player
+//     from cascades 1-2 with no distance fade at all, hence the flat margin.
+// Because a band only ever switches at a distance where its weight is already
+// zero, resuming it (the sim is a stateless evaluation at absolute t) can't pop.
+const CASCADE_GATE_SCALE = 1.5;
+const CASCADE_GATE_MARGIN = 320;
+const CASCADE_GATE_HYSTERESIS = 200;
 
 /**
  * Stylized wavelet height field: a sum of directional sines standing in for the
@@ -77,7 +142,8 @@ function wavelets(p: any, t: any): any {
  * matches the CPU-side waterHeight() the boat floats on.
  */
 export class Water {
-  far: THREE.Mesh;
+  far: THREE.Mesh; // inner annulus: the full material on a camera-following disc
+  horizon: THREE.Mesh; // cheap flat sheet covering everything beyond the annulus
   near: THREE.Mesh;
   heroNear: THREE.Mesh;
   palaceLagoon: THREE.Mesh;
@@ -95,9 +161,18 @@ export class Water {
   #uNearRect = uniform(new THREE.Vector3(0, 0, NEAR_PATCH_MASK_OUTER));
   #uHeroRect = uniform(new THREE.Vector3(0, 0, HERO_PATCH_MASK_OUTER));
   #uNearVisibility = uniform(1);
+  // 1 while the hero sheet draws, 0 once it parks (see HERO_PATCH_WATER_*).
+  // The coarse near patch reads it to CLOSE its hero hole — without this the
+  // parked sheet would leave a 44–56 m bite out of the water at the player's
+  // feet with nothing behind it.
+  #uHeroVisibility = uniform(1);
   #uSurfing = uniform(0);
   #uOrigin = uniform(new THREE.Vector2());
   #uHeroOrigin = uniform(new THREE.Vector2());
+  // Camera XZ centre of the inner annulus; the horizon sheet reads it to cut the
+  // complementary hole (this sheet is static/map-centred, so it needs the origin
+  // in world space rather than the annulus' own positionLocal).
+  #uFarAnnulusOrigin = uniform(new THREE.Vector2());
   #uCamXZ = uniform(new THREE.Vector2());
   #uCamY = uniform(0);
   // Spectral detail cascades (world/ocean/): FFT wind sea layered over the
@@ -113,15 +188,30 @@ export class Water {
   #uSunDir = uniform(SUN_DIR);
   #lastSimT: number | null = null;
   #frame = 0;
+  /** Chamfer distance-to-water in CELL units, one entry per WATER_FIELD_CELL. */
+  #waterField: Float32Array | null = null;
+  #waterFieldW = 0;
+  #waterFieldH = 0;
+  #waterFieldStep = WATER_FIELD_CELL;
+  #waterFieldMinX = 0;
+  #waterFieldMinZ = 0;
+  /** Hysteretic gates driven by the field (see the constants above). */
+  #nearWaterGate = true;
+  #heroWaterGate = true;
+  #cascadeGate = 0b1111;
+  /** Height lattice, for the hero patch's fine-grained water probe. */
+  #map: WorldMap;
   constructor(scene: THREE.Scene, map: WorldMap, renderer: THREE.WebGPURenderer) {
     this.#renderer = renderer;
+    this.#map = map;
     this.ocean = new OceanCascades();
     const { tex, scale } = map.buildFloorTexture();
+    this.#buildWaterField(map);
     const g = map.meta.grid;
     const w = g.width * g.cellSize + 8000;
     const h = g.height * g.cellSize + 8000;
 
-    const makeMaterial = (displace: number, holed: boolean, heroRes = false, originU = this.#uOrigin) => {
+    const makeMaterial = (displace: number, holed: boolean, heroRes = false, originU = this.#uOrigin, annulus = false) => {
       // Both sheets are MeshStandard, not Physical. Water is the biggest surface
       // on screen and the shader is fragment-bound on lighter GPUs (an M2 Air
       // sputters over open bay); the physical fragment path (ior/specular BRDF)
@@ -235,14 +325,45 @@ export class Water {
       // patch (same alpha-tested handoff as near-vs-far, one level down).
       if (displace > 0 && !heroRes) {
         const heroRect = this.#uHeroRect;
+        const heroHole = smoothstep(
+          float(HERO_PATCH_MASK_INNER),
+          heroRect.z,
+          vec2(p.x.sub(heroRect.x), p.y.sub(heroRect.y)).length()
+        );
+        // …and CLOSE that hole whenever the hero sheet is parked, or the gate
+        // would punch a hole in the water at the player's feet.
+        waterVisibility = waterVisibility.mul(mix(float(1), heroHole, this.#uHeroVisibility));
+      }
+      // Inner-annulus outer rim: the full material only reaches ~2 km from the
+      // camera, so fade it out over its rim and let the cheap horizon sheet
+      // (complementary radial mask, alpha-tested at 0.5 — the same handoff the
+      // near↔far pair uses one level down) own everything beyond. The annulus
+      // mesh is camera-centred, so its own local radius IS the view-distance ring.
+      if (annulus) {
         waterVisibility = waterVisibility.mul(
-          smoothstep(
-            float(HERO_PATCH_MASK_INNER),
-            heroRect.z,
-            vec2(p.x.sub(heroRect.x), p.y.sub(heroRect.y)).length()
-          )
+          smoothstep(float(FAR_ANNULUS_FADE_OUTER), float(FAR_ANNULUS_FADE_INNER), positionLocal.xz.length())
         );
       }
+
+      // Coverage: the ONE term that decides whether this sheet owns the pixel.
+      // It feeds maskNode and opacityNode from the same node, so the early
+      // discard and the alpha test are identical by construction — every
+      // hero↔near↔far↔horizon handoff keeps its exact 0.5 cut.
+      //
+      // Why it matters: these sheets are map-wide punch-through planes, so at a
+      // waterfront stop they rasterize ~2 screenfuls over a view that is almost
+      // all land, and every one of those doomed fragments used to pay the whole
+      // ocean composite first (three emits opacity + alphaTest AFTER colorNode,
+      // NodeMaterial.setupDiffuseColor). maskNode is the FIRST statement of that
+      // method, so the kill now costs one floor fetch and a handful of
+      // smoothsteps instead of 2–5 cascade fetches, foam, surf, normals, PBR,
+      // the analytic sky IBL and the fog graph.
+      const coverage = waterVisibility
+        .mul(dry.oneMinus())
+        .mul(this.#uReveal)
+        .mul(materializeAmount()) // spatial front sweep (collapses to 1 once revealed)
+        .toVar();
+      mat.maskNode = coverage.greaterThan(0.5);
 
       const viewDist = positionView.z.negate();
       const detail = clamp(float(1).sub(viewDist.div(1900)), 0, 1).toVar();
@@ -370,10 +491,83 @@ export class Water {
       // the hero surf sheet sits 2.5 cm above this base and wins depth wherever
       // a wave stands. Cutting a second alpha-tested hole here used a different
       // threshold from the hero mask and exposed contour/grid gaps between them.
-      mat.opacityNode = waterVisibility
+      // Same node as maskNode above — the alpha test stays as the authoritative
+      // cut so nothing downstream depends on discard semantics.
+      mat.opacityNode = coverage;
+
+      mat.envMapIntensity = 0.25;
+      return mat;
+    };
+
+    // Cheap horizon sheet: covers the map beyond the inner annulus (~2 km+ from
+    // the camera, fog-dominated). It DROPS the map-wide far material's expensive
+    // fragment work — the depth-graded body colour (constant fog-teal instead),
+    // the mx_noise sun-spark, all foam/lap/chop/surf, and the 2nd FFT cascade —
+    // and KEEPS only what stays visible or correct at range: cascade 0's broad
+    // swell normal (so it matches the annulus at the handoff and fades to a flat
+    // mirror past 3.4 km), the LEADR-lite roughness ramp, and a single floor
+    // fetch for the DRY-LAND mask (a coplanar y≈0 plane can graze distant
+    // coastlines the depth buffer resolves imperfectly — Marin, the East Bay
+    // hills — so the mask, not depth alone, is what keeps water off far land).
+    // No If() (WGSL→Metal uniformity hazard): mix/multiply/smoothstep only.
+    const makeHorizonMaterial = () => {
+      const mat = new THREE.MeshStandardNodeMaterial({
+        roughness: 0.48,
+        metalness: 0,
+        transparent: false,
+        depthWrite: true
+      });
+      mat.alphaTestNode = float(0.5);
+
+      // flat sheet — displace = 0, no vertex work.
+      const pxz = positionWorld.xz.toVar();
+
+      // Dry-land mask ONLY (coarse version of the annulus' mask): one floor
+      // fetch, thresholded. The depth-graded colour that also read this texture
+      // is dropped, so this fetch survives purely for coastline correctness.
+      const mapUv = pxz.sub(vec2(scale.x, scale.y)).div(vec2(scale.z, scale.w)).toVar();
+      const floorH = texture(tex, mapUv).r;
+      const inMap = step(0.001, mapUv.x).mul(step(mapUv.x, 0.999)).mul(step(0.001, mapUv.y)).mul(step(mapUv.y, 0.999));
+      const dry = step(0.55, floorH).mul(inMap);
+
+      // Complementary outer handoff: transparent inside the annulus' fade ring,
+      // opaque beyond it — the exact mirror of the annulus' smoothstep, measured
+      // from the same camera-XZ origin (in world space, since this sheet is
+      // static/map-centred). alphaTest 0.5 → exactly one sheet draws per pixel.
+      const ao = this.#uFarAnnulusOrigin;
+      const outer = smoothstep(
+        float(FAR_ANNULUS_FADE_INNER),
+        float(FAR_ANNULUS_FADE_OUTER),
+        vec2(pxz.x.sub(ao.x), pxz.y.sub(ao.y)).length()
+      );
+      // Coverage first (see the annulus material): this sheet spans the whole
+      // map + apron, so the inner 2.1 km hole and every land pixel are killed
+      // before the cascade fetch and the shared fog/IBL path.
+      const coverage = outer
         .mul(dry.oneMinus())
         .mul(this.#uReveal)
-        .mul(materializeAmount()); // spatial front sweep (collapses to 1 once revealed)
+        .mul(materializeAmount()) // spatial front sweep
+        .toVar();
+      mat.maskNode = coverage.greaterThan(0.5);
+
+      const viewDist = positionView.z.negate();
+      // One cascade (the physics band's broad swell normal). It matches the
+      // annulus exactly at the handoff — cascade 1's slope has faded to 0 by
+      // 950 m, well inside the ~2 km ring — and its cutVariance drives the same
+      // roughness ramp so distant water never shimmers. No foam/crest fetches.
+      const det = oceanDetail(this.ocean.cascades, pxz, viewDist, 1);
+      const rippleNormal = normalize(vec3(det.slope.x.negate(), 1, det.slope.y.negate()));
+      mat.normalNode = normalize(cameraViewMatrix.mul(vec4(rippleNormal, 0)).xyz);
+
+      // Constant deep-teal body: the annulus' depth gradient has already
+      // asymptoted to this exact tone (0x0b7580) for deep water by the handoff,
+      // and fog carries the rest, so dropping the gradient reads identical here.
+      mat.colorNode = color(0x0b7580);
+      const totalVar = this.ocean.cascades.reduce((s, c) => s + c.slopeVariance, 0);
+      const varToRough = 0.36 / Math.max(totalVar, 1e-6);
+      mat.roughnessNode = clamp(float(0.36).add(det.cutVariance.mul(varToRough)), 0.3, 0.8);
+
+      mat.opacityNode = coverage;
 
       mat.envMapIntensity = 0.25;
       return mat;
@@ -447,13 +641,25 @@ export class Water {
       return mat;
     };
 
-    // far sheet: flat, whole map, with a hole under the near patch
-    const farGeo = new THREE.PlaneGeometry(w, h, 8, 8);
+    // far flat sheet, SPLIT for GPU-load (see FAR_ANNULUS_* above):
+    //   • far     — inner annulus. The full material, geometry trimmed to a
+    //               ~2.1 km disc that FOLLOWS the camera (recentred in update),
+    //               still holed under the near patch, fading out at its own rim.
+    //   • horizon — cheap map-wide sheet covering everything past that ring.
+    //               Static/map-centred, parked just below (y = −0.02) so the
+    //               annulus wins any overlap depth; complementary alpha handoff.
+    const farGeo = new THREE.PlaneGeometry(FAR_ANNULUS_SIZE, FAR_ANNULUS_SIZE, 8, 8);
     farGeo.rotateX(-Math.PI / 2);
-    this.far = new THREE.Mesh(farGeo, makeMaterial(0, true));
-    this.far.position.set(g.minX + (g.width * g.cellSize) / 2, 0, g.minZ + (g.height * g.cellSize) / 2);
+    this.far = new THREE.Mesh(farGeo, makeMaterial(0, true, false, this.#uOrigin, true));
     this.far.renderOrder = 10;
     this.far.frustumCulled = false;
+
+    const horizonGeo = new THREE.PlaneGeometry(w, h, 8, 8);
+    horizonGeo.rotateX(-Math.PI / 2);
+    this.horizon = new THREE.Mesh(horizonGeo, makeHorizonMaterial());
+    this.horizon.position.set(g.minX + (g.width * g.cellSize) / 2, -0.02, g.minZ + (g.height * g.cellSize) / 2);
+    this.horizon.renderOrder = 9.8;
+    this.horizon.frustumCulled = false;
 
     // near patch: displaced vertices for a gentle bob around the player
     const nearGeo = new THREE.PlaneGeometry(NEAR_PATCH_SIZE, NEAR_PATCH_SIZE, NEAR_PATCH_SEGMENTS, NEAR_PATCH_SEGMENTS);
@@ -537,8 +743,147 @@ export class Water {
     this.palaceLagoon.name = "palace_fine_arts_lagoon";
     this.palaceLagoon.renderOrder = 10.5;
 
-    scene.add(this.far, this.near, this.heroNear, this.palaceLagoon, this.underside);
+    scene.add(this.far, this.horizon, this.near, this.heroNear, this.palaceLagoon, this.underside);
     this.echoes = new WaterEchoes(scene, map);
+  }
+
+  /**
+   * Coarse distance-to-water field, built once. Downsamples map.heights to
+   * 128 m cells (wet if ANY stride-2 tap is at/below the waterline — the same
+   * subsample the shader's half-res floor texture reads) and runs a two-pass
+   * chamfer distance transform over the result. ~1 ms at boot for 118×109
+   * cells / 50 KB; the alternative is a height-grid search per frame, which is
+   * exactly the cost the gates below exist to avoid.
+   */
+  #buildWaterField(map: WorldMap) {
+    const { width: W, height: H, cellSize, minX, minZ } = map.meta.grid;
+    const taps = Math.max(1, Math.round(WATER_FIELD_CELL / cellSize)); // grid cells per field cell
+    const step = taps * cellSize;
+    const cw = Math.ceil(W / taps);
+    const ch = Math.ceil(H / taps);
+    const d = new Float32Array(cw * ch).fill(Infinity);
+    const heights = map.heights;
+    // seed: one tap at or below the waterline marks its whole field cell wet.
+    // Cell-major with an early break so open bay/ocean exits on the first tap.
+    for (let cz = 0; cz < ch; cz++) {
+      const gz1 = Math.min(H, (cz + 1) * taps);
+      for (let cx = 0; cx < cw; cx++) {
+        const gx1 = Math.min(W, (cx + 1) * taps);
+        let wet = false;
+        for (let gz = cz * taps; gz < gz1 && !wet; gz += 2) {
+          const row = gz * W;
+          for (let gx = cx * taps; gx < gx1; gx += 2) {
+            if (heights[row + gx] <= WATER_FIELD_WET_FLOOR) {
+              wet = true;
+              break;
+            }
+          }
+        }
+        if (wet) d[cz * cw + cx] = 0;
+      }
+    }
+    // Everything outside the grid is open ocean — the sheets run an 8 km apron
+    // and their `inMap` term drops the dry mask out there — so the border ring
+    // is always within one cell of water.
+    for (let cx = 0; cx < cw; cx++) {
+      d[cx] = 0;
+      d[(ch - 1) * cw + cx] = 0;
+    }
+    for (let cz = 0; cz < ch; cz++) {
+      d[cz * cw] = 0;
+      d[cz * cw + cw - 1] = 0;
+    }
+    // forward pass (top-left → bottom-right), then backward
+    for (let cz = 0; cz < ch; cz++) {
+      for (let cx = 0; cx < cw; cx++) {
+        const i = cz * cw + cx;
+        let v = d[i];
+        if (v === 0) continue;
+        if (cx > 0) v = Math.min(v, d[i - 1] + CHAMFER_ORTHO);
+        if (cz > 0) {
+          v = Math.min(v, d[i - cw] + CHAMFER_ORTHO);
+          if (cx > 0) v = Math.min(v, d[i - cw - 1] + CHAMFER_DIAG);
+          if (cx < cw - 1) v = Math.min(v, d[i - cw + 1] + CHAMFER_DIAG);
+        }
+        d[i] = v;
+      }
+    }
+    for (let cz = ch - 1; cz >= 0; cz--) {
+      for (let cx = cw - 1; cx >= 0; cx--) {
+        const i = cz * cw + cx;
+        let v = d[i];
+        if (v === 0) continue;
+        if (cx < cw - 1) v = Math.min(v, d[i + 1] + CHAMFER_ORTHO);
+        if (cz < ch - 1) {
+          v = Math.min(v, d[i + cw] + CHAMFER_ORTHO);
+          if (cx < cw - 1) v = Math.min(v, d[i + cw + 1] + CHAMFER_DIAG);
+          if (cx > 0) v = Math.min(v, d[i + cw - 1] + CHAMFER_DIAG);
+        }
+        d[i] = v;
+      }
+    }
+    this.#waterField = d;
+    this.#waterFieldW = cw;
+    this.#waterFieldH = ch;
+    this.#waterFieldStep = step;
+    this.#waterFieldMinX = minX;
+    this.#waterFieldMinZ = minZ;
+  }
+
+  /**
+   * Conservative lower bound on the horizontal distance (m) from (x,z) to the
+   * nearest water. Deliberately never over-estimates: the query point can sit
+   * anywhere in its own cell (hence the −1 cell), and the chamfer metric runs
+   * up to ~4 % long. Off-grid reads 0 — that's the open ocean apron.
+   */
+  #distanceToWater(x: number, z: number): number {
+    const f = this.#waterField;
+    if (!f) return 0;
+    const step = this.#waterFieldStep;
+    const cx = Math.floor((x - this.#waterFieldMinX) / step);
+    const cz = Math.floor((z - this.#waterFieldMinZ) / step);
+    if (cx < 0 || cz < 0 || cx >= this.#waterFieldW || cz >= this.#waterFieldH) return 0;
+    return Math.max(0, (f[cz * this.#waterFieldW + cx] * 0.96 - 1) * step);
+  }
+
+  /**
+   * Exact "is any water within `radius` of (x,z)" test against the height
+   * lattice — the fine-grained companion to #distanceToWater, for gates whose
+   * radius is smaller than one 128 m field cell. Conservative the same two
+   * ways the field is: WATER_FIELD_WET_FLOOR sits above the shader's own 0.55
+   * cut, and anything reaching off-grid is the open-ocean apron. Bounded by
+   * the disc (≈780 reads at 110 m on the 8 m lattice) with an early-out on the
+   * first wet node, and only ever called once the coarse field has failed to
+   * settle the question.
+   */
+  #waterWithin(x: number, z: number, radius: number): boolean {
+    const { width: W, height: H, cellSize, minX, minZ } = this.#map.meta.grid;
+    if (
+      x - radius < minX ||
+      z - radius < minZ ||
+      x + radius > minX + (W - 1) * cellSize ||
+      z + radius > minZ + (H - 1) * cellSize
+    ) {
+      return true;
+    }
+    const heights = this.#map.heights;
+    const gx0 = Math.max(0, Math.ceil((x - radius - minX) / cellSize));
+    const gx1 = Math.min(W - 1, Math.floor((x + radius - minX) / cellSize));
+    const gz0 = Math.max(0, Math.ceil((z - radius - minZ) / cellSize));
+    const gz1 = Math.min(H - 1, Math.floor((z + radius - minZ) / cellSize));
+    const r2 = radius * radius;
+    for (let gz = gz0; gz <= gz1; gz++) {
+      const dz = minZ + gz * cellSize - z;
+      const span2 = r2 - dz * dz;
+      if (span2 <= 0) continue;
+      const row = gz * W;
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const dx = minX + gx * cellSize - x;
+        if (dx * dx > span2) continue;
+        if (heights[row + gx] <= WATER_FIELD_WET_FLOOR) return true;
+      }
+    }
+    return false;
   }
 
   /** Void-realm reveal ramp (0 = hidden in the void, 1 = normal water).
@@ -561,12 +906,124 @@ export class Water {
     //                  (it IS the flyover texture).
     //   underwater   — surface is a wobbling ceiling: alternate the two
     //                  coarse bands at half rate, fine bands off.
+    //   plain surface + governor hot (fftEconomy) — keep the coarse+mid bands
+    //                  every frame, but alternate the two FINE bands (2,3)
+    //                  odd/even so each updates at half rate. These bands are
+    //                  VISUAL-only (physics reads the analytic hero band =
+    //                  cascade 0, never these), and surfing is excluded so a
+    //                  rider on the water never sees half-rate ripple. When the
+    //                  governor is cool this branch is skipped → bit-identical
+    //                  to full-rate 0b1111.
     this.#frame++;
     const airborne = !surfing && camPos.y - waterHeight(playerPos.x, playerPos.z, t) > 60;
     let mask = 0b1111;
     if (camUnder) mask = this.#frame % 2 ? 0b0001 : 0b0010;
     else if (airborne) mask = this.#frame % 2 ? 0b0001 : 0b0011;
-    this.simMask = mask;
+    else if (!surfing && governorEffects().fftEconomy) {
+      mask = 0b0011 | (this.#frame % 2 ? 0b0100 : 0b1000);
+    }
+    // Nearest water to the player AND to the camera — a chase/flight camera
+    // can sit well off the player, and every fade the gates reason about is
+    // measured from the camera.
+    const waterDist = Math.min(
+      this.#distanceToWater(playerPos.x, playerPos.z),
+      this.#distanceToWater(camPos.x, camPos.z)
+    );
+
+    // Inner annulus follows the CAMERA (its detail fades are all view-distance
+    // based, and the fragment shading is world-locked so the flat sheet doesn't
+    // swim — no vertex grid to snap to). The horizon sheet reads this same origin
+    // to cut its complementary hole.
+    this.far.position.x = camPos.x;
+    this.far.position.z = camPos.z;
+    this.#uFarAnnulusOrigin.value.set(camPos.x, camPos.z);
+    // snap the near patch to its own grid so vertices don't swim
+    const snap = NEAR_PATCH_SIZE / NEAR_PATCH_SEGMENTS;
+    this.near.position.x = Math.round(playerPos.x / snap) * snap;
+    this.near.position.z = Math.round(playerPos.z / snap) * snap;
+    this.#uOrigin.value.set(this.near.position.x, this.near.position.z);
+    this.#uNearRect.value.set(this.near.position.x, this.near.position.z, NEAR_PATCH_MASK_OUTER);
+    // hero patch: finer snap grid, own origin/hole uniforms; and tell the CPU
+    // physics twin where the rendered focus fade is centred this frame.
+    const heroSnap = HERO_PATCH_SIZE / HERO_PATCH_SEGMENTS;
+    this.heroNear.position.x = Math.round(playerPos.x / heroSnap) * heroSnap;
+    this.heroNear.position.z = Math.round(playerPos.z / heroSnap) * heroSnap;
+    this.#uHeroOrigin.value.set(this.heroNear.position.x, this.heroNear.position.z);
+    this.#uHeroRect.value.set(this.heroNear.position.x, this.heroNear.position.z, HERO_PATCH_MASK_OUTER);
+    setHeroFocus(this.near.position.x, this.near.position.z);
+
+    // --- displaced-sheet visibility --------------------------------------
+    // Resolved BEFORE the cascade gate below, which needs to know which sheets
+    // are actually going to consume each band this frame.
+    if (surfing) {
+      // Tall Ocean Beach faces put the board ~12 m above sea level; that
+      // clearance used to fade the near patch to the flat far sheet mid-ride.
+      // Keep both fully visible while surfing so CPU floor and GPU swell stay
+      // matched.
+      this.#uNearVisibility.value = 1;
+      this.#nearWaterGate = true;
+      this.#heroWaterGate = true;
+      this.near.visible = true;
+      this.heroNear.visible = true;
+    } else {
+      // Horizontal companion to the altitude fade below (NEAR_PATCH_WATER_*):
+      // once the nearest water is past the patch rim there is nothing for
+      // either displaced sheet to draw, whatever the clearance says.
+      this.#nearWaterGate =
+        waterDist < (this.#nearWaterGate ? NEAR_PATCH_WATER_OFF : NEAR_PATCH_WATER_ON);
+      const clearance = playerPos.y - waterHeight(playerPos.x, playerPos.z, t);
+      this.#uNearVisibility.value = THREE.MathUtils.clamp(
+        (NEAR_PATCH_FADE_END_HEIGHT - clearance) / (NEAR_PATCH_FADE_END_HEIGHT - NEAR_PATCH_FADE_START_HEIGHT),
+        0,
+        1
+      );
+      // Once the patch has fully feathered out (flying high over the bay) stop
+      // drawing it altogether — it's 560 m of shaded-then-invisible water
+      // covering most of a downward view. The flat far sheet shows the
+      // identical colour underneath, so there's nothing to see; this is pure
+      // fragment savings while airborne. Re-shown the instant you drop back
+      // toward the surface. The inland gate rides the same uniform on purpose:
+      // zeroing it also closes the far sheet's follow-hole, so no gap can open
+      // where the patch used to be.
+      if (!this.#nearWaterGate) this.#uNearVisibility.value = 0;
+      this.near.visible = this.#uNearVisibility.value > 0.001;
+      // Hero patch: its own, much tighter gate. Inheriting the near patch's
+      // 300 m release kept 120 m of the heaviest material in the game alive
+      // over a 56 m disc — at a seawall stop that is ~40 % of the screen and
+      // 51k displaced triangles producing literally zero wet pixels. The
+      // coarse field settles the far cases for free; only inside its blind
+      // spot do we pay for the exact lattice probe.
+      const heroRadius = this.#heroWaterGate ? HERO_PATCH_WATER_OFF : HERO_PATCH_WATER_ON;
+      this.#heroWaterGate =
+        waterDist <= heroRadius && this.#waterWithin(playerPos.x, playerPos.z, heroRadius);
+      this.heroNear.visible = this.near.visible && this.#heroWaterGate;
+    }
+    this.#uHeroVisibility.value = this.heroNear.visible ? 1 : 0;
+
+    // --- sim throttle ------------------------------------------------------
+    // Proximity gate (see CASCADE_GATE_*): bands whose fade distance is
+    // provably behind the nearest water stop dispatching. AND-composed with the
+    // context throttles above, so it can only ever remove work, never add it.
+    let gate = 0;
+    for (let i = 0; i < this.ocean.cascades.length; i++) {
+      const bit = 1 << i;
+      // an unlisted band is treated as the widest one, i.e. never gated
+      const on = (CASCADE_FADE_DIST[i] ?? CASCADE_FADE_DIST[0]) * CASCADE_GATE_SCALE + CASCADE_GATE_MARGIN;
+      const hyst = this.#cascadeGate & bit ? CASCADE_GATE_HYSTERESIS : 0;
+      if (waterDist < on + hyst) gate |= bit;
+    }
+    this.#cascadeGate = gate; // distance hysteresis state — consumers are AND'd in below
+    // Consumer gate: the two finest bands have no reader once their only sheet
+    // is parked. oceanDetail() pays for cascades [0, count): hero 4, near 3,
+    // far 2, horizon 1 — so band 3 exists solely for the hero sheet and band 2
+    // for hero+near (hero.visible implies near.visible). A band whose consumer
+    // is hidden contributes to no pixel, and resuming it can't pop for the same
+    // reason the distance gate can't: the sim is a stateless evaluation at
+    // absolute t, not an integration.
+    let consumers = 0b1111;
+    if (!this.heroNear.visible) consumers &= ~0b1000;
+    if (!this.near.visible) consumers &= ~0b0100;
+    this.simMask = mask & gate & consumers;
 
     // Advance the spectral cascades (~18 tiny compute dispatches, ≲0.3 ms GPU
     // all-in at full rate). A skipped cascade keeps its last textures — the
@@ -583,42 +1040,6 @@ export class Water {
       this.#uCamXZ.value.set(camPos.x, camPos.z);
       this.#uCamY.value = camPos.y;
     }
-    // snap the near patch to its own grid so vertices don't swim
-    const snap = NEAR_PATCH_SIZE / NEAR_PATCH_SEGMENTS;
-    this.near.position.x = Math.round(playerPos.x / snap) * snap;
-    this.near.position.z = Math.round(playerPos.z / snap) * snap;
-    this.#uOrigin.value.set(this.near.position.x, this.near.position.z);
-    this.#uNearRect.value.set(this.near.position.x, this.near.position.z, NEAR_PATCH_MASK_OUTER);
-    // hero patch: finer snap grid, own origin/hole uniforms; and tell the CPU
-    // physics twin where the rendered focus fade is centred this frame.
-    const heroSnap = HERO_PATCH_SIZE / HERO_PATCH_SEGMENTS;
-    this.heroNear.position.x = Math.round(playerPos.x / heroSnap) * heroSnap;
-    this.heroNear.position.z = Math.round(playerPos.z / heroSnap) * heroSnap;
-    this.#uHeroOrigin.value.set(this.heroNear.position.x, this.heroNear.position.z);
-    this.#uHeroRect.value.set(this.heroNear.position.x, this.heroNear.position.z, HERO_PATCH_MASK_OUTER);
-    setHeroFocus(this.near.position.x, this.near.position.z);
-    // Tall Ocean Beach faces put the board ~12 m above sea level; that clearance
-    // used to fade the near patch to the flat far sheet mid-ride. Keep it fully
-    // visible while surfing so CPU floor and GPU swell stay matched.
-    if (surfing) {
-      this.#uNearVisibility.value = 1;
-      this.near.visible = true;
-      this.heroNear.visible = true;
-      return;
-    }
-    const clearance = playerPos.y - waterHeight(playerPos.x, playerPos.z, t);
-    this.#uNearVisibility.value = THREE.MathUtils.clamp(
-      (NEAR_PATCH_FADE_END_HEIGHT - clearance) / (NEAR_PATCH_FADE_END_HEIGHT - NEAR_PATCH_FADE_START_HEIGHT),
-      0,
-      1
-    );
-    // Once the patch has fully feathered out (flying high over the bay) stop
-    // drawing it altogether — it's 560 m of shaded-then-invisible water covering
-    // most of a downward view. The flat far sheet shows the identical colour
-    // underneath, so there's nothing to see; this is pure fragment savings while
-    // airborne. Re-shown the instant you drop back toward the surface.
-    this.near.visible = this.#uNearVisibility.value > 0.001;
-    this.heroNear.visible = this.near.visible;
   }
 }
 
