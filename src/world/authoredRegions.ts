@@ -82,7 +82,17 @@ export type AuthoredRegionStreamerOptions = {
   scene: THREE.Scene;
   map: WorldMap;
   tiles: TileStreamer;
-  prepareRoot?: (label: string, root: THREE.Group) => void | Promise<void>;
+  /**
+   * Covered pipeline warm. `arrivalCritical` marks a region a travel transition
+   * is actively waiting on: those MUST compile on the arrival-priority lane,
+   * because the normal lane is parked while an arrival is active and this warm
+   * is what the arrival is blocked on.
+   */
+  prepareRoot?: (
+    label: string,
+    root: THREE.Group,
+    arrivalCritical: boolean
+  ) => void | Promise<void>;
 };
 
 function finitePositive(value: number): boolean {
@@ -238,6 +248,8 @@ export class AuthoredRegionStreamer {
   readonly #map: WorldMap;
   readonly #tiles: TileStreamer;
   readonly #prepareRoot?: AuthoredRegionStreamerOptions["prepareRoot"];
+  /** Region ids a covered arrival is currently waiting on. */
+  readonly #arrivalCritical = new Set<string>();
   readonly #loader = new GLTFLoader();
   readonly #states = new Map<string, RegionState>();
   readonly #watchers = new Map<string, Set<RegionWatcher>>();
@@ -279,6 +291,9 @@ export class AuthoredRegionStreamer {
       state.definition.arrivalDistance
     );
     const requiredIds = new Set(required.map((state) => state.definition.id));
+    // The covered transition is now waiting on exactly these. Their warm has to
+    // jump the reveal blocker or the wait cannot be satisfied — see prepareRoot.
+    for (const id of requiredIds) this.#arrivalCritical.add(id);
     // A discontinuous cut does not imply travel through every region between
     // destinations. Retire stale parses before they can publish an unrelated
     // landmark into the new arrival's covered frame.
@@ -299,6 +314,7 @@ export class AuthoredRegionStreamer {
       await Promise.all(required.map((state) => this.#ensure(state, signal)));
     } finally {
       signal?.removeEventListener("abort", abortRequired);
+      for (const id of requiredIds) this.#arrivalCritical.delete(id);
     }
   }
 
@@ -449,7 +465,7 @@ export class AuthoredRegionStreamer {
     // to this region's birth uniform (stamped at attach, forgotten at unload).
     applyRegionMaterialize(root, materializeField.birthOf(`region:${definition.id}`));
     try {
-      await this.#prepareRoot?.(definition.label, root);
+      await this.#prepareRoot?.(definition.label, root, this.#arrivalCritical.has(definition.id));
       if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
       this.#attach(state, root);
     } catch (error) {

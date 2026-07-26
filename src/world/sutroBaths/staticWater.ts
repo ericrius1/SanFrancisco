@@ -83,6 +83,8 @@ export type SutroBathsStaticWater = {
   mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardNodeMaterial>;
   update(dt: number, time: number, player: { x: number; z: number }): void;
   setEnabled(enabled: boolean): void;
+  /** 0 = daylight pools, 1 = the out-of-time twilight (lamps on the water). */
+  setTwilight(depth: number): void;
   syncTuning(): void;
   readonly stats: SutroBathsStaticWaterStats;
   debugState(): SutroBathsStaticWaterDebugState;
@@ -166,6 +168,9 @@ export function createSutroBathsStaticWater(options: {
   const shoreFoamU = uniform(0.5);
   const poolDepthU = uniform(1.35);
   const sunDirU = uniform(new THREE.Vector3(-0.52, 0.42, -0.28));
+  // Pocket twilight: the sun leaves the bed caustics and the lamps take over the
+  // surface. One uniform, no second material, no pipeline permutation.
+  const twilightU = uniform(0);
   const waterMeta: N = attribute("waterMeta", "vec4");
 
   const waveA = positionWorld.x.mul(0.46).add(positionWorld.z.mul(0.13)).add(timeU.mul(0.72));
@@ -183,8 +188,13 @@ export function createSutroBathsStaticWater(options: {
   const temperatureColor = mix(coldColorU, warmColorU, waterMeta.x);
   const fieldLight = saturate(crest.mul(0.18).add(0.27));
 
-  const analyticalNormalX = cos(waveA).mul(rippleU).mul(0.27);
-  const analyticalNormalZ = cos(waveB).mul(rippleU).mul(0.29);
+  // At dusk the surface stops being a window and becomes a mirror, and a
+  // perfectly flat mirror reads as a slab of slate. Deepening only the NORMAL
+  // (never the vertex displacement, which would lift the waterline off the
+  // coping) keeps the sunset broken up across the pool.
+  const normalRipple = rippleU.mul(twilightU.mul(3.2).add(1));
+  const analyticalNormalX = cos(waveA).mul(normalRipple).mul(0.27);
+  const analyticalNormalZ = cos(waveB).mul(normalRipple).mul(0.29);
   const worldNormal = normalize(vec3(analyticalNormalX, 1, analyticalNormalZ));
 
   const viewVector = positionWorld.sub(cameraPosition);
@@ -201,7 +211,9 @@ export function createSutroBathsStaticWater(options: {
   const refractionUV = safeRefractionUV(screenUV.add(distortion));
   const sceneBehind = viewportSharedTexture(refractionUV).rgb;
   const bedScene = tintTowardBed(sceneBehind, bedColorU, bedTintU);
-  const daylight = saturate(sunDirU.y.mul(4));
+  // Caustics are sunlight on the pool bed; they fade out with the daylight and
+  // never survive into deep twilight.
+  const daylight = saturate(sunDirU.y.mul(4)).mul(twilightU.mul(0.82).oneMinus());
   const causticPattern = causticWeb(
     positionWorld.xz.mul(1.9).add(worldNormal.xz.mul(1.4)),
     timeU.mul(0.55)
@@ -217,7 +229,11 @@ export function createSutroBathsStaticWater(options: {
     clarityDepth: clarityU
   });
   const baseColor = mix(water.scatter, temperatureColor, fieldLight.mul(0.35));
-  const surfaceColor = mix(baseColor, highlightColorU, smoothstep(0.81, 0.99, crest).mul(0.12));
+  const litSurface = mix(baseColor, highlightColorU, smoothstep(0.81, 0.99, crest).mul(0.12));
+  // Evening water reads deeper and cooler in the body, so the warm lamp glints
+  // below have something to sit against.
+  const duskColorU = uniform(new THREE.Color(0x123a49));
+  const surfaceColor = mix(litSurface, mix(litSurface, duskColorU, float(0.42)), twilightU);
 
   const dither = interleavedGradientNoise(screenCoordinate.xy);
   const edgeWobble = sin(positionWorld.x.mul(1.4).add(sin(positionWorld.z.mul(1.1)).mul(1.6)));
@@ -233,7 +249,29 @@ export function createSutroBathsStaticWater(options: {
     sunDirection: sunDirU,
     time: timeU
   }).mul(sparkleU);
-  const transmittance = water.transmittance.mul(float(1).sub(foamMask));
+  // Evening water must still read as water. Clear daylight water is mostly the
+  // lit bed showing through; with the sun gone that left the pools looking like
+  // dry basins, so twilight closes the transmittance down and the body of the
+  // pool carries its own dusk glow instead.
+  const transmittance = water.transmittance
+    .mul(float(1).sub(foamMask))
+    .mul(twilightU.mul(0.3).oneMinus());
+
+  // Lamplight on the surface. Reusing the sparkle cell field with an overhead
+  // "lamp direction" gives real per-wavelet twinkles instead of the smooth
+  // sine-product blobs a hand-rolled field lays down in a visible grid.
+  const lampColorU = uniform(new THREE.Color(0xffb673));
+  const lampDirU = uniform(new THREE.Vector3(0.18, 0.94, -0.28).normalize());
+  const lampGlint = sunSparkle({
+    worldPosition: positionWorld,
+    worldNormal,
+    viewToFragment,
+    sunDirection: lampDirU,
+    time: timeU.mul(0.6),
+    cellDensity: 13
+  }).mul(twilightU);
+  // …plus the faintest warm wash so an evening pool still has a body to it.
+  const lampWash = twilightU.mul(0.04);
 
   const material = new THREE.MeshStandardNodeMaterial({
     roughness: 0.34,
@@ -250,7 +288,9 @@ export function createSutroBathsStaticWater(options: {
   );
   material.emissiveNode = litBed.mul(transmittance)
     .add(highlightColorU.mul(foamMask.mul(0.1)))
-    .add(vec3(1.0, 0.97, 0.88).mul(sparkle));
+    .add(vec3(1.0, 0.97, 0.88).mul(sparkle).mul(twilightU.mul(0.7).oneMinus()))
+    .add(lampColorU.mul(lampGlint.mul(0.5).add(lampWash)))
+    .add(duskColorU.mul(twilightU).mul(0.5));
   material.normalNode = normalize(cameraViewMatrix.mul(vec4(worldNormal, 0)).xyz);
   material.envMapIntensity = 0.42;
 
@@ -310,6 +350,16 @@ export function createSutroBathsStaticWater(options: {
     setEnabled(enabled) {
       apiEnabled = enabled;
       group.visible = enabled && SUTRO_BATHS_TUNING.values.waterEnabled;
+    },
+    setTwilight(depth) {
+      const t = depth < 0 ? 0 : depth > 1 ? 1 : depth;
+      twilightU.value = t;
+      // Daylight water is read through its surface; evening water is read off
+      // it. Tightening roughness and opening the environment term as the sun
+      // goes turns the pools into mirrors of the sunset instead of the flat
+      // sky-grey slabs a broad rough reflection leaves behind.
+      material.roughness = 0.34 - t * 0.27;
+      material.envMapIntensity = 0.42 + t * 0.62;
     },
     syncTuning,
     stats,

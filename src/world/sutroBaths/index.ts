@@ -12,12 +12,18 @@ import {
 import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
 import { createSutroBathsVegetation } from "./vegetation";
 import { createSutroBathers } from "./bathers";
+import { createSutroParlour } from "./parlour";
 import type { SutroBathsSteam } from "./steam";
 import {
   createSutroBathsStaticWater,
   type SutroBathsStaticWater
 } from "./staticWater";
 import { createSutroStaticAmbience } from "./staticAmbience";
+import {
+  createSutroTwilight,
+  type SutroSkyClock,
+  type SutroTwilightState
+} from "./twilight";
 
 const WAKE_DISTANCE = 760;
 const SLEEP_DISTANCE = 900;
@@ -35,6 +41,11 @@ export type SutroBathsStats = {
   trees: number;
   shrubs: number;
   planters: number;
+  flowers: number;
+  bathers: number;
+  conversations: number;
+  parlourTables: number;
+  parlourLamps: number;
 };
 
 export type SutroBathsDebugState = {
@@ -47,6 +58,7 @@ export type SutroBathsDebugState = {
   nearEffectsFailed: boolean;
   water: ReturnType<SutroBathsStaticWater["debugState"]>;
   steam: SutroBathsSteam["stats"] | null;
+  twilight: SutroTwilightState;
 };
 
 export type SutroBaths = {
@@ -81,6 +93,19 @@ export type SutroBathsOptions = {
   scene: THREE.Scene;
   physics?: Physics;
   authoredRegions?: AuthoredRegionStreamer;
+  /**
+   * The world clock. Handed in (rather than imported) so the out-of-time pocket
+   * can take the sky over while the visitor is inside and hand it straight back
+   * on the way out. Omit it and the hall simply keeps the world's own light.
+   */
+  sky?: SutroSkyClock | null;
+  /**
+   * Called when the interior gets deep enough that the outside world is no
+   * longer observable through the glass. The compose layer owns the actual
+   * levers (tile radii, city detail, the fog cull edge); the site only knows
+   * when nobody can see out.
+   */
+  onExteriorThinned?: (thinned: boolean) => void;
 };
 
 type MonitorState = {
@@ -111,7 +136,13 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   const ambience = createSutroStaticAmbience(options.authoredRegions);
   const vegetation = createSutroBathsVegetation();
   const bathers = createSutroBathers();
-  group.add(ambience.group, vegetation.group, bathers.group, water.group);
+  const parlour = createSutroParlour();
+  parlour.setLampGlow(0);
+  const twilight = createSutroTwilight({
+    sky: options.sky,
+    onExteriorThinned: options.onExteriorThinned
+  });
+  group.add(ambience.group, vegetation.group, parlour.group, bathers.group, water.group);
 
   const stats: SutroBathsStats = {
     architectureMeshes: 57,
@@ -122,7 +153,19 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     physicsBodies: 179,
     trees: vegetation.stats.trees,
     shrubs: vegetation.stats.shrubs,
-    planters: vegetation.stats.planters
+    planters: vegetation.stats.planters,
+    flowers: vegetation.stats.flowers,
+    // The cast hydrates across frames, so these two are refreshed on read
+    // rather than frozen at construction (when exactly one bather exists).
+    bathers: bathers.stats.bathers,
+    conversations: bathers.stats.talkGroups,
+    parlourTables: parlour.stats.tables,
+    parlourLamps: parlour.stats.lamps
+  };
+  const liveStats = (): SutroBathsStats => {
+    stats.bathers = bathers.stats.bathers;
+    stats.conversations = bathers.stats.talkGroups;
+    return stats;
   };
 
   const monitors: MonitorState = {
@@ -204,24 +247,71 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       });
   };
 
+  // Staged wake. Revealing the whole site in one frame makes that frame pay the
+  // first-draw cost of every part at once — render lists, bind groups and buffer
+  // uploads for the pools, the cast, the furniture and the planting together —
+  // which is a ~300 ms freeze the instant a visitor arrives. Each layer instead
+  // joins on its own frame, in the order that matters: the water IS the hall, so
+  // it goes first; the people, the parlour and the planting follow over the next
+  // three frames, by which point nobody has looked away from the pools yet.
+  const wakeStages: readonly (() => boolean)[] = [
+    () => {
+      water.group.visible = true;
+      return false;
+    },
+    () => {
+      parlour.group.visible = true;
+      return false;
+    },
+    // The cast comes out a handful at a time — 38 skinned meshes on one frame is
+    // 38 first-draw bind-group builds.
+    () => bathers.revealSome(5),
+    () => {
+      if (foliageVisible) vegetation.setVisible(true);
+      return false;
+    }
+  ];
+  let wakeStage = 0;
+
   const setAwake = (next: boolean) => {
     if (awake === next) return;
     awake = next;
+    if (next) {
+      wakeStage = 0;
+      water.group.visible = false;
+      parlour.group.visible = false;
+      vegetation.setVisible(false);
+    }
     group.visible = next;
     water.setEnabled(next);
     steam?.setEnabled(next);
+    // A sleeping site must never keep holding the world's clock or the city
+    // culled: releasing here covers streaming-out, perf suppression and the
+    // debug panel's A/B toggle in one place.
+    if (!next) twilight.release();
   };
 
   let perfSuppressed = false;
 
   syncTuning();
 
+  // The site is "ready" for the covered warm once its unified foliage has
+  // compiled AND the cast is fully built. Both are sliced across frames, so this
+  // adds no frozen time — it only means the warm sees every signature once.
+  const ready = Promise.all([
+    vegetation.ready,
+    bathers.hydrate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+  ]).then(() => undefined);
+
   return {
     group,
-    ready: vegetation.ready,
+    ready,
     setFoliageVisible(visible) {
       foliageVisible = visible;
-      vegetation.setVisible(visible);
+      // While the staged wake is still walking down its list, leave the reveal
+      // to it: flipping the group on here would hand one frame the very cost
+      // the staging exists to spread out.
+      if (wakeStage >= wakeStages.length || !visible) vegetation.setVisible(visible);
     },
     /** Debug perf gate: force sleep and block proximity wake while suppressed. */
     setPerfSuppressed(on: boolean) {
@@ -233,6 +323,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       if (disposed) return;
       if (perfSuppressed) {
         if (awake) setAwake(false);
+        else twilight.release();
         return;
       }
       distanceToBaths = distanceToSutroBaths(player.x, player.z);
@@ -243,6 +334,14 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       if (waterDistance <= STEAM_LOAD_DISTANCE) loadNearEffects(camera);
       if (!awake) return;
 
+      twilight.update(dt, player);
+      // One layer per frame until the site is fully present (see wakeStages).
+      // A stage that returns true has more to hand out and keeps its turn.
+      if (wakeStage < wakeStages.length && !wakeStages[wakeStage]()) wakeStage++;
+      ambience.setTwilight(twilight.depth);
+      parlour.setLampGlow(twilight.lampGlow);
+      bathers.setTwilight(twilight.depth);
+      water.setTwilight(twilight.depth);
       ambience.update(time, SUTRO_BATHS_TUNING.values);
       if (foliageVisible) vegetation.update(player);
 
@@ -303,7 +402,9 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         sync: syncTuning
       };
     },
-    stats,
+    get stats() {
+      return liveStats();
+    },
     debugState() {
       return {
         awake,
@@ -314,15 +415,18 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         nearEffectsLoaded: steam !== null,
         nearEffectsFailed,
         water: water.debugState(),
-        steam: steam?.stats ?? null
+        steam: steam?.stats ?? null,
+        twilight: twilight.debugState()
       };
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      twilight.release();
       water.dispose();
       steam?.dispose();
       bathers.dispose();
+      parlour.dispose();
       vegetation.dispose();
       ambience.dispose();
       group.removeFromParent();

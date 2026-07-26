@@ -1,33 +1,37 @@
-// Lo-fi music director — a fully generative, client-side ambient score.
+// Music director — a fully generative, client-side score for the whole city.
 //
 // Rides the shared AudioEngine "music" group (the HUD music slider + mute are
 // applied by the engine group gain; nothing here reads a *AudioLevel() into its
-// own gains). At night, soft e-piano chords, a slow pad, sub bass and
-// pentatonic sparkles run through the worn-record chain. Daylight opens a
-// different face of the same score: brisk mallet-like chord pulses, clearer
-// melodic phrases and a stronger groove turn it into playful exploration
-// music without replacing the night palette.
+// own gains).
 //
-// The brain is a slow chord walk (theory.ts) voiced with minimal motion.
-// Region data (regions.ts) blends texture continuously as the listener moves;
-// key/mode ownership switches with hysteresis and only at chord boundaries.
+// The brain is a slow chord walk (theory.ts) voiced with minimal motion, and
+// the ears are a per-region instrument palette (voices/). Region data
+// (regions.ts) blends texture AND timbre continuously as the listener moves, so
+// crossing from the Mission into the Castro hears nylon guitar hand over to
+// felt piano instead of a switch flipping. Key/mode/voicing/kit ownership moves
+// with hysteresis and only at chord boundaries, and the new owner announces
+// itself with a short arrival figure — a place saying its own name.
+//
 // Daylight bends everything: night stretches the harmonic rhythm, darkens the
 // master lowpass, thins the sparkles and leans the mode minor. Layers run on
-// unrelated clocks (chord duration jitter, Poisson-ish sparkles), so the score
-// never audibly repeats.
+// unrelated clocks (chord duration jitter, Poisson-ish sparkles, an independent
+// section arrangement), so the score never audibly repeats.
 
-import { tunables } from "../../core/persist";
 import { musicAudioLevel } from "../../core/audioSettings";
 import { audioEngine } from "../engine";
 import type { MusicBufferResult } from "./musicBuffersWorker";
 import {
   MODES,
-  degreeChordPcs,
+  arrivalFigure,
+  bassLine,
+  buildVoicing,
+  gapForSpread,
   leadVoices,
-  midiToFreq,
   pentatonicPcs,
+  pickCadence,
   pickNextDegree,
-  type ModeName
+  type ModeName,
+  type VoicingStyle
 } from "./theory";
 import {
   CITY_MUSIC_PROFILE,
@@ -38,32 +42,28 @@ import {
   type MusicProfile
 } from "./regions";
 import { StemPlayer } from "./stems";
+import { GroovePlayer, type GrooveKitId } from "./groove";
 import { PhrasePlayer } from "./phrases";
 import { PHRASE_DEFS, PHRASE_REF_ROOT, type PhraseDef } from "./phraseManifest";
+import {
+  bassVoice,
+  keysVoice,
+  padVoice,
+  pickBassVoice,
+  pickKeysVoice,
+  pickPadVoice,
+  pickSparkleVoice,
+  sparkleVoice
+} from "./voices";
+import type { VoiceCtx } from "./voiceTypes";
+import { LOFI_MUSIC_TUNING } from "./tuning";
 
-export const LOFI_MUSIC_TUNING = tunables("lofiMusic", {
-  enabled: { v: true, label: "enabled" },
-  master: { v: 0.85, min: 0, max: 1, step: 0.01, label: "master" },
-  keys: { v: 0.9, min: 0, max: 1, step: 0.01, label: "e-piano" },
-  pads: { v: 0.85, min: 0, max: 1, step: 0.01, label: "pads" },
-  bass: { v: 0.8, min: 0, max: 1, step: 0.01, label: "bass" },
-  sparkle: { v: 0.9, min: 0, max: 1, step: 0.01, label: "sparkle" },
-  crackle: { v: 0.75, min: 0, max: 1, step: 0.01, label: "vinyl" },
-  beats: { v: 0.85, min: 0, max: 1, step: 0.01, label: "beats" },
-  dust: { v: 0.75, min: 0, max: 1, step: 0.01, label: "dust bed" },
-  phrases: { v: 0.85, min: 0, max: 1, step: 0.01, label: "phrases" },
-  wobble: { v: 0.8, min: 0, max: 1, step: 0.01, label: "tape wow" },
-  reverb: { v: 0.9, min: 0, max: 1, step: 0.01, label: "reverb" },
-  pace: { v: 1, min: 0.4, max: 2, step: 0.05, label: "pace ×" },
-  dayCheer: { v: 1, min: 0, max: 1.5, step: 0.05, label: "day adventure" }
-});
+export { LOFI_MUSIC_TUNING };
 
 const LOOKAHEAD = 1.6; // seconds of schedule horizon
 const KEY_SWITCH_SECONDS = 5; // hysteresis before a region takes the key
 const KEYS_LO = 50; // chord voicing register (MIDI)
 const KEYS_HI = 74;
-const DAY_PULSE_BPM = 92;
-const DAY_PULSE_BEAT = 60 / DAY_PULSE_BPM;
 
 // ---- arrangement sections -------------------------------------------------
 // The cure for statistical flatness: a slow arrangement brain. Each section
@@ -113,10 +113,17 @@ export class LofiMusicDirector {
   #bassBus!: GainNode;
   #sparkleBus!: GainNode;
   #revSend!: GainNode;
+  #revPre!: DelayNode; // pre-delay — the single strongest cue for room SIZE
+  #revTone!: BiquadFilterNode; // tail damping — stone is bright, wood is dark
   #convolver!: ConvolverNode;
   #crackleGain!: GainNode;
   #crackleSrc: AudioBufferSourceNode | null = null;
+  #keysCtx!: VoiceCtx;
+  #padCtx!: VoiceCtx;
+  #bassCtx!: VoiceCtx;
+  #sparkleCtx!: VoiceCtx;
   #stemPlayer: StemPlayer | null = null;
+  #groove: GroovePlayer | null = null;
   #phrasePlayer: PhrasePlayer | null = null;
   #nextPhraseT = -1;
   #phrasePending = false;
@@ -134,6 +141,8 @@ export class LofiMusicDirector {
 
   #holdRelease: (() => void) | null = null;
   #inf = new Float32Array(MUSIC_REGIONS.length);
+  #blendT = 0;
+  #dominantId = "city";
   #presence = 0;
   #duck = 1;
   #daylight = 1;
@@ -141,20 +150,32 @@ export class LofiMusicDirector {
   // musical state
   #prevVoices: number[] | null = null;
   #degree = 0;
+  #nextDegree = -1; // picked a chord early so the bass can approach it
+  #cadenceQueue: number[] = [];
+  #lastCadence = "-";
+  #sinceCadence = 0;
   #keyOwnerId = "city";
   #keyCandidateId = "city";
   #keyCandidateT = 0;
   #keyRoot = CITY_MUSIC_PROFILE.root;
   #keyDayMode: ModeName = CITY_MUSIC_PROFILE.dayMode;
   #keyNightMode: ModeName = CITY_MUSIC_PROFILE.nightMode;
+  #voicing: VoicingStyle = CITY_MUSIC_PROFILE.voicing;
+  #kit: GrooveKitId = CITY_MUSIC_PROFILE.kit;
+  #arrivalPending = false;
   #nextChordT = 0;
   #nextSparkleT = 0;
+  #lastBassMidi: number | null = null;
   #texture: MusicProfile = { ...CITY_MUSIC_PROFILE };
   // debug
   #chordCount = 0;
   #sparkleCount = 0;
   #adventurePulseCount = 0;
+  #arrivalCount = 0;
   #lastChord = "-";
+  #lastKeysVoice = "-";
+  #lastPadVoice = "-";
+  #lastBassVoice = "-";
 
   get debugState() {
     return {
@@ -165,17 +186,26 @@ export class LofiMusicDirector {
       keyOwner: this.#keyOwnerId,
       keyRoot: this.#keyRoot,
       cityRoot: this.#cityRoot,
+      voicing: this.#voicing,
+      kit: this.#kit,
       section: this.#sectionId,
       sectionIn: +this.#sectionT.toFixed(1),
       register: this.#register,
       degree: this.#degree,
+      cadence: this.#lastCadence,
+      cadenceQueued: this.#cadenceQueue.length,
       chordCount: this.#chordCount,
       sparkleCount: this.#sparkleCount,
       adventurePulseCount: this.#adventurePulseCount,
+      arrivalCount: this.#arrivalCount,
       dayAdventure: +this.#cheer.toFixed(3),
       lastChord: this.#lastChord,
+      keysVoice: this.#lastKeysVoice,
+      padVoice: this.#lastPadVoice,
+      bassVoice: this.#lastBassVoice,
       vinylReady: Boolean(this.#vinylBuffer),
       stems: this.#stemPlayer?.debugState ?? [],
+      groove: this.#groove?.debugState ?? null,
       phrases: this.#phrasePlayer?.debugState ?? null,
       phrasePending: this.#phrasePending,
       nextPhraseIn: this.#ctx ? +(this.#nextPhraseT - this.#ctx.currentTime).toFixed(2) : 0,
@@ -199,8 +229,19 @@ export class LofiMusicDirector {
     const enabled = Boolean(T.enabled) && Number(T.master) > 0.001 && musicAudioLevel() > 0.001;
 
     const { x, z } = o.playerPos;
-    for (let i = 0; i < MUSIC_REGIONS.length; i++) {
-      this.#inf[i] = musicRegionInfluence(MUSIC_REGIONS[i], x, z);
+    // Influence + blend at 10 Hz, not per frame: the map has dozens of regions,
+    // the listener moves at walking speed, and every texture value this feeds
+    // lands on a setTargetAtTime with a 1.2–2 s constant. Per-frame blending was
+    // pure garbage on the hot path for a result nobody could hear.
+    this.#blendT -= dt;
+    if (this.#blendT <= 0) {
+      this.#blendT = 0.1;
+      for (let i = 0; i < MUSIC_REGIONS.length; i++) {
+        this.#inf[i] = musicRegionInfluence(MUSIC_REGIONS[i], x, z);
+      }
+      const blended = blendMusic(this.#inf);
+      this.#texture = blended.profile;
+      this.#dominantId = blended.dominant?.id ?? "city";
     }
     this.#duck = quietZoneDuck(x, z);
     this.#daylight = daylight(o.timeOfDay);
@@ -225,17 +266,23 @@ export class LofiMusicDirector {
     if (ctx.state !== "running") return;
     const now = ctx.currentTime;
 
-    const blended = blendMusic(this.#inf);
-    this.#texture = blended.profile;
-    this.#updateKeyOwnership(dt, blended.dominant?.id ?? "city");
+    this.#updateKeyOwnership(dt, this.#dominantId);
     this.#applyTexture(now);
 
     this.#out.gain.setTargetAtTime(Number(T.master) * this.#presence * 0.9, now, 0.2);
 
     if (!wantPlaying || this.#presence < 0.012) {
-      // silent — let tails ring, schedule nothing; stems fade out and park
+      // silent — let tails ring, schedule nothing; beds fade out and park
       this.#stemPlayer?.muteAll();
       this.#stemPlayer?.update(dt, now);
+      this.#groove?.update(dt, now, {
+        kit: this.#kit,
+        gain: 0,
+        bpm: this.#texture.bpm,
+        swing: this.#texture.swing,
+        density: 0,
+        bright: this.#daylight
+      });
       return;
     }
 
@@ -262,21 +309,31 @@ export class LofiMusicDirector {
     if (this.#nextPhraseT < now - 0.25) this.#nextPhraseT = now + 11 + Math.random() * 6;
     if (now >= this.#nextPhraseT) this.#phrasePending = true;
 
+    this.#sinceCadence += dt;
     while (this.#nextChordT < now + LOOKAHEAD) this.#scheduleChord();
     while (this.#nextSparkleT < now + LOOKAHEAD) this.#scheduleSparkle();
     this.#phrasePlayer?.update(dt);
 
-    // baked stems: daylight crossfades city kit ↔ brush kit, night takes the
-    // deep half-time kit; the section's groove multiplier lets beats leave
-    if (this.#stemPlayer) {
-      const T = LOFI_MUSIC_TUNING.values;
+    // procedural percussion: the region names the kit and the tempo, the
+    // section's groove multiplier lets the beat leave entirely
+    if (this.#groove) {
       const p = this.#texture;
       const day = this.#daylight;
-      const groove = p.groove * Number(T.beats) * this.#sectionMul.groove;
-      const grooveLift = 1 + 0.5 * Math.min(this.#cheer, 1); // day-only lift
-      this.#stemPlayer.setTarget("beatWarm", groove * day * (1 - p.brush) * grooveLift);
-      this.#stemPlayer.setTarget("beatBrush", groove * day * p.brush * grooveLift);
-      this.#stemPlayer.setTarget("beatDusk", groove * (1 - day) * 0.95);
+      // night thins the kit rather than swapping it — the half-time character
+      // now lives in the pattern, not in a separate baked loop
+      const nightThin = 0.55 + 0.45 * day;
+      this.#groove.update(dt, now, {
+        kit: this.#kit,
+        gain: p.groove * Number(T.beats) * this.#sectionMul.groove * nightThin,
+        bpm: p.bpm,
+        swing: p.swing,
+        density: Math.min(1, (0.45 + 0.55 * day) * (1 + 0.35 * Math.min(this.#cheer, 1))),
+        bright: day
+      });
+    }
+
+    if (this.#stemPlayer) {
+      const p = this.#texture;
       const dayClarity = 1 - 0.62 * Math.min(this.#cheer, 1);
       this.#stemPlayer.setTarget("dust", p.dust * Number(T.dust) * this.#sectionMul.dust * dayClarity);
       this.#stemPlayer.update(dt, now);
@@ -292,6 +349,8 @@ export class LofiMusicDirector {
     this.#crackleSrc = null;
     this.#stemPlayer?.dispose();
     this.#stemPlayer = null;
+    this.#groove?.dispose();
+    this.#groove = null;
     this.#phrasePlayer?.dispose();
     this.#phrasePlayer = null;
     this.#out?.disconnect();
@@ -363,21 +422,43 @@ export class LofiMusicDirector {
     this.#sparkleBus = ctx.createGain();
     this.#sparkleBus.connect(this.#sum);
 
-    // one shared reverb; per-layer sends are baked into voice send gains
+    // One shared reverb, but its SHAPE is regional: pre-delay sells the size of
+    // the room and the return damping sells what it is made of. A cathedral and
+    // a warehouse can share an impulse response and still not sound alike.
     this.#convolver = ctx.createConvolver();
+    this.#revPre = ctx.createDelay(0.2);
+    this.#revPre.delayTime.value = 0.02;
+    this.#revTone = ctx.createBiquadFilter();
+    this.#revTone.type = "lowpass";
+    this.#revTone.frequency.value = 4200;
+    this.#revTone.Q.value = 0.2;
     const revReturn = ctx.createGain();
     revReturn.gain.value = 0.85;
     this.#revSend = ctx.createGain();
     this.#revSend.gain.value = 0.5;
-    this.#revSend.connect(this.#convolver).connect(revReturn).connect(this.#sum);
+    this.#revSend
+      .connect(this.#revPre)
+      .connect(this.#convolver)
+      .connect(this.#revTone)
+      .connect(revReturn)
+      .connect(this.#sum);
 
     // vinyl crackle skips the wow (the "record surface" sits atop the music)
     this.#crackleGain = ctx.createGain();
     this.#crackleGain.gain.value = 0;
     this.#crackleGain.connect(this.#warm);
 
-    // baked stems ride the full lo-fi chain (wow + warmth) like the synths
+    const rng = Math.random;
+    this.#keysCtx = { ctx, out: this.#keysBus, rev: this.#revSend, rng };
+    this.#padCtx = { ctx, out: this.#padBus, rev: this.#revSend, rng };
+    this.#bassCtx = { ctx, out: this.#bassBus, rev: this.#revSend, rng };
+    this.#sparkleCtx = { ctx, out: this.#sparkleBus, rev: this.#revSend, rng };
+
+    // the tape-dust bed is the one layer still worth streaming — it is 20 s of
+    // unrepeatable noise that would cost more to synthesize than to fetch
     this.#stemPlayer = new StemPlayer(ctx, this.#sum);
+    // percussion is fully procedural so every region can own its own kit
+    this.#groove = new GroovePlayer(ctx, this.#sum);
     // baked melodic phrases join the same chain + share the score's reverb
     this.#phrasePlayer = new PhrasePlayer(ctx, this.#sum, this.#revSend);
 
@@ -458,6 +539,12 @@ export class LofiMusicDirector {
     this.#keyRoot = candidate === "city" ? this.#cityRoot : owner.root;
     this.#keyDayMode = owner.dayMode;
     this.#keyNightMode = owner.nightMode;
+    this.#voicing = owner.voicing;
+    this.#kit = owner.kit;
+    // a new place gets to introduce itself, once, on the next chord
+    this.#arrivalPending = Number(LOFI_MUSIC_TUNING.values.arrivals) > 0.01;
+    // a modulation is the wrong moment to be mid-cadence
+    this.#cadenceQueue.length = 0;
   }
 
   #applyTexture(now: number): void {
@@ -477,13 +564,25 @@ export class LofiMusicDirector {
       1.5
     );
     const m = this.#sectionMul;
-    this.#keysBus.gain.setTargetAtTime(p.epiano * Number(T.keys) * 0.95 * m.keys * (1 + 0.12 * cheer), now, 1.5);
+    this.#keysBus.gain.setTargetAtTime(p.keys * Number(T.keys) * 0.95 * m.keys * (1 + 0.12 * cheer), now, 1.5);
     this.#padBus.gain.setTargetAtTime(p.pad * Number(T.pads) * m.pad * (1 - 0.48 * cheer), now, 1.5);
     this.#bassBus.gain.setTargetAtTime(p.bass * Number(T.bass) * m.bass, now, 1.5);
     this.#sparkleBus.gain.setTargetAtTime(Number(T.sparkle) * 0.9 * m.sparkle * (1 + 0.24 * cheer), now, 1.5);
     this.#revSend.gain.setTargetAtTime(p.reverb * Number(T.reverb) * (1 - 0.34 * cheer), now, 1.5);
-    // melodic phrase presence follows the region's sparkle character
-    this.#phrasePlayer?.setGain(Number(T.phrases) * (0.35 + 0.65 * p.sparkle) * m.phrases, now);
+    // big rooms put more air before the first reflection; warm rooms eat the top
+    this.#revPre.delayTime.setTargetAtTime(0.012 + p.reverb * 0.085, now, 2);
+    this.#revTone.frequency.setTargetAtTime(1500 + (1 - p.warmth) * 6500, now, 2);
+    // baked rhodes phrases belong to rhodes-ish places — a koto or organ region
+    // leans on its own sparkles instead of an out-of-palette guest melody
+    const k = p.keysMix;
+    const affinity = (k.rhodes ?? 0) + (k.felt ?? 0) + (k.vibes ?? 0) + (k.celeste ?? 0);
+    let total = 0;
+    for (const v of Object.values(k)) total += Math.max(0, v);
+    const rhodesLike = total > 0 ? affinity / total : 1;
+    this.#phrasePlayer?.setGain(
+      Number(T.phrases) * (0.3 + 0.7 * p.sparkle) * m.phrases * (0.3 + 0.7 * rhodesLike),
+      now
+    );
   }
 
   /** Weighted next section — no self-repeat, no back-to-back breaths, biased
@@ -493,7 +592,7 @@ export class LofiMusicDirector {
     const cheer = this.#cheer; // 0 at night — night section odds unchanged
     const weights: Record<SectionId, number> = {
       full: 0.3 * (1 + 0.8 * cheer),
-      keysOnly: (0.2 + 0.15 * p.epiano) * (1 + 0.15 * cheer),
+      keysOnly: (0.2 + 0.15 * p.keys) * (1 + 0.15 * cheer),
       padDrift: (0.16 + 0.3 * p.pad) * Math.max(0.08, 1 - 0.82 * cheer),
       beatFocus: (0.08 + 0.3 * p.groove) * 1.4 * (1 + 1.35 * cheer),
       breath: 0.1 * Math.max(0.08, 1 - 0.82 * cheer)
@@ -520,6 +619,24 @@ export class LofiMusicDirector {
 
   /* ------------------------------------------------------------ composer */
 
+  /** The next degree, taken from a cadence in progress or the drifting walk.
+   *  Occasionally starts a cadence — a scripted two-or-three chord arrival is
+   *  what separates a piece from a bed. */
+  #advanceDegree(mode: readonly number[], cheer: number): number {
+    if (this.#cadenceQueue.length > 0) return this.#cadenceQueue.shift()!;
+    const p = this.#texture;
+    // never twice in a row, and never before the last one has had room to land
+    const ready = this.#sinceCadence > 45 + 60 * (1 - p.cadence);
+    if (ready && Math.random() < p.cadence * 0.35) {
+      const cadence = pickCadence(Math.random, p.warmth * 0.4 + Math.min(cheer, 1) * 0.6);
+      this.#cadenceQueue = cadence.degrees.slice(1);
+      this.#lastCadence = cadence.label;
+      this.#sinceCadence = 0;
+      return cadence.degrees[0];
+    }
+    return pickNextDegree(this.#degree, Math.random, mode, cheer);
+  }
+
   #scheduleChord(): void {
     if (!this.#ctx) return;
     const t = this.#nextChordT;
@@ -528,12 +645,25 @@ export class LofiMusicDirector {
     const rng = Math.random;
 
     // dawn/dusk are a probability crossfade, so the two modes interleave
-    const mode = rng() < day ? this.#keyDayMode : this.#keyNightMode;
+    const modeName = rng() < day ? this.#keyDayMode : this.#keyNightMode;
+    const mode = MODES[modeName];
     const cheer = this.#cheer; // 0 at night — night harmony untouched
-    this.#degree = pickNextDegree(this.#degree, rng, MODES[mode], cheer);
+
+    this.#degree = this.#nextDegree >= 0 ? this.#nextDegree : this.#advanceDegree(mode, cheer);
+    // looked at one chord ahead so the bass can walk into it
+    this.#nextDegree = this.#advanceDegree(mode, cheer);
+
     const size = rng() < 0.35 + 0.15 * Math.min(cheer, 1) ? 5 : 4;
-    const pcs = degreeChordPcs(this.#keyRoot, MODES[mode], this.#degree, size);
-    const midis = leadVoices(this.#prevVoices, pcs, KEYS_LO + this.#register, KEYS_HI + this.#register);
+    const voicing = buildVoicing(this.#keyRoot, mode, this.#degree, size, this.#voicing);
+    const pcs = voicing.pcs;
+    const gap = gapForSpread(voicing.spread, pcs.length);
+    const midis = leadVoices(
+      this.#prevVoices,
+      pcs,
+      KEYS_LO + this.#register,
+      KEYS_HI + this.#register,
+      gap
+    );
     this.#prevVoices = midis;
 
     const pace = Math.max(0.2, Number(LOFI_MUSIC_TUNING.values.pace));
@@ -547,6 +677,27 @@ export class LofiMusicDirector {
     // low and warm, later passages lift and open
     if (rng() < 0.3) {
       this.#register = Math.max(-4, Math.min(7, this.#register + (rng() < 0.5 ? -2 : 2)));
+    }
+
+    const keysId = pickKeysVoice(p.keysMix, rng);
+    const playKeys = keysVoice(keysId);
+    this.#lastKeysVoice = keysId;
+
+    // a new region introduces itself with one rising figure in its own key and
+    // its own instrument, right on the downbeat of the modulating chord
+    if (this.#arrivalPending) {
+      this.#arrivalPending = false;
+      this.#arrivalCount++;
+      const figure = arrivalFigure(this.#keyRoot, mode, KEYS_HI + this.#register - 8, rng);
+      figure.forEach((midi, i) => {
+        playKeys(this.#keysCtx, {
+          t: t + 0.05 + i * (0.16 + rng() * 0.07),
+          midi,
+          vel: 0.13 + rng() * 0.05,
+          dur: 1.4,
+          bright: day
+        });
+      });
     }
 
     // gesture variety: how this chord is touched, not just which chord it is.
@@ -576,47 +727,97 @@ export class LofiMusicDirector {
           offsets = picked.map((_, i) => 0.03 + i * (0.25 + rng() * 0.3));
         }
         picked.forEach((midi, i) => {
-          this.#epianoNote(t + offsets[i], midi, 0.14 + rng() * 0.08, dur);
+          playKeys(this.#keysCtx, {
+            t: t + offsets[i],
+            midi,
+            vel: 0.14 + rng() * 0.08,
+            dur,
+            bright: day
+          });
         });
         // occasional half-time echo of the top of the chord, quieter
         if (rng() < 0.4 && picked.length >= 2) {
           const echoT = t + dur * (0.45 + rng() * 0.15);
           for (const midi of picked.slice(-2)) {
-            this.#epianoNote(echoT + rng() * 0.12, midi, 0.07 + rng() * 0.04, dur * 0.5);
+            playKeys(this.#keysCtx, {
+              t: echoT + rng() * 0.12,
+              midi,
+              vel: 0.07 + rng() * 0.04,
+              dur: dur * 0.5,
+              bright: day
+            });
           }
         }
       }
     }
 
     // Daytime's defining exploration pulse. It outlines the current chord on
-    // a steady 92 BPM grid with short, dry, mallet-like notes. The velocity is
-    // daylight-scaled, so dusk naturally hands back to the untouched ambient
-    // night arrangement instead of switching palettes abruptly.
+    // the region's own tempo grid with short notes in the region's own voice,
+    // so the Financial District ticks and Chinatown rings. The velocity is
+    // daylight-scaled, so dusk hands back to the ambient night arrangement.
     if (cheer > 0.02 && this.#sectionMul.keys > 0.12) {
+      const beat = 60 / Math.max(50, p.bpm);
       const pulse = [0, 2, 1, 3, 0, 2, 4, 3];
-      const steps = Math.min(12, Math.max(4, Math.floor((dur - 0.3) / DAY_PULSE_BEAT)));
-      const pulseVel = (0.055 + 0.045 * Math.min(cheer, 1)) * Math.min(1, cheer);
+      const steps = Math.min(14, Math.max(4, Math.floor((dur - 0.3) / beat)));
+      const pulseVel = (0.05 + 0.04 * Math.min(cheer, 1)) * Math.min(1, cheer);
       for (let i = 0; i < steps; i++) {
         // A small breath before beat four keeps the loop buoyant instead of
         // reading as a mechanical sequencer.
         if (i % 8 === 6) continue;
         const midi = midis[pulse[i % pulse.length] % midis.length] + (i % 8 >= 4 ? 12 : 0);
         const accent = i % 4 === 0 ? 1.22 : i % 2 === 0 ? 1.05 : 0.82;
-        this.#adventureNote(t + 0.12 + i * DAY_PULSE_BEAT, midi, pulseVel * accent);
+        playKeys(this.#keysCtx, {
+          t: t + 0.12 + i * beat,
+          midi,
+          vel: pulseVel * accent,
+          dur: 0.34,
+          bright: day
+        });
         this.#adventurePulseCount++;
       }
     }
 
-    // pad + bass under the chord root
-    const bassMidi = 36 + pcs[0];
-    this.#padChord(t, [bassMidi + 12, bassMidi + 19], dur);
-    this.#bassNote(t + 0.1, bassMidi, dur);
+    // pad holds the harmony; two tones is enough under a moving voicing
+    const padId = pickPadVoice(p.padMix, rng);
+    const playPad = padVoice(padId);
+    this.#lastPadVoice = padId;
+    const padRoot = 48 + pcs[0];
+    const padTones = [padRoot, padRoot + 12 + ((fifthish(pcs) - pcs[0] + 12) % 12)];
+    for (const midi of padTones) {
+      playPad(this.#padCtx, { t, midi, vel: 0.11, dur, bright: day });
+    }
+
+    // bass: pedal in still places, a walking line where the region asks for one
+    const bassId = pickBassVoice(p.bassMix, rng);
+    const playBass = bassVoice(bassId);
+    this.#lastBassVoice = bassId;
+    const nextPcs = buildVoicing(this.#keyRoot, mode, this.#nextDegree, 3, this.#voicing).pcs;
+    const line = bassLine({
+      chordPcs: pcs,
+      keyRoot: this.#keyRoot,
+      mode,
+      nextRootPc: nextPcs[0],
+      prevMidi: this.#lastBassMidi,
+      motion: p.motion * (0.5 + 0.5 * day),
+      rng
+    });
+    const noteDur = line.length > 1 ? dur / line.length : dur;
+    for (const step of line) {
+      playBass(this.#bassCtx, {
+        t: t + 0.1 + step.at * dur,
+        midi: step.midi,
+        vel: 0.26 * step.vel,
+        dur: noteDur,
+        bright: day
+      });
+    }
+    this.#lastBassMidi = line[line.length - 1].midi;
 
     // hybrid conductor: a pending baked phrase enters just after this chord
     // lands, transposed into the key and matched to the chord's mode flavor.
     // Sections that silence phrases (breath) hold the pending flag instead.
     if (this.#phrasePending && this.#phrasePlayer && this.#sectionMul.phrases > 0.3) {
-      const bright = mode === "ionian" || mode === "lydian" || mode === "mixolydian";
+      const bright = modeName === "ionian" || modeName === "lydian" || modeName === "mixolydian";
       const pool = PHRASE_DEFS.filter(
         (d: PhraseDef) => d.flavor === (bright ? "bright" : "dusk") && d.id !== this.#lastPhraseId
       );
@@ -643,7 +844,7 @@ export class LofiMusicDirector {
 
     this.#nextChordT = t + dur;
     this.#chordCount++;
-    this.#lastChord = `${PC_NAMES[pcs[0]]}${mode === this.#keyDayMode ? "" : "m"}·deg${this.#degree + 1}`;
+    this.#lastChord = `${PC_NAMES[pcs[0]]}·${modeName.slice(0, 3)}·deg${this.#degree + 1}·${this.#voicing}`;
   }
 
   #scheduleSparkle(): void {
@@ -653,27 +854,31 @@ export class LofiMusicDirector {
     const day = this.#daylight;
     const rng = Math.random;
 
-    const mode = rng() < day ? this.#keyDayMode : this.#keyNightMode;
-    const penta = pentatonicPcs(this.#keyRoot, MODES[mode]);
+    const modeName = rng() < day ? this.#keyDayMode : this.#keyNightMode;
+    const penta = pentatonicPcs(this.#keyRoot, MODES[modeName]);
     const pc = penta[Math.floor(rng() * penta.length)];
     // register varies: mostly high music-box, sometimes an octave higher,
     // and at night an occasional low, felt-muted answer
     const base = day < 0.5 && rng() < 0.3 ? 67 : 79;
     const midi = base + ((pc - base + 1200) % 12) + (rng() < 0.4 && base === 79 ? 12 : 0);
-    this.#sparkleNote(t, midi, 0.09 + rng() * 0.08);
+    const playSparkle = sparkleVoice(pickSparkleVoice(p.sparkleMix, rng));
+    const ping = (at: number, m: number, vel: number) =>
+      playSparkle(this.#sparkleCtx, { t: at, midi: m, vel, dur: 1.2, bright: day });
+
+    ping(t, midi, 0.09 + rng() * 0.08);
     // sometimes a double-stop (two penta tones together), sometimes a soft
     // echo of the same note, sometimes a two-note motif completing itself
     const v = rng();
     if (v < 0.2) {
       const other = penta[(penta.indexOf(pc) + (rng() < 0.5 ? 2 : 3)) % penta.length];
-      this.#sparkleNote(t + 0.01, base + ((other - base + 1200) % 12) + 12, 0.05 + rng() * 0.04);
+      ping(t + 0.01, base + ((other - base + 1200) % 12) + 12, 0.05 + rng() * 0.04);
       this.#sparkleCount++;
     } else if (v < 0.45) {
-      this.#sparkleNote(t + 0.4 + rng() * 0.25, midi, 0.045 + rng() * 0.03);
+      ping(t + 0.4 + rng() * 0.25, midi, 0.045 + rng() * 0.03);
       this.#sparkleCount++;
     } else if (v < 0.75) {
       const next = penta[(penta.indexOf(pc) + (rng() < 0.5 ? 1 : 4)) % penta.length];
-      this.#sparkleNote(t + 0.28 + rng() * 0.3, base + ((next - base + 1200) % 12), 0.06 + rng() * 0.05);
+      ping(t + 0.28 + rng() * 0.3, base + ((next - base + 1200) % 12), 0.06 + rng() * 0.05);
       this.#sparkleCount++;
     }
     this.#sparkleCount++;
@@ -684,147 +889,6 @@ export class LofiMusicDirector {
     const cheerSqueeze = 1 - 0.34 * Math.min(this.#cheer, 1); // day-only densify
     this.#nextSparkleT =
       t + interval * nightStretch * sectionStretch * cheerSqueeze * (0.45 + rng() * 1.1);
-  }
-
-  /* -------------------------------------------------------------- voices */
-
-  /** Rhodes-flavoured note: sine body, soft octave partial, fast "tine" ping. */
-  #epianoNote(t: number, midi: number, vel: number, dur: number): void {
-    const ctx = this.#ctx!;
-    const f = midiToFreq(midi);
-
-    const filter = ctx.createBiquadFilter();
-    filter.type = "lowpass";
-    filter.frequency.value = Math.min(8500, f * 5.5);
-    filter.Q.value = 0.4;
-    const pan = ctx.createStereoPanner();
-    pan.pan.value = (Math.random() * 2 - 1) * 0.4;
-    filter.connect(pan).connect(this.#keysBus);
-    const send = ctx.createGain();
-    send.gain.value = 0.3;
-    pan.connect(send).connect(this.#revSend);
-
-    const stopAt = t + Math.min(dur, 8) + 4;
-    const partial = (freq: number, level: number, decay: number, sustain = 0) => {
-      const osc = ctx.createOscillator();
-      osc.frequency.value = freq;
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, level), t + 0.012);
-      if (sustain > 0) {
-        g.gain.setTargetAtTime(level * sustain, t + 0.02, 1.1);
-        g.gain.setTargetAtTime(0.0001, t + Math.min(dur, 8), 0.9);
-      } else {
-        g.gain.setTargetAtTime(0.0001, t + 0.02, decay);
-      }
-      osc.connect(g).connect(filter);
-      osc.start(t);
-      osc.stop(stopAt);
-    };
-    partial(f, vel, 0, 0.25); // body rings and releases with the chord
-    partial(f * 2.001, vel * 0.18, 0.45); // soft octave bloom
-    partial(f * 3.98, vel * 0.13, 0.09); // tine attack
-  }
-
-  /** Two detuned sines per pitch, breathing in over ~3 s. */
-  #padChord(t: number, midis: number[], dur: number): void {
-    const ctx = this.#ctx!;
-    for (const midi of midis) {
-      const f = midiToFreq(midi);
-      for (const detune of [-4, 4]) {
-        const osc = ctx.createOscillator();
-        osc.frequency.value = f;
-        osc.detune.value = detune;
-        const g = ctx.createGain();
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.linearRampToValueAtTime(0.11, t + 2.8);
-        g.gain.setTargetAtTime(0.0001, t + dur, 1.6);
-        osc.connect(g).connect(this.#padBus);
-        const send = ctx.createGain();
-        send.gain.value = 0.5;
-        g.connect(send).connect(this.#revSend);
-        osc.start(t);
-        osc.stop(t + dur + 7);
-      }
-    }
-  }
-
-  #bassNote(t: number, midi: number, dur: number): void {
-    const ctx = this.#ctx!;
-    const osc = ctx.createOscillator();
-    osc.frequency.value = midiToFreq(midi);
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(0.26, t + 1.2);
-    g.gain.setTargetAtTime(0.0001, t + dur * 0.85, 1.2);
-    osc.connect(g).connect(this.#bassBus);
-    osc.start(t);
-    osc.stop(t + dur + 5);
-  }
-
-  /** Short, clear daytime pluck: triangle body + wooden octave knock. */
-  #adventureNote(t: number, midi: number, vel: number): void {
-    const ctx = this.#ctx!;
-    const f = midiToFreq(midi);
-    const filter = ctx.createBiquadFilter();
-    filter.type = "lowpass";
-    filter.frequency.value = Math.min(9600, f * 8);
-    filter.Q.value = 0.45;
-    const pan = ctx.createStereoPanner();
-    pan.pan.value = (Math.random() * 2 - 1) * 0.34;
-    filter.connect(pan).connect(this.#keysBus);
-    const send = ctx.createGain();
-    send.gain.value = 0.16;
-    pan.connect(send).connect(this.#revSend);
-
-    const body = ctx.createOscillator();
-    body.type = "triangle";
-    body.frequency.value = f;
-    const bodyGain = ctx.createGain();
-    bodyGain.gain.setValueAtTime(0.0001, t);
-    bodyGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, vel), t + 0.006);
-    bodyGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
-    body.connect(bodyGain).connect(filter);
-
-    const knock = ctx.createOscillator();
-    knock.type = "sine";
-    knock.frequency.value = f * 2.003;
-    const knockGain = ctx.createGain();
-    knockGain.gain.setValueAtTime(0.0001, t);
-    knockGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, vel * 0.34), t + 0.004);
-    knockGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
-    knock.connect(knockGain).connect(filter);
-
-    body.start(t);
-    knock.start(t);
-    body.stop(t + 0.5);
-    knock.stop(t + 0.14);
-  }
-
-  /** High pentatonic ping with a heavy reverb send — the "music box" layer. */
-  #sparkleNote(t: number, midi: number, vel: number): void {
-    const ctx = this.#ctx!;
-    const f = midiToFreq(midi);
-    const pan = ctx.createStereoPanner();
-    pan.pan.value = (Math.random() * 2 - 1) * 0.7;
-    pan.connect(this.#sparkleBus);
-    const send = ctx.createGain();
-    send.gain.value = 0.9;
-    pan.connect(send).connect(this.#revSend);
-
-    const mk = (freq: number, level: number, decay: number) => {
-      const osc = ctx.createOscillator();
-      osc.frequency.value = freq;
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, level), t + 0.008);
-      g.gain.setTargetAtTime(0.0001, t + 0.015, decay);
-      osc.connect(g).connect(pan);
-      osc.start(t);
-      osc.stop(t + 4);
-    };
-    mk(f, vel, 1.1);
-    mk(f * 3.98, vel * 0.2, 0.07);
   }
 }
 
@@ -846,4 +910,20 @@ function daylight(h: number): number {
 function smooth(e0: number, e1: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
+}
+
+/** The chord tone nearest a perfect fifth above the root — a safe pad partner
+ *  under any voicing style, including the ones with no fifth in the stack. */
+function fifthish(pcs: readonly number[]): number {
+  let best = pcs[0];
+  let bestCost = Infinity;
+  for (const pc of pcs) {
+    const iv = (pc - pcs[0] + 12) % 12;
+    const cost = Math.abs(iv - 7);
+    if (iv !== 0 && cost < bestCost) {
+      bestCost = cost;
+      best = pc;
+    }
+  }
+  return best;
 }

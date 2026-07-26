@@ -1,47 +1,27 @@
 // Baked stem manifest — the contract between tools/music/render_stems.py and
-// the runtime StemPlayer. All stems are UNPITCHED (grooves + texture) so they
-// can never clash with the generative chord walk. loopSeconds is the exact
-// musical schedule period; files carry extra ringing tail past it, and the
-// player overlap-schedules repeats so codec padding can't open gaps.
+// the runtime StemPlayer. All stems are UNPITCHED (texture only) so they can
+// never clash with the generative chord walk. loopSeconds is the exact musical
+// schedule period; files carry extra ringing tail past it, and the player
+// overlap-schedules repeats so codec padding can't open gaps.
+//
+// The three baked drum loops that used to live here are gone: rhythm is now
+// synthesized and performed per region by ./groove, which a fixed loop could
+// never do. Texture is the only thing left worth baking.
 
-export type StemId = "beatWarm" | "beatDusk" | "beatBrush" | "dust";
+export type StemId = "dust";
 
 export type StemDef = {
   id: StemId;
   url: string;
   /** exact musical loop length in seconds (schedule period, NOT file length). */
   loopSeconds: number;
-  /** percussive stems scan for their first transient to skip encoder padding. */
+  /** transient-scan the decoded head to skip encoder padding (percussive only). */
   detectLead: boolean;
   /** level trim into the music mix. */
   gainTrim: number;
 };
 
 export const STEM_DEFS: Record<StemId, StemDef> = {
-  // 92 BPM swung kit — the playful daytime city groove
-  beatWarm: {
-    id: "beatWarm",
-    url: "/audio/music/stems/beat-warm.mp3",
-    loopSeconds: (8 * 4 * 60) / 92,
-    detectLead: true,
-    gainTrim: 0.5
-  },
-  // 58 BPM half-time, deep and sparse — dusk/night
-  beatDusk: {
-    id: "beatDusk",
-    url: "/audio/music/stems/beat-dusk.mp3",
-    loopSeconds: (8 * 4 * 60) / 58,
-    detectLead: true,
-    gainTrim: 0.55
-  },
-  // 92 BPM brushed organic kit — daytime parks and trails
-  beatBrush: {
-    id: "beatBrush",
-    url: "/audio/music/stems/beat-brush.mp3",
-    loopSeconds: (8 * 4 * 60) / 92,
-    detectLead: true,
-    gainTrim: 0.5
-  },
   // tape-dust texture bed; 4 s equal-power fades baked at both ends
   dust: {
     id: "dust",

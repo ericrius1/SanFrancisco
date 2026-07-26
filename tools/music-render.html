@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>sf music render</title>
+  </head>
+  <body>
+    <!--
+      Dev-only harness page for tools/music-render.mjs. It boots NOTHING — no
+      renderer, no world, no WebGPU — so the score can be rendered offline and
+      faster than realtime by driving the director against an OfflineAudioContext.
+      The driver injects everything it needs; this page only proves the origin.
+    -->
+    <p>sf music render harness</p>
+    <script type="module">
+      window.__musicRenderReady = true;
+    </script>
+  </body>
+</html>

@@ -1,6 +1,17 @@
 import * as THREE from "three/webgpu";
 import { tracer } from "../core/hitchTracer";
 
+/** Aim each exclusive compile window at this; below ~120 ms reads as smooth. */
+const WARM_WINDOW_TARGET_MS = 110;
+const WARM_BATCH_MAX = 12;
+
+/** A compile entry point: either the renderer's own, or a pipeline lane. */
+export type RegionCompile = (
+  object: THREE.Object3D,
+  camera: THREE.Camera,
+  scene: THREE.Scene | null
+) => Promise<unknown>;
+
 export type StaticRegionWarmup = Readonly<{
   meshes: number;
   representatives: number;
@@ -255,24 +266,60 @@ export async function warmRootPaced(
       chunkStartedAt = performance.now();
     }
   }
-  for (const mesh of representatives) {
-    const visible = mesh.visible;
-    const frustumCulled = mesh.frustumCulled;
-    mesh.visible = true;
-    mesh.frustumCulled = false;
-    try {
-      await compileRepresentative(mesh, camera, scene);
-      tracer.count("pacedWarmCompile");
-    } catch {
-      // A failed representative compiles on first draw as before.
-    } finally {
-      mesh.visible = visible;
-      mesh.frustumCulled = frustumCulled;
-    }
-    if (performance.now() - chunkStartedAt > chunkBudgetMs) {
+  // Compile in ADAPTIVE BATCHES, not one signature per window.
+  //
+  // Each compile call takes an exclusive window that holds frames, and almost
+  // all of that window is fixed overhead — measured ~200-290 ms whether it
+  // carries one signature or several (the region path compiles 30 signatures in
+  // one 0.56 s call). Warming a dense site one signature at a time therefore
+  // laid down a carpet of ~17 quarter-second hitches, which is the worst of both
+  // worlds: long total AND visibly chunky.
+  //
+  // So: reveal a batch of representatives, compile the root once, and let the
+  // measured window duration size the next batch toward WINDOW_TARGET_MS. Fast
+  // windows grow the batch (fewer hitches); a slow one shrinks it (no hitch
+  // grows past the perception floor).
+  const hidden = representatives.map((mesh) => ({
+    mesh,
+    visible: mesh.visible,
+    frustumCulled: mesh.frustumCulled
+  }));
+  for (const entry of hidden) entry.mesh.visible = false;
+  // Start at one: the FIRST window of a fresh site absorbs one-time driver and
+  // node-graph setup on top of its own signature, so a batch of three there was
+  // a 760 ms freeze. Grow only once a window has proven itself cheap.
+  let batchSize = 1;
+  try {
+    for (let index = 0; index < hidden.length; ) {
+      const batch = hidden.slice(index, index + batchSize);
+      index += batch.length;
+      for (const entry of batch) {
+        entry.mesh.visible = true;
+        entry.mesh.frustumCulled = false;
+      }
+      const windowStartedAt = performance.now();
+      try {
+        await compileRepresentative(root, camera, scene);
+        tracer.count("pacedWarmCompile");
+      } catch {
+        // A failed batch compiles on first draw as before.
+      } finally {
+        for (const entry of batch) entry.mesh.visible = false;
+      }
+      const windowMs = performance.now() - windowStartedAt;
+      if (windowMs < WARM_WINDOW_TARGET_MS * 0.6) {
+        batchSize = Math.min(batchSize * 2, WARM_BATCH_MAX);
+      } else if (windowMs > WARM_WINDOW_TARGET_MS * 1.5) {
+        batchSize = Math.max(1, batchSize >> 1);
+      }
       await pace();
       chunks++;
       chunkStartedAt = performance.now();
+    }
+  } finally {
+    for (const entry of hidden) {
+      entry.mesh.visible = entry.visible;
+      entry.mesh.frustumCulled = entry.frustumCulled;
     }
   }
   return {
@@ -329,11 +376,20 @@ export async function warmUnseenMeshSignatures(
 }
 
 /** Warm the exact pipelines needed by a parsed static Blender region. */
+/**
+ * @param compile optional compile entry. Pass the pipeline's ARRIVAL-PRIORITY
+ *   lane for a region the covered travel transition is waiting on: the default
+ *   `renderer.compileAsync` lands in the normal queue, which is parked for the
+ *   whole duration of an active arrival — and an arrival that is itself waiting
+ *   on this warm then deadlocks until its own timeout fires.
+ */
 export async function warmStaticRegion(
   renderer: THREE.WebGPURenderer,
   camera: THREE.Camera,
   scene: THREE.Scene,
-  root: THREE.Object3D
+  root: THREE.Object3D,
+  compile: RegionCompile = (object, activeCamera, targetScene) =>
+    renderer.compileAsync(object, activeCamera, targetScene)
 ): Promise<StaticRegionWarmup> {
   const meshes: WarmupMesh[] = [];
   root.traverse((object) => {
@@ -363,7 +419,7 @@ export async function warmStaticRegion(
 
   const startedAt = performance.now();
   try {
-    await renderer.compileAsync(root, camera, scene);
+    await compile(root, camera, scene);
   } finally {
     for (const entry of state) {
       entry.mesh.visible = entry.visible;

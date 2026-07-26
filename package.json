@@ -54,6 +54,8 @@
     "test:ocean-beach-kite": "node tools/ocean-beach-kite-probe.mjs",
     "test:piano-godrays": "node tools/piano-godray-probe.mjs",
     "test:sutro-baths": "node tools/sutro-baths-probe.mjs",
+    "test:sutro-pocket": "node tools/sutro-pocket-probe.mjs",
+    "test:sutro-placement": "node tools/sutro-placement-probe.mjs",
     "test:ghost-ship": "node --experimental-strip-types tools/ghost-ship-contract-test.mjs && node tools/ghost-ship-relay-probe.mjs",
     "test:drum-bridge": "node tools/drum-bridge-probe.mjs",
     "test:mission-dolores": "node --experimental-strip-types tools/mission-dolores-contract-test.mjs",

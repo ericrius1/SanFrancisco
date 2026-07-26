@@ -181,7 +181,7 @@ async function main() {
     // The facade module itself rides the core bundle (it's tiny); the CONTRACT
     // is that director/theory/regions/worker never load pre-gesture.
     const bootRequests = musicRequests.filter((u) =>
-      /director|theory|regions|musicBuffersWorker/.test(u)
+      /director|theory|regions|musicBuffersWorker|percussionWorker|groove|voices\//.test(u)
     );
     assert.deepEqual(bootRequests, [], `music engine modules fetched at clean boot:\n${bootRequests.join("\n")}`);
     assert.deepEqual(stemRequests, [], `baked stems fetched at clean boot:\n${stemRequests.join("\n")}`);
@@ -223,7 +223,7 @@ async function main() {
     assert(engine.levels.music > 0, `engine music group level should be up, got ${JSON.stringify(engine.levels)}`);
     assert(engine.persistent >= 1, `music should own a persistent hold while playing, got ${JSON.stringify(engine)}`);
 
-    // baked stems load on demand once their targets rise (dust is always on)
+    // the tape-dust bed is the only remaining baked stem; it loads on demand
     let stems = null;
     const tStems = Date.now();
     while (Date.now() - tStems < 12_000) {
@@ -238,10 +238,29 @@ async function main() {
     assert(stemRequests.length >= 1, `no stem files were fetched after activation`);
     const failedStems = stems.filter((s) => s.failed);
     assert.deepEqual(failedStems, [], `stems failed to load: ${JSON.stringify(failedStems)}`);
-    assert.equal(
-      stems.find((s) => s.id === "beatDusk")?.loaded,
-      false,
-      `noon activation should not fetch the night groove: ${JSON.stringify(stems)}`
+    assert.deepEqual(
+      stems.map((s) => s.id),
+      ["dust"],
+      `percussion is procedural now — no beat stem may remain in the manifest: ${JSON.stringify(stems)}`
+    );
+
+    // percussion is synthesized in a worker: nothing is fetched, the kit comes
+    // up on demand, and bars keep getting scheduled
+    let groove = null;
+    const tGroove = Date.now();
+    while (Date.now() - tGroove < 20_000) {
+      await sleep(700);
+      groove = await ev(cdp, "window.__sf.lofiMusic.debugState.groove ?? null");
+      if (groove?.ready && groove.barsScheduled >= 2) break;
+    }
+    assert(groove, "groove engine never reported state");
+    assert.equal(groove.failed, false, `percussion worker failed: ${JSON.stringify(groove)}`);
+    assert(groove.ready, `percussion buffers never arrived: ${JSON.stringify(groove)}`);
+    assert(groove.barsScheduled >= 2, `no groove bars scheduled: ${JSON.stringify(groove)}`);
+    assert(groove.gain > 0.01, `groove should be audible in the city: ${JSON.stringify(groove)}`);
+    assert(
+      groove.slots.some((s) => s.sources > 0),
+      `groove scheduled no hits: ${JSON.stringify(groove)}`
     );
 
     // hybrid conductor: the first baked phrase enters at a chord boundary
@@ -274,8 +293,7 @@ async function main() {
     while (Date.now() - tNight < 15_000) {
       await sleep(700);
       night = await ev(cdp, "window.__sf.lofiMusic.debugState");
-      const duskLoaded = night?.stems?.find((s) => s.id === "beatDusk")?.loaded;
-      if (night?.daylight === 0 && duskLoaded && night.chordCount > beforeNight.chordCount) break;
+      if (night?.daylight === 0 && night.chordCount > beforeNight.chordCount) break;
     }
     assert.equal(night?.dayAdventure, 0, `night should remove the adventure mix: ${JSON.stringify(night)}`);
     assert.equal(
@@ -283,19 +301,20 @@ async function main() {
       beforeNight.adventurePulseCount,
       `day pulse kept scheduling after nightfall: before=${JSON.stringify(beforeNight)} after=${JSON.stringify(night)}`
     );
-    assert.equal(
-      night?.stems?.find((s) => s.id === "beatWarm")?.target,
-      0,
-      `day groove stayed up at night: ${JSON.stringify(night?.stems)}`
+    // the kit does not change at dusk any more — the same procedural pattern
+    // thins out, so the handoff is a density drop rather than a stem swap
+    assert(
+      night.groove.density < beforeNight.groove.density,
+      `night should thin the groove: before=${beforeNight.groove.density} after=${night.groove.density}`
     );
     assert(
-      (night?.stems?.find((s) => s.id === "beatDusk")?.target ?? 0) > 0,
-      `night groove did not take over: ${JSON.stringify(night?.stems)}`
+      night.groove.gain < beforeNight.groove.gain,
+      `night should pull the groove back: before=${beforeNight.groove.gain} after=${night.groove.gain}`
     );
-    assert.equal(
-      stemRequests.filter((url) => /beat-dusk\.mp3(?:\?|$)/.test(url)).length,
-      1,
-      `night action should request exactly the newly needed dusk stem: ${stemRequests.join(", ")}`
+    assert.deepEqual(
+      stemRequests.filter((url) => /beat-(warm|dusk|brush)\.mp3/.test(url)),
+      [],
+      `retired beat stems were still fetched: ${stemRequests.join(", ")}`
     );
 
     // ---- phase 4: pure-data sanity via the same vite-served modules ----
@@ -326,6 +345,61 @@ async function main() {
       pure.motion <= 16,
       `voice-leading motion too large (${pure.motion} semitones total): ${JSON.stringify(pure)}`
     );
+
+    // ---- phase 4b: places actually sound like different places ----
+    // The whole point of the region map. A refactor that quietly collapses the
+    // palettes back toward one house sound has to fail here, not in someone's
+    // ears three months later.
+    const places = await ev(cdp, `(async () => {
+      const R = await import("/src/audio/music/regions.ts");
+      const stops = ${JSON.stringify([
+        ["fidi", 3900, 0],
+        ["chinatown", 3250, -550],
+        ["mission", 1800, 3400],
+        ["soma", 3600, 1450],
+        ["gracecathedral", 2687, -205],
+        ["teagarden", -2298, 2182],
+        ["marin", -4450, -6250],
+        ["oceanbeach", -6000, 3100],
+        ["alcatraz", 1848, -4058],
+        ["sunset", -4000, 3700]
+      ])};
+      const lead = (mix) => Object.entries(mix)
+        .filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "-";
+      return stops.map(([id, x, z]) => {
+        const inf = R.MUSIC_REGIONS.map((r) => R.musicRegionInfluence(r, x, z));
+        const b = R.blendMusic(inf);
+        const p = b.profile;
+        const numbers = Object.entries(p)
+          .filter(([, v]) => typeof v === "number")
+          .map(([k, v]) => k + "=" + v);
+        return {
+          id, owner: b.dominant?.id ?? "city",
+          root: p.root, voicing: p.voicing, kit: p.kit,
+          dayMode: p.dayMode, nightMode: p.nightMode,
+          keys: lead(p.keysMix), pad: lead(p.padMix),
+          bass: lead(p.bassMix), sparkle: lead(p.sparkleMix),
+          bad: numbers.filter((s) => /=(NaN|Infinity|-)/.test(s))
+        };
+      });
+    })()`);
+    for (const p of places) {
+      assert.equal(p.owner, p.id, `${p.id} should own its own centre, got "${p.owner}"`);
+      assert.deepEqual(p.bad, [], `${p.id} blended a bad number: ${p.bad.join(", ")}`);
+    }
+    const signatures = new Set(
+      places.map((p) => `${p.root}|${p.voicing}|${p.kit}|${p.dayMode}|${p.keys}|${p.pad}|${p.sparkle}`)
+    );
+    assert.equal(
+      signatures.size,
+      places.length,
+      `regions collapsed onto shared identities:\n${places.map((p) => JSON.stringify(p)).join("\n")}`
+    );
+    // interiors and open coast must not be running a drum kit
+    for (const id of ["gracecathedral", "teagarden", "marin", "alcatraz"]) {
+      const p = places.find((q) => q.id === id);
+      assert.equal(p.kit, "none", `${id} should be percussion-free, got ${p.kit}`);
+    }
 
     // ---- phase 5: mute economy — zero slider releases the persistent hold ----
     await ev(cdp, `(() => {

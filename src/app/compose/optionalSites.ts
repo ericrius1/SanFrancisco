@@ -658,6 +658,42 @@ export function createOptionalSites({
     refreshOptionalSiteDebug();
   };
 
+  // --- Sutro Baths pocket: the far world is not observable from inside ------
+  // Deep in the restored hall the only things beyond the glass are ocean, sky
+  // and the pocket's own twilight. These roots are kilometres inland or behind
+  // the cliff, so while the visitor is inside they are hidden outright: no
+  // streaming churn, no radius mutation that a mode switch could strand, and an
+  // exact restore because only roots that were VISIBLE get collected.
+  // Newly streamed far-world roots stay visible until the next transition,
+  // which is harmless — streaming has long settled by the time you are inside.
+  const SUTRO_THINNED_ROOT_PREFIXES = [
+    "cityGen",
+    "wildlands_",
+    "TrafficLightRig",
+    "tileBuildingBatch",
+    "tileRoadBatch",
+    "tileShadowProxy:",
+    "landmarkShadowProxy",
+    "golf",
+    "palace_fine_arts_lagoon",
+    "ocean-beach-surf-shack"
+  ];
+  const sutroThinnedRoots: THREE.Object3D[] = [];
+  const applySutroExteriorThinning = (thinned: boolean): void => {
+    if (thinned) {
+      if (sutroThinnedRoots.length > 0) return;
+      for (const child of scene.children) {
+        if (!child.visible || !child.name) continue;
+        if (!SUTRO_THINNED_ROOT_PREFIXES.some((prefix) => child.name.startsWith(prefix))) continue;
+        child.visible = false;
+        sutroThinnedRoots.push(child);
+      }
+      return;
+    }
+    for (const root of sutroThinnedRoots) root.visible = true;
+    sutroThinnedRoots.length = 0;
+  };
+
   const loadSutroBaths = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createSutroBaths } = await import("../../world/sutroBaths");
     await stage();
@@ -667,7 +703,9 @@ export function createOptionalSites({
         renderer,
         scene,
         physics,
-        authoredRegions
+        authoredRegions,
+        sky,
+        onExteriorThinned: applySutroExteriorThinning
       });
       // The geographic tile already owns and displays the period hall. Warm only
       // its optional living layer (foliage, bathers and nearby effects) here.
@@ -1296,6 +1334,8 @@ export function createOptionalSites({
     "sutro-baths": () => {
       sutroBaths?.dispose();
       sutroBaths = null;
+      // dispose() releases the pocket clock; the exterior it hid is ours to restore
+      applySutroExteriorThinning(false);
       refreshOptionalSiteDebug();
     }
   };

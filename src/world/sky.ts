@@ -418,6 +418,9 @@ export class Sky {
 
   #lastElapsed = -1
 
+  /** Pocket-realm clock override in hours, or null while the world clock runs. */
+  #timeAuthority: number | null = null
+
   #shadowNode: ClipmapShadowNode
 
   get shadowDiagnostics() {
@@ -1213,6 +1216,7 @@ export class Sky {
 
   /** Deterministic probe/demo hook: pin both date and time and freeze cycling. */
   setCivilTime(civil: SfCivilTime) {
+    this.#timeAuthority = null
     this.realTime = false
     this.cycleEnabled = false
     // This hook is used by deterministic captures/tests: never let a
@@ -1230,6 +1234,7 @@ export class Sky {
   /** Move the simulated calendar continuously, including date/year rollover. */
   advanceCivilHours(hours: number) {
     if (!Number.isFinite(hours) || hours === 0) return
+    this.#timeAuthority = null
     if (this.realTime) {
       this.#simulatedUtcOffsetHours = sfUtcOffsetHours({ ...this.civilTime, hour: 12 })
     }
@@ -1245,6 +1250,7 @@ export class Sky {
   /** Pin a fixed hour on the current SF calendar date. Stops tracking the real
    *  SF clock (the day cycle keeps running only if it was already on). */
   setTimeOfDay(hours: number) {
+    this.#timeAuthority = null
     if (this.realTime) {
       this.#simulatedUtcOffsetHours = sfUtcOffsetHours({ ...this.civilTime, hour: 12 })
     }
@@ -1257,9 +1263,41 @@ export class Sky {
     this.#reconcileStarlinkSky()
   }
 
+  /**
+   * Pocket-realm clock (the Sutro Baths' out-of-time twilight).
+   *
+   * While an authority is set the dome, IBL, fog palette and every light ramp
+   * follow these hours instead of the SF wall clock or a running day cycle.
+   * Unlike setTimeOfDay this deliberately does NOT clear `realTime`/`cycleEnabled`,
+   * so `setTimeAuthority(null)` hands the world clock straight back on the next
+   * sample with no stash to restore and no way to leak a pinned sky. Only the
+   * palette-side work runs per change: the fog-weather resample keeps its own
+   * cadence in update(), and the live-fog/starlink feeds are left alone because
+   * a pocket interior must not disturb what the outdoor world is fetching.
+   */
+  setTimeAuthority(hours: number | null) {
+    if (hours === null) {
+      if (this.#timeAuthority === null) return
+      this.#timeAuthority = null
+      this.#lastRealClockMs = Number.NEGATIVE_INFINITY // re-sample the real clock next update
+      return
+    }
+    const wrapped = ((hours % 24) + 24) % 24
+    if (this.#timeAuthority !== null && Math.abs(wrapped - this.#timeAuthority) < 1e-4) return
+    this.#timeAuthority = wrapped
+    this.timeOfDay = wrapped
+    this.#civilDay = Math.floor(this.#civilDay) + wrapped / 24
+    this.#applySun()
+  }
+
+  get timeAuthority(): number | null {
+    return this.#timeAuthority
+  }
+
   /** Snap to the current real SF date+time and keep mirroring it every frame —
    *  the default sky. Wherever the player is, the game reads the SF wall clock. */
   followRealTime() {
+    this.#timeAuthority = null
     this.realTime = true
     this.cycleEnabled = false
     const now = sanFranciscoCivilNow()
@@ -1434,7 +1472,9 @@ export class Sky {
       advection.z += dt * this.#fogWindZ * 0.08
     }
 
-    if (this.realTime) {
+    if (this.#timeAuthority !== null) {
+      // A pocket realm owns the clock; setTimeAuthority already pushed the sun.
+    } else if (this.realTime) {
       // default: mirror the real San-Francisco date + clock, wherever the player is.
       // Sampled at 4 Hz — see #lastRealClockMs — because the ephemeris read is ICU
       // work and the sun moves 0.0042° per frame.

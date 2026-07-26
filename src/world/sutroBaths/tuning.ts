@@ -6,7 +6,7 @@ import { tunables } from "../../core/persist";
  */
 export const SUTRO_BATHS_TUNING = tunables("sutroBaths", {
   waterEnabled: { v: true, label: "visual pool water" },
-  waterRipple: { v: 0.018, min: 0, max: 0.08, step: 0.001, label: "fine ripple" },
+  waterRipple: { v: 0.023, min: 0, max: 0.08, step: 0.001, label: "fine ripple" },
   waterClarity: { v: 1.5, min: 0.4, max: 6, step: 0.05, label: "clarity depth (m)" },
   waterRefraction: { v: 0.5, min: 0, max: 1.6, step: 0.01, label: "refraction bend" },
   waterBedTint: { v: 0.5, min: 0, max: 1, step: 0.01, label: "sandy bed tint" },
@@ -22,7 +22,17 @@ export const SUTRO_BATHS_TUNING = tunables("sutroBaths", {
   steamSunGain: { v: 0.9, min: 0, max: 2, step: 0.02, label: "steam sun glow" },
   steamCurl: { v: 0.6, min: 0, max: 2, step: 0.02, label: "steam curl" },
   glassOpacity: { v: 0.12, min: 0.04, max: 0.6, step: 0.01, label: "glass sheen" },
-  lampIntensity: { v: 4.6, min: 0, max: 18, step: 0.1, label: "warm lamp intensity" }
+  lampIntensity: { v: 4.6, min: 0, max: 18, step: 0.1, label: "warm lamp intensity" },
+  pocketEnabled: { v: true, label: "out-of-time twilight" },
+  pocketDriftSeconds: {
+    v: 240,
+    min: 40,
+    max: 900,
+    step: 5,
+    label: "sunset↔twilight cycle (s)"
+  },
+  lampWarmth: { v: 1, min: 0, max: 2, step: 0.02, label: "lamp bloom" },
+  interiorWarmth: { v: 0.9, min: 0, max: 1.4, step: 0.02, label: "interior warm grade" }
 });
 
 export const SUTRO_TUNING_FOLDERS = [
@@ -61,5 +71,10 @@ export const SUTRO_TUNING_FOLDERS = [
       "glassOpacity",
       "lampIntensity"
     ]
+  },
+  {
+    title: "out-of-time pocket",
+    expanded: true,
+    keys: ["pocketEnabled", "pocketDriftSeconds", "lampWarmth", "interiorWarmth"]
   }
 ] as const;

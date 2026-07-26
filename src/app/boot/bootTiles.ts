@@ -7,7 +7,11 @@ import * as THREE from "three/webgpu";
 import { TileStreamer } from "../../world/tiles";
 import { prepareFacadeTextures } from "../../world/facade";
 import { AuthoredRegionStreamer } from "../../world/authoredRegions";
-import { warmStaticRegion, warmUnseenMeshSignatures } from "../../render/warmStaticRegion";
+import {
+  warmStaticRegion,
+  warmUnseenMeshSignatures,
+  type RegionCompile
+} from "../../render/warmStaticRegion";
 import type { WorldMap } from "../../world/heightmap";
 import type { Sky } from "../../world/sky";
 
@@ -22,6 +26,14 @@ export interface BootTilesDeps {
 export interface BootTilesResult {
   tiles: TileStreamer;
   authoredRegions: AuthoredRegionStreamer;
+  /**
+   * Late binding for the pipeline's arrival-priority compile lane. Tiles boot
+   * long before the render pipeline's admission machine exists, and a region the
+   * travel cover is waiting on must not warm in the normal queue — that queue is
+   * parked for the whole arrival, so the arrival waits on a compile that is
+   * waiting on the arrival. main binds this next to setCompileBlocker.
+   */
+  setRegionArrivalCompile(compile: RegionCompile | null): void;
 }
 
 export async function bootTiles({ scene, camera, renderer, map, sky }: BootTilesDeps): Promise<BootTilesResult> {
@@ -63,16 +75,19 @@ export async function bootTiles({ scene, camera, renderer, map, sky }: BootTiles
   // handler in the same synchronous run as the hoist above, so the facade
   // promise never has an unhandled-rejection window.
   await Promise.all([facades, tiles.init(map)]);
+  let regionArrivalCompile: RegionCompile | null = null;
   const authoredRegions = new AuthoredRegionStreamer({
     scene,
     map,
     tiles,
-    prepareRoot: async (label, root) => {
+    prepareRoot: async (label, root, arrivalCritical) => {
+      const compile = arrivalCritical ? regionArrivalCompile ?? undefined : undefined;
       try {
-        const warmup = await warmStaticRegion(renderer, camera, scene, root);
+        const warmup = await warmStaticRegion(renderer, camera, scene, root, compile);
         console.info(
           `[authored-region] ${label} warmed ${warmup.representatives}/${warmup.meshes} meshes ` +
-          `(${warmup.renderSignatures} render paths) in ${(warmup.durationMs / 1000).toFixed(2)}s`
+          `(${warmup.renderSignatures} render paths) in ${(warmup.durationMs / 1000).toFixed(2)}s` +
+          `${arrivalCritical ? " [arrival lane]" : ""}`
         );
       } catch (error) {
         // Compilation is a covered presentation optimization. The parsed
@@ -83,5 +98,11 @@ export async function bootTiles({ scene, camera, renderer, map, sky }: BootTiles
   });
   await authoredRegions.init();
   import.meta.hot?.dispose(() => authoredRegions.dispose());
-  return { tiles, authoredRegions };
+  return {
+    tiles,
+    authoredRegions,
+    setRegionArrivalCompile: (compile) => {
+      regionArrivalCompile = compile;
+    }
+  };
 }

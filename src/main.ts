@@ -129,7 +129,7 @@ async function boot() {
   let oceanBeachWaves: import("./gameplay/surfing/waves").OceanBeachWaves | null = null;
 
   progress(40, "streaming the city");
-  const { tiles, authoredRegions } = await bootTiles({ scene, camera, renderer, map, sky });
+  const { tiles, authoredRegions, setRegionArrivalCompile } = await bootTiles({ scene, camera, renderer, map, sky });
   bootMark("tiles");
 
   // M14 terrain-data streaming: real 800 m height/surface/groundtop tiles
@@ -852,6 +852,14 @@ async function boot() {
   });
   pipeline.setCompileBlocker(
     () => worldArrival.active || ringCoordinator.state !== "settled"
+  );
+  // The blocker above parks the normal compile queue for the whole arrival. An
+  // authored region the arrival is REQUIRED to wait for (the Sutro deck, the
+  // Fort Mason bandstand) must therefore warm on the priority lane, or the
+  // transition waits 18 s on a compile that is waiting on the transition and
+  // then fails into visual-blocked.
+  setRegionArrivalCompile((object, activeCamera, targetScene) =>
+    pipeline.compileAsyncPrioritized(object, activeCamera, targetScene)
   );
   classifyFarArrival = arrival.classifyFarArrival;
   onFarArrivalCut = arrival.onFarArrivalCut;
