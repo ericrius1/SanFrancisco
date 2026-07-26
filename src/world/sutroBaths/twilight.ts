@@ -61,6 +61,15 @@ export type SutroSkyClock = {
   readonly civilTime: SfCivilTime;
   readonly timeAuthority: number | null;
   setTimeAuthority(hours: number | null): void;
+  /**
+   * The dome's own radiance in a world direction, point features excluded.
+   *
+   * Not a clock duty, but it is the same Sky object, and the pools borrow it so
+   * their mirror is the sky rather than a second hand-authored gradient that
+   * would drift away from it across the pocket's sunset-to-twilight swing.
+   * Optional because probes stub this type with a bare clock.
+   */
+  envRadiance?(dir: unknown, level: unknown): unknown;
 };
 
 export type SutroTwilightOptions = {

@@ -225,16 +225,34 @@ async function main() {
       );
     }
 
+    // ---- pacing, measured rather than glanced at.
+    //
+    // Sampling `tracer.ema` once at the end of the run is worthless: back-to-back
+    // runs of identical code reported 33.1 ms and 16.8 ms, because whatever
+    // streaming or shader compile happened to land in the last second dominates
+    // a running average. Park on the heaviest pose, let the EMA settle, then
+    // take a spread of samples and report the median.
+    await page.evaluate((pose) => window.__sfFreeCam(pose.eye, pose.target), SHOTS[0]);
+    await page.waitForTimeout(4000);
+    const emaSamples = [];
+    for (let i = 0; i < 9; i++) {
+      emaSamples.push(await page.evaluate(() => window.__sf?.tracer?.ema ?? null));
+      await page.waitForTimeout(400);
+    }
+    const usable = emaSamples.filter((v) => typeof v === "number").sort((a, b) => a - b);
+    const medianEmaMs = usable.length ? Number(usable[usable.length >> 1].toFixed(2)) : null;
+
     await page.evaluate(() => window.__sfFreeCam(null));
 
     const state = await page.evaluate(() => {
       const sf = window.__sf;
       return {
         sutro: sf?.sutroBaths?.debugState?.() ?? null,
-        frameEmaMs: sf?.tracer?.ema ?? null,
         pixelRatio: sf?.renderer?.getPixelRatio?.() ?? null
       };
     });
+    state.medianEmaMs = medianEmaMs;
+    state.emaSamples = usable.map((v) => Number(v.toFixed(2)));
 
     await writeFile(
       path.join(OUT, "report.json"),
@@ -243,7 +261,9 @@ async function main() {
     if (pageErrors.length) {
       process.stdout.write(`\nPAGE ERRORS (${pageErrors.length}):\n${pageErrors.slice(0, 5).join("\n")}\n`);
     }
-    process.stdout.write(`\nframe EMA ${state.frameEmaMs} ms · wrote ${OUT}\n`);
+    process.stdout.write(
+      `\nframe EMA median ${state.medianEmaMs} ms (samples ${state.emaSamples.join(", ")}) · wrote ${OUT}\n`
+    );
   } finally {
     await browser.close();
   }

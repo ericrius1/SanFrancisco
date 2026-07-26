@@ -140,7 +140,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   // Construct it with the lazy site root so prepareOptionalRoot prewarms its
   // WebGPU pipeline before the root can become visible. Steam stays behind the
   // tighter proximity gate below.
-  const water = createSutroBathsStaticWater({ renderer: options.renderer });
+  const water = createSutroBathsStaticWater({
+    renderer: options.renderer,
+    // The pools mirror the dome's own radiance rather than a second gradient,
+    // so the reflection tracks the pocket's sunset->twilight swing for free.
+    sky: options.sky ?? null
+  });
   const ambience = createSutroStaticAmbience(options.authoredRegions);
   const vegetation = createSutroBathsVegetation();
   const bathers = createSutroBathers();

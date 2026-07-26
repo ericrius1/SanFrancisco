@@ -12,6 +12,10 @@ export const SUTRO_BATHS_TUNING = tunables("sutroBaths", {
   waterBedTint: { v: 0.5, min: 0, max: 1, step: 0.01, label: "sandy bed tint" },
   waterCaustics: { v: 0.85, min: 0, max: 2, step: 0.01, label: "bed caustics" },
   waterSparkle: { v: 0.85, min: 0, max: 2, step: 0.01, label: "sun sparkles" },
+  // Fresnel-weighted mirror of the sky dome. 1 is the physically honest amount;
+  // the slider exists because the material also picks up a weak sky reflection
+  // through scene.environmentNode, so the two together can overshoot slightly.
+  waterSkyMirror: { v: 0.85, min: 0, max: 1.6, step: 0.01, label: "sky mirror" },
   waterShoreFoam: { v: 0.5, min: 0, max: 1.5, step: 0.01, label: "edge foam rings" },
   waterDepth: { v: 1.35, min: 0.3, max: 3, step: 0.05, label: "pool depth (m)" },
   steamEnabled: { v: true, label: "thermal steam" },
@@ -55,6 +59,7 @@ export const SUTRO_TUNING_FOLDERS = [
       "waterBedTint",
       "waterCaustics",
       "waterSparkle",
+      "waterSkyMirror",
       "waterShoreFoam",
       "waterDepth"
     ]
