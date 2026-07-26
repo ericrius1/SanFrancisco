@@ -166,6 +166,12 @@ export class Input {
   #wantLocked = false;
   /** Invalidates rejected/late request promises without touching a newer gesture. */
   #lockRequestGeneration = 0;
+  /**
+   * True while our own `exitPointerLock` is in flight. Distinguishes that from a
+   * native Esc/browser unlock so a `requestLock()` that raced the exit is not
+   * cancelled by the late `pointerlockchange`.
+   */
+  #expectingUnlock = false;
   #suspended = false;
   #suspensionHolds = new Set<string>();
   #activityCaptured = false;
@@ -318,31 +324,40 @@ export class Input {
       this.#metaHeld.clear();
       this.#resumeLockAfterMeta = false;
       // Drop capture on focus loss; free-cursor mode is sticky until L toggles it.
-      this.#lockRequestGeneration++;
-      this.#wantLocked = false;
-      document.exitPointerLock();
+      this.#dropLock();
     });
 
     document.addEventListener("pointerlockchange", () => {
       const nowLocked = document.pointerLockElement === el;
-      // The browser is the authority on release (including native Escape exit).
-      // Cancel earlier request intent; only a later, explicit gesture may set it.
       if (!nowLocked) {
-        this.#lockRequestGeneration++;
-        this.#wantLocked = false;
+        const expected = this.#expectingUnlock;
+        this.#expectingUnlock = false;
+        if (!expected) {
+          // Native Esc / browser chrome took the lock — cancel intent. Only a
+          // later explicit gesture may re-lock.
+          this.#lockRequestGeneration++;
+          this.#wantLocked = false;
+        }
+        // else: our exitPointerLock finished. Keep `#wantLocked` if requestLock
+        // already ran during the exit; `#tryRequestLock` below issues the API call.
       }
       // A grant that lands after releaseLock() (UI dismiss during an in-flight
       // requestLock) is stale — drop it.
       if (nowLocked && !this.#wantLocked) {
+        this.#expectingUnlock = true;
         document.exitPointerLock();
         return;
       }
       this.locked = nowLocked;
       if (!this.locked) this.fireHeld = false;
       this.onLockChange(this.locked);
-      // A very quick Command tap can release before pointerlockchange arrives.
-      // Re-capture only after the browser confirms that the old lock is gone.
-      if (!nowLocked) this.#resumeMomentaryLock();
+      if (!nowLocked) {
+        // Command clutch: re-capture after the browser confirms the old lock is gone.
+        if (this.#resumeLockAfterMeta) this.#resumeMomentaryLock();
+        // requestLock during an in-flight exit only recorded intent (the API is
+        // ignored while still locked) — issue it now that we are unlocked.
+        else this.#tryRequestLock();
+      }
     });
 
     el.addEventListener("mousedown", (e) => {
@@ -677,10 +692,8 @@ export class Input {
     this.mouseNDCx = 0;
     this.mouseNDCy = 0;
     this.fireHeld = false;
-    this.#lockRequestGeneration++;
-    this.#wantLocked = false;
     this.onFreeCursorChange(true);
-    document.exitPointerLock();
+    this.#dropLock();
   }
 
   #endFreeCursor(relock: boolean) {
@@ -698,8 +711,19 @@ export class Input {
       this.#resumeLockAfterMeta = true;
       return;
     }
-    const generation = ++this.#lockRequestGeneration;
     this.#wantLocked = true;
+    this.#tryRequestLock();
+  }
+
+  /**
+   * Call `requestPointerLock` when intent is set and the element is free.
+   * While an exit is still in flight (`pointerLockElement === el`), only intent
+   * is kept — `pointerlockchange` retries once the unlock lands.
+   */
+  #tryRequestLock() {
+    if (!this.#wantLocked || this.freeCursor || this.#metaHeld.size > 0) return;
+    if (document.pointerLockElement === this.#el) return;
+    const generation = ++this.#lockRequestGeneration;
     // Chrome returns a promise and rejects during the post-Esc cooldown —
     // clear only this request's intent; a later gesture owns a newer generation.
     try {
@@ -728,6 +752,7 @@ export class Input {
     // Free-cursor mode stays sticky (L toggles it); this only drops capture.
     this.#lockRequestGeneration++;
     this.#wantLocked = false;
+    this.#expectingUnlock = document.pointerLockElement === this.#el;
     document.exitPointerLock();
   }
 
