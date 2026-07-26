@@ -13,6 +13,7 @@ import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
 import { createSutroBathsVegetation } from "./vegetation";
 import { createSutroBathers } from "./bathers";
 import { createSutroParlour } from "./parlour";
+import { createSutroPavilionClock } from "./pavilionClock";
 import type { SutroBathsSteam } from "./steam";
 import {
   createSutroBathsStaticWater,
@@ -67,6 +68,8 @@ export type SutroBathsDebugState = {
   water: ReturnType<SutroBathsStaticWater["debugState"]>;
   steam: SutroBathsSteam["stats"] | null;
   twilight: SutroTwilightState;
+  /** Decimal hour the pavilion clock's hands are actually showing. */
+  clockHour: number;
 };
 
 export type SutroBaths = {
@@ -146,11 +149,23 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   const bathers = createSutroBathers();
   const parlour = createSutroParlour();
   parlour.setLampGlow(0);
+  const pavilionClock = createSutroPavilionClock({
+    sky: options.sky,
+    authoredRegions: options.authoredRegions
+  });
+  pavilionClock.setTwilight(0);
   const twilight = createSutroTwilight({
     sky: options.sky,
     onExteriorThinned: options.onExteriorThinned
   });
-  group.add(ambience.group, vegetation.group, parlour.group, bathers.group, water.group);
+  group.add(
+    ambience.group,
+    vegetation.group,
+    parlour.group,
+    pavilionClock.group,
+    bathers.group,
+    water.group
+  );
 
   const stats: SutroBathsStats = {
     architectureMeshes: 57,
@@ -297,8 +312,13 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     steam?.setEnabled(next);
     // A sleeping site must never keep holding the world's clock or the city
     // culled: releasing here covers streaming-out, perf suppression and the
-    // debug panel's A/B toggle in one place.
-    if (!next) twilight.release();
+    // debug panel's A/B toggle in one place. The pavilion clock releases with
+    // it so the next arrival finds its hands already on the hour rather than
+    // winding to it from wherever the last visit left them.
+    if (!next) {
+      twilight.release();
+      pavilionClock.release();
+    }
   };
 
   let perfSuppressed = false;
@@ -350,6 +370,10 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       if (wakeStage < wakeStages.length && !wakeStages[wakeStage]()) wakeStage++;
       ambience.setTwilight(twilight.depth);
       parlour.setLampGlow(twilight.lampGlow);
+      // After twilight.update: the pocket has just written the hour the sky is
+      // rendering, and the clock's whole job is to agree with it.
+      pavilionClock.setTwilight(twilight.depth);
+      pavilionClock.update(dt);
       bathers.setTwilight(twilight.depth);
       water.setTwilight(twilight.depth);
       ambience.update(time, SUTRO_BATHS_TUNING.values);
@@ -439,7 +463,8 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         nearEffectsFailed,
         water: water.debugState(),
         steam: steam?.stats ?? null,
-        twilight: twilight.debugState()
+        twilight: twilight.debugState(),
+        clockHour: pavilionClock.displayHour
       };
     },
     dispose() {
@@ -450,6 +475,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       steam?.dispose();
       bathers.dispose();
       parlour.dispose();
+      pavilionClock.dispose();
       vegetation.dispose();
       ambience.dispose();
       group.removeFromParent();
