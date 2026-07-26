@@ -300,7 +300,8 @@ export function createWildGrass(
     field,
     inputs,
     WILD_GRASS_SPACING,
-    MAX_DENSITY_LAYERS
+    MAX_DENSITY_LAYERS,
+    "wildlands_grass"
   );
   for (const geometry of sourceGeometries) geometry.dispose();
   for (const layer of gpu.layers) {

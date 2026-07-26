@@ -3,6 +3,13 @@
 // height, density/keep, species/style and height vigour. Only newly entering
 // rows/columns are sampled when the player walks; a teleport rebuilds the square
 // progressively through the shared frame scheduler.
+//
+// Resolution is per-instance. The blade field stays at the 1 m / 288-cell grid
+// the grass ladder was tuned against; the wildflower ring pages its own coarser,
+// wider pair of squares, because clump and drift features span tens of metres and
+// the source terrain lattice is 8 m anyway — so its 2.5 m near square plus a 12 m
+// horizon square cost half the blade field's cells while reaching seven times
+// further out.
 
 import * as THREE from "three/webgpu";
 import { valueNoise } from "./scatter";
@@ -33,6 +40,13 @@ export type FoliageFieldOptions = Readonly<{
   schedule?: (job: FoliageFieldBuildJob) => void;
   now?: () => number;
   sliceBudgetMs?: number;
+  /** Cells per side (default FOLIAGE_FIELD_SIZE). */
+  size?: number;
+  /** World metres per cell (default FOLIAGE_FIELD_SPACING). */
+  spacing?: number;
+  /** Hard cell ceiling for one sampling turn, alongside `sliceBudgetMs`. Raise it
+   *  with the budget for a field whose full rebuild gates a world arrival. */
+  maxCellsPerSlice?: number;
 }>;
 
 export type FoliageFieldStats = Readonly<{
@@ -71,11 +85,16 @@ const positiveModulo = (value: number, divisor: number): number =>
  */
 export class FoliageField {
   readonly texture: THREE.DataTexture;
-  readonly data = new Float32Array(FOLIAGE_FIELD_SIZE * FOLIAGE_FIELD_SIZE * 4);
+  readonly data: Float32Array;
+  /** Cells per side of the toroidal square. */
+  readonly size: number;
+  /** World metres per cell. */
+  readonly spacing: number;
 
   readonly #options: FoliageFieldOptions;
   readonly #now: () => number;
   readonly #sliceBudgetMs: number;
+  readonly #maxCellsPerSlice: number;
   readonly #schedule: (job: FoliageFieldBuildJob) => void;
   #generation = 0;
   #build: Build | null = null;
@@ -92,8 +111,12 @@ export class FoliageField {
 
   constructor(options: FoliageFieldOptions) {
     this.#options = options;
+    this.size = Math.max(2, Math.floor(options.size ?? FOLIAGE_FIELD_SIZE));
+    this.spacing = Math.max(0.05, options.spacing ?? FOLIAGE_FIELD_SPACING);
+    this.data = new Float32Array(this.size * this.size * 4);
     this.#now = options.now ?? (() => globalThis.performance?.now() ?? Date.now());
     this.#sliceBudgetMs = Math.max(0.1, options.sliceBudgetMs ?? DEFAULT_SLICE_MS);
+    this.#maxCellsPerSlice = Math.max(16, Math.floor(options.maxCellsPerSlice ?? MAX_CELLS_PER_SLICE));
     this.#schedule = options.schedule ?? ((job) => {
       const run = () => {
         if (job() === "again") setTimeout(run, 0);
@@ -103,8 +126,8 @@ export class FoliageField {
 
     this.texture = new THREE.DataTexture(
       this.data,
-      FOLIAGE_FIELD_SIZE,
-      FOLIAGE_FIELD_SIZE,
+      this.size,
+      this.size,
       THREE.RGBAFormat,
       THREE.FloatType
     );
@@ -122,10 +145,10 @@ export class FoliageField {
   /** World-space square currently guaranteed valid for GPU sampling. */
   get bounds(): Readonly<{ minX: number; maxX: number; minZ: number; maxZ: number }> {
     return {
-      minX: this.#minX * FOLIAGE_FIELD_SPACING,
-      maxX: this.#maxX * FOLIAGE_FIELD_SPACING,
-      minZ: this.#minZ * FOLIAGE_FIELD_SPACING,
-      maxZ: this.#maxZ * FOLIAGE_FIELD_SPACING
+      minX: this.#minX * this.spacing,
+      maxX: this.#maxX * this.spacing,
+      minZ: this.#minZ * this.spacing,
+      maxZ: this.#maxZ * this.spacing
     };
   }
 
@@ -138,9 +161,26 @@ export class FoliageField {
       fullRebuilds: this.#fullRebuilds,
       slabUpdates: this.#slabUpdates,
       uploadedBytes: this.#uploadedBytes,
-      centerX: this.#valid ? (this.#minX + this.#maxX) * 0.5 * FOLIAGE_FIELD_SPACING : Number.NaN,
-      centerZ: this.#valid ? (this.#minZ + this.#maxZ) * 0.5 * FOLIAGE_FIELD_SPACING : Number.NaN
+      centerX: this.#valid ? (this.#minX + this.#maxX) * 0.5 * this.spacing : Number.NaN,
+      centerZ: this.#valid ? (this.#minZ + this.#maxZ) * 0.5 * this.spacing : Number.NaN
     };
+  }
+
+  /**
+   * Forget the resident square so the next `request` re-samples every cell. The
+   * ecology a paint function bakes can depend on live authoring values (the
+   * wildflower clump tunables); moving one of those has to re-bake, not page.
+   */
+  invalidate(): void {
+    if (this.#disposed) return;
+    this.#build?.resolve();
+    this.#build = null;
+    this.#generation++;
+    this.#valid = false;
+    this.#minX = 0;
+    this.#maxX = -1;
+    this.#minZ = 0;
+    this.#maxZ = -1;
   }
 
   /**
@@ -149,13 +189,13 @@ export class FoliageField {
    */
   request(focus: Readonly<{ x: number; z: number }>): Promise<void> {
     if (this.#disposed) return Promise.reject(new Error("Foliage field is disposed"));
-    const centerX = Math.floor(focus.x / FOLIAGE_FIELD_SPACING);
-    const centerZ = Math.floor(focus.z / FOLIAGE_FIELD_SPACING);
-    const half = Math.floor(FOLIAGE_FIELD_SIZE / 2);
+    const centerX = Math.floor(focus.x / this.spacing);
+    const centerZ = Math.floor(focus.z / this.spacing);
+    const half = Math.floor(this.size / 2);
     const minX = centerX - half;
     const minZ = centerZ - half;
-    const maxX = minX + FOLIAGE_FIELD_SIZE - 1;
-    const maxZ = minZ + FOLIAGE_FIELD_SIZE - 1;
+    const maxX = minX + this.size - 1;
+    const maxZ = minZ + this.size - 1;
 
     if (
       this.#build &&
@@ -167,8 +207,8 @@ export class FoliageField {
     ) return Promise.resolve();
 
     const full = !this.#valid ||
-      Math.abs(minX - this.#minX) >= FOLIAGE_FIELD_SIZE ||
-      Math.abs(minZ - this.#minZ) >= FOLIAGE_FIELD_SIZE;
+      Math.abs(minX - this.#minX) >= this.size ||
+      Math.abs(minZ - this.#minZ) >= this.size;
     const cells: Cell[] = [];
     if (full) {
       for (let z = minZ; z <= maxZ; z++) {
@@ -216,8 +256,8 @@ export class FoliageField {
   }
 
   #writeCell(cell: Cell): void {
-    const wx = cell.x * FOLIAGE_FIELD_SPACING;
-    const wz = cell.z * FOLIAGE_FIELD_SPACING;
+    const wx = cell.x * this.spacing;
+    const wz = cell.z * this.spacing;
     const patch = valueNoise(wx, wz, 26, 701);
     const authored = this.#options.paint?.(wx, wz);
     const density = THREE.MathUtils.clamp(
@@ -235,9 +275,9 @@ export class FoliageField {
       0.25,
       2
     );
-    const tx = positiveModulo(cell.x, FOLIAGE_FIELD_SIZE);
-    const tz = positiveModulo(cell.z, FOLIAGE_FIELD_SIZE);
-    const offset = (tz * FOLIAGE_FIELD_SIZE + tx) * 4;
+    const tx = positiveModulo(cell.x, this.size);
+    const tz = positiveModulo(cell.z, this.size);
+    const offset = (tz * this.size + tx) * 4;
     this.data[offset] = this.#options.groundHeight(wx, wz);
     this.data[offset + 1] = density;
     this.data[offset + 2] = species;
@@ -252,7 +292,7 @@ export class FoliageField {
     while (build.cursor < build.cells.length) {
       this.#writeCell(build.cells[build.cursor++]);
       sampled++;
-      if (sampled >= MAX_CELLS_PER_SLICE || this.#now() - started >= this.#sliceBudgetMs) {
+      if (sampled >= this.#maxCellsPerSlice || this.#now() - started >= this.#sliceBudgetMs) {
         return "again";
       }
     }

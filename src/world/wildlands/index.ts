@@ -203,7 +203,11 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     nearExitRadius: 110,
     nearMax: 46
   });
-  const flowers = createFlowerRing(map, exclusions.groundcover); // player-following ring, like the grass
+  // Player-following field, placed by the same GPU ground-cover runtime as the
+  // grass and paging its own baked ecology through the same frame-budget lane.
+  const flowers = createFlowerRing(map, exclusions.groundcover, {
+    schedule: exclusions.scheduleGroundcoverBuild
+  });
   const grass = createWildGrass(map, exclusions.groundcover, {
     schedule: exclusions.scheduleGroundcoverBuild,
     // Completed tile buffers enter the group hidden. The preparation registry
@@ -313,9 +317,10 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
 
   const prepareGroundcoverRoots = async (prepare: NativeTreePrepareUnit): Promise<void> => {
     groundcoverPreparer = prepare;
-    // Wait for the foliage field and its one atomic four-layer compute pass.
-    // This gives the destination a complete far→hero surface under the cover.
-    await grass.whenCriticalReady();
+    // Wait for both paged ecologies and their atomic placement passes. This
+    // gives the destination a complete far→hero surface under the cover, with
+    // its blooms already placed rather than growing in after the reveal.
+    await Promise.all([grass.whenCriticalReady(), flowers.whenCriticalReady()]);
     for (const root of [flowers.group, grass.group]) {
       const units = groundcoverUnits(root);
       // One detached-root compile warms every distinct layer material/layout.
@@ -365,9 +370,9 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
       };
       signal?.addEventListener("abort", onAbort, { once: true });
       try {
-        // Retarget both destination rings immediately. Flowers update in place;
-        // grass pages its toroidal field, then publishes all four compacted layers
-        // together after the shared preparation registry admits their layouts.
+        // Retarget both destination fields immediately. Each pages its toroidal
+        // ecology, then publishes all of its compacted layers together after the
+        // shared preparation registry admits their layouts.
         flowers.update(focus);
         grass.update(focus);
         for (const unit of groundcoverUnits()) {
@@ -379,7 +384,10 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
         if (groundcoverPreparer) {
           await abortable(prepareGroundcoverRoots(groundcoverPreparer), signal);
         } else {
-          await abortable(grass.whenCriticalReady(), signal);
+          await abortable(
+            Promise.all([grass.whenCriticalReady(), flowers.whenCriticalReady()]),
+            signal
+          );
           await abortable(prepareCurrentGroundcover(epoch), signal);
         }
         if (signal?.aborted || epoch !== groundcoverEpoch) throw destinationSuperseded();

@@ -15,6 +15,12 @@ export function requireRenderer(): THREE.WebGPURenderer {
   return renderer;
 }
 
+/** The renderer if one exists, for systems whose CPU half must also run headless
+ *  (deterministic placement contracts construct real graphs with no device). */
+export function optionalRenderer(): THREE.WebGPURenderer | null {
+  return renderer;
+}
+
 /**
  * Release a shared vertex/index attribute that is not owned by a renderable
  * BufferGeometry at eviction time. Three r185 keeps these GPU buffers in its

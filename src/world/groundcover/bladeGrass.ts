@@ -38,6 +38,7 @@ import { groundSwayFlow, groundSwayLite, WIND_DIR } from "./sway";
 import { terrainFieldNormal } from "./terrainFieldNormal";
 import { DISPLACERS, MAX_DISPLACERS } from "./displacers";
 import { fadeAroundInstanceAnchor, instanceAnchorWorld, worldOffsetToModelLocal } from "./instanceDeform";
+import { rankAnnulusGrowth } from "./rankDissolve";
 
 export type GrassEntry = {
   x: number;
@@ -51,11 +52,6 @@ export type GrassEntry = {
 };
 
 const GRASS_FADE_BAND = 0.16;
-// Softening window for the rank fade, as a fraction of a layer's fade band. The
-// hard per-instance rank rejection now happens in the GPU cull pass; each blade
-// shrinks toward its anchor across this window just before it is culled, so the
-// band dissolves gradually instead of popping (decorrelated ranks stagger it).
-const RANK_FADE_SOFT = 0.25;
 
 export type GrassMaterialState = {
   material: THREE.Material;
@@ -63,10 +59,12 @@ export type GrassMaterialState = {
   focus: THREE.Vector2;
 };
 
-/** Storage-buffer handles for GPU-culled indirect draws. The vertex shader
- *  resolves the real instance through `visibleIndices[instanceIndex]`, so a
- *  per-frame cull compute decides which instances rasterize at all. */
-export type GrassIndirectSource = {
+/** The ONE ground-cover instance-data contract. Storage-buffer handles for
+ *  GPU-culled indirect draws: the vertex shader resolves the real instance
+ *  through `visibleIndices[instanceIndex]`, so a per-frame cull compute decides
+ *  which instances rasterize at all. Blades and wildflowers read the identical
+ *  three planes, which is what lets one placement runtime feed both. */
+export type GroundcoverInstanceSource = {
   /** storage node — vec4 anchorXYZ + yaw per instance. */
   transforms: TslNode;
   /** storage node — vec4 spread, height, windAmp, fadeRadius. */
@@ -76,6 +74,9 @@ export type GrassIndirectSource = {
   /** storage node — uint compacted visible-instance indices. */
   visibleIndices: TslNode;
 };
+
+/** @deprecated Name kept for the blade-side call sites; use GroundcoverInstanceSource. */
+export type GrassIndirectSource = GroundcoverInstanceSource;
 
 export type GrassMaterialOptions = {
   /** Subsurface translucency for the backlit blade look. Near/hero layers keep
@@ -331,31 +332,20 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
 
   // A moving field must not visibly sink into the floor. Streamed layers dissolve
   // whole clusters by a stable per-instance rank. That hard rank/distance
-  // rejection now lives in the GPU cull compute pass, so the blade material stays
+  // rejection lives in the GPU cull compute pass, so the blade material stays
   // fully OPAQUE — no per-fragment alphaTest discard, which on Apple's TBDR GPUs
   // would otherwise defeat hidden-surface removal on every blade of every layer.
-  // Here we only soften the band edge: a cluster shrinks toward its ground anchor
-  // as its (unclamped) distance fade approaches its instance rank, dissolving to
-  // nothing just before the cull drops it. `RANK_FADE_SOFT` is measured in the
-  // same units as the cull threshold, so the two stay in lockstep.
+  // Here we only soften the band edge, through the shared ground-cover dissolve
+  // the cull reads too (rankDissolve.ts) — grass and wildflowers grow in and out
+  // by one definition, so neither can drift out of lockstep with its own cull.
   let deformationFade: TslNode = fade;
   if (rankFade) {
-    const rank = tintVertex.w; // per-instance rank; identical to the cull-pass threshold
-    deformationFade = fadeRaw.sub(rank).div(RANK_FADE_SOFT).clamp(0, 1);
-    // Inner band (co-located LOD pair): the same shrink run backwards. The cull
-    // admits this cluster at innerFade >= 1 - rank, so softening the approach to
-    // that threshold grows it out of the ground instead of popping it in. At the
-    // spec's recommended minRadius (two soft windows inside the inner layer's own
-    // dissolve) this reaches full size exactly where the inner layer starts to
-    // shrink, so the pair crossfades with no gap and no double-scale dip.
-    const minRadius = Math.max(0, Number(options.minRadius ?? 0));
-    if (minRadius > 0) {
-      const innerBand = float(Math.max(1, Number(options.innerBand ?? options.fadeBand ?? 12)));
-      const innerRaw = dist.sub(float(minRadius)).div(innerBand);
-      deformationFade = deformationFade.min(
-        innerRaw.sub(float(1).sub(rank)).div(RANK_FADE_SOFT).clamp(0, 1)
-      );
-    }
+    deformationFade = rankAnnulusGrowth(dist, tintVertex.w, {
+      visibleRadius: fadeRadius,
+      fadeBand: Math.max(1, Number(options.fadeBand ?? 12)),
+      minRadius: Math.max(0, Number(options.minRadius ?? 0)),
+      innerBand: Math.max(1, Number(options.innerBand ?? options.fadeBand ?? 12))
+    });
   }
 
   // Compact instance transform: position/rotation + shape replace a 16-float

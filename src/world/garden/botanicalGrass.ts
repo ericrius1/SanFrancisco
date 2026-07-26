@@ -402,7 +402,7 @@ export class BotanicalGrassController extends THREE.Group {
       inputs,
       GARDEN_GRASS_SPACING,
       MAX_DENSITY_LAYERS,
-      "sfbg"
+      "sfbg_grass"
     );
     for (const geometry of sourceGeometries) geometry.dispose();
     for (const layer of this.#gpu.layers) {

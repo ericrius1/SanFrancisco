@@ -10,10 +10,16 @@
   </head>
   <body>
     <script type="module">
-      // Rendered regression for large-coordinate anchor fades. Streamed grass
+      // Rendered regression for large-coordinate anchor fades: streamed grass
       // reconstructs its compact transform but extinguishes deterministic whole
-      // blades instead of scaling the field into the floor. Flowers retain their
-      // existing anchored scale handoff.
+      // blades instead of scaling the field into the floor.
+      //
+      // The wildflower half of this fixture is gone. It injected instances into
+      // InstancedMesh buckets through aBloom/aFlowerAnchor attributes, and the
+      // ring has not owned either since placement moved to GPU storage buffers.
+      // Its coverage now lives in tools/flower-lod-contract-test.mjs (the rank
+      // dissolve windows and ladder continuity, both shared with the grass) —
+      // this file keeps the part it can still render.
       import * as THREE from "three/webgpu";
       import { color } from "three/tsl";
       import {
@@ -31,21 +37,12 @@
         wildGrassLayerKeep,
         wildGrassLayersAt
       } from "/src/world/wildlands/grassField.ts";
-      import {
-        createFlowerRing,
-        FLOWER_EDGE_FADE_BAND_METRES,
-        FLOWER_EDGE_STAGGER_METRES,
-        FLOWER_ROTATION_SHADE_AMPLITUDE
-      } from "/src/world/wildlands/flowerRing.ts";
 
       const W = 320;
       const H = 320;
       const ANCHOR = new THREE.Vector3(8192, 0, 8192);
       const GRASS_REACH = 20;
       const GRASS_FADE_BAND_METRES = 8;
-      const FLOWER_HERO_FADE_START = 13;
-      const FLOWER_HERO_FADE_END = 19;
-      const FLOWER_REACH = 110;
       const FADE_BAND = 0.16;
 
       function finish(result) {
@@ -60,30 +57,6 @@
         return new THREE.Vector2(ANCHOR.x + distance, ANCHOR.z);
       }
 
-      function focusForFlowerHeroFade(fade) {
-        // This fixture injects its instance into the production hero bucket.
-        // Exercise that bucket's actual inverse-smoothstep handoff instead of
-        // the much farther outer-ring fade, where a hero is intentionally gone.
-        const distance = fade >= 1
-          ? 0
-          : fade <= 0
-            ? FLOWER_HERO_FADE_END + 1
-            : (FLOWER_HERO_FADE_START + FLOWER_HERO_FADE_END) * 0.5;
-        return new THREE.Vector2(ANCHOR.x + distance, ANCHOR.z);
-      }
-
-      function focusForFlowerEdgeFade(fade) {
-        // aFlowerAnchor.w = 1 below maps to phase 0.5. Its deterministic outer
-        // window therefore ends halfway through the eight-metre stagger band.
-        const edgeEnd = FLOWER_REACH - FLOWER_EDGE_STAGGER_METRES * 0.5;
-        const edgeStart = edgeEnd - FLOWER_EDGE_FADE_BAND_METRES;
-        const distance = fade >= 1
-          ? edgeStart - 1
-          : fade <= 0
-            ? edgeEnd + 1
-            : (edgeStart + edgeEnd) * 0.5;
-        return new THREE.Vector2(ANCHOR.x + distance, ANCHOR.z);
-      }
 
       function anchorPixel(camera) {
         const p = ANCHOR.clone().project(camera);
@@ -298,57 +271,6 @@
         ];
         scene.add(grass);
 
-        // Flowers: createFlowerRing owns the private production material state.
-        // Updating far outside every wild region only writes its focus uniform and
-        // deliberately avoids terrain/map sampling; then the fixture writes one
-        // deterministic hero and far accents into production instance attributes.
-        const flowers = createFlowerRing({
-          groundHeight: () => 0,
-          surfaceType: () => 0,
-          isWater: () => false
-        });
-        flowers.update({ x: ANCHOR.x, z: ANCHOR.z });
-        const flowerMeshes = flowers.group.children.filter((child) => child.isInstancedMesh);
-        const heroFlower = flowerMeshes.find((mesh) => mesh.name.startsWith("wildlands_flowers_hero_"));
-        const farFlower = flowerMeshes.find((mesh) => mesh.name.startsWith("wildlands_flowers_far_"));
-        if (!heroFlower || !farFlower) throw new Error("production hero/far flower buckets are missing");
-        for (const mesh of flowerMeshes) {
-          mesh.count = 0;
-          mesh.visible = false;
-        }
-
-        const flowerDummy = new THREE.Object3D();
-        flowerDummy.position.copy(ANCHOR);
-        flowerDummy.rotation.y = 0.47;
-        flowerDummy.scale.set(1.75, 1.75, 1.75);
-        flowerDummy.updateMatrix();
-
-        function injectFlower(mesh, rotationShade) {
-          mesh.material.colorNode = color(0xff4ec4);
-          mesh.material.emissiveNode = color(0xff4ec4);
-          mesh.receiveShadow = false;
-          flowerDummy.matrix.toArray(mesh.instanceMatrix.array, 0);
-          mesh.instanceMatrix.needsUpdate = true;
-          const bloom = mesh.geometry.getAttribute("aBloom");
-          bloom.setXYZ(0, 1, 1, 1);
-          bloom.needsUpdate = true;
-          const anchor = mesh.geometry.getAttribute("aFlowerAnchor");
-          anchor.setXYZW(0, ANCHOR.x, ANCHOR.y, ANCHOR.z, rotationShade);
-          anchor.needsUpdate = true;
-          // Wind is not part of this regression. Zeroing its static tip weights
-          // keeps pixel counts identical while the production position graph runs.
-          const sway = mesh.geometry.getAttribute("aSway");
-          sway.array.fill(0);
-          sway.needsUpdate = true;
-          mesh.count = 1;
-          // Production uploads recompute exact per-sector bounds. This fixture
-          // bypasses that writer, so refresh the manually injected bound.
-          mesh.computeBoundingSphere();
-          mesh.boundingSphere.radius += 0.65;
-        }
-        injectFlower(heroFlower, 1);
-        injectFlower(farFlower, 1);
-        scene.add(flowers.group);
 
         const target = new THREE.RenderTarget(W, H, {
           type: THREE.UnsignedByteType,
@@ -358,74 +280,23 @@
 
         async function renderSample(system, fade) {
           grass.visible = system === "grass";
-          flowers.group.visible = system === "flower" || system === "flower-edge";
-          heroFlower.visible = system === "flower";
-          farFlower.visible = system === "flower-edge";
-          if (system === "grass") {
-            const focus = focusForFade(GRASS_REACH, fade, GRASS_FADE_BAND_METRES);
-            grassState.focus.copy(focus);
-          } else if (system === "flower") {
-            const focus = focusForFlowerHeroFade(fade);
-            // update() always moves the private per-ring focus uniform before its
-            // resample throttle / outside-region early return.
-            flowers.update({ x: focus.x, z: focus.y });
-          } else if (system === "flower-edge") {
-            const anchor = farFlower.geometry.getAttribute("aFlowerAnchor");
-            anchor.setW(0, 1);
-            anchor.needsUpdate = true;
-            const focus = focusForFlowerEdgeFade(fade);
-            flowers.update({ x: focus.x, z: focus.y });
-          }
+          grassState.focus.copy(focusForFade(GRASS_REACH, fade, GRASS_FADE_BAND_METRES));
           renderer.setRenderTarget(target);
           await renderer.renderAsync(scene, camera);
           const buf = await renderer.readRenderTargetPixelsAsync(target, 0, 0, W, H);
           return { fade, ...analyzePixels(buf, expectedAnchor) };
         }
 
-        async function captureCurrentFlower(label) {
-          renderer.setRenderTarget(target);
-          await renderer.renderAsync(scene, camera);
-          const buf = await renderer.readRenderTargetPixelsAsync(target, 0, 0, W, H);
-          return { fade: label, ...analyzePixels(buf, expectedAnchor) };
-        }
-
         const grassSamples = [];
-        const flowerSamples = [];
-        const flowerEdgeSamples = [];
         for (const fade of [1, 0.5, 0]) grassSamples.push(await renderSample("grass", fade));
-        for (const fade of [1, 0.5, 0]) flowerSamples.push(await renderSample("flower", fade));
-        for (const fade of [1, 0.5, 0]) flowerEdgeSamples.push(await renderSample("flower-edge", fade));
 
-        // At one fixed radius, the late phase remains visible while the early
-        // phase has already dissolved. This is the rendered proof that the edge
-        // no longer resolves into one circular threshold.
-        const staggerDistance = FLOWER_REACH - FLOWER_EDGE_STAGGER_METRES + 1;
-        const farAnchor = farFlower.geometry.getAttribute("aFlowerAnchor");
-        farAnchor.setW(0, 1 + FLOWER_ROTATION_SHADE_AMPLITUDE);
-        farAnchor.needsUpdate = true;
-        flowers.update({ x: ANCHOR.x + staggerDistance, z: ANCHOR.z });
-        const latePhase = await captureCurrentFlower("late");
-        farAnchor.setW(0, 1 - FLOWER_ROTATION_SHADE_AMPLITUDE);
-        farAnchor.needsUpdate = true;
-        const earlyPhase = await captureCurrentFlower("early");
-        const edgeStagger = {
-          ok: latePhase.pixels >= 8 && earlyPhase.pixels <= 1,
-          distance: staggerDistance,
-          latePhase,
-          earlyPhase
-        };
 
         renderer.setRenderTarget(null);
-        const systems = [
-          verifyTriplet("grass", grassSamples),
-          verifyTriplet("flower", flowerSamples),
-          verifyTriplet("flower-edge", flowerEdgeSamples)
-        ];
+        const systems = [verifyTriplet("grass", grassSamples)];
         const result = {
           ok:
             systems.every((system) => system.ok) &&
-            grassContracts.every((contract) => contract.pass) &&
-            edgeStagger.ok,
+            grassContracts.every((contract) => contract.pass),
           backend: "webgpu",
           anchor: ANCHOR.toArray(),
           expectedAnchorPixel: [
@@ -433,7 +304,6 @@
             +expectedAnchor.y.toFixed(2)
           ],
           systems,
-          edgeStagger,
           grassContracts
         };
         finish(result);

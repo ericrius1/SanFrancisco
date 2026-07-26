@@ -16,6 +16,12 @@ const fieldSource = await readFile(
   new URL("../src/world/groundcover/foliageField.ts", import.meta.url),
   "utf8"
 );
+// Storage arenas, indirect draw sets and visible-index buffers are generic and
+// live in the shared GPU indirect runtime; placement composes them.
+const indirectSource = await readFile(
+  new URL("../src/render/gpuIndirect.ts", import.meta.url),
+  "utf8"
+);
 
 for (const forbidden of [
   "GrassEntry",
@@ -42,12 +48,16 @@ for (const required of [
   "IndirectStorageBufferAttribute",
   "atomicAdd",
   "atomicStore",
-  "StorageInstancedBufferAttribute",
   "textureLoad",
   "setIndirect"
 ]) {
-  assert(placementSource.includes(required), `GPU compactor lost ${required}`);
+  assert(
+    placementSource.includes(required) || indirectSource.includes(required),
+    `GPU compactor lost ${required}`
+  );
 }
+assert(indirectSource.includes("StorageInstancedBufferAttribute"),
+  "instance data must stay in GPU storage buffers, not vertex attributes");
 assert(placementSource.includes("Manual bilinear read"),
   "RGBA32F height filtering must not depend on the optional float32-filterable feature");
 assert(placementSource.includes("withinRadius"), "compute must reject square-corner candidates");
@@ -59,9 +69,9 @@ assert(placementSource.includes("authoredDensity.greaterThan(0)"),
 // visible-index buffer, and materials resolve instances through it.
 assert(placementSource.includes("atomicLoad(liveCounter)"),
   "the per-frame cull must bound iteration by the live compaction counter");
-assert(placementSource.includes("visibleWrite.element(slot).assign(instanceIndex)"),
+assert(indirectSource.includes("visibleWrite.element(target) as N).assign(instanceIndexNode)"),
   "the per-frame cull must append survivors into the visible-index indirection");
-assert(placementSource.includes("visibleIndices: storage(visibleAttr"),
+assert(placementSource.includes("visibleIndices: visible.read"),
   "layer materials must read instances through the culled visible-index buffer");
 
 assert(fieldSource.includes("Entering X slabs") && fieldSource.includes("Entering Z slabs"),

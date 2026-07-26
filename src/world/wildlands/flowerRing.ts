@@ -1,29 +1,34 @@
-// Wildflower ring — the flowers, as a player-following ring co-located with the
-// wildlands grass (grassField.ts). It re-scatters a dense patch around the player
-// as they move, so cost is fixed regardless of region size and it's free outside
-// the nature regions. This REPLACES the old static flowerField: density and the
-// clump↔scatter balance are now live-tunable, and — the whole point — the flowers
-// share the grass's exact wind (groundSway + WIND_DIR) and trample field, so grass
-// and blooms lean the same way at the same time instead of fighting.
+// Wildflower ring — the flowers, as a player-following field co-located with the
+// wildlands grass, and now placed by the SAME GPU ground-cover runtime
+// (groundcover/gpuGrassPlacement.ts) over the SAME kind of paged ecology field.
+// A ladder of concentric layers scatters candidates on the canonical world grid,
+// samples the baked flower field (flowerField.ts), and compacts survivors into
+// storage buffers that a per-frame frustum cull draws indirectly. Blooms share
+// the grass's exact wind (groundSway + WIND_DIR), trample field, instance-data
+// contract, and — the point of this pass — its distance dissolve, so grass and
+// flowers grow in and out of the field by one definition instead of two.
 //
-// Placement borrows the "False Earth" article's Voronoi clustering (scatter.ts's
-// worleyClump): every cell asks which clump centre owns it and how deep in it sits,
-// so you get real single-species patches with sparse mixed singles between them —
-// wildflowers in a field, not an even sprinkle. Designed superbloom meadows still
-// bloom hard up close via flowerDriftAt (the old FLOWER_DRIFTS as a density boost).
+// Two things the old CPU ring could not do, and this one does:
+//  · GROW IN. Every clump carries a stable rank, so each one leaves its LOD band
+//    at its own distance (rankDissolve.ts) — geometry scaling up out of the
+//    ground and back down into it, not a dithered coverage mask and not a ring
+//    sweeping through the meadow. The same window feeds the cull, so a bloom is
+//    always already zero-sized by the time it is dropped.
+//  · REACH. The scatter no longer costs CPU per candidate, so the ladder runs to
+//    the configured reach in continuously-graded rings instead of the old hard
+//    sampling bands, whose 1.6 → 6 → 18 m spacing steps re-rolled every bloom at
+//    120 m and 360 m each time the player crossed one.
 //
 // LOOK (chasing momentchan/false-earth's luminous roses, our own wildflowers): real
 // 3D curved layered petals with true normals + a translucent MeshSSS material + a
 // fresnel rim glow + a pale-centre→saturated-edge colour ramp, so blooms read as
-// dimensional, back-lit, glowing cups — not flat cards. Nearby GPU instances remain
+// dimensional, back-lit, glowing cups — not flat cards. Nearby instances remain
 // small 3–5-stem botanical clumps; distance tiers redistribute that detail into
-// simplified species silhouettes and tiny static accents, spatially bucketed so
-// off-camera meadow sectors actually cull.
+// simplified species silhouettes and tiny static accents.
 
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {
-  atomicAdd,
   attribute,
   cameraPosition,
   cameraViewMatrix,
@@ -39,10 +44,8 @@ import {
   positionGeometry,
   positionLocal,
   positionViewDirection,
+  select,
   sin,
-  smoothstep as smoothstepNode,
-  storage,
-  uint,
   uniform,
   vec2,
   vec3,
@@ -52,18 +55,28 @@ import {
 import { groundSway, groundSwayFlow, groundSwayLite, WIND_DIR } from "../groundcover/sway";
 import { DISPLACERS, MAX_DISPLACERS } from "../groundcover/displacers";
 import { fadeAroundInstanceAnchor, instanceAnchorWorld, worldOffsetToModelLocal } from "../groundcover/instanceDeform";
-import { fitGroundY } from "../groundcover/grounding";
-import { hash2, r2Offset, smoothstep, worleyClump } from "../groundcover/scatter";
-import { flowerDriftAt, grassyGround, nearAnyWildRegion, wildRegionAt } from "./layout";
-import { releaseRendererAttribute, requireRenderer } from "../../app/rendererRegistry";
+import { hash2, smoothstep } from "../groundcover/scatter";
+import type { GroundcoverInstanceSource } from "../groundcover/bladeGrass";
 import {
-  buildCullPass,
-  createCullCamera,
-  createIndirectDrawSet,
-  createInstanceArena,
-  createVisibleBuffer,
-  INDIRECT_STRIDE
-} from "../../render/gpuIndirect";
+  createGpuGrassPlacement,
+  type GpuGrassLayerInput,
+  type GpuGrassPlacement,
+  type GpuGrassStyleContext
+} from "../groundcover/gpuGrassPlacement";
+import { rankAnnulusGrowth, rankHandoffRadius, type RankAnnulus } from "../groundcover/rankDissolve";
+import { nearAnyWildRegion } from "./layout";
+import { createFlowerFields, FLOWER_FIELD_HALF_EXTENT, FLOWER_HORIZON_HALF_EXTENT } from "./flowerField";
+import {
+  FAR_HEIGHT_SCALE,
+  FLOWER_SPECIES_IDS,
+  ROOT_FOOTPRINT_RADIUS,
+  HEADS_PER_CLUMP,
+  KEEP_CEILING,
+  MID_HEADS_PER_CLUMP,
+  PALETTES,
+  type AuthoredFlowerSpecies
+} from "./flowerSpecies";
+import { optionalRenderer } from "../../app/rendererRegistry";
 import { governorEffects, onGovernorChange } from "../../render/adaptiveResolution";
 import type { GardenTerrain } from "../garden/layout";
 import {
@@ -75,15 +88,7 @@ import {
 
 type N = any;
 
-// bloom base palettes (per-instance tint lerps within [a,b] by a hash)
-const PALETTES: { a: number; b: number }[] = [
-  { a: 0xff5a1e, b: 0xe23c14 }, // 0 poppy — california orange
-  { a: 0x6a5cc4, b: 0x8f7ad8 }, // 1 lupine — blue-violet
-  { a: 0xf3ead2, b: 0xf7d65a }, // 2 yarrow — cream→gold
-  { a: 0xffc31e, b: 0xffd94a } // 3 goldfield — bright gold
-];
-
-export type AuthoredFlowerSpecies = "poppy" | "lupine" | "yarrow" | "goldfield";
+export type { AuthoredFlowerSpecies } from "./flowerSpecies";
 
 export type AuthoredFlowerPlacement = {
   x: number;
@@ -97,15 +102,6 @@ export type AuthoredFlowerPlacement = {
 };
 
 export type AuthoredFlowerPalette = { a: number; b: number };
-
-// which species favour which region, and (index 0) the clump-dominant pick order
-const REGION_FLOWERS: Record<string, readonly number[]> = {
-  ggpark: [0, 1, 2, 3],
-  presidio: [1, 2, 0, 1],
-  marin: [0, 0, 3, 1], // poppy-heavy golden hills + goldfields
-  twinpeaks: [1, 2, 0, 3]
-};
-const DEFAULT_PAL: readonly number[] = [0, 1, 2, 3];
 
 // ---- geometry: real 3D curved petals -------------------------------------------
 // A petal is a curved ruled strip that grows +Z outward from the origin and arcs
@@ -406,29 +402,59 @@ function goldfieldGeometry(): THREE.BufferGeometry {
 }
 
 const BUILDERS = [poppyGeometry, lupineGeometry, yarrowGeometry, goldfieldGeometry];
-const HEADS_PER_CLUMP = [3, 3, 3, 5] as const;
 
-// Geometry and deformation are now distance-graded. Hero clumps keep the full
-// curved, layered botanical meshes and interactive trample. Mid clumps keep a
-// recognizable species silhouette with 60–80% fewer triangles and one-sine
-// sway. The distant field is a shared 6-triangle static accent, where stems and
-// petal layering are sub-pixel anyway. Adjacent tiers overlap and scale through
-// noisy handoff bands in the shader instead of hard-switching at a ring edge.
-const HERO_FADE_START = 13;
-const HERO_FADE_END = 19;
-const MID_FADE_START = HERO_FADE_START;
-const MID_FADE_END = HERO_FADE_END;
-const MID_FADE_OUT_START = 43;
-const MID_FADE_OUT_END = 51;
-const FAR_FADE_START = MID_FADE_OUT_START;
-const FAR_FADE_END = MID_FADE_OUT_END;
-const LOD_NOISE_METRES = 1.5;
-const HERO_SAMPLE_END = HERO_FADE_END + LOD_NOISE_METRES + 1;
-const MID_SAMPLE_START = MID_FADE_START - LOD_NOISE_METRES - 1;
-const MID_SAMPLE_END = MID_FADE_OUT_END + LOD_NOISE_METRES + 1;
-const FAR_SAMPLE_START = FAR_FADE_START - LOD_NOISE_METRES - 1;
+// Geometry and deformation are distance-graded. Hero clumps keep the full curved,
+// layered botanical meshes and interactive trample. Mid clumps keep a recognizable
+// species silhouette with 60–80% fewer triangles and one-sine sway. Beyond that
+// the field becomes a shared 6-triangle accent, where stems and petal layering are
+// sub-pixel anyway — first at a 2× cell to hold real density, then at an 8× cell
+// for the horizon wash.
+//
+// Each rung owns an annulus, and hands off to the next through the shared
+// rank dissolve: hero and mid scatter at BIT-IDENTICAL anchors (same stride, same
+// hashes), so their bands partition one set of clumps — a bloom shrinks into the
+// ground as its hero form leaves and its mid form rises out of the same spot.
+const FLOWER_SPACING = 1.6; // canonical wildflower cell (coarser than grass)
 
-const MID_HEADS_PER_CLUMP = [2, 2, 2, 2] as const;
+type FlowerGrade = RankAnnulus & { visibleRadius: number; gridStride: number };
+
+const HERO_GRADE: FlowerGrade = { visibleRadius: 26, fadeBand: 10, gridStride: 1 };
+const MID_GRADE: FlowerGrade = {
+  visibleRadius: 56,
+  fadeBand: 16,
+  gridStride: 1,
+  minRadius: rankHandoffRadius(HERO_GRADE.visibleRadius, HERO_GRADE.fadeBand),
+  innerBand: HERO_GRADE.fadeBand
+};
+// The accent rungs keep the FULL 1.6 m cell out to 140 m — the old ring dropped
+// to a 6 m cell at 120 m, which is where its density visibly fell away. Only
+// past that, where a bloom is well under a pixel, does the cell coarsen; each
+// coarser rung widens its accents by the square root of its cell ratio so the
+// colour it lays down per square metre stays put.
+const FAR_GRADE: FlowerGrade = {
+  visibleRadius: 140,
+  fadeBand: 30,
+  gridStride: 1,
+  minRadius: rankHandoffRadius(MID_GRADE.visibleRadius, MID_GRADE.fadeBand),
+  innerBand: MID_GRADE.fadeBand
+};
+const DIST_GRADE: FlowerGrade = {
+  visibleRadius: 195,
+  fadeBand: 40,
+  gridStride: 4,
+  minRadius: rankHandoffRadius(FAR_GRADE.visibleRadius, FAR_GRADE.fadeBand),
+  innerBand: FAR_GRADE.fadeBand
+};
+const HORIZON_GRADE: FlowerGrade = {
+  visibleRadius: FLOWER_REACH_MAX,
+  fadeBand: 110,
+  gridStride: 10,
+  minRadius: rankHandoffRadius(DIST_GRADE.visibleRadius, DIST_GRADE.fadeBand),
+  innerBand: DIST_GRADE.fadeBand
+};
+
+/** A sparse rung stands in for a denser one; widen its accents to match the ink. */
+const gradeRepresentation = (grade: FlowerGrade): number => Math.sqrt(grade.gridStride);
 
 function simplePoppy(stemH: number): THREE.BufferGeometry {
   const parts = makeStem(stemH, 0.03);
@@ -506,30 +532,12 @@ function farAccentGeometry(): THREE.BufferGeometry {
 const FLOWER_WIND_FULL_DISTANCE = 14;
 const FLOWER_WIND_ZERO_DISTANCE = 46;
 
-// A flower's existing yaw-derived colour variance also gives every clump a free,
-// deterministic edge phase. Each clump fades through a 28 m window, while that
-// window ends at a different point across the outermost 8 m. The combined 36 m
-// transition dissolves into irregular singles instead of drawing a circular rim;
-// no bloom extends beyond the configured reach.
-export const FLOWER_ROTATION_SHADE_AMPLITUDE = 0.117;
-export const FLOWER_EDGE_FADE_BAND_METRES = 28;
-export const FLOWER_EDGE_STAGGER_METRES = 8;
-
+// COLOUR-FROM-ROTATION (the article's cheap-variation trick): a flower's yaw
+// nudges its brightness, so a patch of the same species + tint still varies bloom
+// to bloom for free — no extra buffer, no extra pass. Placed clumps recover it
+// from the yaw they already unpack; authored beds bake it into aFlowerAnchor.w.
 function flowerRotationShade(yaw: number): number {
   return 1 + Math.cos(yaw) * 0.1 + Math.sin(yaw) * 0.06;
-}
-
-/** CPU mirror of the shader edge window, used by deterministic contracts and
- *  visual probes. Production packs the same yaw shade into aFlowerAnchor.w. */
-export function flowerEdgeFadeWindow(reach: number, yaw: number): { start: number; end: number } {
-  const shade = flowerRotationShade(yaw);
-  const phase = THREE.MathUtils.clamp(
-    0.5 - ((shade - 1) / FLOWER_ROTATION_SHADE_AMPLITUDE) * 0.5,
-    0,
-    1
-  );
-  const end = reach - phase * FLOWER_EDGE_STAGGER_METRES;
-  return { start: end - FLOWER_EDGE_FADE_BAND_METRES, end };
 }
 
 // ---- material ------------------------------------------------------------------
@@ -539,29 +547,21 @@ const STEM_COL = vec3(0.12, 0.22, 0.09);
 type FlowerMaterialState = {
   material: THREE.MeshSSSNodeMaterial | THREE.MeshStandardNodeMaterial;
   focus: THREE.Vector2;
-  reach: N;
 };
 
 type FlowerRenderTier = "authored" | "hero" | "mid" | "far";
 
-/** Storage handles for the GPU-culled ring tiers. The vertex shader resolves
- *  the real instance through `visibleIndices[base + instanceIndex]`, written by
- *  the per-frame frustum pass, and reconstructs the transform from packed data
- *  instead of an instance matrix. */
-type FlowerIndirectSource = {
-  /** vec4 — anchor xyz (world) + yaw. */
-  data0: N;
-  /** vec4 — scale xz, scale y, rotation shade, bucket id. */
-  data1: N;
-  /** vec4 — bloom rgb + conservative cull radius. */
-  data2: N;
-  /** uint — shared compacted visible-index buffer. */
-  visibleIndices: N;
-  /** uint uniform — first slot of this bucket's visible region. */
-  base: N;
+/** A placed rung reads the shared ground-cover instance planes through the
+ *  frustum-culled visible-index indirection, exactly as a blade layer does:
+ *  transforms = anchor xyz + yaw · shapes = spread, height, wind gain, live
+ *  outer radius · colors = bloom rgb + dissolve rank. */
+type FlowerPlacedSource = {
+  indirect: GroundcoverInstanceSource;
+  grade: FlowerGrade;
 };
 
-function flowerMaterial(tier: FlowerRenderTier, indirect?: FlowerIndirectSource): FlowerMaterialState {
+function flowerMaterial(tier: FlowerRenderTier, placed?: FlowerPlacedSource): FlowerMaterialState {
+  const indirect = placed?.indirect ?? null;
   // True SSS is reserved for hero/authored petals where translucency covers
   // enough pixels to read. Mid/far tiers use a cheaper standard node material,
   // retaining the colour ramp and rim lift without paying SSS over the field.
@@ -578,30 +578,39 @@ function flowerMaterial(tier: FlowerRenderTier, indirect?: FlowerIndirectSource)
   const headMask: N = attribute("aHead", "float");
   const grad: N = attribute("aG", "float"); // 0 bloom centre → 1 petal tip
 
-  // Indirect tiers fetch packed instance data through the frustum-culled index
-  // buffer; hoist each vec4 into a var so reuse doesn't re-emit buffer loads.
+  // Placed rungs fetch instance data through the frustum-culled index buffer;
+  // hoist each vec4 into a var so reuse doesn't re-emit buffer loads.
   const trueIndex: N | null = indirect
-    ? (indirect.visibleIndices.element(uint(instanceIndex).add(indirect.base)) as N).toVar()
+    ? (indirect.visibleIndices.element(instanceIndex) as N).toVar()
     : null;
-  const d0: N | null = indirect ? (indirect.data0.element(trueIndex) as N).toVar() : null;
-  const d1: N | null = indirect ? (indirect.data1.element(trueIndex) as N).toVar() : null;
-  const d2: N | null = indirect ? (indirect.data2.element(trueIndex) as N).toVar() : null;
+  /** anchor xyz + yaw */
+  const d0: N | null = indirect ? (indirect.transforms.element(trueIndex) as N).toVar() : null;
+  /** spread, height, wind gain, live outer radius */
+  const d1: N | null = indirect ? (indirect.shapes.element(trueIndex) as N).toVar() : null;
+  /** bloom rgb + dissolve rank */
+  const d2: N | null = indirect ? (indirect.colors.element(trueIndex) as N).toVar() : null;
 
-  // positionNode runs after the instance matrix in Three r185. Keep the exact
-  // mesh-local instance translation available so LOD scales around the root,
-  // never around the world's origin. W carries precomputed yaw colour variance.
+  // Authored beds still draw as InstancedMesh, where positionNode runs AFTER the
+  // instance matrix in Three r185: keep the exact mesh-local instance translation
+  // available so any shrink pivots around the root and not the world origin.
+  // Its W carries the baked yaw colour variance a placed rung recovers in-shader.
   const flowerAnchor: N | null = indirect ? null : attribute("aFlowerAnchor", "vec4");
   const anchorLocal: N = indirect ? d0.xyz : flowerAnchor.xyz;
   // Ring meshes sit at the world origin, so the packed anchor IS world space.
   const anchorWorld: N = indirect ? d0.xyz : instanceAnchorWorld(anchorLocal);
   const focus = new THREE.Vector2(1e6, 1e6);
   const focusU: N = uniform(focus);
-  const reachU: N = uniform(110);
 
-  // COLOUR-FROM-ROTATION (the article's cheap-variation trick): a flower's yaw
-  // nudges its brightness, so a patch of the same species + tint still varies bloom
-  // to bloom for free — packed beside the anchor, no extra buffer or pass.
-  const rotShade: N = indirect ? d1.z : flowerAnchor.w;
+  // Placed rungs reconstruct rotation in-shader (no instance matrix), so yaw is
+  // unpacked once here and reused by the colour shade, the lit normal and the
+  // transform below.
+  const yawCos: N | null = indirect ? (cos(d0.w) as N).toVar() : null;
+  const yawSin: N | null = indirect ? (sin(d0.w) as N).toVar() : null;
+  // COLOUR-FROM-ROTATION: recovered from the yaw already unpacked (placed) or
+  // baked beside the anchor (authored) — either way it costs no extra data.
+  const rotShade: N = indirect
+    ? float(1).add(yawCos.mul(0.1)).add(yawSin.mul(0.06))
+    : flowerAnchor.w;
   // Fragment stages cannot key storage reads off instanceIndex — route the
   // shaded bloom colour through a vertex-stage varying in indirect mode.
   const bloomV: N = indirect
@@ -614,10 +623,7 @@ function flowerMaterial(tier: FlowerRenderTier, indirect?: FlowerIndirectSource)
   const petalCol: N = mix(core, bloomV, (grad as N).pow(0.55));
   mat.colorNode = mix(STEM_COL, petalCol, headMask);
 
-  // Indirect mode reconstructs rotation in-shader (no instance matrix), so the
-  // lit normal must be yaw-rotated and pushed through a vertex-stage varying.
-  const yawCos: N | null = indirect ? (cos(d0.w) as N).toVar() : null;
-  const yawSin: N | null = indirect ? (sin(d0.w) as N).toVar() : null;
+  // The lit normal must be yaw-rotated and pushed through a vertex-stage varying.
   let litNormalView: N = normalView as N;
   if (indirect) {
     const inverseScaled: N = vec3(
@@ -695,107 +701,61 @@ function flowerMaterial(tier: FlowerRenderTier, indirect?: FlowerIndirectSource)
   const flowXZ: N = tier === "mid" || tier === "far"
     ? vec2(WIND_DIR.x, WIND_DIR.z).mul(swayAmt)
     : groundSwayFlow(anchorWorld.xz.add(windOffset));
+  // A placed clump carries its own wind gain (taller stems catch more), exactly
+  // as a blade cluster does through the same `shapes.z` slot.
+  const windGain: N = indirect ? d1.z : float(1);
   const windWorld: N = vec3(flowXZ.x, 0, flowXZ.y)
     .mul(tier === "mid" ? 0.065 : tier === "far" ? 0 : 0.11)
     .mul(swayW)
+    .mul(windGain)
     .mul(windDamp)
     .mul(windLod);
   const dipWorld: N = vec3(0, crush.mul(-0.4).mul(swayW), 0); // head sinks when stepped on
 
-  const dist: N = anchorWorld.xz.sub(focusU).length();
-  const rotationVariance: N = rotShade
-    .sub(1)
-    .div(FLOWER_ROTATION_SHADE_AMPLITUDE)
-    .clamp(-1, 1);
-
-  // Broad, staggered outer fade. Stable per-clump windows break the radial edge
-  // into scattered singles while keeping the configured reach a hard outer cap.
-  // Let the brighter rotation variants survive longest at the sparse horizon.
-  const edgePhase: N = rotationVariance.mul(-0.5).add(0.5);
-  const edgeEnd: N = reachU.sub(edgePhase.mul(FLOWER_EDGE_STAGGER_METRES));
-  const ringFade: N = tier === "authored"
-    ? float(1)
-    : smoothstepNode(edgeEnd.sub(FLOWER_EDGE_FADE_BAND_METRES), edgeEnd, dist).oneMinus();
-
-  // W is already a deterministic yaw-derived variance. Reuse it to slide the
-  // LOD thresholds by ±1.5 m: the handoff is a noisy band, never a visible ring.
-  // CPU tier membership is also focus-relative, so orbit/free cameras cannot
-  // fade the only submitted tier away and open a flowerless hole at the player.
-  const lodNoise: N = rotationVariance.mul(LOD_NOISE_METRES);
-  const lodFade: N = tier === "hero"
-    ? smoothstepNode(float(HERO_FADE_START).add(lodNoise), float(HERO_FADE_END).add(lodNoise), dist).oneMinus()
-    : tier === "mid"
-      ? smoothstepNode(float(MID_FADE_START).add(lodNoise), float(MID_FADE_END).add(lodNoise), dist)
-          .mul(smoothstepNode(float(MID_FADE_OUT_START).add(lodNoise), float(MID_FADE_OUT_END).add(lodNoise), dist).oneMinus())
-      : tier === "far"
-        ? smoothstepNode(float(FAR_FADE_START).add(lodNoise), float(FAR_FADE_END).add(lodNoise), dist)
-        : float(1);
-  // Reach and LOD are intentionally separate effects. The configured reach is
-  // the ONLY thing allowed to grow a flower up from its root. LOD handoffs used
-  // to multiply geometry by `lodFade`, which made the hero clumps visibly bloom
-  // at 13–19 m no matter how far the reach slider was pushed. Keep every LOD at
-  // full size and dither its coverage instead, so detail changes without a near
-  // growth ring while the real outer edge still grows at the configured reach.
-  const growthFade: N = ringFade;
-  if (indirect) {
-    mat.opacityNode = vertexStage(lodFade);
-    mat.alphaHash = true;
-  }
+  // GROW IN / GROW OUT. One shared window (rankDissolve.ts), read here to shrink
+  // the clump toward its root and read again by this rung's cull pass to drop it.
+  // The rung's own annulus and the instance's stable rank set the distance, so
+  // adjacent rungs partition the same clumps instead of cross-fading a whole
+  // ring at once — no LOD bloom at the player, no dithered coverage, no pop.
+  const growthFade: N = placed
+    ? rankAnnulusGrowth(anchorWorld.xz.sub(focusU).length(), d2.w, {
+      visibleRadius: d1.w,
+      fadeBand: placed.grade.fadeBand,
+      minRadius: placed.grade.minRadius,
+      innerBand: placed.grade.innerBand
+    })
+    : float(1);
 
   if (indirect) {
-    // Reconstruct the instance transform from packed data: outer reach growth
-    // shrinks toward the root at the geometry origin, then yaw-rotate and
-    // translate to the world anchor. LOD coverage never changes the transform.
-    // Wind/trample offsets are world-space and the ring meshes sit at the
-    // origin, so they apply directly.
+    // Reconstruct the instance transform from packed data: the dissolve shrinks
+    // toward the root at the geometry origin, then yaw-rotate and translate to
+    // the world anchor. Wind/trample offsets are world-space and the ring meshes
+    // sit at the origin, so they apply directly.
     const shaped: N = vec3(
       (positionGeometry as N).x.mul(d1.x),
       (positionGeometry as N).y.mul(d1.y),
       (positionGeometry as N).z.mul(d1.x)
     ).mul(growthFade);
-    const placed: N = vec3(
+    const world: N = vec3(
       shaped.x.mul(yawCos).sub(shaped.z.mul(yawSin)).add(d0.x) as N,
       shaped.y.add(d0.y) as N,
       shaped.x.mul(yawSin).add(shaped.z.mul(yawCos)).add(d0.z) as N
     );
-    mat.positionNode = placed.add(windWorld.add(dipWorld).mul(growthFade));
+    mat.positionNode = world.add(windWorld.add(dipWorld).mul(growthFade));
   } else {
     const scaled: N = fadeAroundInstanceAnchor(positionLocal as N, anchorLocal, growthFade);
     const offsetLocal: N = worldOffsetToModelLocal(windWorld.add(dipWorld).mul(growthFade));
     mat.positionNode = scaled.add(offsetLocal);
   }
   mat.envMapIntensity = tier === "far" ? 0.25 : 0.5;
-  return { material: mat, focus, reach: reachU };
+  return { material: mat, focus };
 }
 
 // ---- ring ----------------------------------------------------------------------
 
-const RESAMPLE_STEP = 9; // re-scatter after the focus moves this far (m)
-const SPACING = 1.6; // flower cell (coarser than grass — flowers are accents)
-// Keep one rebuild-step of invisible instances outside the visible ring. As the
-// player moves, those flowers enter through the shader fade from zero instead
-// of appearing at ~70% scale on the next deterministic re-scatter.
-const SAMPLE_OVERSCAN = RESAMPLE_STEP;
-// Preserve the original full-density 110 m ring (plus overscan), then grow the
-// field in progressively coarser world-space bands. Each far accent represents
-// a larger patch, keeping the CPU scan and GPU instance pool nearly linear in
-// visible detail instead of making a 10x radius cost 100x as much.
-const SAMPLE_BANDS = [
-  { end: 120, spacing: SPACING },
-  { end: 360, spacing: 6 },
-  { end: 1080, spacing: 18 },
-  { end: 3240, spacing: 54 },
-  { end: FLOWER_REACH_MAX + SAMPLE_OVERSCAN, spacing: 162 }
-] as const;
 // The beauty camera sees this layer; the half-resolution ink prepass does not.
 // Tiny animated petals otherwise become unstable depth/normal outlines.
 const BEAUTY_ONLY_LAYER = 31;
-const CLUMP_SALT = 5171;
-
-// keep-probability shape (before the density knob multiplies it)
-const EVEN_PROB = 0.28; // clumpiness 0: a uniform moderate field
-const CLUMP_PEAK = 0.85; // clumpiness 1: dense inside a clump
-const CLUMP_FLOOR = 0.03; // clumpiness 1: sparse singles between clumps
 
 type Row = { x: number; y: number; z: number; yaw: number; sx: number; sy: number; r: number; g: number; b: number };
 
@@ -856,12 +816,11 @@ export function createAuthoredFlowerPatch(
   group.name = options.name;
   const materialState = flowerMaterial("authored");
   // Authored patches are spatially bounded by their owner and use its range
-  // gate. Keep the ring-edge shader fade fully open for these static instances.
+  // gate — no distance dissolve, so the focus is inert for them.
   materialState.focus.set(0, 0);
-  materialState.reach.value = 1e7;
   const material = materialState.material;
   const geoms = BUILDERS.map((builder) => builder());
-  const speciesIds: readonly AuthoredFlowerSpecies[] = ["poppy", "lupine", "yarrow", "goldfield"];
+  const speciesIds = FLOWER_SPECIES_IDS;
   const speciesIndex = new Map(speciesIds.map((id, index) => [id, index] as const));
   const rows: Row[][] = geoms.map(() => []);
   const colorA = new THREE.Color();
@@ -931,17 +890,118 @@ export function createAuthoredFlowerPatch(
   };
 }
 
+
+// ---- placed ladder ---------------------------------------------------------------
+
+/** Seat a clump on the lowest point of its footprint, a few centimetres proud of
+ *  it, and refuse ground that breaks by more than a stem's worth across the span. */
+const ROOT_MAX_RISE = 0.78;
+const ROOT_SINK = 0.035;
+/** Ground taps for the shared accent rungs, whose species varies per instance. */
+const ACCENT_FOOTPRINT_RADIUS = 0.28;
+/** Three vec4 instance planes, matching the shared ground-cover arena. */
+const FLOWER_INSTANCE_BYTES = 12 * Float32Array.BYTES_PER_ELEMENT;
+/** Retarget the placement after the player moves this far. */
+const FLOWER_STREAM_STEP = 6;
+/** Instance slots reserved per candidate on the shared accent rungs. */
+const ACCENT_CAPACITY_FRACTION = 0.85;
+
+// Palettes as LINEAR working-space colour, resolved once so the placement shader
+// can carry them as literals instead of another storage buffer.
+const PALETTE_LINEAR = PALETTES.map(({ a, b }) => ({
+  a: new THREE.Color().setHex(a),
+  b: new THREE.Color().setHex(b)
+}));
+
+const speciesBloom = (species: number, tint: N): N => {
+  const { a, b } = PALETTE_LINEAR[species];
+  return mix(vec3(a.r, a.g, a.b), vec3(b.r, b.g, b.b), tint);
+};
+
+/** Palette for a species only known at runtime (the shared accent rungs). */
+const dynamicBloom = (speciesId: N, tint: N): N => {
+  let bloom: N = speciesBloom(PALETTE_LINEAR.length - 1, tint);
+  for (let species = PALETTE_LINEAR.length - 2; species >= 0; species--) {
+    bloom = select(speciesId.equal(int(species)), speciesBloom(species, tint), bloom);
+  }
+  return bloom;
+};
+
+const dynamicHeightScale = (speciesId: N): N => {
+  let scale: N = float(FAR_HEIGHT_SCALE[FAR_HEIGHT_SCALE.length - 1]);
+  for (let species = FAR_HEIGHT_SCALE.length - 2; species >= 0; species--) {
+    scale = select(speciesId.equal(int(species)), float(FAR_HEIGHT_SCALE[species]), scale);
+  }
+  return scale;
+};
+
+/** The baked field's packed B channel: species id in the integer part, its clump's
+ *  brightness seed in the fraction. Read from the NEAREST tap so neither drifts. */
+const unpackSpecies = (ctx: GpuGrassStyleContext): { id: N; seed: N } => {
+  const packed = (ctx.ecoNearest.z.mul(4) as N).toVar();
+  return { id: int(packed), seed: packed.fract() };
+};
+
+/** Roll this candidate against the baked keep shape × the live density knob, and
+ *  (for a species-specific rung) against the species its clump belongs to. */
+function flowerSelect(species: number | null) {
+  return (ctx: GpuGrassStyleContext): N => {
+    const keep = ctx.density.mul(ctx.ecoNearest.y).clamp(0, KEEP_CEILING);
+    const rolled = ctx.hash01(ctx.gx, ctx.gz, 23).lessThanEqual(keep) as N;
+    if (species === null) return rolled;
+    return rolled.and(unpackSpecies(ctx).id.equal(int(species)));
+  };
+}
+
+/**
+ * One clump's shape and bloom colour. Detail rungs carry the species silhouette
+ * at its authored size; the accent rungs stand in for a sparser grid, so they
+ * widen by the square root of their cell ratio and take the species' relative
+ * height — a distant lupine spike still reads taller than a goldfield tuft.
+ */
+function flowerStyle(grade: FlowerGrade, species: number | null) {
+  const representation = gradeRepresentation(grade);
+  const accent = species === null;
+  return (ctx: GpuGrassStyleContext) => {
+    const { id, seed } = unpackSpecies(ctx);
+    const tint = ctx.hash01(ctx.gx, ctx.gz, 41);
+    const baseSpread = ctx.ecoNearest.w.add(ctx.hash01(ctx.gx, ctx.gz, 37).mul(0.5));
+    const baseHeight = baseSpread.mul(float(0.85).add(tint.mul(0.3)));
+    const heightScale = accent
+      ? dynamicHeightScale(id)
+      : float(1);
+    const spread = accent
+      ? baseSpread.mul(float(0.88).add(heightScale.mul(0.12))).mul(representation)
+      : baseSpread;
+    const height = accent ? baseHeight.mul(heightScale).mul(representation) : baseHeight;
+    const bloom = (accent ? dynamicBloom(id, tint) : speciesBloom(species, tint))
+      .mul(float(0.88).add(seed.mul(0.24))); // per-clump brightness
+    return {
+      spread,
+      height,
+      yaw: ctx.hash01(ctx.gx, ctx.gz, 31).mul(Math.PI * 2),
+      // Taller stems catch more wind, exactly as a blade cluster's gain does.
+      wind: float(0.88).add(baseHeight.mul(0.24)),
+      color: bloom
+    };
+  };
+}
+
 export type FlowerRing = {
   group: THREE.Group;
   update(focus: { x: number; z: number }): void;
   /** Per-frame GPU frustum cull against the render camera (cheap; no readback). */
   cullFrame(camera: THREE.Camera): void;
-  /** force an immediate re-scatter at the last focus (debug panel calls this on a slider change) */
+  /** Force a re-bake + re-place at the last focus (the debug panel calls this on
+   *  a slider change; clump shaping is baked into the field, so it re-pages). */
   refresh(): void;
+  /** Resolves once the near ladder has been placed for the latest focus. */
+  whenCriticalReady(): Promise<void>;
   dispose(): void;
   stats: {
-    /** GPU clump instances (kept as `count` for existing diagnostics). */
+    /** Live clump instances (kept as `count` for existing diagnostics). */
     count: number;
+    reach: number;
     /** Apparent flower heads/spikes/umbels represented by those clump instances. */
     heads: number;
     /** Instanced geometry triangles submitted by live clumps, before clipping. */
@@ -953,213 +1013,204 @@ export type FlowerRing = {
       mid: readonly number[];
       far: number;
     };
-    /** Submitted GPU instances, including short cross-fade overlap bands. */
+    /** Submitted GPU instances, including the rank-dissolve handoff bands. */
     submittedInstances: number;
-    lodInstances: { hero: number; mid: number; far: number };
+    lodInstances: { hero: number; mid: number; far: number; dist: number; horizon: number };
     draws: number;
     reservedInstances: number;
     reservedInstanceBytes: number;
     droppedByCapacity: number;
     instanceCapPerSpecies: number;
+    /** Paged ecology state, mirroring the grass field's streaming surface. */
+    field: { ready: boolean; pendingCells: number; sampledCells: number };
   };
 };
 
-type FlowerBucket = {
-  mesh: THREE.Mesh;
-  rows: Row[];
-  capacity: number;
-  /** First slot of this bucket's region in the shared data/visible buffers. */
-  base: number;
-  /** Bucket id baked into data1.w so the single cull pass can route slots. */
-  index: number;
+type FlowerTierName = "hero" | "mid" | "far" | "dist" | "horizon";
+
+type FlowerRung = {
+  tier: FlowerTierName;
+  species: number | null;
+  grade: FlowerGrade;
   triangles: number;
-  /** Unscaled local bounding radius of the bucket geometry, for cull margins. */
-  localRadius: number;
+  /** Candidate grid cells this rung tests each time placement retargets. */
+  candidates: number;
+  capacity: number;
+  live: number;
 };
 
-// GPU frustum culling replaced the old angular sector buckets: a per-frame
-// compute pass tests every live clump against the camera and compacts the
-// survivors into indirect draws, so each tier needs only one bucket per
-// distinct geometry (hero/mid per species, far shared). Capacities preserve
-// the previous reserve envelope (mid was 4 sectors × 1152 per species, far was
-// 10 sectors × 1536). FAR was later raised for the wildflower reach extension,
-// and all tiers raised again when the default FLOWER_TUNING.density went
-// 1.4 → 1.9. Reach and density stack, so FAR carries extra headroom — overflowed
-// clumps drop silently, so the reserve must lead combined demand.
-const HERO_CAPACITY_PER_SPECIES = 864;
-const MID_CAPACITY_PER_SPECIES = 6220;
-const FAR_CAPACITY = 40960;
-const FLOWER_INSTANCE_BYTES = 12 * Float32Array.BYTES_PER_ELEMENT; // 3 packed vec4s
-/** World-space margin over the scaled cluster bound: wind sway + trample dip. */
-const FLOWER_CULL_SLACK = 0.9;
-
-const ROOT_FOOTPRINT_RADIUS = [0.31, 0.29, 0.27, 0.24] as const;
-const ROOT_MAX_RISE = 0.78;
-const ROOT_SINK = 0.035;
-const FAR_HEIGHT_SCALE = [1, 1.28, 0.9, 0.68] as const;
-
-export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: number) => boolean): FlowerRing {
+export function createFlowerRing(
+  map: GardenTerrain,
+  excluded?: (x: number, z: number) => boolean,
+  options: {
+    /** App-wide frame-budget lane used to page the baked ecology. */
+    schedule?: (job: () => void | "again") => void;
+    sliceBudgetMs?: number;
+    now?: () => number;
+  } = {}
+): FlowerRing {
   // Lazily bound so CPU-side contracts can construct the ring headlessly; the
-  // per-frame cull only runs inside the live frame loop where a renderer exists.
+  // placement and cull passes only run inside the live frame loop.
   let renderer: THREE.WebGPURenderer | null = null;
   const group = new THREE.Group();
   group.name = "wildlands_flowers";
+
   const heroGeometries = BUILDERS.map((builder) => builder());
   const midGeometries = MID_BUILDERS.map((builder) => builder());
   const farGeometry = farAccentGeometry();
-  const trianglesPerClump = heroGeometries.map((geometry) =>
-    (geometry.index?.count ?? geometry.getAttribute("position").count) / 3
-  );
-  const midTrianglesPerClump = midGeometries.map((geometry) =>
-    (geometry.index?.count ?? geometry.getAttribute("position").count) / 3
-  );
-  const farTrianglesPerClump = (farGeometry.index?.count ?? farGeometry.getAttribute("position").count) / 3;
+  const triangleCount = (geometry: THREE.BufferGeometry) =>
+    (geometry.index?.count ?? geometry.getAttribute("position").count) / 3;
+  const trianglesPerClump = heroGeometries.map(triangleCount);
+  const midTrianglesPerClump = midGeometries.map(triangleCount);
+  const farTriangles = triangleCount(farGeometry);
 
-  // One bucket per distinct geometry; the per-frame GPU cull handles every
-  // camera-facing decision per instance, so no angular sectoring is needed.
-  const bucketSpecs = [
-    ...heroGeometries.map((geometry, species) => ({
-      name: `wildlands_flowers_hero_sp${species}`,
-      tier: "hero" as FlowerRenderTier,
-      geometry,
-      capacity: HERO_CAPACITY_PER_SPECIES
-    })),
-    ...midGeometries.map((geometry, species) => ({
-      name: `wildlands_flowers_mid_sp${species}`,
-      tier: "mid" as FlowerRenderTier,
-      geometry,
-      capacity: MID_CAPACITY_PER_SPECIES
-    })),
-    {
-      name: "wildlands_flowers_far",
-      tier: "far" as FlowerRenderTier,
-      geometry: farGeometry,
-      capacity: FAR_CAPACITY
-    }
-  ];
-  const totalCapacity = bucketSpecs.reduce((sum, spec) => sum + spec.capacity, 0);
-
-  // Shared instance arena (data0/1/2 planes), the compacted visible buffer, and
-  // the indirect draw set all come from the GPU indirect core; CPU rescatters
-  // stream the arena host arrays, the per-frame cull rewrites visibility. Planes:
-  // data0 = anchor xyz+yaw; data1 = scale xz/scale y/rotation shade/bucket id;
-  // data2 = bloom rgb + cull radius.
-  const arena = createInstanceArena(
-    [{ name: "data0", format: "vec4" }, { name: "data1", format: "vec4" }, { name: "data2", format: "vec4" }],
-    totalCapacity
-  );
-  const sharedVisible = createVisibleBuffer(totalCapacity);
-  // Base-lookup indexed by the data-driven bucket id: the single cull dispatch
-  // routes each live slot into its bucket's region of the shared visible buffer.
-  const bucketBaseAttr = new THREE.StorageBufferAttribute(new Uint32Array(bucketSpecs.length), 1);
-  const bucketBaseRead = storage(bucketBaseAttr, "uint", bucketSpecs.length).toReadOnly();
-  const cullCamera = createCullCamera();
-
-  // Pass 1: give each bucket its arena region + indirect material (materials must
-  // exist before the shared draw set can build their meshes).
-  const materialStates: FlowerMaterialState[] = [];
-  let runningBase = 0;
-  const builds = bucketSpecs.map((spec, index) => {
-    const base = runningBase;
-    runningBase += spec.capacity;
-    (bucketBaseAttr.array as Uint32Array)[index] = base;
-    if (!spec.geometry.boundingSphere) spec.geometry.computeBoundingSphere();
-    const state = flowerMaterial(spec.tier, {
-      data0: arena.read("data0"),
-      data1: arena.read("data1"),
-      data2: arena.read("data2"),
-      visibleIndices: sharedVisible.read,
-      base: uniform(base, "uint")
-    });
-    materialStates.push(state);
-    return {
-      spec,
-      base,
-      material: state.material,
-      triangles: (spec.geometry.index?.count ?? spec.geometry.getAttribute("position").count) / 3,
-      localRadius: spec.geometry.boundingSphere?.radius ?? 1 // unscaled; scaled per instance at cull
-    };
+  const fields = createFlowerFields(map, excluded, {
+    schedule: options.schedule,
+    sliceBudgetMs: options.sliceBudgetMs,
+    now: options.now
   });
 
-  // Pass 2: one InstancedBufferGeometry draw per bucket, all sharing the single
-  // indirect buffer + single visible buffer at per-bucket base offsets.
-  const drawSet = createIndirectDrawSet(
-    builds.map((build) => ({
-      geometry: build.spec.geometry,
-      material: build.material,
-      capacity: build.spec.capacity,
-      visible: sharedVisible,
-      visibleBase: build.base,
-      name: build.spec.name
-    })),
+  // Live reach, shared by every rung: each clamps it by its own authored radius,
+  // so one slider grows the whole ladder outward instead of only its last rung.
+  const reachU: N = uniform(FLOWER_REACH_MIN);
+  const materials: FlowerMaterialState[] = [];
+  const rungs: FlowerRung[] = [];
+
+  const detailRung = (
+    tier: "hero" | "mid",
+    grade: FlowerGrade,
+    geometries: THREE.BufferGeometry[],
+    triangles: number[]
+  ): GpuGrassLayerInput[] =>
+    geometries.map((geometry, species) => {
+      rungs.push({ tier, species, grade, triangles: triangles[species], candidates: 0, capacity: 0, live: 0 });
+      return {
+        spec: {
+          name: `${tier}_sp${species}`,
+          gridStride: grade.gridStride,
+          visibleRadius: grade.visibleRadius,
+          fadeBand: grade.fadeBand,
+          minRadius: grade.minRadius,
+          innerBand: grade.innerBand,
+          densityLayers: 1,
+          groundFit: "lowest",
+          groundFoot: ROOT_FOOTPRINT_RADIUS[species],
+          groundSink: ROOT_SINK,
+          slopeCull: ROOT_MAX_RISE
+        },
+        geometry,
+        materialFor: (source: GroundcoverInstanceSource) => {
+          const state = flowerMaterial(tier, { indirect: source, grade });
+          materials.push(state);
+          return state;
+        },
+        trianglesPerCluster: triangles[species],
+        style: flowerStyle(grade, species),
+        select: flowerSelect(species),
+        radiusNode: reachU,
+        // A superbloom drift forces ONE species across its whole ellipse, so at
+        // the maximum density the dominant rung has to hold nearly every kept
+        // candidate — reserve just past the baked keep ceiling.
+        capacityFraction: KEEP_CEILING + 0.03
+      } satisfies GpuGrassLayerInput;
+    });
+
+  const accentRung = (
+    tier: "far" | "dist" | "horizon",
+    grade: FlowerGrade,
+    field?: ReturnType<typeof createFlowerFields>["horizon"]
+  ): GpuGrassLayerInput => {
+    rungs.push({ tier, species: null, grade, triangles: farTriangles, candidates: 0, capacity: 0, live: 0 });
+    // The horizon rung reads a 12 m ecology, where a 30 cm footprint fit and a
+    // stem-height slope cull resolve nothing: seat it on the interpolated
+    // surface and let the ladder's inner rungs own the terrain-fitting rules.
+    const coarse = tier === "horizon";
+    return {
+      spec: {
+        name: tier,
+        gridStride: grade.gridStride,
+        visibleRadius: grade.visibleRadius,
+        fadeBand: grade.fadeBand,
+        minRadius: grade.minRadius,
+        innerBand: grade.innerBand,
+        densityLayers: 1,
+        groundFit: coarse ? "average" : "lowest",
+        groundFoot: ACCENT_FOOTPRINT_RADIUS,
+        groundSink: ROOT_SINK,
+        slopeCull: coarse ? 1e6 : ROOT_MAX_RISE
+      },
+      geometry: farGeometry,
+      materialFor: (source: GroundcoverInstanceSource) => {
+        // The `far` rung shares the mid rung's ground: it takes over from
+        // swaying clumps at ~40 m, so it keeps the cheap one-sine wind rather
+        // than standing dead still beside them. Only past ~100 m, where a few
+        // centimetres of sway makes a bright petal jump between pixels, does the
+        // ladder go static.
+        const state = flowerMaterial(tier === "far" ? "mid" : "far", { indirect: source, grade });
+        materials.push(state);
+        return state;
+      },
+      trianglesPerCluster: farTriangles,
+      style: flowerStyle(grade, null),
+      select: flowerSelect(null),
+      radiusNode: reachU,
+      field,
+      // Worst case is a maximum-density superbloom: the baked keep ceiling times
+      // the plantable share of a wildlands region. Reserve past that — a rung
+      // that overflows drops in grid order, which would carve a visible empty
+      // quadrant rather than thinning evenly.
+      capacityFraction: ACCENT_CAPACITY_FRACTION
+    } satisfies GpuGrassLayerInput;
+  };
+
+  const inputs: GpuGrassLayerInput[] = [
+    ...detailRung("hero", HERO_GRADE, heroGeometries, trianglesPerClump),
+    ...detailRung("mid", MID_GRADE, midGeometries, midTrianglesPerClump),
+    accentRung("far", FAR_GRADE),
+    accentRung("dist", DIST_GRADE),
+    accentRung("horizon", HORIZON_GRADE, fields.horizon)
+  ];
+
+  const gpu: GpuGrassPlacement = createGpuGrassPlacement(
+    fields.near,
+    inputs,
+    FLOWER_SPACING,
+    1,
     "wildlands_flowers"
   );
-  // Source clumps have been cloned into the draw meshes (counts + bounds captured).
   for (const geometry of [...heroGeometries, ...midGeometries, farGeometry]) geometry.dispose();
-
-  // Pass 3: expose each record as a bucket carrying its live-row staging list.
-  const allBuckets = builds.map((build, index): FlowerBucket => {
-    const mesh = drawSet.records[index].mesh;
-    mesh.layers.set(BEAUTY_ONLY_LAYER);
-    // Empty streaming pools stay out of the render list so WebGPU does not
-    // compile every flower-tier pipeline during the initial world reveal.
-    mesh.visible = false;
-    // QA surface: contracts/probes read packed instance data through these.
-    mesh.userData.flowerBase = build.base;
-    mesh.userData.flowerCapacity = build.spec.capacity;
-    mesh.userData.flowerCount = 0;
-    group.add(mesh);
-    return { mesh, rows: [], capacity: build.spec.capacity, base: build.base, index, triangles: build.triangles, localRadius: build.localRadius };
+  gpu.layers.forEach((layer, index) => {
+    rungs[index].capacity = layer.capacity;
+    rungs[index].candidates = layer.candidateSide * layer.candidateSide;
+    // The beauty camera sees blooms; the half-resolution ink prepass must not.
+    layer.mesh.layers.set(BEAUTY_ONLY_LAYER);
+    // Empty pools stay out of the render list so WebGPU does not compile every
+    // flower pipeline during the initial world reveal.
+    layer.mesh.visible = false;
+    layer.mesh.userData.flowerTier = rungs[index].tier;
+    layer.mesh.userData.flowerSpecies = rungs[index].species;
+    group.add(layer.mesh);
   });
-  const heroBuckets = allBuckets.slice(0, 4);
-  const midBuckets = allBuckets.slice(4, 8);
-  const farBucket = allBuckets[8];
-  group.userData.flowerData0 = arena.hostArray("data0");
   // QA surface: probes read the per-frame culled draw counts from this shared
   // indirect buffer (renderer.getArrayBufferAsync) to verify GPU frustum culling.
-  group.userData.flowerIndirect = drawSet.indirect;
-  const reservedInstances = totalCapacity;
-  const capPerSpecies =
-    HERO_CAPACITY_PER_SPECIES +
-    MID_CAPACITY_PER_SPECIES +
-    Math.ceil(FAR_CAPACITY / PALETTES.length);
+  group.userData.flowerIndirect = gpu.indirect;
+  group.userData.flowerRungs = rungs;
 
-  // Per-frame cull: the core drawReset zeroes the draw counts, then one dispatch
-  // over the whole arena frustum-tests every live clump. A negative bucket id
-  // (data1.w) marks a dead slot, rejected by accept; survivors route dynamically —
-  // emit publishes to the shared indirect count + visible buffer by runtime bucket
-  // (record.append can't be used because the bucket is only known from slot data).
-  const cull = buildCullPass({
-    name: "flowers cull",
-    dispatch: totalCapacity,
-    camera: cullCamera,
-    instance: (idx: N) => {
-      const bucket = int((arena.read("data1").element(idx) as N).w).toVar();
-      const d0 = (arena.read("data0").element(idx) as N).toVar();
-      const radius = (arena.read("data2").element(idx) as N).w.toVar();
-      return {
-        center: vec3(d0.x, d0.y.add(radius.mul(0.5)), d0.z),
-        radius,
-        accept: bucket.greaterThanEqual(int(0)),
-        emit: () => {
-          const slot = atomicAdd(drawSet.indirectStorage.element(uint(bucket).mul(uint(INDIRECT_STRIDE)).add(uint(1))), uint(1));
-          const target = (bucketBaseRead.element(uint(bucket)) as N).add(slot);
-          (sharedVisible.write.element(target) as N).assign(idx);
-        }
-      };
-    }
-  });
-  const cullPasses = [drawSet.drawReset, cull];
+  const reservedInstances = rungs.reduce((sum, rung) => sum + rung.capacity, 0);
+  const speciesCapacity = rungs
+    .filter((rung) => rung.species !== null)
+    .reduce((sum, rung) => sum + rung.capacity, 0) / PALETTES.length;
+  const accentCapacity = rungs
+    .filter((rung) => rung.species === null)
+    .reduce((sum, rung) => sum + rung.capacity, 0);
+  const instanceCapPerSpecies = Math.ceil(speciesCapacity + accentCapacity / PALETTES.length);
 
-  const col = new THREE.Color();
-  const a = new THREE.Color();
-  const b = new THREE.Color();
-  const last = { x: 1e9, z: 1e9 };
-  let count = 0;
-  let heads = 0;
-  let droppedByCapacity = 0;
-
-  const sampleGround = (x: number, z: number) => map.groundHeight(x, z);
+  let disposed = false;
+  let generation = 0;
+  let activePromise: Promise<void> = Promise.resolve();
+  let lastSyncX = Number.NaN;
+  let lastSyncZ = Number.NaN;
+  const lastFocus = { x: 1e9, z: 1e9 };
 
   function configuredReach(): number {
     return Math.min(
@@ -1168,259 +1219,185 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     );
   }
 
-  function clearRows() {
-    for (const bucket of allBuckets) bucket.rows.length = 0;
-  }
+  const publishLive = (liveCounts: Uint32Array): void => {
+    for (let index = 0; index < rungs.length; index++) rungs[index].live = liveCounts[index] ?? 0;
+  };
 
-  function uploadRows() {
-    const stage0 = arena.hostArray("data0");
-    const stage1 = arena.hostArray("data1");
-    const stage2 = arena.hostArray("data2");
-    // A negative bucket id marks a dead slot; the cull pass skips them, so no
-    // per-bucket live counters are needed.
-    for (let slot = 0; slot < totalCapacity; slot++) stage1[slot * 4 + 3] = -1;
-    for (const bucket of allBuckets) {
-      for (let i = 0; i < bucket.rows.length; i++) {
-        const row = bucket.rows[i];
-        const slot = (bucket.base + i) * 4;
-        stage0[slot] = row.x;
-        stage0[slot + 1] = row.y;
-        stage0[slot + 2] = row.z;
-        stage0[slot + 3] = row.yaw;
-        stage1[slot] = row.sx;
-        stage1[slot + 1] = row.sy;
-        stage1[slot + 2] = flowerRotationShade(row.yaw);
-        stage1[slot + 3] = bucket.index;
-        stage2[slot] = row.r;
-        stage2[slot + 1] = row.g;
-        stage2[slot + 2] = row.b;
-        stage2[slot + 3] = bucket.localRadius * Math.max(row.sx, row.sy) + FLOWER_CULL_SLACK;
+  const clearLive = (): void => {
+    for (const rung of rungs) rung.live = 0;
+    for (const layer of gpu.layers) layer.mesh.visible = false;
+  };
+
+  const requestGeneration = (focus: { x: number; z: number }, force = false): void => {
+    if (disposed) return;
+    if (
+      !force && Number.isFinite(lastSyncX) &&
+      Math.hypot(focus.x - lastSyncX, focus.z - lastSyncZ) < FLOWER_STREAM_STEP
+    ) return;
+    lastSyncX = focus.x;
+    lastSyncZ = focus.z;
+    const id = ++generation;
+    const destination = { x: focus.x, z: focus.z };
+
+    const run = (async () => {
+      await fields.request(destination);
+      if (disposed || id !== generation) return;
+      gpu.focus.set(destination.x, destination.z);
+      gpu.cullFocus.set(destination.x, destination.z);
+      // Effective density = authored ceiling × governor foliage scale (1.0, or
+      // 0.7 at L4). The tweakpane slider stays the ceiling; this only ever trims.
+      gpu.density.value =
+        Math.max(0, Number(FLOWER_TUNING.values.density)) * governorEffects().foliageScale;
+      reachU.value = configuredReach();
+      for (const material of materials) material.focus.set(destination.x, destination.z);
+      // Headless placement contracts build the real graphs with no device; the
+      // baked ecology above is the half they exercise.
+      renderer ??= optionalRenderer();
+      if (!renderer) return;
+
+      // Reset and every rung's compactor share one command encoder, so rendering
+      // can only ever observe the whole old field or the whole new one.
+      await renderer.computeAsync([gpu.reset, ...gpu.layers.map((layer) => layer.compute)]);
+      // This frame's frustum pass may already have run against the previous
+      // placement; re-cull immediately so the draw counts match the new buffers.
+      renderer.compute(gpu.cullPasses);
+      const readback = await renderer.getArrayBufferAsync(gpu.liveCounts);
+      if (disposed || id !== generation) return;
+      publishLive(new Uint32Array(readback as ArrayBuffer));
+      for (let index = 0; index < gpu.layers.length; index++) {
+        gpu.layers[index].mesh.visible = rungs[index].live > 0;
       }
-      bucket.mesh.visible = bucket.rows.length > 0;
-      bucket.mesh.userData.flowerCount = bucket.rows.length;
+    })();
+    activePromise = run.catch((error) => {
+      if (id === generation) console.warn("[flowers] placement failed", error);
+    });
+  };
+
+  const waitForLatest = async (): Promise<void> => {
+    while (!disposed) {
+      const requested = activePromise;
+      await requested;
+      if (requested === activePromise) return;
     }
-    arena.markDirty("data0");
-    arena.markDirty("data1");
-    arena.markDirty("data2");
-  }
+  };
 
-  function pushRow(bucket: FlowerBucket, row: Row): boolean {
-    if (bucket.rows.length >= bucket.capacity) {
-      droppedByCapacity += 1;
-      return false;
-    }
-    bucket.rows.push(row);
-    return true;
-  }
-
-  function resample(fx: number, fz: number) {
-    const T = FLOWER_TUNING.values;
-    const reach = configuredReach();
-    // Effective density = authored ceiling × governor foliage scale (1.0, or 0.7
-    // at L4). The tweakpane slider stays the ceiling; this multiplier only trims.
-    const density = Math.max(0, T.density as number) * governorEffects().foliageScale;
-    const clumpiness = Math.min(1, Math.max(0, T.clumpiness as number));
-    const clumpSize = Math.max(2, T.clumpSize as number);
-    for (const state of materialStates) state.reach.value = reach;
-
-    clearRows();
-    count = 0;
-    heads = 0;
-    droppedByCapacity = 0;
-    const sampleReach = reach + SAMPLE_OVERSCAN;
-    let bandStart = 0;
-    for (let bandIndex = 0; bandIndex < SAMPLE_BANDS.length; bandIndex++) {
-      const band = SAMPLE_BANDS[bandIndex];
-      const bandEnd = Math.min(sampleReach, band.end);
-      if (bandEnd <= bandStart) break;
-      const spacing = band.spacing;
-      const bandStart2 = bandStart * bandStart;
-      const bandEnd2 = bandEnd * bandEnd;
-      const gx0 = Math.floor((fx - bandEnd) / spacing);
-      const gx1 = Math.ceil((fx + bandEnd) / spacing);
-      const gz0 = Math.floor((fz - bandEnd) / spacing);
-      const gz1 = Math.ceil((fz + bandEnd) / spacing);
-      const saltOffset = bandIndex * 1009;
-
-      for (let gx = gx0; gx <= gx1; gx++) {
-        for (let gz = gz0; gz <= gz1; gz++) {
-          const jitter = r2Offset(gx, gz, 11 + saltOffset);
-          const px = gx * spacing + (jitter.ox - 0.5) * spacing * 0.9;
-          const pz = gz * spacing + (jitter.oz - 0.5) * spacing * 0.9;
-          const dx = px - fx, dz = pz - fz;
-          const distance2 = dx * dx + dz * dz;
-          if (distance2 < bandStart2 || distance2 > bandEnd2) continue;
-
-          // Voronoi clumping: how deep this cell sits in its nearest clump centre.
-          const wc = worleyClump(px, pz, clumpSize * 1.7, CLUMP_SALT);
-          const clumpField = smoothstep(clumpSize, 0, wc.d); // 1 at centre → 0 at rim
-          // clumpiness blends an even field against tight clumps + sparse singles.
-          const clumpyProb = CLUMP_FLOOR + (CLUMP_PEAK - CLUMP_FLOOR) * clumpField;
-          const local = EVEN_PROB * (1 - clumpiness) + clumpyProb * clumpiness;
-
-          // designed superbloom meadows: boost density where a drift covers this cell.
-          const drift = flowerDriftAt(px, pz);
-          const driftKeep = drift.boost > 0 ? density * drift.boost * 1.6 : 0;
-          const baseKeep = density * local;
-          const useDrift = driftKeep > baseKeep;
-          const keep = Math.min(1, Math.max(baseKeep, driftKeep));
-          if (hash2(gx, gz, 23 + saltOffset) > keep) continue;
-
-          // expensive ground test only for cells that survived the keep roll
-          if (excluded?.(px, pz) || !grassyGround(map, px, pz)) continue;
-
-          const region = wildRegionAt(px, pz);
-          const pal = (region && REGION_FLOWERS[region.id]) || DEFAULT_PAL;
-          const inClump = clumpField > 0.4;
-          let species: number;
-          if (useDrift && drift.species >= 0) species = drift.species;
-          else if (inClump) species = pal[Math.floor(wc.seed * pal.length) % pal.length]; // one dominant species per clump
-          else species = pal[Math.floor(hash2(gx, gz, 29 + saltOffset) * pal.length) % pal.length]; // singles are mixed
-          const tint = hash2(gx, gz, 41 + saltOffset);
-          const pal2 = PALETTES[species];
-          a.setHex(pal2.a);
-          b.setHex(pal2.b);
-          col.copy(a).lerp(b, tint).multiplyScalar(0.88 + wc.seed * 0.24); // per-clump brightness
-          const sx = (inClump ? 0.9 : 0.72) + hash2(gx, gz, 37 + saltOffset) * 0.5;
-          const y = fitGroundY(
-            sampleGround,
-            px,
-            pz,
-            ROOT_FOOTPRINT_RADIUS[species] * sx,
-            ROOT_MAX_RISE,
-            -ROOT_SINK
-          );
-          if (y === null) continue;
-
-          const row: Row = {
-            x: px,
-            y,
-            z: pz,
-            yaw: hash2(gx, gz, 31 + saltOffset) * Math.PI * 2,
-            sx,
-            sy: sx * (0.85 + tint * 0.3),
-            r: col.r,
-            g: col.g,
-            b: col.b
-          };
-
-          const distance = Math.sqrt(distance2);
-          // A far accent stands in for a progressively larger patch. Scale it
-          // continuously with distance so coarse-band boundaries never create
-          // a visible size step as the player moves through the meadow.
-          const representationScale = Math.sqrt(Math.max(1, distance / 120));
-          let submitted = false;
-          if (distance <= HERO_SAMPLE_END) submitted = pushRow(heroBuckets[species], row) || submitted;
-          if (distance >= MID_SAMPLE_START && distance <= MID_SAMPLE_END) {
-            submitted = pushRow(midBuckets[species], row) || submitted;
-          }
-          if (distance >= FAR_SAMPLE_START) {
-            const speciesHeightScale = FAR_HEIGHT_SCALE[species];
-            submitted = pushRow(farBucket, {
-              ...row,
-              sy: row.sy * speciesHeightScale * representationScale,
-              sx: row.sx * (0.88 + speciesHeightScale * 0.12) * representationScale
-            }) || submitted;
-          }
-          if (!submitted) continue;
-          count += 1;
-          heads += distance < (HERO_FADE_START + HERO_FADE_END) * 0.5
-            ? HEADS_PER_CLUMP[species]
-            : distance < (MID_FADE_OUT_START + MID_FADE_OUT_END) * 0.5
-              ? MID_HEADS_PER_CLUMP[species]
-              : 1;
-        }
-      }
-      bandStart = band.end;
-    }
-    uploadRows();
-  }
-
-  // Governor foliage axis: the L4 rung drops effective density to 0.7×. Re-scatter
+  // Governor foliage axis: the L4 rung drops effective density to 0.7×. Re-place
   // only when the multiplier actually changes — the governor already enforces an
-  // ~8 s dwell around L4 entry/exit, so this never churns on ordinary level steps.
+  // ~8 s dwell around L4 entry/exit, so this never churns on ordinary steps.
   let lastFoliageScale = governorEffects().foliageScale;
   const unsubscribeGovernor = onGovernorChange((effects) => {
     if (effects.foliageScale === lastFoliageScale) return;
     lastFoliageScale = effects.foliageScale;
-    if (last.x < 1e8) resample(last.x, last.z);
+    if (lastFocus.x < 1e8) requestGeneration(lastFocus, true);
   });
 
   return {
     group,
     update(focus) {
-      // Keep fade centred on the live player every frame; only the deterministic
-      // scatter itself is throttled by RESAMPLE_STEP.
-      for (const state of materialStates) state.focus.set(focus.x, focus.z);
-      const dx = focus.x - last.x, dz = focus.z - last.z;
-      if (dx * dx + dz * dz < RESAMPLE_STEP * RESAMPLE_STEP) return;
-      last.x = focus.x;
-      last.z = focus.z;
-      // Region AABB early-out: the multi-band Worley scan would otherwise run
-      // every 9 m city-wide, even downtown where grassyGround rejects every cell.
-      // Outside every wild region (+live reach), one clearing write empties it.
-      if (!nearAnyWildRegion(focus.x, focus.z, configuredReach() + SAMPLE_OVERSCAN + 2)) {
-        if (count > 0) {
-          clearRows();
-          uploadRows();
-          count = 0;
-          heads = 0;
-        }
+      lastFocus.x = focus.x;
+      lastFocus.z = focus.z;
+      // Keep the dissolve centred on the live player every frame; only the
+      // placement itself is throttled by FLOWER_STREAM_STEP.
+      for (const material of materials) material.focus.set(focus.x, focus.z);
+      // Region AABB early-out: outside every wild region (+ live reach) there is
+      // nothing to bake and nothing to draw, so the ecology never pages downtown.
+      if (!nearAnyWildRegion(focus.x, focus.z, configuredReach() + FLOWER_STREAM_STEP + 2)) {
+        generation++;
+        group.visible = false;
+        clearLive();
+        lastSyncX = Number.NaN;
+        lastSyncZ = Number.NaN;
         return;
       }
-      resample(focus.x, focus.z);
+      group.visible = true;
+      requestGeneration(focus);
     },
     cullFrame(camera) {
-      // Nothing live and already-cleared draw counts: skip the dispatch.
-      if (count === 0) return;
-      renderer ??= requireRenderer();
-      cullCamera.update(camera);
-      renderer.compute(cullPasses);
+      if (disposed || !group.visible) return;
+      if (!rungs.some((rung) => rung.live > 0)) return;
+      renderer ??= optionalRenderer();
+      if (!renderer) return;
+      // The per-instance dissolve tracks the live player focus, matching each
+      // material's shrink; keep the cull reading the same point every frame.
+      gpu.cullFocus.set(lastFocus.x, lastFocus.z);
+      gpu.updateCullCamera(camera);
+      renderer.compute(gpu.cullPasses);
     },
     refresh() {
-      if (last.x < 1e8) resample(last.x, last.z);
+      // Clump shaping and species selection are baked into the ecology field, so
+      // moving those sliders re-bakes rather than re-rolls.
+      fields.invalidate();
+      if (lastFocus.x < 1e8) requestGeneration(lastFocus, true);
     },
+    whenCriticalReady: waitForLatest,
     dispose() {
+      if (disposed) return;
+      disposed = true;
+      generation++;
       unsubscribeGovernor();
-      cull.dispose();
-      // Releases the shared indirect buffer, every record geometry (setIndirect
-      // null + dispose + detach) and the draw-reset compute.
-      drawSet.dispose();
-      arena.dispose();
-      sharedVisible.dispose();
-      releaseRendererAttribute(bucketBaseAttr);
-      for (const state of materialStates) state.material.dispose();
+      fields.dispose();
+      gpu.dispose();
+      for (const material of materials) material.material.dispose();
       group.removeFromParent();
       group.clear();
     },
     get stats() {
-      const heroInstances = heroBuckets.reduce((sum, bucket) => sum + bucket.rows.length, 0);
-      const midInstances = midBuckets.reduce((sum, bucket) => sum + bucket.rows.length, 0);
-      const farInstances = farBucket.rows.length;
-      const submittedTriangles =
-        heroBuckets.reduce((sum, bucket) => sum + bucket.rows.length * bucket.triangles, 0) +
-        midBuckets.reduce((sum, bucket) => sum + bucket.rows.length * bucket.triangles, 0) +
-        farBucket.rows.length * farBucket.triangles;
-      const submittedInstances = heroInstances + midInstances + farInstances;
+      let count = 0;
+      let heads = 0;
+      let submittedTriangles = 0;
+      let draws = 0;
+      let droppedByCapacity = 0;
+      const lodInstances = { hero: 0, mid: 0, far: 0, dist: 0, horizon: 0 };
+      for (const rung of rungs) {
+        const live = Math.min(rung.capacity, rung.live);
+        droppedByCapacity += Math.max(0, rung.live - rung.capacity);
+        lodInstances[rung.tier] += live;
+        count += live;
+        submittedTriangles += live * rung.triangles;
+        draws += live > 0 ? 1 : 0;
+        heads += live * (
+          rung.tier === "hero" ? HEADS_PER_CLUMP[rung.species ?? 0]
+            : rung.tier === "mid" ? MID_HEADS_PER_CLUMP[rung.species ?? 0]
+              : 1
+        );
+      }
+      const field = fields.near.stats;
       return {
-        reach: configuredReach(),
         count,
+        reach: configuredReach(),
         heads,
         submittedTriangles,
         trianglesPerClump,
         trianglesPerClumpByLod: {
           hero: trianglesPerClump,
           mid: midTrianglesPerClump,
-          far: farTrianglesPerClump
+          far: farTriangles
         },
-        submittedInstances,
-        lodInstances: { hero: heroInstances, mid: midInstances, far: farInstances },
-        draws: allBuckets.reduce((draws, bucket) => draws + (bucket.rows.length > 0 ? 1 : 0), 0),
+        submittedInstances: count,
+        lodInstances,
+        draws,
         reservedInstances,
         reservedInstanceBytes: reservedInstances * FLOWER_INSTANCE_BYTES,
         droppedByCapacity,
-        instanceCapPerSpecies: capPerSpecies
+        instanceCapPerSpecies,
+        field: {
+          ready: field.ready,
+          pendingCells: field.pendingCells,
+          sampledCells: field.sampledCells
+        }
       };
     }
   };
 }
+
+/** World-space half-extents of the two baked ecology squares, for contracts. */
+export const FLOWER_LADDER = {
+  hero: HERO_GRADE,
+  mid: MID_GRADE,
+  far: FAR_GRADE,
+  dist: DIST_GRADE,
+  horizon: HORIZON_GRADE,
+  spacing: FLOWER_SPACING,
+  nearHalfExtent: FLOWER_FIELD_HALF_EXTENT,
+  horizonHalfExtent: FLOWER_HORIZON_HALF_EXTENT
+} as const;

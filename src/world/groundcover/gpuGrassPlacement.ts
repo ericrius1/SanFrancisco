@@ -41,11 +41,8 @@ import {
   vec3,
   vec4
 } from "three/tsl";
-import {
-  FOLIAGE_FIELD_SIZE,
-  FOLIAGE_FIELD_SPACING,
-  type FoliageField
-} from "./foliageField";
+import { type FoliageField } from "./foliageField";
+import { rankAnnulusAccept } from "./rankDissolve";
 import { releaseRendererAttribute } from "../../app/rendererRegistry";
 import {
   buildCullPass,
@@ -62,9 +59,6 @@ import type { GrassIndirectSource, GrassMaterialState, GrassMesh } from "./blade
 type N = any;
 
 const WORLD_CELL_OFFSET = 1 << 20;
-// Must be an exact multiple of the toroidal width: unlike a hash offset, this
-// may not rotate the world-to-texture mapping.
-const FIELD_CELL_OFFSET = FOLIAGE_FIELD_SIZE * 4096;
 const HASH_TO_UNIT = 1 / 0x1_0000_0000;
 const R2_A1 = 0.7548776662466927;
 const R2_A2 = 0.5698402909980532;
@@ -77,6 +71,7 @@ const CULL_RADIUS_SLACK = 1.25;
 export type GpuGrassLayerSpec = Readonly<{
   name: string;
   gridStride: number;
+  /** Authored outer radius. Sizes the candidate grid and bounds `radiusNode`. */
   visibleRadius: number;
   fadeBand: number;
   /** Inner hole radius. Layers that share a gridStride (and therefore scatter at
@@ -86,12 +81,26 @@ export type GpuGrassLayerSpec = Readonly<{
    *  and it becomes a real LOD ladder — the inner layer owns the hero ring, this
    *  one grows in across `innerBand` by the same per-instance rank the outer
    *  dissolve already uses, so the handoff is a stochastic crossfade, not a ring.
-   *  Pick `minRadius = innerRadius - innerFadeBand * (1 + 2 * RANK_FADE_SOFT)` so
-   *  this layer is at full size before the inner layer starts shrinking. */
+   *  Use `rankHandoffRadius(innerRadius, innerFadeBand)` (rankDissolve.ts) so this
+   *  layer is at full size before the inner layer starts shrinking. */
   minRadius?: number;
   /** Width of the inner grow-in band. Match the inner layer's `fadeBand` so the
    *  two ramps are exact complements. Defaults to this layer's `fadeBand`. */
   innerBand?: number;
+  /** Candidate planes per cell. Defaults to the placement-wide maximum; a layer
+   *  whose consumer expresses density through its own keep shape (wildflowers)
+   *  wants exactly one. */
+  densityLayers?: number;
+  /** `average` seats a cluster on its footprint mean (blades hug the surface);
+   *  `lowest` seats it on the footprint minimum, so a wildflower's wide skirt of
+   *  petals never floats off a rise. */
+  groundFit?: "average" | "lowest";
+  /** Half-span of the four ground taps. Defaults to the blade footprint. */
+  groundFoot?: number;
+  /** Extra sink applied after grounding. */
+  groundSink?: number;
+  /** Reject a candidate whose footprint rises more than this across the taps. */
+  slopeCull?: number;
 }>;
 
 export type GpuGrassLayer = Readonly<{
@@ -140,13 +149,18 @@ export type GpuGrassStyleContext = Readonly<{
   groundY: N;
   /** Bilinearly-sampled field texel: R height · G density · B style · A vigour. */
   eco: N;
+  /** Nearest (unfiltered) field texel — species/style ids must not interpolate. */
+  ecoNearest: N;
   /** Renormalized vigour patch (0..1) and clamped style channel (0..1). */
   patch: N;
   style: N;
-  /** Placement patchiness uniform node. */
+  /** Placement density and patchiness uniform nodes. */
+  density: N;
   patchiness: N;
   /** Canonical integer hash → [0,1). */
   hash01: (gx: N, gz: N, salt: number) => N;
+  /** Distance from the placement focus (metres). */
+  distance: N;
   /** The layer this candidate belongs to. */
   spec: GpuGrassLayerSpec;
 }>;
@@ -172,6 +186,21 @@ export type GpuGrassLayerInput = Readonly<{
   trianglesPerCluster: number;
   /** Optional per-consumer styling. Omit for the shared wildlands meadow look. */
   style?: GpuGrassStyleHook;
+  /** Replace the built-in density/patchiness keep roll. Return a bool node: the
+   *  wildflower ring rolls its own baked clump/drift keep and species match here,
+   *  while the field's plantability, slope and radius gates still apply. */
+  select?: (ctx: GpuGrassStyleContext) => N;
+  /** Field this layer samples. Defaults to the placement's field — the wildflower
+   *  horizon tier reads a coarser, much wider square than its own near tiers. */
+  field?: FoliageField;
+  /** Live outer radius (uniform node), clamped by the spec's authored radius.
+   *  Omit for a fixed ladder rung. */
+  radiusNode?: N;
+  /** Fraction of the candidate grid this layer reserves instance slots for. A
+   *  layer that keeps only one species (or a deliberately sparse horizon band)
+   *  never approaches 1; reserving its true expectation plus headroom is what
+   *  keeps a four-species ladder inside the old single-tier memory envelope. */
+  capacityFraction?: number;
 }>;
 
 const uintHash = (gx: N, gz: N, salt: number): N => {
@@ -190,18 +219,22 @@ const uintHash = (gx: N, gz: N, salt: number): N => {
 const hash01 = (gx: N, gz: N, salt: number): N =>
   float(uintHash(gx, gz, salt)).mul(HASH_TO_UNIT);
 
-const wrapFieldCell = (value: N): N =>
-  value.add(int(FIELD_CELL_OFFSET)).mod(int(FOLIAGE_FIELD_SIZE));
+// Must be an exact multiple of the field's toroidal width: unlike a hash offset,
+// this may not rotate the world-to-texture mapping.
+const fieldCellOffset = (field: FoliageField): number => field.size * 4096;
+
+const wrapFieldCell = (field: FoliageField, value: N): N =>
+  value.add(int(fieldCellOffset(field))).mod(int(field.size));
 
 const fieldTexel = (field: FoliageField, cellX: N, cellZ: N): N =>
   textureLoad(
     field.texture as unknown as N,
-    ivec2(wrapFieldCell(cellX), wrapFieldCell(cellZ))
+    ivec2(wrapFieldCell(field, cellX), wrapFieldCell(field, cellZ))
   ) as N;
 
 /** Manual bilinear read keeps RGBA32F legal without an optional filterable-f32 feature. */
 const sampleField = (field: FoliageField, world: N): N => {
-  const cell = (world.div(float(FOLIAGE_FIELD_SPACING)) as N);
+  const cell = (world.div(float(field.spacing)) as N);
   const base = floor(cell) as N;
   const blend = cell.sub(base) as N;
   const ix = int(base.x);
@@ -212,7 +245,7 @@ const sampleField = (field: FoliageField, world: N): N => {
 };
 
 const nearestField = (field: FoliageField, world: N): N => {
-  const cell = floor(world.div(float(FOLIAGE_FIELD_SPACING)).add(0.5)) as N;
+  const cell = floor(world.div(float(field.spacing)).add(0.5)) as N;
   return fieldTexel(field, int(cell.x), int(cell.y));
 };
 
@@ -262,12 +295,15 @@ type LayerBuild = {
   visible: VisibleBuffer;
   material: GrassMaterialState;
   capacity: number;
+  candidates: number;
   candidateSide: number;
   reach: number;
   step: number;
   planeCandidates: number;
+  densityLayers: number;
   localRadius: number;
   styleHook: GpuGrassStyleHook;
+  field: FoliageField;
   name: string;
 };
 
@@ -301,7 +337,7 @@ export function createGpuGrassPlacement(
 
   const reset = Fn(() => {
     atomicStore(liveStorage.element(instanceIndex), uint(0));
-  })().compute(inputs.length, [64]).setName("grass live reset");
+  })().compute(inputs.length, [64]).setName(`${namePrefix} live reset`);
 
   // Live field focus for the per-instance rank fade. Kept separate from the
   // placement `focus` (which only retargets every stream step): the material's
@@ -319,8 +355,18 @@ export function createGpuGrassPlacement(
     const reach = Math.ceil(input.spec.visibleRadius / step) + 1;
     const candidateSide = reach * 2 + 1;
     const planeCandidates = candidateSide * candidateSide;
-    const capacity = planeCandidates * maxDensityLayers;
+    const densityLayers = Math.max(1, Math.floor(input.spec.densityLayers ?? maxDensityLayers));
+    const candidates = planeCandidates * densityLayers;
+    // A layer that keeps only a slice of its candidates (one wildflower species,
+    // a sparse horizon band) reserves that slice plus headroom, not the grid.
+    const capacity = Math.max(
+      64,
+      Math.ceil(candidates * Math.min(1, Math.max(0.02, input.capacityFraction ?? 1)))
+    );
     const styleHook = input.style ?? defaultGrassStyle;
+    // The cull scales this per instance by its spread/height; a missing bound
+    // would silently fall back to a fixed guess and over-admit tiny accents.
+    if (!input.geometry.boundingSphere) input.geometry.computeBoundingSphere();
 
     const arena = createInstanceArena(GRASS_ARENA_ATTRS, capacity);
     const visible = createVisibleBuffer(capacity);
@@ -336,15 +382,18 @@ export function createGpuGrassPlacement(
       visible,
       material,
       capacity,
+      candidates,
       candidateSide,
       reach,
       step,
       planeCandidates,
+      densityLayers,
       // Conservative local-space bound for one cluster of this layer, scaled per
       // instance by its spread/height at cull time.
       localRadius: input.geometry.boundingSphere?.radius ?? 1.4,
       styleHook,
-      name: `${namePrefix}_grass_${input.spec.name}_gpu`
+      field: input.field ?? field,
+      name: `${namePrefix}_${input.spec.name}_gpu`
     };
   });
 
@@ -355,11 +404,18 @@ export function createGpuGrassPlacement(
     visible: build.visible,
     name: build.name
   }));
-  const drawSet = createIndirectDrawSet(entries, `${namePrefix}_grass`);
+  const drawSet = createIndirectDrawSet(entries, namePrefix);
 
   // Pass 2: build each layer's placement/compaction compute and per-frame cull.
   const layers = builds.map((build, layerIndex): GpuGrassLayer => {
-    const { input, arena, capacity, candidateSide, reach, step, planeCandidates, localRadius, styleHook } = build;
+    const { input, arena, capacity, candidates, candidateSide, reach, step, planeCandidates, localRadius, styleHook } = build;
+    const layerField = build.field;
+    // Live outer radius. `shapes.w` carries it per instance, so the material's
+    // dissolve and the cull's acceptance both follow a tunable reach with no
+    // pipeline rebuild; the authored radius stays the hard bound on the grid.
+    const radiusNode: N = input.radiusNode
+      ? (input.radiusNode as N).clamp(0, input.spec.visibleRadius)
+      : float(input.spec.visibleRadius);
     const record = drawSet.records[layerIndex];
     const mesh = record.mesh as GrassMesh;
     mesh.userData.grassCapacity = capacity;
@@ -400,65 +456,82 @@ export function createGpuGrassPlacement(
         float(gz).mul(step).add(oz.sub(0.5).mul(step * 0.86))
       );
 
-      const ecoNearest = nearestField(field, world);
-      const eco = sampleField(field, world);
+      const ecoNearest = nearestField(layerField, world);
+      const eco = sampleField(layerField, world);
       const patch = eco.w.sub(0.82).div(0.36).clamp(0, 1);
       const style = eco.z.clamp(0, 1);
       const authoredDensity = ecoNearest.y.clamp(0, 1);
-      const fill = densityNode.mul(authoredDensity).sub(float(densityLayer)).clamp(0, 1);
-      const guaranteedBase = (densityLayer.equal(uint(0)) as N)
-        .and(densityNode.mul(authoredDensity).greaterThanEqual(1));
-      const patchShape = float(0.72).add(patch.mul(0.56));
-      const keep = select(
-        guaranteedBase,
-        float(1),
-        fill.mul(mix(float(1), patchShape, patchinessNode.clamp(0, 1))).clamp(0, 1)
-      );
-
-      const left = sampleField(field, world.add(vec2(-GROUND_FOOT, 0))).x;
-      const right = sampleField(field, world.add(vec2(GROUND_FOOT, 0))).x;
-      const back = sampleField(field, world.add(vec2(0, -GROUND_FOOT))).x;
-      const front = sampleField(field, world.add(vec2(0, GROUND_FOOT))).x;
+      const distance = world.sub(focusU).length().toVar();
+      const groundFoot = Math.max(0.05, Number(input.spec.groundFoot ?? GROUND_FOOT));
+      const left = sampleField(layerField, world.add(vec2(-groundFoot, 0))).x;
+      const right = sampleField(layerField, world.add(vec2(groundFoot, 0))).x;
+      const back = sampleField(layerField, world.add(vec2(0, -groundFoot))).x;
+      const front = sampleField(layerField, world.add(vec2(0, groundFoot))).x;
       const minHeight = left.min(right).min(back).min(front);
       const maxHeight = left.max(right).max(back).max(front);
-      const groundY = left.add(right).add(back).add(front).mul(0.25).sub(GROUND_SINK);
-      const withinRadius = world.sub(focusU).length().lessThan(input.spec.visibleRadius);
-      // Density is continuous authored data, not just a plantable bit. Any
-      // positive value participates in `fill`; a painted 0.3 should make a
-      // sparse patch instead of falling off the former binary 0.5 cliff.
+      // Blades hug the mean; a wildflower's wide petal skirt seats on the
+      // footprint minimum so it can never hover off the crown of a rise.
+      const groundY = (input.spec.groundFit === "lowest"
+        ? minHeight
+        : left.add(right).add(back).add(front).mul(0.25)
+      ).sub(Number(input.spec.groundSink ?? GROUND_SINK));
+      // The candidate grid is a square; only its inscribed disc is this layer's.
+      const withinRadius = distance.lessThan(radiusNode);
+      const context: GpuGrassStyleContext = {
+        gx,
+        gz,
+        salt,
+        saltF: float(salt),
+        world,
+        groundY,
+        eco,
+        ecoNearest,
+        patch,
+        style,
+        density: densityNode,
+        patchiness: patchinessNode,
+        hash01,
+        distance,
+        spec: input.spec
+      };
+
+      const rolled = input.select
+        ? input.select(context)
+        : (() => {
+          // Density is continuous authored data, not just a plantable bit. Any
+          // positive value participates in `fill`; a painted 0.3 should make a
+          // sparse patch instead of falling off the former binary 0.5 cliff.
+          const fill = densityNode.mul(authoredDensity).sub(float(densityLayer)).clamp(0, 1);
+          const guaranteedBase = (densityLayer.equal(uint(0)) as N)
+            .and(densityNode.mul(authoredDensity).greaterThanEqual(1));
+          const patchShape = float(0.72).add(patch.mul(0.56));
+          const keep = select(
+            guaranteedBase,
+            float(1),
+            fill.mul(mix(float(1), patchShape, patchinessNode.clamp(0, 1))).clamp(0, 1)
+          );
+          return hash01(gx, gz, 23).add(float(salt).mul(0.0000002384185791)).fract().lessThanEqual(keep);
+        })();
       const accepted = authoredDensity.greaterThan(0)
-        .and(hash01(gx, gz, 23).add(float(salt).mul(0.0000002384185791)).fract().lessThanEqual(keep))
-        .and(maxHeight.sub(minHeight).lessThanEqual(GROUND_SLOPE_CULL))
+        .and(rolled)
+        .and(maxHeight.sub(minHeight).lessThanEqual(Number(input.spec.slopeCull ?? GROUND_SLOPE_CULL)))
         .and(withinRadius);
 
       If(accepted, () => {
         const outputIndex = atomicAdd(liveCounter, uint(1));
         If(outputIndex.lessThan(uint(capacity)), () => {
-          const styled = styleHook({
-            gx,
-            gz,
-            salt,
-            saltF: float(salt),
-            world,
-            groundY,
-            eco,
-            patch,
-            style,
-            patchiness: patchinessNode,
-            hash01,
-            spec: input.spec
-          });
+          const styled = styleHook(context);
           // Fade rank stays here (not in the hook): the per-frame cull pass reads
           // the SAME expression as its extinction threshold, so styling can never
           // desynchronize the edge dissolve.
           const rank = hash01(gx, gz, 59).add(float(salt).mul(0.0000005960464478)).fract()
             .mul(0.996).add(0.002);
           transforms.element(outputIndex).assign(vec4(world.x, groundY, world.y, styled.yaw));
-          shapes.element(outputIndex).assign(vec4(styled.spread, styled.height, styled.wind, input.spec.visibleRadius));
+          shapes.element(outputIndex).assign(vec4(styled.spread, styled.height, styled.wind, radiusNode));
           colors.element(outputIndex).assign(vec4(styled.color, rank));
         });
       });
-    })().compute(capacity, [256]).setName(`grass compact ${input.spec.name}`);
+    })().compute(candidates, [256]).setName(`scatter compact ${input.spec.name}`);
 
     // Per-instance rank fade — the extra acceptance the shared frustum cull can't
     // own: a cluster survives only while its distance fade to the field focus
@@ -466,10 +539,8 @@ export function createGpuGrassPlacement(
     // to nothing just before this rejection, so the edge dissolves without a pop.
     // A layer with `minRadius` also carries the mirrored INNER rejection, which
     // is what keeps co-located layers from drawing the same anchor twice.
-    const minRadius = Math.max(0, Number(input.spec.minRadius ?? 0));
-    const innerBand = Math.max(1, Number(input.spec.innerBand ?? input.spec.fadeBand));
     const cull = buildCullPass({
-      name: `grass cull ${input.spec.name}`,
+      name: `scatter cull ${input.spec.name}`,
       dispatch: capacity,
       camera: cullCamera,
       activeCount: () => atomicLoad(liveCounter),
@@ -478,17 +549,16 @@ export function createGpuGrassPlacement(
         const s = (shapes.element(idx) as N).toVar();
         const rank = (colors.element(idx) as N).w;
         const dist = t.xz.sub(cullFocusU).length();
-        const fade = float(input.spec.visibleRadius).sub(dist)
-          .div(float(Math.max(1, input.spec.fadeBand))).clamp(0, 1);
         // Inner acceptance is the outer test read backwards: rank r survives the
         // outer edge longest and the inner edge shortest, so the two bands of a
-        // co-located pair partition the clusters instead of doubling them.
-        const accept = minRadius > 0
-          ? fade.greaterThanEqual(rank).and(
-            dist.sub(float(minRadius)).div(float(innerBand)).clamp(0, 1)
-              .greaterThanEqual(float(1).sub(rank))
-          )
-          : fade.greaterThanEqual(rank);
+        // co-located pair partition the clusters instead of doubling them. The
+        // material shrinks against this exact same window (rankDissolve.ts).
+        const accept = rankAnnulusAccept(dist, rank, {
+          visibleRadius: s.w,
+          fadeBand: input.spec.fadeBand,
+          minRadius: input.spec.minRadius,
+          innerBand: input.spec.innerBand
+        });
         const radius = s.x.max(s.y).mul(float(localRadius)).add(CULL_RADIUS_SLACK);
         const center = vec3(t.x, t.y.add(s.y.mul(0.55)), t.z);
         return { center, radius, accept, emit: () => record.append(idx) };
