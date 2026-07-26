@@ -277,6 +277,36 @@ const run = async () => {
       { justHidden: inside.unrestored.length, hidden: inside.rootsHidden, total: inside.rootsTotal }
     );
 
+    // --- the EDGE of the pocket ---------------------------------------------
+    //
+    // The pocket used to let go from the inside. Its latch and the indoor camera
+    // both read feathered blends that had already collapsed several metres
+    // inside the building — twice as fast in a corner, where two axis feathers
+    // multiplied — so walking over to the glass, standing in the north corner or
+    // taking the outer edge of the spiral snapped the sky back to the real
+    // afternoon and swung the camera out to third person, all while the visitor
+    // was still on the deck. Both are measured from the WALL now. These stands
+    // are the ones that used to break: the room must still be at evening, still
+    // hold the clock, and still be in the eye rig at every one of them.
+    for (const [label, point] of [
+      ["east-glass", local(36.4, SITE.deckY + 0.92, 0)],
+      ["north-corner", local(33, SITE.deckY + 0.92, 70)],
+      ["south-corner", local(-33, SITE.deckY + 0.92, -70)],
+      // Two metres PAST the portal: the deliberate buffer, so a step out of the
+      // doorway and back cannot flip anything.
+      ["portal-buffer", local(40.9, 32.1, 63.1)]
+    ]) {
+      await stand(point);
+      const edge = await snapshot();
+      const indoorCamera = await page.evaluate(() => window.__sf.chase?.indoor === true);
+      expect(
+        `edge-${label}-still-inside`,
+        edge.twilight?.inside === true && edge.authority !== null && indoorCamera,
+        { ...edge, indoorCamera }
+      );
+      expect(`edge-${label}-room-still-lit`, edge.twilight?.lampGlow > 0.6, edge);
+    }
+
     await stand(ROAD_STAND);
     const unfaded = await settleSkyCrossfade("out");
     expect("exit-sky-crossfade-completed", unfaded.blend <= 0.001, unfaded);
