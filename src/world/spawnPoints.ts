@@ -18,11 +18,25 @@ export const SUTRO_BATHS_GATE = {
   halfLength: 76.1
 } as const;
 
-/** The dry Point Lobos portal above the broad descending museum stair. */
+/**
+ * On the bath deck, at the south end of the pool cascade, facing north up the
+ * full length of the hall.
+ *
+ * Deliberately INSIDE. The arrival used to land on the Point Lobos road portal
+ * above the descent, which meant every visit to the baths opened on a car park
+ * and a staircase, and the actual place — seven pools under a glass barrel vault
+ * with the Pacific behind them — only appeared after a walk down. Landing on the
+ * deck puts the room itself in the first frame. The road portal and its stair
+ * remain the walk-in route for anyone arriving overland.
+ *
+ * Local (-7, 50) on the deck spine between the great plunge and the graduated
+ * baths, so no pool rectangle is under the capsule; heading is the hall's own
+ * yaw, which looks straight down the axis.
+ */
 export const SUTRO_BATHS_ARRIVAL = {
-  x: -6084.38916,
-  z: 1183.420776,
-  heading: 1.942
+  x: -6135.825455,
+  z: 1166.313381,
+  heading: -0.077
 } as const;
 
 export function distanceToSutroBaths(x: number, z: number): number {

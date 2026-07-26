@@ -1,9 +1,21 @@
-"""Author the final player-first Sutro Baths entrances in Blender.
+"""Author the player-first Sutro Baths entrances in Blender.
 
 The road pavilion, descent, ocean gate, terrain handoffs, and their colliders
 are one authored system. Each approach owns enough terrain to prevent the live
 clipmap from swallowing its walking surface, while retaining a local collision
 height directly beneath the authored floor. The script is idempotent.
+
+SUPERSEDED IN PART — READ BEFORE RUNNING.
+
+The GRAND GALLERY CASCADE section below builds the v5 four-flight switchback,
+which has been REPLACED by the single helical descent in
+`tools/rebuild-sutro-grand-spiral.py` (scene revision 9). Running this script
+again rebuilds the cascade and leaves the hall with two overlapping descents.
+
+If you need to re-author the road pavilion or the ocean gate, run this and then
+immediately re-run `rebuild-sutro-grand-spiral.py`, which deletes the cascade it
+recreates and rebuilds the spiral. Better: lift the pavilion/gate sections into
+their own script and delete the cascade section here.
 """
 
 from __future__ import annotations

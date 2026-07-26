@@ -13,23 +13,38 @@ import { SUTRO_BATHS_TUNING } from "./tuning";
  * warm evening you can walk into whenever you like.
  *
  * HOW IT WORKS
- *  - `depth` is a smoothed 0..1 "how far inside am I": 1 deep in the hall,
- *    0 out on the road or the beach, with a wide feather so the handover
- *    happens while you walk down the gallery stair rather than snapping at a
- *    doorway.
+ *
+ * Two separate signals, because they answer two different questions.
+ *
+ *  - `depth` is a smoothed 0..1 "how far inside am I": 1 deep in the hall, 0 out
+ *    on the road or the beach, with a wide feather. It drives everything that is
+ *    genuinely a property of the ROOM — the lamps coming up, the water's night
+ *    response, the interior grade, the exterior thinning. Those all want to
+ *    follow the visitor, so a position signal is exactly right for them.
+ *
+ *  - `skyBlend` is a 0..1 crossfade for the SKY, and it deliberately does NOT
+ *    follow position. Driving the hour off `depth` was the original design and
+ *    it was wrong in a way you feel immediately: the hour became a function of
+ *    where you stood, so walking a few metres in and out dragged the sun and
+ *    moon back and forth across the sky at walking pace. Instead the pocket
+ *    LATCHES inside/outside with wide hysteresis, and `skyBlend` ramps toward
+ *    that latch on the WALL CLOCK over a fixed number of seconds. Once the latch
+ *    is set, walking around inside cannot move the hour at all — and a visitor
+ *    who arrives already inside (a teleport straight onto the deck) gets the
+ *    evening immediately, with no sweep at all.
+ *
  *  - The hour that produces the wanted light is SOLVED, not hard-coded: the
- *    pocket asks for a sun elevation (just above the horizon → six degrees
+ *    pocket asks for a sun elevation (just above the horizon → a few degrees
  *    below it) and bisects the evening for the civil hour that delivers it on
  *    today's date. So it reads the same in December as in June, which a fixed
  *    "20:15" never would.
- *  - That hour is handed to `sky.setTimeAuthority`, blended from the world's
- *    own clock by `depth` along the SHORT way round the 24-hour circle. Leaving
- *    releases the authority and the world's real time comes straight back — the
- *    pocket owns no stashed state that could leak a pinned sky.
- *
- * The same `depth` drives everything else that should notice the change: the
- * lamps, the water's night response, and the exterior thinning callback that
- * lets the compose layer stop paying for a city nobody inside can see.
+ *  - That hour is handed to `sky.setTimeAuthority`, crossfaded from the world's
+ *    own clock along the SHORT way round the 24-hour circle. Leaving releases
+ *    the authority and the world's real time comes straight back — the pocket
+ *    owns no stashed state that could leak a pinned sky. The remembered world
+ *    hour ticks forward on the wall clock while the pocket holds the sky, so the
+ *    handback lands on the time it actually is outside rather than the time it
+ *    was when the visitor walked in.
  */
 
 /** The subset of Sky this needs — structural so probes can stub a clock. */
@@ -48,6 +63,10 @@ export type SutroTwilightOptions = {
 
 export type SutroTwilightState = {
   depth: number;
+  /** Wall-clock sky crossfade. Never a function of where the visitor stands. */
+  skyBlend: number;
+  /** The latch `skyBlend` is ramping toward. */
+  inside: boolean;
   hour: number;
   sunsetHour: number;
   twilightHour: number;
@@ -74,6 +93,26 @@ const TWILIGHT_ELEVATION = -2.6; // dusk: violet overhead, the horizon still bur
 /** Depth at which the exterior is considered unobservable and gets thinned. */
 const THIN_ON = 0.82;
 const THIN_OFF = 0.55;
+
+/**
+ * Hysteresis band for the inside/outside LATCH that owns the sky.
+ *
+ * Deliberately wide. Anything narrower and a visitor standing near the
+ * threshold — or one whose capsule jitters a little on a stair tread — could
+ * flip the latch repeatedly, and every flip is a sun that turns around. The
+ * gap between these two is a good few metres of walking.
+ */
+const LATCH_IN_DEPTH = 0.62;
+const LATCH_OUT_DEPTH = 0.16;
+
+/**
+ * Seconds the sky crossfade takes, per direction. Wall-clock, fixed, and
+ * independent of gait: this is the ONLY thing that sets how fast the sun can
+ * move during a handover. Slower going in (the evening settles over you) than
+ * coming out (the road should not keep a sunset for long).
+ */
+const SKY_FADE_IN_SECONDS = 7;
+const SKY_FADE_OUT_SECONDS = 4.5;
 
 const HALL_HALF_WIDTH = SUTRO_BATHS.hallHalfWidth;
 const HALL_HALF_LENGTH = SUTRO_BATHS.halfLength;
@@ -137,6 +176,18 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
   let exteriorThinned = false;
   let authorityHeld = false;
   let pocketHour = sunsetHour;
+  /** The latch: what the sky is fading TOWARD. Flipped only by the hysteresis. */
+  let inside = false;
+  /** The wall-clock crossfade itself. */
+  let skyBlend = 0;
+  /**
+   * True until the first update of a visit. The first sample must SNAP rather
+   * than fade: a visitor who teleports onto the deck is already inside, and
+   * fading in from the outdoor hour would sweep the sun across the sky for the
+   * first seven seconds of their arrival — the exact artefact this file exists
+   * to remove.
+   */
+  let needsSnap = true;
 
   const solveFor = (civil: SfCivilTime) => {
     const dayKey = civil.year * 10000 + civil.month * 100 + civil.day;
@@ -196,9 +247,30 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       depth += (target - depth) * Math.min(1, rampStep * rate * 3);
       if (depth < 0.002 && target === 0) depth = 0;
 
+      // The LATCH. Position is allowed to say "inside" or "outside" and nothing
+      // more; it never says "42% of the way to evening". Crossing the band is
+      // several metres of walking, so ordinary movement inside the hall — or a
+      // pause on the threshold — cannot flip it.
+      if (!tuning.pocketEnabled) inside = false;
+      else if (inside ? depth < LATCH_OUT_DEPTH : depth > LATCH_IN_DEPTH) inside = !inside;
+
+      // First sample of a visit: adopt the latch outright. Arriving inside must
+      // look like the hall has always been at evening, not like a time-lapse.
+      if (needsSnap) {
+        needsSnap = false;
+        skyBlend = inside ? 1 : 0;
+      } else {
+        const seconds = inside ? SKY_FADE_IN_SECONDS : SKY_FADE_OUT_SECONDS;
+        const towards = inside ? 1 : 0;
+        // Constant rate, wall clock. The sun's speed during a handover is this
+        // and nothing else.
+        skyBlend += Math.sign(towards - skyBlend) * Math.min(Math.abs(towards - skyBlend), rampStep / seconds);
+      }
+
       if (!sky) return;
 
-      if (depth <= 0) {
+      // Fully outside AND fully faded out: hand the clock straight back.
+      if (!inside && skyBlend <= 0) {
         releaseAuthority();
         worldHour = sky.timeOfDay;
         setThinned(false);
@@ -210,6 +282,11 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
         // Capture the hour the world was actually at, once, on the way in.
         worldHour = sky.timeOfDay;
         authorityHeld = true;
+      } else {
+        // Keep the remembered outdoor hour ticking on the real clock while the
+        // pocket holds the sky, so the handback lands on the time it actually is
+        // out there — not the time it was when the visitor came in.
+        worldHour = (worldHour + rampStep / 3600) % 24;
       }
 
       drift += step / Math.max(20, tuning.pocketDriftSeconds);
@@ -217,7 +294,7 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       // a full twilight rather than sliding through them at constant speed.
       const swing = 0.5 - 0.5 * Math.cos(drift * Math.PI * 2);
       pocketHour = mixHours(sunsetHour, twilightHour, swing);
-      sky.setTimeAuthority(mixHours(worldHour, pocketHour, smooth01(depth)));
+      sky.setTimeAuthority(mixHours(worldHour, pocketHour, smooth01(skyBlend)));
 
       setThinned(exteriorThinned ? depth > THIN_OFF : depth > THIN_ON);
     },
@@ -225,10 +302,16 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       releaseAuthority();
       setThinned(false);
       depth = 0;
+      inside = false;
+      skyBlend = 0;
+      // The next visit is a fresh arrival, and must snap rather than sweep.
+      needsSnap = true;
     },
     debugState() {
       return {
         depth,
+        skyBlend,
+        inside,
         hour: pocketHour,
         sunsetHour,
         twilightHour,

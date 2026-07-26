@@ -25,10 +25,12 @@ export const SUTRO_BATHS_TUNING = tunables("sutroBaths", {
   lampIntensity: { v: 4.6, min: 0, max: 18, step: 0.1, label: "warm lamp intensity" },
   pocketEnabled: { v: true, label: "out-of-time twilight" },
   pocketDriftSeconds: {
-    v: 240,
-    min: 40,
-    max: 900,
-    step: 5,
+    // A full sunset → twilight → sunset swing. Long on purpose: the light should
+    // read as "slowly moving" over a visit, not as a time-lapse you can watch.
+    v: 720,
+    min: 60,
+    max: 2400,
+    step: 10,
     label: "sunset↔twilight cycle (s)"
   },
   lampWarmth: { v: 1, min: 0, max: 2, step: 0.02, label: "lamp bloom" },

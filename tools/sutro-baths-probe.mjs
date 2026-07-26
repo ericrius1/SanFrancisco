@@ -596,15 +596,19 @@ async function main() {
       }));
     };
     const roadRecovery = await forceBelowFloor(localPoint(44.25, 29.58, 63.1));
-    const foyerRecovery = await forceBelowFloor(localPoint(36.0, 29.58, 63.1));
-    const switchbackRecovery = await forceBelowFloor(localPoint(29.5, 19.995, 59.2));
+    // Interior threshold slab, just inside the glazed road doors.
+    const foyerRecovery = await forceBelowFloor(localPoint(37.6, 29.58, 63.1));
+    // Mid-descent on the grand spiral (theta 145 deg of its 20.66..270 sweep).
+    // This replaces a sample that sat on the v5 switchback's second flight; that
+    // lane is now the spiral's open well, so a capsule there SHOULD fall through.
+    const spiralRecovery = await forceBelowFloor(localPoint(15.098, 16.58, 64.853));
     const beachRecovery = await forceBelowFloor(localPoint(-48, 2.58, 33.29));
     const deckRecovery = await forceBelowFloor(localPoint(-7, 4.12, 0));
     const basinRecovery = await forceBelowFloor(localPoint(-20, 1.12, 8));
     const collisionRecovery = {
       road: roadRecovery,
       foyer: foyerRecovery,
-      switchback: switchbackRecovery,
+      spiralMidFlight: spiralRecovery,
       beach: beachRecovery,
       deck: deckRecovery,
       basin: basinRecovery
@@ -615,13 +619,13 @@ async function main() {
       collisionRecovery
     );
     expect(
-      "activation-road-foyer-fallthrough-recovers",
+      "activation-road-threshold-fallthrough-recovers",
       Math.abs(foyerRecovery.y - (31.18 + 0.92)) < 0.12,
       collisionRecovery
     );
     expect(
-      "activation-switchback-fallthrough-recovers",
-      Math.abs(switchbackRecovery.y - (21.495 + 0.92)) < 0.12,
+      "activation-spiral-midflight-fallthrough-recovers",
+      Math.abs(spiralRecovery.y - (18.58 + 0.92)) < 0.12,
       collisionRecovery
     );
     expect(
@@ -663,9 +667,11 @@ async function main() {
         target: localPoint(35.5, 33.6, 63.1)
       },
       {
-        name: "road-foyer-switchback.png",
-        eye: localPoint(42.5, 35.0, 63.1),
-        target: localPoint(29.5, 22.5, 59)
+        // Was aimed at the v5 switchback's second flight, which is now the
+        // spiral's open well. Points at the descent and its newel instead.
+        name: "road-threshold-grand-spiral.png",
+        eye: localPoint(44, 36.0, 63.1),
+        target: localPoint(24.6, 21.0, 58.2)
       },
       {
         name: "beach-gate-approach.png",
