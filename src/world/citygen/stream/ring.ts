@@ -17,6 +17,7 @@ import { buildingColliders, doorMetrics, doorEligible, roofColliderMesh, STOOP_M
 import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, signedDistToPoly } from "../core/footprint";
 import { buildInterior, assembleBuilding } from "../render";
 import { buildChunkLOD, createChunkLODBeautyWarmup, type ChunkLOD } from "../render/chunkLod";
+import { footprintGrade, type GroundSampler } from "../render/foundation";
 import { createModuleLayer } from "../render/moduleLayer";
 import { createShellBatchLayer } from "../render/shellBatch";
 import { buildCityGenMaterials } from "../theme/materials";
@@ -235,29 +236,16 @@ interface CellState {
   frontGateHandle?: FrontGateHandle;
 }
 
-// Highest ground under a footprint (verts + edge midpoints), from live terrain.
-// The baked `base` is the LOWEST ground (buildings dig into hills), so on a slope
-// the bottom window rows would sit below the uphill grade — this is the line the
-// façade/LOD keep windows above. Clamped into (base, top) against a bad sample.
-function footprintGrade(
-  poly: readonly (readonly [number, number])[], base: number, top: number,
-  map: { groundHeight(x: number, z: number): number },
-): number {
-  let gmax = -Infinity;
-  for (let k = 0; k < poly.length; k++) {
-    const [x0, z0] = poly[k];
-    const [x1, z1] = poly[(k + 1) % poly.length];
-    const h0 = map.groundHeight(x0, z0);
-    const hm = map.groundHeight((x0 + x1) / 2, (z0 + z1) / 2);
-    if (h0 > gmax) gmax = h0;
-    if (hm > gmax) gmax = hm;
-  }
-  if (!Number.isFinite(gmax)) return base;
-  // grade = the true ground line (highest terrain under the footprint). Ground-floor
-  // doors/storefronts meet it exactly; window sills clear it via aboveGrade()'s own
-  // margin (so no +margin here, or entries would float above flat-lot sidewalks).
-  return Math.min(Math.max(gmax, base), top - 1.5);
-}
+// Terrain conform lines come from the ONE shared sampler (render/foundation.ts),
+// which the chunk-LOD builder also uses:
+//   grade = highest ground under the footprint — the line the façade/LOD keep
+//           windows above. Ground-floor doors/storefronts meet it exactly; sills
+//           clear it via aboveGrade()'s own margin (so no +margin here, or
+//           entries would float above flat-lot sidewalks).
+//   foot  = lowest ground on a ring DILATED outside the footprint — where the
+//           foundation skirt has to reach so a cliff-lip lot doesn't float.
+// The two used to be hand-duplicated here and in render/foundation.ts, which is
+// why only one tier ever got the skirt.
 
 /** One faded-in detail building's street door, in world space — enough for a probe
  *  to raycast the opening and push a body through it. Matches the collider gap and
@@ -340,8 +328,13 @@ export interface CityGenRing {
   debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[];
   /** DEBUG: live walk-in wall + interior collider OBBs for the "/" x-ray overlay. */
   debugColliders(walls: ColliderBox[], interiors: ColliderBox[], roofs?: ColliderMesh[]): void;
-  /** DEBUG/probe: streaming state of every entry within r metres of (x,z). */
-  debugEntriesNear(x: number, z: number, r: number): { i: number; d: number; state: string; bodies: number; pendingBuild: boolean; insideBB: boolean }[];
+  /** DEBUG/probe: streaming state + terrain conform lines of every entry within
+   *  r metres of (x,z). `foot` is where the foundation skirt reaches. */
+  debugEntriesNear(x: number, z: number, r: number): {
+    i: number; d: number; state: string; bodies: number; pendingBuild: boolean; insideBB: boolean;
+    cx: number; cz: number; base: number; top: number; grade?: number; foot?: number;
+    poly: readonly (readonly [number, number])[];
+  }[];
   /** DEBUG/probe: world-space door frames for every faded-in detail building. */
   debugDoors(): CityGenDoorProbe[];
   /** Nearest operable street door within ~8 m of pos (fully faded-in detail
@@ -415,7 +408,16 @@ export async function createCityGenRing(
   ctx: {
     scene: THREE.Object3D;
     physics: { world: PhysWorld } & Partial<QuerySolidHost>;
-    map: { groundHeight(x: number, z: number): number; surfaceType?(x: number, z: number): number };
+    map: {
+      groundHeight(x: number, z: number): number;
+      /** The RENDERED, walkable surface (terrain + draped roads/lawns + authored
+       *  flat-ownership overlays). Buildings must meet THIS, not the raw
+       *  heightfield: an authored region that lowers ground under its footprints
+       *  is invisible to `groundHeight`, leaving the walls floating over it.
+       *  Optional so portable/demo hosts can still supply a bare heightfield. */
+      groundTop?(x: number, z: number): number;
+      surfaceType?(x: number, z: number): number;
+    };
     tiles: Tiles;
     schedule?: ScheduleFn;
     /** Yield to the host immediately before creating/preparing a WebGPU owner.
@@ -428,6 +430,14 @@ export async function createCityGenRing(
   },
 ): Promise<CityGenRing> {
   const url = opts.url ?? "/citygen/buildings.json";
+  // The one terrain sampler every conform read goes through — the rendered
+  // ground, falling back to the raw heightfield for hosts that have no overlay
+  // stack. Bound once so `this` survives the call and both tiers agree.
+  const groundAt: GroundSampler = ctx.map.groundTop
+    ? (x, z) => ctx.map.groundTop!(x, z)
+    : (x, z) => ctx.map.groundHeight(x, z);
+  const conformOf = (poly: readonly (readonly [number, number])[], base: number, top: number) =>
+    footprintGrade(poly, base, top, groundAt);
   const grid = await fetchPackedGrid(url);
   await ctx.beforeRenderOwnership?.();
   const materials = buildCityGenMaterials();
@@ -574,10 +584,12 @@ export async function createCityGenRing(
       seed: grid.seeds[packedIndex]
     };
     if (Number.isFinite(h)) spec.h = h;
-    // Live terrain is main-thread owned, so the worker cannot provide grade.
-    // Compute it inside the bounded cell slice before any detail ranking or
-    // street-edge analysis can observe the Entry.
-    spec.grade = footprintGrade(poly, base, top, ctx.map);
+    // Live terrain is main-thread owned, so the worker cannot provide the
+    // conform lines. Compute them inside the bounded cell slice before any
+    // detail ranking or street-edge analysis can observe the Entry.
+    const conform = conformOf(poly, base, top);
+    spec.grade = conform.grade;
+    spec.foot = conform.foot;
     return {
       ...spec,
       key,
@@ -657,7 +669,11 @@ export async function createCityGenRing(
     return false;
   };
   const sampleDoorFrontGround = (cx: number, cz: number, nx: number, nz: number, sill: number): number => {
-    const at = (d: number) => ctx.map.groundHeight(cx + nx * d, cz + nz * d);
+    // Same ground definition as `grade`/`foot` (groundAt = the RENDERED surface).
+    // The sill derives from grade and the stoop ramp is walked on, so reading the
+    // raw heightfield here would aim the steps at a line up to a metre below the
+    // surface the player actually stands on wherever a road/lawn drapes.
+    const at = (d: number) => groundAt(cx + nx * d, cz + nz * d);
     const near = at(1.3);
     const foot = 0.3 + Math.max(0.5, (sill - near) / 0.63);
     return Math.min(near, at(foot));
@@ -990,7 +1006,7 @@ export async function createCityGenRing(
   const specOf = (e: Entry): BuildingSpec => ({
     i: e.i, id: e.id, poly: e.poly, base: e.base, top: e.top,
     streetEdge: e.streetEdge, doorAllowed: e.doorAllowed,
-    grade: e.grade, frontGround: e.frontGround, h: e.h, archetype: e.archetype, seed: e.seed,
+    grade: e.grade, foot: e.foot, frontGround: e.frontGround, h: e.h, archetype: e.archetype, seed: e.seed,
   });
   const detailBuildDistance2 = (e: Entry) => {
     // Queue the nearest wall, not the nearest centroid. This matters for long
@@ -1133,7 +1149,11 @@ export async function createCityGenRing(
         releaseDetailBuild(e, reservation);
         return;
       }
-      if (e.grade === undefined) e.grade = footprintGrade(e.poly, e.base, e.top, ctx.map);
+      if (e.grade === undefined) {
+        const conform = conformOf(e.poly, e.base, e.top);
+        e.grade = conform.grade;
+        e.foot = conform.foot;
+      }
       resolveStreetEdge(e);
       // Sample the live street terrain at the door front ONCE, before the mesh
       // build. Visible stoop steps and their ramp collider share this value.
@@ -1572,8 +1592,9 @@ export async function createCityGenRing(
     const [ix, iz] = key.split("_").map(Number);
     const cell: CellState = { key, ix, iz, entries,
       // conform LOD chunk buildings to terrain (highest ground under each footprint
-      // + a foundation skirt down to the lowest) so hillside windows aren't buried.
-      chunk: buildChunkLOD(entries as BuildingSpec[], { groundHeight: (x, z) => ctx.map.groundHeight(x, z) }),
+      // + a foundation skirt down to the lowest ground on a ring dilated OUTSIDE
+      // it) so hillside windows aren't buried and cliff-lip lots don't float.
+      chunk: buildChunkLOD(entries as BuildingSpec[], { groundHeight: groundAt }),
       phase: "building" };
     loaded.set(key, cell);
     building.push(cell);
@@ -2061,7 +2082,11 @@ export async function createCityGenRing(
           // Entry hydration normally guarantees this. Keep the cache invariant
           // explicit so a future alternate source can never permanently price a
           // sloped building from baked `base` before live grade is available.
-          if (e.grade === undefined) e.grade = footprintGrade(e.poly, e.base, e.top, ctx.map);
+          if (e.grade === undefined) {
+            const conform = conformOf(e.poly, e.base, e.top);
+            e.grade = conform.grade;
+            e.foot = conform.foot;
+          }
           let per = 0;
           for (let k = 0; k < e.poly.length; k++) {
             const [x0, z0] = e.poly[k], [x1, z1] = e.poly[(k + 1) % e.poly.length];
@@ -2227,7 +2252,7 @@ export async function createCityGenRing(
       return out;
     },
     debugEntriesNear(x, z, r) {
-      const out: { i: number; d: number; state: string; bodies: number; pendingBuild: boolean; insideBB: boolean }[] = [];
+      const out: ReturnType<CityGenRing["debugEntriesNear"]> = [];
       const r2 = r * r;
       for (const cell of loaded.values()) for (const e of cell.entries) {
         const dx = x - e.cx, dz = z - e.cz;
@@ -2236,6 +2261,10 @@ export async function createCityGenRing(
         out.push({ i: e.i, d: Math.round(Math.sqrt(d2) * 10) / 10, state: e.state, bodies: e.bodies.length,
           pendingBuild: e.pendingBuild,
           hasDetail: !!e.detail, fade: Math.round(e.fade * 100) / 100, fadeDir: e.fadeDir,
+          // footprint + conform lines, so a probe can assert the foundation
+          // reaches the ground along the REAL walls without reading geometry
+          // back off the GPU
+          cx: e.cx, cz: e.cz, base: e.base, top: e.top, grade: e.grade, foot: e.foot, poly: e.poly,
           insideBB: x > e.bb.minx - 1 && x < e.bb.maxx + 1 && z > e.bb.minz - 1 && z < e.bb.maxz + 1 } as typeof out[number]);
       }
       out.sort((a, b) => a.d - b.d);

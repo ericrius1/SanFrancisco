@@ -143,10 +143,11 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: Pris
   // grade = highest ground under the footprint (matches core/massing). Windows are
   // laid grade→top; foot→grade is a solid skirt so a sloped lot doesn't show a
   // half-buried bottom row even at LOD range. `foot` is where the wall meets the
-  // ground: the baked lowest `base` for the legacy path, or the live-sampled
-  // lowest ground when a `conform` override was computed from live terrain (so the
-  // far chunk building neither buries its uphill windows nor floats downhill).
-  const foot = conform ? conform.foot : base;
+  // ground: the live-sampled lowest ground when a `conform` override was computed
+  // from live terrain, else the spec's own host-supplied `foot` (the streaming
+  // ring stamps it), else the baked lowest `base` — so the far chunk building
+  // neither buries its uphill windows nor floats downhill.
+  const foot = conform ? conform.foot : Math.min(spec.foot ?? base, base);
   const grade = conform
     ? Math.min(Math.max(conform.grade, foot), top - 1.5)
     : Math.min(Math.max(spec.grade ?? base, base), top - 1.5);

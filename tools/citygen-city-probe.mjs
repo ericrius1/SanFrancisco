@@ -58,6 +58,13 @@ async function main() {
       try{ s.scene.environmentIntensity=0.35; s.renderer.toneMappingExposure=(s.renderer.toneMappingExposure||1)*1.05; }catch{}
       try{ if(s.aiCars){ s.aiCars.prePhysics=()=>{}; s.aiCars.update=()=>{}; if(s.aiCars.postPhysics)s.aiCars.postPhysics=()=>{}; } }catch{}
       if(!window.__f){window.__f=1; s.chase.update=()=>{}; s.player.update=()=>{};} return 1;})()`);
+    // The ring is background-admitted: it only constructs after the arrival
+    // reveal settles AND a real quiet window passes (backgroundAdmission.ts
+    // waitForCityGenRenderWindow). `__sf.citygenRing` is just the container and
+    // exists from boot, so waiting on it alone raced ahead of the ring and every
+    // spot below reported 0 buildings. Wait for the ring ITSELF, on wall clock.
+    await waitEval(c, "Boolean(window.__sf.citygenRing.current)", 180000)
+      .catch(() => console.log("[probe] WARNING: ring never constructed"));
     console.log("[probe] ring total victorian/edwardian:", await evaluate(c, "window.__sf.citygenRing.current ? window.__sf.citygenRing.current.count : 'ring not ready'"));
 
     // candidate spots (game coords); pick the first that streams buildings. SF_SPOT="x,z" overrides.

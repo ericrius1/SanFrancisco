@@ -7,7 +7,7 @@
 // to a flat wall (Phase-1 shell). Pure geometry — no THREE, no textures.
 import type { ArchetypeSpec, BuildingSpec, ModuleInstance, Panel, Vec2 } from "./types";
 import { centroid, edgeOutwardNormal, ensureCCW, streetEdgeIndex, triangulate } from "./footprint";
-import { PanelBuilder, defaultFlatWall, type FacadeDecorator, type FacadeEdge, type Vec3 } from "./facade";
+import { PanelBuilder, defaultFlatWall, pointOnWall, type FacadeDecorator, type FacadeEdge, type Vec3 } from "./facade";
 
 export interface Massing {
   panels: Panel[];
@@ -34,6 +34,9 @@ export function massBuilding(spec: BuildingSpec, arch: ArchetypeSpec, decorate: 
   // grade = highest ground under the footprint; clamp into (base, top) so a lot
   // never loses its whole façade to a bad sample. Windows sit above this line.
   const grade = Math.min(Math.max(spec.grade ?? base, base), top - 1.5);
+  // foot = lowest ground the walls must reach, sampled OUTSIDE the footprint
+  // (render/foundation.ts). Never above `base`, which the façades already cover.
+  const foot = Math.min(spec.foot ?? base, base);
   // Visible storeys begin at live grade, matching the doorway sill, interiors
   // and chunk-LOD window grid. Counting from the buried low foundation shifted
   // upper facade bands down across raised doors on hillsides.
@@ -57,6 +60,23 @@ export function massBuilding(spec: BuildingSpec, arch: ArchetypeSpec, decorate: 
     };
     // Seed salt per edge so each face varies but stays deterministic.
     decorate(edge, out, edgeRng(spec.seed, i));
+    // ---- foundation skirt: plain wall from `foot` up to the baked `base` -----
+    // The façade above starts at `base`, which is the lowest ground the BAKE
+    // found INSIDE the footprint. A lot on a cliff lip (Point Lobos above Sutro
+    // Baths) drops away just outside its own edges, so that wall bottom hangs in
+    // the air on the downhill side. This is the same skirt the chunk LOD has
+    // always drawn (render/lod.ts appendPrism) — the near tier simply never grew
+    // one. Undecorated on purpose: it is below the ground line, so it must never
+    // carry windows or storefront detail.
+    if (base > foot + 0.05) {
+      const n: Vec3 = [normal[0], 0, normal[1]];
+      out.quad(
+        arch.baseMaterial ?? arch.wallMaterial,
+        pointOnWall(edge, 0, foot), pointOnWall(edge, 1, foot),
+        pointOnWall(edge, 1, base), pointOnWall(edge, 0, base),
+        n,
+      );
+    }
   }
 
   // ---- roof cap: triangulated top polygon (handles concave footprints) -----

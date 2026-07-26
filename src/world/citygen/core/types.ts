@@ -37,6 +37,13 @@ export interface BuildingSpec {
    *  bottom row (the buried skirt between base and grade stays solid wall).
    *  Optional — supplied by the streaming host from live terrain; defaults to base. */
   grade?: number;
+  /** world Y of the LOWEST ground the walls have to reach — sampled on a ring
+   *  DILATED a few metres outside the footprint, so a lot perched on a cliff lip
+   *  sees the drop-off its own corners cannot. A plain foundation skirt fills
+   *  foot → base, which is what keeps a bluff-edge building from floating over
+   *  its downhill wall. Optional — supplied by the streaming host from live
+   *  terrain; defaults to base (flat lot, no skirt). */
+  foot?: number;
   /** world Y of the live terrain just OUTSIDE the street door (≈1.3 m out).
    *  Optional — supplied by the streaming host; drives the front-stoop rise so the
    *  visible steps and the walkable stoop ramp collider agree exactly. */
