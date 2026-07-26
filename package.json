@@ -55,6 +55,7 @@
     "test:piano-godrays": "node tools/piano-godray-probe.mjs",
     "test:sutro-baths": "node tools/sutro-baths-probe.mjs",
     "test:sutro-pocket": "node tools/sutro-pocket-probe.mjs",
+    "test:sutro-clock": "node tools/sutro-clock-probe.mjs",
     "test:sutro-placement": "node tools/sutro-placement-probe.mjs",
     "test:ghost-ship": "node --experimental-strip-types tools/ghost-ship-contract-test.mjs && node tools/ghost-ship-relay-probe.mjs",
     "test:drum-bridge": "node tools/drum-bridge-probe.mjs",
