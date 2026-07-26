@@ -58,13 +58,58 @@ const WARM_TARGETS: Readonly<Record<string, number>> = {
 const GLASS_NAMES = new Set(["sutro_roof_glass", "sutro_window_glass"]);
 const LAMP_NAME = "sutro_lamp";
 
+/**
+ * Grade strengths, sized against the scene's ACTUAL ambient rather than by eye.
+ *
+ * These were authored blind: the type test below skipped every material in the
+ * hall from the day this file was written, so nothing here had ever reached a
+ * rendered pixel. The first frame that ran it came out a flat beige wash —
+ * self-glow alone was 0.283 on plaster, twice the whole scene's ambient
+ * (`scene.environmentIntensity` measures ~0.14 at the pocket's held hour), so
+ * every surface emitted more than the sky lit it and the hall lost its form.
+ *
+ * Sized now as fractions of that measured ambient: the self-glow is a shadow
+ * floor at roughly a tenth of it, and the tint stops well short of the point
+ * where warm iron reads as beige.
+ */
+const INTERIOR_SELF_GLOW = 0.03;
+const INTERIOR_TINT = 0.3;
+const GLASS_SELF_GLOW = 0.05;
+
 /** Lamplight, and the cool the room falls away to between the pools. */
 const LAMP_TINT = new THREE.Color(0xffb469);
 const LAMP_EMISSIVE = new THREE.Color(0xffc07a);
 const GLASS_TINT = new THREE.Color(0xff9d5e);
 
+/**
+ * What this grade needs a material to be, structurally.
+ *
+ * Deliberately NOT `THREE.MeshStandardMaterial`. `applyRegionMaterialize`
+ * (world/authoredRegions.ts) replaces every authored GLB material with a node
+ * twin before this module's region watch ever fires, and
+ * `MeshStandardNodeMaterial extends NodeMaterial` — not `MeshStandardMaterial`.
+ * An `instanceof MeshStandardMaterial` test is therefore false for every
+ * material in the hall, which silently made this entire file inert: no warm
+ * grade, no lamp lift, no glass override. The twin does carry the
+ * `isMeshStandardMaterial` flag, so match on that and describe the properties
+ * structurally.
+ *
+ * Writing these plain properties is still correct on the twin: `applyBirthFade`
+ * wraps `materialColor`/`materialEmissive`/`materialOpacity`, all of which read
+ * the material's own colour objects as live uniforms. So the grade stays uniform
+ * writes and never recompiles a pipeline.
+ */
+type GradableMaterial = THREE.Material & {
+  isMeshStandardMaterial?: boolean;
+  color: THREE.Color;
+  emissive: THREE.Color;
+  emissiveIntensity: number;
+  opacity: number;
+  alphaHash?: boolean;
+};
+
 type GradedMaterial = {
-  material: THREE.MeshStandardMaterial;
+  material: GradableMaterial;
   baseColor: THREE.Color;
   baseEmissive: THREE.Color;
   baseEmissiveIntensity: number;
@@ -77,9 +122,9 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
   group.name = "sutro_baths_runtime_ambience";
   const lampSpecs: LightAnchorSpec[] = [];
   const unregisterLights: (() => void)[] = [];
-  const graded = new Map<THREE.MeshStandardMaterial, GradedMaterial>();
-  const glass = new Set<THREE.MeshStandardMaterial>();
-  const lamps = new Set<THREE.MeshStandardMaterial>();
+  const graded = new Map<GradableMaterial, GradedMaterial>();
+  const glass = new Set<GradableMaterial>();
+  const lamps = new Set<GradableMaterial>();
   let requestedLampIntensity = 4.6;
   let requestedGlassOpacity = 0.162;
   let lampWarmth = 1;
@@ -108,7 +153,7 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
     }
   }
 
-  const remember = (material: THREE.MeshStandardMaterial, warm: number): GradedMaterial => {
+  const remember = (material: GradableMaterial, warm: number): GradedMaterial => {
     let entry = graded.get(material);
     if (!entry) {
       entry = {
@@ -129,8 +174,9 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
       const mesh = object as THREE.Mesh;
       if (!mesh.isMesh) return;
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const candidate of materials) {
-        if (!(candidate instanceof THREE.MeshStandardMaterial)) continue;
+      for (const source of materials) {
+        const candidate = source as GradableMaterial;
+        if (candidate?.isMeshStandardMaterial !== true) continue;
         const name = candidate.name;
         if (GLASS_NAMES.has(name)) {
           remember(candidate, 0);
@@ -183,21 +229,25 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
         // last light rather than vanishing into the ironwork.
         material.opacity = Math.min(0.72, requestedGlassOpacity + lampLift * 0.07);
         material.emissive.copy(GLASS_TINT);
-        material.emissiveIntensity = lampLift * 0.22;
+        material.emissiveIntensity = lampLift * GLASS_SELF_GLOW;
         continue;
       }
       // Everything else drifts toward lamplight as the room gets darker, with a
       // whisper of self-glow so twilight reads as warm rather than muddy.
       // The hall is enormous and the renderer carries one contextual light, so
-      // the surfaces themselves have to carry the lamplight: a warm tint plus a
-      // small self-glow keeps twilight golden instead of collapsing to mud.
+      // the surfaces themselves have to carry the lamplight.
+      //
+      // Both terms are deliberately small. Emissive is UNLIT: it adds the same
+      // value to a fragment facing the lamps and one facing away, so any
+      // meaningful amount erases the shading that gives the ironwork its form.
+      // Its only job here is to keep deep interior shadow off pure black — a
+      // floor, not a light. The warm tint does the actual "this room is lit by
+      // gas globes" work, and it has to stay under the threshold where iron
+      // stops reading as iron.
       const warm = entry.warm * interiorWarmth * twilight;
-      material.color.copy(entry.baseColor).lerp(LAMP_TINT, Math.min(0.6, warm * 0.6));
+      material.color.copy(entry.baseColor).lerp(LAMP_TINT, Math.min(0.28, warm * INTERIOR_TINT));
       material.emissive.copy(LAMP_EMISSIVE);
-      // Candles do not throw a pool of light the way a globe lamp did, so the
-      // surfaces carry a little more of it themselves now that the lamps are
-      // gone from the middle of the hall.
-      material.emissiveIntensity = warm * 0.37;
+      material.emissiveIntensity = warm * INTERIOR_SELF_GLOW;
     }
   }
 
