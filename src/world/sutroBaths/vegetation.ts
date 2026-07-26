@@ -25,6 +25,32 @@ export type SutroBathsVegetation = {
   stats: { trees: number; shrubs: number; planters: number; flowers: number };
 };
 
+/**
+ * PLANTING ENVELOPE — why these positions and not prettier-sounding ones.
+ *
+ * The hall is a glass barrel over a working bath house, and most of its floor
+ * already has something over it: the tiered spectator gallery hangs across local
+ * x 28.2..34.5 with its underside 5.6 m above the deck, and the ocean-window
+ * seating gallery fills x -38.5..-31.2 with only 1.6 m of clear air. The previous
+ * planting ignored both. Its east avenue stood at x 29.6 under 5.6 m of headroom
+ * carrying 7.2 m trees, so every crown on that side grew through the seating
+ * tiers and the gallery rail; the west row at x -37.6 was simply inside the
+ * ocean gallery's structure.
+ *
+ * So each lane below is placed against a measured headroom map of the deck
+ * (regenerate it with the helper in the site's survey notes) and every crown is
+ * kept under the lowest thing above it:
+ *
+ *   central spine   x  -8      14.7 m to the pendant lamps
+ *   east avenue     x  23      20.4 m — clear of the seating tiers at x 28.2
+ *   north bank      z -62      clear to the roof
+ *   south promenade z  62      clear to the roof, and west of the spiral at x 10.4
+ *   west deck       x -25      clear, and only where the great plunge is not
+ *
+ * The grand spiral (site-local axis 24.6, 58.2, radius 9.0..14.2, sweeping
+ * 20.66 deg to 270 deg) also owns floor now, which is why the east avenue stops
+ * at z 30 and the south promenade stays west of x 9.
+ */
 const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
   /**
    * The conservatory canopy. Magnolia carries the planting because it is the one
@@ -33,6 +59,11 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
    * tree from any angle. The palm recipe has no branch levels at all: it is a
    * trunk with at most a handful of frond rosettes, which from underneath is a
    * flat starburst and nothing like a plant.
+   *
+   * Two species, not three or four. Each additional species is another pipeline
+   * signature to compile, and the arrival now lands INSIDE the hall — so this
+   * planting is on the critical path of the transition rather than something a
+   * visitor walks down to.
    */
   {
     id: "gallery-magnolia",
@@ -40,9 +71,12 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
       species: "magnolia",
       seed: 18962,
       controls: {
-        height: 7.2,
-        crownDensity: 1.8,
-        crownWidth: 1.0,
+        // Shorter and markedly denser than before. The old 7.2 m / 1.8-density
+        // magnolia read as a leggy houseplant — a bare stem with a few leaf
+        // sprays — because the crown was stretched over too much trunk.
+        height: 6.4,
+        crownDensity: 2.3,
+        crownWidth: 1.05,
         // Warmer and a shade lighter than the wild recipe: these live under
         // glass and candlelight, not on a fog-grey headland, and a saturated
         // cold green goes to pure black once the pocket twilight settles.
@@ -59,9 +93,9 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
       species: "magnolia",
       seed: 18965,
       controls: {
-        height: 5.1,
-        crownDensity: 1.8,
-        crownWidth: 1.18,
+        height: 4.6,
+        crownDensity: 2.4,
+        crownWidth: 1.22,
         foliageColor: 0x4d7047,
         foliageTint: 0x9aa966,
         windResponse: 0.2
@@ -71,21 +105,19 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
   },
   {
     /**
-     * The big specimens: a spreading oak crown at the north bank and either side
-     * of the grand stair. Palms were the obvious choice for a bath house, but
-     * that recipe has no branch levels at all — a trunk with three frond
-     * rosettes, which reads as a flat asterisk at every height and distance. Two
-     * dense broadleaf recipes make a far better conservatory, and cost four
-     * fewer pipeline signatures than keeping the palm as a third species.
+     * The big specimens: a spreading oak crown at the north bank and on the
+     * south promenade. Palms were the obvious choice for a bath house, but that
+     * recipe has no branch levels at all — a trunk with three frond rosettes,
+     * which reads as a flat asterisk at every height and distance.
      */
     id: "conservatory-specimen",
     design: {
       species: "coast-live-oak",
       seed: 18966,
       controls: {
-        height: 9.4,
-        crownDensity: 1.7,
-        crownWidth: 1.2,
+        height: 8.4,
+        crownDensity: 2.1,
+        crownWidth: 1.15,
         foliageColor: 0x56784a,
         foliageTint: 0xa6b26e,
         windResponse: 0.24
@@ -96,29 +128,34 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
 ] as const;
 
 const TREE_LAYOUT = [
-  // North conservatory bank: the big specimen crowns, read against the north
-  // glass.
-  { x: -18, z: -66, scale: 0.92, archetype: "conservatory-specimen" },
-  { x: 2, z: -67, scale: 1, archetype: "conservatory-specimen" },
-  { x: 21, z: -66, scale: 0.88, archetype: "conservatory-specimen" },
-  { x: -28, z: -65, scale: 0.9, archetype: "gallery-magnolia" },
-  { x: -8, z: -66.5, scale: 0.95, archetype: "gallery-magnolia" },
-  { x: 30, z: -64, scale: 0.85, archetype: "gallery-magnolia" },
-  // East gallery avenue, one between each pair of tea tables
-  { x: 29.6, z: -48, scale: 0.9, archetype: "gallery-magnolia" },
-  { x: 29.6, z: -22, scale: 1, archetype: "gallery-magnolia" },
-  { x: 29.6, z: 4, scale: 0.92, archetype: "gallery-magnolia-low" },
-  { x: 29.6, z: 30, scale: 0.96, archetype: "gallery-magnolia" },
-  { x: 30.5, z: 38, scale: 0.86, archetype: "gallery-magnolia-low" },
-  { x: 29.6, z: 52, scale: 0.9, archetype: "gallery-magnolia" },
-  // West ocean gallery — deliberately low so nothing blocks the sunset windows
-  { x: -37.6, z: -52, scale: 0.82, archetype: "gallery-magnolia-low" },
-  { x: -37.6, z: -12, scale: 0.86, archetype: "gallery-magnolia-low" },
-  { x: -37.6, z: 28, scale: 0.82, archetype: "gallery-magnolia-low" },
-  { x: -37.6, z: 56, scale: 0.8, archetype: "gallery-magnolia-low" },
-  // South promenade, framing the grand stair
-  { x: -20, z: 58, scale: 0.95, archetype: "conservatory-specimen" },
-  { x: 8, z: 58, scale: 1, archetype: "conservatory-specimen" }
+  // North conservatory bank, read against the north glass. Clear to the roof.
+  { x: -22, z: -62, scale: 0.95, archetype: "conservatory-specimen" },
+  { x: -8, z: -63, scale: 1, archetype: "conservatory-specimen" },
+  { x: 7, z: -62, scale: 0.92, archetype: "conservatory-specimen" },
+  { x: -27, z: -61, scale: 0.9, archetype: "gallery-magnolia" },
+  { x: 20, z: -63, scale: 0.88, archetype: "gallery-magnolia" },
+  { x: 27, z: -61, scale: 0.85, archetype: "gallery-magnolia" },
+  // East avenue on the walkway between the graduated baths and the seating
+  // tiers: 20.4 m of headroom, and 5.2 m of lateral room before the tiers.
+  // Threaded BETWEEN the east tea tables (parlour.ts TABLES, local x 25.4 at
+  // z -34, -6 and 20) rather than level with them — a planter opposite a table
+  // put its pulled-up chair 1.55 m from the pot, inside the clearance the
+  // placement probe enforces.
+  { x: 23.5, z: -58, scale: 0.9, archetype: "gallery-magnolia" },
+  { x: 23.5, z: -46, scale: 1, archetype: "gallery-magnolia" },
+  { x: 23.5, z: -20, scale: 0.92, archetype: "gallery-magnolia-low" },
+  { x: 23.5, z: 6, scale: 0.96, archetype: "gallery-magnolia" },
+  { x: 23.5, z: 32, scale: 0.9, archetype: "gallery-magnolia-low" },
+  { x: 23.5, z: 40, scale: 0.94, archetype: "gallery-magnolia" },
+  // West deck, only where the great plunge is not: low crowns so the sunset
+  // still comes through the ocean windows unblocked.
+  { x: -25, z: -60, scale: 0.86, archetype: "gallery-magnolia-low" },
+  { x: -25, z: 34, scale: 0.84, archetype: "gallery-magnolia-low" },
+  { x: -25, z: 42, scale: 0.82, archetype: "gallery-magnolia-low" },
+  // South promenade, framing the foot of the spiral from the west side.
+  { x: -20, z: 62, scale: 0.95, archetype: "conservatory-specimen" },
+  { x: -6, z: 63, scale: 1, archetype: "conservatory-specimen" },
+  { x: 6, z: 62, scale: 0.9, archetype: "gallery-magnolia" }
 ] as const;
 
 const TREE_PLACEMENTS: readonly AuthoredTreePlacement[] = TREE_LAYOUT.map((tree, index) => {
@@ -141,13 +178,14 @@ const SHRUB_PALETTES: readonly AuthoredShrubPalette[] = [
 ] as const;
 
 const SHRUB_LAYOUT = [
-  // Ferny north conservatory bank beneath the period palms.
+  // Ferny north conservatory bank beneath the specimen crowns.
   [-24, -66, 1.2, 0, "fern"],
   [-13, -67, 1.08, 2, "fern"],
   [1, -66, 1.15, 0, "fern"],
   [15, -66, 1.08, 2, "fern"],
   [26, -65.5, 1.1, 0, "fern"],
-  // Potted foliage along the east gallery and its landing.
+  // Potted foliage under the seating tiers along the east walkway. Shrubs are
+  // waist-high, so the 5.6 m tier soffit that ruled out trees here is ample.
   [30.2, -47, 0.82, 0, "natural"],
   [30.2, -35, 0.88, 1, "fern"],
   [30.2, -23, 0.8, 0, "natural"],
@@ -155,7 +193,7 @@ const SHRUB_LAYOUT = [
   [30.2, 1, 0.86, 0, "natural"],
   [30.2, 13, 0.9, 1, "fern"],
   [30.2, 25, 0.84, 0, "natural"],
-  [30.2, 49, 0.92, 2, "fern"],
+  [30.2, 37, 0.92, 2, "fern"],
   // Ferns bank the ocean-window seating gallery without blocking the view.
   [-32, -55, 0.72, 0, "fern"],
   [-32, -34, 0.8, 2, "fern"],
@@ -172,11 +210,11 @@ const SHRUB_LAYOUT = [
   [-7.6, -10, 0.82, 2, "natural"],
   [-7.6, 18, 0.88, 1, "fern"],
   [-7.6, 42, 0.8, 0, "natural"],
-  // South promenade beds either side of the grand stair.
+  // South promenade beds, kept west of the spiral's inner edge at local x 10.4.
   [-24, 55, 0.9, 1, "fern"],
   [-16, 57, 0.84, 2, "natural"],
   [2, 57, 0.86, 0, "fern"],
-  [10, 55, 0.9, 1, "natural"]
+  [7, 68, 0.9, 1, "natural"]
 ] as const;
 
 const SHRUB_PLACEMENTS: readonly AuthoredShrubPlacement[] = SHRUB_LAYOUT.map((entry, index) => {

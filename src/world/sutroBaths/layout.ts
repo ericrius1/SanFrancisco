@@ -139,14 +139,74 @@ type SutroStairSurface = {
   steps: number;
 };
 
-/** v5 gallery cascade: flights run along local X on constant-z lanes, so
- * `across` is local z and `along` is local x (the beach-stair axis swap). */
-const MAIN_ENTRY_FLIGHTS: readonly SutroStairSurface[] = [
-  { minAcross: 60.6, maxAcross: 65.6, startAlong: 36.6, endAlong: 20.2, startY: 31.02, endY: 24.83, steps: 24 },
-  { minAcross: 54.6, maxAcross: 59.6, startAlong: 20.2, endAlong: 35.8, startY: 24.67, endY: 18.48, steps: 24 },
-  { minAcross: 48.6, maxAcross: 53.6, startAlong: 35.8, endAlong: 20.2, startY: 18.32, endY: 12.13, steps: 24 },
-  { minAcross: 42.6, maxAcross: 47.6, startAlong: 20.2, endAlong: 35.8, startY: 11.97, endY: 5.78, steps: 24 }
-] as const;
+/**
+ * The grand spiral descent (revision 9, `tools/rebuild-sutro-grand-spiral.py`).
+ *
+ * One continuous helical flight from the glazed road doors down to the bath
+ * deck, replacing the v5 four-flight switchback cascade whose lowest flight
+ * finished against a blank wall. These numbers MIRROR the Blender authority —
+ * that script prints a `SPIRAL_CONTRACT` line on every run; if you retune the
+ * helix there, copy the printed values here in the same commit.
+ */
+const SPIRAL = {
+  cx: 24.6,
+  cz: 58.2,
+  radius: 11.6,
+  inner: 9.0,
+  outer: 14.2,
+  startDeg: 20.66,
+  sweepDeg: 249.34,
+  topY: 31.18,
+  botY: 5.78,
+  steps: 128,
+  headSpanDeg: 15,
+  footSpanDeg: 20
+} as const;
+
+/** The foot fan widens past the last tread by this much on each radial side. */
+const SPIRAL_FOOT_RADIAL_PAD = 0.8;
+
+/**
+ * Walk surface for the helix, or null when the point is off it.
+ *
+ * Resolves to the same discrete tread the authored slabs occupy, so the
+ * recovery contract and the streamed colliders agree on which step a capsule is
+ * standing on rather than disagreeing by half a riser.
+ */
+function sutroSpiralWalkSurfaceY(localX: number, localZ: number): number | null {
+  const dx = localX - SPIRAL.cx;
+  const dz = localZ - SPIRAL.cz;
+  const radius = Math.hypot(dx, dz);
+  // Head, flight and fan all share one angular sweep, so resolve the angle once
+  // and let the radial test widen only for the fan.
+  const degrees = (Math.atan2(dz, dx) * 180) / Math.PI;
+  let along = degrees - SPIRAL.startDeg;
+  while (along < -180) along += 360;
+  while (along > 180) along += -360;
+  // `along` is now -180..180 relative to the head. The descent occupies
+  // 0..sweep, the head landing -headSpan..0, the fan sweep..sweep+footSpan —
+  // and sweep + footSpan is 269.34, so re-wrap the far side into that range.
+  if (along < -SPIRAL.headSpanDeg) along += 360;
+
+  const onFlightRadius = radius >= SPIRAL.inner - ENTRY_RECOVERY_PAD &&
+    radius <= SPIRAL.outer + ENTRY_RECOVERY_PAD;
+
+  if (along >= -SPIRAL.headSpanDeg && along < 0) {
+    return onFlightRadius ? SPIRAL.topY : null;
+  }
+  if (along >= 0 && along <= SPIRAL.sweepDeg) {
+    if (!onFlightRadius) return null;
+    const progress = along / SPIRAL.sweepDeg;
+    const step = Math.round(progress * (SPIRAL.steps - 1));
+    return SPIRAL.topY + (SPIRAL.botY - SPIRAL.topY) * step / (SPIRAL.steps - 1);
+  }
+  if (along > SPIRAL.sweepDeg && along <= SPIRAL.sweepDeg + SPIRAL.footSpanDeg) {
+    const onFanRadius = radius >= SPIRAL.inner - SPIRAL_FOOT_RADIAL_PAD - ENTRY_RECOVERY_PAD &&
+      radius <= SPIRAL.outer + SPIRAL_FOOT_RADIAL_PAD + ENTRY_RECOVERY_PAD;
+    return onFanRadius ? SPIRAL.botY : null;
+  }
+  return null;
+}
 
 const BEACH_ENTRY_STAIR: SutroStairSurface = {
   minAcross: 29.19,
@@ -201,15 +261,12 @@ export function sutroEntryWalkSurfaceY(x: number, z: number): number | null {
   const roadY = stairSurfaceY(local.z, local.x, ROAD_APPROACH_STAIR);
   if (roadY !== null) return roadY;
 
-  // Gallery flights run along local x, so swap the axes for the shared helper.
-  for (const flight of MAIN_ENTRY_FLIGHTS) {
-    const y = stairSurfaceY(local.z, local.x, flight);
-    if (y !== null) return y;
-  }
-  if (insideRect(local.x, local.z, 16.6, 20.2, 54.6, 65.6)) return 24.83;
-  if (insideRect(local.x, local.z, 35.8, 37.8, 48.6, 59.6)) return 18.48;
-  if (insideRect(local.x, local.z, 16.6, 20.2, 44.4, 53.6)) return 12.13;
-  if (insideRect(local.x, local.z, 35.8, 38.2, 42.6, 47.6)) return 5.78;
+  // The single helical descent. Checked before the flat aprons below so a
+  // capsule on a tread resolves to that tread, not to the deck beneath it.
+  const spiralY = sutroSpiralWalkSurfaceY(local.x, local.z);
+  if (spiralY !== null) return spiralY;
+  // Foot apron butting the fan onto the deck (authored 2 cm under the fan).
+  if (insideRect(local.x, local.z, 18.51, 25.52, 41.58, 49.98)) return 5.76;
 
   // The beach stair runs along local x, so swap the axes for the shared helper.
   const beachY = stairSurfaceY(local.z, local.x, BEACH_ENTRY_STAIR);

@@ -150,6 +150,31 @@ const run = async () => {
         };
       });
 
+    /**
+     * Wait for the pocket's sky crossfade to land.
+     *
+     * The handover is deliberately WALL-CLOCK paced (twilight.ts,
+     * SKY_FADE_IN_SECONDS / SKY_FADE_OUT_SECONDS) rather than parametrized by how
+     * far inside the visitor has walked: driving the hour off position meant
+     * someone pacing about the hall dragged the sun and moon back and forth at
+     * walking speed. A fixed post-move sleep therefore samples mid-handover, so
+     * every clock assertion below waits for the fade to finish instead.
+     * `skyBlend` reaching its end stop IS the "handover complete" signal.
+     */
+    const settleSkyCrossfade = (direction) =>
+      page.evaluate(async (dir) => {
+        const started = performance.now();
+        const deadline = started + 20_000;
+        const read = () => window.__sf.sutroBaths?.debugState?.().twilight?.skyBlend ?? 0;
+        const done = (blend) => (dir === "in" ? blend >= 0.999 : blend <= 0.001);
+        while (performance.now() < deadline) {
+          const blend = read();
+          if (done(blend)) return { blend, waitedMs: Math.round(performance.now() - started), dir };
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return { blend: read(), waitedMs: Math.round(performance.now() - started), dir, timedOut: true };
+      }, direction);
+
     const stand = async (point) => {
       await page.evaluate(([x, y, z]) => {
         const sf = window.__sf;
@@ -196,6 +221,9 @@ const run = async () => {
     await sleep(2500);
 
     await stand(local(-7, SITE.deckY + 0.92, 0));
+    const faded = await settleSkyCrossfade("in");
+    expect("inside-sky-crossfade-completed", faded.blend >= 0.999, faded);
+
     const inside = await snapshot();
     expect("inside-pocket-engaged", inside.twilight?.depth > 0.9, inside);
     expect("inside-clock-held", inside.authority !== null, inside);
@@ -204,6 +232,42 @@ const run = async () => {
       inside.timeOfDay >= Math.min(inside.twilight.sunsetHour, inside.twilight.twilightHour) - 0.05 &&
         inside.timeOfDay <= Math.max(inside.twilight.sunsetHour, inside.twilight.twilightHour) + 0.05,
       inside
+    );
+
+    // The regression this file now guards: the hour must be a function of the
+    // CLOCK, not of where the visitor stands. Walk the length of the hall — a
+    // large change in `depth` — and the held hour may only drift by the slow
+    // sunset↔twilight cycle, never by the walk.
+    const walkDrift = await page.evaluate(async ([a, b]) => {
+      const sf = window.__sf;
+      const samples = [];
+      for (let i = 0; i <= 10; i++) {
+        const t = i / 10;
+        sf.player.restoreState({
+          x: a[0] + (b[0] - a[0]) * t,
+          y: a[1] + (b[1] - a[1]) * t,
+          z: a[2] + (b[2] - a[2]) * t,
+          heading: sf.player.heading,
+          mode: "walk"
+        });
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const tw = sf.sutroBaths?.debugState?.().twilight;
+        samples.push({ hour: sf.sky.timeOfDay, depth: tw?.depth ?? 0, skyBlend: tw?.skyBlend ?? 0 });
+      }
+      const hours = samples.map((s) => s.hour);
+      const depths = samples.map((s) => s.depth);
+      return {
+        hourSpread: Math.max(...hours) - Math.min(...hours),
+        depthSpread: Math.max(...depths) - Math.min(...depths),
+        skyBlendMin: Math.min(...samples.map((s) => s.skyBlend))
+      };
+    }, [local(-7, SITE.deckY + 0.92, -62), local(-7, SITE.deckY + 0.92, 62)]);
+    // 1.5 s of walking at the authored drift rate cannot move the hour this far,
+    // so anything above it means position leaked back into the sky.
+    expect(
+      "inside-hour-does-not-track-position",
+      walkDrift.hourSpread < 0.05 && walkDrift.skyBlendMin >= 0.999,
+      walkDrift
     );
     expect("inside-lamps-up", inside.twilight?.lampGlow > 0.9, inside);
     expect("inside-exterior-thinned", inside.twilight?.exteriorThinned === true, inside);
@@ -214,6 +278,8 @@ const run = async () => {
     );
 
     await stand(ROAD_STAND);
+    const unfaded = await settleSkyCrossfade("out");
+    expect("exit-sky-crossfade-completed", unfaded.blend <= 0.001, unfaded);
     const back = await snapshot();
     expect("exit-clock-released", back.authority === null && back.realTime, back);
     expect(
