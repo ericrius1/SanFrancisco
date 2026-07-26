@@ -6,7 +6,7 @@ import {
   SUTRO_BATHS,
   distanceToSutroBaths,
   distanceToSutroWater,
-  inSutroBathsHall,
+  sutroHallWallInset,
   sutroWalkSurfaceY
 } from "./layout";
 import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
@@ -28,6 +28,14 @@ import {
 const WAKE_DISTANCE = 760;
 const SLEEP_DISTANCE = 900;
 const STEAM_LOAD_DISTANCE = 170;
+
+/**
+ * Indoor-camera latch, in metres from the hall wall (see `isPlayerInside`).
+ * Enter just past the wall; release only well clear of the building, so the
+ * threshold, the spiral's outer treads and the glass-side deck all stay indoors.
+ */
+const INDOOR_ENTER_INSET = 0.6;
+const INDOOR_EXIT_INSET = -3.2;
 
 export type SutroBathsPlayerPosition = { x: number; y?: number; z: number };
 
@@ -185,6 +193,8 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   let foliageVisible = true;
   let distanceToBaths = Number.POSITIVE_INFINITY;
   let disposed = false;
+  /** Latched answer to `isPlayerInside` — see the thresholds by that method. */
+  let playerInside = false;
   // The authored region hands terrain ownership to the hall and publishes its
   // deck/basin bodies asynchronously. Keep a lightweight recovery contract
   // armed for the lifetime of the site: it covers both that handoff frame and
@@ -358,13 +368,26 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       monitors.playerDistance = water.stats.playerDistance;
       monitors.steamVisible = steam?.stats.visible ?? 0;
     },
+    /**
+     * Does the indoor camera rig own the visitor?
+     *
+     * LATCHED, with the release deliberately outside the building. A plain
+     * "inside the footprint" test flipped the camera back to third person at the
+     * wall plane — which is to say while the visitor was still under the roof:
+     * on the entry threshold slab, on the outer edge of the spiral descent
+     * (whose treads reach the wall), or simply walking the deck by the glass.
+     * Coming in latches just inside the wall; going out does not release until
+     * the visitor is a good three metres clear of it, out on the promenade or
+     * the beach, so no walk INSIDE the hall can swing the camera out.
+     */
     isPlayerInside(player) {
       const y = player.y ?? SUTRO_BATHS.deckY;
-      return (
-        inSutroBathsHall(player.x, player.z, -1.2) &&
-        y >= SUTRO_BATHS.basinY - 1.5 &&
-        y <= SUTRO_BATHS.roofApexY + 4
-      );
+      const containedVertically =
+        y >= SUTRO_BATHS.basinY - (playerInside ? 4.5 : 1.5) &&
+        y <= SUTRO_BATHS.roofApexY + (playerInside ? 7 : 4);
+      const inset = sutroHallWallInset(player.x, player.z);
+      playerInside = containedVertically && inset > (playerInside ? INDOOR_EXIT_INSET : INDOOR_ENTER_INSET);
+      return playerInside;
     },
     takeFloorHandoffHeight(player, playerMode) {
       if (!hasFloorRecovery || disposed || playerMode !== "walk") return null;
@@ -440,5 +463,6 @@ export {
   SUTRO_POOLS,
   distanceToSutroBaths,
   distanceToSutroWater,
-  inSutroBathsHall
+  inSutroBathsHall,
+  sutroHallWallInset
 } from "./layout";
