@@ -43,13 +43,15 @@ export interface ChunkLOD {
 }
 
 export interface ChunkLODOptions {
-  /** Optional LIVE terrain sampler. When supplied, every merged building is
-   *  conformed to terrain: its windowed wall + roof start at the HIGHEST ground
-   *  under the footprint (no uphill window buried into the slope) and a plain
-   *  foundation skirt drops to the LOWEST ground (no downhill float). Omit for the
-   *  legacy baked-`base` behaviour (identical output to before). A few samples per
+  /** Optional LIVE terrain sampler — the RENDERED ground (`map.groundTop`), not
+   *  the raw heightfield, so authored regions that lower ground are seen. When
+   *  supplied, every merged building is conformed to terrain: its windowed wall +
+   *  roof start at the HIGHEST ground under the footprint (no uphill window
+   *  buried into the slope) and a plain foundation skirt drops to the LOWEST
+   *  ground on a ring dilated OUTSIDE the footprint (no downhill float, even on a
+   *  cliff lip). Omit for the legacy baked-`base` behaviour. ~57 samples per
    *  building — cheap enough for the ~260 buildings/frame merge budget.
-   *  NOTE: pass a bound fn — e.g. `(x, z) => map.groundHeight(x, z)` — so `this`
+   *  NOTE: pass a bound fn — e.g. `(x, z) => map.groundTop(x, z)` — so `this`
    *  survives; a bare method reference would lose its receiver. */
   groundHeight?: GroundSampler;
 }
