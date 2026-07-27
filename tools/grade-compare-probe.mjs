@@ -21,6 +21,8 @@
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright-core";
+import { decodePng, sampleDisc } from "./lib/pngSample.mjs";
+import { evaluateLook, findLook } from "../src/render/gradeLooks.ts";
 
 const OUT = process.env.SF_SHOT_OUT ?? ".data/grade-shots";
 const BASE = process.env.SF_PROBE_URL?.trim() || "http://localhost:5245";
@@ -31,6 +33,34 @@ const FACE = process.env.SF_FACE ?? "sun";
 const PITCH = Number(process.env.SF_PITCH ?? 0.02);
 const LUTSIZE = process.env.SF_LUTSIZE ? Number(process.env.SF_LUTSIZE) : null;
 const TAG = process.env.SF_TAG ?? "";
+const CARDS = process.env.SF_GREYCARDS === "1";
+
+const srgbDecode = (x) => (x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4));
+const lum = (rgb) => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+
+/**
+ * Screen-space disc + sun-facing term for each calibration sphere. Pixel
+ * sampling happens node-side on the screenshot: drawImage() of a WebGPU canvas
+ * reads back black in headless Chrome, so the page can only report geometry.
+ */
+const GEOM_EXPR = `(()=>{const sf=window.__sf,THREE=sf.THREE,cam=sf.camera,chart=sf.calibrationChart;
+  const cv=sf.renderer.domElement,w=cv.width,h=cv.height;
+  const sun=sf.sky.sun;const sd=sun.position.clone().sub(sun.target.position).normalize();
+  const v=new THREE.Vector3(),n=new THREE.Vector3();
+  const f=(h*0.5)/Math.tan(THREE.MathUtils.degToRad(cam.fov*0.5));
+  const out={w,h,exposure:sf.renderer.toneMappingExposure,
+    look:sf.pipeline.grade.activeLookId(),
+    sunI:sun.intensity,sunC:sun.color.toArray(),spheres:[]};
+  for(const s of chart.spheres){
+    s.mesh.getWorldPosition(v);
+    n.copy(cam.position).sub(v).normalize();
+    const ndl=Math.max(0,n.dot(sd)),dist=v.distanceTo(cam.position);
+    v.project(cam);
+    out.spheres.push({albedo:s.albedo,ndl,
+      cx:(v.x*0.5+0.5)*w,cy:(-v.y*0.5+0.5)*h,
+      pr:Math.max(4,chart.radius/dist*f*0.72)});
+  }
+  return out;})()`;
 
 async function exists(p) {
   try { await access(p); return true; } catch { return false; }
@@ -93,22 +123,12 @@ try {
   );
   console.log("[cmp] world settled");
 
-  await page.evaluate(() => {
+  await page.evaluate((cards) => {
     window.__sfManual(true);
     window.__sf.sky.cycleEnabled = false;
     window.__sf.sky.realTime = false;
-  });
-
-  // Clean plate: Tab fades the HUD. It is read via input.pressed("Tab") inside
-  // the frame body, so in manual mode the press lands on the NEXT tick.
-  await page.keyboard.press("Tab");
-  await page.evaluate(() => { for (let i = 0; i < 40; i++) window.__sf.tick(1 / 30); });
-  await page.waitForTimeout(1_200);
-
-  if (LUTSIZE) {
-    await page.evaluate((n) => window.__sf.pipeline.grade.setLutSize(n), LUTSIZE);
-    console.log("[cmp] LUT re-baked at", LUTSIZE);
-  }
+    if (cards) window.__sf.RENDER_TUNING.values.greyCards = true;
+  }, CARDS);
 
   /**
    * Tick in batches separated by REAL awaits.
@@ -121,6 +141,9 @@ try {
    * cheerfully reports the new sun elevation and camera heading. That is how a
    * plate can be a midday inland shot whose log line says sunset, and why the
    * failure came and went depending on whether a compile happened to be pending.
+   * It also cost the first grey-card plate of every run: the chart is posed by
+   * main's tick, so with no real frame between enabling it and shooting, the
+   * sampler read sky instead of spheres.
    */
   /**
    * chase.yaw is the DESTINATION heading; the rendered boom eases toward it over
@@ -144,6 +167,29 @@ try {
       await page.waitForTimeout(120);
     }
   };
+
+  // Clean plate: Tab fades the HUD. It is read via input.pressed("Tab") inside
+  // the frame body, so in manual mode the press lands on the NEXT tick.
+  await page.keyboard.press("Tab");
+  await settle(8);
+  await page.waitForTimeout(1_200); // the HUD fade is a CSS transition
+
+  if (LUTSIZE) {
+    await page.evaluate((n) => window.__sf.pipeline.grade.setLutSize(n), LUTSIZE);
+    console.log("[cmp] LUT re-baked at", LUTSIZE);
+    await settle(4);
+  }
+
+  // Prime on the first target and throw the result away. Two things are not
+  // ready on a cold first plate: the chase boom is still easing from the spawn
+  // heading toward the sun, and — with SF_GREYCARDS — the calibration chart has
+  // not been posed yet, because main's tick is what poses it. Both failures are
+  // silent: the plate looks like a normal screenshot and the card sampler
+  // happily reads sand and sky, which is how the first look of a run came back
+  // two stops brighter than every other look in the same sweep.
+  await page.evaluate((tod) => window.__sf.sky.setTimeOfDay(tod), TIMES[0]);
+  await settle();
+  console.log("[cmp] primed");
 
   for (const time of TIMES) {
     for (const look of LOOKS) {
@@ -178,9 +224,40 @@ try {
 
       const name = `${TAG}${look}_t${String(time).replace(".", "-")}.png`;
       const file = path.join(OUT, name);
-      await page.screenshot({ path: file });
+      const buf = await page.screenshot({ path: file });
       written.push(file);
       console.log(`[cmp] ${name}  ${JSON.stringify(info)}`);
+
+      if (CARDS) {
+        // Measure the RENDERED grey cards. The point is not the absolute number
+        // but where the 18% card sits relative to photographic neutral (0.18
+        // display-linear) — that is the one reading the whole light rig is
+        // calibrated against, and the one a tone-curve change moves.
+        const geom = await page.evaluate(GEOM_EXPR);
+        const png = decodePng(buf);
+        const scale = png.w / geom.w;
+        const lk = findLook(geom.look);
+        console.log("   albedo | sunlit sRGB (sun-only pred) | centre sRGB");
+        for (const s of geom.spheres) {
+          const m = sampleDisc(png, s.cx * scale, s.cy * scale, s.pr * scale);
+          const rad = geom.sunC.map((c) => (c * geom.sunI * 1 * s.albedo * geom.exposure) / Math.PI);
+          const pred = evaluateLook(lk, rad[0], rad[1], rad[2]);
+          console.log(
+            `   ${(s.albedo * 100).toFixed(0).padStart(5)}% |  ${lum(m.max).toFixed(3)} (${lum(pred).toFixed(3)})` +
+              `              |  ${lum(m.center).toFixed(3)}`
+          );
+        }
+        const grey = geom.spheres.find((s) => Math.abs(s.albedo - 0.18) < 1e-6);
+        if (grey) {
+          const m = sampleDisc(png, grey.cx * scale, grey.cy * scale, grey.pr * scale);
+          const dl = lum(m.max.map(srgbDecode));
+          const stops = Math.log2(Math.max(dl, 1e-5) / 0.18);
+          console.log(
+            `   18% grey sunlit spot: display-linear ${dl.toFixed(3)} → ` +
+              `${stops >= 0 ? "+" : ""}${stops.toFixed(2)} stops vs photographic neutral`
+          );
+        }
+      }
     }
   }
   if (pageErrors.length) console.log("[cmp] pageErrors:\n" + pageErrors.join("\n"));

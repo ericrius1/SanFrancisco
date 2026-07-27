@@ -142,8 +142,8 @@ export function shaperInverse(u: number): number {
  * white has saturated, every remaining operation is scale-invariant: white
  * balance and saturation-by-ratio are homogeneous, the contrast pow turns a
  * factor s into a factor s^k on every channel alike, and the output depends
- * only on c/peak. So f(s·c) === f(c) exactly, and SHAPER_MAX (48) sits far
- * above where that kicks in (≈7.4 linear for the house look). Verified by
+ * only on c/peak. So f(s·c) === f(c) exactly, and SHAPER_MAX sits far above
+ * where that kicks in (≈7.4 linear for the house look). Verified by
  * measurement: the probe reports identical error stressing samples to linear
  * 120 and to linear 4000.
  */
@@ -183,7 +183,24 @@ export type GradeLook = {
   readonly whiteBalance: readonly [number, number, number];
   /** Log-space slope about GRADE_PIVOT. >1 deepens the toe and opens highlights. */
   readonly contrast: number;
-  /** Trim in stops, folded into the same expression as `contrast`. */
+  /**
+   * Trim in stops, folded into the same expression as `contrast`.
+   *
+   * This is the EXPOSURE ANCHOR, and every `sf` look is solved so that a sunlit
+   * 18% grey card lands at the same place the legacy ACES curve put it
+   * (display-linear 0.1855, measured on the "/" chart at Ocean Beach, noon).
+   * Switching looks therefore changes character — contrast, chroma, tint — and
+   * not brightness, which is the only way a look selector is usable: otherwise
+   * every comparison is confounded by one option simply being brighter.
+   *
+   * It is also why the fix for the new curve's −0.30 stop midtone lives HERE
+   * rather than in sky.ts's sunDay/hemiDay. Those set actual scene radiance, and
+   * scene-linear values are load-bearing elsewhere — the bloom threshold of 2.2
+   * is measured in that space. A display-side shift gets a display-side
+   * correction; the lighting rig is left exactly as it was.
+   *
+   * Re-solve with tools/grade-probe.mjs if the tonescale or contrast changes.
+   */
   readonly offsetStops: number;
   /** Linear saturation, BEFORE the tonescale so film-like compression applies. */
   readonly saturation: number;
@@ -462,9 +479,8 @@ export const GRADE_LOOKS: readonly GradeLook[] = [
     // 1.18 is where the horizon reads as a silhouette against the water instead
     // of a grey shape. Past ~1.3 the fog banks start clipping to black.
     contrast: 1.18,
-    // The Reinhard shoulder lands mid grey a touch under photographic neutral;
-    // this is the trim that puts the 18% card back where the chart expects it.
-    offsetStops: 0.16,
+    // Solved, not chosen — see the exposure-anchor note on GradeLook.offsetStops.
+    offsetStops: 0.519,
     saturation: 1.2,
     white: 6.0,
     // The sun disc (peak ≳ 8) still bleaches to white. The sky wedge around it
@@ -482,7 +498,7 @@ export const GRADE_LOOKS: readonly GradeLook[] = [
     curve: "sf",
     whiteBalance: [1, 1, 1],
     contrast: 1.0,
-    offsetStops: 0.16,
+    offsetStops: 0.485,
     saturation: 1.0,
     white: 6.0,
     pathToWhite: [2.0, 12.0, 0.75],
@@ -498,7 +514,7 @@ export const GRADE_LOOKS: readonly GradeLook[] = [
     curve: "sf",
     whiteBalance: [1.0, 1.0, 1.02],
     contrast: 1.34,
-    offsetStops: 0.2,
+    offsetStops: 0.535,
     saturation: 1.42,
     // A short white point is what makes slide film slide film: highlights run
     // out of headroom early instead of rolling gently forever.
@@ -516,7 +532,7 @@ export const GRADE_LOOKS: readonly GradeLook[] = [
     curve: "sf",
     whiteBalance: [1, 1, 1],
     contrast: 1.45,
-    offsetStops: 0.1,
+    offsetStops: 0.56,
     saturation: 0.42,
     white: 8.0,
     pathToWhite: [3.0, 14.0, 0.8],
@@ -532,7 +548,7 @@ export const GRADE_LOOKS: readonly GradeLook[] = [
     curve: "sf",
     whiteBalance: [1.03, 1.0, 0.97],
     contrast: 0.9,
-    offsetStops: 0.12,
+    offsetStops: -0.027,
     saturation: 1.12,
     white: 7.0,
     pathToWhite: [2.4, 11.0, 0.66],
