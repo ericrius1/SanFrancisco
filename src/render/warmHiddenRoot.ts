@@ -18,11 +18,18 @@ import type * as THREE from "three/webgpu";
  *     pool (player/lightPool.ts registerAmbientLightAnchor), because a light
  *     entering the visible set invalidates every lit pipeline scene-wide.
  */
+/** Reattach the root even if its compile never settles (see the watchdog note
+ *  below). Long enough that a genuinely slow compile still gets its hidden
+ *  window; short enough that a parked lane cannot swallow the content. */
+const WARM_REATTACH_DEADLINE_MS = 10_000;
+
 export async function warmHiddenRoot(
   renderer: THREE.WebGPURenderer,
   camera: THREE.Camera,
   scene: THREE.Scene,
-  root: THREE.Object3D
+  root: THREE.Object3D,
+  compile: (o: THREE.Object3D, c: THREE.Camera, s: THREE.Scene) => Promise<unknown> = (o, c, s) =>
+    renderer.compileAsync(o, c, s)
 ): Promise<void> {
   const parent = root.parent;
   const state: { object: THREE.Object3D; visible: boolean; frustumCulled: boolean }[] = [];
@@ -34,7 +41,23 @@ export async function warmHiddenRoot(
   });
   root.updateMatrixWorld(true);
   try {
-    await renderer.compileAsync(root, camera, scene);
+    // Watchdog. This helper's failure mode is silent and total: the root is
+    // DETACHED for the duration of the compile, so a compile that never settles
+    // removes the content from the world permanently — no error, no missing
+    // texture, just absence. That is exactly what happened to the ocean, whose
+    // warm sat on the normal compile lane behind an arrival blocker that never
+    // cleared at heavy destinations (the four sheets stayed parentless and the
+    // "sea" you saw was the bare terrain seabed).
+    //
+    // Callers on the priority lane cannot park, but nothing stops a future
+    // caller from using the default lane, so reattach unconditionally after a
+    // deadline and let the compile finish in the background. Reattaching early
+    // only risks the synchronous first-draw stall this helper exists to avoid —
+    // strictly better than losing the geometry.
+    await Promise.race([
+      compile(root, camera, scene),
+      new Promise((resolve) => setTimeout(resolve, WARM_REATTACH_DEADLINE_MS))
+    ]);
   } finally {
     for (const entry of state) {
       entry.object.visible = entry.visible;

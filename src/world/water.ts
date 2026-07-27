@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import {
-  cameraViewMatrix,
+  cameraPosition,
   positionLocal,
   positionWorld,
   positionView,
@@ -19,7 +19,9 @@ import {
   max,
   normalize,
   uv,
-  vec4,
+  uniformArray,
+  atan,
+  floor,
   mx_fractal_noise_float,
   mx_noise_float,
   textureLevel,
@@ -32,7 +34,8 @@ import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 import { WaterEchoes } from "./waterEchoes";
 import { OceanCascades, oceanDetail, cascadeUv, CASCADE_FADE_DIST, HERO_STRIP_GATE } from "./ocean/oceanSim";
 import { setHeroFocus } from "./ocean/heroWaves";
-import { SUN_DIR } from "./sky";
+import { SUN_DIR, type Sky } from "./sky";
+import { causticWeb, oceanSurfaceRadiance } from "./waterShadingTSL";
 import { governorEffects } from "../render/adaptiveResolution";
 
 const PALACE_LAGOON_SEGMENTS = 112;
@@ -67,6 +70,79 @@ const FAR_ANNULUS_FADE_OUTER = 2100;
 // Square plane whose inscribed radius (SIZE/2 = 2200 m) covers the fade disc.
 const FAR_ANNULUS_SIZE = 4400;
 const TAU = Math.PI * 2;
+
+// --- water BRDF (see waterShadingTSL.oceanSurfaceRadiance) ------------------
+// Microfacet roughness of the water ITSELF, before the spectral LEADR ramp adds
+// back whatever slope variance has faded below pixel footprint. Real water is
+// near-mirror; every bit of apparent roughness you see is unresolved waves, and
+// within the finest cascade's fade distance the cascades resolve those waves
+// explicitly. So this stays low and the ramp does the work — which is what puts
+// a crisp sky in close water and a soft, stable glitter band in far water.
+const WATER_BASE_ROUGHNESS = 0.055;
+// Peak roughness the ramp can add once every band has faded (matches the old
+// LEADR calibration, rebased onto the lower floor above).
+const WATER_ROUGHNESS_RANGE = 0.4;
+const WATER_ROUGHNESS_MAX = 0.62;
+// Foam is a rough dielectric raft, not water.
+const FOAM_ROUGHNESS = 0.85;
+
+// --- shallow-water transmission (Tier B) -----------------------------------
+// Per-metre Beer-Lambert extinction in the linear render space, green-dominant
+// like real coastal water — red dies first, which is what turns a sand bed
+// green-blue as it drops away, and no colour ramp reproduces that for free.
+//
+// Calibrated to this bay's authored identity (a "vivid Caribbean" green, not
+// the literal grey-green Pacific): at a 2.5 m slant path the bed still reads
+// through at (0.09, 0.39, 0.32), so the shallows show a real seabed instead of
+// a colour that merely suggests one. True SF turbidity (~1-2 m visibility, i.e.
+// roughly sigma 1.35/0.62/0.78) buries the bed and its caustics inside the
+// first metre, where almost nothing in the world is.
+//
+// Deliberately NOT derived from the deep palette via beerLambertWater(): that
+// couples extinction to the art colour and makes wet sand read cyan.
+const WATER_SIGMA = new THREE.Vector3(0.95, 0.38, 0.46);
+// Hard gate. smoothstep clamps, so past this the bed term is EXACTLY zero and
+// open water is bit-identical to Tier A — a falsifiable probe assertion, not a
+// "small enough to ignore". By 6 m the green channel is already ≤0.10.
+const BED_VISIBLE_DEPTH = 6.0;
+// Bed palette lifted verbatim from the terrain's own literals so the waterline
+// lands on the same colour from both sides. Sand at the swash line, the
+// terrain's bay-floor tone once you are a few metres down.
+const BED_SAND = 0xd1c49f;
+const BED_FLOOR = 0x466c68;
+// The terrain is a LIT MeshStandard; the water is unlit with its own
+// illuminant, so the two do not agree numerically without one scalar.
+const BED_GAIN = 1.25;
+
+// --- reflected coastline (Tier C) ------------------------------------------
+// A coast lays a dark band on the water beneath it. Sampling sky there is why
+// most ocean shaders read as an empty planet, and it is the single most
+// conspicuous thing missing from a bay ringed by cliffs and headlands.
+//
+// NOT a screen-space march: at grazing incidence on a near-flat surface the
+// reflection ray leaves the frustum almost immediately, so SSR misses exactly
+// the geometry that matters and ghosts on what it does find. NOT a world-space
+// heightfield march either — that costs 8-12 texture fetches per pixel, which
+// would hand back everything Tier A saved.
+//
+// Instead: once per update, sweep the terrain from the CAMERA over a ring of
+// azimuths and record the tangent of each direction's horizon. The shader then
+// resolves "is there land along this reflected ray" with two uniform-array
+// reads and a lerp — no texture fetch, ~15 ALU — and it is correct for terrain
+// that is entirely off-screen. The profile is camera-centred while the water
+// spans hundreds of metres, but the parallax error over that span is small
+// against landforms that are hundreds of metres away and tens of metres tall,
+// and the result is a soft band, not a mirror image.
+const HORIZON_AZIMUTHS = 48;
+/** How far the sweep looks for blocking terrain. */
+const HORIZON_MAX_DIST = 2600;
+/** Ray steps per azimuth; spacing widens with distance (see #scanHorizon). */
+const HORIZON_STEPS = 44;
+/** Re-sweep once the camera has moved this far — the profile is a slow field. */
+const HORIZON_REFRESH_DIST = 45;
+/** How completely terrain suppresses the sky reflection. Not 1: a real coast
+ *  reflection still carries scattered skylight, and the profile is coarse. */
+const COAST_STRENGTH = 0.8;
 
 // --- coarse water-proximity field (see #buildWaterField) -------------------
 // A 128 m-cell distance-to-water map over the height grid, built once at boot
@@ -186,6 +262,18 @@ export class Water {
   /** Sim throttle mask (bit per cascade) + rate, driven by the profile. */
   simMask = 0b111;
   #uSunDir = uniform(SUN_DIR);
+  /** Key-light radiance (sun.color × sun.intensity) for the BRDF's glint lobe.
+   *  Sky owns the day/night grade; this just mirrors it into the water graph so
+   *  the sun path dims through dusk and becomes a moon path at night. */
+  #uSunRadiance = uniform(new THREE.Color(1, 1, 1));
+  /** tan(elevation) of the terrain horizon per azimuth, swept from the camera
+   *  (see HORIZON_* and #scanHorizon). Negative where nothing blocks. */
+  //   +1 entry duplicating index 0, so the shader's azimuth lerp never needs a
+  //   modulo to wrap the last spoke back to the first.
+  #horizonData = new Array<number>(HORIZON_AZIMUTHS + 1).fill(-1);
+  #uHorizon = uniformArray(new Array<number>(HORIZON_AZIMUTHS + 1).fill(-1), "float");
+  #horizonAt = new THREE.Vector2(Infinity, Infinity);
+  #sky: Sky;
   #lastSimT: number | null = null;
   #frame = 0;
   /** Chamfer distance-to-water in CELL units, one entry per WATER_FIELD_CELL. */
@@ -201,9 +289,10 @@ export class Water {
   #cascadeGate = 0b1111;
   /** Height lattice, for the hero patch's fine-grained water probe. */
   #map: WorldMap;
-  constructor(scene: THREE.Scene, map: WorldMap, renderer: THREE.WebGPURenderer) {
+  constructor(scene: THREE.Scene, map: WorldMap, renderer: THREE.WebGPURenderer, sky: Sky) {
     this.#renderer = renderer;
     this.#map = map;
+    this.#sky = sky;
     this.ocean = new OceanCascades();
     const { tex, scale } = map.buildFloorTexture();
     this.#buildWaterField(map);
@@ -212,23 +301,29 @@ export class Water {
     const h = g.height * g.cellSize + 8000;
 
     const makeMaterial = (displace: number, holed: boolean, heroRes = false, originU = this.#uOrigin, annulus = false) => {
-      // Both sheets are MeshStandard, not Physical. Water is the biggest surface
-      // on screen and the shader is fragment-bound on lighter GPUs (an M2 Air
-      // sputters over open bay); the physical fragment path (ior/specular BRDF)
-      // is measurably heavier (~0.5 ms/render here on the near patch alone) and
-      // the sun glint it bought is carried just as well by the env reflection +
-      // roughness gradient + emissive spark below — a headless A/B at sunset was
-      // pixel-indistinguishable. The env-mapped Fresnel sky reflection still
-      // falls out of Standard for free.
-      const mat = new THREE.MeshStandardNodeMaterial({
-        roughness: 0.48,
-        metalness: 0,
+      // UNLIT material + a hand-written water BRDF (waterShadingTSL.
+      // oceanSurfaceRadiance). Water has no meaningful diffuse lobe, so running
+      // it through three's analytic-light + IBL path was paying ~1500 ALU and 6
+      // texture fetches per pixel — a pooled point light at intensity 0 (263
+      // ALU + 2 DFG fetches), the split-sum specular LUTs, and the analytic sky
+      // evaluated TWICE (radiance + irradiance) — to produce a Lambert lobe that
+      // is physically wrong for water anyway.
+      //
+      // `lights = false` makes NodeMaterial.setupOutgoingLight return
+      // diffuseColor.rgb directly and skip the whole lighting block, while
+      // setupDiffuseColor (maskNode / opacityNode / alphaTest) and setupOutput
+      // (scene.fogNode, tone mapping) are untouched — so every sheet handoff and
+      // the fog composite behave exactly as before. Basic is the base class only
+      // because it is the material whose contract is already "colorNode IS the
+      // outgoing radiance"; nothing here uses its lighting model.
+      const mat = new THREE.MeshBasicNodeMaterial({
         transparent: false,
         // Ocean is an occluding body, not a tinted overlay. Both sheets write
         // depth; alpha testing below resolves their complementary ownership and
         // reveal masks in the opaque pass.
         depthWrite: true
       });
+      mat.lights = false;
       mat.alphaTestNode = float(0.5);
 
       const t = this.#uTime;
@@ -296,13 +391,21 @@ export class Water {
       const dry = step(0.55, floorH).mul(inMap); // dry land under this pixel: hide
       const depth = max(0, positionWorld.y.sub(floorH)).toVar();
 
-      // Bay gradient — vivid Caribbean: a bright aqua-mint sandy shallow through
-      // luminous turquoise to a still-bright deep teal (never a near-black deep,
-      // so the whole bay glows). d2 softened (-0.042) so the turquoise carries
-      // further out before the deep tone takes over.
+      // Bay gradient — vivid Caribbean: luminous turquoise through a still-bright
+      // deep teal (never a near-black deep, so the whole bay glows). d2 softened
+      // (-0.042) so the turquoise carries further out before the deep tone takes
+      // over.
+      //
+      // The shallow anchor USED to be a near-white aqua-mint (0x93e6d4), which
+      // was a stand-in for "you can see the sand" back when the surface was
+      // opaque. Tier B transmits the real bed, so keeping the pale anchor
+      // double-counted it: the shallows washed to mint and the actual seabed —
+      // and its caustics — were invisible inside the wash. The in-scatter is now
+      // saturated turquoise all the way in, and the LIGHTENING at a shoreline
+      // comes from the bed showing through, which is where it physically is.
       const d1 = exp(depth.mul(-0.24)).oneMinus();
       const d2 = exp(depth.mul(-0.042)).oneMinus().toVar();
-      const waterCol = mix(mix(color(0x93e6d4), color(0x16b8a6), d1), color(0x0b7580), d2).toVar();
+      const waterCol = mix(mix(color(0x35c9b0), color(0x16b8a6), d1), color(0x0b7580), d2).toVar();
 
       // Feather the player-following near patch into the far bay sheet. This
       // keeps the displaced water useful for watercraft without leaving a
@@ -366,7 +469,6 @@ export class Water {
       mat.maskNode = coverage.greaterThan(0.5);
 
       const viewDist = positionView.z.negate();
-      const detail = clamp(float(1).sub(viewDist.div(1900)), 0, 1).toVar();
       const foamBand = smoothstep(1.4, 0.15, depth).toVar();
 
       // NO If() gates here: a branch inside a Fn corrupted unrelated outputs
@@ -437,55 +539,171 @@ export class Water {
       // Chop zones dig the slopes a little harder, like the old ripple did.
       // NO If() gates here (see the branch-hazard note above).
       const slopeK = zoneF.mul(0.35).add(1);
+      // WORLD space now (the BRDF reflects in world space and the sky is a
+      // world-direction function), so the old cameraViewMatrix multiply is gone.
       const rippleNormal = normalize(
         vec3(det.slope.x.mul(slopeK).negate(), 1, det.slope.y.mul(slopeK).negate())
-      );
-      mat.normalNode = normalize(cameraViewMatrix.mul(vec4(rippleNormal, 0)).xyz);
+      ).toVar();
 
-      // sun sparkle: occasional near-field flecks only; the env-mapped Fresnel
-      // reflection carries the broad sunset sheen, so this stays subtle on top.
-      const sparkNoise = mx_noise_float(vec3(p.mul(2.2), t.mul(0.8)));
-      const spark = smoothstep(0.78, 0.97, sparkNoise).mul(detail.mul(detail)).mul(foamTotal.oneMinus());
-      const emeraldVein = smoothstep(0.82, 0.97, sparkNoise.mul(0.5).add(0.5))
-        .mul(surfFaceTint.mul(surfFaceTint).mul(surfFaceTint));
-      // While the surf overlay is live, standing swell on this sheet must stay
-      // luminous water on its sun-shadowed side too — an unlit PBR backside
-      // rendered near-black against the bright bay ("dark hole behind the
-      // wave"). Build-time gated to the displaced sheet; scaled by uSurfing.
+      // LEADR-lite roughness: whatever spectral slope energy was faded out of
+      // the normal at this distance comes back as microfacet variance, so the
+      // distant sun path spreads into a stable soft band (no shimmer, no
+      // hand-tuned "detail" ramp — the spectrum itself says how rough far
+      // water is). The floor is now WATER's own roughness rather than the old
+      // 0.36 stand-in, because the BRDF below reflects the sky explicitly: close
+      // water, where every band is resolved, should be a near-mirror.
+      const totalVar = this.ocean.cascades.reduce((s, c) => s + c.slopeVariance, 0);
+      const varToRough = WATER_ROUGHNESS_RANGE / Math.max(totalVar, 1e-6);
+      const baseRough = clamp(
+        float(WATER_BASE_ROUGHNESS).add(det.cutVariance.mul(varToRough)),
+        WATER_BASE_ROUGHNESS,
+        WATER_ROUGHNESS_MAX
+      );
+      const roughness = mix(baseRough, float(FOAM_ROUGHNESS), foamTotal).toVar();
+
+      // Ocean Beach gets an absorptive blue-green body. Brightness belongs to
+      // the thin emerald wall and cool lip in the first-use surf overlay; a
+      // globally cyan swell made every set dissolve into marine fog.
+      const faceCol = mix(waterCol, color(0x075940), surfFaceTint);
+
+      // --- the water BRDF ------------------------------------------------
+      // Fresnel-weighted sky reflection vs in-scattered body, plus a GGX sun
+      // lobe whose width rides the same spectral variance as the roughness.
+      // The sky is this project's ANALYTIC sky evaluated along the true
+      // reflected ray — no PMREM, no render target, and it tracks the sun
+      // continuously instead of at a bake cadence.
+      const viewDir = normalize(positionWorld.sub(cameraPosition));
+
+      // --- shallow-water transmission (Tier B) ---------------------------
+      // The seabed through Beer-Lambert absorption. No scene-colour copy and no
+      // pipeline change: the bathymetry is ALREADY fetched above for the dry
+      // mask, so this is pure ALU on a value we have. (A screen-space
+      // refraction is not merely unwanted here — it is non-functional: water
+      // draws BEFORE terrain, so the framebuffer it would sample contains no
+      // seabed at all.)
+      // Slant path, not vertical depth: looking along the water you see through
+      // far more of it, which is why a shoreline goes opaque as you flatten out.
+      const slant = viewDir.y.abs().max(0.18);
+      const pathLength = depth.div(slant);
+      // EXACTLY zero past BED_VISIBLE_DEPTH (smoothstep clamps its interpolant),
+      // so deep water is bit-identical to Tier A.
+      const shallowGate = smoothstep(BED_VISIBLE_DEPTH, 0, depth).toVar();
+      const bedT = exp(pathLength.negate().mul(vec3(WATER_SIGMA))).mul(shallowGate).toVar();
+      // Sand at the swash line, the terrain's own bay-floor tone by ~3 m down —
+      // both ends land on terrain literals, so the waterline stops being a seam.
+      const bedBase = mix(color(BED_SAND), color(BED_FLOOR), smoothstep(0.3, 3.0, depth));
+      // Caustics: BUILD-TIME gated to the displaced sheets. TSL only dead-strips
+      // a subgraph that is unreferenced at build time (a JS ternary) — never one
+      // merely multiplied by zero at runtime — and the branchless rule forbids
+      // an If(), so the expensive term must be excluded here or the far annulus
+      // pays ~77 ALU for a web it can never show.
+      const caustic = displace > 0
+        ? causticWeb(pxz.mul(1.4).add(rippleNormal.xz.mul(1.1)), t.mul(0.5))
+            // Fade on the sheet's OWN radius, not viewDist: the patch is
+            // player-centred while viewDist is camera-relative, and a chase or
+            // flight camera decouples them. Closed well inside the 210–276 m
+            // handoff, so the far sheet never needs the term.
+            .mul(smoothstep(150, 60, positionLocal.xz.length()))
+        : float(0);
+      // Light focuses on the bed, so caustics brighten it PROPORTIONALLY rather
+      // than adding a flat white — and they dim with depth and with the sun.
+      // The falloff is deliberately gentle (0.45, not 0.9): real caustics are
+      // strongest around 1-3 m, and since the bed is only a fraction of the
+      // final pixel at those depths, a steep falloff plus a small gain makes
+      // the web mathematically present and visually absent.
+      const causticFocus = exp(depth.negate().mul(0.45)).mul(det.crest.mul(0.6).add(1));
+      const bedAlbedo = bedBase.mul(
+        caustic.mul(1.8).mul(causticFocus).mul(saturate(this.#uSunDir.y.mul(4))).add(1)
+      );
+
+      // --- reflected coastline (Tier C) ----------------------------------
+      // Resolve the reflected ray against the CPU horizon profile: two uniform
+      // reads, a lerp and a smoothstep — no texture fetch — and it sees terrain
+      // entirely outside the frustum, which a screen-space march cannot.
+      // Evaluated as a CALLBACK so it uses the BRDF's own horizon-clamped
+      // reflected direction (the real per-pixel wave normal), not a flat mirror.
+      const coastBlock = (skyDir: any) => {
+        const reflTan = skyDir.y.div(max(skyDir.xz.length(), 1e-3));
+        // atan2 -> 0..1 around the compass, matching #scanHorizon's a/N x TAU.
+        const azimuth = atan(skyDir.z, skyDir.x).div(TAU).add(1).fract().mul(HORIZON_AZIMUTHS);
+        const a0 = floor(azimuth);
+        const i0 = a0.toInt().toVar();
+        const horizonTan = mix(
+          this.#uHorizon.element(i0) as never,
+          this.#uHorizon.element(i0.add(1)) as never,
+          azimuth.sub(a0)
+        ) as never as ReturnType<typeof float>;
+        // Wide feather: 48 spokes is 7.5 deg apart, and a hard threshold across
+        // that spacing reads as faceted polygons rather than a coastal haze.
+        return smoothstep(horizonTan.add(0.09), horizonTan.sub(0.09), reflTan)
+          .mul(COAST_STRENGTH)
+          // Past ~1.4 km the profile's camera-centred parallax stops being a
+          // good approximation of the water's own view, and fog owns the pixel.
+          .mul(clamp(float(1).sub(viewDist.div(1400)), 0, 1));
+      };
+      // Reflected land: fog-tinted and dark. A coastal reflection reads as a
+      // dark band borrowing the sky's own haze, never a legible mirror image —
+      // and shading it from `ambient` keeps it tracking the day cycle.
+      const coastRadiance = this.#sky.ambientRadiance().mul(vec3(0.42, 0.46, 0.42));
+
+      const surface = oceanSurfaceRadiance({
+        normal: rippleNormal,
+        viewDir,
+        roughness,
+        reflectionBlock: coastBlock,
+        blockedRadiance: coastRadiance,
+        sunDir: this.#uSunDir,
+        sunRadiance: this.#uSunRadiance,
+        ambient: this.#sky.ambientRadiance(),
+        bodyAlbedo: faceCol,
+        bedAlbedo,
+        bedTransmittance: bedT,
+        bedGain: BED_GAIN,
+        foam: foamTotal,
+        foamAlbedo: color(0xdfe8e6),
+        // Crest subsurface (SoT trick): the cascades' 1−Jacobian mask IS the set
+        // of folding, thin crests, so the glow rides exactly the pitching tops.
+        // It lives inside the BRDF now so it gets the view dependence it needs —
+        // light through a wave is only visible when the sun is beyond it.
+        sss: det.crest.mul(det.crest),
+        skyRadiance: (dir, level) => this.#sky.envRadiance(dir, level)
+      });
+
+      // While the surf overlay is live, standing swell must stay luminous water
+      // on its sun-shadowed side too — an unlit backside rendered near-black
+      // against the bright bay ("dark hole behind the wave"). Build-time gated
+      // to the displaced sheet; scaled by uSurfing.
       const surfWallGlow = displace > 0
         ? vec3(0.02, 0.3, 0.18)
             .mul(smoothstep(1.2, 6.0, surfField.height))
             .mul(this.#uSurfing)
             .mul(0.5 * LIGHT_SCALE)
         : vec3(0);
-      // Crest subsurface glow (SoT trick): folding crests are thin — light
-      // leaks through them. The crest mask is the cascades' 1−Jacobian, so the
-      // glow rides exactly the pitching tops, day-gated by sun height.
-      const daylight = saturate(this.#uSunDir.y.mul(4));
-      const crestGlow = vec3(0.05, 0.4, 0.32)
-        .mul(det.crest.mul(det.crest))
-        .mul(daylight)
-        .mul(0.055 * LIGHT_SCALE);
-      mat.emissiveNode = vec3(1.0, 0.95, 0.82).mul(spark.mul(0.035 * LIGHT_SCALE))
+      // The mx_noise sun sparkle is GONE — one 3D gradient-noise evaluation
+      // (~485 ALU, 20% of the far sheet's whole fragment shader) standing in for
+      // a glint the BRDF's GGX lobe now produces correctly, tracking sun AND
+      // view instead of drifting through a noise field. The emerald surf vein it
+      // also drove rides the analytic surf field directly instead.
+      // The vein needs BREAK-UP, not just the face mask: cubing surfFaceTint
+      // alone paints a solid emerald sheet over the whole wave face instead of
+      // the marbled streaks it is meant to be. The old form got that from the
+      // mx_noise field the sparkle shared; three counter-drifting sines give
+      // the same irregularity for ~12 ALU instead of ~485.
+      const veinBreak = sin(pxz.x.mul(0.21).add(pxz.y.mul(0.13)).add(t.mul(0.6)))
+        .mul(sin(pxz.x.mul(0.077).sub(pxz.y.mul(0.164)).sub(t.mul(0.43))))
+        .mul(0.5)
+        .add(0.5);
+      const emeraldVein = surfFaceTint
+        .mul(surfFaceTint)
+        .mul(surfFaceTint)
+        .mul(smoothstep(0.35, 0.8, veinBreak));
+      // Added into colorNode rather than emissiveNode: with `lights = false`
+      // the outgoing light IS diffuseColor.rgb, so the two are identical here —
+      // one fewer node, and the whole surface stays one expression.
+      mat.colorNode = surface
         .add(vec3(0.03, 0.42, 0.2).mul(emeraldVein.mul(0.13 * LIGHT_SCALE)))
-        .add(crestGlow)
-        .add(surfWallGlow);
 
-      // Ocean Beach gets an absorptive blue-green body. Brightness belongs to
-      // the thin emerald wall and cool lip in the first-use surf overlay; a
-      // globally cyan swell made every set dissolve into marine fog.
-      const faceCol = mix(waterCol, color(0x075940), surfFaceTint);
-      mat.colorNode = mix(faceCol, color(0xb8cecc), foamTotal);
-      // LEADR-lite roughness: whatever spectral slope energy was faded out of
-      // the normal at this distance comes back as microfacet variance, so the
-      // distant sun path spreads into a stable soft band (no shimmer, no
-      // hand-tuned "detail" ramp — the spectrum itself says how rough far
-      // water is). varToRough maps the cascades' true variance to a roughness
-      // add peaking ≈0.36 when every band has faded.
-      const totalVar = this.ocean.cascades.reduce((s, c) => s + c.slopeVariance, 0);
-      const varToRough = 0.36 / Math.max(totalVar, 1e-6);
-      const baseRough = clamp(float(0.36).add(det.cutVariance.mul(varToRough)), 0.3, 0.8);
-      mat.roughnessNode = mix(baseRough, float(0.78), foamTotal);
+        .add(surfWallGlow);
 
       // Interior water is fully opaque. opacityNode carries coverage only:
       // the hero surf sheet sits 2.5 cm above this base and wins depth wherever
@@ -495,7 +713,6 @@ export class Water {
       // cut so nothing downstream depends on discard semantics.
       mat.opacityNode = coverage;
 
-      mat.envMapIntensity = 0.25;
       return mat;
     };
 
@@ -511,12 +728,15 @@ export class Water {
     // hills — so the mask, not depth alone, is what keeps water off far land).
     // No If() (WGSL→Metal uniformity hazard): mix/multiply/smoothstep only.
     const makeHorizonMaterial = () => {
-      const mat = new THREE.MeshStandardNodeMaterial({
-        roughness: 0.48,
-        metalness: 0,
+      // Unlit + hand-written BRDF, same as the annulus (see makeMaterial). This
+      // sheet gained the MOST from dropping the lit path: its own water maths
+      // was only ~10% of the emitted shader, the rest being the generic PBR +
+      // IBL tail it now skips entirely.
+      const mat = new THREE.MeshBasicNodeMaterial({
         transparent: false,
         depthWrite: true
       });
+      mat.lights = false;
       mat.alphaTestNode = float(0.5);
 
       // flat sheet — displace = 0, no vertex work.
@@ -556,20 +776,36 @@ export class Water {
       // 950 m, well inside the ~2 km ring — and its cutVariance drives the same
       // roughness ramp so distant water never shimmers. No foam/crest fetches.
       const det = oceanDetail(this.ocean.cascades, pxz, viewDist, 1);
-      const rippleNormal = normalize(vec3(det.slope.x.negate(), 1, det.slope.y.negate()));
-      mat.normalNode = normalize(cameraViewMatrix.mul(vec4(rippleNormal, 0)).xyz);
+      const rippleNormal = normalize(vec3(det.slope.x.negate(), 1, det.slope.y.negate())).toVar();
 
-      // Constant deep-teal body: the annulus' depth gradient has already
-      // asymptoted to this exact tone (0x0b7580) for deep water by the handoff,
-      // and fog carries the rest, so dropping the gradient reads identical here.
-      mat.colorNode = color(0x0b7580);
       const totalVar = this.ocean.cascades.reduce((s, c) => s + c.slopeVariance, 0);
-      const varToRough = 0.36 / Math.max(totalVar, 1e-6);
-      mat.roughnessNode = clamp(float(0.36).add(det.cutVariance.mul(varToRough)), 0.3, 0.8);
+      const varToRough = WATER_ROUGHNESS_RANGE / Math.max(totalVar, 1e-6);
+      const roughness = clamp(
+        float(WATER_BASE_ROUGHNESS).add(det.cutVariance.mul(varToRough)),
+        WATER_BASE_ROUGHNESS,
+        WATER_ROUGHNESS_MAX
+      ).toVar();
+
+      // Same BRDF as the annulus, so the 1.9–2.1 km handoff stays seamless:
+      // identical Fresnel, identical sky sample, identical roughness ramp. Only
+      // the body colour is simplified (the annulus' depth gradient has already
+      // asymptoted to this exact deep tone by the handoff) and there is no foam.
+      const viewDir = normalize(positionWorld.sub(cameraPosition));
+      mat.colorNode = oceanSurfaceRadiance({
+        normal: rippleNormal,
+        viewDir,
+        roughness,
+        sunDir: this.#uSunDir,
+        sunRadiance: this.#uSunRadiance,
+        ambient: this.#sky.ambientRadiance(),
+        bodyAlbedo: color(0x0b7580),
+        foam: float(0),
+        foamAlbedo: color(0xdfe8e6),
+        skyRadiance: (dir, level) => this.#sky.envRadiance(dir, level)
+      });
 
       mat.opacityNode = coverage;
 
-      mat.envMapIntensity = 0.25;
       return mat;
     };
 
@@ -691,6 +927,10 @@ export class Water {
     // a submerged-only ceiling drawn before the water sheets, so skipping the test
     // is safe — nothing legitimately sits between you and the surface above.
     const undMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+    // Basic's lighting model resolves to diffuseColor.rgb anyway (no AO map,
+    // no specular), so this is bit-identical output — it just stops compiling
+    // the whole analytic-light + IBL tail into a lid that never used it.
+    undMat.lights = false;
     {
       const t = this.#uTime;
       const camXZ = this.#uCamXZ;
@@ -886,6 +1126,46 @@ export class Water {
     return false;
   }
 
+  /**
+   * Sweep the terrain horizon around `x,z` and publish tan(elevation) per
+   * azimuth — the CPU half of the reflected coastline (Tier C).
+   *
+   * One pass is HORIZON_AZIMUTHS × HORIZON_STEPS height lookups (48 × 44 ≈ 2.1k)
+   * and only runs when the camera has moved HORIZON_REFRESH_DIST, so it is far
+   * below the cost of the per-pixel marching it replaces.
+   *
+   * Steps widen quadratically: near ground dominates the horizon angle (a 20 m
+   * bluff at 100 m subtends more than a 200 m ridge at 2 km), so resolution
+   * belongs close in. Rays start beyond the first step to avoid the camera's
+   * own cell reporting itself as a cliff.
+   */
+  #scanHorizon(x: number, z: number) {
+    const map = this.#map;
+    for (let a = 0; a < HORIZON_AZIMUTHS; a++) {
+      const ang = (a / HORIZON_AZIMUTHS) * TAU;
+      const dx = Math.cos(ang);
+      const dz = Math.sin(ang);
+      let best = -1; // tan(elevation); <0 means "open sky along this bearing"
+      for (let s = 1; s <= HORIZON_STEPS; s++) {
+        const f = s / HORIZON_STEPS;
+        const d = HORIZON_MAX_DIST * f * f;
+        if (d < 8) continue;
+        // groundTop, not the water surface: a cliff blocks the reflection, and
+        // sea-level cells give tan ≈ 0 which never wins against `best`.
+        const h = map.groundTop(x + dx * d, z + dz * d);
+        if (h <= 0.5) continue;
+        const tan = h / d;
+        if (tan > best) best = tan;
+      }
+      this.#horizonData[a] = best;
+    }
+    this.#horizonData[HORIZON_AZIMUTHS] = this.#horizonData[0]; // wrap sentinel
+    const u = this.#uHorizon as unknown as { array: number[]; needsUpdate: boolean };
+    for (let i = 0; i <= HORIZON_AZIMUTHS; i++) u.array[i] = this.#horizonData[i];
+    u.needsUpdate = true;
+    this.#horizonAt.set(x, z);
+  }
+
   /** Void-realm reveal ramp (0 = hidden in the void, 1 = normal water).
    *  Uniform-only; every water pipeline is unchanged. */
   setReveal(v: number) {
@@ -895,6 +1175,17 @@ export class Water {
   update(t: number, camPos: THREE.Vector3, playerPos: THREE.Vector3, surfing = false) {
     this.#uTime.value = t;
     this.#uSurfing.value = surfing ? 1 : 0;
+    // Mirror the key light's graded radiance into the BRDF. Sky owns the
+    // day/night curve (and swaps colour + direction to the moon after dusk), so
+    // the water's sun path follows the sky for free — no second grade to keep
+    // in sync. #uSunDir already tracks SUN_DIR, which Sky mutates in place.
+    this.#uSunRadiance.value.copy(this.#sky.sun.color).multiplyScalar(this.#sky.sun.intensity);
+    // Reflected-coastline horizon profile (Tier C). Slow field, camera-centred,
+    // re-swept only on real movement.
+    if (this.#horizonAt.distanceToSquared({ x: camPos.x, y: camPos.z } as THREE.Vector2) >
+        HORIZON_REFRESH_DIST * HORIZON_REFRESH_DIST) {
+      this.#scanHorizon(camPos.x, camPos.z);
+    }
 
     const camUnder = camPos.y < waterHeight(camPos.x, camPos.z, t) - 0.35;
 
