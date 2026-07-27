@@ -436,9 +436,7 @@ const TAB_PLAY = `
 
   <section>
     <h3><span class="bts-ic">🎪</span> A world full of toys</h3>
-    <p>The city is stitched with little systems that reward wandering. Crabs skitter along the waterline
-    as one instanced mesh with its wiggle done in the vertex shader, so the CPU only steers; catch one and
-    it poofs a sparkle ring, counts into your satchel, and respawns somewhere fresh.
+    <p>The city is stitched with little systems that reward wandering.
     Blow soap bubbles and they drift off on a breeze with real thin-film iridescence — the colours are
     the viewing angle, not a texture — and burst against a wall, the water, or just old age.</p>
     <p>The wildlife is rideable: up in the Marin redwoods, walk up to a bear or raccoon and mount it with

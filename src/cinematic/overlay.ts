@@ -40,6 +40,23 @@ function wrappedLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: num
   return lines;
 }
 
+/**
+ * A cinematic owns the whole frame, so the live HUD steps aside for as long as
+ * one is armed: film bars are the only chrome a shot gets. This covers the
+ * in-app reel too, where nothing else hides `#hud` — without it you film the
+ * toolbar, the throw meter and the pause control along with the beach. Clean
+ * plates (`chrome: false`) suppress it as well; they want no chrome at all.
+ */
+function suppressAppChrome(): () => void {
+  const hud = document.getElementById("hud");
+  if (!hud) return () => {};
+  const previous = hud.style.display;
+  hud.style.display = "none";
+  return () => {
+    hud.style.display = previous;
+  };
+}
+
 /** Frame-driven film titles. No CSS animations: capture time owns every pixel. */
 export class CinematicOverlay {
   #root = document.createElement("div");
@@ -49,10 +66,13 @@ export class CinematicOverlay {
   #mirror = document.createElement("canvas");
   #letterbox: number;
   #chrome: boolean;
+  #restoreAppChrome: () => void;
 
   constructor(name: string, cues: readonly OverlayCue[], letterbox = 0.055, chrome = true) {
     this.#letterbox = letterbox;
     this.#chrome = chrome;
+    // Before the early return below: a clean plate still wants the HUD gone.
+    this.#restoreAppChrome = suppressAppChrome();
     this.#root.className = "cine-overlay";
     this.#root.dataset.cinematic = name;
     this.#root.style.setProperty("--cine-letterbox", `${letterbox * 100}vh`);
@@ -258,5 +278,7 @@ export class CinematicOverlay {
     const win = window as CinematicOverlayWindow;
     if (win.__sfCinematicOverlayCanvas === this.#mirror) delete win.__sfCinematicOverlayCanvas;
     this.#root.remove();
+    this.#restoreAppChrome();
+    this.#restoreAppChrome = () => {};
   }
 }

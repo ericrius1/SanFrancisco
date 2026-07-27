@@ -457,7 +457,6 @@
       #hud .minimap,
       #hud .place-history,
       #hud .avatar-ui,
-      #hud .satchel,
       #hud .share-ui,
       #hud .tutorial-ui,
       #hud .tutorial-panel,
@@ -474,7 +473,6 @@
       #hud.faded .minimap,
       #hud.faded .place-history,
       #hud.faded .avatar-ui,
-      #hud.faded .satchel,
       #hud.faded .share-ui,
       #hud.faded .tutorial-ui,
       #hud.faded .tutorial-panel,
@@ -966,47 +964,9 @@
           padding-right: 8px;
         }
       }
-      #hud .satchel {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 5px;
-      }
-      #hud .satchel .srow {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-        padding: 4px 10px;
-        border-radius: var(--r-sm);
-        background: var(--surface);
-        border: 1px solid var(--hairline);
-        box-shadow: var(--shadow-sm), var(--edge-hi);
-        color: #ffe9ae;
-        font: 700 13px var(--font);
-        font-variant-numeric: tabular-nums;
-      }
-      #hud .satchel .sic {
-        font-size: 15px;
-        line-height: 1;
-      }
-      #hud .satchel .srow.pop {
-        animation: satchelpop 0.32s ease;
-      }
-      @keyframes satchelpop {
-        0% {
-          transform: scale(1);
-        }
-        35% {
-          transform: scale(1.22);
-          border-color: rgba(255, 215, 106, 0.8);
-        }
-        100% {
-          transform: scale(1);
-        }
-      }
       /* golf: round scorecard chip (top center) + swing rail/force meter
-         (bottom center). Same glass recipe as the satchel; keyboard-only, so
-         pointer-events stay off like the rest of #hud. */
+         (bottom center). Same glass recipe as the rest of the HUD; keyboard-only,
+         so pointer-events stay off like everything else in #hud. */
       #hud .golf-card {
         position: absolute;
         left: 50%;
@@ -1077,7 +1037,6 @@
          meter, so tuck them away until the shot is released or the player
          walks away from the ball. */
       #hud.golf-context .toolbar,
-      #hud.golf-context .satchel,
       #hud.golf-context .help {
         opacity: 0;
         pointer-events: none;
@@ -4573,7 +4532,6 @@
               "Cross the Golden Gate",
               "Climb Corona Heights",
               "Become the phoenix",
-              "Hunt for crabs",
               "Drift the lagoon",
               "Draw a bow in the park",
               "Fetch with the dogs",

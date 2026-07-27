@@ -117,7 +117,7 @@ carry `zone=<id>` until the city is woken.
   The site itself hydrates through the normal arrival/proximity lane because the
   spawn is at the site.
 - **Wake semantics** (`main.ts` `wakeCity()` + `ui/wakeCity.ts`). Skipped
-  city-wide systems (traffic + signals, scatter boats, islands, crab hunt, the
+  city-wide systems (traffic + signals, scatter boats, islands, the
   citygen ring, forest + creatures, and the minimap landmark pins) are collected
   into `deferredCityWork` instead of constructed at boot. The "Wake the city"
   HUD button raises `CONFIG.tileLoadRadius` back to `cityTileRadius`, kicks the
