@@ -774,9 +774,15 @@ export class TerrainClipmap {
     // detail uses): past ~512 m a 1.6 m band is sub-pixel and this would be pure
     // cost. ~8 ALU, no texture fetch, no new uniform.
     if (level.level <= 3) {
-      const wet: N = smoothstep(1.6, -0.2, (positionWorld as N).y).mul(
-        (surface.b as N).add(surface.a).saturate()
-      );
+      // Faded to zero WELL INSIDE the level-3 ring. The `level.level <= 3` gate
+      // is a per-ring material split, and clipmap rings follow the camera — so
+      // a band that were still at full strength where level 3 hands off to
+      // level 4 would terminate in a hard straight line that slides with the
+      // player. Closing it by ~420 m makes the gate unobservable, and a 1.6 m
+      // wet band is sub-pixel long before then anyway.
+      const wet: N = smoothstep(1.6, -0.2, (positionWorld as N).y)
+        .mul((surface.b as N).add(surface.a).saturate())
+        .mul(smoothstep(420, 210, (positionWorld as N).distance(cameraPosition)));
       terrainColor = terrainColor.mul(mix(float(1), float(0.58), wet));
       // Wet sand is also SPECULAR — the darkening alone reads as dirt, the
       // gloss is what reads as water. Applied to the roughness assignment below
