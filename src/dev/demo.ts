@@ -78,6 +78,15 @@ export type DemoContext = {
 /** A demo module: a stable name + a one-shot setup that arms the shot. */
 export type Demo = {
   name: string;
+  /**
+   * Set false for a production whose passes SAMPLE scene depth. Cinematic pages
+   * otherwise turn on 4x multisampling, which multisamples the depth attachment
+   * too — and a multisampled depth texture cannot be bound as an ordinary one,
+   * so every command buffer that frame is rejected and the clip records cleared
+   * canvas. Asking from inside `run()` is too late: warmup has already
+   * allocated the targets by then. This is read before warmup.
+   */
+  multisample?: boolean;
   run(ctx: DemoContext): void;
 };
 
@@ -130,4 +139,13 @@ export function runDemo(name: string, ctx: DemoContext) {
     return;
   }
   demo.run(ctx);
+}
+
+/**
+ * Whether this demo can take cinematic multisampling. Answered from the
+ * registry rather than from inside the demo because the caller has to decide
+ * before it warms the pipeline up — see `Demo.multisample`.
+ */
+export function demoWantsMultisampling(name: string): boolean {
+  return DEMOS[name]?.multisample !== false;
 }

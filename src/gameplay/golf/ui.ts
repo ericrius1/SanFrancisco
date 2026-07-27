@@ -5,7 +5,7 @@ import { SWEET_SPOT } from "./tuning";
  * Golf HUD: a scorecard chip pinned top-center while a round is live, a club
  * rail + radial force meter that appear only in the swing context. Pure DOM
  * inside #hud (pointer-events stay off — clubs are keyboard-picked), styled on
- * the shared glass tokens like the satchel/toolbar.
+ * the shared glass tokens like the toolbar.
  */
 
 const STANDING: [number, string][] = [

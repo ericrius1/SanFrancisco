@@ -225,7 +225,6 @@ const PANELS: Record<string, string> = {
   board: ".board-ui",
   scooter: ".scooter-ui",
   car: ".car-ui",
-  satchel: ".satchel",
   share: ".share-ui",
   wakeCity: ".wake-city-ui",
   tutorial: ".tutorial-ui, .tutorial-panel",

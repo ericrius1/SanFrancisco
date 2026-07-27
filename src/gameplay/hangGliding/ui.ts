@@ -321,7 +321,6 @@ const STYLE = `
 #hud.hang-gliding-context .minimap,
 #hud.hang-gliding-context .place-history,
 #hud.hang-gliding-context .avatar-ui,
-#hud.hang-gliding-context .satchel,
 #hud.hang-gliding-context .share-ui,
 #hud.hang-gliding-context .tutorial-ui,
 #hud.hang-gliding-context .tutorial-panel,
