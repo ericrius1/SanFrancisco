@@ -11,10 +11,12 @@ import {
   normalViewGeometry,
   packNormalToRGB,
   positionWorld,
+  rtt,
   smoothstep,
   uniform,
   texture
 } from "three/tsl";
+import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import {
   createPostFx,
   applyPostFxParams,
@@ -213,10 +215,44 @@ export function createRenderPipeline(
       : undefined
   });
 
+  // ------------------------------------------------------------------- bloom
+  //
+  // Bloom belongs in LINEAR HDR, before the ACES curve and the exposure trim.
+  // postfx taps everything through its source texture and converts exactly once
+  // (renderOutput, postfx.ts), so the seam to feed a bloomed scene in at is the
+  // source itself — no edit to the stylized graph, and the piano god-ray path,
+  // which already swaps that source, gets bloom for free.
+  //
+  // It has to be a TEXTURE and not an expression: postfx samples its source at
+  // several UVs (dream halation, the underwater god rays, the flow lens), and an
+  // expression would re-evaluate the whole bloom chain per tap. `rtt` renders it
+  // once per frame into a half-float target, which also keeps the values linear.
+  //
+  // One BloomNode per source, never shared. `BloomNode.setup()` pushes five
+  // separable-blur materials per NodeBuilder with no reset, while `setSize` and
+  // `updateBefore` only ever index the first five — so a single instance reached
+  // by the eight cached style variants would build forty materials and orphan
+  // thirty-five of them. Wrapping in `rtt` puts the bloom graph in exactly one
+  // builder no matter how many variants sample the result.
+  const bloomStrengthU = uniform(POSTFX_TUNING.values.bloomStrength);
+  const bloomRadiusU = uniform(POSTFX_TUNING.values.bloomRadius);
+  const bloomThresholdU = uniform(POSTFX_TUNING.values.bloomThreshold);
+  const bloomedScene = rtt(
+    sceneColor.add(bloom(sceneColor, bloomStrengthU, bloomRadiusU, bloomThresholdU))
+  );
+  const bloomEnabled = () => POSTFX_TUNING.values.bloom === true;
+
   const variants = new Map<number, THREE.RenderPipeline>();
-  const getVariantPipeline = (requestedMask: number) => {
+  const bloomVariants = new Map<number, THREE.RenderPipeline>();
+  /**
+   * @param bloomed select the bloomed-source family. Both families are cached
+   *   per style mask, so toggling bloom selects an already-built graph rather
+   *   than discarding a live fullscreen pipeline.
+   */
+  const getVariantPipeline = (requestedMask: number, bloomed = false) => {
     const mask = requestedMask & 7;
-    let variant = variants.get(mask);
+    const family = bloomed ? bloomVariants : variants;
+    let variant = family.get(mask);
     if (variant !== undefined) return variant;
 
     variant = new THREE.RenderPipeline(renderer);
@@ -224,13 +260,15 @@ export function createRenderPipeline(
     // to the original scene sample while inactive, and avoids a shader compile
     // hitch on the first flow-state activation.
     variant.outputColorTransform = false;
-    variant.outputNode = postfx.get(mask);
-    variants.set(mask, variant);
+    variant.outputNode = bloomed
+      ? postfx.getWithSceneTexture(mask, bloomedScene)
+      : postfx.get(mask);
+    family.set(mask, variant);
     return variant;
   };
 
   let activeVariantMask = getPostFxVariantMask();
-  let activePipeline = getVariantPipeline(activeVariantMask);
+  let activePipeline = getVariantPipeline(activeVariantMask, bloomEnabled());
 
   // The official raymarched GodraysNode stack is a piano-only nested lazy
   // feature. Its module, dedicated shadow light and render targets do not exist
@@ -249,23 +287,39 @@ export function createRenderPipeline(
     pianoGodRaysRequested && POSTFX_TUNING.values.pianistRays && directionalLight
   );
 
-  const getPianoGodRaysVariantPipeline = (requestedMask: number) => {
+  /**
+   * God-ray composite, optionally bloomed. This needs its own BloomNode: a
+   * BloomNode owns one `inputNode` and `setup()` rebinds its high-pass material
+   * from it on every build, so sharing the scene's instance here would bloom the
+   * wrong image. Built lazily with the runtime, so the grove's render targets
+   * only exist while the grove does.
+   */
+  let pianoGodRaysBloomed: ReturnType<typeof rtt> | null = null;
+  const getPianoGodRaysVariantPipeline = (requestedMask: number, bloomed = false) => {
     if (!pianoGodRaysRuntime) return null;
     const mask = requestedMask & 7;
-    let variant = pianoGodRaysVariants.get(mask);
+    const key = bloomed ? mask | 8 : mask;
+    let variant = pianoGodRaysVariants.get(key);
     if (variant !== undefined) return variant;
+    if (bloomed && !pianoGodRaysBloomed) {
+      const source = pianoGodRaysRuntime.sceneTexture;
+      pianoGodRaysBloomed = rtt(
+        source.add(bloom(source, bloomStrengthU, bloomRadiusU, bloomThresholdU))
+      );
+    }
     variant = new THREE.RenderPipeline(renderer);
     variant.outputColorTransform = false;
     variant.outputNode = postfx.getWithSceneTexture(
       mask,
-      pianoGodRaysRuntime.sceneTexture
+      bloomed ? pianoGodRaysBloomed : pianoGodRaysRuntime.sceneTexture
     );
-    pianoGodRaysVariants.set(mask, variant);
+    pianoGodRaysVariants.set(key, variant);
     return variant;
   };
 
   const selectActivePipeline = () => {
-    const basePipeline = getVariantPipeline(activeVariantMask);
+    const bloomed = bloomEnabled();
+    const basePipeline = getVariantPipeline(activeVariantMask, bloomed);
     if (
       pianoGodRaysEnabled() &&
       pianoGodRaysRuntime !== null &&
@@ -273,7 +327,7 @@ export function createRenderPipeline(
       // setup; hold the base pipeline until the beauty pass has allocated it.
       pianoGodRaysRuntime.shadowMapReady()
     ) {
-      const variant = getPianoGodRaysVariantPipeline(activeVariantMask);
+      const variant = getPianoGodRaysVariantPipeline(activeVariantMask, bloomed);
       if (variant) {
         activePipeline = variant;
         pianoGodRaysActive = true;
@@ -288,6 +342,9 @@ export function createRenderPipeline(
     pianoGodRaysActive = false;
     for (const variant of pianoGodRaysVariants.values()) variant.dispose();
     pianoGodRaysVariants.clear();
+    // The grove's own bloom targets belong to the grove; its source texture is
+    // about to stop existing, so the RTT wrapper around it must go too.
+    pianoGodRaysBloomed = null;
     pianoGodRaysRuntime?.dispose();
     pianoGodRaysRuntime = null;
     selectActivePipeline();
@@ -441,9 +498,18 @@ export function createRenderPipeline(
     if (fxaaRequested && !fxaaRuntime) {
       void ensureFxaaRuntime().catch((err) => console.warn("[render] FXAA unavailable:", err));
     }
+    // Bloom sliders are live uniforms read by both families' already-built
+    // graphs; only the on/off toggle reselects a pipeline, and both families
+    // stay cached so the switch never discards a live fullscreen pipeline.
+    bloomStrengthU.value = POSTFX_TUNING.values.bloomStrength;
+    bloomRadiusU.value = POSTFX_TUNING.values.bloomRadius;
+    bloomThresholdU.value = POSTFX_TUNING.values.bloomThreshold;
     const mask = getPostFxVariantMask();
     if (mask !== activeVariantMask) activeVariantMask = mask;
     applyPianoGodRaysFx();
+    // applyPianoGodRaysFx only reselects when the grove owns the pipeline; a
+    // bloom toggle outside the grove still has to land.
+    if (!pianoGodRaysActive) selectActivePipeline();
   };
 
   // compileAsync mutates shared renderer state (tone mapping, color space, …)
@@ -760,8 +826,12 @@ export function createRenderPipeline(
     }
   };
   const compilePostFxVariants = async (masks: readonly number[] = POSTFX_VARIANT_MASKS) => {
+    // Warm the family that will actually draw. Compiling only the unbloomed
+    // graphs would leave the first live frame to build the bloom chain inside
+    // PassNode, which is the hitch this whole warmup exists to prevent.
+    const bloomed = bloomEnabled();
     const quads = masks.map((mask) => {
-      const internal = getVariantPipeline(mask) as WarmableRenderPipeline;
+      const internal = getVariantPipeline(mask, bloomed) as WarmableRenderPipeline;
       internal._update();
       return internal._quadMesh;
     });

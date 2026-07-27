@@ -3,6 +3,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import type { GroundTopOverlay, WorldMap } from "./heightmap";
 import type { TerrainCutoutSpec, TileStreamer } from "./tiles";
+import { materialEmissive } from "three/tsl";
 import { attachKtx2Loader } from "../render/textures";
 import { applyBirthFade, materializeField } from "../render/materialize";
 import { frontGate, type FrontGateHandle } from "../render/frontGate";
@@ -194,7 +195,67 @@ function disposeRoot(root: THREE.Object3D): void {
  * Multi-material arrays are left untouched (none of the authored GLBs use
  * them today).
  */
-function applyRegionMaterialize(root: THREE.Object3D, birth: unknown): void {
+/**
+ * Optional per-region shader decoration, imported ON DEMAND.
+ *
+ * Deliberately not a static import. This module constructs the region streamer,
+ * so anything it pulls in sits on the critical path between boot and the
+ * streamer's first GLB request — and a static import of the Sutro caustics (and
+ * through it the water shading helpers and the hall layout) pushed the
+ * authored-region fetch ~600 ms past the 100 ms arrival-priority budget the
+ * lazy-loading contract enforces. Awaiting it inside the region's own async load,
+ * AFTER its GLB has already arrived, costs nothing on that path and only ever
+ * loads for a region that is actually streaming in.
+ */
+type RegionMaterialDecorator = (material: THREE.MeshStandardNodeMaterial) => void;
+const regionDecorators = new Map<string, RegionMaterialDecorator>();
+
+async function ensureRegionDecorations(regionId: string): Promise<void> {
+  if (regionId !== "sutro-baths" || regionDecorators.has(regionId)) return;
+  const { shouldReceiveHallCaustics, sutroHallCaustics } = await import("./sutroHallCaustics");
+  regionDecorators.set(regionId, (material) => {
+    if (!shouldReceiveHallCaustics(material.name)) return;
+    decorateEmissive(material, sutroHallCaustics().node);
+  });
+}
+
+/**
+ * Add an emissive term without losing what was already there.
+ *
+ * A null `emissiveNode` does not mean "no emissive": three falls back to
+ * `materialEmissive`, the live uniform pair behind material.emissive and
+ * .emissiveIntensity, which is exactly what the Sutro hall's warm twilight grade
+ * drives (sutroBaths/staticAmbience.ts). Assigning the new term alone would
+ * silently replace that fallback and delete the grade, so make it explicit
+ * before adding — the same reasoning applyBirthFade uses below.
+ */
+function decorateEmissive(material: THREE.MeshStandardNodeMaterial, term: unknown): void {
+  const base = (material.emissiveNode ??
+    (material.emissive && material.emissive.isColor ? materialEmissive : null)) as
+    | { add(other: unknown): unknown }
+    | null;
+  material.emissiveNode = (base ? base.add(term) : term) as never;
+}
+
+/**
+ * Gating on the region id rather than on a material-name prefix is load-bearing:
+ * the hall's `sutro_iron` twin also shades the beach gate and the road pavilion
+ * up on Point Lobos, so a name test would paint pool light on a roadside
+ * building. Every other region falls straight through.
+ */
+function decorateRegionMaterial(
+  regionId: string | undefined,
+  material: THREE.MeshStandardNodeMaterial
+): void {
+  const decorate = regionId ? regionDecorators.get(regionId) : undefined;
+  if (decorate) decorate(material);
+}
+
+function applyRegionMaterialize(
+  root: THREE.Object3D,
+  birth: unknown,
+  regionId?: string
+): void {
   const converted = new Map<THREE.Material, THREE.Material>();
   root.traverse((object) => {
     const mesh = object as THREE.Mesh;
@@ -211,6 +272,10 @@ function applyRegionMaterialize(root: THREE.Object3D, birth: unknown): void {
       } else {
         material = new THREE.MeshStandardNodeMaterial().copy(source as THREE.MeshStandardMaterial);
       }
+      // Region-owned emissive decoration goes on BEFORE the birth wrap, so the
+      // holo sweep fades it in with everything else. Added after, it would glow
+      // at full strength while the geometry behind it is still black.
+      decorateRegionMaterial(regionId, material as THREE.MeshStandardNodeMaterial);
       applyBirthFade(material as THREE.MeshStandardNodeMaterial, { birth });
       converted.set(source, material);
     }
@@ -447,6 +512,13 @@ export class AuthoredRegionStreamer {
 
   async #load(state: RegionState, signal: AbortSignal): Promise<void> {
     const { definition } = state;
+    // Start the region's optional shader decoration NOW, unawaited, so it
+    // downloads alongside the GLB instead of after it. Awaiting it later in this
+    // function is otherwise a real network wait in the middle of the load, and
+    // the tile streamer gets a whole extra round of requests away during it —
+    // enough to push a fifth world tile into the arrival window the lazy-loading
+    // contract caps at four.
+    const decorations = ensureRegionDecorations(definition.id);
     const response = await fetch(definition.asset, { signal });
     if (!response.ok) throw new Error(`${definition.asset} HTTP ${response.status}`);
     const buffer = await response.arrayBuffer();
@@ -463,7 +535,13 @@ export class AuthoredRegionStreamer {
     });
     // M5: holo-birth wrap (per unique material) BEFORE the warm below, keyed
     // to this region's birth uniform (stamped at attach, forgotten at unload).
-    applyRegionMaterialize(root, materializeField.birthOf(`region:${definition.id}`));
+    // Long since resolved: it was started before the GLB fetch above.
+    await decorations;
+    applyRegionMaterialize(
+      root,
+      materializeField.birthOf(`region:${definition.id}`),
+      definition.id
+    );
     try {
       await this.#prepareRoot?.(definition.label, root, this.#arrivalCritical.has(definition.id));
       if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
