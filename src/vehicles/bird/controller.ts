@@ -6,6 +6,7 @@ import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { poseBone, type BirdRig } from "./mesh";
 import { featherAirspeed, featherBeat, featherWind } from "./wind";
 import { BIRD_TUNING } from "./tuning";
+import { Wingbeat, wobble, type FlightDrive, type WingSample } from "./wingbeat";
 import { TYPICAL_TREE_HEIGHT } from "../shared";
 
 const V = {
@@ -20,17 +21,31 @@ const V = {
   localBack: new THREE.Vector3(0, 0, 1)
 };
 
+/** Scratch stroke samples — one per point sampled along the wing, reused every
+ *  fixed step (see Wingbeat.sample). */
+const S = {
+  shoulder: Wingbeat.newSample(),
+  elbow: Wingbeat.newSample(),
+  hand: Wingbeat.newSample(),
+  tail: Wingbeat.newSample()
+};
+
 /**
  * Playable peregrine, flown drone-style: the mouse owns the chase camera and
  * W flies along the camera's 3D aim ("look down + W" dives), A/D strafe, and
  * the bird eases its yaw in behind the camera — the same muscle memory as the
- * drone. The bird flavor is in the dynamics: it beats its wings to get going
- * (Space climbs, and pushing off from low airspeed auto-flaps), it can never
- * quite hover (idle sink), and Shift tucks into a stoop that triples the speed
- * cap. Attitude is code-owned — nose into the vertical motion, bank into
+ * drone. The bird flavor is in the dynamics: it can never quite hover (idle
+ * sink), Space adds a hard climb, and Shift tucks into a stoop that triples the
+ * speed cap. Attitude is code-owned — nose into the vertical motion, bank into
  * lateral speed; the solver owns translation so collisions still land. Over
  * the bay the floor is the swell itself, so a low fast pass skims the surface
  * (splash FX key off that).
+ *
+ * The wings answer the flight path rather than the keys: this feeds airspeed,
+ * climb angle, throttle and stoop into `wingbeat.ts`, which decides how hard the
+ * phoenix is working and whether it is mid-stroke or riding an open glide. Point
+ * the nose up and it digs in and never stops beating; push it over and the wings
+ * open out, rake back and ride the descent down.
  */
 export class BirdController implements ModeController {
   readonly spawnLift = 3.5;
@@ -43,19 +58,9 @@ export class BirdController implements ModeController {
   #spin = 0; // aerobatic barrel-roll angle, on top of the bank
   #spinVel = 0;
   #twirl = 0; // 0..1 spin envelope, folds the wings in while rolling
-  #flapPow = 0; // wingbeat envelope
-  #flapPhase = 0;
-  #flapKey = false;
-  #gaitGlide = 0; // >0 → wings held open, counting down to the next burst
-  #beatsLeft = 0; // beats remaining in the current burst
-  #beatAmp = 1; // this beat's depth, re-rolled every completed cycle
-  #beatAmpL = 1; // slight per-wing asymmetry, re-rolled per burst
-  #beatAmpR = 1;
-  #flutter = 0; // 1 → current burst is a quick shallow wrist-led flutter
-  #flutterMix = 0;
-  #beatW = 0; // smoothed burst-vs-glide master blend
-  #lastCycle = 0;
-  #animT = 0;
+  #beat = new Wingbeat(); // gait + stroke shape
+  #drive: FlightDrive = { speedNorm: 0, climb: 0, throttle: 0, boost: 0, tuck: 0, twirl: 0 };
+  #climb = 0; // smoothed sine of the flight-path angle, +1 up .. -1 down
   #speedVis = 0;
   #speedNorm = 0;
   #tailBank = 0;
@@ -86,17 +91,8 @@ export class BirdController implements ModeController {
     this.#spin = 0;
     this.#spinVel = 0;
     this.#twirl = 0;
-    this.#flapPow = 0;
-    this.#flapKey = false;
-    this.#gaitGlide = 0;
-    this.#beatsLeft = 3;
-    this.#beatAmp = 1;
-    this.#beatAmpL = 1;
-    this.#beatAmpR = 1;
-    this.#flutter = 0;
-    this.#flutterMix = 0;
-    this.#beatW = 0;
-    this.#lastCycle = 0;
+    this.#climb = 0;
+    this.#beat.reset();
     this.#tailBank = 0;
     this.#tailPitch = 0;
     return p.y + 1.5;
@@ -120,7 +116,6 @@ export class BirdController implements ModeController {
     const strafeIn = input.axis("KeyA", "KeyD");
     const flapKey = input.down("Space");
     const tucking = input.down("ShiftLeft");
-    this.#flapKey = flapKey;
     this.#tuck += ((tucking ? 1 : 0) - this.#tuck) * Math.min(1, dt * 6);
 
     // Q/E: barrel-roll twirl in either direction — hold to keep rolling.
@@ -142,15 +137,8 @@ export class BirdController implements ModeController {
     if (target.lengthSq() > 1) target.normalize();
     target.multiplyScalar(tucking ? t.tuckMax : t.maxSpeed);
 
-    // wingbeat effort follows how hard we're flying: full beats under power,
-    // harder still the faster we go (a stoop is all wing), and barely a
-    // flutter when coasting on a glide
     const spd = ctx.velocity.length();
-    const speedNorm = THREE.MathUtils.clamp(spd / t.maxSpeed, 0, 2);
-    const moving = Math.abs(fwdIn) > 0.05 || Math.abs(strafeIn) > 0.05 || flapKey;
-    const effort = moving ? Math.min(1, 0.55 + speedNorm * 0.4) : 0.08;
-    this.#flapPow += (effort - this.#flapPow) * Math.min(1, dt * (effort > this.#flapPow ? 6 : 2.5));
-    this.#speedNorm = speedNorm;
+    this.#speedNorm = THREE.MathUtils.clamp(spd / t.maxSpeed, 0, 2);
     if (flapKey) target.y += t.flapClimb;
     // a bird never quite hovers — idle it settles toward the ground
     if (!flapKey && fwdIn === 0 && strafeIn === 0) target.y -= t.sink;
@@ -170,6 +158,17 @@ export class BirdController implements ModeController {
     // turn itself; wingbeats hold the chest proud, a stoop streamlines flat
     const speed = V.tmp2.length();
     this.#speedVis = speed;
+    // Flight-path angle drives the whole gait: the wings work for height and
+    // coast for descent. Smoothed so a gust of stick doesn't strobe the beat.
+    const climb = speed > 1 ? THREE.MathUtils.clamp(V.tmp2.y / Math.max(speed, 3), -1, 1) : 0;
+    this.#climb += (climb - this.#climb) * Math.min(1, dt * 3.5);
+    const d = this.#drive;
+    d.speedNorm = this.#speedNorm;
+    d.climb = this.#climb;
+    d.throttle = Math.min(1, Math.abs(fwdIn) + Math.abs(strafeIn) * 0.6);
+    d.boost = flapKey ? 1 : 0;
+    d.tuck = this.#tuck;
+    d.twirl = this.#twirl;
     const targetPitch = speed > 2 ? Math.asin(THREE.MathUtils.clamp(V.tmp2.y / Math.max(speed, 4), -1, 1)) : 0;
     this.#pitch += (targetPitch - this.#pitch) * Math.min(1, dt * 5);
     // bank INTO the turn. Lean on the COMMANDED velocity (`target`), not the eased
@@ -185,7 +184,13 @@ export class BirdController implements ModeController {
     // This keeps a twirl axial even while climbing/diving and avoids Euler
     // order ambiguity. The Blender-authored flight rest no longer needs the
     // old permanent nose-up chest compensation.
-    const posture = this.#flapPow * 0.025 - Math.min(this.#speedNorm, 1) * 0.025 - this.#tuck * 0.055;
+    // Chest proud when working, streamlined at speed and in a stoop, and the
+    // nose lifts a touch into a climb the way a bird's body angles off its
+    // flight path.
+    const posture = this.#beat.demand * 0.03
+      - Math.min(this.#speedNorm, 1) * 0.025
+      - this.#tuck * 0.055
+      + Math.max(0, this.#climb) * 0.05;
     V.qYaw.setFromAxisAngle(V.up, yaw);
     V.qPitch.setFromAxisAngle(V.localRight, this.#pitch * 0.95 + posture);
     V.qRoll.setFromAxisAngle(V.localBack, this.#roll + this.#spin);
@@ -205,211 +210,130 @@ export class BirdController implements ModeController {
       w.setBodyVelocity(ctx.body, [V.tmp2.x, 0, V.tmp2.z], [0, 0, 0]);
     }
 
-    this.#animateWings(dt, t.flapHz);
+    this.#animateWings(dt, t);
     ctx.heading = yaw + Math.PI;
   }
 
-  /** Pose the phoenix skeleton on the fixed step. The GLB contains no baked
-   * clip: Blender owns the broad load-bearing rest silhouette, while this
-   * controller adds a heavy recovery / power / glide cycle. The shoulder
-   * leads, elbow and wrist fold on delayed arcs, the torso takes the impulse,
-   * and the tail resolves attitude changes after the body. */
-  #animateWings(dt: number, flapHz: number) {
+  /** Pose the phoenix skeleton on the fixed step. The GLB holds no baked clip:
+   * Blender owns the broad load-bearing rest silhouette and the flight goes on
+   * top of it. `wingbeat.ts` answers where in the stroke we are; everything
+   * here is how that lands on bone. The shoulder leads and the elbow and wrist
+   * follow on delayed arcs so the span whips rather than swinging as a plank,
+   * the wing shortens on the recovery and opens through the power stroke, the
+   * hand feathers to hold a bite, the torso takes the impulse a beat before the
+   * tip finishes it, and the tail resolves everything last. */
+  #animateWings(dt: number, t: (typeof BIRD_TUNING)["values"]) {
     const r = (this.#rig ??= (this.#mesh.userData.rig as BirdRig | undefined) ?? null);
     if (!r) return;
-    this.#animT += dt;
-    const pow = this.#flapPow;
+    const beat = this.#beat;
+    beat.update(dt, this.#drive, t.flapHz);
+    const at = beat.t;
     const sn = Math.min(this.#speedNorm, 1.6);
-    const flapSpeed = Math.min(this.#speedNorm, 1.35);
-    const powered = pow > 0.18;
-    const climbing = this.#flapKey;
+    const demand = beat.demand;
 
-    // Gait: real flight is bursts of beats separated by open glides, not a
-    // metronome. Every burst re-rolls its own character — how many beats, how
-    // deep, occasionally a quick wrist-led flutter instead of full power
-    // strokes — while effort and airspeed set how often the glides come and
-    // how vigorous the beats are. Space refuses to wait for the next burst.
-    if (this.#gaitGlide > 0) {
-      // throttle collapses a soar: powering up caps whatever multi-second
-      // coasting glide remains at about a second, so the wings answer the
-      // input instead of waiting out the full soar. Gaps rolled while already
-      // powered are short and burn in real time.
-      if (powered) this.#gaitGlide = Math.min(this.#gaitGlide, 1);
-      this.#gaitGlide -= dt;
-      if (climbing) this.#gaitGlide = 0;
-      if (this.#gaitGlide <= 0) this.#startBurst(powered, pow);
-    }
-    const burst = this.#gaitGlide <= 0;
+    // One stroke, sampled at three points along the wing. The lag is what turns
+    // three hinges into a single flexing span.
+    const sh = beat.sample(0, S.shoulder);
+    const el = beat.sample(0.075, S.elbow);
+    const hd = beat.sample(0.145, S.hand);
 
-    // Beat rate rides effort and airspeed, plus a slow layered wander so even
-    // one burst never ticks evenly. The phase only advances inside a burst;
-    // between bursts it parks on the cycle's built-in glide segment, so easing
-    // the amplitude out never freezes the wing mid-stroke.
-    const wander = Math.sin(this.#animT * 0.7) * 0.6 + Math.sin(this.#animT * 1.9 + 1.3) * 0.4;
-    if (burst) {
-      this.#flapPhase += dt * Math.PI * 2 * flapHz * (0.35 + 0.6 * pow) * (0.78 + 0.28 * flapSpeed)
-        * (1 + 0.1 * wander) * (1 + this.#flutterMix * 1.05);
-    }
+    // Stroke travel, in radians of wingtip elevation. The gather reaches high
+    // and the power stroke drives lower still — a wing that only swings level
+    // reads as waving, not lifting — and working hard opens the gather further.
+    const stroke = beat.amplitude(this.#drive) * (1 - this.#twirl * 0.55);
+    const up = t.strokeUp * (1 + demand * 0.2);
+    const down = t.strokeDown;
+    // Share of that travel per joint. They sum to one at the tip, so the wrist
+    // covers more ground than the shoulder does even though it rotates least.
+    const swing = (s: WingSample, share: number) =>
+      (s.elev >= 0 ? s.elev * up : s.elev * down) * stroke * share;
+    const armL = beat.splitL();
+    const armR = beat.splitR();
 
-    const cycle = ((this.#flapPhase / (Math.PI * 2)) % 1 + 1) % 1;
-    if (burst && cycle < this.#lastCycle) {
-      // a beat just completed — every stroke lands a little different
-      this.#beatAmp = 0.82 + Math.random() * 0.36;
-      if (--this.#beatsLeft <= 0) {
-        if (climbing) this.#beatsLeft = 2; // keep pumping while Space is held
-        else this.#gaitGlide = this.#glideGap(powered, sn);
-      }
-    }
-    this.#lastCycle = cycle;
+    // A glide is not stillness. The wing rides thermals, rocks slowly about the
+    // flight axis, and its tips bow up under airload the faster the air moves —
+    // all of it fading out as the wings pick the stroke back up.
+    const soar = (1 - beat.beatW) * (1 - this.#tuck);
+    const sway = (wobble(at * 0.62, 7) * 0.055 + wobble(at * 0.21, 13) * 0.032) * (0.28 + soar * 1.15);
+    const rock = wobble(at * 0.27, 17) * 0.03 * soar * (0.5 + Math.min(sn, 1) * 0.5);
+    const tipLoad = soar * (0.07 + Math.min(sn, 1) * 0.15);
 
-    this.#beatW += ((burst ? 1 : 0) - this.#beatW) * Math.min(1, dt * (burst ? 7 : 3.2));
-    this.#flutterMix += ((burst ? this.#flutter : 0) - this.#flutterMix) * Math.min(1, dt * 5);
-    const smooth = (value: number) => {
-      const x = THREE.MathUtils.clamp(value, 0, 1);
-      return x * x * (3 - 2 * x);
-    };
-    const sampleWing = (lag: number) => {
-      const phase = (cycle - lag + 1) % 1;
-      let lift = 0;
-      let recovery = 0;
-      let power = 0;
-      if (phase < 0.17) {
-        const u = smooth(phase / 0.17);
-        lift = THREE.MathUtils.lerp(-0.035, 0.58, u);
-        recovery = u;
-      } else if (phase < 0.29) {
-        const u = (phase - 0.17) / 0.12;
-        lift = 0.58 + Math.sin(u * Math.PI) * 0.025;
-        recovery = 1;
-      } else if (phase < 0.52) {
-        const u = smooth((phase - 0.29) / 0.23);
-        lift = THREE.MathUtils.lerp(0.58, -0.8, u);
-        recovery = 1 - u;
-        power = Math.sin(u * Math.PI);
-      } else if (phase < 0.67) {
-        const u = smooth((phase - 0.52) / 0.15);
-        lift = THREE.MathUtils.lerp(-0.8, -0.035, u);
-        power = 1 - u;
-      } else {
-        const u = (phase - 0.67) / 0.33;
-        lift = -0.035 + Math.sin(u * Math.PI) * 0.018;
-      }
-      return { lift, recovery, power };
-    };
+    // Rake sweeps the whole wing back to streamline. A stoop and a twirl rake
+    // hard, and so does a committed descent — riding one down is a swept, quiet
+    // silhouette, not a spread soar. Plain airspeed barely rakes at all, so an
+    // open powered cruise keeps beating big. It saturates below the angle where
+    // the chain would carry the two tips past the tail plane and scissor them.
+    const dive = Math.max(0, -this.#climb);
+    const rake = Math.min(sn * 0.05 + this.#tuck * 0.45 + this.#twirl * 0.5 + dive * 0.3, 0.7);
+    // In a hard bank the inside wing draws in — the phoenix carves the turn
+    // instead of holding a flat plank through it.
+    const carve = THREE.MathUtils.clamp(this.#roll * 0.22, -0.13, 0.13);
 
-    // A glide is alive too: thermal sway, a slow rock about the flight axis,
-    // and wingtips that flex up under airload the faster the air moves. The
-    // Blender silhouette stays broad and authoritative between strokes.
-    const glide = (1 - this.#beatW) * (1 - this.#tuck); // open soar, not a stoop
-    const sway = (Math.sin(this.#animT * 1.15) * 0.05 + Math.sin(this.#animT * 0.53 + 2) * 0.028)
-      * (0.3 + glide * 1.05 + Math.max(0, 1 - pow) * 0.25);
-    const rock = Math.sin(this.#animT * 0.42 + 1.7) * 0.022 * glide * (0.5 + Math.min(sn, 1) * 0.5);
-    const tipLoad = glide * (0.05 + Math.min(sn, 1) * 0.09);
-    // wings rake back in a stoop or a twirl (streamline for the dive); plain
-    // airspeed barely folds them so an open powered cruise keeps beating big.
-    // Fold saturates below the point where the chain would carry the L/R tips
-    // past the tail plane and scissor them, and it calms the throw with it (a
-    // tucked wing quivers, it doesn't thrash).
-    const fold = Math.min(sn * 0.045 + this.#tuck * 0.42 + this.#twirl * 0.5, 0.7);
-    const damp = 1 - 0.66 * (fold / 0.7);
-    const speedRange = THREE.MathUtils.clamp(sn - 0.35, 0, 1.3) * (1 - this.#tuck);
-    // Stroke amplitude eases out into a glide and flattens out of a stoop; a
-    // flutter is shallower than a power beat; each beat carries its own depth.
-    const strokeW = this.#beatW * (1 - this.#tuck * 0.85);
-    const drive = (0.24 + 0.78 * pow + 0.1 * speedRange) * (1 + wander * 0.055) * damp
-      * (0.12 + 0.88 * strokeW) * this.#beatAmp * (1 - this.#flutterMix * 0.35);
+    // Span change through the stroke: the wing folds on the recovery and opens
+    // through the power stroke. That, more than the arc, is what separates a
+    // wingbeat from a wave. The sweep term is the fore/aft half of the tip's
+    // oval — drawn back at the top, thrown forward through the bottom.
+    const elbowFold = rake * 0.55 + el.recovery * stroke * 0.42 - el.sweep * stroke * 0.1;
+    const handFold = rake * 0.4 + hd.recovery * stroke * 0.5 - hd.sweep * stroke * 0.18;
+    // Feathering: the hand pronates through the downstroke so the primaries
+    // bite, and supinates on the way up so they slice. It peaks with stroke
+    // velocity, a quarter-cycle off the elevation, which is what closes the
+    // wingtip's oval instead of leaving it a straight line.
+    const twist = hd.vel * stroke * 0.4 + wobble(at * 1.4, 23) * 0.022 * featherAirspeed.value;
 
-    // Shoulder → elbow → wrist on delayed arcs: the lag deepens down the chain
-    // so the span flexes through the stroke instead of swinging as one plank.
-    // A flutter shifts the work outboard — quiet shoulder, busy wrist.
-    const shoulder = sampleWing(0);
-    const elbow = sampleWing(0.055);
-    const hand = sampleWing(0.1);
-    const rootStroke = shoulder.lift * drive * 0.85 * (1 - this.#flutterMix * 0.3);
-    const rootLiftL = rootStroke * this.#beatAmpL + sway + rock;
-    const rootLiftR = rootStroke * this.#beatAmpR + sway - rock;
-    const elbowLift = elbow.lift * drive * 0.46 + tipLoad * 0.45;
-    const handLift = hand.lift * drive * 0.34 * (1 + this.#flutterMix * 0.5) + tipLoad;
-    const elbowFold = fold * 0.55 + elbow.recovery * drive * 0.28;
-    const handFold = fold * 0.38 + hand.recovery * drive * 0.34;
-    const feather = (-hand.power * 0.36 + hand.recovery * 0.18) * drive * (1 + this.#flutterMix * 0.6)
-      + Math.sin(this.#animT * 3.1 + 0.4) * 0.018 * featherAirspeed.value;
-    poseBone(r.wingL, 0, fold * 0.72 + shoulder.recovery * drive * 0.025, rootLiftL);
-    poseBone(r.wingR, 0, -fold * 0.72 - shoulder.recovery * drive * 0.025, -rootLiftR);
-    poseBone(r.elbowL, -elbow.power * drive * 0.07, elbowFold, elbowLift);
-    poseBone(r.elbowR, -elbow.power * drive * 0.07, -elbowFold, -elbowLift);
-    poseBone(r.handL, feather, handFold, handLift);
-    poseBone(r.handR, feather, -handFold, -handLift);
-    featherWind.value = Math.min(1, 0.2 + sn * 0.45 + pow * 0.3);
-    featherAirspeed.value = THREE.MathUtils.clamp(this.#speedVis / 42, 0, 1);
-    featherBeat.value = shoulder.power * drive;
+    // Sway lifts both wings together (a dihedral breath); rock lifts one and
+    // drops the other, which is the slow roll a soaring bird rides a thermal on.
+    const rootSwing = swing(sh, 0.5);
+    const elbowSwing = swing(el, 0.3);
+    const handSwing = swing(hd, 0.2);
+    const shoulderSweep = rake * 0.72 + sh.recovery * stroke * 0.05;
+    poseBone(r.wingL, 0, shoulderSweep + carve * 0.4, rootSwing * armL + sway + rock);
+    poseBone(r.wingR, 0, -shoulderSweep + carve * 0.4, -(rootSwing * armR + sway - rock));
+    poseBone(r.elbowL, -el.power * stroke * 0.09, elbowFold + carve, elbowSwing * armL + tipLoad * 0.5);
+    poseBone(r.elbowR, -el.power * stroke * 0.09, -elbowFold + carve, -(elbowSwing * armR + tipLoad * 0.5));
+    poseBone(r.handL, twist, handFold + carve * 0.7, handSwing * armL + tipLoad);
+    poseBone(r.handR, twist, -handFold + carve * 0.7, -(handSwing * armR + tipLoad));
 
     // The torso accepts the downstroke before the wingtip finishes it. Spine
     // and chest counter-rotate slightly, giving the stroke mass without adding
     // a gameplay-space camera bob or disturbing collision motion.
-    const bodyImpulse = shoulder.power * drive;
-    const breath = Math.sin(this.#animT * 0.92) * 0.012;
-    poseBone(r.spine, -bodyImpulse * 0.065 + breath, 0, Math.sin(this.#animT * 0.47) * 0.01);
-    poseBone(r.chest, bodyImpulse * 0.11 - hand.recovery * drive * 0.025, 0, 0);
+    const impulse = sh.power * stroke;
+    featherWind.value = Math.min(1, 0.2 + sn * 0.45 + demand * 0.35);
+    featherAirspeed.value = THREE.MathUtils.clamp(this.#speedVis / 42, 0, 1);
+    featherBeat.value = impulse;
+    const breath = Math.sin(at * 0.92) * 0.012;
+    poseBone(r.spine, -impulse * 0.085 + breath, 0, wobble(at * 0.3, 29) * 0.012);
+    poseBone(r.chest, impulse * 0.14 - sh.recovery * stroke * 0.035, 0, 0);
 
     // Tail inertia is deliberately slower than body attitude. A turn begins at
     // the chest, then travels down five bones as two detuned wind waves plus a
-    // weaker echo of the power stroke. Local angles stay modest because they
-    // accumulate down the chain.
+    // weaker echo of the power stroke, which itself arrives later the further
+    // out the bone sits. Local angles stay modest because they accumulate down
+    // the chain.
     this.#tailBank += (this.#roll - this.#tailBank) * Math.min(1, dt * 1.25);
     this.#tailPitch += (this.#pitch - this.#tailPitch) * Math.min(1, dt * 1.05);
     const bankLag = this.#tailBank - this.#roll;
     const pitchLag = this.#tailPitch - this.#pitch;
-    const flare = Math.sin(this.#pitch) * 0.08 + pow * 0.018;
+    const flare = Math.sin(this.#pitch) * 0.08 + demand * 0.022;
     const windGain = 0.7 + sn * 0.42;
     const twirlCounter = THREE.MathUtils.clamp(-this.#spinVel * 0.008, -0.045, 0.045);
     for (let i = 0; i < r.tail.length; i++) {
       const along = (i + 1) / r.tail.length;
-      const sideWave = Math.sin(this.#animT * (1.25 + sn * 0.12) - i * 0.64 + Math.sin(this.#animT * 0.31) * 0.28)
+      const sideWave = Math.sin(at * (1.25 + sn * 0.12) - i * 0.64 + wobble(at * 0.12, 37) * 0.3)
         * (0.018 + along * 0.036) * windGain;
-      const liftWave = Math.sin(this.#animT * (1.62 + sn * 0.16) - i * 0.78 + 1.05)
+      const liftWave = Math.sin(at * (1.62 + sn * 0.16) - i * 0.78 + 1.05)
         * (0.014 + along * 0.03) * windGain;
-      const wake = Math.sin(this.#flapPhase - 0.5 - i * 0.44) * bodyImpulse * (0.008 + along * 0.015);
+      const wake = beat.sample(0.22 + i * 0.06, S.tail).power * impulse * (0.014 + along * 0.026);
       const pitch = -flare * (0.2 + along * 0.18) + pitchLag * (0.06 + along * 0.07) + liftWave + wake;
       const yaw = sideWave + bankLag * (0.12 + along * 0.13) - this.#roll * 0.008;
       poseBone(r.tail[i], pitch, yaw, twirlCounter * (0.2 + i * 0.2));
     }
 
     // neck leads the turn slightly — predators look where they're going; the
-    // look spreads down the chain so the head never hinges
+    // look spreads down the chain so the head never hinges, and the head keeps
+    // its own level as the body angles onto a climb or a dive
     const lookY = THREE.MathUtils.clamp(this.#roll * 0.35, -0.5, 0.5);
-    const lookX = -this.#tuck * 0.2; // eyes up onto the target in a stoop
+    const lookX = -this.#tuck * 0.2 + this.#climb * 0.16;
     for (const c of r.neck) poseBone(c, lookX / 3, lookY / 3, 0);
-  }
-
-  /** Roll the character of the next burst of wingbeats. Coasting adjustments
-   * are always flutters; under power roughly one burst in five is one, the
-   * rest are full strokes whose count grows with effort. The tiny L/R depth
-   * split keeps the wings from mirroring each other perfectly. */
-  #startBurst(powered: boolean, pow: number) {
-    const flutter = !powered || Math.random() < 0.15;
-    this.#flutter = flutter ? 1 : 0;
-    this.#beatsLeft = flutter
-      ? 2 + ((Math.random() * 2) | 0)
-      : 3 + ((Math.random() * (2.6 + pow * 2.6)) | 0);
-    // A coasting adjustment is a deliberate trim flap — with the low-effort
-    // envelope shrinking the stroke it needs extra depth to read at all.
-    this.#beatAmp = powered ? 0.82 + Math.random() * 0.36 : 1.05 + Math.random() * 0.4;
-    this.#beatAmpL = 1 + (Math.random() - 0.5) * 0.08;
-    this.#beatAmpR = 1 + (Math.random() - 0.5) * 0.08;
-    // clean stroke entry: park on the next cycle boundary so the burst opens
-    // with the recovery upstroke (the pose there matches the glide silhouette)
-    const tau = Math.PI * 2;
-    this.#flapPhase = Math.ceil(this.#flapPhase / tau) * tau;
-    this.#lastCycle = 0;
-  }
-
-  /** How long the wings hold open before the next burst. Coasting soars for
-   * seconds; a powered cruise takes short breaths between bursts — shorter
-   * still the faster we fly — with the occasional held glide for variety. */
-  #glideGap(powered: boolean, sn: number): number {
-    if (!powered) return 2.2 + Math.random() * 3.4;
-    if (Math.random() < 0.16) return 1.6 + Math.random() * 1.3;
-    return (0.4 + Math.random() * 1.0) * (1.15 - Math.min(sn, 1) * 0.55);
   }
 }
