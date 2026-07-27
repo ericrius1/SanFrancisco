@@ -1202,6 +1202,19 @@ export class Sky {
     return this.#skyRadiance(dir, { pointFeatures: false, soften: level })
   }
 
+  /**
+   * Hemispheric mean sky radiance — the ambient/downwelling term, in the same
+   * linear render space envRadiance() returns. FREE in a shader: #applySkyPalette
+   * already resolves it on the CPU at 4 Hz, so this is a uniform read, not a
+   * gradient evaluation. Hand-written BRDFs (world/water.ts) use it as their
+   * diffuse/in-scatter illuminant instead of paying a second envRadiance().
+   */
+  ambientRadiance(): N {
+    return (this.#uSkyMean as N)
+      .mul(SKY_DOME_BOOST)
+      .mul(mix(float(1), float(0.018), this.#uVoid as N))
+  }
+
   /** Re-run the sun/IBL pass after a day-grade tunable (sunDay/hemiDay)
    *  changes — the "/" panel calls this so the sliders re-grade live even
    *  while the time of day is pinned. */
