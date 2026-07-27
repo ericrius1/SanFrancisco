@@ -186,7 +186,12 @@ export function createSunsetAir(opts: {
     // the far field is handed back to the world's own fog rather than stacked
     // on top of it. Between them is the band where a bank reads as weather.
     const near = smoothstep(11, 50, distance);
-    const far = float(1).sub(smoothstep(150, 260, distance));
+    // The far cut is deliberately close. A cinematic camera stands a hundred
+    // metres off and looks through the whole field at once; letting distant
+    // banks keep full weight stacks a dozen of them into a white wall and the
+    // beach loses all its contrast. Near and mid banks are what read as
+    // weather — past that the world's own fog already has the job.
+    const far = float(1).sub(smoothstep(78, 170, distance));
 
     mistMaterial.colorNode = vec4(tint.mul(glow.mul(0.55).add(0.85)), 1);
     mistMaterial.opacityNode = shape.mul(mistStrength).mul(near).mul(far).mul(0.3);

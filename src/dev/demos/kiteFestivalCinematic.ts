@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import { armCinematic, easeInOutCubic, mix, setPose, smoothstep } from "../../cinematic";
-import { SUN_DIR } from "../../world/sky";
+import { SUN_STATE } from "../../world/sky";
 import type { OceanBeachKiteEncounter } from "../../world/oceanBeachKite";
 import type { Demo } from "../demo";
 import { cleanPlate, freezeAndBuryPlayer } from "./shared";
@@ -57,106 +57,132 @@ type Framing = {
  * which any of this feature's light exists. Every shot below is framed from
  * that distance and reaches for a longer lens instead of a shorter throw.
  */
+/**
+ * Two rules hold these five together.
+ *
+ * Distance, because the sun sits a few degrees above the water while the kites
+ * fly at thirty-plus metres: a camera parked close is looking steeply up at a
+ * kite with the sun nowhere in frame, and this feature's light only exists
+ * where kite and sun share one. Standing back and reaching for a longer lens
+ * is what buys that.
+ *
+ * And a target between the two, because aiming at a kite puts the horizon off
+ * the bottom of the frame and fills it with empty sky. Every shot below looks
+ * at a point part-way down from its subject toward the water, so the beach, the
+ * flyers and the sun stay in shot underneath the kites.
+ */
 const FRAMINGS: readonly Framing[] = [
   {
     id: "01",
     title: "Ocean Beach Kites · The Whole Beach",
-    hour: 19.42,
-    exposure: 1,
+    hour: 19.46,
+    exposure: 0.94,
     subject: 0,
-    // Establishing. A slow lateral drift across the whole line of flyers, far
-    // enough back that all seven and the sun are in one frame.
+    // Establishing: a slow lateral drift across the line of flyers, far enough
+    // back that all seven, the runners and the sun are in one frame.
     frame: ({ u }, live, eye, target) => {
       const drift = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
       eye.copy(live.flock)
-        .addScaledVector(live.sun, -mix(158, 132, drift))
-        .addScaledVector(along, mix(-40, 30, drift));
-      eye.y = live.ground(eye.x, eye.z) + mix(4.2, 7.4, drift);
-      target.copy(live.flock).addScaledVector(along, mix(-6, 10, drift));
-      target.y = live.flock.y * mix(0.66, 0.78, drift);
-      return mix(30, 38, drift);
+        .addScaledVector(live.sun, -mix(150, 126, drift))
+        .addScaledVector(along, mix(-38, 28, drift));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(5.5, 8.5, drift);
+      target.copy(live.flock).addScaledVector(along, mix(-6, 9, drift));
+      target.y = mix(base + 5, live.flock.y, 0.42);
+      return mix(34, 42, drift);
     }
   },
   {
     id: "02",
     title: "Ocean Beach Kites · Two Sunwheels",
-    hour: 19.63,
-    exposure: 1.04,
+    hour: 19.66,
+    exposure: 0.96,
     subject: 1,
-    // The mirrored pair, on a long lens so the two rotors compress against the
+    // The mirrored pair on a long lens, so the two rotors compress against the
     // sun and their opposite arcs read as one gesture.
     frame: ({ u }, live, eye, target) => {
       const push = smoothstep(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
       eye.copy(live.kite)
-        .addScaledVector(live.sun, -mix(104, 88, push))
-        .addScaledVector(along, mix(26, 10, push));
-      eye.y = live.ground(eye.x, eye.z) + mix(3.1, 6.6, push);
-      target.copy(live.kite).addScaledVector(along, mix(-4, 2, push));
-      target.y = live.kite.y * mix(0.72, 0.84, push);
-      return mix(52, 72, push);
+        .addScaledVector(live.sun, -mix(88, 74, push))
+        .addScaledVector(along, mix(22, 8, push));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(5, 8.5, push);
+      target.copy(live.kite).addScaledVector(along, mix(-3, 2, push));
+      // Anchored mostly to the waterline rather than to the kite. A tight lens
+      // chasing a kite that swings twenty metres either way walks the horizon
+      // straight out of frame; holding the sea in shot and letting the kite
+      // move within it is the composition that survives the whole take.
+      target.y = base + 7 + (live.kite.y - base) * 0.3;
+      return mix(46, 58, push);
     }
   },
   {
     id: "03",
     title: "Ocean Beach Kites · The Centipede",
-    hour: 19.86,
-    exposure: 1.06,
+    hour: 19.9,
+    exposure: 0.98,
     subject: 6,
-    // The dragon strung across the sun on the longest lens of the five, drifting
-    // just enough that its rings pass through the disc one after another.
+    // The dragon strung across the sun on the longest lens of the five,
+    // drifting just enough that its rings cross the disc one after another.
     frame: ({ u }, live, eye, target) => {
       const drift = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
       eye.copy(live.kite)
-        .addScaledVector(live.sun, -mix(122, 106, drift))
-        .addScaledVector(along, mix(-20, 16, drift));
-      eye.y = live.ground(eye.x, eye.z) + mix(3.4, 7.8, drift);
+        .addScaledVector(live.sun, -mix(104, 88, drift))
+        .addScaledVector(along, mix(-15, 11, drift));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(5.5, 10, drift);
       target.copy(live.kite);
-      target.y = live.kite.y * mix(0.7, 0.82, drift);
-      return mix(58, 78, drift);
+      // Same horizon anchor as the sunwheels, but a touch higher: the dragon is
+      // fifteen metres of kite and needs the room above the waterline.
+      target.y = base + 9 + (live.kite.y - base) * 0.34;
+      return mix(50, 62, drift);
     }
   },
   {
     id: "04",
     title: "Ocean Beach Kites · Running the Sand",
-    hour: 20.12,
-    exposure: 1.1,
+    hour: 20.14,
+    exposure: 1.02,
     subject: 4,
-    // Down on the sand with the sled pair. The only shot that stays close, and
-    // it can afford to: at eye level looking up the beach the sun is dead ahead,
-    // so the runners are silhouettes and their kites climb out of the top of
-    // frame rather than needing to fit in it.
+    // The only shot that stays close, and it can afford to: at eye level up the
+    // beach the sun is dead ahead, so the runners are silhouettes and their
+    // kites climb out of frame rather than needing to fit in it.
     frame: ({ u }, live, eye, target) => {
       const swing = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
       eye.copy(live.runner)
-        .addScaledVector(live.sun, -mix(34, 24, swing))
-        .addScaledVector(along, mix(17, -13, swing));
-      eye.y = live.ground(eye.x, eye.z) + 1.66;
-      target.copy(live.runner).lerp(live.kite, mix(0.16, 0.4, swing));
-      return mix(36, 46, swing);
+        .addScaledVector(live.sun, -mix(38, 27, swing))
+        .addScaledVector(along, mix(15, -12, swing));
+      eye.y = live.ground(eye.x, eye.z) + 1.7;
+      target.copy(live.runner);
+      target.y = mix(live.runner.y + 0.6, live.kite.y, mix(0.18, 0.34, swing));
+      return mix(40, 50, swing);
     }
   },
   {
     id: "05",
     title: "Ocean Beach Kites · Blue Hour",
-    hour: 20.62,
-    exposure: 1.18,
+    hour: 20.78,
+    exposure: 0.9,
     subject: 0,
-    // Past sunset. The kites are shapes now rather than colours, so the shot
-    // widens off them and lets the beach go quiet.
+    // Four degrees under. The sun is gone, the sky has turned, and the kites
+    // are shapes rather than colours — the golden-hour air is most of the way
+    // faded out by this hour, which is the point: this is what the beach looks
+    // like after the show.
     frame: ({ u }, live, eye, target) => {
       const settle = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
       eye.copy(live.flock)
-        .addScaledVector(live.sun, -mix(118, 148, settle))
-        .addScaledVector(along, mix(12, 34, settle));
-      eye.y = live.ground(eye.x, eye.z) + mix(5.2, 10.5, settle);
-      target.copy(live.flock).addScaledVector(along, mix(2, -6, settle));
-      target.y = live.flock.y * mix(0.74, 0.62, settle);
-      return mix(44, 32, settle);
+        .addScaledVector(live.sun, -mix(96, 118, settle))
+        .addScaledVector(along, mix(8, 26, settle));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(6.5, 11, settle);
+      target.copy(live.flock).addScaledVector(along, mix(2, -5, settle));
+      target.y = base + 8 + (live.flock.y - base) * 0.3;
+      return mix(42, 52, settle);
     }
   }
 ];
@@ -221,9 +247,13 @@ function buildDemo(framing: Framing): Demo {
             end: KITE_FESTIVAL_SECONDS,
             safety: { floorClearance: 1.1 },
             camera: (sample, out) => {
-              // Read the live solar direction rather than assume an azimuth, so
-              // every shot stays on the dark side of its subject at any hour.
-              sun.copy(SUN_DIR);
+              // SUN_STATE.toSun, not SUN_DIR: the latter hands over to the
+              // anti-solar direction once the sun is down, which past sunset
+              // would mirror every camera to the wrong side of the beach — the
+              // blue-hour shot flew into the sea before this was caught.
+              sun.copy(SUN_STATE.toSun);
+              sun.y = Math.max(sun.y, 0.02);
+              sun.normalize();
 
               if (!readFlock()) {
                 // Before the encounter resolves, hold a wide plate on the site
