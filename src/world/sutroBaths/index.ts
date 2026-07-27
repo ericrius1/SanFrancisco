@@ -16,6 +16,7 @@ import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
 import { createSutroBathsVegetation } from "./vegetation";
 import { createSutroBathers } from "./bathers";
 import { createSutroParlour } from "./parlour";
+import { createSutroTimberGallery } from "./timberGallery";
 import { createSutroPavilionClock } from "./pavilionClock";
 import type { SutroBathsSteam } from "./steam";
 import {
@@ -59,6 +60,8 @@ export type SutroBathsStats = {
   conversations: number;
   parlourTables: number;
   parlourLamps: number;
+  galleryBoards: number;
+  galleryArtworks: number;
 };
 
 export type SutroBathsDebugState = {
@@ -162,6 +165,10 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   const bathers = createSutroBathers();
   const parlour = createSutroParlour();
   parlour.setLampGlow(0);
+  // The inland wall's timber gallery and its pictures. Built here (not in the
+  // authored GLB) because it carries textures — see timberGallery.ts.
+  const gallery = createSutroTimberGallery();
+  gallery.group.visible = false;
   const pavilionClock = createSutroPavilionClock({
     sky: options.sky,
     authoredRegions: options.authoredRegions
@@ -175,14 +182,15 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     ambience.group,
     vegetation.group,
     parlour.group,
+    gallery.group,
     pavilionClock.group,
     bathers.group,
     water.group
   );
 
   const stats: SutroBathsStats = {
-    architectureMeshes: 57,
-    architectureInstances: 2004,
+    architectureMeshes: 55,
+    architectureInstances: 2191,
     roofRibs: 306,
     glassPanels: 304,
     lamps: 28,
@@ -196,7 +204,9 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     bathers: bathers.stats.bathers,
     conversations: bathers.stats.talkGroups,
     parlourTables: parlour.stats.tables,
-    parlourLamps: parlour.stats.lamps
+    parlourLamps: parlour.stats.lamps,
+    galleryBoards: gallery.stats.boards,
+    galleryArtworks: gallery.stats.artworks
   };
   const liveStats = (): SutroBathsStats => {
     stats.bathers = bathers.stats.bathers;
@@ -318,6 +328,10 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       parlour.group.visible = true;
       return false;
     },
+    () => {
+      gallery.group.visible = true;
+      return false;
+    },
     // The cast comes out a handful at a time — 38 skinned meshes on one frame is
     // 38 first-draw bind-group builds.
     () => bathers.revealSome(5),
@@ -335,6 +349,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       wakeStage = 0;
       water.group.visible = false;
       parlour.group.visible = false;
+      gallery.group.visible = false;
       vegetation.setVisible(false);
     }
     group.visible = next;
@@ -361,7 +376,10 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   // The site is "ready" for the covered warm once its unified foliage has
   // compiled AND the cast is fully built. Both are sliced across frames, so this
   // adds no frozen time — it only means the warm sees every signature once.
+  // The gallery's textures are in here so the covered warm compiles the FINAL
+  // material graphs: optionalSites.ts awaits this before prepareOptionalRoot.
   const ready = Promise.all([
+    gallery.ready,
     vegetation.ready,
     bathers.hydrate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
   ]).then(() => undefined);
@@ -410,6 +428,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       hallCaustics.setTwilight(twilight.depth);
       hallCaustics.setStrength(SUTRO_BATHS_TUNING.values.hallCaustics);
       parlour.setLampGlow(twilight.lampGlow);
+      gallery.setTwilight(twilight.depth);
       // After twilight.update: the pocket has just written the hour the sky is
       // rendering, and the clock's whole job is to agree with it.
       pavilionClock.setTwilight(twilight.depth);
@@ -521,6 +540,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       steam?.dispose();
       bathers.dispose();
       parlour.dispose();
+      gallery.dispose();
       pavilionClock.dispose();
       vegetation.dispose();
       ambience.dispose();
