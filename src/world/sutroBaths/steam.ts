@@ -29,6 +29,8 @@ export type SutroBathsSteam = {
     gust: number
   ): void;
   setEnabled(enabled: boolean): void;
+  /** Camera under a pool's waterline: the sheet is a ceiling, so stay hidden. */
+  setSubmerged(submerged: boolean): void;
   readonly stats: { puffs: number; visible: number; awake: boolean; playerDistance: number };
   dispose(): void;
 };
@@ -49,12 +51,18 @@ export function createSutroBathsSteam(): SutroBathsSteam {
 
   const siteYaw = SUTRO_BATHS.yaw;
 
+  // The shell footprint is the pool rectangle EXACTLY. It used to overhang the
+  // coping by 0.85 m so the plume could drift past the rim, but the shell is
+  // depth-tested back faces: wherever it overhung, its floor face sat 0.44 m
+  // UNDER the deck slab and the whole marched column was rejected — a clean
+  // steam-free border all the way around every bath. Drifting past the rim is
+  // not worth losing the rim.
   const shells = HOT_POOLS.map((pool) => {
     const box = {
       cx: (pool.minX + pool.maxX) * 0.5,
       cz: (pool.minZ + pool.maxZ) * 0.5,
-      halfX: (pool.maxX - pool.minX) * 0.5 + 0.85,
-      halfZ: (pool.maxZ - pool.minZ) * 0.5 + 0.85,
+      halfX: (pool.maxX - pool.minX) * 0.5,
+      halfZ: (pool.maxZ - pool.minZ) * 0.5,
       heat: pool.heat
     };
     return createSteamShell(geometry, box, u, siteYaw);
@@ -71,6 +79,7 @@ export function createSutroBathsSteam(): SutroBathsSteam {
   let enabled = true;
   let awake = false;
   let disposed = false;
+  let submerged = false;
 
   const hide = () => {
     if (group.visible || stats.visible !== 0) {
@@ -85,7 +94,8 @@ export function createSutroBathsSteam(): SutroBathsSteam {
       if (disposed) return;
       const tuning = SUTRO_BATHS_TUNING.values;
       stats.playerDistance = distanceToSutroWater(player.x, player.z);
-      const wantsSteam = enabled && tuning.steamEnabled && tuning.steamAmount > 0.002;
+      const wantsSteam =
+        enabled && !submerged && tuning.steamEnabled && tuning.steamAmount > 0.002;
       if (!wantsSteam) awake = false;
       else if (awake) awake = stats.playerDistance <= SLEEP_DISTANCE;
       else awake = stats.playerDistance <= WAKE_DISTANCE;
@@ -123,6 +133,15 @@ export function createSutroBathsSteam(): SutroBathsSteam {
     setEnabled(next) {
       enabled = next;
       if (!next) {
+        awake = false;
+        stats.awake = false;
+        hide();
+      }
+    },
+    setSubmerged(next) {
+      if (submerged === next) return;
+      submerged = next;
+      if (next) {
         awake = false;
         stats.awake = false;
         hide();

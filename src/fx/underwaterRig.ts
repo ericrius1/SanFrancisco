@@ -2,7 +2,8 @@ import * as THREE from "three/webgpu";
 import { setUnderwaterPostFx } from "../render/postfx";
 import { warmHiddenRoot } from "../render/warmHiddenRoot";
 import { SUN_DIR } from "../world/sky";
-import { waterHeight, type WorldMap } from "../world/heightmap";
+import type { WorldMap } from "../world/heightmap";
+import { submergibleWaterY, swimVolumeAt } from "../world/swimVolumes";
 import { LIGHT_SCALE } from "../config";
 import type { UnderwaterVolume } from "./underwaterVolume";
 
@@ -82,6 +83,11 @@ function latchDry() {
   });
 }
 
+/** Smoothed 0..1 camera submersion, so callers can drive audio off one source. */
+export function underwaterSubmersion(): number {
+  return ease;
+}
+
 export function updateUnderwaterFx(deps: {
   camera: THREE.PerspectiveCamera;
   map: WorldMap;
@@ -89,18 +95,21 @@ export function updateUnderwaterFx(deps: {
   scene: THREE.Scene;
   time: number;
   dt: number;
-}) {
+}): number {
   const { camera, map, renderer, scene, time, dt } = deps;
   const cx = camera.position.x;
   const cz = camera.position.z;
-  const overWater = map.isWater(cx, cz);
+  // NaN when the column is dry. Authored pools (the Sutro baths) resolve here
+  // as well as the bay — see world/swimVolumes.ts.
+  const surfaceY = submergibleWaterY(map, cx, cz, time);
+  const overWater = !Number.isNaN(surfaceY);
   if (!overWater && ease < 0.002) {
     ease = 0;
     latchDry();
-    return;
+    return ease;
   }
 
-  const wy = overWater ? waterHeight(cx, cz, time) : -1e3;
+  const wy = overWater ? surfaceY : -1e3;
   // same hysteresis family as UnderwaterOverlay: centimetre clearances under a
   // crest must not flash the fog on
   const submergedDepth = overWater ? wy - camera.position.y - 0.35 : -1;
@@ -124,12 +133,24 @@ export function updateUnderwaterFx(deps: {
       .catch((err) => console.warn("[underwater] volume unavailable:", err));
   }
 
-  const lightUp = THREE.MathUtils.clamp(SUN_DIR.y * 2.8, 0.06, 1);
-  if (volumeReady && volume) volume.update(camera, time, ease, lightUp);
+  // A tiled bath is not the bay: its floor is the built basin (the terrain down
+  // there is metres below the hall), drifting marine snow in clear indoor water
+  // reads as dirt, and it is lit by lamps rather than by the sun — so an
+  // evening dive must not inherit the open-water rig's near-black sunless
+  // grading. Clearer water, lit floor, no motes.
+  const pool = overWater ? swimVolumeAt(cx, cz) : null;
+  const lightUp = THREE.MathUtils.clamp(SUN_DIR.y * 2.8, pool ? 0.55 : 0.06, 1);
+  if (volumeReady && volume) {
+    volume.update(camera, time, ease, lightUp, {
+      floorY: pool ? pool.floorY : null,
+      surfaceY: pool ? pool.surfaceY : null,
+      snow: pool ? 0 : 1
+    });
+  }
 
   if (ease <= 0) {
     latchDry();
-    return;
+    return ease;
   }
   dryLatched = false;
 
@@ -170,7 +191,9 @@ export function updateUnderwaterFx(deps: {
   const rayDepthFade = THREE.MathUtils.clamp(1 - camDepth / 25, 0, 1);
   setUnderwaterPostFx({
     submersion: ease,
-    sigmaScale: 1,
+    // Filtered bath water over a tiled floor is far clearer than the bay, and
+    // there is only ~2.5 m of it to look through anyway.
+    sigmaScale: pool ? 0.55 : 1,
     scatterAmbient: _scatterAmbient,
     sunScatter: _sunScatter,
     sunViewDir: _sunView,
@@ -178,4 +201,5 @@ export function updateUnderwaterFx(deps: {
     sunScreenY,
     rayAmount: ease * behindFade * rayDepthFade * lightUp * 1.1
   });
+  return ease;
 }

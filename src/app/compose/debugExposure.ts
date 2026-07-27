@@ -229,6 +229,22 @@ export async function installDebugSurfaces(
       }
     };
     const ensureDemoSite = async (name: string): Promise<void> => {
+      // The kite festival is not an OptionalSite — it has its own approach gate,
+      // which only fires once the player is near. Put the body on the beach and
+      // resolve the encounter here, so frame zero already has seven kites up
+      // rather than an empty sky that fills in over the first second.
+      if (name.startsWith("ocean-beach-kite-")) {
+        const beach = oceanKite.site;
+        player.teleportTo({
+          x: beach.x + 18,
+          y: map.groundTop(beach.x + 18, beach.z) + 1.5,
+          z: beach.z,
+          facing: Math.PI / 2,
+          mode: "walk"
+        });
+        await oceanKite.ensure();
+        return;
+      }
       const site: OptionalSiteId | null =
         name === "afterlight" ? "afterlight" :
         name === "palace" || name === "palace-reverie" || name === "phoenix-palace-flyby" ? "palace" :

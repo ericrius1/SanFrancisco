@@ -302,6 +302,9 @@ async function boot() {
   let siteFoliage: SiteFoliageStreamer | null = null;
   let beachPianist: BeachPianist | null = null;
   let pianoGodRaysActive = false;
+  // Late-bound by the ocean-kite gate in P5: the kite asks for the same
+  // raymarch graph during its sunset window (see world/oceanBeachKite).
+  let kiteGodRayArea: (() => { active: boolean; center: THREE.Vector3 } | null) | null = null;
   let bootHud: HUD | null = null; // set once the HUD constructs in P3
   const releasePianoGodRays = () => {
     if (!pianoGodRaysActive) return;
@@ -309,17 +312,30 @@ async function boot() {
     pipeline.setPianoGodRaysArea(false);
   };
   const renderFrame = () => {
-    // God rays are intentionally hard-scoped to the piano grove. Mission
-    // Dolores and every other region stay on the base post-processing graph.
+    // God rays stay hard-scoped to the two places that earn a full-screen
+    // raymarch: the piano grove, and the kite while the sun is on the water.
+    // Mission Dolores and every other region stay on the base graph. The two
+    // areas are hundreds of metres apart, so the shared pooled shadow light is
+    // never contested; the piano wins if that ever stops being true.
     const wantsPianoGodRays =
       Boolean(POSTFX_TUNING.values.pianistRays) &&
       foliageOn &&
       siteFoliage?.isReady("beach-pianist-grove") === true &&
       beachPianist?.isPlayerInGodRayArea(player.position, pianoGodRaysActive) === true;
-    if (wantsPianoGodRays !== pianoGodRaysActive) {
-      pianoGodRaysActive = wantsPianoGodRays;
-      pipeline.setPianoGodRaysArea(wantsPianoGodRays, beachPianist?.group.position);
+    const kiteRays = wantsPianoGodRays ? null : kiteGodRayArea?.() ?? null;
+    const wantsGodRays = wantsPianoGodRays || kiteRays?.active === true;
+    if (wantsGodRays) {
+      // Re-issued every frame while active: setPianoGodRaysArea copies the
+      // centre before its unchanged-state early-out, which is how the kite's
+      // moving centre reaches the raymarch without rebuilding the graph.
+      pipeline.setPianoGodRaysArea(
+        true,
+        wantsPianoGodRays ? beachPianist?.group.position : kiteRays?.center
+      );
+    } else if (pianoGodRaysActive) {
+      pipeline.setPianoGodRaysArea(false);
     }
+    pianoGodRaysActive = wantsGodRays;
     pipeline.render();
   };
 
@@ -948,6 +964,8 @@ async function boot() {
       set foliageOn(v) { foliageOn = v as never; },
       get beachPianist() { return beachPianist; },
       set beachPianist(v) { beachPianist = v as never; },
+      get kiteGodRayArea() { return kiteGodRayArea; },
+      set kiteGodRayArea(v) { kiteGodRayArea = v as never; },
       get bootHud() { return bootHud; },
       set bootHud(v) { bootHud = v as never; },
       get accumulator() { return accumulator; },

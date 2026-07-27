@@ -20,7 +20,7 @@ import type {  } from "../../world/ghostShip";
 import { materializeField } from "../../render/materialize";
 import { emitEmbodimentWaterEcho } from "../../world/waterEchoes";
 import { syncBallGlowNight } from "../../fx/ballGlow";
-import { updateUnderwaterFx } from "../../fx/underwaterRig";
+import { updateUnderwaterFx, underwaterSubmersion } from "../../fx/underwaterRig";
 import { updateCrownDisplay, resetCrownTweaks } from "../../world/salesforceCrown";
 import {  updateBayLights, resetBayLightsTweaks } from "../../world/bayLights";
 import {  updateGoldenGateLights, resetGoldenGateLightsTweaks } from "../../world/goldenGateLights";
@@ -554,7 +554,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       swimAudio.update(frameDt, {
         swimming: player.swimming,
         speed: Math.hypot(player.velocity.x, player.velocity.z),
-        vspeed: player.velocity.y
+        vspeed: player.velocity.y,
+        submersion: underwaterSubmersion()
       });
       updatePlayerFoley(frameDt, true);
       nature.update(frameDt, {
@@ -1414,9 +1415,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (museumFloorHandoff != null) player.recoverOntoWalkSurface(museumFloorHandoff);
     // Sutro Baths buries its footprint and floats the deck above the old ground.
     // Same handoff: lift a capsule stranded beneath the freshly built deck.
-    const sutroFloorHandoff = worldArrival.active
-      ? null
-      : core.state.sutroBaths?.takeFloorHandoffHeight(player.position, player.mode);
+    // A swimmer is deliberately below the deck and above the basin, so the
+    // recovery contract stands down while the walk controller owns the body —
+    // otherwise a dive would be answered by a teleport back to the tiles.
+    const sutroFloorHandoff =
+      worldArrival.active || player.swimming
+        ? null
+        : core.state.sutroBaths?.takeFloorHandoffHeight(player.position, player.mode);
     if (sutroFloorHandoff != null) player.recoverOntoWalkSurface(sutroFloorHandoff);
 
     // Prime the surf runtime while the player is still walking up to the
@@ -1527,14 +1532,18 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // GPU underwater package: drives the permanent post-FX fog/god-ray
     // uniforms and lazily loads/prewarms the marine-snow + caustics volume on
     // first near-water approach (identity + early-return while dry).
-    updateUnderwaterFx({
-      camera,
-      map,
-      renderer,
-      scene,
-      time: ctx.state.elapsed,
-      dt: frameDt
-    });
+    // The same eased state drives the picture and the sound: with your head
+    // under, the world above goes muffled and the water closes in.
+    audioEngine.setSubmersion(
+      updateUnderwaterFx({
+        camera,
+        map,
+        renderer,
+        scene,
+        time: ctx.state.elapsed,
+        dt: frameDt
+      })
+    );
     fx.update(frameDt);
     bubbles.update(frameDt, ctx.state.elapsed);
     wake.update(frameDt, surfaceTime, player);
