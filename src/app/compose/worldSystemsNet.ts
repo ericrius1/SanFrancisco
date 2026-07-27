@@ -80,6 +80,7 @@ import {
   surfboardVisualKey,
   type SurfboardConfig
 } from "../../vehicles/surf";
+import { saveKiteConfig, type KiteConfig } from "../../world/oceanBeachKite/kiteConfig";
 import {
   GARDEN_XZ,
   GOLF_XZ,
@@ -394,13 +395,50 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     }
   });
   core.state.ensureSurfboardCustomizer = (open = false) => surfboard.ensure(open);
+  // The kite atelier is the one customizer gated on WHERE you are rather than
+  // what you are riding: your kite only exists on the Ocean Beach sand, so the
+  // slot follows the kite gate's proximity edge (set below, once that gate is
+  // built) instead of a player mode alone.
+  let inKiteRange = false;
+  const kite = createLazySelector(hudRoot, {
+    id: "kite",
+    launcherClass: "avatar-ui kite-ui kite-launcher-ui",
+    toggleClass: "avatar-toggle kite-toggle",
+    icon: "/ui/customizer-icons/kite.svg",
+    title: "Kite atelier",
+    ariaLabel: "Open kite atelier",
+    active: () => player.mode === "walk" && inKiteRange,
+    onLauncherClick: () => input.releaseLock(),
+    load: async () => {
+      const { KiteSelector } = await import("../../ui/kiteSelector");
+      const applyKiteConfig = (config: KiteConfig) => {
+        ctx.state.kiteConfig = config;
+        oceanKite.setKiteConfig(config);
+      };
+      return new KiteSelector(
+        ctx.state.kiteConfig,
+        (config) => {
+          applyKiteConfig(config);
+          saveKiteConfig(config);
+        },
+        // Slider drag: drive the kite that is already in the sky, but do not
+        // write a localStorage entry per pointer move.
+        applyKiteConfig,
+        () => {}
+      );
+    }
+  });
   // One top-right customizer slot: show only the active mode's atelier (or none).
   core.state.syncCustomizerForMode = (mode) => {
-    avatar.syncVisible(mode === "walk");
+    const kiteOwnsSlot = mode === "walk" && inKiteRange;
+    // On the kite beach the atelier you want on foot is the kite's, not the
+    // avatar's — one slot, and the kite is the thing that is only here.
+    avatar.syncVisible(mode === "walk" && !kiteOwnsSlot);
     board.syncVisible(mode === "board");
     scooter.syncVisible(mode === "scooter");
     car.syncVisible(mode === "drive");
     surfboard.syncVisible(mode === "surf");
+    kite.syncVisible(kiteOwnsSlot);
   };
   core.state.syncCustomizerForMode(player.mode);
   await constructionSlice();
@@ -927,8 +965,24 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
 
   // Kid-with-a-kite ambient encounter (lazy first-approach gate) — extracted
   // per docs/MAIN_DECOMPOSITION.md.
-  const oceanKite = createOceanKiteGate({ map, scene, renderer, camera, player, debugPanel });
+  const oceanKite = createOceanKiteGate({
+    map,
+    scene,
+    renderer,
+    camera,
+    player,
+    debugPanel,
+    // Walking onto (or off) the kite beach hands the single customizer slot to
+    // the kite atelier and back again.
+    onAtelierRangeChange: (inRange) => {
+      inKiteRange = inRange;
+      core.state.syncCustomizerForMode!(player.mode);
+    }
+  });
   import.meta.hot?.dispose(oceanKite.dispose);
+  // Seed the gate with the saved kite so a returning player's sail is already
+  // the right one the first time the encounter streams in.
+  oceanKite.setKiteConfig(ctx.state.kiteConfig);
   // renderFrame lives in main and predates this gate; hand it the kite's
   // sunset god-ray request so both areas arbitrate in one place.
   ctx.state.kiteGodRayArea = oceanKite.godRayArea;
