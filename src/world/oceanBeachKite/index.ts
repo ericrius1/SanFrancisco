@@ -12,6 +12,7 @@ export type OceanBeachKiteSite = { x: number; z: number };
 export type OceanBeachKiteFlyerState = {
   design: KiteDesignId;
   action: KiteFigureName;
+  runner: [number, number, number];
   runnerSpeed: number;
   lineLength: number;
   kiteHeight: number;
@@ -71,7 +72,6 @@ const SLEEP_DISTANCE = 520;
 /** Well inside the wake radius: a full-screen raymarch is not an ambient cost. */
 const GOD_RAY_DISTANCE = 190;
 const GOD_RAY_EXIT_DISTANCE = 240;
-const ROUTE_HALF_LENGTH = 64;
 const ROUTE_STEP = 5;
 // Dry-sand offset east of the live waterline so the runner stays off the wet edge.
 const BEACH_RUNNER_PAD = 12;
@@ -89,21 +89,55 @@ function beachEdgeX(map: WorldMap, referenceX: number, z: number): number {
 }
 
 /**
- * Who is on the beach, in what order along the shore, and where each one picks
- * up the figure loop. Lane 0 keeps the arrival launch; the other two are
- * already flying when you get there, so nobody is ever caught mid-setup and
- * the three kites never march in step.
+ * Who is on the beach, where they stand, and how they group.
+ *
+ * The social grammar is deliberately made of two cheap signals rather than any
+ * kind of agent AI. Members of a troupe share the leader's figure clock, so they
+ * are always running the SAME figure at the same instant; and one member of each
+ * pair is mirrored, so their kites carve opposite arcs, sweep toward each other
+ * and cross. Matching silhouette does the rest — a troupe flies one design, and
+ * the two soloists fly alone in designs nobody else is using.
+ *
+ * Offsets are in lane-spacing units along the shore. Intra-troupe gaps are about
+ * half an inter-troupe gap, which is the ratio proximity-grouping needs before a
+ * viewer reads "those two are together" instead of "those two are near".
+ *
+ * Every lane must stay inside the god-ray shadow map's ±110 m of the flock's
+ * mean kite, or the apertures the designs were sized for stop resolving.
  */
-const LANES: readonly {
+type KiteLane = {
   design: KiteDesignId;
   seed: string;
+  /** Lane centre along the shore, in lane-spacing units from the site. */
   offset: number;
+  /** Fraction of the tuned half-span; a troupe patrols a tighter stretch. */
+  spanScale: number;
   startFigure: number;
   startPhase: number;
-}[] = [
-  { design: "diamond", seed: "ocean-beach-kite-flyer", offset: 0, startFigure: 0, startPhase: 0 },
-  { design: "sunwheel", seed: "ocean-beach-sunwheel-flyer", offset: -1, startFigure: 3, startPhase: 2.4 },
-  { design: "lantern", seed: "ocean-beach-lantern-flyer", offset: 1, startFigure: 6, startPhase: 4.1 }
+  /** Members of a troupe share the first-listed member's figure clock. */
+  troupe?: string;
+  /** Carve the opposite way to the rest of the troupe. */
+  mirror?: boolean;
+};
+
+const LANES: readonly KiteLane[] = [
+  // The arrival. Keeps its one-shot launch, its own clock, and the middle of
+  // the beach; every acceptance contract is written against this flyer.
+  { design: "diamond", seed: "ocean-beach-kite-flyer", offset: 0, spanScale: 1, startFigure: 0, startPhase: 0 },
+
+  // North: a sunwheel pair running mirrored figures in lockstep.
+  { design: "sunwheel", seed: "ocean-beach-sunwheel-flyer", offset: -1.2, spanScale: 0.55, startFigure: 3, startPhase: 2.4, troupe: "wheels" },
+  { design: "sunwheel", seed: "ocean-beach-sunwheel-partner", offset: -1.85, spanScale: 0.55, startFigure: 3, startPhase: 2.4, troupe: "wheels", mirror: true },
+
+  // Far north: one lantern on its own, on a slower clock than anyone else.
+  { design: "lantern", seed: "ocean-beach-lantern-flyer", offset: -2.9, spanScale: 0.8, startFigure: 6, startPhase: 4.1 },
+
+  // South: a sled pair, also mirrored, offset half a loop from the wheels.
+  { design: "sled", seed: "ocean-beach-sled-flyer", offset: 1.2, spanScale: 0.55, startFigure: 8, startPhase: 1.2, troupe: "deltas" },
+  { design: "sled", seed: "ocean-beach-sled-partner", offset: 1.85, spanScale: 0.55, startFigure: 8, startPhase: 1.2, troupe: "deltas", mirror: true },
+
+  // Far south: the centipede, alone, on the longest line of anyone.
+  { design: "centipede", seed: "ocean-beach-centipede-flyer", offset: 2.85, spanScale: 0.8, startFigure: 5, startPhase: 3.3 }
 ];
 
 type RouteSample = { x: number; z: number };
@@ -121,6 +155,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
   #site: OceanBeachKiteSite;
   #route: RouteSample[];
   #flyers: KiteFlyer[] = [];
+  /** Followers that take a leader's figure clock every frame. */
+  #troupe: { follower: KiteFlyer; leader: KiteFlyer }[] = [];
   #air: SunsetAir;
   #debug = new THREE.Group();
   #runnerMarker: THREE.Mesh;
@@ -163,13 +199,17 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     this.#map = map;
     this.#site = { ...site };
     this.#applyWindBearing();
-    this.#route = this.#buildRoute();
     this.group.name = "ocean_beach_kite_encounter";
 
     const tuning = OCEAN_KITE_TUNING.values;
     const spacing = Math.max(18, tuning.runSpan * 0.78);
+    const halfSpan = Math.max(8, tuning.runSpan * 0.34);
+    this.#route = this.#buildRoute(this.#routeHalfLength(spacing, halfSpan));
+
+    const leaders = new Map<string, KiteFlyer>();
     for (const lane of LANES) {
       const laneZ = this.#site.z + lane.offset * spacing;
+      const leader = lane.troupe ? leaders.get(lane.troupe) : undefined;
       const flyer = new KiteFlyer({
         map,
         design: KITE_DESIGNS[lane.design],
@@ -178,8 +218,13 @@ class KiteEncounter implements OceanBeachKiteEncounter {
         beachX: (z) => this.#routeX(z),
         startFigure: lane.startFigure,
         startPhase: lane.startPhase,
-        startAirborne: lane.startFigure !== 0
+        startAirborne: lane.startFigure !== 0,
+        spanScale: lane.spanScale,
+        mirror: lane.mirror,
+        ledByTroupe: Boolean(leader)
       });
+      if (lane.troupe && !leader) leaders.set(lane.troupe, flyer);
+      else if (leader) this.#troupe.push({ follower: flyer, leader });
       this.#flyers.push(flyer);
       this.group.add(flyer.group);
       this.#rayAnchors.push({
@@ -248,9 +293,22 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     return material;
   }
 
-  #buildRoute(): RouteSample[] {
+  /**
+   * The sampled waterline has to reach past the outermost lane plus the stretch
+   * that flyer patrols, or #routeX clamps and the outer flyers steer against a
+   * stale waterline that is metres from where the sea actually is.
+   */
+  #routeHalfLength(spacing: number, halfSpan: number): number {
+    let reach = 0;
+    for (const lane of LANES) {
+      reach = Math.max(reach, Math.abs(lane.offset) * spacing + halfSpan * lane.spanScale);
+    }
+    return Math.ceil((reach + 14) / ROUTE_STEP) * ROUTE_STEP;
+  }
+
+  #buildRoute(halfLength: number): RouteSample[] {
     const samples: RouteSample[] = [];
-    for (let dz = -ROUTE_HALF_LENGTH; dz <= ROUTE_HALF_LENGTH; dz += ROUTE_STEP) {
+    for (let dz = -halfLength; dz <= halfLength; dz += ROUTE_STEP) {
       const z = this.#site.z + dz;
       const x = beachEdgeX(this.#map, this.#site.x, z);
       samples.push({ x, z });
@@ -364,6 +422,9 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     frame.backlight = this.#air.state.backlight * tuning.clothBacklight;
     frame.halfSpan = Math.max(8, tuning.runSpan * 0.34);
     frame.beachDepth = Math.max(8, tuning.beachDepth);
+    // Troupes adopt their leader's figure before anyone moves, so a pair is
+    // always mid-way through the same shape on the same frame.
+    for (const { follower, leader } of this.#troupe) follower.adoptFigure(leader);
     for (const flyer of this.#flyers) flyer.update(frame);
 
     this.#air.update({
@@ -470,6 +531,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
       flyers: this.#flyers.map((flyer) => ({
         design: flyer.design.id,
         action: flyer.figure,
+        runner: [flyer.runnerPosition.x, flyer.runnerPosition.y, flyer.runnerPosition.z] as
+          [number, number, number],
         runnerSpeed: flyer.runnerSpeed,
         lineLength: flyer.lineLength,
         kiteHeight: Math.max(0, flyer.kitePosition.y - flyer.surfaceBelowKite()),
@@ -486,6 +549,7 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     this.#disposed = true;
     for (const flyer of this.#flyers) flyer.dispose();
     this.#flyers.length = 0;
+    this.#troupe.length = 0;
     this.#air.dispose();
     for (const geometry of new Set(this.#ownedGeometries)) geometry.dispose();
     for (const material of new Set(this.#ownedMaterials)) material.dispose();

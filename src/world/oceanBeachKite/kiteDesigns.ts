@@ -1,14 +1,15 @@
 import * as THREE from "three/webgpu";
 
 /**
- * Three kites, built around what they do to light rather than what they look
+ * Five kites, built around what they do to light rather than what they look
  * like on the ground.
  *
  * The god-ray pass raymarches a 1024² shadow map covering 220 m — roughly
  * 0.21 m per texel — so a hollow only becomes a shaft if it is comfortably
  * wider than half a metre. Every aperture here is sized against that budget:
  * the sunwheel's eye is 2 m across, the lantern's cells and windows are
- * 0.85–1.9 m, and the blade gaps stay above 0.35 m. Detail finer than that is
+ * 0.85–1.9 m, the sled's vents are 0.95 m wide, the centipede's pupils
+ * 0.92–1.10 m, and no blade gap drops under 0.35 m. Detail finer than that is
  * for the eye, not for the light.
  *
  * Geometry is emitted as plain parameterised grids — rectangles and polar
@@ -16,7 +17,7 @@ import * as THREE from "three/webgpu";
  * triangulated cut or an alpha test the depth pass would have to honour.
  */
 
-export type KiteDesignId = "diamond" | "sunwheel" | "lantern";
+export type KiteDesignId = "diamond" | "sunwheel" | "lantern" | "sled" | "centipede";
 
 export type KitePalette = {
   clothDeep: number;
@@ -455,6 +456,278 @@ function lanternFrame(ctx: FrameContext): THREE.Object3D[] {
   return parts;
 }
 
+// ---------------------------------------------------------------- the sled
+
+/**
+ * Light does not leave a kite along its local +Z. `flyer.ts` aims local +Z at
+ * the flyer, and with the site's offshore wind and a sun on the water the sun
+ * ray runs through the sail at roughly (0, 0.72, 0.70) local — about 46° off
+ * +Z, tilted in the YZ plane.
+ *
+ * That asymmetry is a design tool. A hole's width along local X does not
+ * foreshorten at all when the kite is centred in its window — which is exactly
+ * the moment `sunsetAir` scores highest — while its height foreshortens by
+ * cos 46° ≈ 0.70. So the sled's apertures are TALL VERTICAL SLOTS: they keep
+ * their full width through the money beat and pinch shut only at the swing
+ * extremes, which makes the doorway of light open and close as the kite comes
+ * through the middle.
+ */
+const SLED_RADIUS = 4;
+const SLED_HALF_ANGLE = 0.55;
+const SLED_TOP = 2;
+const SLED_VENT_TOP = 1.4;
+const SLED_VENT_BOTTOM = -0.75;
+/** Developed-span coordinates of the six panel edges. */
+const SLED_EDGES = [0, 0.1932, 0.4091, 0.5909, 0.8068, 1] as const;
+
+/** Trailing V bitten out of the belly; deepest at the centre. */
+function sledBottom(u: number): number {
+  return -1.3 - 0.7 * Math.abs(2 * u - 1);
+}
+
+function sledPoint(u: number, y: number, out: THREE.Vector3): void {
+  const a = (u - 0.5) * SLED_HALF_ANGLE * 2;
+  out.set(SLED_RADIUS * Math.sin(a), y, SLED_RADIUS * (1 - Math.cos(a)));
+}
+
+/**
+ * A vented sled: no cross spar at all, held open by the wind alone. One bowed
+ * wall of pale ripstop with two tall slots burnt through it.
+ */
+function sledCloth(): THREE.BufferGeometry {
+  const buffers = newBuffers();
+  // The tent has to span the WHOLE sail, not each panel: six seams feathered
+  // individually would band the sail and its shadow (see PatchSpec.bulge).
+  const tent = (u: number, y: number) =>
+    Math.sin(Math.PI * u) *
+    smooth01((y - sledBottom(u)) / 0.9) *
+    smooth01((SLED_TOP - y) / 0.9);
+
+  const panel = (
+    u0: number,
+    u1: number,
+    lo: (u: number) => number,
+    hi: (u: number) => number,
+    nu: number,
+    nv: number
+  ) => {
+    const at = (pu: number, pv: number): [number, number] => {
+      const u = THREE.MathUtils.lerp(u0, u1, pu);
+      return [u, THREE.MathUtils.lerp(lo(u), hi(u), pv)];
+    };
+    emitPatch(buffers, {
+      nu,
+      nv,
+      point: (pu, pv, out) => {
+        const [u, y] = at(pu, pv);
+        sledPoint(u, y, out);
+      },
+      normal: (pu, _pv, out) => {
+        const a = (THREE.MathUtils.lerp(u0, u1, pu) - 0.5) * SLED_HALF_ANGLE * 2;
+        out.set(-Math.sin(a), 0, Math.cos(a));
+      },
+      uv: (pu, pv) => {
+        const [u, y] = at(pu, pv);
+        return [(u - 0.5) + 0.5, (y + 2) / 4];
+      },
+      bulge: (pu, pv) => {
+        const [u, y] = at(pu, pv);
+        return tent(u, y);
+      }
+    });
+  };
+
+  const top = () => SLED_TOP;
+  // Outer panels and the centre band run the full height; the two vent columns
+  // are split above and below the slot, which is what leaves the slot empty.
+  panel(SLED_EDGES[0], SLED_EDGES[1], sledBottom, top, 5, 10);
+  panel(SLED_EDGES[1], SLED_EDGES[2], () => SLED_VENT_TOP, top, 6, 3);
+  panel(SLED_EDGES[1], SLED_EDGES[2], sledBottom, () => SLED_VENT_BOTTOM, 6, 4);
+  panel(SLED_EDGES[2], SLED_EDGES[3], sledBottom, top, 5, 10);
+  panel(SLED_EDGES[3], SLED_EDGES[4], () => SLED_VENT_TOP, top, 6, 3);
+  panel(SLED_EDGES[3], SLED_EDGES[4], sledBottom, () => SLED_VENT_BOTTOM, 6, 4);
+  panel(SLED_EDGES[4], SLED_EDGES[5], sledBottom, top, 5, 10);
+  return finishCloth(buffers, 1.5);
+}
+
+function sledFrame(ctx: FrameContext): THREE.Object3D[] {
+  const parts: THREE.Object3D[] = [];
+  // The bow curves only in XZ and a cylinder's native axis is +Y, so all three
+  // spars share one geometry and need no rotation whatsoever.
+  const sparGeometry = ctx.own(new THREE.CylinderGeometry(0.026, 0.026, 4.02, 8));
+  const pocketGeometry = ctx.own(new THREE.BoxGeometry(0.1, 0.05, 0.05));
+  const at = new THREE.Vector3();
+  for (const u of [0, 0.5, 1]) {
+    sledPoint(u, 0, at);
+    const spar = new THREE.Mesh(sparGeometry, ctx.spar);
+    spar.name = `kite_sled_spar_${u}`;
+    spar.position.set(at.x, 0.35, at.z + 0.03);
+    parts.push(spar);
+    // Sewn sleeve ends — the only hard points on a sled.
+    for (const y of [SLED_TOP - 0.06, sledBottom(u) + 0.06]) {
+      const pocket = new THREE.Mesh(pocketGeometry, ctx.accent);
+      pocket.name = `kite_sled_pocket_${u}_${y > 0 ? "top" : "foot"}`;
+      pocket.position.set(at.x, y, at.z + 0.03);
+      parts.push(pocket);
+    }
+  }
+
+  const outline: THREE.Vector3[] = [];
+  const edge = new THREE.Vector3();
+  const push = (u: number, y: number) => {
+    sledPoint(u, y, edge);
+    outline.push(edge.clone());
+  };
+  for (let i = 0; i <= 12; i++) {
+    push(i / 12, SLED_TOP);
+    if (i > 0) push(i / 12, SLED_TOP);
+  }
+  push(1, SLED_TOP);
+  push(1, sledBottom(1));
+  push(1, sledBottom(1));
+  push(0.5, sledBottom(0.5));
+  push(0.5, sledBottom(0.5));
+  push(0, sledBottom(0));
+  push(0, sledBottom(0));
+  push(0, SLED_TOP);
+  // The two vent mouths, sampled on the same arc as the sail.
+  for (const [a, b] of [
+    [SLED_EDGES[1], SLED_EDGES[2]],
+    [SLED_EDGES[3], SLED_EDGES[4]]
+  ]) {
+    const corners: [number, number][] = [
+      [a, SLED_VENT_TOP],
+      [b, SLED_VENT_TOP],
+      [b, SLED_VENT_BOTTOM],
+      [a, SLED_VENT_BOTTOM]
+    ];
+    for (let i = 0; i < corners.length; i++) {
+      push(corners[i][0], corners[i][1]);
+      const next = corners[(i + 1) % corners.length];
+      push(next[0], next[1]);
+    }
+  }
+  const hem = new THREE.LineSegments(
+    ctx.own(new THREE.BufferGeometry().setFromPoints(outline)),
+    ctx.hem
+  );
+  hem.name = "kite_sled_hem";
+  parts.push(hem);
+  return parts;
+}
+
+// ----------------------------------------------------------- the centipede
+
+/**
+ * A Chinese centipede — a head disc and a chain of body discs threaded on one
+ * line, with no rigid spine. Every disc is an annulus, so the whole kite is a
+ * ladder of apertures: five pupils and the four gaps between them, dealing a
+ * bright rung of light out of each.
+ *
+ * Its apertures are round rather than slotted, which makes it the complement of
+ * the sled: the sled's columns are widest exactly when the centipede's rungs are
+ * most foreshortened, so the two peak on different beats of the same figure.
+ */
+const CENTIPEDE_HEAD = { outer: 1.28, inner: 0.55 };
+const CENTIPEDE_BODY = { outer: 1.04, inner: 0.46 };
+/** Disc centres in local Y, symmetric about the origin. */
+const CENTIPEDE_DISCS = [6.28, 2.93, -0.22, -3.37, -6.52] as const;
+const CENTIPEDE_HALF_HEIGHT = 7.56;
+const CENTIPEDE_DISH = 0.2;
+
+function centipedeCloth(): THREE.BufferGeometry {
+  const buffers = newBuffers();
+  for (let disc = 0; disc < CENTIPEDE_DISCS.length; disc++) {
+    const head = disc === 0;
+    const { outer, inner } = head ? CENTIPEDE_HEAD : CENTIPEDE_BODY;
+    const centreY = CENTIPEDE_DISCS[disc];
+    const slope = (v: number) => (-2 * CENTIPEDE_DISH * (1 - v)) / (outer - inner);
+    emitPatch(buffers, {
+      // The seam at u=0/1 closes on the same angle, so the ring is continuous.
+      nu: head ? 26 : 24,
+      nv: head ? 4 : 3,
+      point: (u, v, out) => {
+        const a = u * Math.PI * 2;
+        const r = THREE.MathUtils.lerp(inner, outer, v);
+        out.set(Math.cos(a) * r, centreY + Math.sin(a) * r, CENTIPEDE_DISH * (1 - v) * (1 - v));
+      },
+      normal: (u, v, out) => {
+        const a = u * Math.PI * 2;
+        out.set(-Math.cos(a) * slope(v), -Math.sin(a) * slope(v), 1).normalize();
+      },
+      uv: (u, v) => {
+        const a = u * Math.PI * 2;
+        const r = THREE.MathUtils.lerp(inner, outer, v);
+        return [
+          (Math.cos(a) * r) / 2.6 + 0.5,
+          (centreY + Math.sin(a) * r + CENTIPEDE_HALF_HEIGHT) / (CENTIPEDE_HALF_HEIGHT * 2)
+        ];
+      },
+      // Laced to both hoops only. A `u` term would draw a false lacing line
+      // straight down the three-o'clock seam of every disc.
+      slack: (_u, v) => edgeFalloff(v, 0.42),
+      bulge: (_u, v) => Math.sin(Math.PI * v)
+    });
+  }
+  return finishCloth(buffers, 1.6);
+}
+
+function centipedeFrame(ctx: FrameContext): THREE.Object3D[] {
+  const parts: THREE.Object3D[] = [];
+  const headRim = ctx.own(new THREE.TorusGeometry(CENTIPEDE_HEAD.outer, 0.028, 6, 30));
+  const headPupil = ctx.own(new THREE.TorusGeometry(CENTIPEDE_HEAD.inner, 0.02, 6, 20));
+  const bodyRim = ctx.own(new THREE.TorusGeometry(CENTIPEDE_BODY.outer, 0.024, 6, 26));
+  const bodyPupil = ctx.own(new THREE.TorusGeometry(CENTIPEDE_BODY.inner, 0.018, 6, 18));
+  // One cross-stick per disc, running clean through and out both sides as the
+  // whiskers — which is literally how a centipede disc is built.
+  const headRod = ctx.own(new THREE.CylinderGeometry(0.016, 0.01, 4.86, 6));
+  headRod.rotateZ(Math.PI / 2);
+  const bodyRod = ctx.own(new THREE.CylinderGeometry(0.016, 0.01, 3.68, 6));
+  bodyRod.rotateZ(Math.PI / 2);
+
+  for (let disc = 0; disc < CENTIPEDE_DISCS.length; disc++) {
+    const head = disc === 0;
+    const y = CENTIPEDE_DISCS[disc];
+    const rim = new THREE.Mesh(head ? headRim : bodyRim, ctx.spar);
+    rim.name = `kite_centipede_rim_${disc}`;
+    rim.position.y = y;
+    const pupil = new THREE.Mesh(head ? headPupil : bodyPupil, ctx.accent);
+    pupil.name = `kite_centipede_pupil_${disc}`;
+    pupil.position.set(0, y, CENTIPEDE_DISH);
+    const rod = new THREE.Mesh(head ? headRod : bodyRod, ctx.spar);
+    rod.name = `kite_centipede_rod_${disc}`;
+    rod.position.y = y;
+    parts.push(rim, pupil, rod);
+  }
+
+  // The cords that make it a train. A rigid spine would be a lie.
+  const cords: THREE.Vector3[] = [];
+  for (let disc = 0; disc + 1 < CENTIPEDE_DISCS.length; disc++) {
+    const upper = disc === 0 ? CENTIPEDE_HEAD.outer : CENTIPEDE_BODY.outer;
+    for (const angle of [Math.PI * 0.5, Math.PI * (7 / 6), Math.PI * (11 / 6)]) {
+      cords.push(
+        new THREE.Vector3(
+          Math.cos(angle) * upper,
+          CENTIPEDE_DISCS[disc] + Math.sin(angle) * upper,
+          0
+        ),
+        new THREE.Vector3(
+          Math.cos(angle) * CENTIPEDE_BODY.outer,
+          CENTIPEDE_DISCS[disc + 1] + Math.sin(angle) * CENTIPEDE_BODY.outer,
+          0
+        )
+      );
+    }
+  }
+  const train = new THREE.LineSegments(
+    ctx.own(new THREE.BufferGeometry().setFromPoints(cords)),
+    ctx.hem
+  );
+  train.name = "kite_centipede_train";
+  parts.push(train);
+  return parts;
+}
+
 // ----------------------------------------------------------------- designs
 
 export const KITE_DESIGNS: Readonly<Record<KiteDesignId, KiteDesign>> = {
@@ -539,8 +812,92 @@ export const KITE_DESIGNS: Readonly<Record<KiteDesignId, KiteDesign>> = {
     },
     buildCloth: lanternCloth,
     buildFrame: lanternFrame
+  },
+  sled: {
+    id: "sled",
+    label: "pearl sled",
+    clothMeshName: "ocean_beach_sled_kite_gpu_cloth",
+    // The bowed chord, not the developed span: it is what the bridle legs and
+    // the framing maths should both reason about.
+    width: 4.18,
+    height: 4,
+    cullPad: 1.5,
+    // A sled tows from a very long two-leg bridle; 1.85 m is about 0.42 of the
+    // span, which is the real proportion, and 0.55 m low sets the angle of
+    // attack that keeps the wall inflated.
+    bridle: [0, -0.55, 1.85],
+    // The apex of the trailing V — where a sled's single tail is actually tied,
+    // and what damps its wander.
+    tailAnchor: [0, -1.32, 0.02],
+    // A sled stands up on less line than anything else here, and keeping it
+    // close is what makes a soft 4 m wall read as big.
+    lineScale: 0.88,
+    // Hard-edged parallel slabs of light want a tight fan.
+    raySpread: 0.1,
+    glowScale: 1.18,
+    palette: {
+      // Achromatic slate to pearl: the one hue family purple, teal and crimson
+      // leave open, and a pale single-layer sail is the best transmission host
+      // on the beach.
+      clothDeep: 0x3b4a66,
+      clothLight: 0xeff3fb,
+      glowLow: 0xd9a05e,
+      glowHigh: 0xfff4d8,
+      // Anodised tube, not wood — a sled uses tube, and it keeps this one
+      // visually apart from the brown-spar kites.
+      spar: 0x2f3a44,
+      hem: 0xdfe8ff,
+      tailA: 0x6f88b8,
+      tailB: 0xffffff,
+      bows: [0xffc978, 0xeff3fb, 0x8fa8d6, 0x3b4a66]
+    },
+    buildCloth: sledCloth,
+    buildFrame: sledFrame
+  },
+  centipede: {
+    id: "centipede",
+    label: "gilt centipede",
+    clothMeshName: "ocean_beach_centipede_kite_gpu_cloth",
+    width: 2.56,
+    height: CENTIPEDE_HALF_HEIGHT * 2,
+    cullPad: 1.6,
+    // Towed from a short three-leg bridle on the head disc, below its centre so
+    // the head pitches up and the body trails behind it.
+    bridle: [0, 6.05, 1.15],
+    // The bottom rim of the last disc: the ribbon continues the body.
+    tailAnchor: [0, -CENTIPEDE_HALF_HEIGHT, -0.12],
+    // A 15 m body needs at least twice its own length of line before it reads
+    // as a kite rather than a banner.
+    lineScale: 1.6,
+    // The widest fan on the beach. One anchor sits at the flight origin, so a
+    // tight fan would sprout every shaft from the dragon's midpoint instead of
+    // from its separate rungs.
+    raySpread: 0.24,
+    // Fifteen square metres of jade silk strung over fifteen metres: in
+    // silhouette it is nearly invisible until the sun gets behind it, and the
+    // whole gag is all five rings igniting at once.
+    glowScale: 1.42,
+    palette: {
+      clothDeep: 0x0d3b2b,
+      clothLight: 0xe8c25a,
+      glowLow: 0x3f9a52,
+      glowHigh: 0xfff0a6,
+      spar: 0x7a5a24,
+      hem: 0xffe6a4,
+      tailA: 0x18774a,
+      tailB: 0xffe27a,
+      bows: [0xff6b3d, 0xe8c25a, 0x18774a, 0xfff0a6]
+    },
+    buildCloth: centipedeCloth,
+    buildFrame: centipedeFrame
   }
 };
 
 /** Presentation order along the beach: the original first. */
-export const KITE_DESIGN_ORDER: readonly KiteDesignId[] = ["diamond", "sunwheel", "lantern"];
+export const KITE_DESIGN_ORDER: readonly KiteDesignId[] = [
+  "diamond",
+  "sunwheel",
+  "lantern",
+  "sled",
+  "centipede"
+];

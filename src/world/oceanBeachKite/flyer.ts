@@ -57,6 +57,20 @@ export type KiteFlyerOptions = {
   startPhase: number;
   /** Skip the ground-level launch and arrive already flying. */
   startAirborne: boolean;
+  /** Fraction of the tuned half-span this flyer patrols; groups run tighter. */
+  spanScale?: number;
+  /**
+   * Mirror every turn and steering input. Give one member of a pair the mirror
+   * and the two of them carve opposite arcs — their kites sweep toward each
+   * other, cross, and part. It is the cheapest thing on the beach that reads as
+   * two people flying together on purpose.
+   */
+  mirror?: boolean;
+  /**
+   * This flyer takes its figure clock from a troupe leader instead of running
+   * its own. Set by the encounter, which calls adoptFigure() each frame.
+   */
+  ledByTroupe?: boolean;
 };
 
 export type KiteFlyerFrame = {
@@ -129,6 +143,9 @@ export class KiteFlyer {
   #figureIndex: number;
   #figureTime: number;
   #figureFlip = false;
+  #mirror: number;
+  #spanScale: number;
+  #ledByTroupe: boolean;
   #tug = 0;
   #haul = 0;
   #stride = 0;
@@ -183,6 +200,9 @@ export class KiteFlyer {
     this.#lane = { ...options.lane };
     this.#figureIndex = options.startFigure;
     this.#figureTime = options.startPhase;
+    this.#mirror = options.mirror ? -1 : 1;
+    this.#spanScale = options.spanScale ?? 1;
+    this.#ledByTroupe = Boolean(options.ledByTroupe);
 
     const tuning = OCEAN_KITE_TUNING.values;
     this.#lineLength = tuning.minLineLength * this.design.lineScale;
@@ -419,13 +439,13 @@ export class KiteFlyer {
     const figure = this.#currentFigure();
     const slow = Math.min(tuning.slowRunSpeed, tuning.fastRunSpeed);
     const fast = Math.max(tuning.slowRunSpeed, tuning.fastRunSpeed);
-    const turnSign = this.#figureFlip ? -1 : 1;
+    const turnSign = (this.#figureFlip ? -1 : 1) * this.#mirror;
     const dt = frame.dt;
 
     this.#runner.update(dt, {
       speed: THREE.MathUtils.lerp(slow, fast, figure.speed),
       turn: figure.turn * tuning.turnRate * turnSign,
-      halfSpan: frame.halfSpan,
+      halfSpan: frame.halfSpan * this.#spanScale,
       beachDepth: frame.beachDepth,
       response: figure.name === "sprint" || figure.name === "launch" ? 3.2 : 1.9
     });
@@ -515,7 +535,7 @@ export class KiteFlyer {
       launchGate = smooth01(this.#figureTime / Math.max(0.1, figure.seconds * 0.82));
     }
 
-    const flip = this.#figureFlip ? -1 : 1;
+    const flip = (this.#figureFlip ? -1 : 1) * this.#mirror;
     this.#window.update({
       dt,
       elapsed: frame.elapsed,
@@ -660,7 +680,7 @@ export class KiteFlyer {
 
   update(frame: KiteFlyerFrame): void {
     if (this.#disposed) return;
-    this.#advanceFigure(frame.dt);
+    if (!this.#ledByTroupe) this.#advanceFigure(frame.dt);
     this.#updateLineLength(frame.dt);
     this.#updateRunner(frame);
     this.#updateFlight(frame);
@@ -689,6 +709,30 @@ export class KiteFlyer {
 
   get figure(): KiteFigureName {
     return this.#currentFigure().name;
+  }
+  get figureIndex(): number {
+    return this.#figureIndex;
+  }
+  get figureTime(): number {
+    return this.#figureTime;
+  }
+  get figureFlip(): boolean {
+    return this.#figureFlip;
+  }
+
+  /**
+   * Take a troupe leader's figure clock. Two flyers on the same figure at the
+   * same instant — one of them mirrored — is what "flying together" looks like
+   * from a hundred metres away, and it needs no path planning to achieve.
+   */
+  adoptFigure(leader: KiteFlyer): void {
+    if (leader.figureIndex !== this.#figureIndex) {
+      this.#figureIndex = leader.figureIndex;
+      // Pick up the incoming figure's haul so the whole troupe loads together.
+      this.#tug = Math.max(this.#tug, this.#currentFigure().tug ?? 0);
+    }
+    this.#figureTime = leader.figureTime;
+    this.#figureFlip = leader.figureFlip;
   }
   get runnerPosition(): THREE.Vector3 {
     return this.#rig.group.position;

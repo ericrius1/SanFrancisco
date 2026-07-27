@@ -42,6 +42,16 @@ const mix = mixRaw as (...a: N[]) => N;
 const MIST_COUNT = 16;
 const MOTE_COUNT = 96;
 const SHAFT_COUNT = 6;
+/**
+ * How many kites may throw a fan at once. Seven fans is 42 additive quads that
+ * all aim along the sun axis and therefore pile up in the same part of the
+ * frame, ten-plus layers deep, on top of the mist and the god-ray composite —
+ * the one genuine fill-rate risk in this feature, on a fanless machine, at
+ * exactly the hour anyone is looking. The best-aligned few carry the effect;
+ * the rest are hidden outright rather than scaled to zero width, because an
+ * invisible mesh leaves the render list and a zero-width one does not.
+ */
+const MAX_LIT_FANS = 3;
 const SHAFT_LENGTH = 38;
 const SHAFT_WIDTH = 2.6;
 /** Under this range the kite is the subject and its shafts are just a smear. */
@@ -304,6 +314,8 @@ export function createSunsetAir(opts: {
     strength: number;
     haloStrength: number;
     distance: number;
+    /** False once a better-aligned kite has taken this fan's budget. */
+    lit: boolean;
   };
   const fans: Fan[] = opts.anchors.map((anchor, fanIndex) => {
     const meshes: THREE.Mesh[] = [];
@@ -326,7 +338,7 @@ export function createSunsetAir(opts: {
     halo.frustumCulled = false;
     halo.renderOrder = 9;
     shaftGroup.add(halo);
-    return { anchor, meshes, halo, splay, strength: 0, haloStrength: 0, distance: 1 };
+    return { anchor, meshes, halo, splay, strength: 0, haloStrength: 0, distance: 1, lit: true };
   });
   group.add(shaftGroup);
 
@@ -338,6 +350,7 @@ export function createSunsetAir(opts: {
   const shaftNormal = new THREE.Vector3();
   const toCamera = new THREE.Vector3();
   const basis = new THREE.Matrix4();
+  const order: number[] = [];
   let elapsed = 0;
 
   return {
@@ -387,6 +400,16 @@ export function createSunsetAir(opts: {
       shaftStrength.value = peakShaft;
       haloStrength.value = peakHalo;
 
+      // Rank by strength and light only the leaders.
+      if (fans.length > MAX_LIT_FANS) {
+        order.length = 0;
+        for (let i = 0; i < fans.length; i++) order.push(i);
+        order.sort((a, b) => fans[b].strength - fans[a].strength);
+        for (let rank = 0; rank < order.length; rank++) {
+          fans[order[rank]].lit = rank < MAX_LIT_FANS;
+        }
+      }
+
       // The sun's travel direction, and a stable frame perpendicular to it to
       // roll each shaft around.
       axis.copy(SUN_DIR).negate().normalize();
@@ -396,6 +419,17 @@ export function createSunsetAir(opts: {
       binormal.crossVectors(axis, perpendicular).normalize();
 
       for (const fan of fans) {
+        if (!fan.lit) {
+          if (fan.halo.visible) {
+            fan.halo.visible = false;
+            for (const shaft of fan.meshes) shaft.visible = false;
+          }
+          continue;
+        }
+        if (!fan.halo.visible) {
+          fan.halo.visible = true;
+          for (const shaft of fan.meshes) shaft.visible = true;
+        }
         // Relative brightness within the shared material: a fan the sun is not
         // behind narrows to nothing rather than needing its own uniform.
         const relative = peakShaft > 1e-5 ? fan.strength / peakShaft : 0;
