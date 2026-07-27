@@ -29,6 +29,7 @@
 import type * as THREE from "three/webgpu";
 import { RENDER_TUNING } from "../config";
 import { tracer } from "../core/hitchTracer";
+import { pocketRenderScale } from "./pocketQuality";
 
 // Per-level render scale (multiplies the tuned pixel-ratio ceiling). Index = level.
 const SCALE_BY_LEVEL = [1, 0.9, 0.8, 0.8, 0.7] as const;
@@ -120,7 +121,13 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
   let lastUpdateAt = 0;
 
   const apply = () => {
-    const target = RENDER_TUNING.values.pixelRatio * SCALE_BY_LEVEL[level];
+    // The pocket boost multiplies the tuned ceiling rather than replacing it, so
+    // this stays the single owner of the drawing buffer and the governor keeps
+    // its authority: an interior that turns out to be too heavy is walked back
+    // down the same ladder as anything else, instead of stuttering at a pinned
+    // resolution.
+    const target =
+      RENDER_TUNING.values.pixelRatio * SCALE_BY_LEVEL[level] * pocketRenderScale();
     if (Math.abs(renderer.getPixelRatio() - target) > 1e-3) renderer.setPixelRatio(target);
   };
 
