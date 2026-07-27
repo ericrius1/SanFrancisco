@@ -391,6 +391,27 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       renderFrame();
   };
 
+  /**
+   * "Am I indoors" — for the body, and separately for the camera.
+   *
+   * They used to be one boolean, which quietly made "this is a room" mean "you
+   * are in first person now". That is right for a city apartment or the mission
+   * chapel, where a chase boom has no space to sit and would spend the visit
+   * inside the walls. It is wrong for Sutro Baths: a 152 m glass hall under a
+   * 43 m roof has room for any shot, and locking the eye rig for the whole visit
+   * takes the third-person view away from the one building most worth looking at
+   * from outside your own head. So the hall still reads as interior for pace and
+   * reverb, and the camera is simply left however the visitor had it — C keeps
+   * cycling third/first/orbit in there like anywhere else.
+   */
+  const syncIndoorState = () => {
+    const inRoom =
+      (citygenRing.current?.isPlayerInside() ?? false) ||
+      (core.state.missionDolores?.isPlayerInside(player.position) ?? false);
+    player.indoor = inRoom || (core.state.sutroBaths?.isPlayerInside(player.position) ?? false);
+    chase.indoor = inRoom; // blend into the indoor eye rig
+  };
+
   // Site wake/sleep + minigame precompute, then the two paused branches. Returns
   // "handled" when a paused branch rendered this frame, else "live" to fall
   // through to the live frame. The precompute writes the loop-scope crossings
@@ -532,10 +553,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       }
       if (inOrbit()) { chase.suspend(player); orbit.update(frameDt); }
       else {
-        player.indoor = chase.indoor =
-          (citygenRing.current?.isPlayerInside() ?? false) ||
-          (core.state.missionDolores?.isPlayerInside(player.position) ?? false) ||
-          (core.state.sutroBaths?.isPlayerInside(player.position) ?? false);
+        syncIndoorState();
         chase.update(frameDt, player, input);
       }
       // keep the vehicle hum, ambience and social presence alive like full pause
@@ -1478,10 +1496,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       chase.suspend(player);
       orbit.update(frameDt);
     } else {
-      player.indoor = chase.indoor =
-        (citygenRing.current?.isPlayerInside() ?? false) ||
-        (core.state.missionDolores?.isPlayerInside(player.position) ?? false) ||
-        (core.state.sutroBaths?.isPlayerInside(player.position) ?? false); // blend into the indoor eye rig
+      syncIndoorState();
       chase.update(frameDt, player, input);
     }
     // World-anchored dialogue must project after the chase/orbit/cinematic has

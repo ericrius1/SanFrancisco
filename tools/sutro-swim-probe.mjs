@@ -27,6 +27,26 @@ function localPoint(x, y, z) {
   return [SITE.x + c * x + s * z, y, SITE.z - s * x + c * z];
 }
 
+function toLocal(x, z) {
+  const c = Math.cos(SITE.yaw);
+  const s = Math.sin(SITE.yaw);
+  const dx = x - SITE.x;
+  const dz = z - SITE.z;
+  return { x: c * dx - s * dz, z: s * dx + c * dz };
+}
+
+/**
+ * Camera yaw that makes W travel along a local axis. W moves along the camera's
+ * forward, so the site's own yaw is the heading that walks/swims toward local
+ * -z; add a quarter turn per axis from there.
+ */
+const LOCAL_HEADING = {
+  minusZ: SITE.yaw,
+  plusZ: SITE.yaw + Math.PI,
+  plusX: SITE.yaw - Math.PI / 2,
+  minusX: SITE.yaw + Math.PI / 2
+};
+
 const results = [];
 const expect = (name, pass, detail) => {
   results.push({ name, pass, detail });
@@ -56,7 +76,15 @@ const main = async () => {
 
   const canvas = page.locator("canvas").first();
   const shot = async (name) => {
-    await canvas.screenshot({ path: path.join(OUT, name) });
+    const file = path.join(OUT, name);
+    try {
+      await canvas.screenshot({ path: file, timeout: 15_000 });
+    } catch {
+      // The canvas occasionally reports itself unstable mid-resize. One retry
+      // is enough, and a missed frame is not worth losing the whole run over.
+      await page.waitForTimeout(600);
+      await canvas.screenshot({ path: file, timeout: 15_000 });
+    }
     console.log("shot", name);
   };
 
@@ -65,8 +93,13 @@ const main = async () => {
       const sf = window.__sf;
       const p = sf.player;
       return {
+        x: +p.position.x.toFixed(3),
+        z: +p.position.z.toFixed(3),
         y: +p.position.y.toFixed(3),
         camY: +sf.camera.position.y.toFixed(3),
+        indoor: p.indoor,
+        chaseIndoor: sf.chase.indoor,
+        camDistance: +sf.camera.position.distanceTo(p.renderPosition).toFixed(2),
         swimming: p.swimming,
         mode: p.mode,
         uw: window.__uw ? +window.__uw.ease.toFixed(3) : null,
@@ -171,15 +204,70 @@ const main = async () => {
   expect("steam returns above the sheet", (surfaced.steamVisible ?? 0) > 0, surfaced.steamVisible);
   await shot("04-surfaced.png");
 
-  // --- climb out: the deck must still be walkable --------------------------
-  await page.evaluate(([x, y, z]) => {
-    window.__sf.player.teleportTo({ x, y, z, facing: 0, mode: "walk" });
-  }, localPoint(-7, SITE.waterY + 2.5, 50));
-  await page.waitForTimeout(2000);
+  // --- climb out by swimming at the side ------------------------------------
+  //
+  // The regression this guards: buoyancy owns the vertical axis while you swim
+  // and a swimmer has no jump, so a bath you can walk into used to be a bath
+  // you could not leave — every press just held you against the coping. Swim
+  // into the side from open water and the body must haul itself onto the deck.
+  await page.evaluate(
+    ({ point: [x, y, z], yaw }) => {
+      window.__sf.chase.yaw = yaw;
+      window.__sf.player.teleportTo({ x, y, z, facing: yaw, mode: "walk" });
+    },
+    { point: localPoint(BATH_V.x, SITE.waterY + 1.2, BATH_V.z), yaw: LOCAL_HEADING.minusZ }
+  );
+  await page.waitForTimeout(2200);
+  const beforeHaul = await state();
+  expect("swimming in open water before the haul", beforeHaul.swimming === true, beforeHaul);
+  // Bath V runs local z 17..26; from the middle that is 4.5 m of water, then
+  // the wall. One unbroken press: reaching the side and climbing it are the
+  // same gesture. Release as soon as the climb lands, since the deck beyond it
+  // runs straight into the next bath and W would swim this one right back in.
+  await page.keyboard.down("KeyW");
+  const climbTrace = [];
+  for (let i = 0; i < 60; i++) {
+    const s = await state();
+    climbTrace.push(`y=${s.y} swim=${s.swimming ? 1 : 0} z=${toLocal(s.x, s.z).z.toFixed(1)}`);
+    if (!s.swimming && toLocal(s.x, s.z).z < 16) break;
+    await page.waitForTimeout(100);
+  }
+  await page.keyboard.up("KeyW");
+  await page.waitForTimeout(900);
   const onDeck = await state();
-  console.log("onDeck:", JSON.stringify(onDeck));
-  expect("dry land is not swimming", onDeck.swimming === false, onDeck);
+  const deckLocal = toLocal(onDeck.x, onDeck.z);
+  console.log("climb:", climbTrace.slice(-14).join(" | "));
+  console.log("onDeck:", JSON.stringify({ ...onDeck, deckLocal }));
+  expect("swimming at the side climbs you out of the bath", onDeck.swimming === false, onDeck);
+  expect("the climb ends on the deck, clear of the pool rect", deckLocal.z < 17, {
+    localZ: +deckLocal.z.toFixed(2),
+    poolEdge: 17
+  });
+  expect("standing on the deck, not floating at the waterline", onDeck.y - 0.9 > SITE.waterY, {
+    bottom: +(onDeck.y - 0.9).toFixed(3),
+    waterY: SITE.waterY
+  });
   expect("dry land is not muffled", onDeck.audio < 0.05, onDeck.audio);
+  await shot("04b-climbed-out.png");
+
+  // --- the hall does not seize the camera -----------------------------------
+  //
+  // 250 m of glass under a 43 m roof has room for any shot, so Sutro reads as
+  // interior for pace and reverb while leaving the view wherever the visitor
+  // had it. C must still cycle third → first → orbit in there.
+  expect("the hall still counts as indoors for the body", onDeck.indoor === true, onDeck.indoor);
+  expect("the hall does not force the eye rig", onDeck.chaseIndoor === false, onDeck.chaseIndoor);
+  expect("third person survives being inside the baths", onDeck.camDistance > 2, onDeck.camDistance);
+  await page.keyboard.press("KeyC");
+  await page.waitForTimeout(1200);
+  const firstPerson = await state();
+  console.log("firstPerson:", JSON.stringify(firstPerson));
+  expect("C still switches to first person inside the baths", firstPerson.camDistance < 1, firstPerson.camDistance);
+  await page.keyboard.press("KeyC"); // → orbit
+  await page.keyboard.press("KeyC"); // → third
+  await page.waitForTimeout(1200);
+  const backToThird = await state();
+  expect("C cycles back out to third person", backToThird.camDistance > 2, backToThird.camDistance);
 
   // --- the great plunge: 84 m of open water for a swimmer's-eye look --------
   await page.evaluate(([x, y, z]) => {
