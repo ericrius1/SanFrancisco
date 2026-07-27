@@ -721,8 +721,6 @@ function buildDemo(framing: Framing): Demo {
   const seconds = framing.seconds ?? KITE_FESTIVAL_SECONDS;
   return {
     name,
-    // Depth-sampling passes: see the note in run(). Read before warmup.
-    multisample: false,
     run(ctx) {
       const { map, sky } = ctx;
       if (!map || !sky) {
