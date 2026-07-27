@@ -236,6 +236,20 @@ export class VehicleAudio {
     this.#previewT = 0;
   }
 
+  /**
+   * Cut a finished one-shot loose from the bus.
+   *
+   * Every one-shot builds a little graph and hands it to #master, and nothing
+   * else ever takes it down — so without this, the GainNode for each carve,
+   * landing, wipeout and touchdown stays wired to the mix for the rest of the
+   * session, and a long surf run accumulates hundreds of them. Severing `out`
+   * when the last source stops detaches the whole branch from the destination,
+   * which is what lets the graph be collected.
+   */
+  #releaseWhenDone(source: AudioScheduledSourceNode, out: GainNode) {
+    source.onended = () => out.disconnect();
+  }
+
   /** One-shot surf feedback through the existing FX mix and unlock policy. */
   surfEvent(kind: "carve" | "landing" | "wipeout" | "flow", strength = 1) {
     const ctx = this.#ensure();
@@ -255,6 +269,7 @@ export class VehicleAudio {
       filter.frequency.exponentialRampToValueAtTime(620, now + 1.15);
       filter.connect(out);
       const notes = [220, 330, 440];
+      let last: OscillatorNode | null = null;
       for (let i = 0; i < notes.length; i++) {
         const tone = ctx.createOscillator();
         const voice = ctx.createGain();
@@ -265,9 +280,11 @@ export class VehicleAudio {
         tone.connect(voice).connect(filter);
         tone.start(now + i * 0.035);
         tone.stop(now + 1.28);
+        last = tone;
       }
       out.gain.exponentialRampToValueAtTime(0.16 + amount * 0.08, now + 0.025);
       out.gain.exponentialRampToValueAtTime(0.0001, now + 1.25);
+      if (last) this.#releaseWhenDone(last, out); // all three stop together
       return;
     }
 
@@ -281,6 +298,7 @@ export class VehicleAudio {
       out.gain.exponentialRampToValueAtTime(0.0001, now + 0.31);
       thump.start(now);
       thump.stop(now + 0.34);
+      this.#releaseWhenDone(thump, out);
       return;
     }
 
@@ -297,6 +315,7 @@ export class VehicleAudio {
     out.gain.exponentialRampToValueAtTime(0.0001, now + duration);
     src.start(now, Math.random() * 1.2, duration);
     src.stop(now + duration + 0.02);
+    this.#releaseWhenDone(src, out);
   }
 
   /**
@@ -361,6 +380,8 @@ export class VehicleAudio {
     slap.connect(slapFilter).connect(slapGain).connect(out);
     slap.start(now, Math.random() * 1.4, 0.14);
     slap.stop(now + 0.15);
+
+    this.#releaseWhenDone(thump, out); // the thump outlasts both the knock and the slap
   }
 
   /** Per rendered frame. `sig` null (paused) fades every voice out. */
