@@ -114,6 +114,12 @@ export type ContactShadowComplement = {
   configure(options: Partial<ContactShadowRuntimeOptions>): void
   /** Neutralize once, then skip the fullscreen pass until re-enabled. */
   setEnabled(enabled: boolean): void
+  /**
+   * Render the complement NOW, from a point the caller knows is outside every
+   * render pass. See the note on ContactShadowPassNode.updateBefore for why
+   * this must not be left to the node graph's own scheduling.
+   */
+  renderNow(renderer: THREE.WebGPURenderer): void
   dispose(): void
 }
 
@@ -232,7 +238,10 @@ export class ContactShadowPassNode extends THREE.TempNode {
     normalEncoding: ContactShadowNormalEncoding
   ) {
     super("float")
-    this.updateBeforeType = NodeUpdateType.FRAME
+    // NONE, not FRAME: the pipeline calls renderNow() at a point it knows is
+    // outside every render pass. See renderNow for what graph-driven scheduling
+    // costs when it fires inside one.
+    this.updateBeforeType = NodeUpdateType.NONE
     this.#depthNode = depthNode
     this.#normalNode = normalNode
     this.#normalEncoding = normalEncoding
@@ -314,10 +323,39 @@ export class ContactShadowPassNode extends THREE.TempNode {
     if (!enabled) this.#neutralClearPending = true
   }
 
+  /**
+   * Render the R8 factor target. This nests a QuadMesh render whose material
+   * SAMPLES the beauty pass's depth attachment, so it must run while no render
+   * pass that owns that depth is open. WebGPU's rule is per render pass:
+   *
+   *   [Texture "depth"] usage (TextureBinding|RenderAttachment) includes
+   *   writable usage and another usage in the same synchronization scope
+   *
+   * and the whole command buffer is rejected — the frame comes out as bare
+   * clear colour. This target itself is depthBuffer:false, so the offending
+   * pass is never ours; it is whichever pass happened to be open when the node
+   * graph decided to fire us. Leaving that to FRAME-scoped scheduling made it a
+   * coin flip: measured across the same ten-second shot, ~70% of captures hit
+   * it and the rest were clean, and once it starts it repeats every frame.
+   *
+   * `renderNow` is therefore the only supported entry point. updateBeforeType
+   * is NONE so the graph never calls this behind the caller's back.
+   */
+  renderNow(renderer: THREE.WebGPURenderer): void {
+    this.#render(renderer)
+  }
+
   updateBefore(frame: any): boolean | undefined {
+    // Kept for the NodeUpdateType.FRAME contract, but the pipeline drives this
+    // explicitly (see renderNow). If something re-enables graph scheduling this
+    // still works — it is simply no longer the safe path.
+    this.#render(frame.renderer as THREE.WebGPURenderer)
+    return undefined
+  }
+
+  #render(renderer: THREE.WebGPURenderer): boolean | undefined {
     if (this.#disposed) return undefined
     if (!this.#enabled && !this.#neutralClearPending) return undefined
-    const renderer = frame.renderer as THREE.WebGPURenderer
     const size = renderer.getDrawingBufferSize(this.#size)
     const width = Math.max(1, Math.round(size.x * this.resolutionScale))
     const height = Math.max(1, Math.round(size.y * this.resolutionScale))
@@ -522,6 +560,7 @@ const unavailableComplement = (reason: string): ContactShadowComplement => {
     apply: (sceneColor: any) => sceneColor,
     configure: () => undefined,
     setEnabled: () => undefined,
+    renderNow: () => undefined,
     dispose: () => undefined
   }
 }
@@ -593,6 +632,7 @@ export function createContactShadowComplement(
       sceneColor.mul(vec4(vec3(sample(sampleUv)), 1)),
     configure: (runtimeOptions) => pass.configure(runtimeOptions),
     setEnabled: (enabled) => pass.setEnabled(enabled),
+    renderNow: (renderer) => pass.renderNow(renderer),
     dispose: () => {
       unsubscribeGovernor()
       pass.dispose()
