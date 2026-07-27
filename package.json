@@ -48,6 +48,7 @@
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
     "test:tea-garden": "node --experimental-strip-types tools/tea-garden-probe.mjs",
     "test:multiplayer-rake": "node tools/multiplayer-rake-probe.mjs",
+    "test:phoenix-passengers": "node tools/phoenix-passenger-flap-probe.mjs",
     "test:multiplayer-ball": "node tools/multiplayer-ball-probe.mjs",
     "test:multiplayer-ball:browser": "node tools/multiplayer-ball-browser-probe.mjs",
     "test:multiplayer-rake:browser": "node tools/multiplayer-rake-browser-probe.mjs",

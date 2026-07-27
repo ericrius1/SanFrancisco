@@ -14,7 +14,9 @@ import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/pl
 import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, animateBoard, boardFromSeed, boardVisualKey, normalizeBoardConfig, type BoardConfig } from "../vehicles/board";
-import { activateBirdAssets, buildBirdMesh } from "../vehicles/bird";
+import { activateBirdAssets, buildBirdMesh, type BirdRig } from "../vehicles/bird";
+import { PhoenixPoser, RemotePhoenixFlight } from "../vehicles/bird/pose";
+import { FEATHER_RANK, publishFeatherDrive } from "../vehicles/bird/wind";
 import { activateSurfboardAssets, animateSurfboard, buildSurfboardMesh } from "../vehicles/surf";
 import {
   normalizeSurfboardConfig,
@@ -150,6 +152,10 @@ type Avatar = {
   surfboardKey: string;
   rakePose: GardenRakePoseController | null;
   rakeMotion: GardenRakeMotion | null;
+  // phoenix: the gait rebuilt from their interpolated flight, and the poser
+  // that puts it on their skeleton. Built on the first frame they fly one.
+  birdFlight: RemotePhoenixFlight | null;
+  birdPoser: PhoenixPoser | null;
 };
 
 const TMP = {
@@ -490,7 +496,9 @@ export class RemotePlayers {
       surfboard: surf,
       surfboardKey: surfboardVisualKey(surf),
       rakePose: null,
-      rakeMotion: null
+      rakeMotion: null,
+      birdFlight: null,
+      birdPoser: null
     });
   }
 
@@ -639,6 +647,12 @@ export class RemotePlayers {
       const prev = a.bodies[a.mode];
       if (prev) setEmbodimentVisible(prev, false);
     }
+    // Leaving the saddle retires the reconstructed flight: coming back later
+    // must start from wherever the phoenix is then, not from a stale altitude.
+    if (a.mode === "bird") {
+      a.birdFlight = null;
+      a.birdPoser = null;
+    }
     a.mode = mode;
     a.rig = null;
     let body = a.bodies[mode];
@@ -764,6 +778,11 @@ export class RemotePlayers {
   update(dt: number) {
     const renderT = performance.now() - INTERP_DELAY_MS;
     this.#riders.length = 0;
+    // The plumage uniforms are one global set (wind.ts), so exactly one remote
+    // phoenix drives them: the closest, which is the one you are sitting on
+    // whenever you are riding shotgun.
+    let featherBird: Avatar | null = null;
+    let featherD2 = Infinity;
     for (const a of this.avatars.values()) {
       const buf = a.buffer;
       if (buf.length === 0) continue;
@@ -804,11 +823,12 @@ export class RemotePlayers {
       // Far players: pose keeps interpolating (minimap/locator/teleport), but
       // the mesh neither draws nor animates until they come back inside range.
       const localPos = this.localPlayerPosition();
+      let dist2 = 0;
       if (localPos) {
-        const d2 = a.root.position.distanceToSquared(localPos);
+        dist2 = a.root.position.distanceToSquared(localPos);
         if (a.farHidden) {
-          if (d2 < FAR_SHOW_SQ) a.farHidden = false;
-        } else if (d2 > FAR_HIDE_SQ) {
+          if (dist2 < FAR_SHOW_SQ) a.farHidden = false;
+        } else if (dist2 > FAR_HIDE_SQ) {
           a.farHidden = true;
         }
       } else {
@@ -819,6 +839,10 @@ export class RemotePlayers {
         a.rakeMotion = null;
         a.rakePose?.hide(a.rig);
         continue;
+      }
+      if (b.mode === "bird" && dist2 < featherD2) {
+        featherD2 = dist2;
+        featherBird = a;
       }
 
       const rake = b.mode === "walk" ? b.rake : undefined;
@@ -900,6 +924,10 @@ export class RemotePlayers {
     // Riders of MY vehicle glue again in glueRidersToLocalVehicle() once the
     // local mesh has settled.
     for (const a of this.#riders) this.#glueRider(a);
+    // Only claims the feathers when nobody is flying their own phoenix — the
+    // local controller outranks this and holds the claim while it is airborne.
+    const feather = featherBird?.birdPoser?.feather;
+    if (feather) publishFeatherDrive(FEATHER_RANK.nearby, feather);
   }
 
   #animate(a: Avatar, dt: number) {
@@ -916,6 +944,7 @@ export class RemotePlayers {
       const body = a.bodies.drive;
       if (body) animateCar(body, dt, a.speed, 0);
     }
+    if (a.mode === "bird") this.#animateBird(a, dt);
     const rig = a.rig;
     if (!rig || !a.mode) return;
     if (a.mode === "walk") {
@@ -958,5 +987,22 @@ export class RemotePlayers {
       rig.group.visible = Boolean(body?.userData.phoenixAsset);
       if (rig.group.visible) poseDrive(rig, 0, a.animT, false);
     }
+  }
+
+  /**
+   * Fly somebody else's phoenix on their behalf. The wire carries a pose and a
+   * speed, never a wingbeat, so the gait is rebuilt here from the interpolated
+   * flight and run through the SAME poser the pilot uses: passengers on the
+   * saddle and anyone watching from the ground see the wings work the climb,
+   * open out down a dive and carve into a bank, instead of a phoenix gliding
+   * through the sky on frozen wings.
+   */
+  #animateBird(a: Avatar, dt: number) {
+    const rig = a.bodies.bird?.userData.rig as BirdRig | undefined;
+    if (!rig) return; // GLB still loading (or never gated in)
+    const flight = (a.birdFlight ??= new RemotePhoenixFlight());
+    const poser = (a.birdPoser ??= new PhoenixPoser());
+    flight.update(dt, a.speed, a.root.position.y, a.root.quaternion);
+    poser.update(rig, dt, flight.drive, flight);
   }
 }
