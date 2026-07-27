@@ -2,11 +2,14 @@ import * as THREE from "three/webgpu";
 import type { Physics } from "../../core/physics";
 import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import type { AuthoredRegionStreamer } from "../authoredRegions";
+import { registerSwimVolume } from "../swimVolumes";
 import {
   SUTRO_BATHS,
   distanceToSutroBaths,
   distanceToSutroWater,
+  isInsideSutroPool,
   sutroHallWallInset,
+  sutroPoolBounds,
   sutroWalkSurfaceY
 } from "./layout";
 import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
@@ -221,6 +224,18 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   // has no gameplay wake contract.
   const batherPlayer = new THREE.Object3D();
 
+  // The seven baths are real water to the swim/underwater stack. Registered
+  // with the site (not statically) so nothing outside the hall pays for them,
+  // and released on dispose so a streamed-out site cannot leave a phantom pool
+  // floating over the cliff. The basin is the built floor, not the terrain.
+  const releaseSwimVolume = registerSwimVolume({
+    id: "sutro-baths-pools",
+    surfaceY: SUTRO_BATHS.waterY,
+    floorY: SUTRO_BATHS.basinY,
+    ...sutroPoolBounds(),
+    contains: isInsideSutroPool
+  });
+
   const syncTuning = () => {
     ambience.applyTuning(SUTRO_BATHS_TUNING.values);
     water.syncTuning();
@@ -382,7 +397,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       const py = player.y ?? SUTRO_BATHS.waterY;
       batherPlayer.position.set(player.x, py, player.z);
       bathers.update(dt, time, batherPlayer);
-      water.update(dt, time, player);
+      water.update(dt, time, player, camera);
+      // Steam lives entirely above the waterline, and from under the surface
+      // the sheet is an opaque ceiling — so a submerged swimmer must not see
+      // plumes composited over it (the shells draw after the sheet by design;
+      // see SUTRO_STEAM_RENDER_ORDER).
+      steam?.setSubmerged(water.cameraSubmerged);
       steam?.update(dt, time, player, camera, gust);
 
       monitors.backend = water.stats.backend;
@@ -470,6 +490,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     dispose() {
       if (disposed) return;
       disposed = true;
+      releaseSwimVolume();
       twilight.release();
       water.dispose();
       steam?.dispose();
