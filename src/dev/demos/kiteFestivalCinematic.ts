@@ -26,6 +26,8 @@ type Framing = {
   title: string;
   /** SF wall-clock hour. 19.4 is sun-on-water; 20.75 is past sunset. */
   hour: number;
+  /** Shot length. Defaults to the festival's ten; the ring set runs seven. */
+  seconds?: number;
   exposure: number;
   /**
    * Per-shot weather. The encounter reads OCEAN_KITE_TUNING every frame, so a
@@ -404,20 +406,26 @@ const LATE_FRAMINGS: readonly Framing[] = [
     // shafts — they come up off the horizon rather than down through the kites.
     hour: 20.62,
     exposure: 0.9,
-    mist: 1.35,
+    // Mist at 0.7, not the 1.35 this started on. Past sunset there is no disc
+    // left to punch through the marine layer — only afterglow — so heavy fog
+    // stops reading as fog and starts reading as a flat brown wash with the
+    // kites lost in it. Thin air and strong shafts is the combination that
+    // still has contrast at this hour.
+    mist: 0.7,
     shafts: 1.85,
     subject: 4,
     companion: 5,
     // A slow rise: sand level up to twice head height, so the fans open out of
-    // the dune line as the camera clears it.
+    // the dune line as the camera clears it. The sled pair leads — the only
+    // shot in the production that frames those two as a pair.
     frame: ({ u }, live, eye, target) => {
       const rise = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
       eye.copy(live.pair)
-        .addScaledVector(live.sun, -mix(104, 92, rise))
-        .addScaledVector(along, mix(-30, -18, rise));
+        .addScaledVector(live.sun, -mix(118, 104, rise))
+        .addScaledVector(along, mix(-30, -14, rise));
       const base = live.ground(eye.x, eye.z);
-      eye.y = base + mix(1.6, 12, rise);
+      eye.y = base + mix(1.8, 9, rise);
       target.copy(live.pair).addScaledVector(along, mix(-8, 2, rise));
       target.y = base + mix(7, 10, rise) + (live.pair.y - base) * 0.3;
       return mix(46, 54, rise);
@@ -434,19 +442,28 @@ const LATE_FRAMINGS: readonly Framing[] = [
     mist: 0.28,
     shafts: 0.5,
     subject: 6,
-    // High and falling, looking down the beach: the centipede's five discs
-    // stack against the bright horizon strip while the sand goes to shadow.
+    // High and falling, looking down the beach: the kites stack against the
+    // bright horizon strip while the sand goes to shadow.
+    //
+    // Anchored to the FLOCK, not to one kite. Standing off a single kite along
+    // -sun is only inland if that kite happens to be inland, and the centipede
+    // is the southmost of the seven — the first cut of this put the camera out
+    // over open ocean, framed a stretch of empty water with the kites off the
+    // top of frame, and tripped a depth read/write hazard in the water passes
+    // for its trouble (1106 validation errors in ten seconds; every other shot
+    // in this set logged none). The flock mean sits over the beach by
+    // construction, which is why every wide shot here uses it.
     frame: ({ u }, live, eye, target) => {
       const fall = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
-      eye.copy(live.kite)
-        .addScaledVector(live.sun, -mix(86, 104, fall))
-        .addScaledVector(along, mix(34, 14, fall));
+      eye.copy(live.flock)
+        .addScaledVector(live.sun, -mix(112, 96, fall))
+        .addScaledVector(along, mix(30, 10, fall));
       const base = live.ground(eye.x, eye.z);
-      eye.y = base + mix(34, 16, fall);
-      target.copy(live.kite);
-      target.y = mix(live.kite.y, base + 9 + (live.kite.y - base) * 0.3, fall);
-      return mix(40, 52, fall);
+      eye.y = base + mix(26, 12, fall);
+      target.copy(live.flock).addScaledVector(along, mix(4, -4, fall));
+      target.y = base + 9 + (live.flock.y - base) * 0.34;
+      return mix(42, 50, fall);
     }
   },
   {
@@ -507,10 +524,196 @@ const LATE_FRAMINGS: readonly Framing[] = [
   }
 ];
 
+/**
+ * Puts the eye on the line that runs from the sun, through the kite, to the
+ * camera — so the sun's disc lands dead centre of the hole the kite is carrying.
+ *
+ * The sun is effectively at infinity, so if `eye = kite - sun * D` then the
+ * direction eye→kite and the direction eye→sun are the SAME vector, for any D
+ * and wherever the kite has drifted to. The alignment is exact by construction:
+ * there is no tracking error to tune and no drift to chase, which matters
+ * because the sunwheel's eye is about two metres across and subtends barely a
+ * degree at these distances — a degree of aim error and the sun is behind the
+ * cloth instead of inside the ring.
+ *
+ * What is NOT free is where that leaves the camera. The ray descends at the
+ * sun's own elevation, so D sets the eye's height: `eye.y = kite.y - D*sun.y`.
+ * Ask for a height and this solves for the D that delivers it (twice, since the
+ * ground under the camera is not known until the camera has a position); ask
+ * for a distance and the height is whatever the geometry gives. A shallow sun
+ * wants a very long throw for a low eye, so D is clamped and a late shot simply
+ * ends up in the air — which is the honest answer, and reads as an aerial.
+ */
+function alignThroughKite(
+  kite: THREE.Vector3,
+  sun: THREE.Vector3,
+  ground: (x: number, z: number) => number,
+  eye: THREE.Vector3,
+  want: { height: number; distance?: undefined } | { distance: number; height?: undefined },
+  minDistance = 38,
+  maxDistance = 195
+): number {
+  const rise = Math.max(sun.y, 0.035);
+  // The clearance floor is enforced by SHORTENING the throw, never by lifting
+  // the eye: raising `eye.y` off the ray is exactly the thing that breaks the
+  // eclipse. Since `eye.y = kite.y - D*rise`, a smaller D is a higher camera,
+  // so there is always a D that clears the sand and still holds the alignment.
+  // Without this a long throw walks the camera inland into the dunes, where it
+  // renders a garbage frame and trips a depth read/write hazard in the water
+  // passes — which is how the first cut of "Star Axis" came back as a shot of
+  // bare sand with 388 validation errors behind it.
+  const clearing = (distance: number) => {
+    let d = THREE.MathUtils.clamp(distance, minDistance, maxDistance);
+    for (let pass = 0; pass < 3; pass++) {
+      eye.copy(kite).addScaledVector(sun, -d);
+      const floor = ground(eye.x, eye.z) + CLEARANCE;
+      if (eye.y >= floor) break;
+      d = THREE.MathUtils.clamp((kite.y - floor) / rise, minDistance, d);
+    }
+    eye.copy(kite).addScaledVector(sun, -d);
+    return d;
+  };
+  if (want.distance !== undefined) return clearing(want.distance);
+  let base = ground(kite.x, kite.z);
+  let distance = minDistance;
+  for (let pass = 0; pass < 2; pass++) {
+    distance = THREE.MathUtils.clamp((kite.y - (base + want.height)) / rise, minDistance, maxDistance);
+    eye.copy(kite).addScaledVector(sun, -distance);
+    base = ground(eye.x, eye.z);
+  }
+  return clearing(distance);
+}
+
+/** Metres of air the eclipse camera keeps under itself. */
+const CLEARANCE = 2.2;
+
+/**
+ * Five seven-second shots built on one idea: stand where the sunwheel eclipses
+ * the sun, so the disc sits inside the wheel's open hub like a lens.
+ *
+ * They are shorter than the festival's ten because the image is a single held
+ * event rather than a scene to read — seven seconds is long enough to arrive,
+ * hold, and leave, and ten spends the last three on nothing.
+ *
+ * Two of them keep the rest of the flock in frame around the ring, two isolate
+ * it against bare sky, and one starts off the axis and slides onto it so the
+ * sun visibly walks into the hub. Hours run 19.3 to 20.42, which also moves the
+ * camera: a high sun puts the eye on the sand at the far end of a long throw, a
+ * sinking one lifts it into the air, and both are the same construction.
+ */
+const RING_FRAMINGS: readonly Framing[] = [
+  {
+    id: "ring-01",
+    title: "Ocean Beach Kites · The Eye",
+    // Sun still ten degrees up, which is what buys a camera down on the sand:
+    // the solve wants ~140 m of throw to drop the eye to head height, and a long
+    // lens turns that distance back into a big ring.
+    hour: 19.3,
+    seconds: 7,
+    exposure: 0.9,
+    mist: 0.8,
+    shafts: 1.45,
+    subject: 1,
+    frame: ({ u }, live, eye, target) => {
+      const push = easeInOutCubic(u);
+      alignThroughKite(live.kite, live.sun, live.ground, eye, { height: mix(2.4, 3.1, push) });
+      target.copy(live.kite);
+      return mix(58, 88, push);
+    }
+  },
+  {
+    id: "ring-02",
+    title: "Ocean Beach Kites · Through the Wheel",
+    // The same eclipse, but wide enough that the other six are in the picture
+    // around it — the ring is the subject and the festival is the context.
+    hour: 19.75,
+    seconds: 7,
+    exposure: 0.94,
+    mist: 1.0,
+    shafts: 1.6,
+    subject: 2,
+    frame: ({ u }, live, eye, target) => {
+      const drift = easeInOutCubic(u);
+      alignThroughKite(live.kite, live.sun, live.ground, eye, { height: mix(5.5, 8.5, drift) });
+      // Aiming off the kite does NOT break the eclipse — that lives in where the
+      // eye stands, not where it points — so the target can slide the ring
+      // around the frame while the sun stays locked inside it.
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      target.copy(live.kite).addScaledVector(along, mix(-7, 6, drift));
+      target.y = live.kite.y - mix(5, 9, drift);
+      return mix(40, 47, drift);
+    }
+  },
+  {
+    id: "ring-03",
+    title: "Ocean Beach Kites · Star Axis",
+    // The tunnel shot: a dolly straight down the sun-kite axis, 170 m in to 52.
+    // Nothing rotates and nothing pans — the ring simply grows until it is the
+    // frame, with the sun sitting still at its centre the whole way in. The eye
+    // climbs on its own as the throw shortens, because the axis is tilted.
+    hour: 20.05,
+    seconds: 7,
+    exposure: 0.92,
+    mist: 0.9,
+    shafts: 1.9,
+    subject: 1,
+    frame: ({ u }, live, eye, target) => {
+      const run = easeInOutCubic(u);
+      alignThroughKite(live.kite, live.sun, live.ground, eye, { distance: mix(170, 52, run) });
+      target.copy(live.kite);
+      return mix(46, 74, run);
+    }
+  },
+  {
+    id: "ring-04",
+    title: "Ocean Beach Kites · Into Line",
+    // Starts a good forty metres off the axis, with the sun beside the wheel
+    // rather than in it, and slides onto the line over the first two-thirds —
+    // so the disc visibly walks across the cloth and drops into the hub, then
+    // holds there. The offset eases to exactly zero; the last third is locked.
+    hour: 19.55,
+    seconds: 7,
+    exposure: 0.92,
+    mist: 1.1,
+    shafts: 1.7,
+    subject: 1,
+    frame: ({ u }, live, eye, target) => {
+      const slide = easeInOutCubic(Math.min(1, u / 0.66));
+      alignThroughKite(live.kite, live.sun, live.ground, eye, { height: 4.2 });
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.addScaledVector(along, mix(42, 0, slide));
+      target.copy(live.kite);
+      return mix(52, 68, slide);
+    }
+  },
+  {
+    id: "ring-05",
+    title: "Ocean Beach Kites · Last Ring",
+    // Six minutes past sunset. The sun is a degree and a half under, so the
+    // solve cannot get the eye anywhere near the sand and clamps out long — the
+    // camera ends up twenty-odd metres up, looking level down the axis with the
+    // whole beach small underneath. The disc in the hub is deep orange by now.
+    hour: 20.42,
+    seconds: 7,
+    exposure: 0.98,
+    mist: 0.6,
+    shafts: 1.25,
+    subject: 2,
+    frame: ({ u }, live, eye, target) => {
+      const settle = easeInOutCubic(u);
+      alignThroughKite(live.kite, live.sun, live.ground, eye, { distance: mix(120, 88, settle) });
+      target.copy(live.kite);
+      target.y = live.kite.y - mix(2, 6, settle);
+      return mix(50, 62, settle);
+    }
+  }
+];
+
 type KiteWindow = Window & typeof globalThis & { __sf?: { oceanBeachKite?: OceanBeachKiteEncounter } };
 
 function buildDemo(framing: Framing): Demo {
   const name = `ocean-beach-kite-${framing.id}`;
+  const seconds = framing.seconds ?? KITE_FESTIVAL_SECONDS;
   return {
     name,
     // Depth-sampling passes: see the note in run(). Read before warmup.
@@ -592,12 +795,12 @@ function buildDemo(framing: Framing): Demo {
       };
       armCinematic(ctx, {
         name,
-        duration: KITE_FESTIVAL_SECONDS,
+        duration: seconds,
         shots: [
           {
             id: framing.id,
             start: 0,
-            end: KITE_FESTIVAL_SECONDS,
+            end: seconds,
             safety: { floorClearance: 1.1 },
             camera: (sample, out) => {
               // SUN_STATE.toSun, not SUN_DIR: the latter hands over to the
@@ -626,7 +829,7 @@ function buildDemo(framing: Framing): Demo {
   };
 }
 
-const ALL_FRAMINGS = [...FRAMINGS, ...EXTRA_FRAMINGS, ...LATE_FRAMINGS];
+const ALL_FRAMINGS = [...FRAMINGS, ...EXTRA_FRAMINGS, ...LATE_FRAMINGS, ...RING_FRAMINGS];
 
 export const kiteFestivalDemos: readonly Demo[] = ALL_FRAMINGS.map(buildDemo);
 export const KITE_FESTIVAL_TITLES: Readonly<Record<string, string>> = Object.fromEntries(

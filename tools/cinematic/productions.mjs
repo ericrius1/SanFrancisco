@@ -177,6 +177,31 @@ const DEFINITIONS = Object.freeze({
         description: `Sunset onshore wind, surf wash and kite fabric — look ${index} of fifteen.`
       })
     })];
+  })),
+  // The eclipse set: seven seconds each, the sun held inside the sunwheel's hub.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Kites · The Eye"],
+    [2, "Ocean Beach Kites · Through the Wheel"],
+    [3, "Ocean Beach Kites · Star Axis"],
+    [4, "Ocean Beach Kites · Into Line"],
+    [5, "Ocean Beach Kites · Last Ring"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-kite-ring-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 7,
+      seed: (0x52_49_4e_00 + index * 0x101) >>> 0,
+      posterAt: 4.6,
+      stillTimes: Object.freeze([0.3, 1.4, 2.6, 3.8, 5, 6.2, 6.8]),
+      audio: Object.freeze({
+        profile: "ocean-beach-kite-ring",
+        index,
+        description: `The sun held inside the sunwheel — eclipse look ${index} of five.`
+      })
+    })];
   }))
 });
 
