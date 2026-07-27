@@ -160,6 +160,18 @@ export function createRenderPipeline(
     scenePass.renderTarget.samples = samples;
   };
 
+  // NOTE for anyone reaching for MSAA on this pass at runtime: it does not work
+  // here, and the failure is silent-ish. Raising `samples` multisamples the
+  // pass's DEPTH attachment too, and several consumers bind that depth as an
+  // ordinary non-multisampled texture — the contact-shadow complement above and
+  // the underwater package in postfx. WebGPU rejects the bind group ("Sample
+  // count (4) of [Texture "depth"] doesn't match expectation (multisampled: 0)")
+  // and the whole frame drops to clear colour. Measured, not theorised.
+  //
+  // The interior pockets therefore buy coverage with resolution instead (see
+  // render/pocketQuality.ts), which costs only fragment work and leaves every
+  // depth consumer's format untouched.
+
   // Wireframe debug: PassNode.overrideMaterial + a retained camera clone.
   // BundleGroups (tiles, citygen, traffic lights) key their WebGPU command
   // caches by camera identity. Mutating scene.overrideMaterial on the live

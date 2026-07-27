@@ -248,7 +248,10 @@ async function main() {
       const sf = window.__sf;
       return {
         sutro: sf?.sutroBaths?.debugState?.() ?? null,
-        pixelRatio: sf?.renderer?.getPixelRatio?.() ?? null
+        pixelRatio: sf?.renderer?.getPixelRatio?.() ?? null,
+        // Interior quality trade: sample count is the observable half, the
+        // frame cap shows up in the EMA above.
+        sceneSampleCount: sf?.pipeline?.sceneSampleCount ?? null
       };
     });
     state.medianEmaMs = medianEmaMs;
@@ -262,7 +265,8 @@ async function main() {
       process.stdout.write(`\nPAGE ERRORS (${pageErrors.length}):\n${pageErrors.slice(0, 5).join("\n")}\n`);
     }
     process.stdout.write(
-      `\nframe EMA median ${state.medianEmaMs} ms (samples ${state.emaSamples.join(", ")}) · wrote ${OUT}\n`
+      `\nframe EMA median ${state.medianEmaMs} ms (samples ${state.emaSamples.join(", ")})` +
+        ` · scene samples ${state.sceneSampleCount} · wrote ${OUT}\n`
     );
   } finally {
     await browser.close();
