@@ -1,0 +1,26 @@
+Image brief — a lithographed plate that will hang, framed, on the timber wall of
+an indoor swimming hall in a stylised low-poly video game. PORTRAIT 2:3.
+
+Subject: a natural-history plate of Pacific shore life, as a Victorian museum
+would have published it — a companion piece to a botanical plate of ferns. Eight
+to ten specimens arranged in a loose ornamental grid on cream stock: an abalone
+shell showing its iridescent inner face, a spiralled whelk, a scallop, a sand
+dollar, a purple sea urchin, a five-armed ochre starfish, a mussel cluster, a
+sprig of bull kelp with its float. Each specimen drawn crisply, isolated, faintly
+shadowed, with a small italic numeral beside it. No scene, no horizon, no people.
+
+Style: 1890s American lithographed natural-history plate. FLAT spot colours over
+fine line work, hard silhouettes, stipple and hatch shading only, NO photorealism,
+NO gradients other than simple flat bands, no digital airbrush. Slight aged cream
+paper tone, generous cream space between specimens.
+
+Palette (use these, they must sit in a warm timber room): cream #f7eed6, warm
+gold #e8ab3f, coral #e07a4e, terracotta #a8412a, deep teal #12454a, mid teal
+#1f6b6b, sea green #2e7f6d, ink navy #1b2b45, moss #4d6b3a, plum #6b2b47.
+
+Typography, spelled EXACTLY, in an elegant Didot-like serif, well kerned:
+  top small line: PLATE VII
+  headline: SHELLS OF THE PACIFIC SHORE
+  bottom rule line: GATHERED AT SEAL ROCKS
+Leave a clean margin — the plate gets a physical frame around it, so keep all
+type and key subject matter inside the middle 92% of the canvas.
