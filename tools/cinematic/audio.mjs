@@ -23,9 +23,13 @@ const PRODUCTION_DURATIONS = Object.freeze({
     `twitter-summer-${String(index + 1).padStart(2, "0")}`,
     7.5
   ])),
-  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
+  ...Object.fromEntries(Array.from({ length: 15 }, (_, index) => [
     `ocean-beach-kite-${String(index + 1).padStart(2, "0")}`,
     10
+  ])),
+  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
+    `ocean-beach-kite-ring-${String(index + 1).padStart(2, "0")}`,
+    7
   ]))
 });
 
@@ -97,13 +101,21 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 3.65, id: "stream", description: "wings tuck into the Palace flyby exit" },
     { time: 4.55, id: "resolve", description: "golden tail stream resolves over the rotunda" }
   ]),
-  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
+  ...Object.fromEntries(Array.from({ length: 15 }, (_, index) => {
     const shot = index + 1;
     return [`ocean-beach-kite-${String(shot).padStart(2, "0")}`, Object.freeze([
       { time: 0, id: "wind", description: `look ${shot} opens on the onshore wind` },
       { time: 3.4, id: "flutter", description: `kite fabric takes the gust` },
       { time: 6.4, id: "surf", description: `a set breaks behind the flyers` },
       { time: 8.9, id: "settle", description: `the beach resolves into the evening` }
+    ])];
+  })),
+  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
+    const shot = index + 1;
+    return [`ocean-beach-kite-ring-${String(shot).padStart(2, "0")}`, Object.freeze([
+      { time: 0, id: "wind", description: `eclipse look ${shot} opens off the axis` },
+      { time: 2.6, id: "align", description: `the sun settles into the wheel's hub` },
+      { time: 5.1, id: "surf", description: `a set breaks under the held ring` }
     ])];
   })),
   ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
@@ -197,6 +209,11 @@ export async function renderCinematicAudio(production, outputPath) {
     scoreSurfAerial(mix);
   } else if (id === "phoenix-palace-flyby") {
     scorePhoenixPalaceFlyby(mix);
+  } else if (id.startsWith("ocean-beach-kite-ring-")) {
+    // Must precede the general kite branch: `ocean-beach-kite-ring-03` also
+    // starts with "ocean-beach-kite-", and its last two characters would read
+    // as look 3 of a ten-second arrangement inside a seven-second clip.
+    scoreOceanBeachKiteRing(mix, Number(id.slice(-2)));
   } else if (id.startsWith("ocean-beach-kite-")) {
     scoreOceanBeachKite(mix, Number(id.slice(-2)));
   } else {
@@ -388,8 +405,24 @@ export async function renderTransitionAudio(options = {}, outputPath) {
  * even though the plan is identical. `shot` only tunes the balance: the early
  * looks are brighter and windier, the last one is mostly water and air.
  */
+/**
+ * How far into the evening each look actually sits, keyed to the hour its demo
+ * pins rather than to its index — the second five are not simply later than the
+ * first five, and shot 06 is mid-afternoon.
+ */
+const KITE_EVENING = Object.freeze({
+  1: 0.0, 2: 0.2, 3: 0.4, 4: 0.65, 5: 1.0,
+  6: 0.0, 7: 0.45, 8: 0.95, 9: 0.3, 10: 0.6,
+  // 11–15 walk from the sun on the water (20.33) out to nautical dark (21.45).
+  // The scale was built with 20.78 as its far end and the arrangement bottoms
+  // out there — pad already dropped a fifth, chimes already gone — so the three
+  // past the end of golden hour all sit at 1 rather than being given a range
+  // the instruments cannot spend. Their difference is on screen, not in the mix.
+  11: 0.78, 12: 0.92, 13: 1.0, 14: 1.0, 15: 1.0
+});
+
 function scoreOceanBeachKite(mix, shot) {
-  const evening = clamp01((shot - 1) / 4);
+  const evening = clamp01(KITE_EVENING[shot] ?? (shot - 1) / 4);
   // The pad drops a fifth and dims as the sun goes; by look five it is a drone.
   addPad(mix, {
     start: 0,
@@ -459,6 +492,60 @@ function scoreOceanBeachKite(mix, shot) {
     pan: -0.3
   });
   addChime(mix, { start: 8.9, midi: 59, duration: 1.6, gain: 0.024 + evening * 0.012, pan: 0.08 });
+}
+
+/**
+ * The eclipse set, seven seconds each. Not the ten-second arrangement trimmed:
+ * that one is built around a surf set landing at 6.4 and resolving at 8.9, and
+ * cutting it at seven decapitates its own ending.
+ *
+ * These are one held event instead. A drone that never moves, a single bell on
+ * the beat the sun seats itself in the hub (2.6s, the same moment the audio
+ * plan names "align"), and one swell underneath that peaks late and is allowed
+ * to finish inside the running time. Hours 19.3 → 20.42, so the light walk is
+ * gentler than the festival's and the mix moves correspondingly less.
+ */
+const RING_EVENING = Object.freeze({ 1: 0.0, 2: 0.3, 3: 0.55, 4: 0.15, 5: 0.85 });
+
+function scoreOceanBeachKiteRing(mix, shot) {
+  const evening = clamp01(RING_EVENING[shot] ?? 0.4);
+  // One chord, held the whole clip. The eclipse is a stillness; the score
+  // should not be doing anything the picture is not.
+  addPad(mix, {
+    start: 0,
+    duration: 7,
+    notes: evening < 0.5 ? [43, 50, 57, 62, 69] : [36, 43, 50, 57, 62],
+    gain: 0.05 + evening * 0.014,
+    pan: 0,
+    brightness: 0.6 - evening * 0.24
+  });
+  addAir(mix, { start: 0, duration: 7, gain: 0.028 - evening * 0.005, panDrift: 0.5 });
+  addFoley(mix, {
+    start: 0.4,
+    duration: 6.2,
+    gain: 0.013 - evening * 0.004,
+    pan: -0.12,
+    character: "grass"
+  });
+  // The alignment bell. Low and long rather than bright — this is the sun
+  // seating itself, not a chime for a caught crab.
+  addChime(mix, {
+    start: 2.6,
+    midi: 69 - Math.round(evening * 7),
+    duration: 3.4,
+    gain: 0.034 * (1 - evening * 0.4),
+    pan: 0.1
+  });
+  // One set, peaking under the held ring and finishing before the cut.
+  addWhoosh(mix, {
+    start: 1.5,
+    duration: 4.4,
+    gain: 0.058 + evening * 0.012,
+    panFrom: -0.5,
+    panTo: 0.22,
+    direction: "in"
+  });
+  addSub(mix, { start: 5.05, duration: 1.4, fromHz: 50, toHz: 32, gain: 0.05 + evening * 0.018 });
 }
 
 function scoreLandsEnd(mix) {

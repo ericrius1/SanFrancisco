@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "id": "region-sutro-baths",
+  "label": "Sutro Baths · 1896 (Blender site bake)",
+  "bake": "npm run bake:region -- --site sutro-baths",
+  "tracked": true,
+  "inputs": {
+    "assets-src/world/sites/sutro-baths.blend": "c4b4a8e3e6911f7ae7de0a584e478cc7e8f6c533d71ad7801fe0f7df848f76c5",
+    "data/authored-regions.json": "dcbbb562570611d5a4dc2be26ff92948773d6cc2f181e581e211c5629c1d7ab3",
+    "tools/export-authored-site.py": "1eeadae42a8df528656b2cc815558e17ab53207d44deaa2cadab6780067d000b",
+    "tools/inject-authored-site.mjs": "2d50e6ae61e2b575bfb0403586a1a1e0d2c947f093fb69773affef41bb8a0101",
+    "tools/sync-authored-region.py": "44b9eba826becee2ddec3312666a50902256d2ddad53d389b915801b07145172"
+  },
+  "outputs": {
+    "data/authored-sites/sutro-baths.json": "d777a0ecf5df34d4d0d298ed35e4d13625ff3a6038cefdc93bbefea95f6e354a",
+    "public/data/authored-regions.json": "44baa8439a3958dbbc8cb19534d6d63c1fe5ef1e26af3e447fbfe110077d5acb",
+    "public/data/colliders/tile_1_12.json": "3fb63449732b611c8284c86f66a87d7d0aed0983264d0f0e0d06d88feddf853c",
+    "public/regions/sutro-baths.glb": "ff02908ab1777350264a0b405e112a72980fb9d044eb1fecbc8cdde8cf42e6f2",
+    "public/tiles/tile_1_12.glb": "6620ea63a3cc5c5092859f2b3349598803f7bd51173a4e421ac0726ffa92db9b"
+  }
+}

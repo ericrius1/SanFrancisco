@@ -11,7 +11,7 @@
     "predev:play": "node tools/copy-litert-webgpu-runtime.mjs",
     "dev:play": "SF_HMR=0 vite",
     "prebuild": "node tools/copy-litert-webgpu-runtime.mjs",
-    "build": "node tools/scene-light-budget-contract-test.mjs && node tools/ambient-bird-removal-contract-test.mjs && node tools/foliage-shadow-contract-test.mjs && node tools/terrain-tiles-contract-test.mjs && node tools/building-facade-contract-test.mjs && tsc --noEmit && vite build && node tools/precompress-dist.mjs",
+    "build": "node tools/assets-check.mjs --heal && node tools/scene-light-budget-contract-test.mjs && node tools/ambient-bird-removal-contract-test.mjs && node tools/foliage-shadow-contract-test.mjs && node tools/terrain-tiles-contract-test.mjs && node tools/building-facade-contract-test.mjs && tsc --noEmit && vite build && node tools/precompress-dist.mjs",
     "bake:terrain-tiles": "node tools/bake-terrain-tiles.mjs",
     "build:native-foliage-textures": "node tools/build-native-foliage-textures.mjs",
     "check:native-foliage-textures": "node tools/build-native-foliage-textures.mjs --check",
@@ -113,7 +113,10 @@
     "bake:site": "node tools/bake-authored-site.mjs",
     "test:authored-regions": "node tools/validate-authored-regions.mjs",
     "optimize:tiles": "node tools/optimize-tiles.mjs",
-    "sync:box3d": "rm -rf vendor/box3d-wasm && mkdir -p vendor/box3d-wasm && cp -R ../box3d-wasm/packages/box3d-wasm/dist ../box3d-wasm/packages/box3d-wasm/package.json vendor/box3d-wasm/ && npm install"
+    "sync:box3d": "rm -rf vendor/box3d-wasm && mkdir -p vendor/box3d-wasm && cp -R ../box3d-wasm/packages/box3d-wasm/dist ../box3d-wasm/packages/box3d-wasm/package.json vendor/box3d-wasm/ && npm install",
+    "assets:check": "node tools/assets-check.mjs",
+    "assets:heal": "node tools/assets-check.mjs --heal",
+    "assets:list": "node tools/assets-check.mjs --list"
   },
   "dependencies": {
     "@litertjs/core": "^2.5.3",

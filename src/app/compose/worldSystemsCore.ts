@@ -61,7 +61,6 @@ import {
 } from "../../world/vegetation/runtime";
 import type { CityGenRing } from "../../world/citygen";
 import { Islands } from "../../gameplay/islands";
-import { Hunt } from "../../gameplay/hunt";
 import { FetchBall } from "../../gameplay/fetchBall";
 import { createSiteGate } from "../../gameplay/siteGate";
 import type { ArcheryGame } from "../../gameplay/archery";
@@ -73,7 +72,6 @@ import type { WaveOrgan } from "../../world/waveOrgan";
 import type {  } from "../../world/beachPianist";
 import type { AfterlightExperience } from "../../gameplay/afterlight";
 import type { HangGlidingExperience } from "../../gameplay/hangGliding";
-import { Satchel } from "../../ui/satchel";
 import { HUD } from "../../ui/hud";
 // The launcher and reader stay dynamically loaded; a reading entry may create
 // the shared reader before this game module begins.
@@ -142,7 +140,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     trafficLights: null as (TrafficLightView | null),
     roadGraphPromise: null as (Promise<RoadGraph> | null),
     islands: null as (Islands | null),
-    hunt: null as (Hunt | null),
     creatures: null as (Creatures | null),
     forest: null as (Forest | null),
     ANIMALS: null as (Record<string, any> | null),
@@ -812,8 +809,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // M12: late-bound far-teleport cell re-gate.
   ctx.state.citygenApplyFrontGate = () => citygenRing.current?.applyFrontGate();
 
-  // crabs to hunt (hunt.ts)
-  const satchel = new Satchel();
   // Presidio golf: full 18 playable holes on the real course footprint —
   // deferred (data fetch + course meshes build behind the settle gate below)
   // (state.golf hoisted to the module state record)
@@ -832,15 +827,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // Buena Vista's hidden summit ritual: five wandering echoes and a sky-scale
   // finale, asleep outside its clearing like the other located activities.
   // (state.afterlight hoisted to the module state record)
-  // Shoreline crab hunt: city-wide scenery, deferred in zone boot.
-  void ctx.zoneBoot.deferCity("hunt", () => {
-    state.hunt = new Hunt(map, scene);
-    state.hunt.onCatch = (kind) => {
-      satchel.add(kind);
-      hud.message("Crab caught!", 1.1);
-    };
-  });
-
   // Decorative landmarks/parks: each build is isolated in its own try/catch so a
   // broken subsystem degrades scenery (a missing tower, dark bridge) instead of
   // wedging boot on a stuck loading cover. Core systems above
@@ -1096,7 +1082,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     worldQueries,
     buildingRayRefiner,
     citygenRing,
-    satchel,
     dogParkAudio,
     buskers,
     buskerTalk,

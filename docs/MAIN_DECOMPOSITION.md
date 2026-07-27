@@ -141,8 +141,8 @@ Deliberately **left** in `main.ts` (not clean self-contained wiring): the ghost
 ship (its `teleportAboardGhostShip` boarding flow orchestrates
 `navigation.teleportCustom` + embodiments + chase + player, and its ride-camera
 state is shared with the general `exitToWalk` handler — a runtime-only
-`ensure`/`update`/beacon split would fragment that state); hunt/satchel and dog
-park (≈5 lines each — a module would be more wiring than content); buskers
+`ensure`/`update`/beacon split would fragment that state); dog
+park (≈5 lines — a module would be more wiring than content); buskers
 (already `app/systems/buskers` + `gameplay/buskers/conversation`); paintballs
 (firing is interleaved in the tool-fire block; its water hooks already route
 through `teaGarden`).

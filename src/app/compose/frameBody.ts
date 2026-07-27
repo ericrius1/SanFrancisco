@@ -1392,7 +1392,6 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (!worldArrival.active && ringCoordinator.state === "settled") {
       citygenRing.current?.update(player.position, frameDt);
     }
-    if (!worldArrival.active && !core.state.highUp) core.state.hunt?.update(frameDt, ctx.state.elapsed, player.position);
     if (!worldArrival.active) core.state.golf?.update(frameDt, ctx.state.elapsed, { player, input, hud, chase, camera });
     if (!worldArrival.active && sites.perfAllowed("palace")) {
       core.state.palaceReverie?.update(frameDt, ctx.state.elapsed, player.position, hud);

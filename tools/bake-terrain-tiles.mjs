@@ -36,6 +36,7 @@
 // Usage: node tools/bake-terrain-tiles.mjs
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { recordBake } from "./asset-ledger.mjs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -187,3 +188,21 @@ console.log(
     `overview height range ${(hb + minOv * hq).toFixed(2)}..${(hb + maxOv * hq).toFixed(2)} m; ` +
     `${deltaCount} groundtop deltas distributed`
 );
+
+// Record what this bake consumed and produced. The outputs are gitignored, so
+// a later checkout that finds them stale can simply rebake — see
+// tools/assets-check.mjs, which the build runs with --heal.
+recordBake({
+  id: "terrain-tiles",
+  label: "Terrain tile bake",
+  bake: "node tools/bake-terrain-tiles.mjs",
+  tracked: false,
+  inputs: [
+    "public/data/meta.json",
+    "public/data/heightmap.bin",
+    "public/data/surface.bin",
+    "public/data/groundtop-delta.bin",
+    "tools/bake-terrain-tiles.mjs"
+  ],
+  outputs: ["public/data/terrain/"]
+});
