@@ -223,6 +223,15 @@ export async function installDebugSurfaces(
           pipeline.setCinematicMultisampling(Number(values.sceneSamples) > 0);
           delete values.sceneSamples;
         }
+        // Also not a POSTFX uniform: the close-contact shadow complement. A
+        // capture can switch it off because its quad is the thing that binds
+        // the beauty depth attachment, and a second scene-pass render context
+        // (CityGen warms one through prepareSceneOwner) turns that binding into
+        // a rejected command buffer and a frame of clear colour.
+        if ("contactShadows" in values) {
+          pipeline.contactShadows.setEnabled(Boolean(values.contactShadows));
+          delete values.contactShadows;
+        }
         Object.assign(POSTFX_TUNING.values, values);
         pipeline.applyPostFx(); // select the retained toggle variant + push uniforms
       }

@@ -50,17 +50,20 @@ try {
     { timeout: 180_000 }
   );
 
+  // `count` is pinned at MAX_ECHOES for the lifetime of both meshes (inactive
+  // rows are degenerate zero-scale quads, see the WaterEchoes constructor), so
+  // mesh visibility — not instance count — is what "no echoes drawn" means.
   const boot = await page.evaluate(() => ({
     mode: window.__sf.player.mode,
-    shadows: window.__sf.water.echoes.shadows.count,
-    lights: window.__sf.water.echoes.lights.count,
+    shadowVisible: window.__sf.water.echoes.shadows.visible,
+    lightVisible: window.__sf.water.echoes.lights.visible,
     phoenixRequested: performance.getEntriesByType("resource")
-      .some((entry) => entry.name.includes("/models/phoenix.glb"))
+      .some((entry) => entry.name.includes("/models/phoenix-hero.glb"))
   }));
-  if (boot.shadows !== 0 || boot.lights !== 0) {
-    throw new Error(`clean boot allocated visible echoes: ${JSON.stringify(boot)}`);
+  if (boot.shadowVisible || boot.lightVisible) {
+    throw new Error(`clean boot drew echoes: ${JSON.stringify(boot)}`);
   }
-  if (boot.phoenixRequested) throw new Error("clean boot eagerly requested phoenix.glb");
+  if (boot.phoenixRequested) throw new Error("clean boot eagerly requested phoenix-hero.glb");
 
   await page.evaluate(() => {
     const sf = window.__sf;
@@ -103,13 +106,17 @@ try {
       data: Array.from(shadows.geometry.getAttribute("echoData").array.slice(0, 4)),
       color: Array.from(shadows.geometry.getAttribute("echoColor").array.slice(0, 3)),
       phoenixRequested: performance.getEntriesByType("resource")
-        .some((entry) => entry.name.includes("/models/phoenix.glb")),
+        .some((entry) => entry.name.includes("/models/phoenix-hero.glb")),
       phoenixResources: performance.getEntriesByType("resource")
         .map((entry) => entry.name)
         .filter((name) => /phoenix|vehicles\/bird|asset-/.test(name))
     };
   });
-  if (active.shadows < 1 || active.lights < 1 || !active.shadowVisible || !active.lightVisible) {
+  // data[0] is row 0's strength × visibility: non-zero proves a live echo row,
+  // not merely a visible mesh full of degenerate rows. This is what the
+  // surface-clearance ramp in WaterEchoes.endFrame drives, so a threshold that
+  // ever grew past the phoenix's cruising altitude would fail here.
+  if (!active.shadowVisible || !active.lightVisible || !(active.data[0] > 0)) {
     throw new Error(`phoenix echo did not activate: ${JSON.stringify(active)}`);
   }
   if (!active.phoenixRequested) throw new Error(`phoenix asset request was not observable: ${JSON.stringify(active)}`);

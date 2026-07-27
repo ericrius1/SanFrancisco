@@ -75,6 +75,8 @@
     "test:audio-engine:browser": "node tools/audio-engine-browser-probe.mjs",
     "test:nature-audio:browser": "node tools/nature-audio-lifecycle-browser-probe.mjs",
     "test:voice:browser": "node tools/voice-echo-browser-probe.mjs && node tools/voice-mic-persistence-probe.mjs",
+    "test:voice-duck:browser": "node tools/voice-open-mic-duck-probe.mjs",
+    "test:voice-gain:browser": "node tools/voice-gain-staging-probe.mjs",
     "test:car-customizer": "node tools/car-customizer-probe.mjs",
     "test:terrain-collision": "node tools/terrain-collision-probe.mjs",
     "test:terrain-clipmap": "node --experimental-strip-types tools/terrain-clipmap-probe.mjs",

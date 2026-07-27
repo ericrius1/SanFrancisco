@@ -11,6 +11,7 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Shift"], label: "run" },
     { c: ["Space"], label: "jump" },
     { c: ["E"], label: "hop on a ride" },
+    { c: ["J"], label: "emotes" },
     { c: ["Click"], label: "shoot" }
   ],
   drive: [
@@ -230,6 +231,7 @@ const PANELS: Record<string, string> = {
   tutorial: ".tutorial-ui, .tutorial-panel",
   links: ".links-ui",
   locator: ".player-locator",
+  emotes: ".emote-wheel",
   pause: ".pause-ui",
   minigameExit: ".minigame-exit",
   restore: ".ui-restore",

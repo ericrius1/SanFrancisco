@@ -44,6 +44,19 @@ export class AudioEngine {
   #muffle!: BiquadFilterNode;
   #submersionTarget = 0;
   #submersion = 0;
+  /**
+   * Open-mic duck on everything the world makes. While the local mic is live,
+   * our own output is not just "the mix" — it is loudspeaker spill, on its way
+   * back into the microphone, where the browser's echo canceller has to strip
+   * it out of what the far end hears. Sustained tonal beds are the worst case
+   * an AEC can be handed: the hoverboard hum sits at 59/117 Hz and is the
+   * loudest single component in the mix while riding, a laptop speaker
+   * reproduces that much sub-bass NONLINEARLY, and an AEC can only model a
+   * linear echo path — so the residue it cannot cancel lands on the far end as
+   * crackle. Voice is deliberately exempt: ducking the conversation to protect
+   * the conversation is self-defeating (see net/voice.ts).
+   */
+  #micDuck = 1;
   #unlocked = false;
   #hold = 0;
   // Persistent activity holds keep the context running only while the page is
@@ -65,9 +78,9 @@ export class AudioEngine {
   #groupTargets(): Record<AudioGroupName, number> {
     if (this.#pageVisible) {
       return {
-        music: musicAudioLevel(),
-        effects: effectsAudioLevel(),
-        world: soundscapeAudioLevel(),
+        music: musicAudioLevel() * this.#micDuck,
+        effects: effectsAudioLevel() * this.#micDuck,
+        world: soundscapeAudioLevel() * this.#micDuck,
         voice: voiceAudioLevel()
       };
     }
@@ -145,6 +158,7 @@ export class AudioEngine {
       hold: +this.#hold.toFixed(3),
       persistent: this.#persistent,
       background: this.#background,
+      micDuck: +this.#micDuck.toFixed(3),
       pageVisible: this.#pageVisible,
       submersion: +this.#submersion.toFixed(3)
     };
@@ -226,6 +240,16 @@ export class AudioEngine {
       this.#background = Math.max(0, this.#background - 1);
       this.#syncSuspension();
     };
+  }
+
+  /**
+   * How far to pull the world down while the local microphone is live; 1 while
+   * it is off. Voice owns the policy and the number (net/voice.ts), the engine
+   * owns the mix, so this is a plain setter — update() eases the group gains
+   * toward it, which is what makes turning the mic on a fade rather than a step.
+   */
+  setMicDuck(factor: number): void {
+    this.#micDuck = factor > 0 ? (factor < 1 ? factor : 1) : 0;
   }
 
   /** Advance group gains, the idle-suspend policy, and the listener once/frame. */

@@ -721,8 +721,6 @@ function buildDemo(framing: Framing): Demo {
   const seconds = framing.seconds ?? KITE_FESTIVAL_SECONDS;
   return {
     name,
-    // Depth-sampling passes: see the note in run(). Read before warmup.
-    multisample: false,
     run(ctx) {
       const { map, sky } = ctx;
       if (!map || !sky) {
@@ -745,7 +743,20 @@ function buildDemo(framing: Framing): Demo {
       // undo a multisampled depth buffer. That is exactly how this regressed —
       // it held while the depth consumers stayed quiet and broke the moment the
       // ocean rewrite added one that is always live.
-      ctx.setPostFx({ sceneSamples: 0, ink: false, dream: false, retro: false });
+      // contactShadows: false for the same family of reason. The complement's
+      // quad SAMPLES the beauty pass's depth attachment, and CityGen warms a
+      // second scene-pass render context through prepareSceneOwner while a
+      // capture is stepping frames. In that second context the depth is both
+      // the attachment and a binding, WebGPU rejects the command buffer, and
+      // the shot records clear colour — measured at ~70% of ten-second takes on
+      // one framing, with every failing run showing two `rt=output` contexts
+      // against the same "depth" texture and every clean one showing a single
+      // one. Driving the complement outside the pass (contactShadows.renderNow)
+      // roughly halves that; switching it off for the capture is what makes it
+      // zero. These are wide exteriors — kites thirty metres up, camera seventy
+      // to a hundred and forty back — and a close-contact darkening term
+      // contributes nothing at that range.
+      ctx.setPostFx({ sceneSamples: 0, contactShadows: false, ink: false, dream: false, retro: false });
       if (framing.mist !== undefined) OCEAN_KITE_TUNING.values.mistDensity = framing.mist;
       if (framing.shafts !== undefined) OCEAN_KITE_TUNING.values.shaftStrength = framing.shafts;
       ctx.input.suspended = true;
