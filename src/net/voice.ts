@@ -43,13 +43,21 @@ import type { Net } from "./net";
  * roster scan, the speaking indicator and your own pose. So the set of people
  * you can hear freezes as it was when you left, and re-forms when you return.
  *
+ * Open mic = the world ducks. Anything our speakers play while the mic is live
+ * is echo the browser's canceller has to remove before the far end hears us,
+ * and it cannot do that for a loud sustained bed — so transmitting pulls
+ * music/effects/ambience down (VOICE_TUNING.worldDuck → AudioEngine.setMicDuck)
+ * and leaves voice itself alone. Without it, riding the hoverboard puts a
+ * 59/117 Hz drone at the top of the mix and the far end hears crackle.
+ *
  * Privacy: mic off = track stopped and stream released (browser mic indicator
  * turns off), not just muted.
  */
 
 export const VOICE_TUNING = tunables("voice", {
   volume: { v: 1, min: 0, max: 2, step: 0.05, label: "voice volume" },
-  audibleCount: { v: 3, min: 1, max: 8, step: 1, label: "hear closest N players" }
+  audibleCount: { v: 3, min: 1, max: 8, step: 1, label: "hear closest N players" },
+  worldDuck: { v: 0.35, min: 0, max: 1, step: 0.05, label: "duck world while mic on" }
 });
 
 const LINGER_MS = 10_000; // keep a link this long after it leaves both closest-sets
@@ -58,10 +66,22 @@ const MAX_PEERS = 8; // uplink cap: mic is re-encoded per peer (~32 kbps each)
 const RETRY_MS = 5000; // wait after a failed connection before re-offering
 const SPEAK_RMS = 0.015; // analyser RMS above this = "speaking"
 const SPEAK_HOLD_MS = 250; // indicator hold so it doesn't flicker between words
-const VOICE_BOOST = 1.35; // makeup on top of the compressor so voices sit above the world bed
+// Makeup for the leveler, which has no makeup stage of its own. Sized so a
+// talker leaves the chain at about the loudness they arrived at once the voice
+// group's gain is applied: the chain's job is to even talkers out, not to turn
+// the whole conversation down. This was never the wrong number — it was paired
+// with a compressor eating ~6 dB more than it needed to.
+// Verified by tools/voice-gain-staging-probe.mjs.
+const VOICE_BOOST = 1.35;
 // Keep loudspeaker spill below the browser AEC's working range while our mic is
 // live. This is intentionally mild: conversation remains full duplex, unlike a
 // hard gate that would cut off people talking over one another.
+//
+// This one covers the OTHER PLAYERS' voices only. The far bigger spill is the
+// world's own output — see VOICE_TUNING.worldDuck and AudioEngine.setMicDuck,
+// which duck music/effects/ambience for the same reason. Other people's speech
+// is the easy case for an echo canceller (intermittent, band-limited, and it is
+// what AEC3 is tuned for); a sustained synthetic bed is the hard one.
 const OPEN_MIC_PLAYBACK_DUCK = 0.72;
 
 type EchoCancellationMode = boolean | "all" | "remote-only";
@@ -188,6 +208,7 @@ export class Voice {
       this.micOn = false;
     }
     this.#refreshHold();
+    this.#syncMicDuck();
     for (const p of this.#peers.values()) this.#attachMic(p);
     this.onMicChange(this.micOn);
     return true;
@@ -230,6 +251,7 @@ export class Voice {
     if (!track) {
       this.micOn = false;
       this.#refreshHold();
+      this.#syncMicDuck(); // the world comes back up: nothing is transmitting now
       this.onMicChange(false);
       return;
     }
@@ -253,6 +275,24 @@ export class Voice {
       this.#hold = null;
     }
     this.#net.setVoiceKeepAlive(want);
+  }
+
+  /**
+   * Tell the engine how hard to duck the world for the current mic state.
+   *
+   * An open mic turns our own speakers into the far end's noise source: the
+   * world bed goes out, comes back in through the microphone, and the browser's
+   * echo canceller has to subtract it from what everyone else hears. It cannot
+   * do that for a loud sustained bed — the hoverboard hum is the worst offender,
+   * a 59/117 Hz drone that is the loudest thing in the mix while riding and that
+   * a laptop speaker can only reproduce with distortion an AEC has no model for.
+   * Ducking the world while transmitting is what keeps the far end clean.
+   *
+   * Edge-triggered from the mic paths so it lands even if frames stop, and
+   * re-pushed per frame so live tuning of worldDuck takes effect immediately.
+   */
+  #syncMicDuck() {
+    audioEngine.setMicDuck(this.micOn ? VOICE_TUNING.values.worldDuck : 1);
   }
 
   /** Put the current mic track (or silence) on a peer's one audio m-line. */
@@ -328,14 +368,26 @@ export class Voice {
     p.gain?.disconnect();
     p.analyser?.disconnect();
     const src = ctx.createMediaStreamSource(stream);
-    // Voice leveler: browser AGC output varies a lot between mics; squash the
-    // dynamics so quiet talkers come through, then make up the level in #gain.
+    // Voice leveler: browser AGC output varies a lot between mics, so close the
+    // spread between a loud talker and a quiet one, then make the level back up
+    // in #gain (a DynamicsCompressorNode has no makeup stage of its own).
+    //
+    // It only has to LEVEL, not squash. The old -30 dB / 6:1 setting sat ~6 dB
+    // deeper on ordinary speech than this one, which VOICE_BOOST never paid
+    // back, so voices came out of the chain ~5 dB quieter than they went in.
+    // Sitting the threshold near the top of normal speech gets the same evening
+    // out of loud and quiet talkers while keeping the level they arrived with.
+    //
+    // Attack stays short enough to catch syllable peaks — with up to
+    // audibleCount talkers summing into a master that has no limiter, peak
+    // control here is what keeps the mix out of the clipper — while the long
+    // release keeps the gain steady between words instead of pumping.
     p.compressor = new DynamicsCompressorNode(ctx, {
-      threshold: -30,
-      knee: 15,
-      ratio: 6,
-      attack: 0.003,
-      release: 0.2
+      threshold: -20,
+      knee: 12,
+      ratio: 4,
+      attack: 0.006,
+      release: 0.25
     });
     p.gain = ctx.createGain();
     // No voiceAudioLevel() here — the engine's voice group gain applies it.
@@ -394,6 +446,7 @@ export class Voice {
    */
   update() {
     if (!this.#pageVisible) return;
+    this.#syncMicDuck();
     const now = performance.now();
     if (now >= this.#scanAt) {
       this.#scanAt = now + SCAN_MS;
@@ -504,6 +557,8 @@ export class Voice {
         contentHint: this.#micTrack?.contentHint || "none"
       } : null,
       ctx: audioEngine.debugState.ctx,
+      // 1 = world at full level, <1 = ducked because we are transmitting
+      worldDuck: audioEngine.debugState.micDuck,
       audibleCount: Math.max(1, Math.round(VOICE_TUNING.values.audibleCount)),
       peers: [...this.#peers.values()].map((p) => ({
         id: p.id,
@@ -519,6 +574,7 @@ export class Voice {
     document.removeEventListener("visibilitychange", this.#onVisibilityChange);
     this.#micRestoreToken++;
     void this.setMic(false);
+    audioEngine.setMicDuck(1); // never leave the world ducked behind us
     for (const id of [...this.#peers.keys()]) this.drop(id);
     // Release our hold but never close the shared engine ctx.
     this.#hold?.();
