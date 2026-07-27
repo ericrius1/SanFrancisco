@@ -32,10 +32,16 @@ import type { Net } from "./net";
  * Deliberately non-spatial: intelligibility beats immersion for chat.
  *
  * The engine owns the ctx and its gesture unlock — a listen-only player's
- * first input opens it, no local resume plumbing needed. Page suspension is a
- * hard boundary: hidden tabs close peer audio links and release mic capture;
- * both are restored on foreground without advancing any voice processing in
- * the background.
+ * first input opens it, no local resume plumbing needed.
+ *
+ * Backgrounding: voice is the ONE system that survives a hidden page, because
+ * being able to keep talking while you go do something else is the point of
+ * having it. A hidden tab parks the renderer and mixes music, effects and
+ * ambience to silence, but the mic, the peer connections, the voice group and
+ * the relay socket all stay up (see AudioEngine.acquireBackgroundHold and
+ * Net.setVoiceKeepAlive). What does stop is everything frame-driven: the
+ * roster scan, the speaking indicator and your own pose. So the set of people
+ * you can hear freezes as it was when you left, and re-forms when you return.
  *
  * Privacy: mic off = track stopped and stream released (browser mic indicator
  * turns off), not just muted.
@@ -127,8 +133,9 @@ export class Voice {
   #posOf: (id: number) => THREE.Vector3 | null;
   #selfPos: () => THREE.Vector3;
   #peers = new Map<number, Peer>();
-  // One engine hold, live while the mic is on OR ≥1 peer is wired. The audio
-  // engine's visibility gate still overrides it while the page is hidden.
+  // One engine hold, live while the mic is on OR ≥1 peer is wired. It is a
+  // BACKGROUND hold: unlike every other feature's, it outlives page suspension
+  // and keeps the voice group audible out of frame.
   #hold: (() => void) | null = null;
   #micTrack: MediaStreamTrack | null = null;
   #pageVisible = document.visibilityState === "visible";
@@ -138,17 +145,16 @@ export class Voice {
 
   #onVisibilityChange = () => {
     this.#pageVisible = document.visibilityState === "visible";
-    if (!this.#pageVisible) {
-      // A disabled track can still leave browser capture/AEC work alive. Stop
-      // it outright, then reacquire the already-authorized source on resume.
-      this.#micRestoreToken++;
-      this.#micTrack?.stop();
-      this.#micTrack = null;
-      for (const id of [...this.#peers.keys()]) this.drop(id);
-      return;
-    }
+    // Voice is the one system that follows you out of the tab: mic capture and
+    // every wired peer stay exactly as they are, so a conversation survives
+    // going off to do something else. The topology does freeze — #scan is
+    // frame-driven and your pose stops moving — so who you can hear is
+    // whoever you could hear on the way out, until you come back.
+    if (!this.#pageVisible) return;
     this.#scanAt = 0;
-    if (this.micOn) void this.#restoreMicAfterForeground();
+    // Only a mic the platform took from us while hidden (a phone handing the
+    // device to another app) needs reacquiring here.
+    if (this.micOn && !this.#micTrack) void this.#restoreMicTrack();
   };
 
   constructor(net: Net, posOf: (id: number) => THREE.Vector3 | null, selfPos: () => THREE.Vector3) {
@@ -164,7 +170,7 @@ export class Voice {
   /** Toggle the microphone. Resolves false if permission was denied. */
   async setMic(on: boolean): Promise<boolean> {
     if (on === this.micOn) {
-      if (on && this.#pageVisible && !this.#micTrack) void this.#restoreMicAfterForeground();
+      if (on && !this.#micTrack) void this.#restoreMicTrack();
       return true;
     }
     if (on) {
@@ -174,8 +180,7 @@ export class Voice {
       const track = await this.#requestMicTrack();
       if (!track) return false; // denied, no device, or no usable AEC
       this.micOn = true;
-      if (this.#pageVisible) this.#micTrack = track;
-      else track.stop();
+      this.#micTrack = track;
     } else {
       this.#micRestoreToken++;
       this.#micTrack?.stop(); // releases the device (browser mic indicator off)
@@ -214,10 +219,11 @@ export class Voice {
     return track;
   }
 
-  async #restoreMicAfterForeground() {
+  /** Re-acquire the already-authorized source after the platform took it away. */
+  async #restoreMicTrack() {
     const token = ++this.#micRestoreToken;
     const track = await this.#requestMicTrack();
-    if (token !== this.#micRestoreToken || !this.#pageVisible || !this.micOn) {
+    if (token !== this.#micRestoreToken || !this.micOn) {
       track?.stop();
       return;
     }
@@ -233,16 +239,20 @@ export class Voice {
 
   /**
    * Hold the shared context alive while the mic is on or any peer is wired;
-   * release when both are gone. Page visibility still overrides it. Edge-
+   * release when both are gone. This is the single definition of "a voice
+   * session is live", so it also arms the two things that keep one working
+   * out of frame: the engine's background exemption and the relay socket
+   * (RTC signaling rides it, and the server drops a silent player). Edge-
    * triggered from setMic and from peer add/drop — never per frame.
    */
   #refreshHold() {
     const want = this.micOn || this.#peers.size > 0;
-    if (want && !this.#hold) this.#hold = audioEngine.acquireHold();
+    if (want && !this.#hold) this.#hold = audioEngine.acquireBackgroundHold();
     else if (!want && this.#hold) {
       this.#hold();
       this.#hold = null;
     }
+    this.#net.setVoiceKeepAlive(want);
   }
 
   /** Put the current mic track (or silence) on a peer's one audio m-line. */
@@ -300,7 +310,7 @@ export class Voice {
 
   /** Remote stream → hidden <audio> (Chrome quirk) → compressor → gain → voice group. */
   #wireAudio(p: Peer, stream: MediaStream) {
-    if (!this.#pageVisible || this.#peers.get(p.id) !== p) return;
+    if (this.#peers.get(p.id) !== p) return;
     // prewarmBus (not bus()) so the receive graph builds even when a remote
     // track arrives before any local gesture — audibility stays gated by the
     // engine's voice group gain and the suspended ctx; the background hold
@@ -338,7 +348,7 @@ export class Voice {
   }
 
   async #handleSignal(from: number, sig: Signal) {
-    if (!this.#pageVisible || !sig || typeof sig !== "object") return;
+    if (!sig || typeof sig !== "object") return;
     // reactive path: the higher id builds its side when the offer arrives
     const p = this.#peers.get(from) ?? this.#createPeer(from, false);
     try {
@@ -377,7 +387,11 @@ export class Voice {
 
   /* ------------------------------------------------------------- update */
 
-  /** Per rendered frame: gains, speaking indicator, roster scan. */
+  /**
+   * Per rendered frame: gains, speaking indicator, roster scan. Never runs
+   * while hidden — the audio path keeps going without it, and scanning on a
+   * frozen roster of frozen positions would only churn connections.
+   */
   update() {
     if (!this.#pageVisible) return;
     const now = performance.now();
@@ -479,6 +493,7 @@ export class Voice {
     return {
       mic: this.micOn,
       pageVisible: this.#pageVisible,
+      sessionLive: !!this.#hold, // mic on or ≥1 peer: what survives backgrounding
       capturing: this.#micTrack?.readyState === "live",
       micProcessing: micSettings ? {
         echoCancellation: micSettings.echoCancellation ?? "unknown",
@@ -508,5 +523,6 @@ export class Voice {
     // Release our hold but never close the shared engine ctx.
     this.#hold?.();
     this.#hold = null;
+    this.#net.setVoiceKeepAlive(false);
   }
 }
