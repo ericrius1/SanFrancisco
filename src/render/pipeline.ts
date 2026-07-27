@@ -24,6 +24,7 @@ import {
   POSTFX_VARIANT_MASKS
 } from "./postfx";
 import { createContactShadowComplement } from "./contactShadows";
+import { SHADOW_LAYERS } from "../world/shadows/shadowLayers";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
 import { yieldToFrame } from "../core/cooperativeWork";
 import { tracer } from "../core/hitchTracer";
@@ -62,7 +63,7 @@ type FxaaRuntime = {
 
 const OUTLINE_PREPASS_SCALE = 0.5;
 const INK_VARIANT_MASK = 1;
-const BEAUTY_ONLY_LAYER = 31;
+const BEAUTY_ONLY_LAYER = SHADOW_LAYERS.BEAUTY_ONLY;
 // WebGPU enum values are stable; TypeScript's DOM lib still omits their names.
 const GPU_BUFFER_USAGE_MAP_READ = 0x0001;
 const GPU_BUFFER_USAGE_COPY_DST = 0x0008;
