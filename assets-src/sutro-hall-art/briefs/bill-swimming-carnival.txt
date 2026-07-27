@@ -1,0 +1,33 @@
+Generate ONE image with your image generation tool, then copy it to
+/Users/eric/codeprojects/SanFrancisco/.claude/worktrees/sutro-baths-walls-art-wood-5bdf11/.data/codex-art/bill-swimming-carnival.png with `cp`. Reply with only that path.
+
+Image brief — a poster/plate that will hang, framed, on the timber wall of an
+indoor 1896 swimming hall in a stylised low-poly video game. PORTRAIT 2:3 (1024x1536).
+
+Subject: a swimming-carnival bill. A single high diver in a period bathing
+costume, streamlined mid-dive in dark silhouette, against a huge radiating
+sunburst disc; banded teal water with foam scallops across the bottom third.
+
+Type, exactly:
+  GRAND
+  SWIMMING
+  CARNIVAL              (the three lines are the headline stack)
+  SEVEN BATHS UNDER ONE ROOF
+  HIGH DIVING FROM THE SPRING BOARDS
+  AT THREE AND AT EIGHT OCLOCK
+
+Style (identical across this whole series — they hang side by side on one wall):
+1890s American chromolithograph poster. FLAT spot colours, hard silhouettes,
+visible flat colour separations, crisp line work, aged cream paper stock. NO
+photorealism, NO soft digital airbrush, NO modern gradients — only simple flat
+bands and stipple/hatch shading as a stone lithograph would give.
+
+Palette, use these and little else (they must sit in a warm timber room):
+cream #f7eed6, warm gold #e8ab3f, coral #e07a4e, terracotta #a8412a,
+deep teal #12454a, mid teal #1f6b6b, sea green #2e7f6d, ink navy #1b2b45,
+moss green #4d6b3a, plum #6b2b47.
+
+Typography: elegant Didot/Bodoni-like serif, generous letter-spacing, well
+kerned, spelled EXACTLY as given and nothing else — no extra words, no signature,
+no watermark. Keep all type and key subject matter inside the middle 92% of the
+canvas; the poster gets a physical frame around it.
