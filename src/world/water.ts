@@ -19,6 +19,9 @@ import {
   max,
   normalize,
   uv,
+  uniformArray,
+  atan,
+  floor,
   mx_fractal_noise_float,
   mx_noise_float,
   textureLevel,
@@ -110,6 +113,36 @@ const BED_FLOOR = 0x466c68;
 // The terrain is a LIT MeshStandard; the water is unlit with its own
 // illuminant, so the two do not agree numerically without one scalar.
 const BED_GAIN = 1.25;
+
+// --- reflected coastline (Tier C) ------------------------------------------
+// A coast lays a dark band on the water beneath it. Sampling sky there is why
+// most ocean shaders read as an empty planet, and it is the single most
+// conspicuous thing missing from a bay ringed by cliffs and headlands.
+//
+// NOT a screen-space march: at grazing incidence on a near-flat surface the
+// reflection ray leaves the frustum almost immediately, so SSR misses exactly
+// the geometry that matters and ghosts on what it does find. NOT a world-space
+// heightfield march either — that costs 8-12 texture fetches per pixel, which
+// would hand back everything Tier A saved.
+//
+// Instead: once per update, sweep the terrain from the CAMERA over a ring of
+// azimuths and record the tangent of each direction's horizon. The shader then
+// resolves "is there land along this reflected ray" with two uniform-array
+// reads and a lerp — no texture fetch, ~15 ALU — and it is correct for terrain
+// that is entirely off-screen. The profile is camera-centred while the water
+// spans hundreds of metres, but the parallax error over that span is small
+// against landforms that are hundreds of metres away and tens of metres tall,
+// and the result is a soft band, not a mirror image.
+const HORIZON_AZIMUTHS = 48;
+/** How far the sweep looks for blocking terrain. */
+const HORIZON_MAX_DIST = 2600;
+/** Ray steps per azimuth; spacing widens with distance (see #scanHorizon). */
+const HORIZON_STEPS = 44;
+/** Re-sweep once the camera has moved this far — the profile is a slow field. */
+const HORIZON_REFRESH_DIST = 45;
+/** How completely terrain suppresses the sky reflection. Not 1: a real coast
+ *  reflection still carries scattered skylight, and the profile is coarse. */
+const COAST_STRENGTH = 0.8;
 
 // --- coarse water-proximity field (see #buildWaterField) -------------------
 // A 128 m-cell distance-to-water map over the height grid, built once at boot
@@ -233,6 +266,13 @@ export class Water {
    *  Sky owns the day/night grade; this just mirrors it into the water graph so
    *  the sun path dims through dusk and becomes a moon path at night. */
   #uSunRadiance = uniform(new THREE.Color(1, 1, 1));
+  /** tan(elevation) of the terrain horizon per azimuth, swept from the camera
+   *  (see HORIZON_* and #scanHorizon). Negative where nothing blocks. */
+  //   +1 entry duplicating index 0, so the shader's azimuth lerp never needs a
+  //   modulo to wrap the last spoke back to the first.
+  #horizonData = new Array<number>(HORIZON_AZIMUTHS + 1).fill(-1);
+  #uHorizon = uniformArray(new Array<number>(HORIZON_AZIMUTHS + 1).fill(-1), "float");
+  #horizonAt = new THREE.Vector2(Infinity, Infinity);
   #sky: Sky;
   #lastSimT: number | null = null;
   #frame = 0;
@@ -576,10 +616,42 @@ export class Water {
         caustic.mul(1.8).mul(causticFocus).mul(saturate(this.#uSunDir.y.mul(4))).add(1)
       );
 
+      // --- reflected coastline (Tier C) ----------------------------------
+      // Resolve the reflected ray against the CPU horizon profile: two uniform
+      // reads, a lerp and a smoothstep — no texture fetch — and it sees terrain
+      // entirely outside the frustum, which a screen-space march cannot.
+      // Evaluated as a CALLBACK so it uses the BRDF's own horizon-clamped
+      // reflected direction (the real per-pixel wave normal), not a flat mirror.
+      const coastBlock = (skyDir: any) => {
+        const reflTan = skyDir.y.div(max(skyDir.xz.length(), 1e-3));
+        // atan2 -> 0..1 around the compass, matching #scanHorizon's a/N x TAU.
+        const azimuth = atan(skyDir.z, skyDir.x).div(TAU).add(1).fract().mul(HORIZON_AZIMUTHS);
+        const a0 = floor(azimuth);
+        const i0 = a0.toInt().toVar();
+        const horizonTan = mix(
+          this.#uHorizon.element(i0) as never,
+          this.#uHorizon.element(i0.add(1)) as never,
+          azimuth.sub(a0)
+        ) as never as ReturnType<typeof float>;
+        // Wide feather: 48 spokes is 7.5 deg apart, and a hard threshold across
+        // that spacing reads as faceted polygons rather than a coastal haze.
+        return smoothstep(horizonTan.add(0.09), horizonTan.sub(0.09), reflTan)
+          .mul(COAST_STRENGTH)
+          // Past ~1.4 km the profile's camera-centred parallax stops being a
+          // good approximation of the water's own view, and fog owns the pixel.
+          .mul(clamp(float(1).sub(viewDist.div(1400)), 0, 1));
+      };
+      // Reflected land: fog-tinted and dark. A coastal reflection reads as a
+      // dark band borrowing the sky's own haze, never a legible mirror image —
+      // and shading it from `ambient` keeps it tracking the day cycle.
+      const coastRadiance = this.#sky.ambientRadiance().mul(vec3(0.42, 0.46, 0.42));
+
       const surface = oceanSurfaceRadiance({
         normal: rippleNormal,
         viewDir,
         roughness,
+        reflectionBlock: coastBlock,
+        blockedRadiance: coastRadiance,
         sunDir: this.#uSunDir,
         sunRadiance: this.#uSunRadiance,
         ambient: this.#sky.ambientRadiance(),
@@ -1054,6 +1126,46 @@ export class Water {
     return false;
   }
 
+  /**
+   * Sweep the terrain horizon around `x,z` and publish tan(elevation) per
+   * azimuth — the CPU half of the reflected coastline (Tier C).
+   *
+   * One pass is HORIZON_AZIMUTHS × HORIZON_STEPS height lookups (48 × 44 ≈ 2.1k)
+   * and only runs when the camera has moved HORIZON_REFRESH_DIST, so it is far
+   * below the cost of the per-pixel marching it replaces.
+   *
+   * Steps widen quadratically: near ground dominates the horizon angle (a 20 m
+   * bluff at 100 m subtends more than a 200 m ridge at 2 km), so resolution
+   * belongs close in. Rays start beyond the first step to avoid the camera's
+   * own cell reporting itself as a cliff.
+   */
+  #scanHorizon(x: number, z: number) {
+    const map = this.#map;
+    for (let a = 0; a < HORIZON_AZIMUTHS; a++) {
+      const ang = (a / HORIZON_AZIMUTHS) * TAU;
+      const dx = Math.cos(ang);
+      const dz = Math.sin(ang);
+      let best = -1; // tan(elevation); <0 means "open sky along this bearing"
+      for (let s = 1; s <= HORIZON_STEPS; s++) {
+        const f = s / HORIZON_STEPS;
+        const d = HORIZON_MAX_DIST * f * f;
+        if (d < 8) continue;
+        // groundTop, not the water surface: a cliff blocks the reflection, and
+        // sea-level cells give tan ≈ 0 which never wins against `best`.
+        const h = map.groundTop(x + dx * d, z + dz * d);
+        if (h <= 0.5) continue;
+        const tan = h / d;
+        if (tan > best) best = tan;
+      }
+      this.#horizonData[a] = best;
+    }
+    this.#horizonData[HORIZON_AZIMUTHS] = this.#horizonData[0]; // wrap sentinel
+    const u = this.#uHorizon as unknown as { array: number[]; needsUpdate: boolean };
+    for (let i = 0; i <= HORIZON_AZIMUTHS; i++) u.array[i] = this.#horizonData[i];
+    u.needsUpdate = true;
+    this.#horizonAt.set(x, z);
+  }
+
   /** Void-realm reveal ramp (0 = hidden in the void, 1 = normal water).
    *  Uniform-only; every water pipeline is unchanged. */
   setReveal(v: number) {
@@ -1068,6 +1180,12 @@ export class Water {
     // the water's sun path follows the sky for free — no second grade to keep
     // in sync. #uSunDir already tracks SUN_DIR, which Sky mutates in place.
     this.#uSunRadiance.value.copy(this.#sky.sun.color).multiplyScalar(this.#sky.sun.intensity);
+    // Reflected-coastline horizon profile (Tier C). Slow field, camera-centred,
+    // re-swept only on real movement.
+    if (this.#horizonAt.distanceToSquared({ x: camPos.x, y: camPos.z } as THREE.Vector2) >
+        HORIZON_REFRESH_DIST * HORIZON_REFRESH_DIST) {
+      this.#scanHorizon(camPos.x, camPos.z);
+    }
 
     const camUnder = camPos.y < waterHeight(camPos.x, camPos.z, t) - 0.35;
 

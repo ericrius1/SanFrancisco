@@ -225,6 +225,15 @@ export interface OceanSurfaceInputs {
   bedTransmittance?: N;
   /** Calibration of the bed against the terrain's own (lit) illuminant. */
   bedGain?: number;
+  /** skyDir -> 0..1 fraction of that reflected ray blocked by terrain (Tier C).
+   *  Takes the ray as an argument rather than a precomputed value so it is
+   *  resolved against the SAME horizon-clamped reflected direction the sky is
+   *  sampled with; deriving it separately from a flat-mirror ray disagrees with
+   *  the real per-pixel wave normal and tears. */
+  reflectionBlock?: (skyDir: N) => N;
+  /** Radiance substituted where the reflection is blocked — the reflected
+   *  landmass. */
+  blockedRadiance?: N;
 }
 
 /**
@@ -283,7 +292,17 @@ export function oceanSurfaceRadiance(o: OceanSurfaceInputs): N {
   // F² vs F is ~50x too dark looking straight down (F = F0 = 0.02) and only
   // ~1.2x at grazing, i.e. it silently deletes the near-field glitter.
   const sunLobe = o.sunRadiance.mul(glint.mul(keyUp));
-  const reflected = sky.mul(o.reflectionGain ?? 1);
+  // Terrain occlusion of the reflection (Tier C). A coast lays a dark band on
+  // the water under it; sampling the sky there is why most ocean shaders look
+  // like they were rendered on an empty planet. `reflectionBlock` is resolved
+  // against a horizon profile rather than a screen-space march, so it is
+  // correct for land that is entirely OFF-SCREEN — which, at grazing incidence
+  // on a near-flat surface, is most of what a reflection ray actually hits.
+  const reflected = (
+    o.reflectionBlock && o.blockedRadiance
+      ? mix(sky, o.blockedRadiance, o.reflectionBlock(skyDir))
+      : sky
+  ).mul(o.reflectionGain ?? 1);
 
   // Transmitted/in-scattered: the water column lit by sky + key. This keeps the
   // authored palette but makes it a RADIANCE, so it darkens at dusk with the
