@@ -25,12 +25,26 @@ const LIFE = 2.6; // seconds a ring takes to expand out and die
 const SPACING = 3.2; // metres of travel between rings
 const MIN_SPEED = 2.0;
 
+// --- swimmer ripples -------------------------------------------------------
+// A swimmer moves a fraction of a boat's water, so everything here is smaller
+// and closer together: rings the width of a set of shoulders, shed roughly once
+// per stroke rather than per 3.2 m of travel.
+const SWIM_SPACING = 0.55; // metres of travel between stroke rings
+const SWIM_RING_SIZE = 2.6;
+const SWIM_MIN_SPEED = 0.25;
+/** Seconds between the idle rings a treading swimmer pushes out. */
+const SWIM_IDLE_PERIOD = 0.9;
+/** Half the shoulder width — rings alternate left/right like the stroke does. */
+const SWIM_LATERAL = 0.42;
+
 // the ripple layer only needs these off the player
 type BoatState = {
   mode: string;
   renderPosition: THREE.Vector3;
   velocity: THREE.Vector3;
   speed: number;
+  /** True while the walk controller has the capsule in water. */
+  swimming?: boolean;
 };
 
 // prog < 0 = spawn delay still counting down (advances on the same clock)
@@ -48,8 +62,10 @@ export class WakeRipples {
   #progAttr: THREE.InstancedBufferAttribute;
   #ripples: Ripple[] = [];
   #next = 0;
-  #distAcc = 0;
-  #side = 1; // rings alternate port/starboard off the stern
+  #boatDistAcc = 0;
+  #swimDistAcc = 0;
+  #swimIdleAcc = 0;
+  #side = 1; // rings alternate port/starboard off the stern (and shoulder to shoulder for a swimmer)
 
   constructor(scene: THREE.Scene) {
     const geo = new THREE.PlaneGeometry(1, 1);
@@ -151,16 +167,61 @@ export class WakeRipples {
       this.#progAttr.needsUpdate = true;
     }
 
-    // shed new rings by distance travelled, so boost naturally packs the wake
     const v = boat.velocity;
     const h = Math.hypot(v.x, v.z);
-    if (boat.mode !== "boat" || h < MIN_SPEED) {
-      this.#distAcc = 0;
+
+    // --- swimmer ---------------------------------------------------------
+    // Reuses this same pooled batch rather than adding a system: one draw call
+    // already exists for the boat wake, the rings are already world-anchored
+    // and already re-seated on waterHeight() every frame, so a swimmer costs
+    // nothing but a few pool slots. Runs before the boat branch because a
+    // swimming player is never in `boat` mode, so the two can never contend.
+    if (boat.swimming) {
+      this.#boatDistAcc = 0;
+      if (h >= SWIM_MIN_SPEED) {
+        // Shed by DISTANCE, like the boat: the ring spacing then tracks stroke
+        // rate for free, and a drifting swimmer does not machine-gun rings.
+        this.#swimDistAcc += h * dt;
+        this.#swimIdleAcc = 0;
+        if (this.#swimDistAcc >= SWIM_SPACING) {
+          this.#swimDistAcc -= SWIM_SPACING;
+          this.#side = -this.#side;
+          const dx = v.x / h;
+          const dz = v.z / h;
+          const p = boat.renderPosition;
+          // Just behind the shoulder that is pulling, alternating side to side.
+          const lat = this.#side * SWIM_LATERAL;
+          this.#spawn(
+            p.x - dx * 0.35 - dz * lat,
+            p.z - dz * 0.35 + dx * lat,
+            elapsed,
+            SWIM_RING_SIZE + h * 0.25
+          );
+        }
+      } else {
+        // Treading water still moves water. A slow, centred pulse keeps the
+        // surface answering a stationary swimmer instead of going glassy.
+        this.#swimDistAcc = 0;
+        this.#swimIdleAcc += dt;
+        if (this.#swimIdleAcc >= SWIM_IDLE_PERIOD) {
+          this.#swimIdleAcc -= SWIM_IDLE_PERIOD;
+          const p = boat.renderPosition;
+          this.#spawn(p.x, p.z, elapsed, SWIM_RING_SIZE * 0.8);
+        }
+      }
       return;
     }
-    this.#distAcc += h * dt;
-    if (this.#distAcc < SPACING) return;
-    this.#distAcc -= SPACING;
+    this.#swimDistAcc = 0;
+    this.#swimIdleAcc = 0;
+
+    // shed new rings by distance travelled, so boost naturally packs the wake
+    if (boat.mode !== "boat" || h < MIN_SPEED) {
+      this.#boatDistAcc = 0;
+      return;
+    }
+    this.#boatDistAcc += h * dt;
+    if (this.#boatDistAcc < SPACING) return;
+    this.#boatDistAcc -= SPACING;
 
     const dx = v.x / h;
     const dz = v.z / h;

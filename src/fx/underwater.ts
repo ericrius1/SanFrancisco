@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
-import { waterHeight, type WorldMap } from "../world/heightmap";
+import type { WorldMap } from "../world/heightmap";
+import { submergibleWaterY } from "../world/swimVolumes";
 
 /**
  * Underwater colour ramp — the one place the effect's hues live, kept in the
@@ -79,12 +80,12 @@ export class UnderwaterOverlay {
   update(camera: THREE.PerspectiveCamera, timeSec: number) {
     const cx = camera.position.x,
       cz = camera.position.z;
-    // only over actual water — land dipping just below y=0 near shore isn't "underwater"
-    const overWater = this.#map.isWater(cx, cz);
-    const wy = waterHeight(cx, cz, timeSec);
+    // only over actual water — land dipping just below y=0 near shore isn't
+    // "underwater". Authored pools count as water too (world/swimVolumes.ts).
+    const wy = submergibleWaterY(this.#map, cx, cz, timeSec);
     // Small hysteresis so a crest cresting under a high surf eye does not flash
     // the underwater overlay when clearance is only centimetres.
-    const depth = overWater ? wy - camera.position.y - 0.45 : -1; // >0 = camera submerged
+    const depth = Number.isNaN(wy) ? -1 : wy - camera.position.y - 0.45; // >0 = submerged
 
     const target = depth > 0 ? 1 : 0;
     this.#ease += (target - this.#ease) * 0.18;

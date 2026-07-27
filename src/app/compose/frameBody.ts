@@ -20,7 +20,7 @@ import type {  } from "../../world/ghostShip";
 import { materializeField } from "../../render/materialize";
 import { emitEmbodimentWaterEcho } from "../../world/waterEchoes";
 import { syncBallGlowNight } from "../../fx/ballGlow";
-import { updateUnderwaterFx } from "../../fx/underwaterRig";
+import { updateUnderwaterFx, underwaterSubmersion } from "../../fx/underwaterRig";
 import { updateCrownDisplay, resetCrownTweaks } from "../../world/salesforceCrown";
 import {  updateBayLights, resetBayLightsTweaks } from "../../world/bayLights";
 import {  updateGoldenGateLights, resetGoldenGateLightsTweaks } from "../../world/goldenGateLights";
@@ -391,6 +391,27 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       renderFrame();
   };
 
+  /**
+   * "Am I indoors" — for the body, and separately for the camera.
+   *
+   * They used to be one boolean, which quietly made "this is a room" mean "you
+   * are in first person now". That is right for a city apartment or the mission
+   * chapel, where a chase boom has no space to sit and would spend the visit
+   * inside the walls. It is wrong for Sutro Baths: a 152 m glass hall under a
+   * 43 m roof has room for any shot, and locking the eye rig for the whole visit
+   * takes the third-person view away from the one building most worth looking at
+   * from outside your own head. So the hall still reads as interior for pace and
+   * reverb, and the camera is simply left however the visitor had it — C keeps
+   * cycling third/first/orbit in there like anywhere else.
+   */
+  const syncIndoorState = () => {
+    const inRoom =
+      (citygenRing.current?.isPlayerInside() ?? false) ||
+      (core.state.missionDolores?.isPlayerInside(player.position) ?? false);
+    player.indoor = inRoom || (core.state.sutroBaths?.isPlayerInside(player.position) ?? false);
+    chase.indoor = inRoom; // blend into the indoor eye rig
+  };
+
   // Site wake/sleep + minigame precompute, then the two paused branches. Returns
   // "handled" when a paused branch rendered this frame, else "live" to fall
   // through to the live frame. The precompute writes the loop-scope crossings
@@ -532,10 +553,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       }
       if (inOrbit()) { chase.suspend(player); orbit.update(frameDt); }
       else {
-        player.indoor = chase.indoor =
-          (citygenRing.current?.isPlayerInside() ?? false) ||
-          (core.state.missionDolores?.isPlayerInside(player.position) ?? false) ||
-          (core.state.sutroBaths?.isPlayerInside(player.position) ?? false);
+        syncIndoorState();
         chase.update(frameDt, player, input);
       }
       // keep the vehicle hum, ambience and social presence alive like full pause
@@ -554,7 +572,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       swimAudio.update(frameDt, {
         swimming: player.swimming,
         speed: Math.hypot(player.velocity.x, player.velocity.z),
-        vspeed: player.velocity.y
+        vspeed: player.velocity.y,
+        submersion: underwaterSubmersion()
       });
       updatePlayerFoley(frameDt, true);
       nature.update(frameDt, {
@@ -1414,9 +1433,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (museumFloorHandoff != null) player.recoverOntoWalkSurface(museumFloorHandoff);
     // Sutro Baths buries its footprint and floats the deck above the old ground.
     // Same handoff: lift a capsule stranded beneath the freshly built deck.
-    const sutroFloorHandoff = worldArrival.active
-      ? null
-      : core.state.sutroBaths?.takeFloorHandoffHeight(player.position, player.mode);
+    // A swimmer is deliberately below the deck and above the basin, so the
+    // recovery contract stands down while the walk controller owns the body —
+    // otherwise a dive would be answered by a teleport back to the tiles.
+    const sutroFloorHandoff =
+      worldArrival.active || player.swimming
+        ? null
+        : core.state.sutroBaths?.takeFloorHandoffHeight(player.position, player.mode);
     if (sutroFloorHandoff != null) player.recoverOntoWalkSurface(sutroFloorHandoff);
 
     // Prime the surf runtime while the player is still walking up to the
@@ -1473,10 +1496,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       chase.suspend(player);
       orbit.update(frameDt);
     } else {
-      player.indoor = chase.indoor =
-        (citygenRing.current?.isPlayerInside() ?? false) ||
-        (core.state.missionDolores?.isPlayerInside(player.position) ?? false) ||
-        (core.state.sutroBaths?.isPlayerInside(player.position) ?? false); // blend into the indoor eye rig
+      syncIndoorState();
       chase.update(frameDt, player, input);
     }
     // World-anchored dialogue must project after the chase/orbit/cinematic has
@@ -1527,14 +1547,18 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // GPU underwater package: drives the permanent post-FX fog/god-ray
     // uniforms and lazily loads/prewarms the marine-snow + caustics volume on
     // first near-water approach (identity + early-return while dry).
-    updateUnderwaterFx({
-      camera,
-      map,
-      renderer,
-      scene,
-      time: ctx.state.elapsed,
-      dt: frameDt
-    });
+    // The same eased state drives the picture and the sound: with your head
+    // under, the world above goes muffled and the water closes in.
+    audioEngine.setSubmersion(
+      updateUnderwaterFx({
+        camera,
+        map,
+        renderer,
+        scene,
+        time: ctx.state.elapsed,
+        dt: frameDt
+      })
+    );
     fx.update(frameDt);
     bubbles.update(frameDt, ctx.state.elapsed);
     wake.update(frameDt, surfaceTime, player);

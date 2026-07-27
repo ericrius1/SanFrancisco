@@ -64,6 +64,7 @@ import type { BeachPianist } from "../../world/beachPianist";
 import type { AfterlightExperience } from "../../gameplay/afterlight";
 import type { HangGlidingExperience } from "../../gameplay/hangGliding";
 import type { PickleballController } from "../systems/pickleball";
+import { setPocketCommitted } from "../../render/pocketQuality";
 
 type Nature = ReturnType<typeof createNatureSoundscape>;
 type SiteGate = ReturnType<typeof createSiteGate>;
@@ -680,6 +681,12 @@ export function createOptionalSites({
   ];
   const sutroThinnedRoots: THREE.Object3D[] = [];
   const applySutroExteriorThinning = (thinned: boolean): void => {
+    // Same latch, two consequences. Hiding the city frees a large amount of
+    // per-frame budget; pocketQuality is what spends it (4x MSAA on the beauty
+    // pass, paid for by a wall-clock frame cap). Driving both from one
+    // already-hysteretic signal is deliberate — two latches on the same
+    // threshold could disagree, and the MSAA change reallocates a render target.
+    setPocketCommitted(thinned);
     if (thinned) {
       if (sutroThinnedRoots.length > 0) return;
       for (const child of scene.children) {

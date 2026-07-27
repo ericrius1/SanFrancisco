@@ -2,11 +2,14 @@ import * as THREE from "three/webgpu";
 import type { Physics } from "../../core/physics";
 import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import type { AuthoredRegionStreamer } from "../authoredRegions";
+import { registerSwimVolume } from "../swimVolumes";
 import {
   SUTRO_BATHS,
   distanceToSutroBaths,
   distanceToSutroWater,
+  isInsideSutroPool,
   sutroHallWallInset,
+  sutroPoolBounds,
   sutroWalkSurfaceY
 } from "./layout";
 import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
@@ -20,6 +23,7 @@ import {
   type SutroBathsStaticWater
 } from "./staticWater";
 import { createSutroStaticAmbience } from "./staticAmbience";
+import { sutroHallCaustics } from "../sutroHallCaustics";
 import {
   createSutroTwilight,
   type SutroSkyClock,
@@ -143,8 +147,17 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   // Construct it with the lazy site root so prepareOptionalRoot prewarms its
   // WebGPU pipeline before the root can become visible. Steam stays behind the
   // tighter proximity gate below.
-  const water = createSutroBathsStaticWater({ renderer: options.renderer });
+  const water = createSutroBathsStaticWater({
+    renderer: options.renderer,
+    // The pools mirror the dome's own radiance rather than a second gradient,
+    // so the reflection tracks the pocket's sunset->twilight swing for free.
+    sky: options.sky ?? null
+  });
   const ambience = createSutroStaticAmbience(options.authoredRegions);
+  // Shared with the region streamer, which built the node into the hall's
+  // materials before this object existed. Fetching the same instance here is
+  // what connects those materials to the site's clock.
+  const hallCaustics = sutroHallCaustics();
   const vegetation = createSutroBathsVegetation();
   const bathers = createSutroBathers();
   const parlour = createSutroParlour();
@@ -220,6 +233,23 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   // Bathers still move and animate independently; the visual water intentionally
   // has no gameplay wake contract.
   const batherPlayer = new THREE.Object3D();
+
+  // The seven baths are real water to the swim/underwater stack. Registered
+  // with the site (not statically) so nothing outside the hall pays for them,
+  // and released on dispose so a streamed-out site cannot leave a phantom pool
+  // floating over the cliff. The basin is the built floor, not the terrain.
+  const releaseSwimVolume = registerSwimVolume({
+    id: "sutro-baths-pools",
+    surfaceY: SUTRO_BATHS.waterY,
+    floorY: SUTRO_BATHS.basinY,
+    ...sutroPoolBounds(),
+    contains: isInsideSutroPool,
+    // …and getting out again. The coping is only a 0.44 m step above the
+    // water, but a swimmer has no jump, so without a rim to haul onto every
+    // bath is a one-way trip. The authored walk surface already knows what is
+    // beside each pool — the deck, or a stair tread where one meets the water.
+    climbOutY: sutroWalkSurfaceY
+  });
 
   const syncTuning = () => {
     ambience.applyTuning(SUTRO_BATHS_TUNING.values);
@@ -314,10 +344,13 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     // culled: releasing here covers streaming-out, perf suppression and the
     // debug panel's A/B toggle in one place. The pavilion clock releases with
     // it so the next arrival finds its hands already on the hour rather than
-    // winding to it from wherever the last visit left them.
+    // winding to it from wherever the last visit left them, and the hall
+    // caustics live on streamer-owned materials that outlive this object, so
+    // they need the same explicit release — nothing else will zero them.
     if (!next) {
       twilight.release();
       pavilionClock.release();
+      hallCaustics.clear();
     }
   };
 
@@ -369,6 +402,13 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       // A stage that returns true has more to hand out and keeps its turn.
       if (wakeStage < wakeStages.length && !wakeStages[wakeStage]()) wakeStage++;
       ambience.setTwilight(twilight.depth);
+      // Water-light on the ironwork. The node lives on the hall's materials,
+      // which the region streamer owns, so the site only feeds it the clock and
+      // the pocket depth — and zeroes it on sleep, below, so a retired hall
+      // cannot keep shimmering.
+      hallCaustics.setTime(time);
+      hallCaustics.setTwilight(twilight.depth);
+      hallCaustics.setStrength(SUTRO_BATHS_TUNING.values.hallCaustics);
       parlour.setLampGlow(twilight.lampGlow);
       // After twilight.update: the pocket has just written the hour the sky is
       // rendering, and the clock's whole job is to agree with it.
@@ -382,7 +422,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       const py = player.y ?? SUTRO_BATHS.waterY;
       batherPlayer.position.set(player.x, py, player.z);
       bathers.update(dt, time, batherPlayer);
-      water.update(dt, time, player);
+      water.update(dt, time, player, camera);
+      // Steam lives entirely above the waterline, and from under the surface
+      // the sheet is an opaque ceiling — so a submerged swimmer must not see
+      // plumes composited over it (the shells draw after the sheet by design;
+      // see SUTRO_STEAM_RENDER_ORDER).
+      steam?.setSubmerged(water.cameraSubmerged);
       steam?.update(dt, time, player, camera, gust);
 
       monitors.backend = water.stats.backend;
@@ -470,6 +515,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     dispose() {
       if (disposed) return;
       disposed = true;
+      releaseSwimVolume();
       twilight.release();
       water.dispose();
       steam?.dispose();

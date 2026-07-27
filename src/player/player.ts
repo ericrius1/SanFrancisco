@@ -1902,8 +1902,19 @@ export class Player {
       } else if (archering) {
         poseArcher(r, this.#archerPose.draw, this.#archerPose.pitch);
       } else if (walk.swimming) {
-        this.#strideT += dt * 3.4;
-        poseSwim(r, this.#strideT);
+        // Cadence and pose both follow the ACTUAL swim speed. The old form
+        // advanced at a flat dt * 3.4 and always posed a full front crawl, so a
+        // swimmer holding station windmilled at racing rate — the surest tell
+        // that the animation was not connected to anything. WALK_TUNING's
+        // speed * swimFactor is the controller's own full-stroke swim speed, so
+        // `drive` reaches 1 exactly when the player is swimming flat out.
+        const tw = WALK_TUNING.values;
+        const swimSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+        const drive = THREE.MathUtils.clamp(swimSpeed / Math.max(0.2, tw.speed * tw.swimFactor), 0, 1);
+        // Treading still sculls, just slowly — hence the floor rather than a
+        // cadence that stops dead.
+        this.#strideT += dt * (1.15 + drive * 2.6);
+        poseSwim(r, this.#strideT, drive);
       } else if (!walk.grounded) {
         poseAir(r);
       } else {

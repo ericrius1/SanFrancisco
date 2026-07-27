@@ -143,23 +143,32 @@ export class UnderwaterVolume {
 
   /**
    * Per-frame drive. `submersion` is the rig's smoothed 0..1 camera state and
-   * `lightUp` its sun-elevation factor. Uniform writes + one visibility flip
-   * only; nothing here allocates or rebuilds.
+   * `lightUp` its sun-elevation factor. `body` overrides the bay assumptions
+   * for an authored pool: its built floor and still surface instead of the
+   * terrain and the swell, and `snow` at 0 because marine snow drifting through
+   * a tiled bath reads as dirt rather than as sea. Uniform writes + one
+   * visibility flip only; nothing here allocates or rebuilds.
    */
-  update(camera: THREE.PerspectiveCamera, timeSec: number, submersion: number, lightUp: number) {
+  update(
+    camera: THREE.PerspectiveCamera,
+    timeSec: number,
+    submersion: number,
+    lightUp: number,
+    body?: { floorY: number | null; surfaceY: number | null; snow: number }
+  ) {
+    const snowScale = body?.snow ?? 1;
     const active = submersion > 0.01;
-    if (this.#snow.visible !== active) {
-      this.#snow.visible = active;
-      this.#caustics.visible = active;
-    }
+    const snowActive = active && snowScale > 0.001;
+    if (this.#snow.visible !== snowActive) this.#snow.visible = snowActive;
+    if (this.#caustics.visible !== active) this.#caustics.visible = active;
     if (!active) return;
     const cx = camera.position.x;
     const cz = camera.position.z;
     (this.#camU.value as THREE.Vector3).copy(camera.position);
-    this.#snowFade.value = submersion;
+    this.#snowFade.value = submersion * snowScale;
 
-    const floorY = this.#map.groundHeight(cx, cz);
-    const wy = waterHeight(cx, cz, timeSec);
+    const floorY = body?.floorY ?? this.#map.groundHeight(cx, cz);
+    const wy = body?.surfaceY ?? waterHeight(cx, cz, timeSec);
     this.#caustics.position.set(cx, floorY + 0.12, cz);
     (this.#causticCam.value as THREE.Vector2).set(cx, cz);
     // deeper floor = dimmer dapple; subtle is correct — light, not a grid

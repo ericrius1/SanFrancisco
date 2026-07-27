@@ -3,6 +3,7 @@ import { int, rtt, uniform } from "three/tsl";
 import { godrays } from "three/addons/tsl/display/GodraysNode.js";
 import { bilateralBlur } from "three/addons/tsl/display/BilateralBlurNode.js";
 import { depthAwareBlend } from "three/addons/tsl/display/depthAwareBlend.js";
+import { pinShadowCameraToBeautyWorld } from "../world/shadows/shadowLayers";
 import type { PianoGodRaysParams } from "./pianoGodRaysTypes";
 
 type GodraysPass = ReturnType<typeof godrays> & {
@@ -42,6 +43,10 @@ function acquireShadowLight(): THREE.DirectionalLight {
   light.shadow.bias = -0.00035;
   light.shadow.normalBias = 0.08;
   const shadowCamera = light.shadow.camera;
+  // Grove casters only. Left at three's default this camera inherits the render
+  // camera's whole mask, which drags every beauty-only marker — including the
+  // occlusion-gate query proxies — into this per-frame shadow pass.
+  pinShadowCameraToBeautyWorld(shadowCamera);
   const halfExtent = SHADOW_EXTENT * 0.5;
   shadowCamera.left = -halfExtent;
   shadowCamera.right = halfExtent;

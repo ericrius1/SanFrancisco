@@ -624,8 +624,20 @@ export class WorldMap {
     tex.minFilter = THREE.LinearFilter;
     tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.needsUpdate = true;
-    // uv = (world - min) / extent
-    const scale = new THREE.Vector4(minX, minZ, W * cellSize, H * cellSize);
+    // uv = (world - min + cellSize) / extent  — HALF-TEXEL REGISTRATION.
+    //
+    // Texel k stores heights[2k], which lives at world minX + 2k·cellSize, i.e.
+    // uv = 2k/W = k/w — the texel's LEFT EDGE. But a sampler puts texel k's
+    // centre at (k+0.5)/w, so with LinearFilter every fetch returned a 50/50
+    // blend of the wrong pair and the entire bay floor read one full grid cell
+    // (cellSize = 8 m) inland. Measured at the Ocean Beach waterline: median
+    // floorH −0.86 m before this, 0.00 m after.
+    //
+    // Pulling the origin back by cellSize maps that same data point to
+    // (2k+1)/W = (k+0.5)/w — the texel centre — which is exact, not a fudge.
+    // Everything keyed on `depth` (the shoreline foam band, and the Tier B bed
+    // transmission) was reading 8 m of the wrong bathymetry before this.
+    const scale = new THREE.Vector4(minX - cellSize, minZ - cellSize, W * cellSize, H * cellSize);
     return { tex, scale };
   }
 }

@@ -176,7 +176,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     highUp: false as any,
     uiOpen: true as any,
   };
-  const water = new Water(scene, map, renderer);
+  const water = new Water(scene, map, renderer, sky);
   voidRealm.attachWater(water);
   // Compile the water sheets detached before their first visible frame — the
   // void loop is LIVE now; an uncompiled sheet would stall a whole frame on
@@ -186,7 +186,9 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     const restore = waterRoots.map((m) => m.visible);
     for (const m of waterRoots) m.visible = false;
     void Promise.all(
-      waterRoots.map((m) => warmHiddenRoot(renderer, camera, scene, m).catch(() => {}))
+      waterRoots.map((m) =>
+        warmHiddenRoot(renderer, camera, scene, m, ctx.pipeline.compileAsyncPrioritized).catch(() => {})
+      )
     ).then(() => waterRoots.forEach((m, i) => (m.visible = restore[i])));
   }
   const underwater = new UnderwaterOverlay(app, map);
