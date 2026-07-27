@@ -200,6 +200,18 @@ export function ghostShipDeckHalfWidth(z: number): number {
   return 0;
 }
 
+/**
+ * How far above the deck a falling body still counts as arriving on this ship.
+ *
+ * The carry has to start well before the feet touch down, or the ship simply
+ * flies out from under anyone dropping onto it — step off a bird a few metres
+ * up and you land where the deck *was*. The ceiling clears the tallest mast
+ * (14.3 m) with room for a running jump off a mount above it, and the deck
+ * footprint still does the real gating: leave over the rail and the carry
+ * releases you on the way down, however high you were.
+ */
+export const GHOST_SHIP_ARRIVAL_CEILING = 24;
+
 /** A body-centre gate used before applying the ship's frame delta to a walker. */
 export function ghostShipLocalPointIsAboard(x: number, y: number, z: number): boolean {
   const halfWidth = ghostShipDeckHalfWidth(z);
@@ -207,7 +219,7 @@ export function ghostShipLocalPointIsAboard(x: number, y: number, z: number): bo
     halfWidth > 0 &&
     Math.abs(x) <= halfWidth + 0.45 &&
     y >= GHOST_SHIP_DECK_TOP + 0.35 &&
-    y <= GHOST_SHIP_DECK_TOP + 5.2
+    y <= GHOST_SHIP_DECK_TOP + GHOST_SHIP_ARRIVAL_CEILING
   );
 }
 
