@@ -149,7 +149,12 @@ const DEFINITIONS = Object.freeze({
     [2, "Ocean Beach Kites · Two Sunwheels"],
     [3, "Ocean Beach Kites · The Centipede"],
     [4, "Ocean Beach Kites · Running the Sand"],
-    [5, "Ocean Beach Kites · Blue Hour"]
+    [5, "Ocean Beach Kites · Blue Hour"],
+    [6, "Ocean Beach Kites · From Above"],
+    [7, "Ocean Beach Kites · Full Rays"],
+    [8, "Ocean Beach Kites · Clear Dusk"],
+    [9, "Ocean Beach Kites · The Descent"],
+    [10, "Ocean Beach Kites · Around the Pair"]
   ].map(([index, title]) => {
     const suffix = String(index).padStart(2, "0");
     const id = `ocean-beach-kite-${suffix}`;

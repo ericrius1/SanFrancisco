@@ -23,7 +23,7 @@ const PRODUCTION_DURATIONS = Object.freeze({
     `twitter-summer-${String(index + 1).padStart(2, "0")}`,
     7.5
   ])),
-  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
+  ...Object.fromEntries(Array.from({ length: 10 }, (_, index) => [
     `ocean-beach-kite-${String(index + 1).padStart(2, "0")}`,
     10
   ]))
@@ -97,7 +97,7 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 3.65, id: "stream", description: "wings tuck into the Palace flyby exit" },
     { time: 4.55, id: "resolve", description: "golden tail stream resolves over the rotunda" }
   ]),
-  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
+  ...Object.fromEntries(Array.from({ length: 10 }, (_, index) => {
     const shot = index + 1;
     return [`ocean-beach-kite-${String(shot).padStart(2, "0")}`, Object.freeze([
       { time: 0, id: "wind", description: `look ${shot} opens on the onshore wind` },
@@ -388,8 +388,18 @@ export async function renderTransitionAudio(options = {}, outputPath) {
  * even though the plan is identical. `shot` only tunes the balance: the early
  * looks are brighter and windier, the last one is mostly water and air.
  */
+/**
+ * How far into the evening each look actually sits, keyed to the hour its demo
+ * pins rather than to its index — the second five are not simply later than the
+ * first five, and shot 06 is mid-afternoon.
+ */
+const KITE_EVENING = Object.freeze({
+  1: 0.0, 2: 0.2, 3: 0.4, 4: 0.65, 5: 1.0,
+  6: 0.0, 7: 0.45, 8: 0.95, 9: 0.3, 10: 0.6
+});
+
 function scoreOceanBeachKite(mix, shot) {
-  const evening = clamp01((shot - 1) / 4);
+  const evening = clamp01(KITE_EVENING[shot] ?? (shot - 1) / 4);
   // The pad drops a fifth and dims as the sun goes; by look five it is a drone.
   addPad(mix, {
     start: 0,

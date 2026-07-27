@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { armCinematic, easeInOutCubic, mix, setPose, smoothstep } from "../../cinematic";
 import { SUN_STATE } from "../../world/sky";
+import { OCEAN_KITE_TUNING } from "../../world/oceanBeachKite/tuning";
 import type { OceanBeachKiteEncounter } from "../../world/oceanBeachKite";
 import type { Demo } from "../demo";
 import { cleanPlate, freezeAndBuryPlayer } from "./shared";
@@ -26,6 +27,14 @@ type Framing = {
   /** SF wall-clock hour. 19.4 is sun-on-water; 20.75 is past sunset. */
   hour: number;
   exposure: number;
+  /**
+   * Per-shot weather. The encounter reads OCEAN_KITE_TUNING every frame, so a
+   * look can thin the marine layer out or lean on the shafts without touching
+   * anyone else's. This is what stops five clips of the same beach at the same
+   * hour from being five of the same clip.
+   */
+  mist?: number;
+  shafts?: number;
   /** Which flyer this shot is about; 0 is the diamond soloist. */
   subject: number;
   /**
@@ -199,6 +208,141 @@ const FRAMINGS: readonly Framing[] = [
   }
 ];
 
+/**
+ * Five more looks, deliberately unlike the first five. Where those all stood
+ * back at eye level in heavy marine layer, these move the camera — an overhead
+ * that exists to show the shadows, a crane that falls through the flock, an
+ * orbit around a mirrored pair — and each one dials its own fog and shafts.
+ */
+const EXTRA_FRAMINGS: readonly Framing[] = [
+  {
+    id: "06",
+    title: "Ocean Beach Kites · From Above",
+    // Mid-afternoon on purpose. The whole point of this angle is the shadows,
+    // and a sun on the water throws them a hundred metres out to sea; a sun
+    // thirty degrees up lays them on the sand right beside their kites.
+    hour: 16.55,
+    exposure: 0.9,
+    mist: 0.3,
+    shafts: 0.45,
+    subject: 0,
+    // Looking down the whole beach from seventy metres, drifting sideways so
+    // the kites and their shadows separate in parallax.
+    frame: ({ u }, live, eye, target) => {
+      const drift = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.flock)
+        .addScaledVector(live.sun, mix(26, -18, drift))
+        .addScaledVector(along, mix(-34, 30, drift));
+      eye.y = live.ground(eye.x, eye.z) + mix(74, 62, drift);
+      target.copy(live.flock).addScaledVector(along, mix(-10, 8, drift));
+      target.y = live.ground(target.x, target.z) + 6;
+      return mix(34, 40, drift);
+    }
+  },
+  {
+    id: "07",
+    title: "Ocean Beach Kites · Full Rays",
+    hour: 19.72,
+    exposure: 0.92,
+    // Thick air and the shafts pushed hard: the one clip that is about the
+    // light itself rather than about any particular kite.
+    mist: 1.25,
+    shafts: 1.7,
+    subject: 6,
+    // Down on the sand, tracking sideways so kite after kite crosses the sun.
+    frame: ({ u }, live, eye, target) => {
+      const track = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.flock)
+        .addScaledVector(live.sun, -mix(96, 88, track))
+        .addScaledVector(along, mix(-44, 40, track));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + 1.75;
+      target.copy(live.flock).addScaledVector(along, mix(-14, 12, track));
+      target.y = base + 9 + (live.flock.y - base) * 0.36;
+      return mix(50, 44, track);
+    }
+  },
+  {
+    id: "08",
+    title: "Ocean Beach Kites · Clear Dusk",
+    hour: 20.52,
+    exposure: 0.86,
+    // Almost no fog. After the earlier looks buried everything in marine layer,
+    // this one wants hard clean silhouettes on a bare gradient.
+    mist: 0.18,
+    shafts: 0.35,
+    subject: 3,
+    // A slow push in on the lantern, the only move in the shot.
+    frame: ({ u }, live, eye, target) => {
+      const push = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.kite)
+        .addScaledVector(live.sun, -mix(96, 62, push))
+        .addScaledVector(along, mix(16, 11, push));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(7, 5.5, push);
+      target.copy(live.kite);
+      target.y = base + 7 + (live.kite.y - base) * 0.4;
+      return mix(44, 58, push);
+    }
+  },
+  {
+    id: "09",
+    title: "Ocean Beach Kites · The Descent",
+    hour: 19.58,
+    exposure: 0.94,
+    mist: 0.65,
+    shafts: 1.15,
+    subject: 6,
+    // A crane fall: sixty metres down to head height over the ten seconds,
+    // arriving under the centipede as it comes through its window.
+    frame: ({ u }, live, eye, target) => {
+      const fall = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.kite)
+        .addScaledVector(live.sun, -mix(64, 92, fall))
+        .addScaledVector(along, mix(30, 4, fall));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(62, 4.5, fall);
+      target.copy(live.kite);
+      // The look-at falls with the eye, so the horizon rises into frame instead
+      // of the kite sliding out of the top.
+      target.y = mix(live.kite.y, base + 8 + (live.kite.y - base) * 0.36, fall);
+      return mix(38, 50, fall);
+    }
+  },
+  {
+    id: "10",
+    title: "Ocean Beach Kites · Around the Pair",
+    hour: 19.98,
+    exposure: 0.96,
+    mist: 0.5,
+    shafts: 1.35,
+    subject: 1,
+    companion: 2,
+    // A quarter orbit around the mirrored sunwheels, so their crossing arcs
+    // sweep across the sun rather than sitting beside it.
+    frame: ({ u }, live, eye, target) => {
+      const swing = easeInOutCubic(u);
+      // Rotate the stand-off direction around the pair instead of sliding it.
+      const angle = mix(-0.62, 0.5, swing);
+      const away = new THREE.Vector3(
+        -live.sun.x * Math.cos(angle) + live.sun.z * Math.sin(angle),
+        0,
+        -live.sun.z * Math.cos(angle) - live.sun.x * Math.sin(angle)
+      ).normalize();
+      eye.copy(live.pair).addScaledVector(away, mix(86, 74, swing));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(6, 12, swing);
+      target.copy(live.pair);
+      target.y = base + 8 + (live.pair.y - base) * 0.32;
+      return mix(44, 52, swing);
+    }
+  }
+];
+
 type KiteWindow = Window & typeof globalThis & { __sf?: { oceanBeachKite?: OceanBeachKiteEncounter } };
 
 function buildDemo(framing: Framing): Demo {
@@ -217,6 +361,8 @@ function buildDemo(framing: Framing): Demo {
       sky.setTimeOfDay(framing.hour);
       ctx.setExposure(framing.exposure);
       ctx.setPostFx({ ink: false, dream: false, retro: false });
+      if (framing.mist !== undefined) OCEAN_KITE_TUNING.values.mistDensity = framing.mist;
+      if (framing.shafts !== undefined) OCEAN_KITE_TUNING.values.shaftStrength = framing.shafts;
       ctx.input.suspended = true;
 
       // The encounter wakes on the PLAYER's distance to the site, not the
@@ -295,7 +441,7 @@ function buildDemo(framing: Framing): Demo {
   };
 }
 
-export const kiteFestivalDemos: readonly Demo[] = FRAMINGS.map(buildDemo);
+export const kiteFestivalDemos: readonly Demo[] = [...FRAMINGS, ...EXTRA_FRAMINGS].map(buildDemo);
 export const KITE_FESTIVAL_TITLES: Readonly<Record<string, string>> = Object.fromEntries(
-  FRAMINGS.map((framing) => [`ocean-beach-kite-${framing.id}`, framing.title])
+  [...FRAMINGS, ...EXTRA_FRAMINGS].map((framing) => [`ocean-beach-kite-${framing.id}`, framing.title])
 );
