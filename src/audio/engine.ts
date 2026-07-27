@@ -24,11 +24,26 @@ const GROUPS: AudioGroupName[] = ["music", "effects", "world", "voice"];
 const approach = (current: number, target: number, dt: number, rate: number) =>
   current + (target - current) * Math.min(1, dt * rate);
 
+/**
+ * Where the muffle lands when the head is fully under. Water kills the high end
+ * long before it kills the level, so this is mostly a filter move with a small
+ * duck under it; 420 Hz keeps voices and music recognisable while making it
+ * obvious your ears are underwater.
+ */
+const SUBMERGED_CUTOFF_HZ = 420;
+const DRY_CUTOFF_HZ = 21000; // at/above Nyquist: a flat, effectively bypassed filter
+const SUBMERGED_GAIN = 0.72;
+
 export class AudioEngine {
   #ctx: AudioContext | null = null;
   #master!: GainNode;
   #groups!: Record<AudioGroupName, GainNode>;
   #levels: Record<AudioGroupName, number> = { music: 0, effects: 0, world: 0, voice: 0 };
+  /** Submerged bus: everything except voice chat goes through the muffle. */
+  #wet!: GainNode;
+  #muffle!: BiquadFilterNode;
+  #submersionTarget = 0;
+  #submersion = 0;
   #unlocked = false;
   #hold = 0;
   // Persistent activity holds keep the context running only while the page is
@@ -84,7 +99,8 @@ export class AudioEngine {
       },
       hold: +this.#hold.toFixed(3),
       persistent: this.#persistent,
-      pageVisible: this.#pageVisible
+      pageVisible: this.#pageVisible,
+      submersion: +this.#submersion.toFixed(3)
     };
   }
 
@@ -171,6 +187,28 @@ export class AudioEngine {
       if (running) this.#groups[g].gain.setTargetAtTime(level, ctx.currentTime, 0.025);
     }
 
+    // Ears go under faster than they come back up — the crossing should land as
+    // a lid closing, and the surfacing as a lift rather than a pop.
+    const wasSubmerged = this.#submersion;
+    this.#submersion = approach(
+      this.#submersion,
+      this.#submersionTarget,
+      dt,
+      this.#submersionTarget > this.#submersion ? 9 : 6
+    );
+    if (this.#submersion < 0.0005) this.#submersion = 0;
+    if (running && (this.#submersion > 0 || wasSubmerged > 0)) {
+      // Cutoff sweeps geometrically: a linear ramp spends most of its travel in
+      // frequencies nobody can hear moving.
+      const cutoff = DRY_CUTOFF_HZ * Math.pow(SUBMERGED_CUTOFF_HZ / DRY_CUTOFF_HZ, this.#submersion);
+      this.#muffle.frequency.setTargetAtTime(cutoff, ctx.currentTime, 0.05);
+      this.#wet.gain.setTargetAtTime(
+        1 + (SUBMERGED_GAIN - 1) * this.#submersion,
+        ctx.currentTime,
+        0.05
+      );
+    }
+
     if (running) {
       // Mixer levels express how loud a group should be when it has content;
       // they are not evidence that any source is active. Using them as the idle
@@ -201,10 +239,23 @@ export class AudioEngine {
     this.#ctx = ctx;
     if (!this.#pageVisible && ctx.state === "running") void ctx.suspend();
 
-    // group gains (start silent) → master (reserved for future global fades) → out
+    // group gains (start silent) → [muffle for everything but voice] → master → out
     this.#master = ctx.createGain();
     this.#master.gain.value = 1;
     this.#master.connect(ctx.destination);
+
+    // One shared lowpass, permanently installed and parked at Nyquist so it is
+    // audibly a straight wire while dry. Reconnecting the graph on the surface
+    // crossing instead would click, and a per-feature filter would need every
+    // voice in the app to know about water.
+    this.#muffle = ctx.createBiquadFilter();
+    this.#muffle.type = "lowpass";
+    this.#muffle.frequency.value = DRY_CUTOFF_HZ;
+    this.#muffle.Q.value = 0.55;
+    this.#wet = ctx.createGain();
+    this.#wet.gain.value = 1;
+    this.#muffle.connect(this.#wet);
+    this.#wet.connect(this.#master);
 
     this.#groups = {
       music: ctx.createGain(),
@@ -214,9 +265,19 @@ export class AudioEngine {
     };
     for (const g of GROUPS) {
       this.#groups[g].gain.value = 0;
-      this.#groups[g].connect(this.#master);
+      // Voice chat stays dry: muffling other players is a comprehension cost
+      // with no payoff — their radio is not in the water with you.
+      this.#groups[g].connect(g === "voice" ? this.#master : this.#muffle);
     }
     return ctx;
+  }
+
+  /**
+   * 0 = head in air, 1 = fully submerged. Smoothed in `update`, so callers can
+   * hand over a raw per-frame state (fx/underwaterRig's eased submersion).
+   */
+  setSubmersion(amount: number): void {
+    this.#submersionTarget = amount > 0 ? (amount < 1 ? amount : 1) : 0;
   }
 
   /**

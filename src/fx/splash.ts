@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
-import { waterHeight, type WorldMap } from "../world/heightmap";
+import type { WorldMap } from "../world/heightmap";
+import { submergibleWaterY } from "../world/swimVolumes";
 import type { Player } from "../player/player";
 import type { WakeRipples } from "./wake";
 import { LIGHT_SCALE } from "../config";
@@ -15,7 +16,11 @@ import { LIGHT_SCALE } from "../config";
  * along the surface sheds a lighter skim-spray by distance travelled.
  */
 
-const SPLASH_MODES = new Set(["bird", "plane", "drone", "board", "surf"]);
+// "walk" is here for the swimmer: stepping off a bath coping or wading in off
+// the sand crosses the surface exactly like a landing, and the entry plume is
+// the visual half of SwimAudio's plunge. The crossing detector already fires
+// once per entry and holds a cooldown, so surface-bobbing cannot retrigger it.
+const SPLASH_MODES = new Set(["bird", "plane", "drone", "board", "surf", "walk"]);
 
 type Drop = {
   sprite: THREE.Sprite;
@@ -195,12 +200,18 @@ export class WaterSplashes {
 
     this.#cooldown -= dt;
     const p = player.renderPosition;
-    if (!SPLASH_MODES.has(player.mode) || !this.#map.isWater(p.x, p.z)) {
+    if (!SPLASH_MODES.has(player.mode)) {
+      this.#prevY = p.y;
+      return;
+    }
+    // NaN when the column is dry — land dipping below y=0 near shore is not
+    // water. Authored pools resolve here too (world/swimVolumes.ts).
+    const h = submergibleWaterY(this.#map, p.x, p.z, elapsed);
+    if (Number.isNaN(h)) {
       this.#prevY = p.y;
       return;
     }
 
-    const h = waterHeight(p.x, p.z, elapsed);
     const vy = player.velocity.y;
     const hSpeed = Math.hypot(player.velocity.x, player.velocity.z);
 
