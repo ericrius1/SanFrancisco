@@ -1,0 +1,28 @@
+Image brief — a lithographed plate that will hang, framed, on the timber wall of
+an indoor swimming hall in a stylised low-poly video game. PORTRAIT 2:3.
+
+Subject: an architectural plate of the baths, in the manner of a period
+engineering journal. The upper two thirds is a clean cutaway LONG SECTION through
+the glass hall — the arched iron roof trusses drawn as fine line work, the tiers
+of galleries, and the seven pools stepped along the floor below, each pool filled
+with a flat teal tone. The lower third is a small measured PLAN of the same seven
+pools, keyed with roman numerals I to VII. Thin ruled border, a scale bar, fine
+hatching for the rock the building sits on. Precise, technical, restrained — the
+one plate on this wall that is a drawing rather than a picture. No crowds.
+
+Style: 1890s American lithographed architectural plate. FLAT spot colours over
+fine black line work, hard silhouettes, visible flat colour separations, NO
+photorealism, NO gradients other than simple flat bands, no digital airbrush.
+Slight aged cream paper tone. Much more white/cream space than the poster plates.
+
+Palette (use these, they must sit in a warm timber room): cream #f7eed6, warm
+gold #e8ab3f, coral #e07a4e, terracotta #a8412a, deep teal #12454a, mid teal
+#1f6b6b, sea green #2e7f6d, ink navy #1b2b45, moss #4d6b3a.
+
+Typography, spelled EXACTLY, in an elegant Didot-like serif, well kerned:
+  top small line: PLATE II
+  headline: THE NATATORIUM
+  subhead: LONGITUDINAL SECTION & PLAN
+  bottom rule line: SEVEN BATHS · ONE ROOF OF GLASS
+Leave a clean margin — the plate gets a physical frame around it, so keep all
+type and key subject matter inside the middle 92% of the canvas.

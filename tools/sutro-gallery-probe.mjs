@@ -28,7 +28,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BASE_URL = (process.env.SF_PROBE_URL ?? "http://127.0.0.1:5240").replace(/\/$/, "");
 const OUT = path.join(ROOT, ".data/sutro-gallery-probe");
 
-/** Every plate hung in timberGallery.ts, plus the shared grain pair. */
+/**
+ * Every plate hung in timberGallery.ts, plus the shared grain pair. Seventeen
+ * plates in seventeen slots — the wall deliberately hangs no picture twice, so
+ * this list is also the assertion that no plate has quietly gone missing from
+ * the hang or been added to it without being generated.
+ */
 const EXPECTED_MEDIA = [
   "/sutro/timber/hall-timber-basecolor.webp",
   "/sutro/timber/hall-timber-normal.webp",
@@ -36,10 +41,19 @@ const EXPECTED_MEDIA = [
   "/sutro/art/hall-seal-rocks.webp",
   "/sutro/art/hall-carnival-night.webp",
   "/sutro/art/hall-conservatory-palms.webp",
+  "/sutro/art/hall-toboggan-slides.webp",
+  "/sutro/art/hall-tide-tunnel.webp",
+  "/sutro/art/hall-sutro-heights.webp",
+  "/sutro/art/hall-high-dive.webp",
   "/sutro/art/bill-grand-opening.webp",
   "/sutro/art/bill-swimming-carnival.webp",
+  "/sutro/art/bill-sutro-railroad.webp",
+  "/sutro/art/bill-bathing-suits.webp",
+  "/sutro/art/bill-winter-sea.webp",
   "/sutro/art/plate-tropical-ferns.webp",
-  "/sutro/art/plate-museum-curios.webp"
+  "/sutro/art/plate-museum-curios.webp",
+  "/sutro/art/plate-natatorium-section.webp",
+  "/sutro/art/plate-pacific-shells.webp"
 ];
 
 const checks = [];

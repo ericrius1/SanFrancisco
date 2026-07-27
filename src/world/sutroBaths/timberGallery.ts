@@ -167,9 +167,21 @@ type ArtLayout = "wide" | "tall" | "pair";
 type ArtBay = { bay: number; layout: ArtLayout; plates: readonly string[] };
 
 /**
- * What hangs where. Fourteen bays of full-height wall, and no plate ever repeats
- * in adjacent bays — at 9.5 m centres a repeat two bays apart is visible from
- * anywhere on the deck.
+ * What hangs where. Fourteen bays of full-height wall, seventeen pictures, and
+ * no plate hung twice anywhere on the wall.
+ *
+ * The earlier hang had eight plates in eighteen slots, so every picture appeared
+ * two or three times — and at 9.5 m centres a repeat is legible from anywhere on
+ * the deck, which made 133 m of wall read as wallpaper. One of the four paired
+ * bays became a single hang, which is also a better rhythm: a pair reads as a
+ * deliberate diptych when it is occasional and as a default when it is every
+ * third bay.
+ *
+ * Ordering rule beyond "no repeats": the four quiet plates — the two natural
+ * history / architectural sheets and the two most typographic bills — are spread
+ * so that no two land in adjacent bays. They are the plates that reward walking
+ * up to them, and clustering them would leave one end of the wall shouting and
+ * the other end silent.
  */
 const ART_BAYS: readonly ArtBay[] = [
   { bay: -8, layout: "wide", plates: ["hall-pacific-plunge"] },
@@ -177,15 +189,15 @@ const ART_BAYS: readonly ArtBay[] = [
   { bay: -6, layout: "wide", plates: ["hall-seal-rocks"] },
   { bay: -5, layout: "tall", plates: ["bill-swimming-carnival"] },
   { bay: -4, layout: "wide", plates: ["hall-conservatory-palms"] },
-  { bay: -3, layout: "pair", plates: ["plate-museum-curios", "bill-grand-opening"] },
+  { bay: -3, layout: "pair", plates: ["plate-museum-curios", "bill-bathing-suits"] },
   { bay: -2, layout: "wide", plates: ["hall-carnival-night"] },
-  { bay: -1, layout: "tall", plates: ["plate-tropical-ferns"] },
-  { bay: 0, layout: "wide", plates: ["hall-pacific-plunge"] },
-  { bay: 1, layout: "pair", plates: ["bill-swimming-carnival", "plate-museum-curios"] },
-  { bay: 2, layout: "wide", plates: ["hall-seal-rocks"] },
-  { bay: 3, layout: "tall", plates: ["bill-grand-opening"] },
-  { bay: 4, layout: "wide", plates: ["hall-carnival-night"] },
-  { bay: 5, layout: "pair", plates: ["plate-tropical-ferns", "bill-swimming-carnival"] }
+  { bay: -1, layout: "tall", plates: ["bill-sutro-railroad"] },
+  { bay: 0, layout: "wide", plates: ["hall-toboggan-slides"] },
+  { bay: 1, layout: "pair", plates: ["plate-natatorium-section", "plate-pacific-shells"] },
+  { bay: 2, layout: "wide", plates: ["hall-tide-tunnel"] },
+  { bay: 3, layout: "tall", plates: ["hall-high-dive"] },
+  { bay: 4, layout: "wide", plates: ["hall-sutro-heights"] },
+  { bay: 5, layout: "tall", plates: ["bill-winter-sea"] }
 ];
 
 /**

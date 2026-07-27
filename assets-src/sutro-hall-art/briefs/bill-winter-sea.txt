@@ -1,0 +1,25 @@
+Image brief — a lithographed poster that will hang, framed, on the timber wall of
+an indoor swimming hall in a stylised low-poly video game. PORTRAIT 2:3.
+
+Subject: a winter bill selling the warmth of the place against the weather
+outside. The plate is split as a bold vertical contrast: the outer third is a
+cold storm — grey-navy sky, hard white rain strokes, a gull beating into the
+wind, black rocks and cold surf; the inner two thirds is the hall behind its
+glass, glowing warm gold, steam lifting off the water, small bathers swimming in
+comfort. The glass wall itself is the dividing line down the plate. Cold outside,
+gold inside, one clean edge between them.
+
+Style: 1890s American chromolithograph poster. FLAT spot colours, hard
+silhouettes, visible flat colour separations, NO photorealism, NO gradients other
+than simple flat bands, no digital airbrush. Slight aged cream paper tone.
+
+Palette (use these, they must sit in a warm timber room): cream #f7eed6, warm
+gold #e8ab3f, coral #e07a4e, terracotta #a8412a, deep teal #12454a, mid teal
+#1f6b6b, sea green #2e7f6d, ink navy #1b2b45, moss #4d6b3a.
+
+Typography, spelled EXACTLY, in an elegant Didot-like serif, well kerned:
+  headline: SUMMER ALL WINTER
+  subhead: WARMED SALT WATER UNDER GLASS
+  bottom rule line: THE SEA WITHOUT THE WEATHER
+Leave a clean margin — the poster gets a physical frame around it, so keep all
+type and key subject matter inside the middle 92% of the canvas.

@@ -1,0 +1,24 @@
+Image brief — a lithographed poster that will hang, framed, on the timber wall of
+an indoor swimming hall in a stylised low-poly video game. LANDSCAPE 3:2.
+
+Subject: Sutro Heights, the clifftop pleasure gardens above the baths, at golden
+hour. A formal parapet walk along the cliff edge lined with white classical
+statues on plinths, clipped hedges, palms and flowerbeds in flat colour blocks,
+Victorian visitors in period dress strolling in small dark silhouettes, and
+beyond the parapet the whole Pacific in banded teal with a low gold sun. Grand,
+ornamental, serene — the counterpoint to the busy interior plates.
+
+Style: 1890s American chromolithograph poster. FLAT spot colours, hard
+silhouettes, visible flat colour separations, NO photorealism, NO gradients other
+than simple flat bands, no digital airbrush. Slight aged cream paper tone.
+
+Palette (use these, they must sit in a warm timber room): cream #f7eed6, warm
+gold #e8ab3f, coral #e07a4e, terracotta #a8412a, deep teal #12454a, mid teal
+#1f6b6b, sea green #2e7f6d, ink navy #1b2b45, moss #4d6b3a.
+
+Typography, spelled EXACTLY, in an elegant Didot-like serif, well kerned:
+  headline: SUTRO HEIGHTS
+  subhead: GARDENS ABOVE THE SEA
+  bottom rule line: OPEN TO ALL · FREE TO THE PUBLIC
+Leave a clean margin — the poster gets a physical frame around it, so keep all
+type and key subject matter inside the middle 92% of the canvas.
