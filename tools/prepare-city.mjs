@@ -12,6 +12,7 @@ import { decomposeFootprint, minAreaRect } from "./collider-lib.mjs";
 import { computeGroundTop } from "./groundtop-lib.mjs";
 import { buildRoadClearanceIndex, filterRoadOverlappingColliders } from "./road-collider-clearance.mjs";
 import { encodeHeightmap, encodeGroundTopDelta } from "./terrain-codec.mjs";
+import { markBeachSand } from "./beaches.mjs";
 
 const RAW = new URL("../data/raw/", import.meta.url);
 const PUB = new URL("../public/data/", import.meta.url);
@@ -507,20 +508,15 @@ async function main() {
       if (surface[i] !== 3) surface[i] = 2;
     });
   }
-  // Natural sand band along ocean beach: western shore land cells near water.
-  for (let gy = 0; gy < H; gy++) {
-    for (let gx = 0; gx < W; gx++) {
-      const i = idx(gx, gy);
-      if (surface[i] === 0 && height[i] < 6) {
-        // near water?
-        let nearWater = false;
-        for (let d = 1; d <= 3 && !nearWater; d++) {
-          if (gx - d >= 0 && surface[idx(gx - d, gy)] === 3) nearWater = true;
-          if (gx + d < W && surface[idx(gx + d, gy)] === 3) nearWater = true;
-        }
-        if (nearWater && MINX + gx * CELL < -5200) surface[i] = 2;
-      }
-    }
+  // Natural sand along the ocean beaches. This runs AFTER the green pass on
+  // purpose and re-classes class 1 as well as class 0: SF's beaches sit inside
+  // the GGNRA / city-park polygons above, so Ocean Beach, Baker/Marshall's and
+  // China Beach would otherwise bake as parkland — the grass gate then plants a
+  // wildflower meadow on the sand and the clipmap paints the beach lawn-green.
+  // Corridors live in beaches.mjs, shared with tools/mark-beaches-surface.mjs
+  // (which patches an already-baked surface.bin without a full re-bake).
+  for (const c of markBeachSand(surface, (i) => height[i], GRID)) {
+    console.log(`[prep] beach ${c.id}: ${c.cells} cells → sand`);
   }
 
   const buildingChunks = [];
