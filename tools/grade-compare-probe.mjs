@@ -110,29 +110,71 @@ try {
     console.log("[cmp] LUT re-baked at", LUTSIZE);
   }
 
+  /**
+   * Tick in batches separated by REAL awaits.
+   *
+   * This is not padding. The renderer holds frames while a compile is in flight
+   * (pipeline.ts, exclusiveCompileDepth), and a compile resolves on a promise.
+   * A tight tick loop inside one page.evaluate() is synchronous JS, so no
+   * microtask ever runs, the gate never clears, every tick no-ops, and the
+   * canvas keeps the PREVIOUS frame — while the probe's own state read-back
+   * cheerfully reports the new sun elevation and camera heading. That is how a
+   * plate can be a midday inland shot whose log line says sunset, and why the
+   * failure came and went depending on whether a compile happened to be pending.
+   */
+  /**
+   * chase.yaw is the DESTINATION heading; the rendered boom eases toward it over
+   * a second or so. Re-asserting it every round lets it converge without
+   * chase.cutTo(), which is the documented hard-cut but teleports the camera and
+   * kicks off a streaming/compile burst that holds frames well past any
+   * reasonable settle window — plates come back stale while every read-back
+   * still reports success.
+   */
+  const aim = () => page.evaluate(({ face, pitch }) => {
+    if (face !== "sun") return;
+    const sf = window.__sf;
+    sf.chase.yaw = -sf.sky.sunAzimuth * Math.PI / 180;
+    sf.chase.pitch = pitch;
+  }, { face: FACE, pitch: PITCH });
+
+  const settle = async (rounds = 14) => {
+    for (let r = 0; r < rounds; r++) {
+      await aim();
+      await page.evaluate(() => { for (let i = 0; i < 8; i++) window.__sf.tick(1 / 30); });
+      await page.waitForTimeout(120);
+    }
+  };
+
   for (const time of TIMES) {
     for (const look of LOOKS) {
-      const info = await page.evaluate(({ tod, lookId, face, pitch }) => {
+      await page.evaluate(({ tod, lookId }) => {
         const sf = window.__sf;
         sf.pipeline.grade.setLook(lookId);
         sf.sky.setTimeOfDay(tod);
-        // Settle the sky, weather and water before aiming: sunAzimuth is only
-        // correct once the new hour has been applied.
-        for (let i = 0; i < 30; i++) sf.tick(1 / 30);
-        if (face === "sun") {
-          // Camera look dir is (-sin yaw, ·, -cos yaw); solar.ts builds the sun
-          // vector as (sin az, ·, -cos az). Equating them gives yaw = -az.
-          sf.chase.yaw = -sf.sky.sunAzimuth * Math.PI / 180;
-          sf.chase.pitch = pitch;
-        }
-        for (let i = 0; i < 30; i++) sf.tick(1 / 30);
+      }, { tod: time, lookId: look });
+      await settle();
+
+      const info = await page.evaluate(() => {
+        const sf = window.__sf;
+        // Measure the RENDERED camera, not the requested yaw — the requested
+        // value is trivially correct and tells you nothing about the plate.
+        const fwd = sf.camera.position.clone();
+        sf.camera.getWorldDirection(fwd);
+        const sunAz = sf.sky.sunAzimuth * Math.PI / 180;
+        const sunX = Math.sin(sunAz);
+        const sunZ = -Math.cos(sunAz);
+        const dYaw = Math.atan2(
+          fwd.x * sunZ - fwd.z * sunX,
+          fwd.x * sunX + fwd.z * sunZ
+        );
         return {
           look: sf.pipeline.grade.activeLookId(),
           timeOfDay: Number(sf.sky.timeOfDay.toFixed(2)),
           sunElevation: Number(sf.sky.sunElevation.toFixed(2)),
-          sunAzimuth: Number(sf.sky.sunAzimuth.toFixed(1))
+          sunAzimuth: Number(sf.sky.sunAzimuth.toFixed(1)),
+          offSunDeg: Number((dYaw * 180 / Math.PI).toFixed(1))
         };
-      }, { tod: time, lookId: look, face: FACE, pitch: PITCH });
+      });
 
       const name = `${TAG}${look}_t${String(time).replace(".", "-")}.png`;
       const file = path.join(OUT, name);
