@@ -218,26 +218,33 @@ const EXTRA_FRAMINGS: readonly Framing[] = [
   {
     id: "06",
     title: "Ocean Beach Kites · From Above",
-    // Mid-afternoon on purpose. The whole point of this angle is the shadows,
-    // and a sun on the water throws them a hundred metres out to sea; a sun
-    // thirty degrees up lays them on the sand right beside their kites.
-    hour: 16.55,
+    // Early afternoon, and the hour is doing real work. This angle exists for
+    // the shadows, and the world's hero shadow cascade only covers 32 m around
+    // the player. A kite thirty metres up throws its shadow height/tan(sun)
+    // downsun — 31 m at a 44-degree sun, right off the edge of that box, which
+    // is why the first cut of this shot had none. At 58 degrees it lands 19 m
+    // out and falls on sand the cascade actually reaches.
+    hour: 14.35,
     exposure: 0.9,
     mist: 0.3,
     shafts: 0.45,
     subject: 0,
-    // Looking down the whole beach from seventy metres, drifting sideways so
-    // the kites and their shadows separate in parallax.
+    // A high oblique rather than a plan view: fifty metres up and forty back is
+    // about a fifty-degree look-down, which puts the kites BELOW the lens with
+    // their shadows on the sand under them and still keeps the waterline in
+    // frame. Straight down was legible as a map and not much else.
     frame: ({ u }, live, eye, target) => {
       const drift = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
       eye.copy(live.flock)
-        .addScaledVector(live.sun, mix(26, -18, drift))
+        .addScaledVector(live.sun, -mix(78, 62, drift))
         .addScaledVector(along, mix(-34, 30, drift));
-      eye.y = live.ground(eye.x, eye.z) + mix(74, 62, drift);
-      target.copy(live.flock).addScaledVector(along, mix(-10, 8, drift));
-      target.y = live.ground(target.x, target.z) + 6;
-      return mix(34, 40, drift);
+      eye.y = live.ground(eye.x, eye.z) + mix(62, 50, drift);
+      // Aim at the sand, not at the kites: the shadows are the subject, and the
+      // kites fall into the upper half of frame on their way to it.
+      target.copy(live.flock).addScaledVector(along, mix(-8, 7, drift));
+      target.y = live.ground(target.x, target.z) + 1.5;
+      return mix(30, 36, drift);
     }
   },
   {
@@ -302,14 +309,15 @@ const EXTRA_FRAMINGS: readonly Framing[] = [
       const fall = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
       eye.copy(live.kite)
-        .addScaledVector(live.sun, -mix(64, 92, fall))
-        .addScaledVector(along, mix(30, 4, fall));
+        .addScaledVector(live.sun, -mix(70, 94, fall))
+        .addScaledVector(along, mix(26, 4, fall));
       const base = live.ground(eye.x, eye.z);
-      eye.y = base + mix(62, 4.5, fall);
+      // Start level with the kite, not above it. A crane that begins higher
+      // than its own target spends its first seconds pointing down at open
+      // water — which is exactly what the first preview did.
+      eye.y = base + mix(40, 4.5, fall);
       target.copy(live.kite);
-      // The look-at falls with the eye, so the horizon rises into frame instead
-      // of the kite sliding out of the top.
-      target.y = mix(live.kite.y, base + 8 + (live.kite.y - base) * 0.36, fall);
+      target.y = mix(live.kite.y + 5, base + 8 + (live.kite.y - base) * 0.36, fall);
       return mix(38, 50, fall);
     }
   },
@@ -360,7 +368,17 @@ function buildDemo(framing: Framing): Demo {
       sky.cycleEnabled = false;
       sky.setTimeOfDay(framing.hour);
       ctx.setExposure(framing.exposure);
-      ctx.setPostFx({ ink: false, dream: false, retro: false });
+      // sceneSamples: 0 is load-bearing, not a preference. runDevDemo turns on
+      // cinematic multisampling for every demo, but several of this scene's
+      // passes SAMPLE scene depth — and a multisampled depth attachment is not
+      // sampleable as an ordinary texture in WebGPU. Leave MSAA on and the
+      // renderer throws "Sample count (4) of [Texture depth] doesn't match
+      // expectation", every command buffer that frame is invalidated, and the
+      // clip records ten seconds of cleared canvas. It only bites when a
+      // depth-consuming pass is actually live, which is why the golden-hour
+      // looks survived it and the mid-afternoon one came back solid navy.
+      // surfAerialCinematic hit the same wall and documents the same fix.
+      ctx.setPostFx({ sceneSamples: 0, ink: false, dream: false, retro: false });
       if (framing.mist !== undefined) OCEAN_KITE_TUNING.values.mistDensity = framing.mist;
       if (framing.shafts !== undefined) OCEAN_KITE_TUNING.values.shaftStrength = framing.shafts;
       ctx.input.suspended = true;
@@ -373,6 +391,14 @@ function buildDemo(framing: Framing): Demo {
       const site = (window as unknown as { __sf?: { oceanKiteSite?: { x: number; z: number } } })
         .__sf?.oceanKiteSite ?? { x: -6164, z: 1650 };
       freezeAndBuryPlayer(ctx, site.x, site.z);
+      // Burying the body drops player.renderPosition 300 m under the sand — and
+      // that vector is the third argument to sky.update(), which is what the
+      // hero shadow cascade centres its 32 m box on. Left alone it parks the
+      // entire shadow domain below the seabed and NOTHING on this beach casts a
+      // shadow, in any shot, at any hour. Put the reported position back on the
+      // sand; the mesh stays buried because freezeAndBuryPlayer has already
+      // made syncMesh a no-op, so nothing ever walks it back up.
+      ctx.player.renderPosition.set(site.x, map.groundTop(site.x, site.z), site.z);
 
       const eye = new THREE.Vector3();
       const target = new THREE.Vector3();
