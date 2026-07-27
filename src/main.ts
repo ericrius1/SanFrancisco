@@ -617,7 +617,12 @@ async function boot() {
     runAfterConstruction(() => {
       netW.net.setName(typedName);
       netW.avatar.get()?.setName(netW.net.name); // keep the netW.avatar-panel field in step with the gate (no-op until opened)
-      window.setTimeout(() => core.audioControls.showMicNudge(), 650);
+      // The mic follows the player across a refresh. Restore first, then nudge:
+      // someone who left mid-conversation gets their voice back instead of an
+      // invitation to turn on something that was already on.
+      void netW.voice.restoreSavedMic().then(() => {
+        window.setTimeout(() => core.audioControls.showMicNudge(), 650);
+      });
       core.hud.message(
         invite?.from
           ? `Welcome, ${netW.net.name} — you dropped in on ${invite.from}`

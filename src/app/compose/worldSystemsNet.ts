@@ -540,7 +540,9 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
 
   // voice chat: P2P audio to the closest players at any distance,
   // signaled through the relay (src/net/voice.ts). Mic is opt-in — V key or
-  // the HUD mic button — and fully released when off.
+  // the HUD mic button — and fully released when off. Once opted in it sticks:
+  // main.ts calls voice.restoreSavedMic() when the player enters, so a refresh
+  // doesn't drop them out of a conversation.
   const voice = new Voice(
     net,
     (id) => remotes.positionOf(id),

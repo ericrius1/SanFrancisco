@@ -1,6 +1,6 @@
 import type * as THREE from "three/webgpu";
 import { tunables } from "../core/persist";
-import { voiceAudioLevel } from "../core/audioSettings";
+import { saveMicOn, savedMicOn, voiceAudioLevel } from "../core/audioSettings";
 import { audioEngine } from "../audio/engine";
 import type { Net } from "./net";
 
@@ -43,8 +43,16 @@ import type { Net } from "./net";
  * roster scan, the speaking indicator and your own pose. So the set of people
  * you can hear freezes as it was when you left, and re-forms when you return.
  *
+ * Across refreshes: the mic is sticky. Turning it on stores that intent
+ * (core/audioSettings), and entering the world brings it back up — silently
+ * when the browser still holds the permission, otherwise on the next gesture
+ * (see restoreSavedMic). A refresh mid-conversation therefore costs you a few
+ * seconds of reconnecting, not your voice.
+ *
  * Privacy: mic off = track stopped and stream released (browser mic indicator
- * turns off), not just muted.
+ * turns off), not just muted. The stored intent is only ever "the player left
+ * with the mic on" — nothing restores capture that the browser hasn't already
+ * authorized, and a refused restore drops the intent instead of asking again.
  */
 
 export const VOICE_TUNING = tunables("voice", {
@@ -96,6 +104,22 @@ async function preferAllPlaybackEchoCancellation(track: MediaStreamTrack) {
 
 type Signal = { description?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit | null };
 
+type MicPermission = "granted" | "denied" | "prompt" | "unknown";
+
+/**
+ * What a mic request would do right now. "granted" is the one state that needs
+ * no user gesture — the browser remembered the grant, so capture can resume on
+ * its own. Browsers without a "microphone" descriptor (Firefox) report unknown.
+ */
+async function micPermission(): Promise<MicPermission> {
+  try {
+    const status = await navigator.permissions?.query({ name: "microphone" as PermissionName });
+    return (status?.state as MicPermission | undefined) ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 type Peer = {
   id: number;
   pc: RTCPeerConnection;
@@ -140,6 +164,8 @@ export class Voice {
   #micTrack: MediaStreamTrack | null = null;
   #pageVisible = document.visibilityState === "visible";
   #micRestoreToken = 0;
+  #micOp: Promise<unknown> = Promise.resolve(); // one mic request at a time
+  #disarmGesture: (() => void) | null = null; // pending gesture-gated restore
   #scanAt = 0;
   #retryAt = new Map<number, number>(); // failed peers wait out RETRY_MS
 
@@ -167,10 +193,36 @@ export class Voice {
 
   /* ---------------------------------------------------------------- mic */
 
-  /** Toggle the microphone. Resolves false if permission was denied. */
-  async setMic(on: boolean): Promise<boolean> {
+  /**
+   * Toggle the microphone (V key, HUD button). Resolves false if permission was
+   * denied. Records the intent so the next visit starts where this one left off.
+   */
+  setMic(on: boolean): Promise<boolean> {
+    this.#disarmGestureRestore(); // the player just said what they want; stop waiting
+    return this.#queueMic(on, true);
+  }
+
+  /**
+   * Mic requests run one at a time. Two overlapping grants would leave two live
+   * tracks with only one of them attached, so stopping the mic would no longer
+   * turn the browser's recording indicator off. Reachable by mashing V, and by
+   * the boot restore landing on the same gesture as the HUD button.
+   */
+  #queueMic(on: boolean, remember: boolean): Promise<boolean> {
+    const next = this.#micOp.then(
+      () => this.#applyMic(on, remember),
+      () => this.#applyMic(on, remember)
+    );
+    this.#micOp = next.catch(() => {});
+    return next;
+  }
+
+  async #applyMic(on: boolean, remember: boolean): Promise<boolean> {
     if (on === this.micOn) {
       if (on && !this.#micTrack) void this.#restoreMicTrack();
+      // Reconciles a stored intent the platform already broke: muting a mic
+      // that a phone call took away still has to clear "left with it on".
+      if (remember) saveMicOn(this.micOn);
       return true;
     }
     if (on) {
@@ -187,10 +239,65 @@ export class Voice {
       this.#micTrack = null;
       this.micOn = false;
     }
+    if (remember) saveMicOn(this.micOn);
     this.#refreshHold();
     for (const p of this.#peers.values()) this.#attachMic(p);
     this.onMicChange(this.micOn);
     return true;
+  }
+
+  /**
+   * Bring the mic back up if the player left with it on. Called once they are in
+   * the world rather than at construction — the browser's recording indicator
+   * has no business lighting up while someone is still at the name gate.
+   *
+   * A permission the browser still holds restores capture silently, with no
+   * prompt and nothing to click. Anything else means it genuinely forgot
+   * (Safari's per-session grant, a Firefox "allow once"), and only a gesture can
+   * ask again: one pointer/key event's worth of retry, after which the intent is
+   * dropped so a refusal never nags on every future visit.
+   */
+  async restoreSavedMic(): Promise<void> {
+    if (!savedMicOn() || this.micOn || this.#disarmGesture) return;
+    const permission = await micPermission();
+    if (permission === "denied") {
+      saveMicOn(false); // revoked at the browser level: the intent is unreachable
+      return;
+    }
+    // Entering by clicking Start is itself a gesture — Safari can restore on it.
+    const activated = navigator.userActivation?.isActive ?? false;
+    if ((permission === "granted" || activated) && (await this.#queueMic(true, true))) return;
+    this.#armGestureRestore();
+  }
+
+  /**
+   * One-shot: ask again for the stored mic on the next real user gesture.
+   *
+   * Deliberately `click` and not `pointerdown` (a tap raises click too): the HUD
+   * mic button's own handler runs first that way, so clicking it turns the mic on
+   * once instead of racing this listener into an immediate toggle back off. V is
+   * skipped here for the same reason — the keybinding already means "toggle the
+   * mic", and either of them alone gets there.
+   */
+  #armGestureRestore() {
+    const attempt = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.code === "KeyV") return;
+      this.#disarmGestureRestore();
+      void this.#queueMic(true, true).then((ok) => {
+        if (!ok) saveMicOn(false); // asked with a gesture in hand and still refused
+      });
+    };
+    this.#disarmGesture = () => {
+      window.removeEventListener("click", attempt);
+      window.removeEventListener("keydown", attempt);
+    };
+    window.addEventListener("click", attempt);
+    window.addEventListener("keydown", attempt);
+  }
+
+  #disarmGestureRestore() {
+    this.#disarmGesture?.();
+    this.#disarmGesture = null;
   }
 
   async #requestMicTrack(): Promise<MediaStreamTrack | null> {
@@ -492,6 +599,8 @@ export class Voice {
     }) | undefined;
     return {
       mic: this.micOn,
+      savedMic: savedMicOn(), // what the next refresh will try to restore
+      awaitingGesture: !!this.#disarmGesture, // stored mic waiting on a click/keypress
       pageVisible: this.#pageVisible,
       sessionLive: !!this.#hold, // mic on or ≥1 peer: what survives backgrounding
       capturing: this.#micTrack?.readyState === "live",
@@ -517,8 +626,11 @@ export class Voice {
 
   dispose() {
     document.removeEventListener("visibilitychange", this.#onVisibilityChange);
+    this.#disarmGestureRestore();
     this.#micRestoreToken++;
-    void this.setMic(false);
+    // Teardown is not the player muting themselves: release the device without
+    // touching the stored intent, so a reload still comes back talking.
+    void this.#queueMic(false, false);
     for (const id of [...this.#peers.keys()]) this.drop(id);
     // Release our hold but never close the shared engine ctx.
     this.#hold?.();
