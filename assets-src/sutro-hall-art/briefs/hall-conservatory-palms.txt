@@ -1,0 +1,31 @@
+Generate ONE image with your image generation tool, then copy it to
+/Users/eric/codeprojects/SanFrancisco/.claude/worktrees/sutro-baths-walls-art-wood-5bdf11/.data/codex-art/hall-conservatory-palms.png with `cp`. Reply with only that path.
+
+Image brief — a poster/plate that will hang, framed, on the timber wall of an
+indoor 1896 swimming hall in a stylised low-poly video game. LANDSCAPE 3:2 (1536x1024).
+
+Subject: the tropical conservatory inside the baths — tall palms and tree ferns
+under a soaring glazed arcade, shafts of warm light coming through the glass, a
+tiled fountain playing in the middle, potted ferns along a terracotta floor, two
+small figures in Victorian dress with a parasol for scale. Greens, cream and
+terracotta.
+
+Type, exactly:
+  headline: THE TROPICAL CONSERVATORY
+  bottom rule line: PALMS · FERNS · A FOUNTAIN UNDER GLASS
+
+Style (identical across this whole series — they hang side by side on one wall):
+1890s American chromolithograph poster. FLAT spot colours, hard silhouettes,
+visible flat colour separations, crisp line work, aged cream paper stock. NO
+photorealism, NO soft digital airbrush, NO modern gradients — only simple flat
+bands and stipple/hatch shading as a stone lithograph would give.
+
+Palette, use these and little else (they must sit in a warm timber room):
+cream #f7eed6, warm gold #e8ab3f, coral #e07a4e, terracotta #a8412a,
+deep teal #12454a, mid teal #1f6b6b, sea green #2e7f6d, ink navy #1b2b45,
+moss green #4d6b3a, plum #6b2b47.
+
+Typography: elegant Didot/Bodoni-like serif, generous letter-spacing, well
+kerned, spelled EXACTLY as given and nothing else — no extra words, no signature,
+no watermark. Keep all type and key subject matter inside the middle 92% of the
+canvas; the poster gets a physical frame around it.

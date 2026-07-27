@@ -6,13 +6,19 @@
 //
 //   node tools/build-sutro-hall-art.mjs [--preview]
 //
-// WHY DRAWN IN CODE
-// The plates are built as SVG and rasterised with sharp (librsvg), then aged
-// with a generated paper pass. That is a deliberate match to the medium rather
-// than a substitute for one: an 1890s chromolithograph IS flat spot colour,
-// hard silhouettes, sunburst rays, stipple shading and Didot/Bodoni display
-// type on cream stock, all of which vector work renders honestly. Photographic
-// painting would have been the wrong reference for this room.
+// TWO SOURCES, ONE PIPELINE
+// A plate is PRINTED from `assets-src/sutro-hall-art/<name>.png` when that file
+// exists, and DRAWN in code when it does not. The authored plates are the ones
+// hanging today — generated with an image model against the briefs kept beside
+// them in that directory — and they take a cover crop to the plate aspect and
+// nothing else, because they already carry their own aged stock.
+//
+// The drawn fallback below is not dead weight: it is what any machine without an
+// image model can still bake, it defines every plate's aspect, name and caption,
+// and it is the reference for the house style — an 1890s chromolithograph IS
+// flat spot colour, hard silhouettes, sunburst rays, stipple shading and
+// Didot/Bodoni display type on cream stock, all of which vector work renders
+// honestly. Delete a source PNG and that plate simply reverts to it.
 //
 // Type comes from the system's period faces — Didot and Bodoni 72 for display,
 // Copperplate for the small caps rules, Baskerville for body lines, Snell
@@ -23,12 +29,13 @@
 // WebP only and the runtime loads them with { webpOnly: true }.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const SOURCE = path.join(ROOT, "assets-src/sutro-hall-art");
 const STAGING = path.join(ROOT, ".data/sutro-hall-art");
 const PLATE_STAGING = path.join(STAGING, "plates");
 const OUTPUT = path.join(ROOT, "public/sutro/art");
@@ -1344,20 +1351,42 @@ for (const plate of PLATES) {
   plateIndex++;
   const bigW = plate.size.w * SUPERSAMPLE;
   const bigH = plate.size.h * SUPERSAMPLE;
-  const drawn = plate.draw({ w: bigW, h: bigH });
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${bigW}" height="${bigH}" ` +
-    `viewBox="0 0 ${bigW} ${bigH}"><defs>${halftoneDefs()}</defs>${drawn.body}</svg>`;
-  // density 72 makes librsvg treat the SVG's px units 1:1, so the raster lands
-  // exactly on bigW × bigH and the paper layer composites without a resize.
-  const art = await sharp(Buffer.from(svg), { density: 72 }).png().toBuffer();
-  const paper = await paperLayer(bigW, bigH, 900 + plateIndex * 17);
-  // sharp resizes BEFORE it composites within one pipeline, so the paper pass
-  // has to finish in its own before the supersampled plate is brought down.
-  const printed = await sharp(art)
-    .composite([{ input: paper, blend: "multiply" }])
-    .png()
-    .toBuffer();
+  // WebP first: the archived plates are stored that way (see the directory's
+  // README), with PNG accepted so a freshly generated plate can be dropped in
+  // and baked without converting it first.
+  const sourcePlate = [".webp", ".png"]
+    .map((extension) => path.join(SOURCE, `${plate.name}${extension}`))
+    .find((candidate) => existsSync(candidate));
+  const hasSource = Boolean(sourcePlate);
+
+  let printed;
+  if (hasSource) {
+    // An authored plate (assets-src/sutro-hall-art) wins over the drawn
+    // fallback. It arrives already printed on aged stock, so it skips the paper
+    // pass — running the generated tooth over a plate that has its own only
+    // muddies it — and takes a cover crop to the plate aspect instead.
+    printed = await sharp(sourcePlate)
+      .resize(bigW, bigH, { fit: "cover", position: "centre", kernel: sharp.kernel.lanczos3 })
+      .removeAlpha()
+      .png()
+      .toBuffer();
+  } else {
+    const drawn = plate.draw({ w: bigW, h: bigH });
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${bigW}" height="${bigH}" ` +
+      `viewBox="0 0 ${bigW} ${bigH}"><defs>${halftoneDefs()}</defs>${drawn.body}</svg>`;
+    // density 72 makes librsvg treat the SVG's px units 1:1, so the raster lands
+    // exactly on bigW × bigH and the paper layer composites without a resize.
+    const art = await sharp(Buffer.from(svg), { density: 72 }).png().toBuffer();
+    const paper = await paperLayer(bigW, bigH, 900 + plateIndex * 17);
+    // sharp resizes BEFORE it composites within one pipeline, so the paper pass
+    // has to finish in its own before the supersampled plate is brought down.
+    printed = await sharp(art)
+      .composite([{ input: paper, blend: "multiply" }])
+      .png()
+      .toBuffer();
+  }
+
   const aged = await sharp(printed)
     .resize(plate.size.w, plate.size.h, { kernel: sharp.kernel.lanczos3 })
     .modulate({ saturation: 0.96 })
@@ -1367,7 +1396,10 @@ for (const plate of PLATES) {
   if (preview) {
     await sharp(aged).toFile(path.join(STAGING, `preview-${plate.name}.png`));
   }
-  console.log(`  drew ${plate.name} (${plate.size.w}x${plate.size.h})`);
+  console.log(
+    `  ${hasSource ? "printed" : "drew   "} ${plate.name} (${plate.size.w}x${plate.size.h})` +
+      `${hasSource ? " ← assets-src" : ""}`
+  );
 }
 
 execFileSync(
