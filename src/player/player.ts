@@ -33,6 +33,7 @@ import {
   type HeldItem
 } from "./held";
 import { setHandTarget } from "./handIK";
+import { EmoteRunner, type EmoteId } from "./emotes";
 import type { GardenRakeMotion, GardenRakeTool } from "./gardenRake";
 import { ARCHER_BOW_GRIP, poseArcher } from "../gameplay/archery/poses";
 import { avatarFromSeed, normalizeAvatarTraits, type AvatarTraits } from "./avatar";
@@ -313,6 +314,10 @@ export class Player {
   #animT = 0; // free-running clock for idle sway/bob
   #strideT = 0; // stride/stroke phase, advanced by speed
   #mocapPoseDriver: MocapPoseDriver | null = null;
+  // emotes (wave/dance/…): a pose layer over walk/idle, on foot only. #animate
+  // owns the lifetime — walking away, jumping, swimming or picking up an
+  // activity all end it, so no caller has to remember to clean up.
+  #emote = new EmoteRunner();
 
   // what the player is currently driving; swapped when mounting a ridden animal
   driveSpec: DriveSpec = DEFAULT_DRIVE_SPEC;
@@ -349,6 +354,9 @@ export class Player {
   #lightPool: LightPool;
 
   onModeChange: (mode: PlayerMode) => void = () => {};
+  /** An emote started (id) or ended (null) — including the ends #animate
+   *  decides on its own, so the network mirror never goes stale. */
+  onEmote: (id: EmoteId | null) => void = () => {};
 
   constructor(
     physics: Physics,
@@ -664,6 +672,7 @@ export class Player {
     // Never carry the local-only FPS visibility override into another embodiment.
     this.setFirstPersonView(false);
     this.#destroyBody();
+    this.#dropEmote(); // the walk rig is about to stop being what you look like
     this.riding = false; // any body spawn ends a passenger ride
     this.mode = mode;
     const q: [number, number, number, number] = [0, Math.sin(facing / 2), 0, Math.cos(facing / 2)];
@@ -1091,6 +1100,58 @@ export class Player {
     this.#bowCarried = on;
     if (on && !this.#heldBow) this.setArcherPose(this.#archerPose.active, this.#archerPose.draw, this.#archerPose.pitch);
     this.#bow.visible = on || this.#archerPose.active;
+  }
+
+  // ---- emotes ----
+
+  /**
+   * Play an emote. Repeating whichever one is already running stops it (so the
+   * same key both starts and ends a dance), and `null` just stops.
+   *
+   * Only walking bodies emote — the pose layer writes the character rig, and
+   * every other embodiment's rig is busy driving/riding something. Callers do
+   * not need to gate on that or on standing still; #animate ends an emote the
+   * moment the body is needed for anything else.
+   */
+  playEmote(id: EmoteId | null) {
+    if (!id || (this.#emote.playing && this.#emote.id === id)) {
+      this.stopEmote();
+      return;
+    }
+    if (!this.canEmote) return;
+    this.#emote.play(id);
+    this.onEmote(id);
+  }
+
+  /**
+   * Whether an emote could start right now: on foot, and not handing the rig
+   * over to the webcam pose driver — with mocap running, an emote would be
+   * dropped on the very next frame, which reads as a dead key.
+   *
+   * Standing still is deliberately NOT part of this. Starting one and walking
+   * off immediately is the player's business; the emote just blends out.
+   */
+  get canEmote(): boolean {
+    return this.mode === "walk" && !this.#mocapPoseDriver;
+  }
+
+  stopEmote() {
+    if (!this.#emote.playing) return;
+    this.#emote.release();
+    this.onEmote(null);
+  }
+
+  /** The emote being held right now (a fading-out one already reads null). */
+  get activeEmote(): EmoteId | null {
+    return this.#emote.playing ? this.#emote.id : null;
+  }
+
+  /** Hard stop with no fade — the body is needed for something else. */
+  #dropEmote() {
+    if (!this.#emote.active) return;
+    const wasPlaying = this.#emote.playing;
+    this.#emote.cancel(this.#walkRig);
+    if (wasPlaying) this.onEmote(null);
   }
 
   // ---- ball tool (the PlayerBallView backing FetchBall drives) ----
@@ -1897,6 +1958,7 @@ export class Player {
       }
       this.#ballProp.visible = this.#ballHeld;
       applyBallGlow(this.#ballMaterial, this.#ballHeld ? undefined : 0);
+      const h = Math.hypot(this.velocity.x, this.velocity.z);
       if (golfing) {
         poseGolf(r, this.#golfPose.swing);
       } else if (archering) {
@@ -1918,7 +1980,6 @@ export class Player {
       } else if (!walk.grounded) {
         poseAir(r);
       } else {
-        const h = Math.hypot(this.velocity.x, this.velocity.z);
         if (h > 0.35) {
           const tw = WALK_TUNING.values;
           // cadence scales with speed so the athletic sprint doesn't look like
@@ -1933,6 +1994,27 @@ export class Player {
           poseWalk(r, this.#strideT, runBlend);
         } else {
           poseIdle(r, this.#animT);
+        }
+      }
+      // Emote layer, over the base pose. It owns the body only while that body
+      // is genuinely free: anything doing real work with the rig (a swing, a
+      // stroke, a leap, a tool, a held prop) ends the emote outright, while
+      // simply walking away lets it blend out under the stride.
+      if (this.#emote.active) {
+        const busy =
+          golfing ||
+          archering ||
+          walk.swimming ||
+          !walk.grounded ||
+          gardenPoseAllowed ||
+          this.#throwT > 0 ||
+          this.#bowCarried ||
+          this.#carryingBoard ||
+          !!this.#mocapPoseDriver;
+        if (busy) this.#dropEmote();
+        else {
+          if (h > 0.35) this.stopEmote();
+          this.#emote.apply(r, dt);
         }
       }
       if (this.#gardenRakeTool) {

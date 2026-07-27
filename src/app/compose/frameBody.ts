@@ -85,7 +85,7 @@ import type { MainCtx } from "./ctx";
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
   const { water, underwater, hud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
-  const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
+  const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, emoteWheel, updateEmoteKeepAlive, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
   const state = {
     cineHook: null as (((dt: number) => void) | null),
   };
@@ -765,6 +765,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (!numberPressed(i)) continue;
       if (playingPickleball || playingFortMasonEnsemble) break;
       if (core.state.golf?.capturesDigits) break; // core.state.golf swing UI owns the number row (club picks)
+      // An open emote wheel owns the number row — it IS the legend for it.
+      if (emoteWheel.open) {
+        emoteWheel.pick(i - 1);
+        continue;
+      }
       if (ctrlNumberPress(i)) {
         toolCycle.pickByIndex(i - 1);
         continue;
@@ -970,6 +975,26 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       const endDist = Math.min(orbit.maxDistance, startDist + CAMERA_TUNING.values.orbitFlipPull);
       core.state.orbitFlip = { t: 0, duration, startAz: orbit.azimuthAngle, delta, startDist, endDist };
     }
+    // J: emote wheel (wave, dance, clap…). Always the wheel and nothing else —
+    // a key that opens a menu OR cancels depending on invisible state is the
+    // kind of thing players learn twice. Stopping a loop is either walking off
+    // or re-picking the lit chip, which the wheel shows you. On foot only:
+    // every other embodiment's character rig is busy driving or riding.
+    if (!worldArrival.active && input.pressed("KeyJ")) {
+      if (player.canEmote) {
+        emoteWheel.toggle();
+      } else {
+        emoteWheel.setOpen(false);
+        hud.message(
+          player.mode === "walk" ? "Webcam pose is driving your body" : "Emotes are for when you're on foot",
+          1.8
+        );
+      }
+    }
+    // Never leave it open but unreachable: immersive hides the whole HUD, and an
+    // invisible wheel would go on silently eating the number row.
+    if (emoteWheel.open && (!player.canEmote || input.suspended || immersive)) emoteWheel.setOpen(false);
+    updateEmoteKeepAlive(frameDt);
     // V: voice chat mic on/off (same as the HUD mic button)
     if (input.pressed("KeyV")) toggleMic();
     // T: focus the text chat field (releases pointer lock so you can type)

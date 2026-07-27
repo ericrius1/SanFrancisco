@@ -1,0 +1,184 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>emote pose probe</title>
+    <style>
+      html, body { margin: 0; background: #10151b; overflow: hidden; }
+      canvas { display: block; }
+      #labels {
+        position: fixed; inset: 0; pointer-events: none;
+        font: 600 14px ui-sans-serif, system-ui, sans-serif; color: #cfe6f2;
+      }
+      #labels span { position: absolute; transform: translateX(-50%); text-shadow: 0 1px 3px #000; }
+    </style>
+  </head>
+  <body>
+    <div id="labels"></div>
+    <script type="module">
+      // Rendered contact sheet for the avatar emotes: one rig per emote, all on
+      // the same clock, so a pose can be iterated without booting the world.
+      // Layered exactly the way the game layers it — poseIdle writes the base,
+      // then EmoteRunner blends its emote over it — so what this shows is what a
+      // player standing still would see.
+      //
+      // Driven by tools/emote-pose-probe.mjs: window.__emote.render(t, opts)
+      // advances every runner to `t` seconds and draws one frame. The rigs are
+      // yawed 180° because the character's front is local -Z and the camera
+      // looks down -Z; without it the sheet is eight backpacks.
+      import * as THREE from "three/webgpu";
+      import { buildRig, poseIdle } from "/src/player/rig.ts";
+      import { EMOTES, EmoteRunner } from "/src/player/emotes.ts";
+      import { avatarFromSeed } from "/src/player/avatar.ts";
+
+      let W = 2400, H = 800;
+      const SPACING = 1.6;
+      /** Standing sole line: the rig origin sits one capsule half-extent up. */
+      const FOOT_Y = -0.905;
+
+      const renderer = new THREE.WebGPURenderer({ antialias: true });
+      renderer.setSize(W, H);
+      renderer.setPixelRatio(1);
+      renderer.setClearColor(0x10151b, 1);
+      document.body.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      scene.add(new THREE.HemisphereLight(0xdfeeff, 0x2a3038, 2.4));
+      const key = new THREE.DirectionalLight(0xfff2e0, 2.0);
+      key.position.set(2.5, 5, 4);
+      scene.add(key);
+      const fill = new THREE.DirectionalLight(0xbcd8ff, 0.8);
+      fill.position.set(-3, 2, 3);
+      scene.add(fill);
+
+      // Hard ground line: a pose that sinks its feet or floats is only obvious
+      // against an edge.
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(80, 80),
+        new THREE.MeshLambertMaterial({ color: 0x24313d })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.y = FOOT_Y;
+      scene.add(ground);
+
+      const camera = new THREE.PerspectiveCamera(32, W / H, 0.1, 60);
+      const slots = [];
+      const labelHost = document.getElementById("labels");
+      for (const [i, emote] of EMOTES.entries()) {
+        const rig = buildRig(avatarFromSeed(`emote-${emote.id}`));
+        rig.group.position.x = (i - (EMOTES.length - 1) / 2) * SPACING;
+        rig.group.rotation.y = Math.PI; // face the camera
+        scene.add(rig.group);
+        const runner = new EmoteRunner();
+        runner.play(emote.id);
+        slots.push({ emote, rig, runner });
+        const label = document.createElement("span");
+        label.textContent = `${i + 1}. ${emote.label}`;
+        labelHost.appendChild(label);
+      }
+
+      const CAMS = {
+        // dead-on: silhouette, arm height, left/right symmetry
+        front: { pos: [0, -0.05, 7.6], look: [0, -0.05, 0] },
+        // ground-level: feet vs the ground line
+        feet: { pos: [0, -0.66, 5.4], look: [0, -0.66, 0] },
+        // raised: the crossed legs of a sit read from above, not from eye height
+        high: { pos: [0, 2.6, 7.0], look: [0, -0.35, 0] }
+      };
+      /** One-figure framings (paired with a square resize). */
+      const FOCUS_CAMS = {
+        front: { pos: [0, 0.05, 5.0], lookY: -0.18 },
+        feet: { pos: [0, -0.55, 4.2], lookY: -0.62 },
+        high: { pos: [0, 2.2, 4.4], lookY: -0.45 }
+      };
+      function frameCamera(name, focusId) {
+        const c = CAMS[name] ?? CAMS.front;
+        // A single emote gets a close, framed camera — a loop like the dance is
+        // unjudgeable as one 300 px figure in a row of eight. Pair it with
+        // resize() to a square viewport, or the 3:1 contact-sheet aspect brings
+        // the neighbours along.
+        const slot = focusId ? slots.find((s) => s.emote.id === focusId) : null;
+        if (slot) {
+          const x = slot.rig.group.position.x;
+          const f = FOCUS_CAMS[name] ?? FOCUS_CAMS.front;
+          camera.position.set(x + f.pos[0], f.pos[1], f.pos[2]);
+          camera.lookAt(x, f.lookY, 0);
+        } else {
+          camera.position.set(...c.pos);
+          camera.lookAt(...c.look);
+        }
+        camera.updateMatrixWorld(true);
+      }
+
+      function resize(w, h) {
+        W = w;
+        H = h;
+        renderer.setSize(W, H);
+        camera.aspect = W / H;
+        camera.updateProjectionMatrix();
+      }
+      frameCamera("front");
+
+      const v = new THREE.Vector3();
+      function placeLabels() {
+        for (const [i, s] of slots.entries()) {
+          v.set(s.rig.group.position.x, FOOT_Y - 0.16, 0).project(camera);
+          const el = labelHost.children[i];
+          el.style.left = `${((v.x + 1) / 2) * W}px`;
+          el.style.top = `${((1 - v.y) / 2) * H}px`;
+        }
+      }
+
+      let last = 0;
+      async function render(t, opts = {}) {
+        frameCamera(opts.camera ?? "front", opts.focus);
+        // Yaw the RIGS rather than orbiting the camera: the row is 11 m wide, so
+        // any off-axis camera that still frames all eight is far enough away to
+        // make them thumbnails. Turning the figures keeps the framing.
+        const yaw = Math.PI + (opts.yaw ?? 0);
+        const dt = Math.max(1 / 240, t - last);
+        last = t;
+        for (const s of slots) {
+          s.rig.group.rotation.y = yaw;
+          // Loops run forever; one-shots restart so the sheet always has
+          // something to show at every sample time.
+          if (!s.runner.active) s.runner.play(s.emote.id);
+          poseIdle(s.rig, t);
+          s.runner.apply(s.rig, dt);
+        }
+        placeLabels();
+        await renderer.renderAsync(scene, camera);
+      }
+
+      /** Re-seed every runner so a sample sweep starts from t=0 cleanly. */
+      function reset() {
+        last = 0;
+        for (const s of slots) {
+          s.runner.cancel(s.rig);
+          s.runner.play(s.emote.id);
+        }
+      }
+
+      /** Sole heights above the ground line — the numeric read on sinking. */
+      function feetReport() {
+        const box = new THREE.Box3();
+        const out = {};
+        for (const s of slots) {
+          s.rig.group.updateWorldMatrix(true, true);
+          let low = Infinity;
+          for (const sole of [s.rig.soleL, s.rig.soleR]) {
+            sole.updateWorldMatrix(true, false);
+            box.setFromObject(sole);
+            low = Math.min(low, box.min.y);
+          }
+          out[s.emote.id] = Math.round((low - FOOT_Y) * 1000) / 1000;
+        }
+        return out;
+      }
+
+      await renderer.init();
+      await render(0);
+      window.__emote = { render, reset, resize, feetReport, count: EMOTES.length, ready: true };
+    </script>
+  </body>
+</html>

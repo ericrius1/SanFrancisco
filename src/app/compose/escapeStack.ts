@@ -5,6 +5,7 @@ import { getBehindTheScenes } from "../../ui/behindTheScenesHost";
 import type { Input } from "../../core/input";
 import type { Minimap } from "../../ui/minimap";
 import type { Chat } from "../../ui/chat";
+import type { EmoteWheel } from "../../ui/emoteWheel";
 import type { MissionDoloresMuseum } from "../../world/missionDolores";
 
 /**
@@ -20,6 +21,7 @@ export function wireEscapeStack({
   input,
   minimap,
   chat,
+  emoteWheel,
   closeConversation,
   getMissionDolores,
   markChatEscapeBlur
@@ -27,6 +29,8 @@ export function wireEscapeStack({
   input: Input;
   minimap: Minimap;
   chat: Chat;
+  /** The emote picker — a transient legend, so Esc drops it before anything. */
+  emoteWheel: EmoteWheel;
   /** buskerTalk.close(): a conversation owns the screen — Esc leaves it first. */
   closeConversation: () => boolean;
   getMissionDolores: () => MissionDoloresMuseum | null;
@@ -36,7 +40,11 @@ export function wireEscapeStack({
   const dismissEscapeOverlay = (e: KeyboardEvent): boolean => {
     const reader = getBehindTheScenes();
     const missionDolores = getMissionDolores();
-    if (closeConversation()) {
+    if (emoteWheel.open) {
+      // Cheapest thing on screen to dismiss, and the only one Esc can reach
+      // without also giving up pointer lock.
+      emoteWheel.setOpen(false);
+    } else if (closeConversation()) {
       // A conversation owns the screen: Esc leaves it before any other overlay.
     } else if (missionDolores?.bookOpen) {
       missionDolores.closeBook();

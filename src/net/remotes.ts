@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { applyAvatarToRig, buildRig, poseAir, poseDrive, poseIdle, poseRide, poseScooter, poseWalk, type Rig } from "../player/rig";
+import { emoteByIndex, EmoteRunner } from "../player/emotes";
 import { avatarFromSeed, avatarKey, type AvatarTraits } from "../player/avatar";
 import {
   activateCarAssets,
@@ -71,6 +72,11 @@ const FAR_HIDE_DISTANCE = 1250;
 const FAR_SHOW_DISTANCE = 1150;
 const FAR_HIDE_SQ = FAR_HIDE_DISTANCE * FAR_HIDE_DISTANCE;
 const FAR_SHOW_SQ = FAR_SHOW_DISTANCE * FAR_SHOW_DISTANCE;
+// How long a looping emote survives without a keepalive from its owner. The
+// sender re-announces every EMOTE_KEEPALIVE_MS (see the net wiring); this is
+// generous enough to ride out a hiccup and short enough that a player whose tab
+// froze mid-dance stops dancing rather than grooving forever.
+const EMOTE_HOLD_MS = 6000;
 
 // name tags: one canvas texture per player, drawn once (and on rename)
 function makeTag(name: string, hue: number): THREE.Sprite {
@@ -150,6 +156,12 @@ type Avatar = {
   surfboardKey: string;
   rakePose: GardenRakePoseController | null;
   rakeMotion: GardenRakeMotion | null;
+  /** Emote playback, driven by relayed start/stop announcements. */
+  emote: EmoteRunner;
+  /** ms timestamp after which a held loop is assumed abandoned (the sender
+   *  re-announces every EMOTE_KEEPALIVE_MS while it runs, so silence past this
+   *  means their tab went away mid-dance rather than that they are still at it). */
+  emoteHoldUntil: number;
 };
 
 const TMP = {
@@ -405,6 +417,26 @@ export class RemotePlayers {
     return true;
   }
 
+  /**
+   * A relayed emote announcement: `index` is a position in the shared EMOTES
+   * catalog, or < 0 to stop. Re-announcing the emote already running is the
+   * sender's keepalive for a held loop — it extends the hold instead of
+   * restarting the animation, so a dance never stutters every 2.5 s.
+   */
+  setEmote(id: number, index: number) {
+    const a = this.avatars.get(id);
+    if (!a) return;
+    const def = index >= 0 ? emoteByIndex(index) : null;
+    if (!def) {
+      a.emote.release();
+      a.emoteHoldUntil = 0;
+      return;
+    }
+    a.emoteHoldUntil = def.loop ? performance.now() + EMOTE_HOLD_MS : 0;
+    if (a.emote.playing && a.emote.id === def.id) return;
+    a.emote.play(def.id);
+  }
+
   /** Voice indicator: tint the name tag green while that player is speaking. */
   setSpeaking(id: number, on: boolean) {
     const a = this.avatars.get(id);
@@ -490,7 +522,9 @@ export class RemotePlayers {
       surfboard: surf,
       surfboardKey: surfboardVisualKey(surf),
       rakePose: null,
-      rakeMotion: null
+      rakeMotion: null,
+      emote: new EmoteRunner(),
+      emoteHoldUntil: 0
     });
   }
 
@@ -918,6 +952,18 @@ export class RemotePlayers {
     }
     const rig = a.rig;
     if (!rig || !a.mode) return;
+    // A held loop whose owner stopped announcing (tab closed, network gone)
+    // gets let go here rather than dancing forever.
+    if (a.emoteHoldUntil && performance.now() > a.emoteHoldUntil) {
+      a.emote.release();
+      a.emoteHoldUntil = 0;
+    }
+    // Only the walking body emotes; anything else means the rig is busy
+    // driving/riding, exactly as on the local player.
+    if (a.emote.active && (a.mode !== "walk" || a.ride)) {
+      a.emote.cancel(rig);
+      a.emoteHoldUntil = 0;
+    }
     if (a.mode === "walk") {
       if (a.ride) {
         // passenger: seated, no wheel — before the vy check (a car on a hill
@@ -933,6 +979,17 @@ export class RemotePlayers {
         poseWalk(rig, a.strideT, THREE.MathUtils.clamp((h - 5.2) / 6.3, 0, 1));
       } else {
         poseIdle(rig, a.animT);
+      }
+      // Emote layer over that base — same gates the emoting player applied
+      // locally, so what their friends see matches what they see themselves.
+      if (a.emote.active) {
+        if (a.rakeMotion || Math.abs(a.vy) > 3.2) {
+          a.emote.cancel(rig);
+          a.emoteHoldUntil = 0;
+        } else {
+          if (h > 0.35) a.emote.release();
+          a.emote.apply(rig, dt);
+        }
       }
       if (a.rakePose && a.rakeMotion) {
         a.rakePose.pose(rig, a.root.position, a.root.quaternion, a.rakeMotion, a.strideT);
