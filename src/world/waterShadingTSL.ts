@@ -217,6 +217,14 @@ export interface OceanSurfaceInputs {
   sss?: N;
   /** Tint of light transmitted THROUGH a wave crest. */
   sssColor?: N;
+  /** Seabed albedo seen through the water column (Tier B). Omit over deep
+   *  water — the pair is build-time gated, so leaving it out costs nothing. */
+  bedAlbedo?: N;
+  /** vec3 Beer-Lambert transmittance to the bed, ALREADY multiplied by the
+   *  shallow gate so it is exactly 0 past the visible depth. */
+  bedTransmittance?: N;
+  /** Calibration of the bed against the terrain's own (lit) illuminant. */
+  bedGain?: number;
 }
 
 /**
@@ -316,7 +324,19 @@ export function oceanSurfaceRadiance(o: OceanSurfaceInputs): N {
         .mul(o.sunRadiance)
         .mul(saturate(o.sunDir.y.mul(4)))
     : vec3(0);
-  const inScatter = o.bodyAlbedo.mul(down).add(sss).toVar();
+  // Transmitted seabed (Tier B). Composited into the in-scatter lane BEFORE
+  // Fresnel, because the bed is only ever seen through the (1 − F) transport —
+  // at grazing incidence the surface turns to a mirror and the bed correctly
+  // disappears, which is what makes a shoreline read as wet rather than
+  // painted. `bedTransmittance` already carries the depth gate, so this is
+  // exp(−sigma·pathLength) blended against the water's own in-scatter: the
+  // standard Beer-Lambert form, not a depth-keyed colour ramp.
+  const column = o.bodyAlbedo.mul(down);
+  const body =
+    o.bedAlbedo && o.bedTransmittance
+      ? mix(column, o.bedAlbedo.mul(down).mul(o.bedGain ?? 1), o.bedTransmittance)
+      : column;
+  const inScatter = body.add(sss).toVar();
 
   // Foam sits ON the surface: a rough dielectric raft, so it is lit by the same
   // illuminant, just with a brighter albedo — not a separate emissive white.

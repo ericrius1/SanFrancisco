@@ -32,7 +32,7 @@ import { WaterEchoes } from "./waterEchoes";
 import { OceanCascades, oceanDetail, cascadeUv, CASCADE_FADE_DIST, HERO_STRIP_GATE } from "./ocean/oceanSim";
 import { setHeroFocus } from "./ocean/heroWaves";
 import { SUN_DIR, type Sky } from "./sky";
-import { oceanSurfaceRadiance } from "./waterShadingTSL";
+import { causticWeb, oceanSurfaceRadiance } from "./waterShadingTSL";
 import { governorEffects } from "../render/adaptiveResolution";
 
 const PALACE_LAGOON_SEGMENTS = 112;
@@ -82,6 +82,34 @@ const WATER_ROUGHNESS_RANGE = 0.4;
 const WATER_ROUGHNESS_MAX = 0.62;
 // Foam is a rough dielectric raft, not water.
 const FOAM_ROUGHNESS = 0.85;
+
+// --- shallow-water transmission (Tier B) -----------------------------------
+// Per-metre Beer-Lambert extinction in the linear render space, green-dominant
+// like real coastal water — red dies first, which is what turns a sand bed
+// green-blue as it drops away, and no colour ramp reproduces that for free.
+//
+// Calibrated to this bay's authored identity (a "vivid Caribbean" green, not
+// the literal grey-green Pacific): at a 2.5 m slant path the bed still reads
+// through at (0.09, 0.39, 0.32), so the shallows show a real seabed instead of
+// a colour that merely suggests one. True SF turbidity (~1-2 m visibility, i.e.
+// roughly sigma 1.35/0.62/0.78) buries the bed and its caustics inside the
+// first metre, where almost nothing in the world is.
+//
+// Deliberately NOT derived from the deep palette via beerLambertWater(): that
+// couples extinction to the art colour and makes wet sand read cyan.
+const WATER_SIGMA = new THREE.Vector3(0.95, 0.38, 0.46);
+// Hard gate. smoothstep clamps, so past this the bed term is EXACTLY zero and
+// open water is bit-identical to Tier A — a falsifiable probe assertion, not a
+// "small enough to ignore". By 6 m the green channel is already ≤0.10.
+const BED_VISIBLE_DEPTH = 6.0;
+// Bed palette lifted verbatim from the terrain's own literals so the waterline
+// lands on the same colour from both sides. Sand at the swash line, the
+// terrain's bay-floor tone once you are a few metres down.
+const BED_SAND = 0xd1c49f;
+const BED_FLOOR = 0x466c68;
+// The terrain is a LIT MeshStandard; the water is unlit with its own
+// illuminant, so the two do not agree numerically without one scalar.
+const BED_GAIN = 1.25;
 
 // --- coarse water-proximity field (see #buildWaterField) -------------------
 // A 128 m-cell distance-to-water map over the height grid, built once at boot
@@ -323,13 +351,21 @@ export class Water {
       const dry = step(0.55, floorH).mul(inMap); // dry land under this pixel: hide
       const depth = max(0, positionWorld.y.sub(floorH)).toVar();
 
-      // Bay gradient — vivid Caribbean: a bright aqua-mint sandy shallow through
-      // luminous turquoise to a still-bright deep teal (never a near-black deep,
-      // so the whole bay glows). d2 softened (-0.042) so the turquoise carries
-      // further out before the deep tone takes over.
+      // Bay gradient — vivid Caribbean: luminous turquoise through a still-bright
+      // deep teal (never a near-black deep, so the whole bay glows). d2 softened
+      // (-0.042) so the turquoise carries further out before the deep tone takes
+      // over.
+      //
+      // The shallow anchor USED to be a near-white aqua-mint (0x93e6d4), which
+      // was a stand-in for "you can see the sand" back when the surface was
+      // opaque. Tier B transmits the real bed, so keeping the pale anchor
+      // double-counted it: the shallows washed to mint and the actual seabed —
+      // and its caustics — were invisible inside the wash. The in-scatter is now
+      // saturated turquoise all the way in, and the LIGHTENING at a shoreline
+      // comes from the bed showing through, which is where it physically is.
       const d1 = exp(depth.mul(-0.24)).oneMinus();
       const d2 = exp(depth.mul(-0.042)).oneMinus().toVar();
-      const waterCol = mix(mix(color(0x93e6d4), color(0x16b8a6), d1), color(0x0b7580), d2).toVar();
+      const waterCol = mix(mix(color(0x35c9b0), color(0x16b8a6), d1), color(0x0b7580), d2).toVar();
 
       // Feather the player-following near patch into the far bay sheet. This
       // keeps the displaced water useful for watercraft without leaving a
@@ -497,6 +533,49 @@ export class Water {
       // reflected ray — no PMREM, no render target, and it tracks the sun
       // continuously instead of at a bake cadence.
       const viewDir = normalize(positionWorld.sub(cameraPosition));
+
+      // --- shallow-water transmission (Tier B) ---------------------------
+      // The seabed through Beer-Lambert absorption. No scene-colour copy and no
+      // pipeline change: the bathymetry is ALREADY fetched above for the dry
+      // mask, so this is pure ALU on a value we have. (A screen-space
+      // refraction is not merely unwanted here — it is non-functional: water
+      // draws BEFORE terrain, so the framebuffer it would sample contains no
+      // seabed at all.)
+      // Slant path, not vertical depth: looking along the water you see through
+      // far more of it, which is why a shoreline goes opaque as you flatten out.
+      const slant = viewDir.y.abs().max(0.18);
+      const pathLength = depth.div(slant);
+      // EXACTLY zero past BED_VISIBLE_DEPTH (smoothstep clamps its interpolant),
+      // so deep water is bit-identical to Tier A.
+      const shallowGate = smoothstep(BED_VISIBLE_DEPTH, 0, depth).toVar();
+      const bedT = exp(pathLength.negate().mul(vec3(WATER_SIGMA))).mul(shallowGate).toVar();
+      // Sand at the swash line, the terrain's own bay-floor tone by ~3 m down —
+      // both ends land on terrain literals, so the waterline stops being a seam.
+      const bedBase = mix(color(BED_SAND), color(BED_FLOOR), smoothstep(0.3, 3.0, depth));
+      // Caustics: BUILD-TIME gated to the displaced sheets. TSL only dead-strips
+      // a subgraph that is unreferenced at build time (a JS ternary) — never one
+      // merely multiplied by zero at runtime — and the branchless rule forbids
+      // an If(), so the expensive term must be excluded here or the far annulus
+      // pays ~77 ALU for a web it can never show.
+      const caustic = displace > 0
+        ? causticWeb(pxz.mul(1.4).add(rippleNormal.xz.mul(1.1)), t.mul(0.5))
+            // Fade on the sheet's OWN radius, not viewDist: the patch is
+            // player-centred while viewDist is camera-relative, and a chase or
+            // flight camera decouples them. Closed well inside the 210–276 m
+            // handoff, so the far sheet never needs the term.
+            .mul(smoothstep(150, 60, positionLocal.xz.length()))
+        : float(0);
+      // Light focuses on the bed, so caustics brighten it PROPORTIONALLY rather
+      // than adding a flat white — and they dim with depth and with the sun.
+      // The falloff is deliberately gentle (0.45, not 0.9): real caustics are
+      // strongest around 1-3 m, and since the bed is only a fraction of the
+      // final pixel at those depths, a steep falloff plus a small gain makes
+      // the web mathematically present and visually absent.
+      const causticFocus = exp(depth.negate().mul(0.45)).mul(det.crest.mul(0.6).add(1));
+      const bedAlbedo = bedBase.mul(
+        caustic.mul(1.8).mul(causticFocus).mul(saturate(this.#uSunDir.y.mul(4))).add(1)
+      );
+
       const surface = oceanSurfaceRadiance({
         normal: rippleNormal,
         viewDir,
@@ -505,6 +584,9 @@ export class Water {
         sunRadiance: this.#uSunRadiance,
         ambient: this.#sky.ambientRadiance(),
         bodyAlbedo: faceCol,
+        bedAlbedo,
+        bedTransmittance: bedT,
+        bedGain: BED_GAIN,
         foam: foamTotal,
         foamAlbedo: color(0xdfe8e6),
         // Crest subsurface (SoT trick): the cascades' 1−Jacobian mask IS the set

@@ -51,7 +51,10 @@ const SPOTS = {
   // 7.43e-6 z^2, so at z = 3200 the waterline sits near x = -5975; sitting 45 m
   // offshore of it puts the camera over ~1-2 m of water, which is the whole
   // point of Tier B — the band where the seabed should show through.
-  shoreline: { x: -6020, z: 3200, eyeY: 2.5 },
+  // Measured: the bed slopes ~0.09, so x = -6020 is already 4 m down — deep
+  // enough that Beer-Lambert has killed the bed entirely. Tier B lives in the
+  // first ~2 m, which is the last ~20 m before the waterline.
+  shoreline: { x: -5990, z: 3200, eyeY: 2.0 },
   // Sutro cove shallows: rock bed rather than sand, and the site's own water is
   // nearby, so this is the second bed palette Tier B has to satisfy.
   sutroShore: { x: -6260, z: 1117, eyeY: 2.5 }

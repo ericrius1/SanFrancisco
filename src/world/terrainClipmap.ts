@@ -703,6 +703,9 @@ export class TerrainClipmap {
     const sand = color(0xd1c49f);
     const bayFloor = color(0x466c68);
     const rock = color(0x878178);
+    /** Wet-sand band, built below on the inner rings only; null elsewhere so
+     *  the roughness assignment stays byte-identical on the outer rings. */
+    let wetSand: N = null;
     let terrainColor: N = urban.mul(surface.r)
       .add(grass.mul(surface.g))
       .add(sand.mul(surface.b))
@@ -758,6 +761,29 @@ export class TerrainClipmap {
       variation = variation.add(micro.mul(this.#microVariation).mul(nearFade));
     }
     terrainColor = terrainColor.mul(variation.add(1));
+
+    // --- wet sand / swash band (ocean Tier B) ------------------------------
+    // The water side now transmits its bed and feathers into the shore, but a
+    // beach that stays bone-dry right up to the waterline still reads as two
+    // materials meeting at a line. Real sand is darker and glossier for a metre
+    // or so above the water — that band is most of what sells a shoreline.
+    //
+    // Keyed on world height against the y≈0 waterline, and gated to the SAND +
+    // BAYFLOOR surface weights so grass, pavement and rock stay dry. Build-time
+    // gated to the inner rings (level ≤ 3 is the same 8 m-spacing gate the micro
+    // detail uses): past ~512 m a 1.6 m band is sub-pixel and this would be pure
+    // cost. ~8 ALU, no texture fetch, no new uniform.
+    if (level.level <= 3) {
+      const wet: N = smoothstep(1.6, -0.2, (positionWorld as N).y).mul(
+        (surface.b as N).add(surface.a).saturate()
+      );
+      terrainColor = terrainColor.mul(mix(float(1), float(0.58), wet));
+      // Wet sand is also SPECULAR — the darkening alone reads as dirt, the
+      // gloss is what reads as water. Applied to the roughness assignment below
+      // through this shared node.
+      wetSand = wet;
+    }
+
     terrainColor = mix(terrainColor, color(LEVEL_DEBUG_COLORS[level.level]), this.#debugLevels.mul(0.72));
 
     // Dawn ramp (docs/VOID_STREAM_REWRITE.md M18). Terrain is always resident:
@@ -769,7 +795,9 @@ export class TerrainClipmap {
     // both terms are identity multiplies — settled shading is byte-identical.
     const dawn = (materializeField.worldReveal as N).saturate();
     material.colorNode = terrainColor.mul(dawn);
-    material.roughnessNode = surface.a.mul(0.03).add(0.94);
+    material.roughnessNode = wetSand
+      ? surface.a.mul(0.03).add(0.94).mul(mix(float(1), float(0.52), wetSand))
+      : surface.a.mul(0.03).add(0.94);
 
     // While the dawn ramp sits at exactly 0 the terrain is fully absent — not
     // even a dark silhouette occluding the starfield. The clipmap already
