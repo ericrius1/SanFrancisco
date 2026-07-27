@@ -566,6 +566,12 @@ function plantable(map: GardenTerrain, region: WildRegion, x: number, z: number)
  *  reject it explicitly so the intent is obvious and survives a plantClass edit). */
 const SURFACE_ROAD = 4;
 
+/** Dry beach sand — OSM `natural=beach` plus the ocean-beach corridors stamped by
+ *  tools/mark-beaches-surface.mjs. Nothing grows on a beach: rejected explicitly
+ *  for the same reason as the road class, since the ocean beaches bake INSIDE the
+ *  GGNRA park polygons and a stray plantClass edit would carpet the sand again. */
+const SURFACE_SAND = 2;
+
 /**
  * The SHARED ground-cover placement gate: true where BOTH the wildlands grass and
  * the wildflower ring may grow, so flowers land exactly in the grass (never on
@@ -586,6 +592,7 @@ export function grassyGround(map: GardenTerrain, x: number, z: number): boolean 
   if (map.isWater(x, z)) return false;
   const st = map.surfaceType(x, z);
   if (st === SURFACE_ROAD) return false; // never on the streets
+  if (st === SURFACE_SAND) return false; // never on the beaches
 
   const r = wildRegionAt(x, z);
   // region → its plantClasses + ground gate; outside any region → city parks (green) only

@@ -899,6 +899,9 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   // per docs/MAIN_DECOMPOSITION.md.
   const oceanKite = createOceanKiteGate({ map, scene, renderer, camera, player, debugPanel });
   import.meta.hot?.dispose(oceanKite.dispose);
+  // renderFrame lives in main and predates this gate; hand it the kite's
+  // sunset god-ray request so both areas arbitrate in one place.
+  ctx.state.kiteGodRayArea = oceanKite.godRayArea;
 
   // Session resume / invite POSITION was committed back in P1 (void phase).
   // What remains here are the parts that need P3 systems: the surf runtime for

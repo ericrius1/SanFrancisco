@@ -22,6 +22,10 @@ const PRODUCTION_DURATIONS = Object.freeze({
   ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => [
     `twitter-summer-${String(index + 1).padStart(2, "0")}`,
     7.5
+  ])),
+  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
+    `ocean-beach-kite-${String(index + 1).padStart(2, "0")}`,
+    10
   ]))
 });
 
@@ -93,6 +97,15 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 3.65, id: "stream", description: "wings tuck into the Palace flyby exit" },
     { time: 4.55, id: "resolve", description: "golden tail stream resolves over the rotunda" }
   ]),
+  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
+    const shot = index + 1;
+    return [`ocean-beach-kite-${String(shot).padStart(2, "0")}`, Object.freeze([
+      { time: 0, id: "wind", description: `look ${shot} opens on the onshore wind` },
+      { time: 3.4, id: "flutter", description: `kite fabric takes the gust` },
+      { time: 6.4, id: "surf", description: `a set breaks behind the flyers` },
+      { time: 8.9, id: "settle", description: `the beach resolves into the evening` }
+    ])];
+  })),
   ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
     const shot = index + 1;
     return [`twitter-summer-${String(shot).padStart(2, "0")}`, Object.freeze([
@@ -184,6 +197,8 @@ export async function renderCinematicAudio(production, outputPath) {
     scoreSurfAerial(mix);
   } else if (id === "phoenix-palace-flyby") {
     scorePhoenixPalaceFlyby(mix);
+  } else if (id.startsWith("ocean-beach-kite-")) {
+    scoreOceanBeachKite(mix, Number(id.slice(-2)));
   } else {
     scoreTwitterSummerShot(mix, Number(id.slice(-2)));
   }
@@ -361,6 +376,89 @@ export async function renderTransitionAudio(options = {}, outputPath) {
     rmsDb: levels.rmsDb,
     beds: []
   };
+}
+
+/**
+ * Ocean Beach at the end of the day: onshore wind over open sand, sets breaking
+ * behind the flyers, and ripstop taking the gust.
+ *
+ * All five looks share this score. They are the same beach at the same hour and
+ * should sound like it — and because `mix.rng` is seeded from each production's
+ * own seed, the wind, surf and fabric are a different realisation every time
+ * even though the plan is identical. `shot` only tunes the balance: the early
+ * looks are brighter and windier, the last one is mostly water and air.
+ */
+function scoreOceanBeachKite(mix, shot) {
+  const evening = clamp01((shot - 1) / 4);
+  // The pad drops a fifth and dims as the sun goes; by look five it is a drone.
+  addPad(mix, {
+    start: 0,
+    duration: 10,
+    notes: evening < 0.5 ? [43, 50, 55, 62, 67, 74] : [36, 43, 50, 55, 62, 67],
+    gain: 0.042 + evening * 0.016,
+    pan: 0,
+    brightness: 0.62 - evening * 0.26
+  });
+  // Wind is the bed the whole beach sits on, and it never stops.
+  addAir(mix, { start: 0, duration: 10, gain: 0.03 - evening * 0.006, panDrift: 0.8 });
+  // Ripstop. "grass" is the fastest of the foley characters and the closest to
+  // a sail chattering in a gust.
+  addFoley(mix, {
+    start: 0.2,
+    duration: 9.6,
+    gain: 0.016 - evening * 0.005,
+    pan: -0.18,
+    character: "grass"
+  });
+  addFoley(mix, {
+    start: 3.4,
+    duration: 3.1,
+    gain: 0.019 - evening * 0.006,
+    pan: 0.3,
+    character: "grass"
+  });
+  // Three sets breaking, panned across the beach and slower than they are big.
+  addWhoosh(mix, {
+    start: 0.6,
+    duration: 3.4,
+    gain: 0.055,
+    panFrom: -0.62,
+    panTo: -0.1,
+    direction: "in"
+  });
+  addWhoosh(mix, {
+    start: 4.1,
+    duration: 3.2,
+    gain: 0.05,
+    panFrom: 0.58,
+    panTo: 0.12,
+    direction: "in"
+  });
+  addWhoosh(mix, {
+    start: 6.4,
+    duration: 3.4,
+    gain: 0.062 + evening * 0.014,
+    panFrom: -0.2,
+    panTo: 0.4,
+    direction: "in"
+  });
+  addSub(mix, { start: 6.55, duration: 1.5, fromHz: 52, toHz: 33, gain: 0.055 + evening * 0.02 });
+  // Two small bells for the kites themselves, gone by blue hour.
+  addChime(mix, {
+    start: 2.15,
+    midi: 78 - Math.round(evening * 5),
+    duration: 2.1,
+    gain: 0.03 * (1 - evening * 0.7),
+    pan: 0.26
+  });
+  addChime(mix, {
+    start: 5.35,
+    midi: 71 - Math.round(evening * 5),
+    duration: 2.4,
+    gain: 0.026 * (1 - evening * 0.7),
+    pan: -0.3
+  });
+  addChime(mix, { start: 8.9, midi: 59, duration: 1.6, gain: 0.024 + evening * 0.012, pan: 0.08 });
 }
 
 function scoreLandsEnd(mix) {
