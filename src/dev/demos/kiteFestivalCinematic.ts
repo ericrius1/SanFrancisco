@@ -439,8 +439,13 @@ const LATE_FRAMINGS: readonly Framing[] = [
     // pulled right back so that band stays a band instead of a wash.
     hour: 20.88,
     exposure: 0.95,
-    mist: 0.28,
-    shafts: 0.5,
+    // 0.18, and the camera comes in to ~70 m below, because the first render of
+    // this was a grey wash: at this hour the world's own aerial perspective is
+    // already doing the work of fog, and a hundred metres of it over water left
+    // the kites at almost no contrast against the sky. The marine layer this
+    // shot wants is thinner than the distance it is shot from.
+    mist: 0.18,
+    shafts: 0.65,
     subject: 6,
     // High and falling, looking down the beach: the kites stack against the
     // bright horizon strip while the sand goes to shadow.
@@ -457,13 +462,13 @@ const LATE_FRAMINGS: readonly Framing[] = [
       const fall = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
       eye.copy(live.flock)
-        .addScaledVector(live.sun, -mix(112, 96, fall))
-        .addScaledVector(along, mix(30, 10, fall));
+        .addScaledVector(live.sun, -mix(82, 66, fall))
+        .addScaledVector(along, mix(24, 8, fall));
       const base = live.ground(eye.x, eye.z);
-      eye.y = base + mix(26, 12, fall);
+      eye.y = base + mix(20, 9, fall);
       target.copy(live.flock).addScaledVector(along, mix(4, -4, fall));
       target.y = base + 9 + (live.flock.y - base) * 0.34;
-      return mix(42, 50, fall);
+      return mix(46, 56, fall);
     }
   },
   {
