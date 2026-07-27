@@ -1,0 +1,26 @@
+Generate ONE image with your image generation tool, then save it to
+/Users/eric/codeprojects/SanFrancisco/.claude/worktrees/sutro-baths-walls-art-wood-5bdf11/.data/codex-art/hall-seal-rocks.png
+(copy the generated file there with `cp`). Reply with only the absolute path you wrote.
+
+Image brief — a lithographed poster that will hang, framed, on the timber wall of
+an indoor swimming hall in a stylised low-poly video game. LANDSCAPE 3:2.
+
+Subject: Seal Rocks and the 1896 Cliff House, San Francisco, at sunset, seen from
+the water. Craggy dark rocks in the foreground with sea lions hauled out on them,
+the many-spired Victorian Cliff House silhouetted on the bluff behind, a low sun
+with radiating rays over a banded teal ocean, gulls.
+
+Style: 1890s American chromolithograph travel poster. FLAT spot colours, hard
+silhouettes, visible flat colour separations, NO photorealism, NO gradients other
+than simple flat bands, no digital airbrush. Slight aged cream paper tone.
+
+Palette (use these, they must sit in a warm timber room): cream #f7eed6, warm
+gold #e8ab3f, coral #e07a4e, terracotta #a8412a, deep teal #12454a, mid teal
+#1f6b6b, sea green #2e7f6d, ink navy #1b2b45, moss #4d6b3a.
+
+Typography, spelled EXACTLY, in an elegant Didot-like serif, well kerned:
+  headline: SEAL ROCKS
+  subhead: & THE CLIFF HOUSE
+  bottom rule line: A FEW STEPS FROM THE BATHS
+Leave a clean margin — the poster gets a physical frame around it, so keep all
+type and key subject matter inside the middle 92% of the canvas.
