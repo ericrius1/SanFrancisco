@@ -44,6 +44,7 @@
     "server": "node server/server.mjs",
     "start": "node server/server.mjs",
     "audit:traffic": "node --experimental-strip-types tools/audit-traffic-system.mjs",
+    "test:grade": "node --experimental-strip-types tools/grade-probe.mjs --check",
     "test:golf": "node --experimental-strip-types tools/golf-logic-probe.mjs",
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
     "test:tea-garden": "node --experimental-strip-types tools/tea-garden-probe.mjs",
