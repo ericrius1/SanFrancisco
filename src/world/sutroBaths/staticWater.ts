@@ -6,6 +6,7 @@ import {
   cos,
   exp,
   float,
+  max,
   mix,
   normalize,
   positionLocal,
@@ -34,7 +35,9 @@ import {
 import {
   SUTRO_BATHS,
   SUTRO_POOLS,
+  SUTRO_WATER_RENDER_ORDER,
   distanceToSutroWater,
+  isInsideSutroPool,
   sutroLocalToWorld
 } from "./layout";
 import { SUTRO_BATHS_TUNING } from "./tuning";
@@ -92,13 +95,22 @@ export type SutroBathsStaticWaterDebugState = {
   staticSurface: true;
   disposed: boolean;
   enabled: boolean;
+  /** Camera under the waterline: the sheet is drawing its underside look. */
+  cameraSubmerged: boolean;
   stats: SutroBathsStaticWaterStats;
 };
 
 export type SutroBathsStaticWater = {
   group: THREE.Group;
   mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardNodeMaterial>;
-  update(dt: number, time: number, player: { x: number; z: number }): void;
+  update(
+    dt: number,
+    time: number,
+    player: { x: number; z: number },
+    camera: THREE.Camera
+  ): void;
+  /** True while the camera is under the pools' waterline. */
+  readonly cameraSubmerged: boolean;
   setEnabled(enabled: boolean): void;
   /** 0 = daylight pools, 1 = the out-of-time twilight (lamps on the water). */
   setTwilight(depth: number): void;
@@ -372,25 +384,83 @@ export function createSutroBathsStaticWater(options: {
         })()
       : null;
 
+  // --- the surface seen from BENEATH ---------------------------------------
+  //
+  // The sheet used to be FrontSide, so a swimmer who ducked under looked
+  // straight through the waterline at the roof trusses and the sky, with the
+  // hall's columns stabbing into "air". This is the missing lid, on the same
+  // mesh (so it can never disagree with the footprint) and selected by one
+  // uniform rather than a second material: above and below are mutually
+  // exclusive for a flat pool, so the CPU can just say which one it is and no
+  // pipeline permutation is needed.
+  //
+  // Physics of the look: refraction inverts the whole sky into a bright cone
+  // of about 48.6° half-angle straight overhead — Snell's window — and
+  // everything outside that cone is total internal reflection, i.e. a rippled
+  // mirror of the pool itself. Baths are shallow, so the window is small and
+  // moves fast as you rise, which is exactly the cue that tells you which way
+  // is up.
+  const belowU = uniform(0);
+  const camXZU = uniform(new THREE.Vector2());
+  const camYU = uniform(0);
+  const underDepth = max(float(SUTRO_BATHS.waterY).sub(camYU), 0.3);
+  const underHoriz = positionWorld.xz.sub(camXZU).length();
+  // The true cone is 48.6° half-angle (radius ≈ 1.13 × depth), but the pitch a
+  // swimmer can actually reach means a physically sized window fills the entire
+  // up-view with flat near-white and just reads as open sky. Drawing it tight
+  // keeps it legible as a window — the same call world/water.ts's ocean lid
+  // makes. The ripple wobbles the rim so it is a moving hole, not a disc.
+  const underWobble = worldNormal.xz.length().mul(underDepth.mul(1.6));
+  const underWindow = smoothstep(
+    underDepth.mul(0.2),
+    underDepth.mul(0.62),
+    underHoriz.add(underWobble)
+  ).oneMinus();
+  // Everything outside the window is total internal reflection: a rippled
+  // mirror of the bath, not a view of the hall.
+  const underRipple = sin(positionWorld.x.mul(1.7).add(timeU.mul(1.05)))
+    .mul(sin(positionWorld.z.mul(1.45).sub(timeU.mul(0.85))))
+    .mul(0.5)
+    .add(0.5);
+  const underSilver = uniform(new THREE.Color(0x2c5c63));
+  const underLit = mix(
+    mix(underSilver, temperatureColor, underRipple.mul(0.45)),
+    highlightColorU,
+    saturate(underWindow.add(underRipple.mul(0.14)).add(crest.mul(0.1)))
+  );
+  // Lamps and the sun still glint off the mirror side, just dimmer.
+  const underGlint = lampColorU.mul(lampGlint.mul(0.35).mul(twilightU));
+
   const material = new THREE.MeshStandardNodeMaterial({
     roughness: 0.34,
     metalness: 0,
     transparent: true,
     depthWrite: false,
-    side: THREE.FrontSide
+    // Both faces: the same sheet is the pool from the deck and the ceiling from
+    // in the water. Nothing here uses transmission, so this stays single-pass.
+    side: THREE.DoubleSide
   });
+  material.forceSinglePass = true;
   material.positionNode = positionLocal.add(vec3(0, analyticalWave, 0));
-  const diffuse = mix(
+  // The sky mirror belongs to the ABOVE-water branch only. Seen from beneath,
+  // the surface is Snell's window and total internal reflection — a swimmer
+  // looking up must not also get a reflection of the dome painted over it.
+  const aboveDiffuse = mix(
     surfaceColor.mul(vec3(1).sub(transmittance)),
     highlightColorU,
     foamMask
   );
   // Same complementarity as the emissive blend below: a fragment that is mostly
   // mirror has almost no diffuse response left to give.
-  material.colorNode = mirror
-    ? diffuse.mul(float(1).sub(mirror.weight))
-    : diffuse;
-  const body = litBed.mul(transmittance)
+  material.colorNode = mix(
+    mirror ? aboveDiffuse.mul(float(1).sub(mirror.weight)) : aboveDiffuse,
+    // Almost all of the underside is emissive; leaving albedo dark keeps the
+    // hall's directional light from raking across a surface it is behind.
+    underLit.mul(0.12),
+    belowU
+  );
+  const body = litBed
+    .mul(transmittance)
     .add(highlightColorU.mul(foamMask.mul(0.1)))
     .add(vec3(1.0, 0.97, 0.88).mul(sparkle).mul(twilightU.mul(0.7).oneMinus()))
     .add(lampColorU.mul(lampGlint.mul(0.5).add(lampWash)))
@@ -401,9 +471,11 @@ export function createSutroBathsStaticWater(options: {
   // the sky. Blending by the same Fresnel weight keeps the sum at unity, so
   // looking straight down still shows the lit bed and only the grazing angles
   // become mirror.
-  material.emissiveNode = mirror
-    ? mix(body, mirror.radiance, mirror.weight)
-    : body;
+  material.emissiveNode = mix(
+    mirror ? mix(body, mirror.radiance, mirror.weight) : body,
+    underLit.mul(0.85).add(underGlint),
+    belowU
+  );
   material.normalNode = normalize(cameraViewMatrix.mul(vec4(worldNormal, 0)).xyz);
 
   const mesh = new THREE.Mesh(geometry, material);
@@ -411,7 +483,10 @@ export function createSutroBathsStaticWater(options: {
   mesh.position.set(SUTRO_BATHS.centerX, 0, SUTRO_BATHS.centerZ);
   mesh.castShadow = false;
   mesh.receiveShadow = true;
-  mesh.renderOrder = 7;
+  // Reversed-depth transparent ordering: this must stay ABOVE the steam shells'
+  // order so the sheet is laid down first and the plumes composite on top of
+  // it. See SUTRO_WATER_RENDER_ORDER in layout.ts.
+  mesh.renderOrder = SUTRO_WATER_RENDER_ORDER;
 
   const group = new THREE.Group();
   group.name = "sutro_baths_static_water";
@@ -433,6 +508,7 @@ export function createSutroBathsStaticWater(options: {
 
   let apiEnabled = true;
   let disposed = false;
+  let cameraSubmerged = false;
 
   const syncTuning = () => {
     const tuning = SUTRO_BATHS_TUNING.values;
@@ -453,12 +529,40 @@ export function createSutroBathsStaticWater(options: {
   return {
     group,
     mesh,
-    update(_dt, time, player) {
+    update(_dt, time, player, camera) {
       if (disposed) return;
       timeU.value = Number.isFinite(time) ? time : 0;
       (sunDirU.value as THREE.Vector3).copy(SUN_DIR);
       stats.playerDistance = distanceToSutroWater(player.x, player.z);
       stats.revision++;
+
+      // Which side of the sheet the eye is on. The band is asymmetric so a
+      // swimmer bobbing at the waterline cannot strobe between the two looks:
+      // commit to the ceiling only once the eye is properly under, and give it
+      // up as soon as it breaks the surface again.
+      const eye = camera.position;
+      const below = cameraSubmerged
+        ? eye.y < SUTRO_BATHS.waterY - 0.02
+        : eye.y < SUTRO_BATHS.waterY - 0.1;
+      // Only inside a pool footprint: standing on the deck beside a bath puts
+      // the eye above the waterline anyway, but the basin walkways and the
+      // beach stair go below it, and the ceiling look there would be nonsense.
+      cameraSubmerged = below && isInsideSutroPool(eye.x, eye.z);
+      belowU.value = cameraSubmerged ? 1 : 0;
+      // Depth is written ONLY from below, and it is what makes the underside
+      // visible at all. The post-process underwater fog attenuates every pixel
+      // by the OPAQUE depth behind it, so a depth-free ceiling inherited the
+      // roof trusses' distance twelve metres up, took a full water column of
+      // in-scatter, and washed out to flat fog — the sheet drew perfectly and
+      // you could still see the roof through it. From above it must stay off:
+      // the sheet is read THROUGH (its own refraction samples the scene behind
+      // it) and the steam composites over it.
+      if (material.depthWrite !== cameraSubmerged) material.depthWrite = cameraSubmerged;
+      (camXZU.value as THREE.Vector2).set(eye.x, eye.z);
+      camYU.value = eye.y;
+    },
+    get cameraSubmerged() {
+      return cameraSubmerged;
     },
     setEnabled(enabled) {
       apiEnabled = enabled;
@@ -488,6 +592,7 @@ export function createSutroBathsStaticWater(options: {
         staticSurface: true,
         disposed,
         enabled: apiEnabled && SUTRO_BATHS_TUNING.values.waterEnabled,
+        cameraSubmerged,
         stats
       };
     },

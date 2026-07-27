@@ -25,14 +25,17 @@ import {
   positionWorld,
   pow,
   saturate,
+  screenCoordinate,
   sin,
+  smoothstep,
   triNoise3D,
   uniform,
   vec3 as vec3Raw,
   vec4 as vec4Raw
 } from "three/tsl";
+import { interleavedGradientNoise } from "../waterShadingTSL";
 import { WIND_DIR } from "../vegetation/wind";
-import { SUTRO_BATHS, sutroLocalToWorld } from "./layout";
+import { SUTRO_BATHS, SUTRO_STEAM_RENDER_ORDER, sutroLocalToWorld } from "./layout";
 
 // TSL node generics fight composition; `any` is the idiom here (see facade.ts).
 type N = any;
@@ -128,7 +131,7 @@ export function createSteamShell(
   const kSin = float(s);
   const kHeat = float(box.heat);
 
-  const WARM_BASE = vec3(1.0, 0.8, 0.58); // glow near the heated water
+  const WARM_BASE = vec3(1.0, 0.88, 0.74); // glow near the heated water
   const COOL_CREST = vec3(0.9, 0.94, 1.0); // cool white higher in the plume
   const SUN_TINT = vec3(1.0, 0.87, 0.72);
 
@@ -136,25 +139,51 @@ export function createSteamShell(
   const toLocalXZ = (dx: N, dz: N): N =>
     vec3(kCos.mul(dx).sub(kSin.mul(dz)), float(0), kSin.mul(dx).add(kCos.mul(dz)));
 
+  /**
+   * Rising columns. A uniform slab is separated from a bank of steam only by
+   * path length, so it reads as a wall edge-on and as nothing at all from
+   * above. Plumes a few metres apart, with REAL gaps (no density floor), keep
+   * the twenty-metre grazing view broken instead of a flat wash AND give a
+   * two-metre downward ray something dense to march through. The near-static Y
+   * term makes them columns rather than drifting blobs.
+   *
+   * Split out of densityAt so the sun tap can reuse the marched sample's value:
+   * the tap is 1.4 m away and these plumes are ~7 m across, so re-evaluating
+   * this noise for it would cost a third of the shader to move nothing.
+   */
+  const plumeAt = Fn(([pWorld]: N[]): N => {
+    const plumeP = vec3(
+      pWorld.x.mul(0.3),
+      pWorld.y.mul(0.08).sub(u.time.mul(0.1)),
+      pWorld.z.mul(0.3)
+    );
+    const plume = triNoise3D(plumeP, float(0.45), u.time.mul(0.06));
+    return saturate(plume.sub(0.2).div(0.26));
+  });
+
   // Density at a point given its pool-local position (for footprint/height
-  // falloff) and its world position (for the drifting noise field).
-  const densityAt = Fn(([pLocal, pWorld]: N[]): N => {
+  // falloff), its world position (for the drifting noise field) and the plume
+  // coverage there (from plumeAt).
+  const densityAt = Fn(([pLocal, pWorld, columns]: N[]): N => {
     const h = saturate(pLocal.y.sub(kWaterY).div(u.height.max(0.5)));
 
-    // Soft footprint: full in the core, feathering out toward the rim, and a
-    // gentle taper as the plume rises so the column narrows into a crown.
-    const taper = float(1).sub(h.mul(0.35));
-    const rx = saturate(
-      float(1).sub(pLocal.x.abs().sub(kHalfX.mul(0.5)).div(kHalfX.mul(0.5).max(0.001)))
-    );
-    const rz = saturate(
-      float(1).sub(pLocal.z.abs().sub(kHalfZ.mul(0.5)).div(kHalfZ.mul(0.5).max(0.001)))
-    );
+    // Soft footprint. The shell footprint is now exactly the pool rectangle
+    // (see createSutroBathsSteam) so its floor face can never sink under the
+    // deck, which means the whole feather has to live inside the water: full
+    // across the middle, easing out over the last third toward each coping.
+    const taper = float(1).sub(h.mul(0.3));
+    const rx = smoothstep(kHalfX.mul(0.66), kHalfX, pLocal.x.abs()).oneMinus();
+    const rz = smoothstep(kHalfZ.mul(0.66), kHalfZ, pLocal.z.abs()).oneMinus();
     const radial = rx.mul(rz).mul(taper);
 
-    // Top-heavy dissipation: densest just above the water, thinning upward,
-    // with a short rise-in so it doesn't clip hard at the surface.
-    const vertical = pow(saturate(float(1).sub(h)), 1.3).mul(saturate(h.mul(14)));
+    // Steam is THICKEST in the first half-metre over the water and thins as it
+    // climbs. The previous field ramped in over that same half-metre instead,
+    // which emptied the one band a visitor at the coping actually looks
+    // through — from the deck you marched two metres of near-vacuum and saw
+    // nothing, while the twenty-metre grazing view down the hall stayed thick.
+    const vertical = pow(saturate(float(1).sub(h)), 1.35).mul(
+      saturate(h.mul(9)).mul(0.55).add(0.45)
+    );
 
     // Advect the noise field: upward over time (steam rises) plus a wind lean
     // that grows with height and gust, and a slow horizontal curl.
@@ -174,9 +203,9 @@ export function createSteamShell(
     const n2 = triNoise3D(np.mul(0.2).add(vec3(11.3, 4.1, 7.7)), float(0.95), u.time.mul(0.55));
     const fbm = n1.mul(0.65).add(n2.mul(0.4));
     // Shape wisps and open clear gaps between billows.
-    const shaped = saturate(fbm.sub(0.18).div(0.72));
+    const wisps = saturate(fbm.sub(0.22).div(0.56));
 
-    return shaped.mul(vertical).mul(radial).mul(kHeat).mul(u.amount).mul(1.6);
+    return wisps.mul(columns).mul(vertical).mul(radial).mul(kHeat).mul(u.amount).mul(7.5);
   });
 
   const marched = Fn((): N => {
@@ -212,7 +241,11 @@ export function createSteamShell(
 
     const col = vec3(0, 0, 0).toVar();
     const trans = float(1).toVar();
-    const t = tNear.add(stepLen.mul(0.5)).toVar();
+    // Per-pixel step jitter. Twenty steps across a twenty-metre grazing span is
+    // a one-metre stride, and the plume field is structured enough now that an
+    // unjittered march lays visible shells across the bank.
+    const jitter = interleavedGradientNoise(screenCoordinate.xy);
+    const t = tNear.add(stepLen.mul(jitter.mul(0.9).add(0.05))).toVar();
 
     Loop(MAX_MARCH_STEPS, ({ i }: N) => {
       If(float(i).greaterThanEqual(u.steps), () => {
@@ -221,7 +254,8 @@ export function createSteamShell(
 
       const pW = ro.add(rd.mul(t));
       const pL = roL.add(rdL.mul(t));
-      const d = densityAt(pL, pW);
+      const columns = plumeAt(pW);
+      const d = densityAt(pL, pW, columns);
 
       const ext = d.mul(stepLen).mul(DENSITY_TO_EXTINCTION);
       const a = ext.negate().exp().oneMinus();
@@ -230,7 +264,7 @@ export function createSteamShell(
       const h = saturate(pL.y.sub(kWaterY).div(u.height.max(0.5)));
       const sW = pW.add(sunW.mul(SUN_TAP_DISTANCE));
       const sL = pL.add(sunL.mul(SUN_TAP_DISTANCE));
-      const ds = densityAt(sL, sW);
+      const ds = densityAt(sL, sW, columns);
       const lightT = ds.mul(SUN_SHADOW_K).negate().exp();
 
       const base = mix(WARM_BASE, COOL_CREST, h);
@@ -272,7 +306,9 @@ export function createSteamShell(
   const world = sutroLocalToWorld(box.cx, box.cz);
   mesh.position.set(world.x, waterY + STEAM_MAX_HEIGHT * 0.5, world.z);
   mesh.rotation.y = yaw;
-  mesh.renderOrder = 12;
+  // Reversed-depth transparent ordering: this must stay BELOW the pool sheet's
+  // order so the steam is composited on top of it. See layout.ts.
+  mesh.renderOrder = SUTRO_STEAM_RENDER_ORDER;
   mesh.layers.set(31);
   mesh.frustumCulled = true;
   mesh.matrixAutoUpdate = false;

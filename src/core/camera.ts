@@ -4,6 +4,7 @@ import type { Player } from "../player/player"
 import type { PlayerMode } from "../player/types"
 import { waterHeight, type WorldMap } from "../world/heightmap"
 import { oceanBeachWaveHeight } from "../world/oceanBeachWaves"
+import { swimVolumeAt } from "../world/swimVolumes"
 import type { Physics } from "./physics"
 import { CAMERA_TUNING, INPUT_TUNING } from "../config"
 import {
@@ -323,19 +324,31 @@ export class ChaseCamera {
     // hysteresis (~0.45 m) so swell bob doesn't flicker the tint.
     let surfaceSwimCam = false
     if (player.mode === "walk") {
-      const waterY = waterHeight(anchor.x, anchor.z, player.time)
-      const calmY =
-        waterY - oceanBeachWaveHeight(anchor.x, anchor.z, player.time)
-      const seabed = this.#map.effectiveGround(anchor.x, anchor.z)
+      // An authored pool is still, so its surface is its own calm line and its
+      // basin is the bed. Diving in a 2.6 m bath is a shorter drop than the
+      // open-bay threshold expects, hence the tighter dive clearance.
+      const pool = swimVolumeAt(anchor.x, anchor.z)
+      const waterY = pool
+        ? pool.surfaceY
+        : waterHeight(anchor.x, anchor.z, player.time)
+      const calmY = pool
+        ? pool.surfaceY
+        : waterY - oceanBeachWaveHeight(anchor.x, anchor.z, player.time)
+      const seabed = pool ? pool.floorY : this.#map.effectiveGround(anchor.x, anchor.z)
       // threshold sits well below the surface-swim rest (~0.5 m down) so bobbing
       // at the top keeps the eye above water; only a committed dive ducks it under
-      const deepDive = anchor.y < calmY - 1.6 && seabed < calmY - 2.5
+      const diveDrop = pool ? 0.9 : 1.6
+      const bedDrop = pool ? 1.8 : 2.5
+      const deepDive = anchor.y < calmY - diveDrop && seabed < calmY - bedDrop
       if (deepDive) {
         this.#chasePos.y = Math.min(this.#chasePos.y, waterY - 0.8)
       } else if (player.swimming) {
         surfaceSwimCam = true
+        const camPool = swimVolumeAt(this.#chasePos.x, this.#chasePos.z)
         const camWater =
-          waterHeight(this.#chasePos.x, this.#chasePos.z, player.time) + 0.55
+          (camPool
+            ? camPool.surfaceY
+            : waterHeight(this.#chasePos.x, this.#chasePos.z, player.time)) + 0.55
         if (this.#chasePos.y < camWater) this.#chasePos.y = camWater
       }
     }
@@ -631,9 +644,15 @@ export class ChaseCamera {
     // chase endpoint immediately, but the smoothed orbit can trail below the
     // waterline for a few frames and flash the underwater overlay.
     if (surfaceSwimCam && firstPersonBlend < 0.5) {
+      const camPool = swimVolumeAt(this.camera.position.x, this.camera.position.z)
       const camWater =
-        waterHeight(this.camera.position.x, this.camera.position.z, player.time) +
-        0.55
+        (camPool
+          ? camPool.surfaceY
+          : waterHeight(
+              this.camera.position.x,
+              this.camera.position.z,
+              player.time
+            )) + 0.55
       if (this.camera.position.y < camWater) this.camera.position.y = camWater
       if (this.#orbitViewPos.y < camWater) this.#orbitViewPos.y = camWater
       if (this.#orbitPos.y < camWater) this.#orbitPos.y = camWater

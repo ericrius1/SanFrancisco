@@ -38,21 +38,40 @@ export type SutroStaticAmbience = {
  * accumulates the grade twice.
  */
 
-/** The authored materials that should feel the lamps, and how strongly. */
-const WARM_TARGETS: Readonly<Record<string, number>> = {
-  sutro_terracotta: 1,
-  sutro_cream_tile: 0.92,
-  sutro_plaster: 0.85,
-  sutro_plaster_shade: 0.85,
-  sutro_white_tile: 0.7,
-  sutro_timber: 0.8,
-  sutro_timber_dark: 0.8,
-  sutro_brass: 1.1,
-  sutro_blue_tile: 0.45,
-  sutro_deep_tile: 0.4,
-  sutro_iron: 0.5,
-  sutro_iron_light: 0.5,
-  sutro_iron_dark: 0.45
+/** Lamplight, gilded metal and weathered copper: the room's three warm ends. */
+const LAMP_TINT = new THREE.Color(0xffb469);
+const GILT_TINT = new THREE.Color(0xffcf8e);
+const PATINA_TINT = new THREE.Color(0x6dc0a1);
+
+/**
+ * The authored materials that should feel the lamps, how strongly, and WHICH
+ * warm they drift toward.
+ *
+ * A single lamp-orange target for the whole hall made every surface at dusk the
+ * same brown. The building is actually three materials — plaster and tile that
+ * take lamplight, brass that takes gold, and an ocean-weathered iron frame that
+ * should go copper-green, not brown. Splitting the tint is what puts the hall
+ * and the pavilion clock (pavilionClock.ts) in the same palette: gilt and
+ * verdigris over warm ivory.
+ */
+type WarmTarget = { warm: number; tint: THREE.Color };
+const WARM_TARGETS: Readonly<Record<string, WarmTarget>> = {
+  sutro_terracotta: { warm: 1, tint: LAMP_TINT },
+  sutro_cream_tile: { warm: 0.92, tint: LAMP_TINT },
+  sutro_plaster: { warm: 0.85, tint: LAMP_TINT },
+  sutro_plaster_shade: { warm: 0.85, tint: LAMP_TINT },
+  sutro_white_tile: { warm: 0.7, tint: LAMP_TINT },
+  sutro_timber: { warm: 0.8, tint: LAMP_TINT },
+  sutro_timber_dark: { warm: 0.8, tint: LAMP_TINT },
+  sutro_brass: { warm: 1.1, tint: GILT_TINT },
+  sutro_blue_tile: { warm: 0.45, tint: LAMP_TINT },
+  sutro_deep_tile: { warm: 0.4, tint: LAMP_TINT },
+  // The iron frame is the hall's silhouette. Left to drift orange it turned into
+  // brown scaffolding; drifting it toward patina keeps the ribs reading as
+  // painted metal that has stood in salt air since 1896.
+  sutro_iron: { warm: 0.72, tint: PATINA_TINT },
+  sutro_iron_light: { warm: 0.78, tint: PATINA_TINT },
+  sutro_iron_dark: { warm: 0.6, tint: PATINA_TINT }
 };
 
 const GLASS_NAMES = new Set(["sutro_roof_glass", "sutro_window_glass"]);
@@ -61,23 +80,23 @@ const LAMP_NAME = "sutro_lamp";
 /**
  * Grade strengths, sized against the scene's ACTUAL ambient rather than by eye.
  *
- * These were authored blind: the type test below skipped every material in the
- * hall from the day this file was written, so nothing here had ever reached a
- * rendered pixel. The first frame that ran it came out a flat beige wash —
- * self-glow alone was 0.283 on plaster, twice the whole scene's ambient
- * (`scene.environmentIntensity` measures ~0.14 at the pocket's held hour), so
- * every surface emitted more than the sky lit it and the hall lost its form.
+ * Everything in this file was authored blind: the type test below skipped every
+ * material in the hall from the day it was written, so none of it — including
+ * the three-way warm split above — had ever reached a rendered pixel. The first
+ * frame that ran it came out a flat beige wash: self-glow alone was 0.283 on
+ * plaster, twice the whole scene's ambient (`scene.environmentIntensity`
+ * measures ~0.14 at the pocket's held hour), so every surface emitted more than
+ * the sky lit it and the hall lost its form.
  *
  * Sized now as fractions of that measured ambient: the self-glow is a shadow
  * floor at roughly a tenth of it, and the tint stops well short of the point
- * where warm iron reads as beige.
+ * where a graded surface stops reading as its own material.
  */
 const INTERIOR_SELF_GLOW = 0.03;
 const INTERIOR_TINT = 0.3;
 const GLASS_SELF_GLOW = 0.05;
 
-/** Lamplight, and the cool the room falls away to between the pools. */
-const LAMP_TINT = new THREE.Color(0xffb469);
+/** The self-glow the surfaces carry once the lamps are the only light. */
 const LAMP_EMISSIVE = new THREE.Color(0xffc07a);
 const GLASS_TINT = new THREE.Color(0xff9d5e);
 
@@ -115,6 +134,7 @@ type GradedMaterial = {
   baseEmissiveIntensity: number;
   baseOpacity: number;
   warm: number;
+  tint: THREE.Color;
 };
 
 export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): SutroStaticAmbience {
@@ -153,7 +173,11 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
     }
   }
 
-  const remember = (material: GradableMaterial, warm: number): GradedMaterial => {
+  const remember = (
+    material: GradableMaterial,
+    warm: number,
+    tint: THREE.Color = LAMP_EMISSIVE
+  ): GradedMaterial => {
     let entry = graded.get(material);
     if (!entry) {
       entry = {
@@ -162,7 +186,8 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
         baseEmissive: material.emissive.clone(),
         baseEmissiveIntensity: material.emissiveIntensity,
         baseOpacity: material.opacity,
-        warm
+        warm,
+        tint
       };
       graded.set(material, entry);
     }
@@ -196,8 +221,8 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
           lamps.add(candidate);
           continue;
         }
-        const warm = WARM_TARGETS[name];
-        if (warm !== undefined) remember(candidate, warm);
+        const target = WARM_TARGETS[name];
+        if (target !== undefined) remember(candidate, target.warm, target.tint);
       }
     });
     applyGrade();
@@ -245,7 +270,9 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
       // gas globes" work, and it has to stay under the threshold where iron
       // stops reading as iron.
       const warm = entry.warm * interiorWarmth * twilight;
-      material.color.copy(entry.baseColor).lerp(LAMP_TINT, Math.min(0.28, warm * INTERIOR_TINT));
+      material.color.copy(entry.baseColor).lerp(entry.tint, Math.min(0.28, warm * INTERIOR_TINT));
+      // Self-glow stays lamp-coloured whatever the surface drifts toward: the
+      // light in the room comes from one kind of bulb.
       material.emissive.copy(LAMP_EMISSIVE);
       material.emissiveIntensity = warm * INTERIOR_SELF_GLOW;
     }

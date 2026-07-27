@@ -103,6 +103,8 @@ export interface MainCtx {
     surfboardCustomized: boolean;
     foliageOn: boolean;
     beachPianist: BeachPianist | null;
+    /** Kite's sunset god-ray request, read by main's renderFrame. */
+    kiteGodRayArea: (() => { active: boolean; center: THREE.Vector3 } | null) | null;
     bootHud: HUD | null;
     accumulator: number;
     elapsed: number;

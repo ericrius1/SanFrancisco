@@ -2,17 +2,21 @@ import * as THREE from "three/webgpu";
 import type { Physics } from "../../core/physics";
 import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import type { AuthoredRegionStreamer } from "../authoredRegions";
+import { registerSwimVolume } from "../swimVolumes";
 import {
   SUTRO_BATHS,
   distanceToSutroBaths,
   distanceToSutroWater,
+  isInsideSutroPool,
   sutroHallWallInset,
+  sutroPoolBounds,
   sutroWalkSurfaceY
 } from "./layout";
 import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
 import { createSutroBathsVegetation } from "./vegetation";
 import { createSutroBathers } from "./bathers";
 import { createSutroParlour } from "./parlour";
+import { createSutroPavilionClock } from "./pavilionClock";
 import type { SutroBathsSteam } from "./steam";
 import {
   createSutroBathsStaticWater,
@@ -68,6 +72,8 @@ export type SutroBathsDebugState = {
   water: ReturnType<SutroBathsStaticWater["debugState"]>;
   steam: SutroBathsSteam["stats"] | null;
   twilight: SutroTwilightState;
+  /** Decimal hour the pavilion clock's hands are actually showing. */
+  clockHour: number;
 };
 
 export type SutroBaths = {
@@ -156,11 +162,23 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   const bathers = createSutroBathers();
   const parlour = createSutroParlour();
   parlour.setLampGlow(0);
+  const pavilionClock = createSutroPavilionClock({
+    sky: options.sky,
+    authoredRegions: options.authoredRegions
+  });
+  pavilionClock.setTwilight(0);
   const twilight = createSutroTwilight({
     sky: options.sky,
     onExteriorThinned: options.onExteriorThinned
   });
-  group.add(ambience.group, vegetation.group, parlour.group, bathers.group, water.group);
+  group.add(
+    ambience.group,
+    vegetation.group,
+    parlour.group,
+    pavilionClock.group,
+    bathers.group,
+    water.group
+  );
 
   const stats: SutroBathsStats = {
     architectureMeshes: 57,
@@ -215,6 +233,18 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   // Bathers still move and animate independently; the visual water intentionally
   // has no gameplay wake contract.
   const batherPlayer = new THREE.Object3D();
+
+  // The seven baths are real water to the swim/underwater stack. Registered
+  // with the site (not statically) so nothing outside the hall pays for them,
+  // and released on dispose so a streamed-out site cannot leave a phantom pool
+  // floating over the cliff. The basin is the built floor, not the terrain.
+  const releaseSwimVolume = registerSwimVolume({
+    id: "sutro-baths-pools",
+    surfaceY: SUTRO_BATHS.waterY,
+    floorY: SUTRO_BATHS.basinY,
+    ...sutroPoolBounds(),
+    contains: isInsideSutroPool
+  });
 
   const syncTuning = () => {
     ambience.applyTuning(SUTRO_BATHS_TUNING.values);
@@ -307,11 +337,14 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     steam?.setEnabled(next);
     // A sleeping site must never keep holding the world's clock or the city
     // culled: releasing here covers streaming-out, perf suppression and the
-    // debug panel's A/B toggle in one place. The hall caustics live on
-    // streamer-owned materials that outlive this object, so they need the same
-    // explicit release — nothing else will zero them.
+    // debug panel's A/B toggle in one place. The pavilion clock releases with
+    // it so the next arrival finds its hands already on the hour rather than
+    // winding to it from wherever the last visit left them, and the hall
+    // caustics live on streamer-owned materials that outlive this object, so
+    // they need the same explicit release — nothing else will zero them.
     if (!next) {
       twilight.release();
+      pavilionClock.release();
       hallCaustics.clear();
     }
   };
@@ -372,6 +405,10 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       hallCaustics.setTwilight(twilight.depth);
       hallCaustics.setStrength(SUTRO_BATHS_TUNING.values.hallCaustics);
       parlour.setLampGlow(twilight.lampGlow);
+      // After twilight.update: the pocket has just written the hour the sky is
+      // rendering, and the clock's whole job is to agree with it.
+      pavilionClock.setTwilight(twilight.depth);
+      pavilionClock.update(dt);
       bathers.setTwilight(twilight.depth);
       water.setTwilight(twilight.depth);
       ambience.update(time, SUTRO_BATHS_TUNING.values);
@@ -380,7 +417,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       const py = player.y ?? SUTRO_BATHS.waterY;
       batherPlayer.position.set(player.x, py, player.z);
       bathers.update(dt, time, batherPlayer);
-      water.update(dt, time, player);
+      water.update(dt, time, player, camera);
+      // Steam lives entirely above the waterline, and from under the surface
+      // the sheet is an opaque ceiling — so a submerged swimmer must not see
+      // plumes composited over it (the shells draw after the sheet by design;
+      // see SUTRO_STEAM_RENDER_ORDER).
+      steam?.setSubmerged(water.cameraSubmerged);
       steam?.update(dt, time, player, camera, gust);
 
       monitors.backend = water.stats.backend;
@@ -461,17 +503,20 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         nearEffectsFailed,
         water: water.debugState(),
         steam: steam?.stats ?? null,
-        twilight: twilight.debugState()
+        twilight: twilight.debugState(),
+        clockHour: pavilionClock.displayHour
       };
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      releaseSwimVolume();
       twilight.release();
       water.dispose();
       steam?.dispose();
       bathers.dispose();
       parlour.dispose();
+      pavilionClock.dispose();
       vegetation.dispose();
       ambience.dispose();
       group.removeFromParent();

@@ -19,6 +19,7 @@ customization film, an 11-second sunset dog-park film, and the eight-shot,
 | `tools/cinematic/transition.mjs` | Deterministic picture/audio transition and final assembly. |
 | `tools/cinematic/delivery.mjs` | Platform delivery derivatives, validation, and quality-comparison manifests. |
 | `tools/render-cinematic.mjs` | CLI orchestration and process cleanup. |
+| `src/dev/demos/kiteFestivalCinematic.ts` | One parameterised family that exports five `Demo`s (`ocean-beach-kite-01`…`05`). All five film the same live seven-flyer encounter from different places at different hours; only the camera and the clock differ. |
 | `tools/render-twitter-summer.mjs` | Eight independently renderable shots, exact-duration assembly, seven motivated transitions, review artifacts, and X derivatives. |
 
 The pipeline has two output tiers. The archival master captures a lossless PNG
@@ -56,6 +57,13 @@ npm run render:cinematics
 
 # Rebuild only the combined film from existing individual masters.
 npm run render:cinematic -- --combine
+
+# The five Ocean Beach kite-festival looks (sunset through blue hour).
+# One live encounter, five cameras, five wall-clock minutes:
+#   01 the whole beach   19.46   02 two sunwheels   19.66   03 the centipede 19.90
+#   04 running the sand  20.14   05 blue hour       20.78
+npm run render:cinematic -- ocean-beach-kite-01 --stills   # composition check
+npm run render:cinematic -- ocean-beach-kite-01 --full
 
 # Make the conservative X upload derivative from any finished internal film.
 npm run deliver:x -- .data/cinematics/review/roqn-open-road/roqn-open-road-fast.mp4
