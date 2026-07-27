@@ -19,6 +19,7 @@ import {
   type SutroBathsStaticWater
 } from "./staticWater";
 import { createSutroStaticAmbience } from "./staticAmbience";
+import { sutroHallCaustics } from "../sutroHallCaustics";
 import {
   createSutroTwilight,
   type SutroSkyClock,
@@ -147,6 +148,10 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     sky: options.sky ?? null
   });
   const ambience = createSutroStaticAmbience(options.authoredRegions);
+  // Shared with the region streamer, which built the node into the hall's
+  // materials before this object existed. Fetching the same instance here is
+  // what connects those materials to the site's clock.
+  const hallCaustics = sutroHallCaustics();
   const vegetation = createSutroBathsVegetation();
   const bathers = createSutroBathers();
   const parlour = createSutroParlour();
@@ -302,8 +307,13 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     steam?.setEnabled(next);
     // A sleeping site must never keep holding the world's clock or the city
     // culled: releasing here covers streaming-out, perf suppression and the
-    // debug panel's A/B toggle in one place.
-    if (!next) twilight.release();
+    // debug panel's A/B toggle in one place. The hall caustics live on
+    // streamer-owned materials that outlive this object, so they need the same
+    // explicit release — nothing else will zero them.
+    if (!next) {
+      twilight.release();
+      hallCaustics.clear();
+    }
   };
 
   let perfSuppressed = false;
@@ -354,6 +364,13 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       // A stage that returns true has more to hand out and keeps its turn.
       if (wakeStage < wakeStages.length && !wakeStages[wakeStage]()) wakeStage++;
       ambience.setTwilight(twilight.depth);
+      // Water-light on the ironwork. The node lives on the hall's materials,
+      // which the region streamer owns, so the site only feeds it the clock and
+      // the pocket depth — and zeroes it on sleep, below, so a retired hall
+      // cannot keep shimmering.
+      hallCaustics.setTime(time);
+      hallCaustics.setTwilight(twilight.depth);
+      hallCaustics.setStrength(SUTRO_BATHS_TUNING.values.hallCaustics);
       parlour.setLampGlow(twilight.lampGlow);
       bathers.setTwilight(twilight.depth);
       water.setTwilight(twilight.depth);

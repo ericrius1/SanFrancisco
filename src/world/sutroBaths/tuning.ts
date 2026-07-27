@@ -27,6 +27,9 @@ export const SUTRO_BATHS_TUNING = tunables("sutroBaths", {
   steamCurl: { v: 0.6, min: 0, max: 2, step: 0.02, label: "steam curl" },
   glassOpacity: { v: 0.12, min: 0.04, max: 0.6, step: 0.01, label: "glass sheen" },
   lampIntensity: { v: 4.6, min: 0, max: 18, step: 0.1, label: "warm lamp intensity" },
+  // Reflected water-light on the ironwork above the pools. Rides the pocket
+  // depth, so it is off outside the hall and in daylight regardless of this.
+  hallCaustics: { v: 1, min: 0, max: 3, step: 0.05, label: "caustics on the iron" },
   pocketEnabled: { v: true, label: "out-of-time twilight" },
   pocketDriftSeconds: {
     // A full sunset → twilight → sunset swing. Long on purpose: the light should
@@ -82,6 +85,12 @@ export const SUTRO_TUNING_FOLDERS = [
   {
     title: "out-of-time pocket",
     expanded: true,
-    keys: ["pocketEnabled", "pocketDriftSeconds", "lampWarmth", "interiorWarmth"]
+    keys: [
+      "pocketEnabled",
+      "pocketDriftSeconds",
+      "lampWarmth",
+      "interiorWarmth",
+      "hallCaustics"
+    ]
   }
 ] as const;
