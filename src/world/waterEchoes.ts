@@ -23,6 +23,22 @@ const MAX_ECHOES = 24;
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const FORWARD = new THREE.Vector3();
 
+/**
+ * Metres of clearance over the swell an echo needs before it means anything.
+ *
+ * An echo is the mirror image of something ABOVE the water, and the footprint
+ * below is found by intersecting the camera→mirrored-source ray with the
+ * surface. As altitude → 0 that intersection collapses back onto the source, so
+ * a hull floating in the bay gets a full-size, full-brightness echo laid across
+ * itself — and the additive layer's filaments, stretched 1.7× and swung to face
+ * the camera, read as light beams shining out of the boat rather than as any
+ * kind of reflection. Ramping the echo in with clearance keeps every source the
+ * system is actually for (bridge traffic, birds, planes, drones, boards that
+ * catch air) and drops the degenerate surface-level case.
+ */
+const SURFACE_LIFT_MIN = 2;
+const SURFACE_LIFT_FULL = 8;
+
 export const WATER_ECHO_TUNING = tunables("waterEchoes", {
   enabled: { v: true, label: "water echoes" },
   intensity: { v: 1, min: 0, max: 2, step: 0.05, label: "overall intensity" },
@@ -278,7 +294,12 @@ export class WaterEchoes {
       const sourceSurface = waterHeight(source.x, source.z, this.#time.value);
       const altitude = source.y - sourceSurface;
       const cameraAltitude = cam.y - sourceSurface;
-      if (altitude < -0.5 || altitude > maxAltitude || cameraAltitude <= 0.1) continue;
+      if (altitude > maxAltitude || cameraAltitude <= 0.1) continue;
+      // Nothing to mirror until the source is clear of the swell it is sitting
+      // on (SURFACE_LIFT_MIN/FULL). Also covers submerged sources, which used
+      // to pass the old `altitude < -0.5` floor.
+      const liftFade = smooth01(SURFACE_LIFT_MIN, SURFACE_LIFT_FULL, altitude);
+      if (liftFade <= 0) continue;
 
       // Intersect the camera→mirrored-source ray with the water plane. This is
       // the correct flat-mirror footprint; the shader then fractures it into a
@@ -296,7 +317,7 @@ export class WaterEchoes {
 
       const distanceFade = 1 - smooth01(maxDistance * 0.72, maxDistance, distance);
       const altitudeFade = 1 - smooth01(maxAltitude * 0.74, maxAltitude, altitude);
-      const visibility = distanceFade * altitudeFade;
+      const visibility = distanceFade * altitudeFade * liftFade;
       if (visibility <= 0.002) continue;
       this.#visible.push({
         ...source,
