@@ -1121,24 +1121,64 @@ export function poseAir(r: Rig) {
   set(r.foreR, 0.35, 0, 0);
 }
 
-/** Front crawl: body flat, windmilling arms, flutter kick. */
-export function poseSwim(r: Rig, t: number) {
-  r.hips.position.y = 0;
-  // lay the whole body prone at the hips (negative x pitches the torso toward
-  // the face side, -Z); rolling the hips with the stroke sells the reach
-  set(r.hips, -1.35, 0, Math.sin(t) * 0.1);
-  set(r.torso, 0.12, 0, 0);
-  set(r.head, 0.8, 0, 0); // lift the face out of the water
-  // negative sweep = pull through the water head→feet, recover through the air
-  set(r.armL, -t % (Math.PI * 2), 0, 0.15);
-  set(r.armR, -(t + Math.PI) % (Math.PI * 2), 0, -0.15);
-  set(r.foreL, 0.25, 0, 0);
-  set(r.foreR, 0.25, 0, 0);
-  // legs trail the body line (hips already prone); flutter kick around it
-  set(r.legL, 0.1 + Math.sin(t * 3) * 0.35, 0, 0);
-  set(r.legR, 0.1 - Math.sin(t * 3) * 0.35, 0, 0);
-  set(r.shinL, -0.3, 0, 0);
-  set(r.shinR, -0.3, 0, 0);
+/**
+ * Swimming. `drive` 0..1 blends TREADING WATER (0) into a full front crawl (1),
+ * so a swimmer who is holding station stops windmilling at racing cadence — the
+ * single thing that most gave away the old pose, because the stroke ran at a
+ * fixed rate whether or not the body was going anywhere.
+ *
+ * The crawl itself now rolls, breathes and bends its elbows. Real front crawl
+ * rolls the whole body ±30-40° about its long axis and the head turns with it
+ * to breathe; a flat body with straight windmilling arms reads as a doll being
+ * spun. The elbow bend is what separates the pull (bent, catching water) from
+ * the recovery (straighter, swung over the surface).
+ *
+ * `drive` defaults to 1 so existing callers posing a full-speed swimmer
+ * (world/sutroBaths/bathers.ts) are unchanged.
+ */
+export function poseSwim(r: Rig, t: number, drive = 1) {
+  const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
+  const d = Math.min(1, Math.max(0, drive));
+  const stroke = Math.sin(t);
+  // Sink the body as the stroke picks up: a swimmer under way planes up toward
+  // the surface, one holding station hangs lower with only the shoulders out.
+  // This is a VISUAL offset on the rig, deliberately not a change to
+  // SWIM_REST_DEPTH — the capsule and the first-person eye height stay exactly
+  // where the walk controller put them.
+  r.hips.position.y = -0.62 + d * 0.12;
+
+  // Prone under way, closer to upright while treading.
+  const pitch = -0.45 - d * 0.9;
+  // Roll is the crawl's signature; treading barely rolls at all.
+  const roll = stroke * (0.06 + d * 0.36);
+  set(r.hips, pitch, 0, roll);
+  set(r.torso, 0.12, 0, roll * -0.25);
+
+  // Breathe to the side the roll is already taking the body, and lift the face
+  // more when prone (where it would otherwise be in the water).
+  set(r.head, 0.35 + d * 0.5, stroke * 0.55 * d, 0);
+
+  // Arms. Under way: a continuous windmill, elbows bent through the pull and
+  // opening out on the recovery. Treading: sculling out at the sides.
+  const swingL = -t % (Math.PI * 2);
+  const swingR = -(t + Math.PI) % (Math.PI * 2);
+  // 1 while the hand is underneath pulling, 0 while it is over the top
+  const pullL = Math.max(0, Math.sin(t));
+  const pullR = Math.max(0, Math.sin(t + Math.PI));
+  const scullL = 0.95 + Math.sin(t * 1.6) * 0.22;
+  const scullR = 0.95 - Math.sin(t * 1.6) * 0.22;
+  set(r.armL, swingL * d, 0, lerp(scullL, 0.15, d));
+  set(r.armR, swingR * d, 0, lerp(-scullR, -0.15, d));
+  set(r.foreL, lerp(0.75 + Math.sin(t * 1.6) * 0.25, 0.25 + pullL * 0.85, d), 0, 0);
+  set(r.foreR, lerp(0.75 - Math.sin(t * 1.6) * 0.25, 0.25 + pullR * 0.85, d), 0, 0);
+
+  // Legs: flutter kick under way, a slow wide eggbeater while treading.
+  const flutter = Math.sin(t * 3) * 0.35;
+  const tread = Math.sin(t * 1.3);
+  set(r.legL, lerp(0.85 + tread * 0.3, 0.1 + flutter, d), 0, lerp(0.35, 0, d));
+  set(r.legR, lerp(0.85 - tread * 0.3, 0.1 - flutter, d), 0, lerp(-0.35, 0, d));
+  set(r.shinL, lerp(-1.15 - tread * 0.35, -0.3, d), 0, 0);
+  set(r.shinR, lerp(-1.15 + tread * 0.35, -0.3, d), 0, 0);
 }
 
 /**
