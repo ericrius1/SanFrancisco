@@ -253,12 +253,16 @@ export async function installDebugSurfaces(
     };
     const runDevDemo = async (name: string): Promise<void> => {
       await ensureDemoSite(name);
+      const { runDemo, demoWantsMultisampling } = await import("../../dev/demo");
       // Cinematic pages trade throughput for cleaner geometry edges. This is
       // deliberately outside persisted render settings and never runs during
-      // ordinary real-time play.
-      pipeline.setCinematicMultisampling(true);
+      // ordinary real-time play — and productions whose passes sample scene
+      // depth opt out, because a multisampled depth attachment is not bindable
+      // as an ordinary texture. The choice has to be made HERE rather than in
+      // the demo's own setup: warmup below allocates the scene targets, so a
+      // demo asking afterwards is asking after the fact.
+      pipeline.setCinematicMultisampling(demoWantsMultisampling(name));
       await pipeline.warmup("boot");
-      const { runDemo } = await import("../../dev/demo");
       runDemo(name, demoCtx);
     };
     (window as never as { __demo: (n: string) => void }).__demo = (n: string) => {

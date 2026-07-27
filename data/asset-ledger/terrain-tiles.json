@@ -8,10 +8,10 @@
     "public/data/groundtop-delta.bin": "1e40d43fe11296af2694b0cc9ba98e159374e77e12dd47b9b066b754e0d5ff45",
     "public/data/heightmap.bin": "ad6fe77e3c5c4beee62e3bd3a8f29635da65fe8cd2d85f5af311c0bf710a85cf",
     "public/data/meta.json": "c1a870eae7ffca0b236a9abfbef12b09bfb8899e2b8a7b5fd24d032aef3550d6",
-    "public/data/surface.bin": "0accb691a8d37c840b3ab22d4f0c42f780154e430048f24e1936812064b25f9b",
+    "public/data/surface.bin": "76123f5289aeb01ea8868fe1e7a7fb7a44aa8c83914458180dae91c74fe8fc10",
     "tools/bake-terrain-tiles.mjs": "e99db94c8c21550d20019351ccd858008abd25815c4f912cab4dff16e0fa7762"
   },
   "outputs": {
-    "public/data/terrain/": "1bdcdc152566ae014fca17598c159a52697eb0b4db8709b94405a92c493b2466"
+    "public/data/terrain/": "862df13b606fe5f2f46187ef7161bb506381d47861ff0da36e521bb50390da66"
   }
 }

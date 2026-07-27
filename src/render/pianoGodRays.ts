@@ -110,7 +110,13 @@ export function createPianoGodRays(opts: {
   // variants take offset samples. One retained half-float RTT keeps those looks
   // composable without changing the official god-ray/blur/blend sequence.
   const sceneTexture = rtt(composite) as any;
-  sceneTexture.name = "beachPianist.godRays.composite";
+  // Underscores, not dots: this name is emitted verbatim as a WGSL identifier
+  // for the sampler and texture bindings, and a dot there is a parse error that
+  // invalidates every pipeline the RTT is bound into (bloom's high pass and the
+  // RTT pass itself) — which renders the frame as bare clear colour. Scene-graph
+  // names elsewhere in this feature can keep their dotted paths; this one is
+  // shader-facing.
+  sceneTexture.name = "beachPianist_godRays_composite";
 
   const direction = new THREE.Vector3();
   const target = new THREE.Vector3();

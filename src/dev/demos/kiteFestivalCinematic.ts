@@ -351,12 +351,170 @@ const EXTRA_FRAMINGS: readonly Framing[] = [
   }
 ];
 
+/**
+ * Five that live entirely in the last hour of light, because the first ten
+ * bunched up around one: eight of them sit between 19.4 and 20.15, all of it
+ * before the sun is even down, and they read as the same evening filmed ten
+ * ways.
+ *
+ * The clock these are cut against, measured off the world's own solar path for
+ * the shoot date rather than guessed: the sun crosses the horizon at 20.33.
+ * The golden-hour air — the mist and the shafts, this whole feature's light —
+ * holds full until about 20.55, is down to two-thirds by 20.78, a fifth by
+ * 20.95, and is gone at 21.10. That number is the hinge. Past it there are no
+ * shafts to ask for, so a shot there has to be built out of silhouette and the
+ * sky's own gradient instead, and the two that go there are written that way.
+ *
+ * So: sun ON the water, sun just under, civil twilight, the end of civil
+ * twilight, and nautical dark. Exposure opens as the sky closes.
+ */
+const LATE_FRAMINGS: readonly Framing[] = [
+  {
+    id: "11",
+    title: "Ocean Beach Kites · Sun on the Water",
+    // Elevation zero, to the minute: the disc is sitting on the sea rather than
+    // above it or gone. It is a narrow window — twelve minutes either side and
+    // this is just another low-sun shot — so it gets the longest lens in the set
+    // and stands far enough back to keep the whole disc under the kites.
+    hour: 20.33,
+    exposure: 0.88,
+    mist: 0.85,
+    shafts: 1.5,
+    subject: 0,
+    frame: ({ u }, live, eye, target) => {
+      const drift = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.flock)
+        .addScaledVector(live.sun, -mix(132, 118, drift))
+        .addScaledVector(along, mix(20, -16, drift));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(3.2, 4.4, drift);
+      // Low target: the disc on the waterline is the subject and the kites cross
+      // in front of it, so hold the horizon rather than the flock.
+      target.copy(live.flock).addScaledVector(along, mix(6, -6, drift));
+      target.y = base + 6 + (live.flock.y - base) * 0.22;
+      return mix(62, 72, drift);
+    }
+  },
+  {
+    id: "12",
+    title: "Ocean Beach Kites · The Last Shafts",
+    // Eighteen minutes under. Golden air is still near full but the sun itself
+    // is below the water, which is the one geometry where the shafts read as
+    // shafts — they come up off the horizon rather than down through the kites.
+    hour: 20.62,
+    exposure: 0.9,
+    mist: 1.35,
+    shafts: 1.85,
+    subject: 4,
+    companion: 5,
+    // A slow rise: sand level up to twice head height, so the fans open out of
+    // the dune line as the camera clears it.
+    frame: ({ u }, live, eye, target) => {
+      const rise = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.pair)
+        .addScaledVector(live.sun, -mix(104, 92, rise))
+        .addScaledVector(along, mix(-30, -18, rise));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(1.6, 12, rise);
+      target.copy(live.pair).addScaledVector(along, mix(-8, 2, rise));
+      target.y = base + mix(7, 10, rise) + (live.pair.y - base) * 0.3;
+      return mix(46, 54, rise);
+    }
+  },
+  {
+    id: "13",
+    title: "Ocean Beach Kites · Civil Twilight",
+    // Six degrees under — the textbook definition, and the sky's best minute:
+    // a hot orange band on the water under a blue that is already deep. Fog
+    // pulled right back so that band stays a band instead of a wash.
+    hour: 20.88,
+    exposure: 0.95,
+    mist: 0.28,
+    shafts: 0.5,
+    subject: 6,
+    // High and falling, looking down the beach: the centipede's five discs
+    // stack against the bright horizon strip while the sand goes to shadow.
+    frame: ({ u }, live, eye, target) => {
+      const fall = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.kite)
+        .addScaledVector(live.sun, -mix(86, 104, fall))
+        .addScaledVector(along, mix(34, 14, fall));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(34, 16, fall);
+      target.copy(live.kite);
+      target.y = mix(live.kite.y, base + 9 + (live.kite.y - base) * 0.3, fall);
+      return mix(40, 52, fall);
+    }
+  },
+  {
+    id: "14",
+    title: "Ocean Beach Kites · After the Light",
+    // 21.10: golden hits zero here. No shafts exist to ask for at this hour, so
+    // asking for them would only prove the gate works. This one is built out of
+    // what is left — seven black kites on a blue gradient — and the camera
+    // orbits so their outlines change against it rather than sitting still.
+    hour: 21.1,
+    exposure: 1.04,
+    mist: 0.42,
+    shafts: 0,
+    subject: 1,
+    companion: 2,
+    frame: ({ u }, live, eye, target) => {
+      const swing = easeInOutCubic(u);
+      const angle = mix(0.44, -0.36, swing);
+      const away = new THREE.Vector3(
+        -live.sun.x * Math.cos(angle) + live.sun.z * Math.sin(angle),
+        0,
+        -live.sun.z * Math.cos(angle) - live.sun.x * Math.sin(angle)
+      ).normalize();
+      eye.copy(live.pair).addScaledVector(away, mix(92, 80, swing));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(4.5, 9, swing);
+      target.copy(live.pair);
+      // Sit the pair high in frame against the brightest part of the gradient;
+      // the sand below has nothing left to show.
+      target.y = base + 11 + (live.pair.y - base) * 0.42;
+      return mix(48, 58, swing);
+    }
+  },
+  {
+    id: "15",
+    title: "Ocean Beach Kites · Nautical",
+    // Eleven and a half degrees under, the darkest this set goes. Everything is
+    // silhouette and the last cold band over the sea. Widest lens and the lowest
+    // eye in the whole production: from the sand the kites sit against sky, and
+    // sky is the only thing still carrying light.
+    hour: 21.45,
+    exposure: 1.12,
+    mist: 0.55,
+    shafts: 0,
+    subject: 3,
+    frame: ({ u }, live, eye, target) => {
+      const track = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.flock)
+        .addScaledVector(live.sun, -mix(76, 68, track))
+        .addScaledVector(along, mix(-26, 22, track));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + 1.5;
+      target.copy(live.flock).addScaledVector(along, mix(-6, 6, track));
+      target.y = base + 12 + (live.flock.y - base) * 0.34;
+      return mix(34, 38, track);
+    }
+  }
+];
+
 type KiteWindow = Window & typeof globalThis & { __sf?: { oceanBeachKite?: OceanBeachKiteEncounter } };
 
 function buildDemo(framing: Framing): Demo {
   const name = `ocean-beach-kite-${framing.id}`;
   return {
     name,
+    // Depth-sampling passes: see the note in run(). Read before warmup.
+    multisample: false,
     run(ctx) {
       const { map, sky } = ctx;
       if (!map || !sky) {
@@ -368,16 +526,17 @@ function buildDemo(framing: Framing): Demo {
       sky.cycleEnabled = false;
       sky.setTimeOfDay(framing.hour);
       ctx.setExposure(framing.exposure);
-      // sceneSamples: 0 is load-bearing, not a preference. runDevDemo turns on
-      // cinematic multisampling for every demo, but several of this scene's
-      // passes SAMPLE scene depth — and a multisampled depth attachment is not
-      // sampleable as an ordinary texture in WebGPU. Leave MSAA on and the
-      // renderer throws "Sample count (4) of [Texture depth] doesn't match
-      // expectation", every command buffer that frame is invalidated, and the
-      // clip records ten seconds of cleared canvas. It only bites when a
-      // depth-consuming pass is actually live, which is why the golden-hour
-      // looks survived it and the mid-afternoon one came back solid navy.
-      // surfAerialCinematic hit the same wall and documents the same fix.
+      // Single-sampled, and `multisample: false` on the demo is what actually
+      // buys it — several of this scene's passes SAMPLE scene depth, and a
+      // multisampled depth attachment is not bindable as an ordinary texture in
+      // WebGPU. Leave MSAA on and the renderer throws "Sample count (4) of
+      // [Texture depth] doesn't match expectation", every command buffer that
+      // frame is rejected, and the clip records ten seconds of cleared canvas.
+      // Asking here as well is belt and braces: by the time `run()` executes,
+      // warmup has already allocated the targets, so this call alone cannot
+      // undo a multisampled depth buffer. That is exactly how this regressed —
+      // it held while the depth consumers stayed quiet and broke the moment the
+      // ocean rewrite added one that is always live.
       ctx.setPostFx({ sceneSamples: 0, ink: false, dream: false, retro: false });
       if (framing.mist !== undefined) OCEAN_KITE_TUNING.values.mistDensity = framing.mist;
       if (framing.shafts !== undefined) OCEAN_KITE_TUNING.values.shaftStrength = framing.shafts;
@@ -467,7 +626,9 @@ function buildDemo(framing: Framing): Demo {
   };
 }
 
-export const kiteFestivalDemos: readonly Demo[] = [...FRAMINGS, ...EXTRA_FRAMINGS].map(buildDemo);
+const ALL_FRAMINGS = [...FRAMINGS, ...EXTRA_FRAMINGS, ...LATE_FRAMINGS];
+
+export const kiteFestivalDemos: readonly Demo[] = ALL_FRAMINGS.map(buildDemo);
 export const KITE_FESTIVAL_TITLES: Readonly<Record<string, string>> = Object.fromEntries(
-  [...FRAMINGS, ...EXTRA_FRAMINGS].map((framing) => [`ocean-beach-kite-${framing.id}`, framing.title])
+  ALL_FRAMINGS.map((framing) => [`ocean-beach-kite-${framing.id}`, framing.title])
 );

@@ -395,7 +395,13 @@ export async function renderTransitionAudio(options = {}, outputPath) {
  */
 const KITE_EVENING = Object.freeze({
   1: 0.0, 2: 0.2, 3: 0.4, 4: 0.65, 5: 1.0,
-  6: 0.0, 7: 0.45, 8: 0.95, 9: 0.3, 10: 0.6
+  6: 0.0, 7: 0.45, 8: 0.95, 9: 0.3, 10: 0.6,
+  // 11–15 walk from the sun on the water (20.33) out to nautical dark (21.45).
+  // The scale was built with 20.78 as its far end and the arrangement bottoms
+  // out there — pad already dropped a fifth, chimes already gone — so the three
+  // past the end of golden hour all sit at 1 rather than being given a range
+  // the instruments cannot spend. Their difference is on screen, not in the mix.
+  11: 0.78, 12: 0.92, 13: 1.0, 14: 1.0, 15: 1.0
 });
 
 function scoreOceanBeachKite(mix, shot) {
