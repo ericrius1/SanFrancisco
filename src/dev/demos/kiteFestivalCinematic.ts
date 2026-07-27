@@ -29,6 +29,13 @@ type Framing = {
   /** Which flyer this shot is about; 0 is the diamond soloist. */
   subject: number;
   /**
+   * The subject's troupe partner, if this shot is about the two of them. A
+   * mirrored pair carves opposite arcs, so it diverges as hard as it converges
+   * — framing on one of the two loses the other for half the take. `pair` is
+   * the midpoint of both kites and is what such a shot should hold.
+   */
+  companion?: number;
+  /**
    * Places the eye and the look-at each frame. `kite` and `runner` are the
    * subject's live positions, `flock` the mean kite. `sun` is the world
    * direction toward the sun, so a shot can put itself on the dark side of a
@@ -39,6 +46,8 @@ type Framing = {
     live: {
       kite: THREE.Vector3;
       runner: THREE.Vector3;
+      /** Midpoint of subject and companion; equals `kite` when there is none. */
+      pair: THREE.Vector3;
       flock: THREE.Vector3;
       sun: THREE.Vector3;
       ground: (x: number, z: number) => number;
@@ -99,23 +108,24 @@ const FRAMINGS: readonly Framing[] = [
     hour: 19.66,
     exposure: 0.96,
     subject: 1,
-    // The mirrored pair on a long lens, so the two rotors compress against the
-    // sun and their opposite arcs read as one gesture.
+    companion: 2,
+    // The mirrored pair, framed on the point between them so both rotors stay
+    // in shot through the whole divergence.
     frame: ({ u }, live, eye, target) => {
       const push = smoothstep(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
-      eye.copy(live.kite)
-        .addScaledVector(live.sun, -mix(88, 74, push))
-        .addScaledVector(along, mix(22, 8, push));
+      eye.copy(live.pair)
+        .addScaledVector(live.sun, -mix(84, 70, push))
+        .addScaledVector(along, mix(20, 7, push));
       const base = live.ground(eye.x, eye.z);
       eye.y = base + mix(5, 8.5, push);
-      target.copy(live.kite).addScaledVector(along, mix(-3, 2, push));
-      // Anchored mostly to the waterline rather than to the kite. A tight lens
-      // chasing a kite that swings twenty metres either way walks the horizon
-      // straight out of frame; holding the sea in shot and letting the kite
-      // move within it is the composition that survives the whole take.
-      target.y = base + 7 + (live.kite.y - base) * 0.3;
-      return mix(46, 58, push);
+      target.copy(live.pair).addScaledVector(along, mix(-3, 2, push));
+      // Anchored mostly to the waterline rather than to the kites. A lens
+      // chasing kites that swing twenty metres either way walks the horizon
+      // straight out of frame; holding the sea in shot and letting them move
+      // within it is the composition that survives a whole take.
+      target.y = base + 7 + (live.pair.y - base) * 0.34;
+      return mix(40, 48, push);
     }
   },
   {
@@ -130,15 +140,17 @@ const FRAMINGS: readonly Framing[] = [
       const drift = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
       eye.copy(live.kite)
-        .addScaledVector(live.sun, -mix(104, 88, drift))
-        .addScaledVector(along, mix(-15, 11, drift));
+        .addScaledVector(live.sun, -mix(84, 70, drift))
+        .addScaledVector(along, mix(-13, 10, drift));
       const base = live.ground(eye.x, eye.z);
-      eye.y = base + mix(5.5, 10, drift);
+      eye.y = base + mix(5.5, 9, drift);
       target.copy(live.kite);
-      // Same horizon anchor as the sunwheels, but a touch higher: the dragon is
-      // fifteen metres of kite and needs the room above the waterline.
-      target.y = base + 9 + (live.kite.y - base) * 0.34;
-      return mix(50, 62, drift);
+      // Fifteen metres of kite at thirty-five metres up, and a sun on the
+      // waterline: holding both wants about forty metres of vertical coverage,
+      // which is a wide lens from close in rather than a long one from far out.
+      // Closer also makes the dragon big enough to be the subject it is.
+      target.y = base + 6 + (live.kite.y - base) * 0.44;
+      return mix(40, 46, drift);
     }
   },
   {
@@ -221,6 +233,7 @@ function buildDemo(framing: Framing): Demo {
       const kite = new THREE.Vector3();
       const runner = new THREE.Vector3();
       const flock = new THREE.Vector3();
+      const pair = new THREE.Vector3();
       const sun = new THREE.Vector3(-0.9, 0.1, -0.3).normalize();
       const ground = (x: number, z: number) => map.groundTop(x, z);
 
@@ -230,6 +243,15 @@ function buildDemo(framing: Framing): Demo {
         const subject = state.flyers[Math.min(framing.subject, state.flyers.length - 1)];
         kite.set(subject.kite[0], subject.kite[1], subject.kite[2]);
         runner.set(subject.runner[0], subject.runner[1], subject.runner[2]);
+        pair.copy(kite);
+        if (framing.companion !== undefined) {
+          const partner = state.flyers[framing.companion];
+          if (partner) {
+            pair.x = (kite.x + partner.kite[0]) * 0.5;
+            pair.y = (kite.y + partner.kite[1]) * 0.5;
+            pair.z = (kite.z + partner.kite[2]) * 0.5;
+          }
+        }
         flock.set(0, 0, 0);
         for (const flyer of state.flyers) flock.x += flyer.kite[0];
         for (const flyer of state.flyers) flock.y += flyer.kite[1];
@@ -263,7 +285,7 @@ function buildDemo(framing: Framing): Demo {
                 setPose(out, eye, target, 40);
                 return;
               }
-              const focal = framing.frame(sample, { kite, runner, flock, sun, ground }, eye, target);
+              const focal = framing.frame(sample, { kite, runner, pair, flock, sun, ground }, eye, target);
               setPose(out, eye, target, focal);
             }
           }
