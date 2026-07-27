@@ -690,6 +690,140 @@
       #hud .player-locator-marker.edge .pl-arrow {
         display: inline-block;
       }
+      /* Emote wheel (J). Sits dead centre over the world, above the toolbar but
+         below the map/overlays — it is a legend for the number row, so it never
+         takes the pointer unless the player already has a cursor to click with.
+         Closed it is fully non-interactive AND unfocusable (visibility), so a
+         Tab press can never land on an invisible ring of buttons. */
+      #hud .emote-wheel {
+        position: absolute;
+        left: 50%;
+        top: 48%;
+        transform: translate(-50%, -50%) scale(0.9);
+        z-index: var(--z-panel);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transition:
+          opacity var(--dur) var(--ease),
+          transform var(--dur) var(--ease),
+          visibility 0s linear var(--dur);
+      }
+      #hud .emote-wheel.open {
+        opacity: 1;
+        visibility: visible;
+        transform: translate(-50%, -50%) scale(1);
+        transition:
+          opacity var(--dur) var(--ease),
+          transform var(--dur) var(--ease),
+          visibility 0s;
+      }
+      #hud .emote-wheel .emote-ring {
+        position: relative;
+        width: 316px;
+        height: 316px;
+        border-radius: var(--r-pill);
+        background: radial-gradient(
+          circle at 50% 50%,
+          rgba(10, 24, 36, 0.86) 0%,
+          rgba(10, 24, 36, 0.72) 52%,
+          rgba(10, 24, 36, 0) 74%
+        );
+      }
+      #hud .emote-wheel .emote-slot {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        width: 74px;
+        padding: 7px 4px 5px;
+        border-radius: var(--r-md);
+        cursor: pointer;
+        pointer-events: auto;
+        background: var(--surface-raised);
+        border: 1px solid var(--hairline-2);
+        color: var(--text);
+        font: 700 11px var(--font);
+        box-shadow: var(--shadow-sm), var(--edge-hi);
+        transition:
+          border-color var(--dur) var(--ease),
+          background var(--dur) var(--ease),
+          transform 0.12s var(--ease);
+      }
+      #hud .emote-wheel .emote-slot .ic {
+        font-size: 21px;
+        line-height: 1.1;
+      }
+      #hud .emote-wheel .emote-slot .lbl {
+        letter-spacing: 0.02em;
+      }
+      #hud .emote-wheel .emote-slot .num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 15px;
+        height: 15px;
+        padding: 0 4px;
+        border-radius: var(--r-xs);
+        background: var(--surface-sunken);
+        border: 1px solid var(--hairline-2);
+        color: var(--text-dim);
+        font: 700 9px var(--font);
+        font-variant-numeric: tabular-nums;
+        line-height: 1;
+      }
+      #hud .emote-wheel .emote-slot:hover {
+        border-color: var(--hairline-strong);
+        background: #1a3446;
+        transform: translate(-50%, -50%) translateY(-1px);
+      }
+      #hud .emote-wheel .emote-slot.active {
+        border-color: var(--accent);
+        color: var(--accent-strong);
+        background: #164046;
+        box-shadow: var(--shadow-sm), 0 0 0 1px var(--accent-line), 0 0 22px var(--accent-soft);
+      }
+      #hud .emote-wheel .emote-slot.active .num {
+        border-color: var(--accent-line);
+        color: var(--accent-strong);
+      }
+      #hud .emote-wheel .emote-hint {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        text-align: center;
+        text-shadow: 0 1px 3px rgba(2, 8, 14, 0.8);
+      }
+      #hud .emote-wheel .emote-hint-title {
+        color: var(--accent-strong);
+        font: 700 14px var(--font);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      #hud .emote-wheel .emote-hint-sub {
+        color: var(--text-mut);
+        font: 600 11px var(--font);
+      }
+      @media (max-width: 720px) {
+        #hud .emote-wheel .emote-ring {
+          width: 268px;
+          height: 268px;
+        }
+        #hud .emote-wheel .emote-slot {
+          width: 64px;
+          font-size: 10px;
+        }
+        #hud .emote-wheel .emote-slot .ic {
+          font-size: 18px;
+        }
+      }
       /* Full-width rail so the cluster can be centred, yet the flexible spacer
          pseudo-elements below keep it from ever sliding under the bottom-left
          audio panel: they grow equally (→ centred) until the left one hits its

@@ -42,6 +42,8 @@ import {
  *   ← {t:"fw", id, d}                   relayed to everyone else
  *   → {t:"chat", text}                  ephemeral text chat (no persistence)
  *   ← {t:"chat", id, name, text}        relayed to everyone else
+ *   → {t:"emote", e}                    emote index (see player/emotes), -1 = stop
+ *   ← {t:"emote", id, e}                relayed to everyone else
  *   → {t:"rake", d:[[px,pz,cx,cz,ax,az,dx,dz,strength],...]} batched sand strokes
  *   ← {t:"rake", id, session, d:[[sequence,...stroke],...]} ordered echo to everyone
  *   → {t:"golf", k, d?|h?|p?|s?|r?}     golf events + cached state for late joins
@@ -416,6 +418,10 @@ export class Net {
   onFireworks: (id: number, rockets: number[][]) => void = () => {};
   /** Someone else sent a chat line (name is server-stamped from their roster). */
   onChat: (id: number, name: string, text: string) => void = () => {};
+  /** Someone else started an emote, or stopped one (`index` < 0). Looping
+   *  emotes re-send while held, so a repeat of the running index is a
+   *  keepalive, not a restart. */
+  onEmote: (id: number, index: number) => void = () => {};
   /** Canonical server-ordered rake segment. Return true once a live sand
    *  simulation consumed it; false keeps it cached for lazy replay. */
   onRakeStamp: (stamp: SharedRakeStamp) => boolean = () => false;
@@ -1002,6 +1008,12 @@ export class Net {
         if (id !== this.selfId && this.roster.has(id) && name && text) this.onChat(id, name, text);
         break;
       }
+      case "emote": {
+        const id = msg.id as number;
+        const e = msg.e as number;
+        if (id !== this.selfId && this.roster.has(id) && Number.isInteger(e)) this.onEmote(id, e);
+        break;
+      }
       case "rake": {
         if (!this.#adoptRakeSession(msg.session) || !Array.isArray(msg.d)) break;
         for (const value of msg.d.slice(0, RAKE_BATCH_MAX)) {
@@ -1266,6 +1278,18 @@ export class Net {
     const clean = text.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, CHAT_MAX);
     if (!clean) return;
     this.#ws.send(JSON.stringify({ t: "chat", text: clean }));
+  }
+
+  /**
+   * Announce an emote by wire index (`player/emotes` EMOTES order), or -1 to
+   * stop. Fire-and-forget like paint and fireworks: nothing is cached, so a
+   * player who joins mid-dance picks it up on the sender's next keepalive
+   * rather than from server state.
+   */
+  sendEmote(index: number) {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    if (!Number.isInteger(index)) return;
+    this.#ws.send(JSON.stringify({ t: "emote", e: index }));
   }
 
   /** Voice signaling: relay `payload` (SDP/ICE) to one peer through the server. */

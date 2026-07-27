@@ -27,6 +27,8 @@ import {  PAINT_COLORS } from "../../fx/graffiti";
 import {  ProxySet } from "../../core/worldQueries";
 import { createLazySelector } from "../../app/compose/selectorHub";
 import { Chat } from "../../ui/chat";
+import { EmoteWheel } from "../../ui/emoteWheel";
+import { emoteById, emoteIndex } from "../../player/emotes";
 import {    BALL_IMPACT_AUDIO_TUNING } from "../../audio";
 import { LOFI_MUSIC_TUNING } from "../../audio/music/tuning";
 import type {  } from "../../gameplay/creatures";
@@ -520,6 +522,31 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     }
   );
   net.onChat = (_id, name, text) => chat.addMessage(name, text);
+  // Emotes: J opens the wheel, 1–8 pick (the digit row is routed here in
+  // frameBody while it is open). The player owns the emote's lifetime — it can
+  // end itself when the body is needed — so the network mirror hangs off
+  // player.onEmote rather than off the pick, and a held loop re-announces so a
+  // late joiner sees the dance already in progress.
+  //
+  // The re-announce interval sits comfortably inside remotes.ts's
+  // EMOTE_HOLD_MS, so one dropped keepalive never stops a friend's dance.
+  const EMOTE_KEEPALIVE_SEC = 2.5;
+  const emoteWheel = new EmoteWheel((id) => player.playEmote(id));
+  let emoteKeepAlive = 0;
+  player.onEmote = (id) => {
+    emoteWheel.setActive(id);
+    emoteKeepAlive = 0;
+    net.sendEmote(id ? emoteIndex(id) : -1);
+  };
+  const updateEmoteKeepAlive = (dt: number) => {
+    const id = player.activeEmote;
+    if (!id || !emoteById(id)?.loop) return;
+    emoteKeepAlive += dt;
+    if (emoteKeepAlive < EMOTE_KEEPALIVE_SEC) return;
+    emoteKeepAlive = 0;
+    net.sendEmote(emoteIndex(id));
+  };
+  net.onEmote = (id, index) => remotes.setEmote(id, index);
   // presence toast above the chat panel when someone new enters the world
   net.onJoin = (_id, name) => chat.showJoin(name);
   // golf: friends' swings/balls/scores replay here (owner-simulated snapshots)
@@ -792,6 +819,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     input,
     minimap,
     chat,
+    emoteWheel,
     closeConversation: () => ctx.state.beachPianist?.close() || buskerTalk.close(),
     getMissionDolores: () => core.state.missionDolores,
     markChatEscapeBlur: () => { skipChatRelock = true; }
@@ -1894,6 +1922,8 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     car,
     ensureCarCustomizer,
     chat,
+    emoteWheel,
+    updateEmoteKeepAlive,
     ridePos,
     rideQuat,
     voice,

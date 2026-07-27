@@ -40,6 +40,10 @@ const RAKE_BATCH_MAX = 16;
 const RAKE_HISTORY_MAX = 256;
 const FETCH_BALL_MAX_PER_OWNER = 16;
 const FETCH_BALL_ID_MAX = 1_000_000_000;
+// Upper bound on the emote wire index (src/player/emotes.ts EMOTES). Kept
+// generous on purpose: the relay only needs a sanity clamp, and a client
+// shipped with a longer catalog than this process must still be able to emote.
+const EMOTE_INDEX_MAX = 63;
 const MSG_MAX_BYTES = 16384; // fits a WebRTC SDP offer (voice signaling); poses are ~100 B
 const MSG_BUDGET_PER_SEC = 80; // state at 12 Hz + several simultaneous RTC negotiations; flooders get cut
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // no state for 5 min → drop
@@ -1366,6 +1370,11 @@ wss.on("connection", (ws) => {
       // relay to one peer, sender id stamped server-side so it can't be forged
       const target = players.get(msg.to);
       if (target) send(target.ws, { t: "rtc", from: id, payload: msg.payload });
+    } else if (msg.t === "emote" && intBetween(msg.e, -1, EMOTE_INDEX_MAX)) {
+      // Emote start (index) or stop (-1) — pure relay, no cached state: the
+      // sender re-announces a held loop every couple of seconds, so a late
+      // joiner picks up an in-progress dance without the server tracking one.
+      broadcast({ t: "emote", id, e: msg.e }, id);
     } else if (msg.t === "chat" && typeof msg.text === "string") {
       // ephemeral text chat — strip controls, cap length, stamp name from roster
       // (never trust the client's claimed name). No persistence across reconnects.
