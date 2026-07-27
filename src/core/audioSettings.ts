@@ -6,10 +6,15 @@
  * soundscapeAudioLevel(), while player/action feedback uses effectsAudioLevel().
  * vehicle hum reads every frame, fireworks read per triggered sound, voice
  * applies per peer, corona songs poll music.
+ *
+ * The microphone lives here too, but under its own key and outside the mixer:
+ * it is a capture intent rather than a level, so the factory reset leaves it
+ * alone (nothing in a mixer reset should reach into a live device).
  */
 
 const KEY = "sf-audio";
 const SCHEMA = 2;
+const MIC_KEY = "sf-mic";
 
 export type AudioPrefs = {
   musicVolume: number;
@@ -62,6 +67,26 @@ export function saveAudioPrefs() {
 export function resetAudioPrefs() {
   Object.assign(AUDIO_PREFS, DEFAULTS);
   localStorage.removeItem(KEY);
+}
+
+/** Was the mic live when the player last left? (src/net/voice.ts restores it.) */
+export function savedMicOn(): boolean {
+  try {
+    return localStorage.getItem(MIC_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
+/** Record the player's mic intent, so a refresh doesn't silently mute them. */
+export function saveMicOn(on: boolean): void {
+  try {
+    if (on) localStorage.setItem(MIC_KEY, "on");
+    else localStorage.removeItem(MIC_KEY);
+  } catch {
+    // Storage can be unavailable (private mode, quota): the mic still works,
+    // it just won't come back by itself on the next visit.
+  }
 }
 
 /** 0 when muted; volume² otherwise (perceptual taper so mid-slider feels mid-loud). */

@@ -4,6 +4,7 @@ import { tunables } from "../core/persist";
 import { INPUT_TUNING } from "../config";
 import { waterHeight } from "../world/heightmap";
 import { swimVolumeAt } from "../world/swimVolumes";
+import { walkerPlatformCarry } from "../world/movingPlatforms";
 import type { Input } from "../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "./types";
 import { enterOnLand } from "../vehicles/shared";
@@ -138,9 +139,24 @@ export class WalkController implements ModeController {
     const w = ctx.physics.world;
     const ground = ctx.map.effectiveGround(ctx.position.x, ctx.position.z);
     const bottom = ctx.position.y - 0.9;
+    /**
+     * Riding a moving floor (the ghost ship deck) makes this whole controller
+     * work in that floor's frame: intent, gravity and footing are all measured
+     * against the deck, and its own motion is added back on the way out. Adding
+     * it means a walker standing still keeps station on the ship at whatever
+     * speed it is doing — the deck's momentum is theirs, not something they
+     * have to survive. See src/world/movingPlatforms.ts.
+     */
+    const platform = walkerPlatformCarry();
     // grounded on terrain, or resting on something the heightmap doesn't know
-    // about (floating island, rubble pile): vertical speed ~0 means supported
-    this.grounded = bottom - ground < 0.25 || Math.abs(v.linear[1]) < 0.02;
+    // about (floating island, rubble pile, moving deck): no vertical speed
+    // relative to whatever is holding us up means supported.
+    const riseRate = v.linear[1] - (platform?.vy ?? 0);
+    this.grounded = bottom - ground < 0.25 || Math.abs(riseRate) < 0.02;
+    // An idle rider turns with the ship rather than sliding round to face a
+    // fixed compass bearing; steering below overwrites this the moment they
+    // press a direction.
+    if (platform) ctx.heading += platform.yawRate * dt;
 
     // buffer the press early, keep footing warm after leaving the ground
     if (!input.suspended && input.pressed("Space")) this.requestJump();
@@ -200,7 +216,7 @@ export class WalkController implements ModeController {
 
     let vx = dir.x * speed;
     let vz = dir.z * speed;
-    let vy = v.linear[1];
+    let vy = riseRate;
     if (this.#climbOut) {
       // Up the wall first, over it second. Pushing forward the whole way would
       // be wrong below the coping: a capsule down at tile level has no slab in
@@ -249,6 +265,14 @@ export class WalkController implements ModeController {
       }
       vx = dir.x * speed;
       vz = dir.z * speed;
+    }
+    // Back out of the deck's frame. Swimming and the pool haul-out set vy from
+    // absolute world targets, but neither can happen aboard a ship, so there is
+    // never a platform to add there.
+    if (platform) {
+      vx += platform.vx;
+      vy += platform.vy;
+      vz += platform.vz;
     }
     // velocity-only control: the solver owns position/contacts (teleporting the body
     // every step is what made walking jitter). Angular velocity pinned to zero keeps

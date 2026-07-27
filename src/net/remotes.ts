@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { applyAvatarToRig, buildRig, poseAir, poseDrive, poseIdle, poseRide, poseScooter, poseWalk, type Rig } from "../player/rig";
+import { emoteByIndex, EmoteRunner } from "../player/emotes";
 import { avatarFromSeed, avatarKey, type AvatarTraits } from "../player/avatar";
 import {
   activateCarAssets,
@@ -14,7 +15,9 @@ import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/pl
 import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, animateBoard, boardFromSeed, boardVisualKey, normalizeBoardConfig, type BoardConfig } from "../vehicles/board";
-import { activateBirdAssets, buildBirdMesh } from "../vehicles/bird";
+import { activateBirdAssets, buildBirdMesh, type BirdRig } from "../vehicles/bird";
+import { PhoenixPoser, RemotePhoenixFlight } from "../vehicles/bird/pose";
+import { FEATHER_RANK, publishFeatherDrive } from "../vehicles/bird/wind";
 import { activateSurfboardAssets, animateSurfboard, buildSurfboardMesh } from "../vehicles/surf";
 import {
   normalizeSurfboardConfig,
@@ -71,6 +74,11 @@ const FAR_HIDE_DISTANCE = 1250;
 const FAR_SHOW_DISTANCE = 1150;
 const FAR_HIDE_SQ = FAR_HIDE_DISTANCE * FAR_HIDE_DISTANCE;
 const FAR_SHOW_SQ = FAR_SHOW_DISTANCE * FAR_SHOW_DISTANCE;
+// How long a looping emote survives without a keepalive from its owner. The
+// sender re-announces every EMOTE_KEEPALIVE_MS (see the net wiring); this is
+// generous enough to ride out a hiccup and short enough that a player whose tab
+// froze mid-dance stops dancing rather than grooving forever.
+const EMOTE_HOLD_MS = 6000;
 
 // name tags: one canvas texture per player, drawn once (and on rename)
 function makeTag(name: string, hue: number): THREE.Sprite {
@@ -150,6 +158,16 @@ type Avatar = {
   surfboardKey: string;
   rakePose: GardenRakePoseController | null;
   rakeMotion: GardenRakeMotion | null;
+  /** Emote playback, driven by relayed start/stop announcements. */
+  emote: EmoteRunner;
+  /** ms timestamp after which a held loop is assumed abandoned (the sender
+   *  re-announces every EMOTE_KEEPALIVE_MS while it runs, so silence past this
+   *  means their tab went away mid-dance rather than that they are still at it). */
+  emoteHoldUntil: number;
+  // phoenix: the gait rebuilt from their interpolated flight, and the poser
+  // that puts it on their skeleton. Built on the first frame they fly one.
+  birdFlight: RemotePhoenixFlight | null;
+  birdPoser: PhoenixPoser | null;
 };
 
 const TMP = {
@@ -405,6 +423,26 @@ export class RemotePlayers {
     return true;
   }
 
+  /**
+   * A relayed emote announcement: `index` is a position in the shared EMOTES
+   * catalog, or < 0 to stop. Re-announcing the emote already running is the
+   * sender's keepalive for a held loop — it extends the hold instead of
+   * restarting the animation, so a dance never stutters every 2.5 s.
+   */
+  setEmote(id: number, index: number) {
+    const a = this.avatars.get(id);
+    if (!a) return;
+    const def = index >= 0 ? emoteByIndex(index) : null;
+    if (!def) {
+      a.emote.release();
+      a.emoteHoldUntil = 0;
+      return;
+    }
+    a.emoteHoldUntil = def.loop ? performance.now() + EMOTE_HOLD_MS : 0;
+    if (a.emote.playing && a.emote.id === def.id) return;
+    a.emote.play(def.id);
+  }
+
   /** Voice indicator: tint the name tag green while that player is speaking. */
   setSpeaking(id: number, on: boolean) {
     const a = this.avatars.get(id);
@@ -490,7 +528,11 @@ export class RemotePlayers {
       surfboard: surf,
       surfboardKey: surfboardVisualKey(surf),
       rakePose: null,
-      rakeMotion: null
+      rakeMotion: null,
+      emote: new EmoteRunner(),
+      emoteHoldUntil: 0,
+      birdFlight: null,
+      birdPoser: null
     });
   }
 
@@ -639,6 +681,12 @@ export class RemotePlayers {
       const prev = a.bodies[a.mode];
       if (prev) setEmbodimentVisible(prev, false);
     }
+    // Leaving the saddle retires the reconstructed flight: coming back later
+    // must start from wherever the phoenix is then, not from a stale altitude.
+    if (a.mode === "bird") {
+      a.birdFlight = null;
+      a.birdPoser = null;
+    }
     a.mode = mode;
     a.rig = null;
     let body = a.bodies[mode];
@@ -764,6 +812,11 @@ export class RemotePlayers {
   update(dt: number) {
     const renderT = performance.now() - INTERP_DELAY_MS;
     this.#riders.length = 0;
+    // The plumage uniforms are one global set (wind.ts), so exactly one remote
+    // phoenix drives them: the closest, which is the one you are sitting on
+    // whenever you are riding shotgun.
+    let featherBird: Avatar | null = null;
+    let featherD2 = Infinity;
     for (const a of this.avatars.values()) {
       const buf = a.buffer;
       if (buf.length === 0) continue;
@@ -804,11 +857,12 @@ export class RemotePlayers {
       // Far players: pose keeps interpolating (minimap/locator/teleport), but
       // the mesh neither draws nor animates until they come back inside range.
       const localPos = this.localPlayerPosition();
+      let dist2 = 0;
       if (localPos) {
-        const d2 = a.root.position.distanceToSquared(localPos);
+        dist2 = a.root.position.distanceToSquared(localPos);
         if (a.farHidden) {
-          if (d2 < FAR_SHOW_SQ) a.farHidden = false;
-        } else if (d2 > FAR_HIDE_SQ) {
+          if (dist2 < FAR_SHOW_SQ) a.farHidden = false;
+        } else if (dist2 > FAR_HIDE_SQ) {
           a.farHidden = true;
         }
       } else {
@@ -819,6 +873,10 @@ export class RemotePlayers {
         a.rakeMotion = null;
         a.rakePose?.hide(a.rig);
         continue;
+      }
+      if (b.mode === "bird" && dist2 < featherD2) {
+        featherD2 = dist2;
+        featherBird = a;
       }
 
       const rake = b.mode === "walk" ? b.rake : undefined;
@@ -900,6 +958,10 @@ export class RemotePlayers {
     // Riders of MY vehicle glue again in glueRidersToLocalVehicle() once the
     // local mesh has settled.
     for (const a of this.#riders) this.#glueRider(a);
+    // Only claims the feathers when nobody is flying their own phoenix — the
+    // local controller outranks this and holds the claim while it is airborne.
+    const feather = featherBird?.birdPoser?.feather;
+    if (feather) publishFeatherDrive(FEATHER_RANK.nearby, feather);
   }
 
   #animate(a: Avatar, dt: number) {
@@ -916,8 +978,21 @@ export class RemotePlayers {
       const body = a.bodies.drive;
       if (body) animateCar(body, dt, a.speed, 0);
     }
+    if (a.mode === "bird") this.#animateBird(a, dt);
     const rig = a.rig;
     if (!rig || !a.mode) return;
+    // A held loop whose owner stopped announcing (tab closed, network gone)
+    // gets let go here rather than dancing forever.
+    if (a.emoteHoldUntil && performance.now() > a.emoteHoldUntil) {
+      a.emote.release();
+      a.emoteHoldUntil = 0;
+    }
+    // Only the walking body emotes; anything else means the rig is busy
+    // driving/riding, exactly as on the local player.
+    if (a.emote.active && (a.mode !== "walk" || a.ride)) {
+      a.emote.cancel(rig);
+      a.emoteHoldUntil = 0;
+    }
     if (a.mode === "walk") {
       if (a.ride) {
         // passenger: seated, no wheel — before the vy check (a car on a hill
@@ -933,6 +1008,17 @@ export class RemotePlayers {
         poseWalk(rig, a.strideT, THREE.MathUtils.clamp((h - 5.2) / 6.3, 0, 1));
       } else {
         poseIdle(rig, a.animT);
+      }
+      // Emote layer over that base — same gates the emoting player applied
+      // locally, so what their friends see matches what they see themselves.
+      if (a.emote.active) {
+        if (a.rakeMotion || Math.abs(a.vy) > 3.2) {
+          a.emote.cancel(rig);
+          a.emoteHoldUntil = 0;
+        } else {
+          if (h > 0.35) a.emote.release();
+          a.emote.apply(rig, dt);
+        }
       }
       if (a.rakePose && a.rakeMotion) {
         a.rakePose.pose(rig, a.root.position, a.root.quaternion, a.rakeMotion, a.strideT);
@@ -958,5 +1044,22 @@ export class RemotePlayers {
       rig.group.visible = Boolean(body?.userData.phoenixAsset);
       if (rig.group.visible) poseDrive(rig, 0, a.animT, false);
     }
+  }
+
+  /**
+   * Fly somebody else's phoenix on their behalf. The wire carries a pose and a
+   * speed, never a wingbeat, so the gait is rebuilt here from the interpolated
+   * flight and run through the SAME poser the pilot uses: passengers on the
+   * saddle and anyone watching from the ground see the wings work the climb,
+   * open out down a dive and carve into a bank, instead of a phoenix gliding
+   * through the sky on frozen wings.
+   */
+  #animateBird(a: Avatar, dt: number) {
+    const rig = a.bodies.bird?.userData.rig as BirdRig | undefined;
+    if (!rig) return; // GLB still loading (or never gated in)
+    const flight = (a.birdFlight ??= new RemotePhoenixFlight());
+    const poser = (a.birdPoser ??= new PhoenixPoser());
+    flight.update(dt, a.speed, a.root.position.y, a.root.quaternion);
+    poser.update(rig, dt, flight.drive, flight);
   }
 }
