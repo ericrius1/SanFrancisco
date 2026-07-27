@@ -147,6 +147,30 @@ export function inSutroBathsHall(x: number, z: number, pad = 0): boolean {
   );
 }
 
+/**
+ * Signed metres to the nearest wall plane of the hall: positive inside the
+ * enclosure, negative outside it.
+ *
+ * The single source of truth for "am I in the building", and deliberately a
+ * DISTANCE rather than a boolean or a feathered 0..1. Everything that latches on
+ * the interior — the out-of-time sky pocket, the indoor camera rig — wants to
+ * say "not until I am a few metres clear of the wall", and only metres can
+ * express that. A feathered blend cannot: its value collapses well inside the
+ * room (and collapses twice as fast in a corner, where two feathers multiply),
+ * which is exactly how the sky used to hand back and the camera used to swing
+ * out to third person while the visitor was still walking the deck.
+ *
+ * `min` of the two axes, not a product: the distance to the nearest wall is the
+ * nearest wall's distance, and a corner is no more "outside" than a long edge.
+ */
+export function sutroHallWallInset(x: number, z: number): number {
+  const local = sutroWorldToLocal(x, z);
+  return Math.min(
+    SUTRO_BATHS.hallHalfWidth - Math.abs(local.x),
+    SUTRO_BATHS.halfLength - Math.abs(local.z)
+  );
+}
+
 type SutroStairSurface = {
   minAcross: number;
   maxAcross: number;

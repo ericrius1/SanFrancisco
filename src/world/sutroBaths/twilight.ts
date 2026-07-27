@@ -1,5 +1,5 @@
 import { solarPosition, type SfCivilTime } from "../solar";
-import { SUTRO_BATHS, sutroWorldToLocal } from "./layout";
+import { SUTRO_BATHS, sutroHallWallInset } from "./layout";
 import { SUTRO_BATHS_TUNING } from "./tuning";
 
 /**
@@ -16,11 +16,13 @@ import { SUTRO_BATHS_TUNING } from "./tuning";
  *
  * Two separate signals, because they answer two different questions.
  *
- *  - `depth` is a smoothed 0..1 "how far inside am I": 1 deep in the hall, 0 out
- *    on the road or the beach, with a wide feather. It drives everything that is
- *    genuinely a property of the ROOM — the lamps coming up, the water's night
- *    response, the interior grade, the exterior thinning. Those all want to
- *    follow the visitor, so a position signal is exactly right for them.
+ *  - `depth` is a smoothed 0..1 "am I in the building": 1 ANYWHERE under the
+ *    roof, 0 out on the road or the beach, feathered over the few metres just
+ *    outside the wall. It drives everything that is genuinely a property of the
+ *    ROOM — the lamps coming up, the water's night response, the interior
+ *    grade. Those are applied to the whole hall at once, so the feather has to
+ *    live on the approach: a blend that sagged towards the walls dimmed every
+ *    lamp in the building whenever the visitor wandered over to the glass.
  *
  *  - `skyBlend` is a 0..1 crossfade for the SKY, and it deliberately does NOT
  *    follow position. Driving the hour off `depth` was the original design and
@@ -32,6 +34,12 @@ import { SUTRO_BATHS_TUNING } from "./tuning";
  *    is set, walking around inside cannot move the hour at all — and a visitor
  *    who arrives already inside (a teleport straight onto the deck) gets the
  *    evening immediately, with no sweep at all.
+ *
+ *    The latch itself is measured in METRES from the hall wall, never on
+ *    `depth`. Reading `depth` was the same mistake one layer down: the feather
+ *    has already collapsed a few metres INSIDE the wall (sooner in a corner,
+ *    where two feathers multiply), so the hour snapped back to the real
+ *    afternoon while the visitor was still walking the deck.
  *
  *  - The hour that produces the wanted light is SOLVED, not hard-coded: the
  *    pocket asks for a sun elevation (just above the horizon → a few degrees
@@ -90,20 +98,37 @@ export type SutroTwilight = {
 const SUNSET_ELEVATION = 4.6; // late gold: the hall floor still catches the sun
 const TWILIGHT_ELEVATION = -2.6; // dusk: violet overhead, the horizon still burning
 
-/** Depth at which the exterior is considered unobservable and gets thinned. */
-const THIN_ON = 0.82;
-const THIN_OFF = 0.55;
+/**
+ * Metres inside the wall at which the exterior is considered unobservable and
+ * gets thinned, and at which it comes back.
+ *
+ * Its own geometric test rather than a `depth` threshold, because thinning
+ * answers a different question from the room's light: not "is the hall at
+ * evening" but "can anyone still see the city from where this visitor stands".
+ * Deep in the hall, no; a few metres inside the portal, very much yes.
+ */
+const THIN_ON_INSET = 12;
+const THIN_OFF_INSET = 8;
 
 /**
- * Hysteresis band for the inside/outside LATCH that owns the sky.
+ * Hysteresis band for the inside/outside LATCH that owns the sky, in METRES
+ * from the hall's wall plane (positive inside, negative outside).
  *
- * Deliberately wide. Anything narrower and a visitor standing near the
- * threshold — or one whose capsule jitters a little on a stair tread — could
- * flip the latch repeatedly, and every flip is a sun that turns around. The
- * gap between these two is a good few metres of walking.
+ * These used to be thresholds on `depth`, and that was the bug: `depth` is a
+ * feathered blend that has already fallen to a sixth of its value several
+ * metres INSIDE the wall — sooner still in a corner, where the two axis
+ * feathers multiply. So the sky handed the hour back while the visitor was
+ * still on the deck, and walking near the north end or down the outer edge of
+ * the spiral snapped the time back to the middle of the afternoon.
+ *
+ * Measured against the wall instead, the rule reads the way the place does:
+ * the evening takes over just inside the building, and it does not let go until
+ * the visitor is a good four metres clear of it — past the doorway, out onto
+ * the promenade. The band between them is still several metres of walking, so a
+ * pause in the threshold or a capsule jittering on a tread cannot flip it.
  */
-const LATCH_IN_DEPTH = 0.62;
-const LATCH_OUT_DEPTH = 0.16;
+const LATCH_IN_INSET = 1.5;
+const LATCH_OUT_INSET = -4.5;
 
 /**
  * Seconds the sky crossfade takes, per direction. Wall-clock, fixed, and
@@ -114,19 +139,22 @@ const LATCH_OUT_DEPTH = 0.16;
 const SKY_FADE_IN_SECONDS = 7;
 const SKY_FADE_OUT_SECONDS = 4.5;
 
-const HALL_HALF_WIDTH = SUTRO_BATHS.hallHalfWidth;
-const HALL_HALF_LENGTH = SUTRO_BATHS.halfLength;
-/** Metres of feather on each edge — a corridor's worth, not a doorway's. */
-const FEATHER = 14;
+/**
+ * Metres of `depth` feather, and it sits entirely OUTSIDE the wall: depth is a
+ * flat 1 anywhere in the building and fades to 0 over the few metres beyond it.
+ *
+ * It used to feather inward over 14 m from each wall, multiplied across both
+ * axes — so `depth` read 0.09 standing by the east glass and near zero in a
+ * corner. Everything depth drives (the lamps, the water's night response, the
+ * interior grade) is a property of the WHOLE hall applied to the whole hall at
+ * once, so that meant walking over to the windows dimmed every lamp in the
+ * building. Inside is inside; the gradient belongs on the way in.
+ */
+const DEPTH_FADE_METRES = 6;
 
 function smooth01(value: number): number {
   const t = value < 0 ? 0 : value > 1 ? 1 : value;
   return t * t * (3 - 2 * t);
-}
-
-/** 1 well inside `half`, 0 beyond it, feathered over FEATHER metres. */
-function axisInside(distance: number, half: number): number {
-  return smooth01((half - Math.abs(distance)) / FEATHER);
 }
 
 /**
@@ -155,7 +183,7 @@ export function solveEveningHour(civil: SfCivilTime, targetDeg: number): number 
 }
 
 /** Shortest-path interpolation on the 24-hour circle. */
-function mixHours(from: number, to: number, t: number): number {
+export function mixHours(from: number, to: number, t: number): number {
   let delta = to - from;
   while (delta > 12) delta -= 24;
   while (delta < -12) delta += 24;
@@ -229,16 +257,23 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       const step = Math.min(0.1, Math.max(0, dt));
       const tuning = SUTRO_BATHS_TUNING.values;
 
-      const local = sutroWorldToLocal(player.x, player.z);
       const y = player.y ?? SUTRO_BATHS.deckY;
+      // Metres from the nearest wall: positive on the deck, negative out on the
+      // promenade or the beach. The latch below reads this directly.
+      const wallInset = sutroHallWallInset(player.x, player.z);
       // Vertically the pocket covers the basin floor up to a little above the
       // roof, so a swimmer at the bottom of the plunge and a visitor on the
       // upper gallery are both inside it.
       const height =
         smooth01((y - (SUTRO_BATHS.basinY - 6)) / 6) *
         smooth01((SUTRO_BATHS.roofApexY + 12 - y) / 10);
+      // `depth` stays a feathered blend, because the things it drives — lamps,
+      // the interior grade, the water's night response — genuinely want to come
+      // up gradually as the visitor walks in. That gradient now lives on the
+      // approach rather than inside the room: full anywhere under the roof,
+      // fading out over the last few metres of the promenade.
       const target = tuning.pocketEnabled
-        ? axisInside(local.x, HALL_HALF_WIDTH) * axisInside(local.z, HALL_HALF_LENGTH) * height
+        ? smooth01((wallInset + DEPTH_FADE_METRES) / DEPTH_FADE_METRES) * height
         : 0;
 
       // Ease in a little slower than out: arriving should feel like the light
@@ -248,11 +283,14 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       if (depth < 0.002 && target === 0) depth = 0;
 
       // The LATCH. Position is allowed to say "inside" or "outside" and nothing
-      // more; it never says "42% of the way to evening". Crossing the band is
-      // several metres of walking, so ordinary movement inside the hall — or a
-      // pause on the threshold — cannot flip it.
+      // more; it never says "42% of the way to evening". It reads metres from
+      // the wall, never `depth`, so no amount of walking about INSIDE the hall
+      // can release the hour — only actually leaving the building does.
+      // Vertical containment is a hard gate on top: someone flying over the
+      // roof is outside however deep into the plan they are.
+      const latchInset = height > 0.5 ? wallInset : LATCH_OUT_INSET - 1;
       if (!tuning.pocketEnabled) inside = false;
-      else if (inside ? depth < LATCH_OUT_DEPTH : depth > LATCH_IN_DEPTH) inside = !inside;
+      else if (inside ? latchInset < LATCH_OUT_INSET : latchInset > LATCH_IN_INSET) inside = !inside;
 
       // First sample of a visit: adopt the latch outright. Arriving inside must
       // look like the hall has always been at evening, not like a time-lapse.
@@ -296,7 +334,7 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       pocketHour = mixHours(sunsetHour, twilightHour, swing);
       sky.setTimeAuthority(mixHours(worldHour, pocketHour, smooth01(skyBlend)));
 
-      setThinned(exteriorThinned ? depth > THIN_OFF : depth > THIN_ON);
+      setThinned(latchInset > (exteriorThinned ? THIN_OFF_INSET : THIN_ON_INSET));
     },
     release() {
       releaseAuthority();
