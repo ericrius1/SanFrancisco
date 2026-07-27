@@ -138,6 +138,9 @@ export async function installDebugSurfaces(
       teaGardenBuildingSwapState: teaGarden.buildingSwapState,
       ensureOceanBeachKite: oceanKite.ensure,
       oceanKiteSite: oceanKite.site,
+      getKiteConfig: () => ({ ...ctx.state.kiteConfig }),
+      setKiteConfig: oceanKite.setKiteConfig,
+      kiteAtelierInRange: oceanKite.inAtelierRange,
       // renderIdle: probes MUST wait for this before capture phases — while the
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the

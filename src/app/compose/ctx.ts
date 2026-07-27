@@ -118,6 +118,7 @@ export interface MainCtx {
     boardConfig: any;
     scooterConfig: any;
     surfboardConfig: any;
+    kiteConfig: any;
     siteFoliage: any;
     prepareDestinationEssentials: any;
   };
