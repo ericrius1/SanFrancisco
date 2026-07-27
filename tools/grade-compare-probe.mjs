@@ -22,7 +22,7 @@ import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import { decodePng, sampleDisc } from "./lib/pngSample.mjs";
-import { evaluateLook, findLook } from "../src/render/gradeLooks.ts";
+import { GRADE_LUT_SIZE, evaluateLook, findLook } from "../src/render/gradeLooks.ts";
 
 const OUT = process.env.SF_SHOT_OUT ?? ".data/grade-shots";
 const BASE = process.env.SF_PROBE_URL?.trim() || "http://localhost:5245";
@@ -34,6 +34,9 @@ const PITCH = Number(process.env.SF_PITCH ?? 0.02);
 const LUTSIZE = process.env.SF_LUTSIZE ? Number(process.env.SF_LUTSIZE) : null;
 const TAG = process.env.SF_TAG ?? "";
 const CARDS = process.env.SF_GREYCARDS === "1";
+// Shoot a second plate of the SAME frame at this LUT edge length, as a
+// near-truth reference to diff the shipped 48-cube against.
+const LUTAB = process.env.SF_LUTAB ? Number(process.env.SF_LUTAB) : null;
 
 const srgbDecode = (x) => (x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4));
 const lum = (rgb) => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
@@ -227,6 +230,23 @@ try {
       const buf = await page.screenshot({ path: file });
       written.push(file);
       console.log(`[cmp] ${name}  ${JSON.stringify(info)}`);
+
+      if (LUTAB) {
+        // Fidelity check: re-bake at a near-truth edge length and shoot the SAME
+        // world state again. It has to be the same session — comparing two runs
+        // measures wave phase and avatar randomisation, not the LUT (measured:
+        // 35% of pixels differing by >2 code values, all of it scene motion).
+        // Even here the water moves slightly between the two frames, so diff the
+        // sky band, which is static at dusk.
+        await page.evaluate((n) => window.__sf.pipeline.grade.setLutSize(n), LUTAB);
+        await settle(2);
+        const abFile = path.join(OUT, `${TAG}${look}_t${String(time).replace(".", "-")}_lut${LUTAB}.png`);
+        await page.screenshot({ path: abFile });
+        written.push(abFile);
+        console.log(`[cmp]   + LUT ${LUTAB} reference plate`);
+        await page.evaluate((n) => window.__sf.pipeline.grade.setLutSize(n), GRADE_LUT_SIZE);
+        await settle(2);
+      }
 
       if (CARDS) {
         // Measure the RENDERED grey cards. The point is not the absolute number
