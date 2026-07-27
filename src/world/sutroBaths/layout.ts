@@ -104,6 +104,24 @@ export const SUTRO_POOLS: readonly SutroPoolSpec[] = [
   }
 ] as const;
 
+/**
+ * Transparent draw order for the pools and their steam. Keep these two together.
+ *
+ * The renderer runs a REVERSED depth buffer (app/renderCore.ts), and three's
+ * RenderList reverses the whole sorted transparent list when it does — which
+ * flips the renderOrder key along with the depth key. So inside this renderer a
+ * HIGHER renderOrder is drawn EARLIER, the opposite of the usual reading.
+ *
+ * The pool sheet is an alpha-1 surface (its transparency is carried by an
+ * emissive refraction term, not by coverage), so it has to be laid down BEFORE
+ * the steam that rises off it. With the sheet at 7 and the steam at 12 the
+ * sheet landed last and repainted every plume back out of the frame: the halls
+ * kept their distant steam banks, and every pool you actually stood at was
+ * mirror-clean.
+ */
+export const SUTRO_WATER_RENDER_ORDER = 13;
+export const SUTRO_STEAM_RENDER_ORDER = 12;
+
 export function sutroLocalToWorld(x: number, z: number): { x: number; z: number } {
   const c = Math.cos(SUTRO_BATHS.yaw);
   const s = Math.sin(SUTRO_BATHS.yaw);
@@ -335,6 +353,34 @@ export function sutroWalkSurfaceY(x: number, z: number): number | null {
 export function isInsideSutroPool(x: number, z: number): boolean {
   const local = sutroWorldToLocal(x, z);
   return poolAtLocal(local.x, local.z) !== null;
+}
+
+/**
+ * World-space AABB around every pool rectangle — the cheap reject in front of
+ * `isInsideSutroPool` for callers that ask on every frame (swimVolumes.ts).
+ * The site yaw is small but real, so the corners are rotated rather than
+ * assumed axis-aligned.
+ */
+export function sutroPoolBounds(): { minX: number; maxX: number; minZ: number; maxZ: number } {
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (const pool of SUTRO_POOLS) {
+    for (const [lx, lz] of [
+      [pool.minX, pool.minZ],
+      [pool.minX, pool.maxZ],
+      [pool.maxX, pool.minZ],
+      [pool.maxX, pool.maxZ]
+    ]) {
+      const world = sutroLocalToWorld(lx, lz);
+      minX = Math.min(minX, world.x);
+      maxX = Math.max(maxX, world.x);
+      minZ = Math.min(minZ, world.z);
+      maxZ = Math.max(maxZ, world.z);
+    }
+  }
+  return { minX, maxX, minZ, maxZ };
 }
 
 /** Authored water plane at a pool point, or NaN outside every pool. */

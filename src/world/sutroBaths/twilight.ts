@@ -183,7 +183,7 @@ export function solveEveningHour(civil: SfCivilTime, targetDeg: number): number 
 }
 
 /** Shortest-path interpolation on the 24-hour circle. */
-function mixHours(from: number, to: number, t: number): number {
+export function mixHours(from: number, to: number, t: number): number {
   let delta = to - from;
   while (delta > 12) delta -= 24;
   while (delta < -12) delta += 24;

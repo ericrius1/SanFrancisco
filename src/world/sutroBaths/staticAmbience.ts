@@ -38,28 +38,46 @@ export type SutroStaticAmbience = {
  * accumulates the grade twice.
  */
 
-/** The authored materials that should feel the lamps, and how strongly. */
-const WARM_TARGETS: Readonly<Record<string, number>> = {
-  sutro_terracotta: 1,
-  sutro_cream_tile: 0.92,
-  sutro_plaster: 0.85,
-  sutro_plaster_shade: 0.85,
-  sutro_white_tile: 0.7,
-  sutro_timber: 0.8,
-  sutro_timber_dark: 0.8,
-  sutro_brass: 1.1,
-  sutro_blue_tile: 0.45,
-  sutro_deep_tile: 0.4,
-  sutro_iron: 0.5,
-  sutro_iron_light: 0.5,
-  sutro_iron_dark: 0.45
+/** Lamplight, gilded metal and weathered copper: the room's three warm ends. */
+const LAMP_TINT = new THREE.Color(0xffb469);
+const GILT_TINT = new THREE.Color(0xffcf8e);
+const PATINA_TINT = new THREE.Color(0x6dc0a1);
+
+/**
+ * The authored materials that should feel the lamps, how strongly, and WHICH
+ * warm they drift toward.
+ *
+ * A single lamp-orange target for the whole hall made every surface at dusk the
+ * same brown. The building is actually three materials — plaster and tile that
+ * take lamplight, brass that takes gold, and an ocean-weathered iron frame that
+ * should go copper-green, not brown. Splitting the tint is what puts the hall
+ * and the pavilion clock (pavilionClock.ts) in the same palette: gilt and
+ * verdigris over warm ivory.
+ */
+type WarmTarget = { warm: number; tint: THREE.Color };
+const WARM_TARGETS: Readonly<Record<string, WarmTarget>> = {
+  sutro_terracotta: { warm: 1, tint: LAMP_TINT },
+  sutro_cream_tile: { warm: 0.92, tint: LAMP_TINT },
+  sutro_plaster: { warm: 0.85, tint: LAMP_TINT },
+  sutro_plaster_shade: { warm: 0.85, tint: LAMP_TINT },
+  sutro_white_tile: { warm: 0.7, tint: LAMP_TINT },
+  sutro_timber: { warm: 0.8, tint: LAMP_TINT },
+  sutro_timber_dark: { warm: 0.8, tint: LAMP_TINT },
+  sutro_brass: { warm: 1.1, tint: GILT_TINT },
+  sutro_blue_tile: { warm: 0.45, tint: LAMP_TINT },
+  sutro_deep_tile: { warm: 0.4, tint: LAMP_TINT },
+  // The iron frame is the hall's silhouette. Left to drift orange it turned into
+  // brown scaffolding; drifting it toward patina keeps the ribs reading as
+  // painted metal that has stood in salt air since 1896.
+  sutro_iron: { warm: 0.72, tint: PATINA_TINT },
+  sutro_iron_light: { warm: 0.78, tint: PATINA_TINT },
+  sutro_iron_dark: { warm: 0.6, tint: PATINA_TINT }
 };
 
 const GLASS_NAMES = new Set(["sutro_roof_glass", "sutro_window_glass"]);
 const LAMP_NAME = "sutro_lamp";
 
-/** Lamplight, and the cool the room falls away to between the pools. */
-const LAMP_TINT = new THREE.Color(0xffb469);
+/** The self-glow the surfaces carry once the lamps are the only light. */
 const LAMP_EMISSIVE = new THREE.Color(0xffc07a);
 const GLASS_TINT = new THREE.Color(0xff9d5e);
 
@@ -70,6 +88,7 @@ type GradedMaterial = {
   baseEmissiveIntensity: number;
   baseOpacity: number;
   warm: number;
+  tint: THREE.Color;
 };
 
 export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): SutroStaticAmbience {
@@ -108,7 +127,11 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
     }
   }
 
-  const remember = (material: THREE.MeshStandardMaterial, warm: number): GradedMaterial => {
+  const remember = (
+    material: THREE.MeshStandardMaterial,
+    warm: number,
+    tint: THREE.Color = LAMP_EMISSIVE
+  ): GradedMaterial => {
     let entry = graded.get(material);
     if (!entry) {
       entry = {
@@ -117,7 +140,8 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
         baseEmissive: material.emissive.clone(),
         baseEmissiveIntensity: material.emissiveIntensity,
         baseOpacity: material.opacity,
-        warm
+        warm,
+        tint
       };
       graded.set(material, entry);
     }
@@ -150,8 +174,8 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
           lamps.add(candidate);
           continue;
         }
-        const warm = WARM_TARGETS[name];
-        if (warm !== undefined) remember(candidate, warm);
+        const target = WARM_TARGETS[name];
+        if (target !== undefined) remember(candidate, target.warm, target.tint);
       }
     });
     applyGrade();
@@ -192,7 +216,9 @@ export function createSutroStaticAmbience(regions?: AuthoredRegionStreamer): Sut
       // the surfaces themselves have to carry the lamplight: a warm tint plus a
       // small self-glow keeps twilight golden instead of collapsing to mud.
       const warm = entry.warm * interiorWarmth * twilight;
-      material.color.copy(entry.baseColor).lerp(LAMP_TINT, Math.min(0.6, warm * 0.6));
+      material.color.copy(entry.baseColor).lerp(entry.tint, Math.min(0.6, warm * 0.6));
+      // Self-glow stays lamp-coloured whatever the surface drifts toward: the
+      // light in the room comes from one kind of bulb.
       material.emissive.copy(LAMP_EMISSIVE);
       // Candles do not throw a pool of light the way a globe lamp did, so the
       // surfaces carry a little more of it themselves now that the lamps are

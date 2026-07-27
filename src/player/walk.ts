@@ -3,6 +3,7 @@ import { BodyType } from "../core/physics";
 import { tunables } from "../core/persist";
 import { INPUT_TUNING } from "../config";
 import { waterHeight } from "../world/heightmap";
+import { swimVolumeAt } from "../world/swimVolumes";
 import type { Input } from "../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "./types";
 import { enterOnLand } from "../vehicles/shared";
@@ -30,6 +31,28 @@ const COYOTE_TIME = 0.12;
 // capsule is ~1.8 m tall (centre = bottom + 0.9), so a 1.4 m rest sink puts the
 // waterline at the chest/shoulders — swimming *in* the water, not standing on it.
 const SWIM_REST_DEPTH = 1.4;
+/**
+ * …and how deep it rests in an authored pool, which is shallower.
+ *
+ * The swim pose lays the body flat, so the first-person eye ends up only ~0.3 m
+ * above the capsule centre — at the bay's rest depth that puts the eye 0.1 m
+ * UNDER the surface even while idling at the top. In open water nothing showed
+ * it, because the ocean sheet is single-sided from below. A pool sheet is not
+ * (it has an underside now), so a floating swimmer would sit staring at the
+ * ceiling of a pool they are supposedly on top of. Float higher: eyes out,
+ * shoulders awash, which is what treading water looks like anyway. The bay
+ * keeps the deeper rest, where swell would otherwise heave the capsule clear of
+ * the water on every trough.
+ */
+const POOL_SWIM_REST_DEPTH = 0.95;
+/**
+ * How close a diving capsule may get to a pool's tiles — and so, in 2.56 m of
+ * water, the dive limit in the baths. Too generous and the eye never gets far
+ * enough under for the underwater package to read; too tight and the floor
+ * recovery contract (sutroBaths/index.ts's takeFloorHandoffHeight, which lifts
+ * anything below basin + 0.84 m) starts fighting the swimmer for the capsule.
+ */
+const POOL_FLOOR_CLEARANCE = 0.2;
 export const WALK_CAPSULE_HALF_HEIGHT = 0.55;
 export const WALK_CAPSULE_RADIUS = 0.35;
 export const WALK_CAPSULE_HALF_EXTENT = WALK_CAPSULE_HALF_HEIGHT + WALK_CAPSULE_RADIUS;
@@ -114,8 +137,13 @@ export class WalkController implements ModeController {
     const topSpeed = (run ? tw.runSpeed : tw.speed) * speedScale * indoorScale * rakeScale;
     const speed = topSpeed * intent;
 
-    const waterY = waterHeight(ctx.position.x, ctx.position.z, ctx.time);
-    const swimming = ground < waterY - 1.0 && bottom < waterY;
+    // An authored pool (the Sutro baths) wins over the bay: its surface is
+    // fixed, and the bed you must not burrow into is its built basin rather
+    // than the terrain, which down there sits well below the hall floor.
+    const pool = swimVolumeAt(ctx.position.x, ctx.position.z);
+    const waterY = pool ? pool.surfaceY : waterHeight(ctx.position.x, ctx.position.z, ctx.time);
+    const bed = pool ? pool.floorY : ground;
+    const swimming = bed < waterY - 1.0 && bottom < waterY;
     this.swimming = swimming;
 
     let vx = dir.x * speed;
@@ -136,12 +164,16 @@ export class WalkController implements ModeController {
       if (run) vSwim -= tw.swimBoost;
       // Buoyancy floats you back to the waterline when idle; suppressed while
       // actively diving so you can get under and roam instead of popping up.
-      const restBottom = waterY - SWIM_REST_DEPTH;
+      const restBottom = pool
+        ? // A bath is 2.6 m deep: rest high enough that the eye clears the
+          // sheet, and never so low that the capsule parks on the tiles.
+          Math.max(waterY - POOL_SWIM_REST_DEPTH, bed + POOL_FLOOR_CLEARANCE + 0.6)
+        : waterY - SWIM_REST_DEPTH;
       let buoy = (restBottom - bottom) * 3;
       if (vSwim < 0) buoy = Math.min(buoy, 0);
       vy = buoy + vSwim - v.linear[1] * 0.5;
-      // never burrow into the seabed
-      const minBottom = ground + 0.25;
+      // never burrow into the seabed (or the basin tiles)
+      const minBottom = bed + (pool ? POOL_FLOOR_CLEARANCE : 0.25);
       if (bottom < minBottom) vy = Math.max(vy, (minBottom - bottom) * 4);
     } else {
       if (this.#jumpBuf > 0 && (this.grounded || this.#coyote > 0)) {

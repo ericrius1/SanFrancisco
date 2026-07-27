@@ -39,6 +39,8 @@ export function createOceanKiteGate({
   dispose: () => void;
   current: () => OceanBeachKiteEncounter | null;
   update: (dt: number, elapsed: number, revealed: boolean) => void;
+  /** Sunset god-ray request for the shared raymarch pipeline; null when idle. */
+  godRayArea: () => { active: boolean; center: THREE.Vector3 } | null;
 } {
   // Resolve the waterline X now (cheap); everything else waits for approach.
   let kiteShoreX = -6160;
@@ -131,13 +133,20 @@ export function createOceanKiteGate({
     ) {
       void ensureOceanBeachKite();
     }
-    oceanBeachKite?.update(dt, elapsed, player.renderPosition, windGustValue());
+    oceanBeachKite?.update(
+      dt,
+      elapsed,
+      player.renderPosition,
+      windGustValue(),
+      camera.position
+    );
   };
   return {
     site: oceanKiteSite,
     ensure: ensureOceanBeachKite,
     dispose: disposeOceanBeachKite,
     current: () => oceanBeachKite,
-    update
+    update,
+    godRayArea: () => oceanBeachKite?.godRayRequest() ?? null
   };
 }

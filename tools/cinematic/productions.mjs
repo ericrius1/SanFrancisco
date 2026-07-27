@@ -143,6 +143,30 @@ const DEFINITIONS = Object.freeze({
         description: `Movement ${index} of the continuous summer-city score.`
       })
     })];
+  })),
+  ...Object.fromEntries([
+    [1, "Ocean Beach Kites · The Whole Beach"],
+    [2, "Ocean Beach Kites · Two Sunwheels"],
+    [3, "Ocean Beach Kites · The Centipede"],
+    [4, "Ocean Beach Kites · Running the Sand"],
+    [5, "Ocean Beach Kites · Blue Hour"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-kite-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 10,
+      seed: (0x4b_49_54_00 + index * 0x101) >>> 0,
+      posterAt: 6.4,
+      stillTimes: Object.freeze([0.3, 1.6, 3.1, 4.6, 6.1, 7.6, 9.2]),
+      audio: Object.freeze({
+        profile: "ocean-beach-kite",
+        index,
+        description: `Sunset onshore wind, surf wash and kite fabric — look ${index} of five.`
+      })
+    })];
   }))
 });
 

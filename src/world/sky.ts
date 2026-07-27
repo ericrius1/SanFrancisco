@@ -134,6 +134,23 @@ const SKY_IBL_REFERENCE_INTENSITY = 0.24
 // by day, the moon by night). Mutated by Sky; other modules (water) hold a
 // reference and read it every frame.
 export const SUN_DIR = new THREE.Vector3(-0.52, 0.42, -0.28).normalize()
+
+/**
+ * The true solar geometry behind SUN_DIR. SUN_DIR flips to the anti-solar
+ * (moon) direction after dusk, so features that key off the hour of the day —
+ * golden hour, sunset backlighting — cannot read its `y` and must read this.
+ * Mutated by Sky every frame alongside SUN_DIR.
+ */
+export const SUN_STATE = {
+  /** Degrees above the horizon; negative after sunset. */
+  elevationDeg: 45,
+  /** Degrees clockwise from true north. */
+  azimuthDeg: 180,
+  /** True once SUN_DIR has handed over to the moon. */
+  moonlit: false,
+  /** True sun direction, still pointing below the horizon at night. */
+  toSun: new THREE.Vector3(-0.52, 0.42, -0.28).normalize()
+}
 const WARM_SUN = new THREE.Color(0xfff4e8) // midday sun tint, lerped toward as it climbs
 
 // TSL node generics fight composition; any is the idiom here (see facade.ts)
@@ -1400,6 +1417,10 @@ export class Sky {
     this.sunElevation = pos.elevation
     this.sunAzimuth = pos.azimuth
     this.#sunVec.set(pos.x, pos.y, pos.z)
+    SUN_STATE.elevationDeg = pos.elevation
+    SUN_STATE.azimuthDeg = pos.azimuth
+    SUN_STATE.moonlit = pos.elevation <= -2
+    SUN_STATE.toSun.copy(this.#sunVec)
     ;(this.#uSun.value as THREE.Vector3).copy(this.#sunVec)
     this.#applySkyPalette()
 

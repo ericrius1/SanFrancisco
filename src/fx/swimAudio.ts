@@ -14,6 +14,8 @@ export type SwimSignals = {
   speed: number;
   /** Vertical speed (m/s), signed — dive / surface. */
   vspeed: number;
+  /** 0 = head in air, 1 = fully under (fx/underwaterRig's eased submersion). */
+  submersion?: number;
 };
 
 const approach = (cur: number, target: number, dt: number, rate: number) =>
@@ -43,13 +45,16 @@ export class SwimAudio {
   #ambLfo: OscillatorNode | null = null;
   #ambLfoGain: GainNode | null = null;
   #idleSeconds = 0;
+  #submersion = 0;
+  #bubbleTimer = 0;
 
   get debugState() {
     return {
       ctx: this.#ctx?.state ?? "none",
       presence: +this.#presence.toFixed(3),
       ambienceRunning: this.#ambSource !== null,
-      idleSeconds: +this.#idleSeconds.toFixed(2)
+      idleSeconds: +this.#idleSeconds.toFixed(2),
+      submersion: +this.#submersion.toFixed(3)
     };
   }
 
@@ -105,22 +110,40 @@ export class SwimAudio {
 
     const speed = sig.speed;
     const move = clamp01(speed / 3.2);
-    // idle bob is quieter; stroking opens the bed and brightens it a touch
-    const ambTarget = (0.045 + 0.09 * move) * this.#presence;
+    const under = clamp01(sig.submersion ?? 0);
+    this.#submersion = under;
+
+    // Two beds in one filter. At the surface it is the bright slap and lap of
+    // water against your ears; under it the world closes to a low pressurised
+    // hush that gets *louder* and much darker, because sound is arriving
+    // through your skull rather than your ear canal.
+    const ambTarget = (0.045 + 0.09 * move + 0.075 * under) * this.#presence;
     this.#ambLevel = approach(this.#ambLevel, ambTarget, dt, 4);
     this.#ambGain.gain.value = this.#ambLevel;
-    this.#ambFilter.frequency.value = 420 + 380 * move;
+    this.#ambFilter.frequency.value = (420 + 380 * move) * (1 - under * 0.72);
 
-    // stroke splashes only while actually paddling
+    // Strokes only while actually paddling. Submerged they lose the airy
+    // splash-off-the-surface crack and become dull swirls.
     if (audibleSwimming && move > 0.12) {
-      const rate = STROKE_RATE * (0.75 + move * 0.55);
+      const rate = STROKE_RATE * (0.75 + move * 0.55) * (1 - under * 0.25);
       this.#strokePhase += dt * rate;
       while (this.#strokePhase >= STROKE_PHASE) {
         this.#strokePhase -= STROKE_PHASE;
-        this.#stroke(ctx, 0.35 + move * 0.55 + Math.random() * 0.12);
+        this.#stroke(ctx, 0.35 + move * 0.55 + Math.random() * 0.12, under);
       }
     } else {
       this.#strokePhase = 0;
+    }
+
+    // Breath bubbles: the one cue that says "under" even while holding still.
+    if (audibleSwimming && under > 0.35) {
+      this.#bubbleTimer -= dt * (0.55 + move * 0.9);
+      if (this.#bubbleTimer <= 0) {
+        this.#bubbleTimer = 0.7 + Math.random() * 1.5;
+        this.#bubbles(ctx, under * (0.5 + Math.random() * 0.5));
+      }
+    } else {
+      this.#bubbleTimer = 0.25;
     }
   }
 
@@ -218,13 +241,17 @@ export class SwimAudio {
     this.#ambLfoGain = null;
   }
 
-  /** One arm-pull splash: brief noise body + soft mid thump. */
-  #stroke(ctx: AudioContext, intensity: number) {
+  /**
+   * One arm-pull splash: brief noise body + soft mid thump. `under` (0..1)
+   * slides it from a surface splash to a submerged swirl — same gesture, but
+   * the crack of water thrown into air is gone and the pull gets longer.
+   */
+  #stroke(ctx: AudioContext, intensity: number, under = 0) {
     const t0 = ctx.currentTime;
     const g = ctx.createGain();
     g.gain.setValueAtTime(0, t0);
-    g.gain.linearRampToValueAtTime(0.22 * intensity, t0 + 0.012);
-    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18 + Math.random() * 0.06);
+    g.gain.linearRampToValueAtTime(0.22 * intensity * (1 - under * 0.4), t0 + 0.012 + under * 0.03);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18 + under * 0.16 + Math.random() * 0.06);
     g.connect(this.#strokeBus);
 
     const src = ctx.createBufferSource();
@@ -232,16 +259,16 @@ export class SwimAudio {
     src.loop = true;
     // random offset so consecutive strokes don't phase-lock
     src.start(t0, Math.random() * 1.5);
-    src.stop(t0 + 0.28);
+    src.stop(t0 + 0.48);
 
     const bp = ctx.createBiquadFilter();
     bp.type = "bandpass";
-    bp.frequency.value = 700 + Math.random() * 500;
+    bp.frequency.value = (700 + Math.random() * 500) * (1 - under * 0.62);
     bp.Q.value = 0.9;
 
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass";
-    lp.frequency.value = 1600 + Math.random() * 600;
+    lp.frequency.value = (1600 + Math.random() * 600) * (1 - under * 0.7);
 
     src.connect(bp);
     bp.connect(lp);
@@ -260,6 +287,32 @@ export class SwimAudio {
     og.connect(this.#strokeBus);
     o.start(t0);
     o.stop(t0 + 0.14);
+  }
+
+  /**
+   * A short run of breath bubbles rising past your ears. Each bubble is a sine
+   * whose pitch RISES as it goes — the classic bubble signature, since the
+   * cavity shrinks as it climbs — with a whisper of noise for the burst.
+   */
+  #bubbles(ctx: AudioContext, intensity: number) {
+    const t0 = ctx.currentTime;
+    const count = 3 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < count; i++) {
+      const at = t0 + i * (0.035 + Math.random() * 0.075);
+      const base = 240 + Math.random() * 520;
+      const o = ctx.createOscillator();
+      o.type = "sine";
+      o.frequency.setValueAtTime(base, at);
+      o.frequency.exponentialRampToValueAtTime(base * (1.7 + Math.random()), at + 0.06);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, at);
+      g.gain.linearRampToValueAtTime(0.035 * intensity * (0.6 + Math.random() * 0.7), at + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0008, at + 0.075);
+      o.connect(g);
+      g.connect(this.#strokeBus);
+      o.start(at);
+      o.stop(at + 0.09);
+    }
   }
 
   /** Water-entry plunge — bigger, darker splash. */

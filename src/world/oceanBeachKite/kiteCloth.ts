@@ -1,85 +1,25 @@
 import * as THREE from "three/webgpu";
 import {
-  abs,
+  attribute,
+  cameraPosition,
   color,
   float,
   mix,
+  normalize,
+  normalLocal,
   positionLocal,
+  positionWorld,
+  saturate,
   sin,
-  smoothstep,
   time,
   uniform,
-  uv,
-  vec3
+  uv
 } from "three/tsl";
 import { bumpNormal } from "../tslUtil";
+import type { KiteDesign } from "./kiteDesigns";
 
-/** A large, readable classic diamond without turning one ambient prop into a
- * high-poly hero asset. The four panels are subdivided for GPU ripples. */
-export const KITE_WIDTH = 3.5;
-export const KITE_HEIGHT = 4.25;
-const PANEL_SUBDIVISIONS = 9;
-
-type Point = readonly [number, number];
-
-/**
- * Four independently triangulated panels meet at the spine/cross-spar. Shared
- * vertices are unnecessary here: the material is smooth and the duplicate
- * seams make every panel's attachment line exact.
- */
-function createDiamondGeometry(): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const uvs: number[] = [];
-  const corners: readonly Point[] = [
-    [0, KITE_HEIGHT * 0.5],
-    [KITE_WIDTH * 0.5, 0],
-    [0, -KITE_HEIGHT * 0.5],
-    [-KITE_WIDTH * 0.5, 0]
-  ];
-
-  const point = (a: Point, b: Point, i: number, j: number): Point => {
-    const u = i / PANEL_SUBDIVISIONS;
-    const v = j / PANEL_SUBDIVISIONS;
-    return [a[0] * u + b[0] * v, a[1] * u + b[1] * v];
-  };
-  const push = (p: Point) => {
-    positions.push(p[0], p[1], 0);
-    normals.push(0, 0, 1);
-    uvs.push(p[0] / KITE_WIDTH + 0.5, p[1] / KITE_HEIGHT + 0.5);
-  };
-
-  for (let panel = 0; panel < 4; panel++) {
-    const a = corners[panel];
-    const b = corners[(panel + 1) % corners.length];
-    for (let i = 0; i < PANEL_SUBDIVISIONS; i++) {
-      for (let j = 0; j < PANEL_SUBDIVISIONS - i; j++) {
-        const p00 = point(a, b, i, j);
-        const p10 = point(a, b, i + 1, j);
-        const p01 = point(a, b, i, j + 1);
-        // +Z winding matches the authored normal and the kite's flyer-facing
-        // cloth side. DoubleSide can now flip the opposite face correctly.
-        push(p00);
-        push(p01);
-        push(p10);
-        if (j < PANEL_SUBDIVISIONS - i - 1) {
-          const p11 = point(a, b, i + 1, j + 1);
-          push(p10);
-          push(p01);
-          push(p11);
-        }
-      }
-    }
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-  geometry.computeBoundingSphere();
-  if (geometry.boundingSphere) geometry.boundingSphere.radius += 1.35;
-  return geometry;
-}
+export { KITE_DESIGNS, KITE_DESIGN_ORDER } from "./kiteDesigns";
+export type { KiteDesign, KiteDesignId } from "./kiteDesigns";
 
 export type KiteClothState = {
   wind: number;
@@ -90,6 +30,10 @@ export type KiteClothState = {
   speed: number;
   /** CPU flight wobble phase, used only to keep gust beats synchronized. */
   gustPhase: number;
+  /** World direction toward the sun; drives the sunset transmission term. */
+  sunDir: THREE.Vector3;
+  /** 0..1 golden-hour window — how much light is behind the cloth. */
+  backlight: number;
 };
 
 export type KiteCloth = {
@@ -99,13 +43,17 @@ export type KiteCloth = {
 };
 
 /**
- * Fake cloth, fully in the WebGPU vertex stage. The CPU writes six tiny
- * uniforms; the static mesh never changes and nothing is read back. A diamond
- * kite's cloth is laced to a vertical spine, a bowed cross-spar, and its outer
- * hem, so displacement deliberately reaches zero on all three attachments and
- * swells only inside the four free fabric panels.
+ * Fake cloth, fully in the WebGPU vertex stage. The CPU writes a handful of
+ * tiny uniforms; the static mesh never changes and nothing is read back.
+ *
+ * Where the fabric is laced to a spar, a hoop or a hem is a property of the
+ * design, not of the shader, so each design bakes two per-vertex attributes at
+ * build time: `slack` (0 on an attachment, 1 in free fabric) and `bulge` (where
+ * wind pressure bellies the panel out). One shader then serves a solid diamond,
+ * a six-bladed rotor and a pierced box without knowing anything about any of
+ * them.
  */
-export function createKiteCloth(): KiteCloth {
+export function createKiteCloth(design: KiteDesign): KiteCloth {
   const wind = uniform(1);
   const tautness = uniform(0.68);
   const billow = uniform(0.34);
@@ -113,24 +61,15 @@ export function createKiteCloth(): KiteCloth {
   const frequency = uniform(4.2);
   const speed = uniform(5.4);
   const gustPhase = uniform(0);
+  const sunDir = uniform(new THREE.Vector3(-0.52, 0.42, -0.28).normalize());
+  const backlight = uniform(0);
 
-  const nx = abs(positionLocal.x).div(KITE_WIDTH * 0.5);
-  const ny = abs(positionLocal.y).div(KITE_HEIGHT * 0.5);
-  const edgeRoom = float(1).sub(nx.add(ny));
+  // TSL node generics fight composition; `any` is the idiom here (facade.ts).
+  const slack = attribute("slack", "float") as any;
+  const bulge = attribute("bulge", "float") as any;
 
-  // Exactly still on spine/cross-spar and at the sewn hem; fully mobile in the
-  // middle of each quadrant. This is the visual equivalent of multi-point pins.
-  const freePanel = smoothstep(0.025, 0.34, nx)
-    .mul(smoothstep(0.02, 0.28, ny))
-    .mul(smoothstep(0.01, 0.2, edgeRoom));
-
-  const pressureShape = sin(nx.mul(Math.PI)).mul(sin(ny.mul(Math.PI)));
   const looseness = float(1.12).sub(tautness.mul(0.82));
-  const pressure = pressureShape
-    .mul(billow)
-    .mul(wind)
-    .mul(looseness)
-    .mul(0.72);
+  const pressure = bulge.mul(billow).mul(wind).mul(looseness).mul(0.72);
   const wavePhase = positionLocal.x
     .mul(frequency)
     .add(positionLocal.y.mul(frequency).mul(0.61))
@@ -142,7 +81,7 @@ export function createKiteCloth(): KiteCloth {
     .mul(ripple)
     .mul(wind)
     .mul(looseness);
-  const displacement = pressure.add(flutter).mul(freePanel);
+  const displacement = pressure.add(flutter).mul(slack);
 
   const material = new THREE.MeshStandardNodeMaterial({
     side: THREE.DoubleSide,
@@ -150,17 +89,35 @@ export function createKiteCloth(): KiteCloth {
     metalness: 0
   });
   const verticalTint = uv().y.mul(0.58).add(0.18).clamp(0, 1);
-  const purple = mix(color(0x4b1f91), color(0xa766ef), verticalTint);
-  // Seams beside the spars stay a touch darker; the four breathing panels catch
-  // more of the sky and read as actual cloth instead of one flat purple card.
-  material.colorNode = purple.mul(float(0.88).add(freePanel.mul(0.12)));
-  material.positionNode = positionLocal.add(vec3(0, 0, displacement));
+  const dyed = mix(color(design.palette.clothDeep), color(design.palette.clothLight), verticalTint);
+  // Seams beside the spars stay a touch darker; the breathing panels catch more
+  // of the sky and read as actual cloth instead of one flat card.
+  material.colorNode = dyed.mul(float(0.88).add(slack.mul(0.12)));
+  // Displacement is along the panel's own normal, so a cone, a box face and a
+  // flat diamond all belly outward rather than all bellying along +Z.
+  material.positionNode = positionLocal.add(normalLocal.mul(displacement));
   // Shade the displaced surface, not the original flat card. Screen-space
   // derivatives keep the normal in step with both broad billow and fine waves.
   material.normalNode = bumpNormal(displacement);
 
-  const mesh = new THREE.Mesh(createDiamondGeometry(), material);
-  mesh.name = "ocean_beach_purple_kite_gpu_cloth";
+  // Sunset transmission. Ripstop this thin stops being a surface when the sun
+  // is behind it and becomes a lit panel — but only the free fabric does, so
+  // spars, hoops and hems stay as dark lines drawn across a glowing sail. That
+  // silhouette is the whole picture, and it is what the god rays are cut from.
+  const towardSun = saturate(normalize(positionWorld.sub(cameraPosition)).dot(sunDir));
+  const transmission = towardSun.pow(4.5).mul(backlight);
+  const thinness = slack.mul(float(0.72).add(bulge.mul(0.28)));
+  material.emissiveNode = mix(
+    mix(color(design.palette.glowLow), color(design.palette.glowHigh), towardSun.pow(3)),
+    color(0xffb877),
+    towardSun.pow(22)
+  )
+    .mul(transmission)
+    .mul(thinness)
+    .mul(1.5 * design.glowScale);
+
+  const mesh = new THREE.Mesh(design.buildCloth(), material);
+  mesh.name = design.clothMeshName;
   mesh.position.z = -0.025;
   mesh.castShadow = false;
   mesh.receiveShadow = false;
@@ -175,6 +132,8 @@ export function createKiteCloth(): KiteCloth {
       frequency.value = Math.max(0.1, state.frequency);
       speed.value = Math.max(0.1, state.speed);
       gustPhase.value = state.gustPhase;
+      (sunDir.value as THREE.Vector3).copy(state.sunDir);
+      backlight.value = THREE.MathUtils.clamp(state.backlight, 0, 1);
     },
     dispose() {
       mesh.geometry.dispose();
