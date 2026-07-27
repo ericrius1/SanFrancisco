@@ -28,14 +28,20 @@ export type SutroBathsVegetation = {
 /**
  * PLANTING ENVELOPE — why these positions and not prettier-sounding ones.
  *
- * The hall is a glass barrel over a working bath house, and most of its floor
- * already has something over it: the tiered spectator gallery hangs across local
- * x 28.2..34.5 with its underside 5.6 m above the deck, and the ocean-window
- * seating gallery fills x -38.5..-31.2 with only 1.6 m of clear air. The previous
- * planting ignored both. Its east avenue stood at x 29.6 under 5.6 m of headroom
- * carrying 7.2 m trees, so every crown on that side grew through the seating
- * tiers and the gallery rail; the west row at x -37.6 was simply inside the
- * ocean gallery's structure.
+ * The hall is a glass barrel over a working bath house, and much of its floor
+ * already has something over it. The ocean-window seating gallery fills x
+ * -38.5..-31.2 with only 1.6 m of clear air, and the inland side used to carry
+ * the tiered spectator gallery across x 28.2..34.5 with its underside 5.6 m up.
+ * The previous planting ignored both: its east avenue stood at x 29.6 under 5.6 m
+ * of headroom carrying 7.2 m trees, so every crown on that side grew through the
+ * seating tiers, and the west row at x -37.6 was simply inside the ocean
+ * gallery's structure.
+ *
+ * The tiers are gone now (tools/rebuild-sutro-inland-gallery.py retired them in
+ * favour of the timber picture gallery on the wall itself), so the inland lane is
+ * no longer capped by them — but the lane below stays where it is on purpose:
+ * pulled back to x 23 it keeps a clear view of the hung art from the deck
+ * instead of standing a row of crowns in front of it.
  *
  * So each lane below is placed against a measured headroom map of the deck
  * (regenerate it with the helper in the site's survey notes) and every crown is

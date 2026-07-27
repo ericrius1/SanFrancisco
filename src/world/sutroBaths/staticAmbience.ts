@@ -63,6 +63,11 @@ const WARM_TARGETS: Readonly<Record<string, WarmTarget>> = {
   sutro_white_tile: { warm: 0.7, tint: LAMP_TINT },
   sutro_timber: { warm: 0.8, tint: LAMP_TINT },
   sutro_timber_dark: { warm: 0.8, tint: LAMP_TINT },
+  // The inland wall's authored plate and panels, behind the runtime timber
+  // gallery's boards: they show between its slats and ARE the wall until the
+  // lazy site wakes, so they take the lamp grade like every other surface.
+  sutro_wall_timber: { warm: 0.82, tint: LAMP_TINT },
+  sutro_wall_timber_dark: { warm: 0.82, tint: LAMP_TINT },
   sutro_brass: { warm: 1.1, tint: GILT_TINT },
   sutro_blue_tile: { warm: 0.45, tint: LAMP_TINT },
   sutro_deep_tile: { warm: 0.4, tint: LAMP_TINT },

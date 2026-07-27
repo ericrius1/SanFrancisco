@@ -83,6 +83,17 @@ export interface LoadTextureOpts {
   /** color map (default true) vs data map (normal/roughness). */
   srgb?: boolean;
   anisotropy?: number;
+  /**
+   * Asset published WITHOUT a KTX2 sibling — skip the compressed probe and go
+   * straight to WebP.
+   *
+   * The KTX2 path below falls back on failure, so this is not about
+   * correctness: it is about not firing a request that is known to 404. Set it
+   * for anything whose builder ran `optimize-textures.mjs --webp-only` (which is
+   * what happens when the KTX-Software `toktx` binary is unavailable at bake
+   * time), so a browser-QA request waterfall stays free of dead entries.
+   */
+  webpOnly?: boolean;
 }
 
 /**
@@ -93,7 +104,7 @@ export interface LoadTextureOpts {
 export async function loadTexture(name: string, opts: LoadTextureOpts = {}): Promise<THREE.Texture> {
   const srgb = opts.srgb ?? true;
   let tex: THREE.Texture;
-  const ktx2 = await getKtx2Loader();
+  const ktx2 = opts.webpOnly ? null : await getKtx2Loader();
   if (ktx2) {
     try {
       tex = await ktx2.loadAsync(`${name}.ktx2`);

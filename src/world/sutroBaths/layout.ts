@@ -122,6 +122,37 @@ export const SUTRO_POOLS: readonly SutroPoolSpec[] = [
 export const SUTRO_WATER_RENDER_ORDER = 13;
 export const SUTRO_STEAM_RENDER_ORDER = 12;
 
+/**
+ * The inland gallery wall — the long east side, and the one surface a visitor on
+ * the deck is always looking at.
+ *
+ * MIRRORED from tools/rebuild-sutro-inland-gallery.py, which asserts every one
+ * of these numbers against the Blender source on each bake and prints them as
+ * SUTRO_WALL_CONTRACT. The authored wall is a plain plate with a colonnade of
+ * pilasters standing proud of it; timberGallery.ts clads the bays between those
+ * pilasters and hangs the pictures, so if the wall ever moves in Blender the
+ * bake fails rather than the boards drifting off it.
+ *
+ * Bay k spans z = pitch * k .. pitch * (k + 1), so its centre is
+ * pitch * (k + 0.5). Bays `firstBay`..`lastBay` are the run of full-height wall;
+ * past that the road pavilion and the grand spiral own the corner.
+ */
+export const SUTRO_WALL = {
+  /** Inner face of the wall plate (local x). */
+  faceX: 38.09,
+  /** Pilasters stand this far into the hall — the depth budget for cladding. */
+  pilasterFaceX: 37.7,
+  /** Pilaster spacing, centred on z 0. */
+  pitch: 9.5125,
+  /** Half width of one pilaster. */
+  pilasterHalf: 0.175,
+  /** The authored mid-height panel band, which the art band follows. */
+  bandLowY: 8.42,
+  bandHighY: 17.22,
+  firstBay: -8,
+  lastBay: 5
+} as const;
+
 export function sutroLocalToWorld(x: number, z: number): { x: number; z: number } {
   const c = Math.cos(SUTRO_BATHS.yaw);
   const s = Math.sin(SUTRO_BATHS.yaw);
