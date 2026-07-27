@@ -1,4 +1,4 @@
-import { sanFranciscoCivilNow, type SfCivilTime } from "../solar.ts";
+import { sanFranciscoCivilAt, type SfCivilTime } from "../solar.ts";
 
 /** Reserved negative presence id for a passenger anchored to the public ship. */
 export const GHOST_SHIP_RIDE_ID = -1001;
@@ -276,8 +276,7 @@ export function ghostShipPoseAt(
   epochMs: number,
   groundHeight: (x: number, z: number) => number
 ): GhostShipPose {
-  const civil = sanFranciscoCivilNow(new Date(epochMs));
-  return ghostShipPoseForCivil(civil, groundHeight);
+  return ghostShipPoseForCivil(sanFranciscoCivilAt(epochMs), groundHeight);
 }
 
 /** Civil-time form used by the per-frame proxy after its once-a-minute clock sync. */
