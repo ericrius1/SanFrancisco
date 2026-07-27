@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { CONFIG, RENDER_TUNING } from "../config";
 import { applyBundleOrderPatch } from "../render/bundleOrderPatch";
 import { installAttributeDisposePatch } from "../render/attributeDisposePatch";
+import { installOcclusionQueryPatch } from "../render/occlusionQueryPatch";
 import { installPaddedAttributePatch } from "../render/paddedAttributePatch";
 import { installRenderObjectRegistry } from "../render/renderObjectRegistry";
 import { installDeferredTextureDisposePatch } from "../render/textureDisposePatch";
@@ -84,6 +85,13 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
   // retained render bundles can still replay a bind group that references it.
   // Retire raw textures only after completed frames and a queue drain.
   installDeferredTextureDisposePatch(renderer);
+
+  // r185 ends an occlusion query that a pass never began whenever the render
+  // list counted an `occlusionTest` object the pass then declined to draw — any
+  // shadow pass, given an occlusion-gate query proxy. That invalidates the
+  // command buffer and drops the whole submit, so the light's shadow map never
+  // lands.
+  installOcclusionQueryPatch(renderer);
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(

@@ -64,6 +64,7 @@ import {
   type GpuGrassStyleContext
 } from "../groundcover/gpuGrassPlacement";
 import { rankAnnulusGrowth, rankHandoffRadius, type RankAnnulus } from "../groundcover/rankDissolve";
+import { SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { nearAnyWildRegion } from "./layout";
 import { createFlowerFields, FLOWER_FIELD_HALF_EXTENT, FLOWER_HORIZON_HALF_EXTENT } from "./flowerField";
 import {
@@ -755,7 +756,7 @@ function flowerMaterial(tier: FlowerRenderTier, placed?: FlowerPlacedSource): Fl
 
 // The beauty camera sees this layer; the half-resolution ink prepass does not.
 // Tiny animated petals otherwise become unstable depth/normal outlines.
-const BEAUTY_ONLY_LAYER = 31;
+const BEAUTY_ONLY_LAYER = SHADOW_LAYERS.BEAUTY_ONLY;
 
 type Row = { x: number; y: number; z: number; yaw: number; sx: number; sy: number; r: number; g: number; b: number };
 

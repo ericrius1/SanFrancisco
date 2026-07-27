@@ -23,6 +23,7 @@ import {
   type SutroBathsStaticWater
 } from "./staticWater";
 import { createSutroStaticAmbience } from "./staticAmbience";
+import { sutroHallCaustics } from "../sutroHallCaustics";
 import {
   createSutroTwilight,
   type SutroSkyClock,
@@ -146,8 +147,17 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   // Construct it with the lazy site root so prepareOptionalRoot prewarms its
   // WebGPU pipeline before the root can become visible. Steam stays behind the
   // tighter proximity gate below.
-  const water = createSutroBathsStaticWater({ renderer: options.renderer });
+  const water = createSutroBathsStaticWater({
+    renderer: options.renderer,
+    // The pools mirror the dome's own radiance rather than a second gradient,
+    // so the reflection tracks the pocket's sunset->twilight swing for free.
+    sky: options.sky ?? null
+  });
   const ambience = createSutroStaticAmbience(options.authoredRegions);
+  // Shared with the region streamer, which built the node into the hall's
+  // materials before this object existed. Fetching the same instance here is
+  // what connects those materials to the site's clock.
+  const hallCaustics = sutroHallCaustics();
   const vegetation = createSutroBathsVegetation();
   const bathers = createSutroBathers();
   const parlour = createSutroParlour();
@@ -329,10 +339,13 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     // culled: releasing here covers streaming-out, perf suppression and the
     // debug panel's A/B toggle in one place. The pavilion clock releases with
     // it so the next arrival finds its hands already on the hour rather than
-    // winding to it from wherever the last visit left them.
+    // winding to it from wherever the last visit left them, and the hall
+    // caustics live on streamer-owned materials that outlive this object, so
+    // they need the same explicit release — nothing else will zero them.
     if (!next) {
       twilight.release();
       pavilionClock.release();
+      hallCaustics.clear();
     }
   };
 
@@ -384,6 +397,13 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       // A stage that returns true has more to hand out and keeps its turn.
       if (wakeStage < wakeStages.length && !wakeStages[wakeStage]()) wakeStage++;
       ambience.setTwilight(twilight.depth);
+      // Water-light on the ironwork. The node lives on the hall's materials,
+      // which the region streamer owns, so the site only feeds it the clock and
+      // the pocket depth — and zeroes it on sleep, below, so a retired hall
+      // cannot keep shimmering.
+      hallCaustics.setTime(time);
+      hallCaustics.setTwilight(twilight.depth);
+      hallCaustics.setStrength(SUTRO_BATHS_TUNING.values.hallCaustics);
       parlour.setLampGlow(twilight.lampGlow);
       // After twilight.update: the pocket has just written the hour the sky is
       // rendering, and the clock's whole job is to agree with it.
