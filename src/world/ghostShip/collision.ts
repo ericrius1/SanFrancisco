@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
+import { registerMovingPlatform, setWalkerPlatformCarry } from "../movingPlatforms";
 import {
   GHOST_SHIP_COLLIDER_SPECS,
   ghostShipLocalPointIsAboard,
@@ -28,6 +29,15 @@ type CollisionBody = {
 const PARK_Y = -12_000;
 const MAX_VELOCITY_DELTA = 12;
 const MAX_VELOCITY_DT = 0.2;
+/**
+ * A frame delta this large is not flight — it is the route being moved under
+ * the ship (a probe/cinematic clock override, or the twice-yearly DST rebase in
+ * the beacon). The route peaks around 18 m/s on the climb out of a landing, so
+ * even the loop's slowest allowed frame (90 ms) covers barely half of this.
+ * Continuous motion is carried by velocity, which the contact solver can hold;
+ * only a real jump hard-sets the rider, since no velocity expresses a teleport.
+ */
+const CARRY_TELEPORT_DELTA = 3;
 
 /** Moving Box3D deck/guard bodies plus the frame carry needed by an on-foot rider. */
 export function createGhostShipCollision(
@@ -69,65 +79,79 @@ export function createGhostShipCollision(
     position: [0, 0, 0] as [number, number, number],
     rotation: [0, 0, 0, 1] as [number, number, number, number]
   };
-  const walkerVelocity = {
-    linear: [0, 0, 0] as [number, number, number],
-    angular: [0, 0, 0] as [number, number, number]
-  };
   let previousRootYaw = 0;
   let ready = false;
   let disposed = false;
   let walkerAboard = false;
 
+  const aboardProbe = new THREE.Vector3();
+  const unregisterPlatform = registerMovingPlatform({
+    id: "ghost_ship_deck",
+    aboard(x, y, z) {
+      if (disposed) return false;
+      aboardProbe.set(x, y, z);
+      root.worldToLocal(aboardProbe);
+      return ghostShipLocalPointIsAboard(aboardProbe.x, aboardProbe.y, aboardProbe.z);
+    }
+  });
+
   const carryWalker = (walkerBody: number, dt: number, rootYaw: number) => {
     walkerAboard = false;
+    setWalkerPlatformCarry(null);
     if (!ready || walkerBody <= 0) return;
     const transform = world.getBodyTransform(walkerBody, walkerTransform);
     localWalker
       .set(transform.position[0], transform.position[1], transform.position[2])
       .applyMatrix4(inversePreviousRootMatrix.copy(previousRootMatrix).invert());
     if (!ghostShipLocalPointIsAboard(localWalker.x, localWalker.y, localWalker.z)) return;
+    walkerAboard = true;
 
+    // Where the deck-fixed point under the rider moved to this frame. Because
+    // the local point is mapped through the whole root matrix, this delta
+    // already carries the ship's rotation about its own centre — an off-axis
+    // rider swings with a turn without any separate ω × r term.
     carriedWalker.copy(localWalker).applyMatrix4(root.matrixWorld);
-    walkerQuaternion.set(
-      transform.rotation[0],
-      transform.rotation[1],
-      transform.rotation[2],
-      transform.rotation[3]
-    );
+    const dx = carriedWalker.x - transform.position[0];
+    const dy = carriedWalker.y - transform.position[1];
+    const dz = carriedWalker.z - transform.position[2];
     const yawDelta = Math.atan2(
       Math.sin(rootYaw - previousRootYaw),
       Math.cos(rootYaw - previousRootYaw)
     );
-    yawQuaternion.setFromAxisAngle(axis.set(0, 1, 0), yawDelta);
-    walkerQuaternion.premultiply(yawQuaternion).normalize();
-    world.setBodyTransform(
-      walkerBody,
-      [carriedWalker.x, carriedWalker.y, carriedWalker.z],
-      [walkerQuaternion.x, walkerQuaternion.y, walkerQuaternion.z, walkerQuaternion.w]
-    );
-
-    // The walk controller owns intentional X/Z velocity at the next fixed step.
-    // Seeding the frame velocity here gives the contact solver the platform's
-    // inherited motion on the first step after a seat dismount.
-    if (dt > 0 && dt <= MAX_VELOCITY_DT) {
-      const dx = carriedWalker.x - transform.position[0];
-      const dy = carriedWalker.y - transform.position[1];
-      const dz = carriedWalker.z - transform.position[2];
-      if (Math.hypot(dx, dy, dz) <= MAX_VELOCITY_DELTA) {
-        const velocity = world.getBodyVelocity(walkerBody, walkerVelocity);
-        world.setBodyVelocity(
-          walkerBody,
-          [
-            velocity.linear[0] + dx / dt,
-            velocity.linear[1] + dy / dt,
-            velocity.linear[2] + dz / dt
-          ],
-          [0, 0, 0]
-        );
-      }
-    }
     world.setBodyAwake(walkerBody, true);
-    walkerAboard = true;
+
+    if (dt <= 0 || dt > MAX_VELOCITY_DT) return;
+    if (Math.hypot(dx, dy, dz) > CARRY_TELEPORT_DELTA) {
+      // The route jumped rather than flew. Nothing the solver can integrate
+      // covers this, so set the body onto its deck spot — and leave velocity
+      // alone, since a teleport carries no momentum.
+      walkerQuaternion.set(
+        transform.rotation[0],
+        transform.rotation[1],
+        transform.rotation[2],
+        transform.rotation[3]
+      );
+      yawQuaternion.setFromAxisAngle(axis.set(0, 1, 0), yawDelta);
+      walkerQuaternion.premultiply(yawQuaternion).normalize();
+      world.setBodyTransform(
+        walkerBody,
+        [carriedWalker.x, carriedWalker.y, carriedWalker.z],
+        [walkerQuaternion.x, walkerQuaternion.y, walkerQuaternion.z, walkerQuaternion.w]
+      );
+      return;
+    }
+
+    // Flight: hand the deck's motion to the walk controller, which spends the
+    // next fixed step steering *relative* to it (src/world/movingPlatforms.ts).
+    // Nothing here writes the body — a rider who is standing still and a deck
+    // that is moving are then the same velocity, which is the only state the
+    // contact solver can hold without either burrowing or bouncing.
+    setWalkerPlatformCarry({
+      vx: dx / dt,
+      vy: dy / dt,
+      vz: dz / dt,
+      yawRate: yawDelta / dt
+    });
   };
 
   return {
@@ -213,9 +237,11 @@ export function createGhostShipCollision(
     dispose() {
       if (disposed) return;
       disposed = true;
+      unregisterPlatform();
       for (const body of bodies) world.destroyBody(body.handle);
       bodies.length = 0;
       walkerAboard = false;
+      setWalkerPlatformCarry(null);
     }
   };
 }

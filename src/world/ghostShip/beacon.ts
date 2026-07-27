@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import type { WorldMap } from "../heightmap";
-import { sanFranciscoCivilNow, sfCivilFromScalarDays, sfCivilScalarDays } from "../solar";
+import { sanFranciscoCivilAt, sfCivilFromScalarDays, sfCivilScalarDays } from "../solar";
 import { ghostShipPoseForCivil, type GhostShipPose } from "./route";
 
 /**
@@ -16,7 +16,7 @@ export class GhostShipBeacon {
   #materials: THREE.Material[] = [];
   #geometries: THREE.BufferGeometry[] = [];
   #clockSyncMs = Date.now();
-  #clockSyncCivil = sanFranciscoCivilNow(new Date(this.#clockSyncMs));
+  #clockSyncCivil = sanFranciscoCivilAt(this.#clockSyncMs);
   #clockOverrideMs: number | null = null;
 
   constructor(scene: THREE.Scene, map: WorldMap) {
@@ -81,9 +81,15 @@ export class GhostShipBeacon {
 
   update(epochMs = Date.now()): GhostShipPose {
     epochMs = this.#clockOverrideMs ?? epochMs;
+    // Rebase onto the wall clock once a minute so a DST step (or a tab that
+    // slept) is picked up. The basis is millisecond-exact, so the rebase agrees
+    // with the extrapolation it replaces and the route never jolts — a plain
+    // `sanFranciscoCivilNow` here quantised to whole seconds and shunted the
+    // ship up to a second of travel sideways every minute, with anyone standing
+    // on the deck shunted along with it.
     if (Math.abs(epochMs - this.#clockSyncMs) >= 60_000) {
       this.#clockSyncMs = epochMs;
-      this.#clockSyncCivil = sanFranciscoCivilNow(new Date(epochMs));
+      this.#clockSyncCivil = sanFranciscoCivilAt(epochMs);
     }
     const next = this.#poseAt(epochMs);
     Object.assign(this.pose, next);
@@ -96,7 +102,7 @@ export class GhostShipBeacon {
     this.#clockOverrideMs = epochMs !== null && Number.isFinite(epochMs) ? epochMs : null;
     if (this.#clockOverrideMs !== null) {
       this.#clockSyncMs = this.#clockOverrideMs;
-      this.#clockSyncCivil = sanFranciscoCivilNow(new Date(this.#clockOverrideMs));
+      this.#clockSyncCivil = sanFranciscoCivilAt(this.#clockOverrideMs);
     }
   }
 

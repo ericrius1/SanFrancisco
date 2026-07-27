@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { waterHeight } from "../world/heightmap";
+import { movingPlatformAt } from "../world/movingPlatforms";
 import type { PlayerCtx } from "../player/types";
 
 /** Typical tall park/street canopy (m). Plane/phoenix launches clear ~2× this. */
@@ -157,7 +158,13 @@ export function findWater(ctx: PlayerCtx): { x: number; z: number } | null {
  * make sure there's clearance above the local ground. */
 export function enterOnLand(ctx: PlayerCtx) {
   const onBridge = ctx.map.bridgeDeck(ctx.position.x, ctx.position.z) > -Infinity;
-  if (!onBridge && ctx.map.isWater(ctx.position.x, ctx.position.z)) {
+  // A deck overhead is land enough. The ghost ship spends much of its route
+  // over the bay and the Pacific, and the shore hop below would answer someone
+  // stepping off a mount onto its deck by flinging them a couple of hundred
+  // metres inland and several hundred metres down.
+  const aboard =
+    movingPlatformAt(ctx.position.x, ctx.position.y, ctx.position.z) !== null;
+  if (!onBridge && !aboard && ctx.map.isWater(ctx.position.x, ctx.position.z)) {
     const spot = findLand(ctx);
     if (spot) ctx.position.set(spot.x, ctx.map.effectiveGround(spot.x, spot.z) + 1.2, spot.z);
   } else {
