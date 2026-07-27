@@ -61,6 +61,7 @@
     "test:sutro-clock": "node tools/sutro-clock-probe.mjs",
     "test:sutro-placement": "node tools/sutro-placement-probe.mjs",
     "test:ghost-ship": "node --experimental-strip-types tools/ghost-ship-contract-test.mjs && node tools/ghost-ship-relay-probe.mjs",
+    "test:ghost-ship:boarding": "node tools/ghost-ship-boarding-probe.mjs",
     "test:drum-bridge": "node tools/drum-bridge-probe.mjs",
     "test:mission-dolores": "node --experimental-strip-types tools/mission-dolores-contract-test.mjs",
     "test:car-jump": "node --experimental-strip-types tools/car-jump-physics-probe.mjs",
