@@ -20,6 +20,7 @@ import { SKY_TUNING, type Sky } from "../world/sky";
 import {
   POSTFX_TUNING,
   POSTFX_TOGGLES,
+  POSTFX_BLOOM_KEYS,
   POSTFX_PIANO_GOD_RAY_KEYS,
   applyPostFxParams
 } from "../render/postfx";
@@ -940,7 +941,11 @@ export class DebugPanel {
       onChange: (key, _value, last) => {
         if (this.#syncingPane) return;
         if ((POSTFX_TOGGLES as readonly string[]).includes(key)) this.#postfx?.applyPostFx();
-        else if ((POSTFX_PIANO_GOD_RAY_KEYS as readonly string[]).includes(key)) {
+        else if ((POSTFX_BLOOM_KEYS as readonly string[]).includes(key)) {
+          // Bloom's uniforms live in pipeline.ts, not in the postfx graph, so
+          // the style-slider lane below would silently drop them.
+          this.#postfx?.applyPostFx();
+        } else if ((POSTFX_PIANO_GOD_RAY_KEYS as readonly string[]).includes(key)) {
           if (key !== "pianistRaysResolution" || last) this.#postfx?.applyPianoGodRaysFx();
         } else applyPostFxParams();
       }

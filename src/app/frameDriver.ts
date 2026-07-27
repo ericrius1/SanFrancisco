@@ -1,5 +1,9 @@
 import type * as THREE from "three/webgpu";
 import { RENDER_TUNING } from "../config";
+import { pocketFrameIntervalMs } from "../render/pocketQuality";
+
+/** One 60 Hz frame. Only used to un-inflate a deliberately capped frame time. */
+const DISPLAY_INTERVAL_MS = 1000 / 60;
 
 type FrameTracer = {
   frame(frameMs: number): void;
@@ -87,6 +91,14 @@ export function startFrameDriver(opts: {
     } else {
       quietParity = 0;
     }
+    // Interior pockets trade frame rate for per-frame quality (render/
+    // pocketQuality.ts). Unlike quiet mode this is a WALL-CLOCK gate, not rAF
+    // parity: the pocket's budget must be the same on a 60 Hz panel and a
+    // 120 Hz one, and parity would silently hand the latter twice the rate and
+    // half the budget. Skip the whole tick exactly as quiet mode does, and do
+    // not advance lastLoop, so the tracer still measures true render-to-render.
+    const pocketIntervalMs = pocketFrameIntervalMs();
+    if (pocketIntervalMs > 0 && performance.now() - lastLoop < pocketIntervalMs) return;
     const now = performance.now();
     if (throttleRaf && now - lastLoop < 50) return;
     const frameMs = now - lastLoop;
@@ -98,7 +110,18 @@ export function startFrameDriver(opts: {
       // Quiet mode roughly doubles the render-to-render interval by design; feed
       // the governor the halved EMA so a capped-but-healthy frame reads as its
       // true per-frame cost and never triggers a spurious downscale.
-      adaptiveRes?.update(quiet ? tracer.ema * 0.5 : tracer.ema);
+      //
+      // The interior frame cap needs exactly the same correction, and without it
+      // the pocket boost defeats itself: a 30 fps cap makes every frame measure
+      // ~33 ms, the governor reads that as a GPU in trouble and walks all the way
+      // down its ladder, so a requested 1.5x render scale lands at 1.05x — the
+      // cap bought budget and the governor immediately spent it going backwards.
+      // Scaling by refresh/cap says "capped but healthy reads as healthy" while
+      // still leaving genuine overruns above the hot gate, so the protection is
+      // intact: a pocket that really cannot hold the cap is still stepped down.
+      const capMs = pocketIntervalMs;
+      const capFactor = capMs > 0 ? Math.min(1, DISPLAY_INTERVAL_MS / capMs) : 1;
+      adaptiveRes?.update(tracer.ema * (quiet ? 0.5 : 1) * capFactor);
     }
   };
 

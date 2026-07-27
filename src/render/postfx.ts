@@ -52,6 +52,22 @@ import type { PianoGodRaysParams } from "./pianoGodRaysTypes";
  */
 export const POSTFX_TUNING = tunables("postfx", {
   fxaa: { v: false, label: "FXAA" },
+  // Bloom, in linear HDR before the ACES curve (see pipeline.ts). Default on:
+  // this is the base look, not an optional style. The point is that a lamp
+  // reads as a light source, not that the image glows.
+  //
+  // The threshold is the load-bearing number and it is measured, not guessed.
+  // A white diffuse surface in full sun lands near 1.0-1.3 linear here, so an
+  // "just above white" threshold catches ordinary lit geometry: at 1.05 the
+  // player's plain-white head became a blazing orb outdoors and an outdoor
+  // frame's mean luma rose 83 -> 106. Sitting it at 2.2 leaves lit white alone
+  // while the Sutro lamp globes (emissive ~4.8, luminance ~1.9) and the sun
+  // disc still bleed properly — the hall's mean still moves 58.8 -> 61.8 with
+  // the lamps blooming, which is the effect this is for.
+  bloom: { v: true, label: "bloom" },
+  bloomStrength: { v: 0.42, min: 0, max: 2, step: 0.01, label: "· bloom strength" },
+  bloomRadius: { v: 0.55, min: 0, max: 1, step: 0.01, label: "· bloom radius" },
+  bloomThreshold: { v: 2.2, min: 0, max: 4, step: 0.01, label: "· bloom threshold" },
   ink: { v: false, label: "ink & wash" },
   inkStrength: { v: 0.65, min: 0, max: 1, step: 0.05, label: "· ink strength" },
   inkWidth: { v: 1.5, min: 1, max: 4, step: 0.5, label: "· line width (px)" },
@@ -83,7 +99,9 @@ export const POSTFX_TUNING = tunables("postfx", {
 });
 
 /** Toggles that require a pipeline selection/update (everything else is a live uniform). */
-export const POSTFX_TOGGLES = ["fxaa", "ink", "ukiyo", "dream", "retro"] as const;
+export const POSTFX_TOGGLES = ["fxaa", "bloom", "ink", "ukiyo", "dream", "retro"] as const;
+/** Bloom sliders are plain uniforms read by both cached families — no reselect. */
+export const POSTFX_BLOOM_KEYS = ["bloomStrength", "bloomRadius", "bloomThreshold"] as const;
 export const POSTFX_PIANO_GOD_RAY_KEYS = [
   "pianistRays",
   "pianistRaysSteps",

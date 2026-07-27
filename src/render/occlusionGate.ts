@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { SHADOW_LAYERS } from "../world/shadows/shadowLayers";
 
 /**
  * Kill switch for the whole occlusion-gate experiment. Flip to `false` in this
@@ -165,6 +166,13 @@ export function createOcclusionGate(options: OcclusionGateOptions): OcclusionGat
   // three only rebuilds the backend's resolved-occluder set on frames that issued
   // at least one query — so a culled proxy would keep re-reading an older verdict.
   proxy.frustumCulled = false;
+  // Beauty camera only. `frustumCulled = false` means this proxy is pushed into
+  // the render list of EVERY camera that includes its layer, and a pass that
+  // lists an occlusionTest object it will not draw costs a GPU query set per
+  // frame (shadow cameras skip non-casters; the ink prepass skips transparents).
+  // Layer 0 is what those secondary cameras select, so stay off it — the render
+  // camera enables BEAUTY_ONLY, so the query itself still runs and resolves.
+  proxy.layers.set(SHADOW_LAYERS.BEAUTY_ONLY);
   proxyParent.add(proxy);
 
   const inverseParent = new THREE.Matrix4();
