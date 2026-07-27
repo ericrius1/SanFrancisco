@@ -53,6 +53,32 @@ const POOL_SWIM_REST_DEPTH = 0.95;
  * anything below basin + 0.84 m) starts fighting the swimmer for the capsule.
  */
 const POOL_FLOOR_CLEARANCE = 0.2;
+/**
+ * Hauling out of an authored pool.
+ *
+ * Buoyancy owns the vertical axis while you swim and a swimmer has no jump, so
+ * a bath you can walk into is a bath you cannot leave: the coping stands above
+ * the float line, and pressing into it only holds you against the wall. Swim at
+ * the side and the body climbs the edge instead — no key to learn, which is the
+ * whole point, since the visitor discovering the problem is already mid-swim.
+ *
+ * The probe reaches a little past the capsule's own contact point, so the haul
+ * arms while you are pressed against the wall rather than only once your centre
+ * has crossed it. The rise cap spans a whole bath — floor to coping — because
+ * the swimmer who most needs the ladder is the one down at the tiles: down
+ * there the capsule sits BELOW the deck slab, with nothing but the recovery
+ * contract between them and swimming clean through the wall to be snapped up
+ * on the far side. Climbing the wall is the same exit, minus the teleport.
+ */
+const POOL_EXIT_PROBE = 0.9;
+const POOL_EXIT_MAX_RISE = 3;
+/** Bottom clearance over the rim before the haul counts as landed. */
+const POOL_EXIT_CLEARANCE = 0.22;
+/** Climb rate, and the press that carries you forward once you clear the edge. */
+const POOL_EXIT_RISE_SPEED = 2.6;
+const POOL_EXIT_PUSH = 2.6;
+/** A haul that hasn't landed by now was aimed at something unclimbable. */
+const POOL_EXIT_TIMEOUT = 2.5;
 export const WALK_CAPSULE_HALF_HEIGHT = 0.55;
 export const WALK_CAPSULE_RADIUS = 0.35;
 export const WALK_CAPSULE_HALF_EXTENT = WALK_CAPSULE_HALF_HEIGHT + WALK_CAPSULE_RADIUS;
@@ -71,6 +97,8 @@ export class WalkController implements ModeController {
   swimming = false;
   #jumpBuf = 0; // seconds a Space press stays pending
   #coyote = 0; // seconds after losing footing a jump still fires
+  /** Active haul-out over a pool coping — see the POOL_EXIT_* contract. */
+  #climbOut: { rimY: number; time: number } | null = null;
 
   spawnBody(ctx: PlayerCtx, _facing: number): number {
     const p = ctx.position;
@@ -87,6 +115,7 @@ export class WalkController implements ModeController {
   }
 
   enter(ctx: PlayerCtx) {
+    this.#climbOut = null;
     if (ctx.swimEnter) {
       ctx.swimEnter = false;
       // drop in already at the swim waterline (centre a touch under the surface)
@@ -146,10 +175,47 @@ export class WalkController implements ModeController {
     const swimming = bed < waterY - 1.0 && bottom < waterY;
     this.swimming = swimming;
 
+    // Haul-out latch. Arm it when a swimmer presses into a coping within reach;
+    // hold it — across the frame where the rising body stops counting as
+    // swimming — until they are over the edge, they let go, or the rim turns
+    // out to be something they cannot climb after all.
+    if (this.#climbOut) {
+      this.#climbOut.time += dt;
+      // Released at the rim, not at the climb target: the target is approached
+      // asymptotically and would leave the latch hovering the body a hand's
+      // width over the deck until the timeout swatted it down. Above the rim
+      // and over the slab IS out — let gravity settle the last few centimetres.
+      const landed =
+        bottom >= this.#climbOut.rimY &&
+        (!pool || !pool.contains(ctx.position.x, ctx.position.z));
+      if (landed || intent < 0.05 || this.#climbOut.time > POOL_EXIT_TIMEOUT) this.#climbOut = null;
+    } else if (swimming && pool?.climbOutY && intent > 0.05) {
+      const probeX = ctx.position.x + dir.x * POOL_EXIT_PROBE;
+      const probeZ = ctx.position.z + dir.z * POOL_EXIT_PROBE;
+      const rimY = pool.contains(probeX, probeZ) ? null : pool.climbOutY(probeX, probeZ);
+      if (rimY !== null && rimY > bottom && rimY - bottom <= POOL_EXIT_MAX_RISE) {
+        this.#climbOut = { rimY, time: 0 };
+      }
+    }
+
     let vx = dir.x * speed;
     let vz = dir.z * speed;
     let vy = v.linear[1];
-    if (swimming) {
+    if (this.#climbOut) {
+      // Up the wall first, over it second. Pushing forward the whole way would
+      // be wrong below the coping: a capsule down at tile level has no slab in
+      // front of it, so the press would carry it clean THROUGH the wall and
+      // leave the recovery contract to teleport it out — the very snap this
+      // climb exists to replace. Above the rim the press resumes and the arc
+      // finishes onto the deck. Holding at the target rather than falling back
+      // is safe: the target IS a walk surface, so nothing here can lift anyone
+      // anywhere they could not have walked.
+      const target = this.#climbOut.rimY + POOL_EXIT_CLEARANCE;
+      const overTheEdge = bottom >= this.#climbOut.rimY;
+      vx = overTheEdge ? dir.x * POOL_EXIT_PUSH : 0;
+      vz = overTheEdge ? dir.z * POOL_EXIT_PUSH : 0;
+      vy = Math.min(POOL_EXIT_RISE_SPEED, (target - bottom) * 6);
+    } else if (swimming) {
       // --- swimming: bob at the surface, dive when you look/press down ------
       // Horizontal glide (run key is repurposed as dive, so use base speed).
       const swimSpeed = tw.speed * tw.swimFactor * speedScale * intent;

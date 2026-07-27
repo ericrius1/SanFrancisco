@@ -233,7 +233,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     surfaceY: SUTRO_BATHS.waterY,
     floorY: SUTRO_BATHS.basinY,
     ...sutroPoolBounds(),
-    contains: isInsideSutroPool
+    contains: isInsideSutroPool,
+    // …and getting out again. The coping is only a 0.44 m step above the
+    // water, but a swimmer has no jump, so without a rim to haul onto every
+    // bath is a one-way trip. The authored walk surface already knows what is
+    // beside each pool — the deck, or a stair tread where one meets the water.
+    climbOutY: sutroWalkSurfaceY
   });
 
   const syncTuning = () => {

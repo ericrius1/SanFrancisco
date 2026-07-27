@@ -35,6 +35,18 @@ export type SwimVolume = {
   readonly maxZ: number;
   /** Exact footprint test for a world-space column. */
   contains(x: number, z: number): boolean;
+  /**
+   * Height of the walkable rim a swimmer can haul out onto at a column just
+   * OUTSIDE the water, or null where there is nothing to climb. Only asked
+   * about columns `contains` has already rejected, so a site can answer with
+   * its ordinary walk-surface query.
+   *
+   * Optional, because it is a contract only a *contained* body needs: you wade
+   * out of the bay wherever the beach is, but a pool whose coping stands above
+   * the float line is a room with no door until something can lift you over it
+   * (see the haul-out in player/walk.ts).
+   */
+  climbOutY?(x: number, z: number): number | null;
 };
 
 /** Just `isWater`, so callers can pass a WorldMap without importing its type. */
