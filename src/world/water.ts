@@ -530,7 +530,19 @@ export class Water {
       // a glint the BRDF's GGX lobe now produces correctly, tracking sun AND
       // view instead of drifting through a noise field. The emerald surf vein it
       // also drove rides the analytic surf field directly instead.
-      const emeraldVein = surfFaceTint.mul(surfFaceTint).mul(surfFaceTint);
+      // The vein needs BREAK-UP, not just the face mask: cubing surfFaceTint
+      // alone paints a solid emerald sheet over the whole wave face instead of
+      // the marbled streaks it is meant to be. The old form got that from the
+      // mx_noise field the sparkle shared; three counter-drifting sines give
+      // the same irregularity for ~12 ALU instead of ~485.
+      const veinBreak = sin(pxz.x.mul(0.21).add(pxz.y.mul(0.13)).add(t.mul(0.6)))
+        .mul(sin(pxz.x.mul(0.077).sub(pxz.y.mul(0.164)).sub(t.mul(0.43))))
+        .mul(0.5)
+        .add(0.5);
+      const emeraldVein = surfFaceTint
+        .mul(surfFaceTint)
+        .mul(surfFaceTint)
+        .mul(smoothstep(0.35, 0.8, veinBreak));
       // Added into colorNode rather than emissiveNode: with `lights = false`
       // the outgoing light IS diffuseColor.rgb, so the two are identical here —
       // one fewer node, and the whole surface stays one expression.

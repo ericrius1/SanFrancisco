@@ -269,9 +269,13 @@ export function oceanSurfaceRadiance(o: OceanSurfaceInputs): N {
   // Below the horizon the key contributes nothing (and SUN_DIR has already
   // flipped to the moon by then, so this gates both).
   const keyUp = saturate(o.sunDir.y.mul(6));
-  const reflected = sky
-    .mul(o.reflectionGain ?? 1)
-    .add(o.sunRadiance.mul(glint.mul(keyUp)));
+  // NOTE the sun lobe is deliberately NOT part of `reflected`. `glint` already
+  // carries its own Fresnel (line above), and `reflected` gets Fresnel-weighted
+  // again by the final mix — folding the lobe in there would apply F twice.
+  // F² vs F is ~50x too dark looking straight down (F = F0 = 0.02) and only
+  // ~1.2x at grazing, i.e. it silently deletes the near-field glitter.
+  const sunLobe = o.sunRadiance.mul(glint.mul(keyUp));
+  const reflected = sky.mul(o.reflectionGain ?? 1);
 
   // Transmitted/in-scattered: the water column lit by sky + key. This keeps the
   // authored palette but makes it a RADIANCE, so it darkens at dusk with the
@@ -293,29 +297,34 @@ export function oceanSurfaceRadiance(o: OceanSurfaceInputs): N {
     .mul(o.ambientGain ?? 0.3)
     .add(o.sunRadiance.mul(diffuseWrap.mul(o.sunDiffuseGain ?? 0.26)))
     .toVar();
-  const inScatter = o.bodyAlbedo.mul(down).toVar();
-
   // Subsurface: folding crests are thin, so the key shines THROUGH them — and
   // only when you are looking into it. `v` is eye→fragment, so dot(v, sunDir) is
   // high exactly when the sun is beyond the wave. This is the "glowing green
   // crest" read, and it is view-dependent by construction rather than a flat
   // emissive add.
-  if (o.sss) {
-    const through = pow(saturate(dot(v, o.sunDir)), 3.0);
-    inScatter.addAssign(
-      (o.sssColor ?? vec3(0.05, 0.4, 0.32))
+  //
+  // Built as a pure EXPRESSION, never `inScatter.addAssign(...)`. TSL's assign
+  // operators need a current stack, which only exists inside an Fn() body; at
+  // material-construction scope three logs "No stack defined for assign
+  // operation" and returns the receiver UNMODIFIED, so the term silently
+  // vanishes from the emitted WGSL. The `if` here is a build-time JS gate (so
+  // the subgraph is dead-stripped when unused), not a shader branch.
+  const sss = o.sss
+    ? (o.sssColor ?? vec3(0.05, 0.4, 0.32))
         .mul(o.sss)
-        .mul(through)
+        .mul(pow(saturate(dot(v, o.sunDir)), 3.0))
         .mul(o.sunRadiance)
         .mul(saturate(o.sunDir.y.mul(4)))
-    );
-  }
+    : vec3(0);
+  const inScatter = o.bodyAlbedo.mul(down).add(sss).toVar();
 
   // Foam sits ON the surface: a rough dielectric raft, so it is lit by the same
   // illuminant, just with a brighter albedo — not a separate emissive white.
   const foamLit = o.foamAlbedo.mul(down.mul(o.foamGain ?? 0.95));
 
-  return mix(mix(inScatter, reflected, fresnel), foamLit, o.foam);
+  // Fresnel mixes the two TRANSPORT lanes; the sun lobe is a specular addition
+  // on top (it already carries its own F), and foam covers whatever it covers.
+  return mix(mix(inScatter, reflected, fresnel).add(sunLobe), foamLit, o.foam);
 }
 
 /**

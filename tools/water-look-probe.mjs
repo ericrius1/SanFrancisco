@@ -45,7 +45,16 @@ const SPOTS = {
   // Mid-bay open water, no land in frame.
   midbay: { x: 2000, z: -3500, eyeY: 3.0 },
   // Airborne over the bay — the drone framing, where the body colour dominates.
-  drone: { x: 2000, z: -3500, eyeY: 90.0 }
+  drone: { x: 2000, z: -3500, eyeY: 90.0 },
+  // --- shallow water (Tier B: shoreline transmission + caustics) ------------
+  // Ocean Beach swash zone. oceanBeachApproxShoreX(z) = -6323 + 0.08504z +
+  // 7.43e-6 z^2, so at z = 3200 the waterline sits near x = -5975; sitting 45 m
+  // offshore of it puts the camera over ~1-2 m of water, which is the whole
+  // point of Tier B — the band where the seabed should show through.
+  shoreline: { x: -6020, z: 3200, eyeY: 2.5 },
+  // Sutro cove shallows: rock bed rather than sand, and the site's own water is
+  // nearby, so this is the second bed palette Tier B has to satisfy.
+  sutroShore: { x: -6260, z: 1117, eyeY: 2.5 }
 };
 
 const WHERE = process.argv[2] ?? "pacific";
@@ -262,9 +271,16 @@ async function main() {
   const wT0 = Date.now();
   let sheeted = false;
   while (Date.now() - wT0 < 120000) {
+    // Assert SCENE MEMBERSHIP, not just .visible. warmHiddenRoot detaches each
+    // root and forces visible=true while it compiles, so a `.visible` gate
+    // reports ready for a scene that contains no ocean at all — which is how a
+    // bare terrain seabed once got captured and read as "the shading change did
+    // nothing". Parent + visible together is the falsifiable condition.
     const s = await ev(
       c,
-      `(()=>{const w=window.__sf.water;return w.near.visible&&w.far.visible&&w.horizon.visible;})()`
+      `(()=>{const w=window.__sf.water;
+       const ok=(m)=>!!m.parent&&m.visible;
+       return ok(w.near)&&ok(w.far)&&ok(w.horizon);})()`
     );
     if (s) {
       sheeted = true;

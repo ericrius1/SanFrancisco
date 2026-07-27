@@ -186,7 +186,9 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     const restore = waterRoots.map((m) => m.visible);
     for (const m of waterRoots) m.visible = false;
     void Promise.all(
-      waterRoots.map((m) => warmHiddenRoot(renderer, camera, scene, m).catch(() => {}))
+      waterRoots.map((m) =>
+        warmHiddenRoot(renderer, camera, scene, m, ctx.pipeline.compileAsyncPrioritized).catch(() => {})
+      )
     ).then(() => waterRoots.forEach((m, i) => (m.visible = restore[i])));
   }
   const underwater = new UnderwaterOverlay(app, map);
