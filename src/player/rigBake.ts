@@ -120,10 +120,33 @@ export function bakeRigToSkinnedMesh(rig: Rig, options: { name?: string } = {}):
     sources.push(mesh);
   });
 
+  // Everything that leaves the hierarchy below. Nothing in here may be chosen
+  // as a bone: a detached object's matrixWorld freezes at its bake-time value,
+  // which then cancels exactly against its own boneInverse, so its vertices sit
+  // at their rig-local bind position in WORLD space — a giant sliver stretching
+  // back to the origin from wherever the figure actually stands.
+  const detaching = new Set<THREE.Object3D>([...sources, ...dropped]);
+
   const bones: THREE.Object3D[] = [];
   const boneIndex = new Map<THREE.Object3D, number>();
+  /**
+   * A part can be parented to another PART rather than to a joint — the Sutro
+   * towel hangs its contrast end-stripe off the towel box so the stripe follows
+   * the towel's tilt. Walk up to the nearest surviving joint instead of taking
+   * the immediate parent. No offset has to be carried across: vertices are baked
+   * through `mesh.matrixWorld` into rig-local bind space already, and the bone's
+   * own inverse re-expresses that bind position relative to whichever ancestor
+   * we pick. Any rigid ancestor reproduces the same pose, because everything
+   * between it and the mesh is now frozen geometry.
+   */
+  const jointFor = (mesh: THREE.Mesh): THREE.Object3D => {
+    for (let node = mesh.parent; node && node !== root; node = node.parent) {
+      if (!detaching.has(node)) return node;
+    }
+    return root;
+  };
   const boneFor = (mesh: THREE.Mesh): number => {
-    const joint = mesh.parent ?? root;
+    const joint = jointFor(mesh);
     let index = boneIndex.get(joint);
     if (index === undefined) {
       index = bones.length;
@@ -192,6 +215,20 @@ export function bakeRigToSkinnedMesh(rig: Rig, options: { name?: string } = {}):
   (material as unknown as { emissiveNode: N }).emissiveNode = vec3(
     attribute("color", "vec3") as N
   ).mul(liftUniform as N);
+
+  // `jointFor` is what upholds this, so the loop should never fire — but the
+  // failure it guards against reads as a rendering glitch rather than a rigging
+  // one (a sliver stretching off to the origin, thousands of metres away), and
+  // costs an afternoon to trace back here. Keep the invariant stated out loud.
+  if (import.meta.env.DEV) {
+    for (const bone of bones) {
+      if (!detaching.has(bone)) continue;
+      console.error(
+        `[rigBake] ${options.name ?? "baked_rig"}: bone "${bone.name || bone.type}" is a baked source mesh; ` +
+          "its vertices will render at the world origin. Parent that part to a joint."
+      );
+    }
+  }
 
   const boneInverses = bones.map((bone) => bone.matrixWorld.clone().invert());
   const skeleton = new THREE.Skeleton(bones as THREE.Bone[], boneInverses);
