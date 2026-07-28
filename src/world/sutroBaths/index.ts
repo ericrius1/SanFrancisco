@@ -127,6 +127,12 @@ export type SutroBaths = {
   ): void;
   isPlayerInside(player: SutroBathsPlayerPosition): boolean;
   /**
+   * E, standing in the ring of falling water: ride it back up to the plunge.
+   * Returns true when it consumed the press, so the app's interaction chain can
+   * fall through to whatever else is nearby when it did not.
+   */
+  tryInteract(player: SutroBathsPlayerPosition, playerMode: string): boolean;
+  /**
    * Is the visitor down in the sunken gallery? A separate question from
    * `isPlayerInside`, because it has a separate answer for the camera: the hall
    * is a 152 m room with space for any shot, and the gallery is a corridor.
@@ -307,14 +313,17 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   let grottoFailed = false;
   let inGrotto = false;
   /**
-   * Each end of the shaft has to be LEFT before it will fire again, or the
-   * drain would swallow anyone who surfaced back into the middle of the plunge
-   * and the upwelling would throw back anyone it had just delivered. Armed by
-   * distance, not by a timer, so a visitor who lingers under the fall keeps
-   * exactly as long as they like.
+   * The drain has to be LEFT before it will take anyone again, or it would
+   * swallow whoever the upwelling had just put back in the middle of the
+   * plunge. Armed by distance, not by a timer.
+   *
+   * The way UP has no such latch, because it is not automatic: you stand in the
+   * ring of falling water and press E (`tryInteract`). Going down is something
+   * the water does to you; coming back is something you decide.
    */
   let drainArmed = true;
-  let riseArmed = false;
+  /** One-shot latch for the "press E" nudge under the fall. */
+  let risePrompted = false;
   // The authored region hands terrain ownership to the hall and publishes its
   // deck/basin bodies asynchronously. Keep a lightweight recovery contract
   // armed for the lifetime of the site: it covers both that handoff frame and
@@ -471,38 +480,32 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     steam?.setEnabled(awake && !next);
   };
 
+  /** Is the visitor standing in the ring of falling water? */
+  const inTheFall = (player: SutroBathsPlayerPosition): boolean =>
+    inGrotto &&
+    Math.hypot(player.x - grottoRise.x, player.z - grottoRise.z) <= SUTRO_GROTTO_RISE.radius;
+
   /**
-   * Down the drain, and back up the middle of the fall.
+   * Down the drain.
    *
    * The cut itself is one frame inside a dark bore, and the player keeps their
    * facing and their camera through it (see SutroBathsRelocation); what they
    * actually experience is going into a hole and coming out of a ceiling still
-   * heading the same way. The rest is the arming latch above.
+   * heading the same way.
    */
   const updateShaft = (player: SutroBathsPlayerPosition, py: number): void => {
     const relocate = options.relocate;
     if (!grotto || !relocate) return;
 
     if (inGrotto) {
-      const centre = Math.hypot(
-        player.x - grottoRise.x,
-        player.z - grottoRise.z
-      );
-      if (!riseArmed) {
-        if (centre > SUTRO_GROTTO_RISE.radius + 2) riseArmed = true;
-        return;
-      }
-      // Submerged, in the middle of the basin, under the column: the water
-      // going down has to come back from somewhere.
-      if (
-        centre <= SUTRO_GROTTO_RISE.radius &&
-        py < SUTRO_GROTTO.poolSurfaceY - 0.1 &&
-        sutroGrottoPoolContains(player.x, player.z)
-      ) {
-        drainArmed = false;
-        setInGrotto(false);
-        relocate({ x: grottoRise.x, y: SUTRO_GROTTO_RISE.y, z: grottoRise.z });
-        options.hud?.message("The upwelling carries you back into the plunge", 3);
+      // The way back is a prompt, not a trapdoor — see `tryInteract`. All this
+      // does is offer it, once, the first time somebody wades into the ring.
+      const standing = inTheFall(player);
+      if (standing && !risePrompted) {
+        risePrompted = true;
+        options.hud?.message("Press E to ride the water back up", 3.2);
+      } else if (!standing) {
+        risePrompted = false;
       }
       return;
     }
@@ -513,7 +516,6 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     }
     // Deep enough that they dived for it, and inside the bore.
     if (distanceToDrain <= SUTRO_DRAIN.grabRadius && py <= SUTRO_DRAIN.grabY) {
-      riseArmed = false;
       setInGrotto(true);
       relocate({ x: grottoDrop.x, y: SUTRO_GROTTO_DROP.y, z: grottoDrop.z });
     }
@@ -564,7 +566,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       inGrotto = false;
       if (grotto) grotto.group.visible = false;
       drainArmed = true;
-      riseArmed = false;
+      risePrompted = false;
     }
     hallLayer.visible = next;
     group.visible = next;
@@ -730,6 +732,16 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       const inset = sutroHallWallInset(player.x, player.z);
       playerInside = containedVertically && inset > (playerInside ? INDOOR_EXIT_INSET : INDOOR_ENTER_INSET);
       return playerInside;
+    },
+    tryInteract(player, playerMode) {
+      if (disposed || playerMode !== "walk" || !grotto || !options.relocate) return false;
+      if (!inTheFall(player)) return false;
+      drainArmed = false;
+      risePrompted = false;
+      setInGrotto(false);
+      options.relocate({ x: grottoRise.x, y: SUTRO_GROTTO_RISE.y, z: grottoRise.z });
+      options.hud?.message("The water carries you back up into the plunge", 2.6);
+      return true;
     },
     isPlayerInGrotto(player) {
       return (

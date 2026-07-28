@@ -249,8 +249,13 @@ export const SUTRO_GROTTO_RISE = {
   z: PLUNGE_CENTRE_Z,
   y: SUTRO_BATHS.basinY + 1.7,
   heading: SUTRO_BATHS.yaw + Math.PI,
-  /** Swim into this much of the basin's middle and the water takes you up. */
-  radius: 2.4
+  /**
+   * Get this far into the middle of the basin — into the ring of falling water
+   * itself — and E rides it back up. A shade wider than the column (2.5 m) so
+   * being "in the fall" is judged by what it looks like rather than by hitting
+   * a radius you cannot see.
+   */
+  radius: 3
 } as const;
 
 /** Distance (m) from the drain's axis, for a WORLD-space point. */

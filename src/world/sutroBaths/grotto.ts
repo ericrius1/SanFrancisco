@@ -16,7 +16,7 @@ import {
   vec4 as vec4Raw
 } from "three/tsl";
 import { loadTexture } from "../../render/textures";
-import type { Physics } from "../../core/physics";
+import { BodyType, type Physics } from "../../core/physics";
 import {
   lightAnchor,
   registerAmbientLightAnchor,
@@ -849,15 +849,18 @@ export function createSutroGrotto(options: { physics?: Physics } = {}): SutroGro
   // Spray where it lands: a low flare standing on the water, and the mist that
   // hangs over it.
   {
+    // Low and tight. At three metres tall and six across this stood at the eye
+    // height of anyone walking the basin's edge, and an additive wall seen
+    // edge-on from inside reads as a sheet of haze hanging in the room.
     const geometry = new THREE.CylinderGeometry(
-      SUTRO_GROTTO.apertureRadius * 2.4,
-      SUTRO_GROTTO.apertureRadius * 1.05,
-      3.1,
+      SUTRO_GROTTO.apertureRadius * 1.7,
+      SUTRO_GROTTO.apertureRadius * 1.02,
+      1.7,
       40,
       1,
       true
     );
-    geometry.translate(CX, fallBottom + 1.4, CZ);
+    geometry.translate(CX, fallBottom + 0.75, CZ);
     const material = new THREE.MeshBasicNodeMaterial({ name: "sutro_grotto_spray" });
     material.transparent = true;
     material.depthWrite = false;
@@ -870,7 +873,7 @@ export function createSutroGrotto(options: { physics?: Physics } = {}): SutroGro
         .mul(0.5)
         .add(0.5);
       const rise = smoothstep(float(1), float(0.05), coord.y).mul(smoothstep(float(0), float(0.12), coord.y));
-      return vec4(vec3(0.72, 0.94, 1), rise.mul(billow.mul(0.7).add(0.3)).mul(0.16));
+      return vec4(vec3(0.72, 0.94, 1), rise.mul(billow.mul(0.7).add(0.3)).mul(0.13));
     })() as N;
     attach(geometry, material, "sutro_grotto_spray");
   }
@@ -994,6 +997,29 @@ export function createSutroGrotto(options: { physics?: Physics } = {}): SutroGro
   const reef: SutroReef = createSutroReef();
   group.add(reef.group);
 
+  /**
+   * Nothing down here is in the weather.
+   *
+   * `scene.fogNode` is the world's marine bank, and its density term is a ramp
+   * from the bank's ceiling down — so at y −27 it is pinned at maximum and
+   * every surface more than ~15 m away washes to fog grey. Inside a sealed room
+   * thirty-one metres underground that is a sheet of sea mist hanging in a
+   * timber gallery, and through the windows it fights the reef's own water
+   * haze, which is the term that should be doing that job (reef.ts, seaShade).
+   *
+   * Done by traversal rather than at each material, so a material added to this
+   * room later cannot quietly opt back into the weather.
+   */
+  group.traverse((object) => {
+    const material = (object as THREE.Mesh).material;
+    if (!material) return;
+    // `fog` is a NodeMaterial flag rather than a base-Material one; every
+    // material in this room is one, so the cast is the honest description.
+    for (const entry of Array.isArray(material) ? material : [material]) {
+      (entry as THREE.NodeMaterial).fog = false;
+    }
+  });
+
   // ---- light -------------------------------------------------------------
   // Emissive geometry does the room; the pooled contextual light does the body
   // standing in it. Never a new scene light — see player/lightPool.ts.
@@ -1045,30 +1071,89 @@ export function createSutroGrotto(options: { physics?: Physics } = {}): SutroGro
         [bx, SUTRO_GROTTO.poolFloorY, bz]
       );
     }
-    // The envelope. A solid ceiling on purpose: nothing in this room can jump
-    // eleven metres, and a hole in it is one more edge to fall through.
-    shell.wall(X0, Z0, X0, Z1, FLOOR, CEILING);
-    shell.wall(X1, Z0, X1, Z1, FLOOR, CEILING);
-    shell.wall(X0, Z0, X1, Z0, FLOOR, CEILING);
-    shell.wall(X0, Z1, X1, Z1, FLOOR, CEILING);
-    shell.slab(X0, X1, Z0, Z1, CEILING);
   }
 
-  let collisionBody: number | null = null;
+  const collisionBodies: number[] = [];
   const physics = options.physics;
   if (physics) {
-    collisionBody = physics.world.createStaticMesh({
-      position: [SUTRO_BATHS.centerX, 0, SUTRO_BATHS.centerZ],
-      vertices: shell.vertices,
-      indices: shell.indices,
-      friction: 0.75
-    });
-    const yaw = SUTRO_BATHS.yaw;
-    physics.world.setBodyTransform(
-      collisionBody,
-      [SUTRO_BATHS.centerX, 0, SUTRO_BATHS.centerZ],
-      [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]
+    /**
+     * The floor is a triangle mesh because it has an octagonal hole in it, and
+     * nothing else can express that exactly.
+     *
+     * ROTATION IS BAKED INTO THE VERTICES. The site sits at yaw −0.077, and
+     * leaning on `setBodyTransform` to turn a mesh body is a bet on how the
+     * solver treats mesh shapes that this room cannot afford to lose: a 4.4°
+     * error is centimetres at the middle of the room and nearly three metres at
+     * its ends, which is precisely "walk to the edge and fall through". Rotate
+     * the points and hand the body an identity orientation instead.
+     */
+    const bake = new THREE.Matrix4().makeRotationY(SUTRO_BATHS.yaw);
+    const baked: number[] = [];
+    const point = new THREE.Vector3();
+    for (let i = 0; i < shell.vertices.length; i += 3) {
+      point.set(shell.vertices[i], shell.vertices[i + 1], shell.vertices[i + 2]).applyMatrix4(bake);
+      baked.push(point.x, point.y, point.z);
+    }
+    collisionBodies.push(
+      physics.world.createStaticMesh({
+        position: [SUTRO_BATHS.centerX, 0, SUTRO_BATHS.centerZ],
+        vertices: baked,
+        indices: shell.indices,
+        friction: 0.75
+      })
     );
+
+    /**
+     * The envelope is SOLID BOXES, not more triangles.
+     *
+     * A trimesh wall is an infinitely thin shell: a capsule that arrives at it
+     * with any speed can end up on the far side, and down here the far side is
+     * the inside of a hill. Each of these is 1.4 m of solid with its inner face
+     * exactly on the visible wall line, and they run past the floor and the
+     * ceiling at both ends so there is no seam at a corner to squeeze through.
+     */
+    const envelope = (
+      cx: number,
+      cz: number,
+      hx: number,
+      hz: number
+    ): void => {
+      const world = sutroLocalToWorld(cx, cz);
+      const body = physics.world.createBox({
+        type: BodyType.Static,
+        position: [world.x, (FLOOR + CEILING) * 0.5, world.z],
+        halfExtents: [hx, (CEILING - FLOOR) * 0.5 + 3, hz],
+        friction: 0.55
+      });
+      physics.world.setBodyTransform(
+        body,
+        [world.x, (FLOOR + CEILING) * 0.5, world.z],
+        [0, Math.sin(SUTRO_BATHS.yaw / 2), 0, Math.cos(SUTRO_BATHS.yaw / 2)]
+      );
+      collisionBodies.push(body);
+    };
+    const half = 0.7;
+    const lengthHalf = (Z1 - Z0) * 0.5 + half * 2;
+    const widthHalf = (X1 - X0) * 0.5 + half * 2;
+    envelope(X0 - half, CZ, half, lengthHalf);
+    envelope(X1 + half, CZ, half, lengthHalf);
+    envelope(CX, Z0 - half, widthHalf, half);
+    envelope(CX, Z1 + half, widthHalf, half);
+    // …and a lid. Nothing in this room can jump eleven metres, but the drop
+    // arrives through the ceiling and must not be able to leave the same way.
+    const lidWorld = sutroLocalToWorld(CX, CZ);
+    const lid = physics.world.createBox({
+      type: BodyType.Static,
+      position: [lidWorld.x, CEILING + 0.7, lidWorld.z],
+      halfExtents: [(X1 - X0) * 0.5 + 1.4, 0.7, (Z1 - Z0) * 0.5 + 1.4],
+      friction: 0.4
+    });
+    physics.world.setBodyTransform(
+      lid,
+      [lidWorld.x, CEILING + 0.7, lidWorld.z],
+      [0, Math.sin(SUTRO_BATHS.yaw / 2), 0, Math.cos(SUTRO_BATHS.yaw / 2)]
+    );
+    collisionBodies.push(lid);
   }
 
   // ---- what the rest of the world needs to know about this room ---------
@@ -1191,8 +1276,8 @@ export function createSutroGrotto(options: { physics?: Physics } = {}): SutroGro
       for (const unregister of unregisterLights) unregister();
       for (const anchor of lightAnchors) anchor.removeFromParent();
       lightAnchors.length = 0;
-      if (collisionBody !== null && physics) physics.world.destroyBody(collisionBody);
-      collisionBody = null;
+      if (physics) for (const body of collisionBodies) physics.world.destroyBody(body);
+      collisionBodies.length = 0;
       reef.dispose();
       for (const mesh of meshes) mesh.removeFromParent();
       for (const geometry of geometries) geometry.dispose();

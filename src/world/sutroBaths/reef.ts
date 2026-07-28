@@ -68,6 +68,21 @@ const REEF = {
 
 const CZ = SUTRO_GROTTO_CENTRE.z;
 
+/**
+ * Nothing may cross the glass.
+ *
+ * Every placement below picks an x from the shelf and then grows something
+ * around it — a 6 m boulder, a 7 m light shaft, a fish on a 26 m orbit — and
+ * "the shelf starts 1.4 m outside the window" is a statement about CENTRES, not
+ * about extents. Left unguarded, a wide shaft reaches four metres past the
+ * glazed wall and hangs in the gallery as a sheet of grey haze, and the big
+ * rockfish swim laps through the pictures.
+ *
+ * So placement is by CLEARANCE: `shelfX(random, margin)` returns a centre whose
+ * own half-extent still leaves it `margin` clear of this line.
+ */
+const CLEAR_X = SUTRO_GROTTO.glassFaceX - 0.8;
+
 /** Deterministic: the same reef every visit, on every machine. */
 function rng(seed: number): () => number {
   let state = seed >>> 0;
@@ -78,6 +93,18 @@ function rng(seed: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/**
+ * A centre on the shelf for something `margin` metres across, biased toward the
+ * glass by `bias` (>1 crowds the window, which is where the reef should be
+ * thickest). Returns null when the thing is simply too big to fit clear.
+ */
+function shelfX(random: () => number, margin: number, bias = 1): number | null {
+  const near = CLEAR_X - margin;
+  const far = REEF.farX + margin;
+  if (near <= far) return null;
+  return near - Math.pow(random(), bias) * (near - far);
 }
 
 /** Rolling relief on the shelf, so nothing sits on a table. */
@@ -458,9 +485,10 @@ export function createSutroReef(): SutroReef {
     const stone = new THREE.Color();
     const matrix = new THREE.Matrix4();
     for (let i = 0; i < 120; i++) {
-      const x = REEF.nearX - random() * Math.abs(REEF.nearX - REEF.farX);
-      const z = CZ + (random() * 2 - 1) * REEF.halfZ;
       const size = 0.9 + Math.pow(random(), 2.1) * 5.2;
+      const x = shelfX(random, size * 1.1);
+      if (x === null) continue;
+      const z = CZ + (random() * 2 - 1) * REEF.halfZ;
       stone.setHSL(0.36 + random() * 0.1, 0.12 + random() * 0.1, 0.14 + random() * 0.12);
       matrix.compose(
         new THREE.Vector3(x, bedHeight(x, z) + size * 0.24, z),
@@ -535,11 +563,11 @@ export function createSutroReef(): SutroReef {
     const tint = new THREE.Color();
     const matrix = new THREE.Matrix4();
     for (let i = 0; i < species.count; i++) {
-      // Bias toward the glass: the reef should be thickest right at the window.
-      const across = Math.pow(random(), 1.7);
-      const x = REEF.nearX - across * Math.abs(REEF.nearX - REEF.farX);
-      const z = CZ + (random() * 2 - 1) * REEF.halfZ * 0.92;
       const scale = species.scale[0] + random() * (species.scale[1] - species.scale[0]);
+      // Bias toward the glass: the reef should be thickest right at the window.
+      const x = shelfX(random, scale * 2.2 + species.sway * scale, 1.7);
+      if (x === null) continue;
+      const z = CZ + (random() * 2 - 1) * REEF.halfZ * 0.92;
       const baseY = bedHeight(x, z);
       tint.setHSL(
         (species.hue[0] + random() * (species.hue[1] - species.hue[0]) + 1) % 1,
@@ -583,11 +611,12 @@ export function createSutroReef(): SutroReef {
     const tint = new THREE.Color();
     const matrix = new THREE.Matrix4();
     for (let i = 0; i < 150; i++) {
-      const across = Math.pow(random(), 1.5);
-      const x = REEF.nearX - 1 - across * Math.abs(REEF.nearX - REEF.farX) * 0.85;
-      const z = CZ + (random() * 2 - 1) * REEF.halfZ * 0.9;
       const height = 8 + random() * 13;
       const width = 0.5 + random() * 0.7;
+      // The stipes sway up to 2 m off vertical, so that goes in the clearance.
+      const x = shelfX(random, width + 2.4, 1.5);
+      if (x === null) continue;
+      const z = CZ + (random() * 2 - 1) * REEF.halfZ * 0.9;
       const baseY = bedHeight(x, z);
       tint.setHSL(0.22 + random() * 0.09, 0.5 + random() * 0.25, 0.16 + random() * 0.14);
       matrix.compose(
@@ -662,7 +691,10 @@ export function createSutroReef(): SutroReef {
     const identity = new THREE.Matrix4();
     for (let i = 0; i < school.count; i++) {
       const radius = school.radius[0] + random() * (school.radius[1] - school.radius[0]);
-      const centreX = REEF.nearX - 5 - random() * (Math.abs(REEF.nearX - REEF.farX) - 14);
+      // A fish is its ORBIT, not its body: a rockfish on a 26 m circle would
+      // otherwise spend half of every lap swimming through the gallery.
+      const centreX = shelfX(random, radius + school.size[1]);
+      if (centreX === null) continue;
       const centreZ = CZ + (random() * 2 - 1) * (REEF.halfZ - radius - 4);
       const centreY = school.height[0] + random() * (school.height[1] - school.height[0]);
       const size = school.size[0] + random() * (school.size[1] - school.size[0]);
@@ -719,10 +751,12 @@ export function createSutroReef(): SutroReef {
     blade.translate(0, -0.5, 0);
     const matrix = new THREE.Matrix4();
     for (let i = 0; i < 26; i++) {
-      const x = REEF.nearX - random() * Math.abs(REEF.nearX - REEF.farX);
-      const z = CZ + (random() * 2 - 1) * REEF.halfZ * 0.85;
       const width = 1.6 + random() * 6;
       const drop = 16 + random() * 14;
+      // Crossed blades, so the extent is the full half-width in every direction.
+      const x = shelfX(random, width * 0.5 + 0.5);
+      if (x === null) continue;
+      const z = CZ + (random() * 2 - 1) * REEF.halfZ * 0.85;
       // Two crossed blades so a shaft never disappears when seen edge-on.
       for (const turn of [0, Math.PI * 0.5]) {
         matrix.compose(
@@ -769,10 +803,11 @@ export function createSutroReef(): SutroReef {
     const quad = new THREE.PlaneGeometry(1, 1);
     const matrix = new THREE.Matrix4();
     for (let i = 0; i < 520; i++) {
-      const x = REEF.nearX - random() * Math.abs(REEF.nearX - REEF.farX) * 0.7;
+      const size = 0.03 + random() * 0.05;
+      const x = shelfX(random, size + 1.2);
+      if (x === null) continue;
       const z = CZ + (random() * 2 - 1) * REEF.halfZ * 0.7;
       const y = REEF.bedY + random() * (REEF.topY - REEF.bedY);
-      const size = 0.03 + random() * 0.05;
       const drift = random() * 6.28;
       for (const turn of [0, Math.PI * 0.5]) {
         matrix.compose(
@@ -814,7 +849,7 @@ export function createSutroReef(): SutroReef {
     for (let i = 0; i < 130; i++) {
       const ventAngle = random() * 6.28;
       const ventSpread = Math.pow(random(), 0.6) * 2.6;
-      const x = REEF.nearX - 12 + Math.cos(ventAngle) * ventSpread;
+      const x = Math.min(CLEAR_X - 1.2, REEF.nearX - 12 + Math.cos(ventAngle) * ventSpread);
       const z = CZ + Math.sin(ventAngle) * ventSpread;
       const size = 0.05 + Math.pow(random(), 2) * 0.22;
       for (const turn of [0, Math.PI * 0.5]) {

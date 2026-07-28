@@ -872,6 +872,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !core.state.landsEnd?.keeper.tryInteract(player, hud) &&
       !core.state.waveOrgan?.tryInteract(player, hud) &&
       !core.state.missionDolores?.tryInteract(player.position, player.mode, hud) &&
+      !core.state.sutroBaths?.tryInteract(player.position, player.mode) &&
       !core.state.hangGliding?.tryInteract(player, hud, input, chase) &&
       !core.state.afterlight?.tryInteract(player, hud)
     ) {
