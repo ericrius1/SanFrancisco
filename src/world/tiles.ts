@@ -2679,6 +2679,49 @@ export class TileStreamer {
     }
   }
 
+  /** Batch form of suppressBuildingMesh (CityGen hydration pre-mask): identical
+   *  per-building semantics, but ONE alive-row sync and no shadow invalidation,
+   *  so hiding a whole tile's shells at once costs one row memcpy instead of a
+   *  per-building sync storm. */
+  suppressBuildingMeshBatch(key: string, indices: readonly number[]) {
+    const tile = this.loaded.get(key);
+    const data = tile?.slot ? tile.slot.data : null;
+    let dirty = false;
+    for (const index of indices) {
+      this.#meshSuppressed.add(`${key}:${index}`);
+      if (data && index >= 0 && index * 4 < data.length && data[index * 4] === 255) {
+        data[index * 4] = 1;
+        dirty = true;
+      }
+      tile?.shadowProxy?.setBuildingVisible(index, false);
+    }
+    if (dirty && tile?.slot) {
+      tile.slot.tex.needsUpdate = true;
+      this.#syncBuildingAtlasRow(tile);
+    }
+  }
+
+  /** Batch form of unsuppressBuildingMesh — restores only buildings that are
+   *  mesh-suppressed (alive 1), never a fully suppressed one (alive 0). */
+  unsuppressBuildingMeshBatch(key: string, indices: readonly number[]) {
+    const tile = this.loaded.get(key);
+    const data = tile?.slot ? tile.slot.data : null;
+    let dirty = false;
+    for (const index of indices) {
+      const id = `${key}:${index}`;
+      this.#meshSuppressed.delete(id);
+      if (data && index >= 0 && index * 4 < data.length && data[index * 4] === 1) {
+        data[index * 4] = 255;
+        dirty = true;
+      }
+      tile?.shadowProxy?.setBuildingVisible(index, !this.#suppressed.has(id));
+    }
+    if (dirty && tile?.slot) {
+      tile.slot.tex.needsUpdate = true;
+      this.#syncBuildingAtlasRow(tile);
+    }
+  }
+
   /** Undo suppressBuildingMesh — restore the baked mesh (alive flag → 255). */
   unsuppressBuildingMesh(key: string, index: number, opts?: { invalidateShadows?: boolean }) {
     this.#meshSuppressed.delete(`${key}:${index}`);
