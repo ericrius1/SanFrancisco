@@ -1291,6 +1291,13 @@ export function createRenderPipeline(
       };
     })(),
     /** Stable half-resolution close-contact complement and live controls. */
-    contactShadows
+    contactShadows,
+    /**
+     * The display transform (render/grade.ts). Selecting a look swaps the LUT's
+     * contents, so — unlike every other look-affecting control on this object —
+     * it needs no pipeline reselection and no recompile. That is why it is
+     * handed out directly rather than fronted by an applyX() call.
+     */
+    grade: postfx.grade
   };
 }

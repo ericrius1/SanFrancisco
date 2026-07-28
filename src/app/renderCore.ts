@@ -51,7 +51,16 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
   });
   renderer.setPixelRatio(RENDER_TUNING.values.pixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  // Tone mapping is project-owned — see render/gradeLooks.ts for the transform
+  // and render/grade.ts for the LUT that carries it. NoToneMapping here is
+  // load-bearing rather than cosmetic: postfx's seam used to call renderOutput(),
+  // which resolves the curve from the RenderPipeline's node context, so leaving
+  // ACES set would apply a second, unwanted curve on top of the grade.
+  //
+  // toneMappingExposure stays the exposure control. The grade reads it as a TSL
+  // rendererReference, so the "/" slider, the factory reset and __sf.setExposure
+  // all keep working through the same property they always used.
+  renderer.toneMapping = THREE.NoToneMapping;
   renderer.toneMappingExposure = RENDER_TUNING.values.exposure;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
