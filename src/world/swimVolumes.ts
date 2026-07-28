@@ -33,6 +33,22 @@ export type SwimVolume = {
   readonly maxX: number;
   readonly minZ: number;
   readonly maxZ: number;
+  /**
+   * Lowest point this body of water actually reaches. Below it the column is
+   * not this water — it is whatever the site built down there.
+   *
+   * `contains` is deliberately a 2D test, which for the bay and for an ordinary
+   * pool is exactly right: everything under a pool is rock. It stops being
+   * right the moment a site puts a ROOM under one. The sunken gallery beneath
+   * the Sutro plunge sits inside the plunge's own footprint, 31 m down and full
+   * of air; without a floor to the water, its visitors are classified as
+   * swimmers and buoyancy hurls them at a ceiling.
+   *
+   * Only consulted when the caller supplies a `y`. Callers that cannot (a
+   * splash particle asking "what is the water height in this column") keep the
+   * old, column-shaped answer, which is correct for every one of them.
+   */
+  readonly bottomY?: number;
   /** Exact footprint test for a world-space column. */
   contains(x: number, z: number): boolean;
   /**
@@ -67,28 +83,34 @@ export function registerSwimVolume(volume: SwimVolume): () => void {
  * The authored body of water over (x, z), or null. Costs one empty loop check
  * everywhere in the world that has no registered pool, which is everywhere the
  * player usually is.
+ *
+ * Pass `y` — the point you are actually asking about — whenever you have it.
+ * That is what lets a volume declare a floor (`bottomY`) and stop claiming the
+ * air beneath it. Omitting it keeps the original column-shaped answer.
  */
-export function swimVolumeAt(x: number, z: number): SwimVolume | null {
+export function swimVolumeAt(x: number, z: number, y?: number): SwimVolume | null {
   for (let i = 0; i < volumes.length; i++) {
     const volume = volumes[i];
     if (x < volume.minX || x > volume.maxX || z < volume.minZ || z > volume.maxZ) continue;
+    if (y !== undefined && volume.bottomY !== undefined && y < volume.bottomY) continue;
     if (volume.contains(x, z)) return volume;
   }
   return null;
 }
 
 /**
- * Height of whatever water surface covers (x, z) — an authored pool first, then
- * the live bay surface — or NaN when the column is dry. One call replaces the
- * `isWater` + `waterHeight` pair every submersion test used to do by hand.
+ * Height of whatever water surface covers (x, y, z) — an authored pool first,
+ * then the live bay surface — or NaN when the point is dry. One call replaces
+ * the `isWater` + `waterHeight` pair every submersion test used to do by hand.
  */
 export function submergibleWaterY(
   map: WaterColumnSource,
   x: number,
   z: number,
-  time: number
+  time: number,
+  y?: number
 ): number {
-  const volume = swimVolumeAt(x, z);
+  const volume = swimVolumeAt(x, z, y);
   if (volume) return volume.surfaceY;
   return map.isWater(x, z) ? waterHeight(x, z, time) : Number.NaN;
 }

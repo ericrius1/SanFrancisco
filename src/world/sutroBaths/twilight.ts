@@ -97,7 +97,13 @@ export type SutroTwilight = {
   readonly depth: number;
   /** 0 lamps dark → 1 lamps carrying the room. */
   readonly lampGlow: number;
-  update(dt: number, player: { x: number; y?: number; z: number }): void;
+  /**
+   * `forceInside` is the sunken gallery: a sealed room thirty-one metres under
+   * the deck is as far inside this building as it is possible to be, but it
+   * sits far below the vertical band the geometry test uses and would otherwise
+   * hand the sky back and un-thin the whole city while nobody could see either.
+   */
+  update(dt: number, player: { x: number; y?: number; z: number }, forceInside?: boolean): void;
   /** Hand the world clock back at once (site sleep, dispose, perf suppression). */
   release(): void;
   debugState(): SutroTwilightState;
@@ -253,7 +259,7 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
     get lampGlow() {
       return depth;
     },
-    update(dt, player) {
+    update(dt, player, forceInside = false) {
       // The depth ramp runs on the WALL clock, not the world clock: the
       // "freeze the world, keep walking" mode drives this site with dt = 0 to
       // hold its bathers and water still, and a visitor who walks in under that
@@ -269,13 +275,14 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       const y = player.y ?? SUTRO_BATHS.deckY;
       // Metres from the nearest wall: positive on the deck, negative out on the
       // promenade or the beach. The latch below reads this directly.
-      const wallInset = sutroHallWallInset(player.x, player.z);
+      const wallInset = forceInside ? 1e3 : sutroHallWallInset(player.x, player.z);
       // Vertically the pocket covers the basin floor up to a little above the
       // roof, so a swimmer at the bottom of the plunge and a visitor on the
       // upper gallery are both inside it.
-      const height =
-        smooth01((y - (SUTRO_BATHS.basinY - 6)) / 6) *
-        smooth01((SUTRO_BATHS.roofApexY + 12 - y) / 10);
+      const height = forceInside
+        ? 1
+        : smooth01((y - (SUTRO_BATHS.basinY - 6)) / 6) *
+          smooth01((SUTRO_BATHS.roofApexY + 12 - y) / 10);
       // `depth` stays a feathered blend, because the things it drives — lamps,
       // the interior grade, the water's night response — genuinely want to come
       // up gradually as the visitor walks in. That gradient now lives on the

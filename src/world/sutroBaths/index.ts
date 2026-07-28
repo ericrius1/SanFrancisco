@@ -5,13 +5,23 @@ import type { AuthoredRegionStreamer } from "../authoredRegions";
 import { registerSwimVolume } from "../swimVolumes";
 import {
   SUTRO_BATHS,
+  SUTRO_DRAIN,
+  SUTRO_GROTTO,
+  SUTRO_GROTTO_DROP,
+  SUTRO_GROTTO_RISE,
   distanceToSutroBaths,
+  distanceToSutroDrain,
   distanceToSutroWater,
   isInsideSutroPool,
+  sutroGrottoContains,
+  sutroGrottoPoolContains,
   sutroHallWallInset,
+  sutroLocalToWorld,
   sutroPoolBounds,
   sutroWalkSurfaceY
 } from "./layout";
+import { createSutroDrain } from "./drain";
+import type { SutroGrotto } from "./grotto";
 import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
 import { createSutroBathsVegetation } from "./vegetation";
 import { createSutroBathers } from "./bathers";
@@ -77,6 +87,29 @@ export type SutroBathsDebugState = {
   twilight: SutroTwilightState;
   /** Decimal hour the pavilion clock's hands are actually showing. */
   clockHour: number;
+  /** The sunken gallery: its own lazy gate, and whether anyone is down there. */
+  grottoLoading: boolean;
+  grottoLoaded: boolean;
+  grottoFailed: boolean;
+  playerInGrotto: boolean;
+  distanceToDrain: number;
+};
+
+/**
+ * Where the drain (or the upwelling under it) is putting the player.
+ *
+ * Deliberately NOT a teleport contract — no label, no cover, no place history.
+ * Both ends of the shaft are a continuous swim: the visitor goes into the hole
+ * and comes out of the ceiling still falling, and the cut lands inside a dark
+ * bore where there is nothing to see it happen against. `heading` is omitted
+ * for exactly that reason — turning the body would be the one thing that gave
+ * the cut away.
+ */
+export type SutroBathsRelocation = {
+  x: number;
+  y: number;
+  z: number;
+  heading?: number;
 };
 
 export type SutroBaths = {
@@ -93,6 +126,12 @@ export type SutroBaths = {
     gust: number
   ): void;
   isPlayerInside(player: SutroBathsPlayerPosition): boolean;
+  /**
+   * Is the visitor down in the sunken gallery? A separate question from
+   * `isPlayerInside`, because it has a separate answer for the camera: the hall
+   * is a 152 m room with space for any shot, and the gallery is a corridor.
+   */
+  isPlayerInGrotto(player: SutroBathsPlayerPosition): boolean;
   /**
    * One-shot lazy-build floor handoff. Returns the restored deck height the
    * first time a walking visitor is inside the hall footprint, so main can lift
@@ -124,6 +163,14 @@ export type SutroBathsOptions = {
    * when nobody can see out.
    */
   onExteriorThinned?: (thinned: boolean) => void;
+  /**
+   * Put the player somewhere, atomically and without a travel cover. The site
+   * owns WHERE (the two ends of the drain shaft); the app owns the body. Omit
+   * it and the drain is scenery — it still turns, but it never takes anyone.
+   */
+  relocate?: (pose: SutroBathsRelocation) => void;
+  /** For the two nudges this site gives; structural so probes can stub it. */
+  hud?: { message(text: string, seconds?: number): void };
 };
 
 type MonitorState = {
@@ -178,15 +225,31 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     sky: options.sky,
     onExteriorThinned: options.onExteriorThinned
   });
-  group.add(
+  // The bronze collar in the floor of the great plunge. Cheap, textureless, and
+  // built with the site because it is the only clue the room below exists.
+  const drain = createSutroDrain();
+  /**
+   * Everything that is the HALL, under one switch.
+   *
+   * Thirty-one metres of rock separate the sunken gallery from all of it, so
+   * while a visitor is down there the pools, the cast, the parlour, the
+   * planting and the drain itself are not merely invisible — they are
+   * unreachable by any ray. Retiring the whole branch (and the water sim and
+   * steam with it, below) is what pays for the room and its reef.
+   */
+  const hallLayer = new THREE.Group();
+  hallLayer.name = "sutro_baths_hall_layer";
+  hallLayer.add(
     ambience.group,
     vegetation.group,
     parlour.group,
     gallery.group,
     pavilionClock.group,
     bathers.group,
-    water.group
+    water.group,
+    drain.group
   );
+  group.add(hallLayer);
 
   const stats: SutroBathsStats = {
     architectureMeshes: 55,
@@ -206,11 +269,14 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     parlourTables: parlour.stats.tables,
     parlourLamps: parlour.stats.lamps,
     galleryBoards: gallery.stats.boards,
-    galleryArtworks: gallery.stats.artworks
+    galleryArtworks: 0
   };
   const liveStats = (): SutroBathsStats => {
     stats.bathers = bathers.stats.bathers;
     stats.conversations = bathers.stats.talkGroups;
+    // The hang moved downstairs, and the room it moved to is lazy — so this is
+    // zero until somebody has actually been through the drain.
+    stats.galleryArtworks = grotto?.stats.artworks ?? 0;
     return stats;
   };
 
@@ -230,9 +296,25 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   let awake = false;
   let foliageVisible = true;
   let distanceToBaths = Number.POSITIVE_INFINITY;
+  let distanceToDrain = Number.POSITIVE_INFINITY;
   let disposed = false;
   /** Latched answer to `isPlayerInside` — see the thresholds by that method. */
   let playerInside = false;
+
+  // --- the sunken gallery, and the two ends of the shaft ------------------
+  let grotto: SutroGrotto | null = null;
+  let grottoLoading: Promise<void> | null = null;
+  let grottoFailed = false;
+  let inGrotto = false;
+  /**
+   * Each end of the shaft has to be LEFT before it will fire again, or the
+   * drain would swallow anyone who surfaced back into the middle of the plunge
+   * and the upwelling would throw back anyone it had just delivered. Armed by
+   * distance, not by a timer, so a visitor who lingers under the fall keeps
+   * exactly as long as they like.
+   */
+  let drainArmed = true;
+  let riseArmed = false;
   // The authored region hands terrain ownership to the hall and publishes its
   // deck/basin bodies asynchronously. Keep a lightweight recovery contract
   // armed for the lifetime of the site: it covers both that handoff frame and
@@ -253,6 +335,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     surfaceY: SUTRO_BATHS.waterY,
     floorY: SUTRO_BATHS.basinY,
     ...sutroPoolBounds(),
+    // A bath is 2.56 m of water on a tiled floor, and NOT the thirty-one metres
+    // of rock and gallery under that floor. Without this the sunken room —
+    // which is inside the great plunge's own footprint, because that is where
+    // the water goes — would be a column of bath to every submersion test in
+    // the game, and buoyancy would fire its visitors at the ceiling.
+    bottomY: SUTRO_BATHS.basinY - 0.4,
     contains: isInsideSutroPool,
     // …and getting out again. The coping is only a 0.44 m step above the
     // water, but a swimmer has no jump, so without a rim to haul onto every
@@ -290,8 +378,9 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
             if (disposed) return;
             steam = nextSteam;
             nextSteam = null;
-            group.add(steam.group);
-            steam.setEnabled(awake);
+            hallLayer.add(steam.group);
+            // …but not while the visitor is thirty-one metres under it.
+            steam.setEnabled(awake && !inGrotto);
             monitors.steamLoaded = true;
           } finally {
             nextSteam?.dispose();
@@ -310,6 +399,124 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       .finally(() => {
         nearEffectsLoading = null;
       });
+  };
+
+  /** The two ends of the shaft, in world space. Fixed for the site's lifetime. */
+  const grottoDrop = sutroLocalToWorld(SUTRO_GROTTO_DROP.x, SUTRO_GROTTO_DROP.z);
+  const grottoRise = sutroLocalToWorld(SUTRO_GROTTO_RISE.x, SUTRO_GROTTO_RISE.z);
+
+  /**
+   * Build the room under the drain.
+   *
+   * Gated on a swimmer getting within thirty metres of the collar, which is the
+   * honest boundary for "about to go down there" and leaves plenty of time: a
+   * visitor still has to cross that water and dive 2.5 m before the grab can
+   * fire. Nothing here is on the site's own load path — the room, its
+   * seventeen plates and the whole reef are one dynamic import that a visitor
+   * who never gets in the water never makes.
+   *
+   * Until it lands, the drain reads shut (`setOpen`) and the grab below cannot
+   * fire, so there is no window in which the hole leads nowhere.
+   */
+  const loadGrotto = (camera: THREE.Camera): void => {
+    if (grotto || grottoLoading || grottoFailed || disposed) return;
+    grottoLoading = import("./grotto")
+      .then(async (grottoModule) => {
+        let candidate: SutroGrotto | null = null;
+        try {
+          candidate = grottoModule.createSutroGrotto({ physics: options.physics });
+          // Textures first: the covered warm below must compile the FINAL,
+          // mapped graphs, or the first frame in the room recompiles under the
+          // visitor's feet.
+          await candidate.ready;
+          if (disposed) return;
+          try {
+            // WebGPURenderer compilation can encode render passes while it
+            // builds async pipelines, so the detached root has to be visible
+            // for Three to traverse it.
+            candidate.group.visible = true;
+            await options.renderer.compileAsync(candidate.group, camera, options.scene);
+          } catch (error) {
+            console.warn("[sutro-baths] sunken gallery warmup failed:", error);
+          } finally {
+            candidate.group.visible = false;
+          }
+          if (disposed) return;
+          grotto = candidate;
+          candidate = null;
+          group.add(grotto.group);
+          drain.setOpen(true);
+          options.hud?.message("Something turns at the bottom of the great plunge", 3.4);
+        } finally {
+          candidate?.dispose();
+        }
+      })
+      .catch((error) => {
+        // Rebuilding the same failing room every frame makes nothing better.
+        grottoFailed = true;
+        console.warn("[sutro-baths] sunken gallery unavailable:", error);
+      })
+      .finally(() => {
+        grottoLoading = null;
+      });
+  };
+
+  /** Hall on top, room below: exactly one of them is ever worth drawing. */
+  const setInGrotto = (next: boolean): void => {
+    if (inGrotto === next) return;
+    inGrotto = next;
+    hallLayer.visible = awake && !next;
+    if (grotto) grotto.group.visible = next;
+    water.setEnabled(awake && !next);
+    steam?.setEnabled(awake && !next);
+  };
+
+  /**
+   * Down the drain, and back up the middle of the fall.
+   *
+   * The cut itself is one frame inside a dark bore, and the player keeps their
+   * facing and their camera through it (see SutroBathsRelocation); what they
+   * actually experience is going into a hole and coming out of a ceiling still
+   * heading the same way. The rest is the arming latch above.
+   */
+  const updateShaft = (player: SutroBathsPlayerPosition, py: number): void => {
+    const relocate = options.relocate;
+    if (!grotto || !relocate) return;
+
+    if (inGrotto) {
+      const centre = Math.hypot(
+        player.x - grottoRise.x,
+        player.z - grottoRise.z
+      );
+      if (!riseArmed) {
+        if (centre > SUTRO_GROTTO_RISE.radius + 2) riseArmed = true;
+        return;
+      }
+      // Submerged, in the middle of the basin, under the column: the water
+      // going down has to come back from somewhere.
+      if (
+        centre <= SUTRO_GROTTO_RISE.radius &&
+        py < SUTRO_GROTTO.poolSurfaceY - 0.1 &&
+        sutroGrottoPoolContains(player.x, player.z)
+      ) {
+        drainArmed = false;
+        setInGrotto(false);
+        relocate({ x: grottoRise.x, y: SUTRO_GROTTO_RISE.y, z: grottoRise.z });
+        options.hud?.message("The upwelling carries you back into the plunge", 3);
+      }
+      return;
+    }
+
+    if (!drainArmed) {
+      if (distanceToDrain > SUTRO_DRAIN.grabRadius + 2.5) drainArmed = true;
+      return;
+    }
+    // Deep enough that they dived for it, and inside the bore.
+    if (distanceToDrain <= SUTRO_DRAIN.grabRadius && py <= SUTRO_DRAIN.grabY) {
+      riseArmed = false;
+      setInGrotto(true);
+      relocate({ x: grottoDrop.x, y: SUTRO_GROTTO_DROP.y, z: grottoDrop.z });
+    }
   };
 
   // Staged wake. Revealing the whole site in one frame makes that frame pay the
@@ -351,7 +558,15 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       parlour.group.visible = false;
       gallery.group.visible = false;
       vegetation.setVisible(false);
+    } else {
+      // A site that streamed out with a visitor below it must come back as the
+      // hall, not as a hidden hall with an orphaned room showing.
+      inGrotto = false;
+      if (grotto) grotto.group.visible = false;
+      drainArmed = true;
+      riseArmed = false;
     }
+    hallLayer.visible = next;
     group.visible = next;
     water.setEnabled(next);
     steam?.setEnabled(next);
@@ -415,6 +630,39 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       if (waterDistance <= STEAM_LOAD_DISTANCE) loadNearEffects(camera);
       if (!awake) return;
 
+      const py = player.y ?? SUTRO_BATHS.waterY;
+
+      // --- the drain -------------------------------------------------------
+      // Everything about the shaft happens before the hall's own frame, because
+      // the very first thing it can decide is that the hall should not draw.
+      distanceToDrain = distanceToSutroDrain(player.x, player.z);
+      const inTheWater = py < SUTRO_BATHS.waterY + 0.6;
+      if (inTheWater && distanceToDrain <= SUTRO_DRAIN.primeRadius) loadGrotto(camera);
+      // Quiet from across the hall, turning hard once you are over it.
+      drain.setCharge(
+        inTheWater || inGrotto
+          ? THREE.MathUtils.clamp(1.25 - distanceToDrain / 14, 0.12, 1)
+          : 0.1
+      );
+      drain.update(time);
+      // Derive occupancy from where the body actually IS before letting the
+      // shaft act. `updateShaft` sets the same latch optimistically on the frame
+      // it relocates — it has to, because the `player` it was handed still holds
+      // the pre-relocation pose — and this is what stops that optimism from
+      // outliving its frame if a relocation is ever refused.
+      setInGrotto(grotto !== null && sutroGrottoContains(player.x, py, player.z, 1.5));
+      updateShaft(player, py);
+      grotto?.update(time);
+      // Below the hall there is nothing of the hall to run: the pools, the cast,
+      // the parlour and the planting are all behind thirty-one metres of rock.
+      if (inGrotto) {
+        // The pocket still owns the sky and the far world — more so down here
+        // than anywhere, since nothing outside is observable at all.
+        twilight.update(dt, player, true);
+        grotto?.setTwilight(1);
+        return;
+      }
+
       twilight.update(dt, player);
       // One layer per frame until the site is fully present (see wakeStages).
       // A stage that returns true has more to hand out and keeps its turn.
@@ -438,7 +686,6 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       ambience.update(time, SUTRO_BATHS_TUNING.values);
       if (foliageVisible) vegetation.update(player);
 
-      const py = player.y ?? SUTRO_BATHS.waterY;
       batherPlayer.position.set(player.x, py, player.z);
       bathers.update(dt, time, batherPlayer);
       water.update(dt, time, player, camera);
@@ -470,6 +717,13 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
      */
     isPlayerInside(player) {
       const y = player.y ?? SUTRO_BATHS.deckY;
+      // The sunken gallery is as interior as a room gets, and it is far below
+      // the hall's own vertical band — so it answers first rather than fighting
+      // the latch below.
+      if (grotto && sutroGrottoContains(player.x, y, player.z, 1.5)) {
+        playerInside = true;
+        return true;
+      }
       const containedVertically =
         y >= SUTRO_BATHS.basinY - (playerInside ? 4.5 : 1.5) &&
         y <= SUTRO_BATHS.roofApexY + (playerInside ? 7 : 4);
@@ -477,8 +731,21 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       playerInside = containedVertically && inset > (playerInside ? INDOOR_EXIT_INSET : INDOOR_ENTER_INSET);
       return playerInside;
     },
+    isPlayerInGrotto(player) {
+      return (
+        grotto !== null &&
+        sutroGrottoContains(player.x, player.y ?? SUTRO_BATHS.deckY, player.z, 1.5)
+      );
+    },
     takeFloorHandoffHeight(player, playerMode) {
       if (!hasFloorRecovery || disposed || playerMode !== "walk") return null;
+      const y = player.y;
+      if (grotto && y !== undefined && sutroGrottoContains(player.x, y, player.z, 2)) {
+        // The gallery's own floor is the only surface down here — except over
+        // the basin, where a body is SUPPOSED to be below it. Recovering there
+        // would catch a visitor mid-fall and hover them over the water for ever.
+        return sutroGrottoPoolContains(player.x, player.z) ? null : SUTRO_GROTTO.floorY;
+      }
       return sutroWalkSurfaceY(player.x, player.z);
     },
     tuningDescriptor() {
@@ -528,7 +795,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         water: water.debugState(),
         steam: steam?.stats ?? null,
         twilight: twilight.debugState(),
-        clockHour: pavilionClock.displayHour
+        clockHour: pavilionClock.displayHour,
+        grottoLoading: grottoLoading !== null,
+        grottoLoaded: grotto !== null,
+        grottoFailed,
+        playerInGrotto: inGrotto,
+        distanceToDrain
       };
     },
     dispose() {
@@ -538,6 +810,9 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       twilight.release();
       water.dispose();
       steam?.dispose();
+      drain.dispose();
+      grotto?.dispose();
+      grotto = null;
       bathers.dispose();
       parlour.dispose();
       gallery.dispose();
@@ -552,9 +827,13 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
 export {
   SUTRO_BATHS,
   SUTRO_BATHS_ARRIVAL,
+  SUTRO_DRAIN,
+  SUTRO_GROTTO,
   SUTRO_POOLS,
   distanceToSutroBaths,
+  distanceToSutroDrain,
   distanceToSutroWater,
   inSutroBathsHall,
+  sutroGrottoContains,
   sutroHallWallInset
 } from "./layout";

@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
+import { inInteriorVolume } from "../world/interiorVolumes";
 import type { Input } from "../core/input";
 import type { SavedPlayer } from "../core/persist";
 import {
@@ -971,13 +972,20 @@ export class Player {
     // lowers groundTop far beneath the baked hill (the Sutro hall floor), the
     // baked height alone would flag every legitimate deck visitor as "under
     // terrain" and respawn them each update — a zone-shaped total freeze.
+    //
+    // …and it must respect authored ROOMS below the terrain, which is a
+    // different claim: no burial makes the sunken gallery under the Sutro
+    // plunge legal, because it is 31 m under a groundTop of 2 m and every one
+    // of those metres is deliberate. A site with real floor down there says so
+    // (world/interiorVolumes.ts) and this net stands down inside it.
     const groundReference = Math.min(
       this.map.baseGroundTop(this.position.x, this.position.z),
       this.map.groundTop(this.position.x, this.position.z)
     );
     if (
       this.mode === "walk" &&
-      this.position.y < groundReference - WALK_BELOW_GROUND_RECOVERY_DEPTH
+      this.position.y < groundReference - WALK_BELOW_GROUND_RECOVERY_DEPTH &&
+      !inInteriorVolume(this.position.x, this.position.y, this.position.z)
     ) {
       this.respawn({ x: this.position.x, z: this.position.z, heading: this.heading - Math.PI });
       return;
