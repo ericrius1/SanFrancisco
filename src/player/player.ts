@@ -630,6 +630,11 @@ export class Player {
     this.#firstPersonView = active;
     this.meshes.walk.visible =
       this.mode === "walk" && !active && !this.#externalEmbodimentHidden;
+    // Stock drone (and custom flyers) have no cockpit to sit in — hide the
+    // whole chassis so first person is a clean immersive fly cam.
+    if (this.mode === "drone") {
+      this.meshes.drone.visible = !active && !this.#externalEmbodimentHidden;
+    }
     this.#riderRig.group.visible =
       !(active && (this.mode === "board" || (this.mode === "drone" && this.#broomRigAttached)));
     this.#surfRig.group.visible = !(active && this.mode === "surf");
@@ -649,7 +654,9 @@ export class Player {
   /** Let an in-world activity rig embody the local player without moving the camera target. */
   setExternalEmbodimentHidden(hidden: boolean) {
     this.#externalEmbodimentHidden = hidden;
-    this.meshes[this.mode].visible = !hidden && (this.mode !== "walk" || !this.#firstPersonView);
+    const hideForFirstPerson =
+      this.#firstPersonView && (this.mode === "walk" || this.mode === "drone");
+    this.meshes[this.mode].visible = !hidden && !hideForFirstPerson;
   }
 
   #destroyBody() {
@@ -1711,7 +1718,10 @@ export class Player {
       next.add(this.#riderRig.group);
       this.#broomRigAttached = true;
     }
-    setEmbodimentVisible(next, this.mode === "drone");
+    setEmbodimentVisible(
+      next,
+      this.mode === "drone" && !(this.#firstPersonView || this.#externalEmbodimentHidden)
+    );
     if (this.mode === "drone") this.#lightPool.claim(next);
   }
 
