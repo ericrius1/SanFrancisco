@@ -11,6 +11,7 @@ import {
 } from "../../world/ghostShip/route";
 import type {  } from "../../world/ghostShip";
 import { Water } from "../../world/water";
+import { nearOceanBeachShore } from "../../world/oceanBeachWaves";
 import { frontGate } from "../../render/frontGate";
 import { UnderwaterOverlay } from "../../fx/underwater";
 import { RoadGraph } from "../../world/traffic/roadGraph";
@@ -495,6 +496,57 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
       state.surfEntryPreparations--;
     }
   };
+  // Waves running up the sand at Ocean Beach. Landscape, not an activity: it
+  // has nothing to do with the surf runtime and loads on approach to the beach
+  // itself, on foot or on wheels. Visiting the rest of the city must not fetch
+  // a byte of it, so the mesh + material live behind a dynamic import.
+  let shorebreak: import("../../world/oceanBeachShorebreak").OceanBeachShorebreak | null = null;
+  let shorebreakLoading: Promise<void> | null = null;
+  const ensureShorebreak = () => {
+    if (shorebreak || shorebreakLoading) return shorebreakLoading ?? Promise.resolve();
+    shorebreakLoading = import("../../world/oceanBeachShorebreak")
+      .then(async ({ OceanBeachShorebreak }) => {
+        const sheet = new OceanBeachShorebreak(map);
+        try {
+          // Compile detached, like the surf sheet: a transparent sheet this
+          // wide added uncompiled costs a visible hitch on arrival.
+          await renderer.compileAsync(sheet.group, camera, scene);
+        } catch (error) {
+          console.warn("[shorebreak] warmup compile failed", error);
+        }
+        scene.add(sheet.group);
+        shorebreak = sheet;
+      })
+      .catch((error) => console.warn("[shorebreak] failed to load", error))
+      .finally(() => {
+        shorebreakLoading = null;
+      });
+    return shorebreakLoading;
+  };
+  const releaseShorebreak = () => {
+    shorebreak?.dispose();
+    shorebreak = null;
+  };
+  /**
+   * Per-frame: load on approach, drop once the player has genuinely left. The
+   * proximity test is the boot-resident one from oceanBeachWaves — asking the
+   * shorebreak module itself would fetch the chunk from anywhere in the city.
+   * The release window is far wider than the load window so pacing the
+   * boundary cannot churn build/dispose cycles.
+   */
+  const updateShorebreak = (dt: number, time: number) => {
+    const { x, z } = player.position;
+    if (nearOceanBeachShore(x, z, { shorePad: 620, inlandPad: 400, zPad: 300 })) {
+      void ensureShorebreak();
+    } else if (
+      shorebreak &&
+      !nearOceanBeachShore(x, z, { shorePad: 1250, inlandPad: 900, zPad: 800 })
+    ) {
+      releaseShorebreak();
+    }
+    shorebreak?.update(time, dt, player.renderPosition);
+  };
+
   let surfFlowFx = 0;
   let surfFlowPhase = 0;
   let surfFlowSerial = 0;
@@ -1064,6 +1116,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     ensureSurfShack,
     ensureSurfRuntime,
     releaseSurfVisual,
+    updateShorebreak,
+    currentShorebreak: () => shorebreak,
     surfBreakStillLocal,
     prepareSurfEntry,
     updateSurfPresentation,
