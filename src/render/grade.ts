@@ -5,15 +5,20 @@ import {
   HalfFloatType,
   LinearFilter,
   NoColorSpace,
-  RGBAFormat
+  RGBAFormat,
+  Vector2
 } from "three/webgpu";
-import { Fn, float, rendererReference, texture3D, vec3 } from "three/tsl";
+import { Fn, float, rendererReference, texture3D, uniform, vec3 } from "three/tsl";
 import { tunables } from "../core/persist";
 import {
   DEFAULT_GRADE_ID,
   GRADE_LUT_SIZE,
   SHAPER_A,
   SHAPER_MAX,
+  // Imported, never re-derived. This and the shaper it normalises must stay in
+  // lockstep with the bake, and two copies of one formula is precisely how a
+  // LUT and its sampler drift apart by half a cell.
+  SHAPER_NORM,
   evaluateLook,
   findLook,
   gradeOptions,
@@ -65,11 +70,14 @@ type N = any;
  * 0 and 1 on the centre of texel N−1, but a sampler maps texcoord t to texel
  * t·N − 0.5. Without this the whole image is biased by half a cell — the
  * classic LUT bug, which looks "almost right" and is therefore easy to ship.
+ *
+ * It is a uniform rather than a constant because `setLutSize` can re-bake at a
+ * different edge length: baking N=128 while the correction still says 48 leaves
+ * the reference lookup shifted by a fraction of a cell, which is small enough to
+ * hide (it measured under one code value) and would quietly bias the very
+ * comparison the debug path exists to make.
  */
-const LUT_SCALE = (GRADE_LUT_SIZE - 1) / GRADE_LUT_SIZE;
-const LUT_OFFSET = 0.5 / GRADE_LUT_SIZE;
-
-const SHAPER_NORM = (Math.sqrt(SHAPER_MAX) + SHAPER_A) / Math.sqrt(SHAPER_MAX);
+const lutCorrection = (size: number) => new Vector2((size - 1) / size, 0.5 / size);
 
 /**
  * Bake one look into half-float RGBA texel data.
@@ -148,6 +156,7 @@ export function createGrade(): GradeRuntime {
 
   const lut = makeTexture(findLook(activeId), lutSize);
   const lutNode = texture3D(lut) as N;
+  const uCorrection = uniform(lutCorrection(lutSize)) as N;
 
   /**
    * Exposure comes straight off the renderer, so the three existing writers
@@ -166,6 +175,7 @@ export function createGrade(): GradeRuntime {
       image.depth = lutSize;
     }
     image.data = next;
+    (uCorrection.value as Vector2).copy(lutCorrection(lutSize));
     // Bumps texture.version, which is what Textures.js compares to decide to
     // re-upload. Same GPU resource, same bind group, new contents.
     lut.needsUpdate = true;
@@ -188,7 +198,7 @@ export function createGrade(): GradeRuntime {
       const s = c.sqrt();
       const u = s.div(s.add(SHAPER_A)).mul(SHAPER_NORM).clamp(0, 1);
 
-      return lutNode.sample(u.mul(LUT_SCALE).add(LUT_OFFSET)).rgb;
+      return lutNode.sample(u.mul(uCorrection.x).add(uCorrection.y)).rgb;
     })();
 
   return {

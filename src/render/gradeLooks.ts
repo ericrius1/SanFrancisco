@@ -105,7 +105,7 @@ export const SHAPER_MAX = 28;
  * Normalises the curve so u(SHAPER_MAX) is exactly 1 and the axis is fully
  * used. Without it the top of the LUT is dead range.
  */
-const SHAPER_NORM = (Math.sqrt(SHAPER_MAX) + SHAPER_A) / Math.sqrt(SHAPER_MAX);
+export const SHAPER_NORM = (Math.sqrt(SHAPER_MAX) + SHAPER_A) / Math.sqrt(SHAPER_MAX);
 
 /**
  * scene-linear → LUT axis coordinate. Mirrored exactly in TSL by
