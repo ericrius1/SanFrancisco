@@ -13,7 +13,9 @@ import { CANVAS_FONT_FAMILY } from "../core/typography";
  * grids the game already ships (8 m/px). The expanded map then first-use loads
  * a period-cartography pyramid: one city overview, viewport-selected regional
  * plates, and a smaller Golden Gate detail tile at close zoom. Authoritative
- * roads/bridges stay as live vectors above the artwork.
+ * roads stay as live vectors above the artwork; the bridge decks do not —
+ * every plate already inks both spans, so the vector deck is only the fallback
+ * for the bare heightmap backdrop.
  * Everything here is 2D canvas; the WebGPU world renderer remains untouched.
  *
  * Multiplayer: every remote player is a colored dot (their server-assigned
@@ -87,7 +89,17 @@ const HISTORICAL_DETAIL_BOUNDS = {
   maxZ: -2422.5
 } as const;
 const HISTORICAL_REGIONAL_LOAD_SPAN = 6800;
-const HISTORICAL_DETAIL_LOAD_SPAN = 900;
+/** The Golden Gate plate is the only art that resolves the span itself rather
+ *  than a regional plate's 0.24 px/m, so it has to be resident before the map
+ *  reaches BIG_MIN_SPAN — a gate below that closest zoom would never fire — and
+ *  with enough headroom that it is decoded before the fade below lifts it off
+ *  zero rather than popping in mid-ramp. */
+const HISTORICAL_DETAIL_LOAD_SPAN = 2800;
+/** Screen resolution (device px per world metre) over which the Golden Gate
+ *  plate cross-fades in: from roughly 3.5x the regional plate's own resolution
+ *  to 6x, i.e. the range where regional ink stops being able to hold the
+ *  strait. Both maps measure in device px, so one ramp serves both. */
+const HISTORICAL_DETAIL_FADE_PX_PER_M = { from: 0.85, to: 1.45 } as const;
 /** How many regional plates may stay resident. Each is a full-resolution canvas
  *  (~6 MB of backing store), and panning the expanded map across the city would
  *  otherwise pin all nine for the rest of the session. Six is the floor: a
@@ -511,7 +523,11 @@ export class Minimap {
     image.addEventListener(
       "load",
       () => {
-        this.#historicalDetail = this.#featherHistoricalImage(image, 0.035);
+        // A wider ramp than the plates use between themselves: this one lands
+        // over regional art that is already 5x upsampled at the zoom it appears
+        // at, so a tight edge reads as a rectangle of sharpness rather than as
+        // the strait coming into focus.
+        this.#historicalDetail = this.#featherHistoricalImage(image, 0.14, 0.2);
         this.update(true);
       },
       { once: true }
@@ -587,7 +603,7 @@ export class Minimap {
     this.#historicalTrimTimer = null;
   }
 
-  #featherHistoricalImage(image: HTMLImageElement, verticalFade: number) {
+  #featherHistoricalImage(image: HTMLImageElement, verticalFade: number, horizontalFade = 0.035) {
     const canvas = document.createElement("canvas");
     canvas.width = image.naturalWidth;
     canvas.height = image.naturalHeight;
@@ -596,8 +612,8 @@ export class Minimap {
     ctx.globalCompositeOperation = "destination-in";
     const gx = ctx.createLinearGradient(0, 0, canvas.width, 0);
     gx.addColorStop(0, "rgba(0,0,0,0)");
-    gx.addColorStop(0.035, "rgba(0,0,0,1)");
-    gx.addColorStop(0.965, "rgba(0,0,0,1)");
+    gx.addColorStop(horizontalFade, "rgba(0,0,0,1)");
+    gx.addColorStop(1 - horizontalFade, "rgba(0,0,0,1)");
     gx.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = gx;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -671,12 +687,24 @@ export class Minimap {
     }
   }
 
+  /** The Golden Gate plate is a 500 x 750 m patch inside regional art painted
+   *  from a different sitting, so its paper tone does not match seamlessly. It
+   *  earns that mismatch only once the screen is asking for far more resolution
+   *  than the regional plate carries — otherwise it reads as a pale smudge over
+   *  the strait. Below the ramp it is not drawn at all. */
   #drawHistoricalDetail(
     ctx: CanvasRenderingContext2D,
     px: (x: number) => number,
-    pz: (z: number) => number
+    pz: (z: number) => number,
+    pxPerM: number
   ) {
+    const { from, to } = HISTORICAL_DETAIL_FADE_PX_PER_M;
+    const alpha = Math.min(1, Math.max(0, (pxPerM - from) / (to - from)));
+    if (alpha <= 0) return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
     this.#drawHistoricalTile(ctx, this.#historicalDetail, HISTORICAL_DETAIL_BOUNDS, px, pz);
+    ctx.restore();
   }
 
   /** Returns whether the plate actually landed on the canvas. */
@@ -1208,7 +1236,7 @@ export class Minimap {
     const miniPz = (z: number) => mc + (z - center.z) * pxPerM;
     this.#drawHistoricalOverview(ctx, miniPx, miniPz);
     this.#drawHistoricalRegions(ctx, miniPx, miniPz);
-    this.#drawHistoricalDetail(ctx, miniPx, miniPz);
+    this.#drawHistoricalDetail(ctx, miniPx, miniPz, pxPerM);
     this.#drawCloseEngraving(ctx, center, this.#miniSpan, this.#miniSpan);
     this.#drawVectorRoads(ctx, center, mc, mc, pxPerM);
     this.#drawBridges(
@@ -1468,9 +1496,28 @@ export class Minimap {
     ctx.restore();
   }
 
+  /** True once a resident period plate covers this stretch of world end to end.
+   * The plates draw both spans themselves — International Orange over the
+   * Golden Gate, gray out to Yerba Buena, towers and cable hatching included —
+   * at whatever resolution the plate carries. */
+  #historicalArtCovers(minX: number, maxX: number, minZ: number, maxZ: number) {
+    const covers = (tile: HTMLCanvasElement | null | undefined, b: HistoricalBounds) =>
+      !!tile?.width && minX >= b.minX && maxX <= b.maxX && minZ >= b.minZ && maxZ <= b.maxZ;
+    // The overview spans the whole world, so it settles this on its own once
+    // the map has been opened; the regional cores are checked for the case
+    // where only a plate loaded.
+    if (covers(this.#historicalOverview, HISTORICAL_WORLD_BOUNDS)) return true;
+    for (const spec of HISTORICAL_REGION_TILES) {
+      if (covers(this.#historicalRegions.get(spec.id), spec.coreBounds)) return true;
+    }
+    return false;
+  }
+
   /** Paint every bridge deck as a coloured polyline (International Orange for
-   * the Golden Gate, gray for the Bay Bridge) with tower dots. Shared by the
-   * mini and expanded maps via the passed-in projection. */
+   * the Golden Gate, gray for the Bay Bridge) with tower dots. This is the
+   * backdrop-only fallback: where the period artwork is resident it already
+   * draws the spans, and a flat vector deck on top would smother the drawing.
+   * Shared by the mini and expanded maps via the passed-in projection. */
   #drawBridges(
     ctx: CanvasRenderingContext2D,
     px: (x: number) => number,
@@ -1481,6 +1528,17 @@ export class Minimap {
     for (const br of this.#map.meta.bridges) {
       const line = br.line;
       if (!line || line.length < 2) continue;
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      for (const [x, z] of line) {
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minZ = Math.min(minZ, z);
+        maxZ = Math.max(maxZ, z);
+      }
+      if (this.#historicalArtCovers(minX, maxX, minZ, maxZ)) continue;
       const color = (br.color && BRIDGE_COLORS[br.color]) || BRIDGE_FALLBACK_COLOR;
       // deck thickness in screen px, tracking real width but clamped for reads
       // Preserve physical width when zoomed in; only cap the extreme close-up
@@ -2133,15 +2191,16 @@ export class Minimap {
     const visible = (x: number, y: number, margin = 16 * dpr) =>
       x >= -margin && y >= -margin && x <= canvas.width + margin && y <= canvas.height + margin;
 
-    // GPT-painted detail is only an underlay. Authoritative vector streets and
-    // bridges are redrawn above it at the current screen resolution.
+    // GPT-painted detail is the base. Authoritative vector streets are redrawn
+    // above it at the current screen resolution; the bridge decks are left to
+    // the artwork wherever a plate covers them.
     this.#drawHistoricalOverview(ctx, px, pz);
     this.#drawHistoricalRegions(ctx, px, pz);
-    this.#drawHistoricalDetail(ctx, px, pz);
+    this.#drawHistoricalDetail(ctx, px, pz, sx);
     this.#drawCloseEngraving(ctx, center, spanX, spanZ);
     this.#drawVectorRoads(ctx, center, canvas.width / 2, canvas.height / 2, sx, sy);
 
-    // bridge decks under the pins
+    // bridge decks under the pins, for any span the artwork has not reached
     this.#drawBridges(ctx, px, pz, sx);
 
     // landmarks — clickable teal dots
