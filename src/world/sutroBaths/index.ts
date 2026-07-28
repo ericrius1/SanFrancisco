@@ -756,7 +756,20 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
         // The gallery's own floor is the only surface down here — except over
         // the basin, where a body is SUPPOSED to be below it. Recovering there
         // would catch a visitor mid-fall and hover them over the water for ever.
-        return sutroGrottoPoolContains(player.x, player.z) ? null : SUTRO_GROTTO.floorY;
+        if (sutroGrottoPoolContains(player.x, player.z)) return null;
+        /**
+         * …and only when they are genuinely THROUGH it.
+         *
+         * Everywhere else this contract runs, the surface it names is an
+         * authored height that the collider under it only approximates, so
+         * `recoverOntoWalkSurface`'s 6 cm "clearly below" margin is comfortably
+         * outside the solver's resting slop. Here the two agree exactly — the
+         * floor collider's top IS `floorY` — which puts a capsule standing
+         * still within a few millimetres of that trigger. It fired on the
+         * frames it dipped, teleported, settled, and fired again: the room
+         * shook. This is a fell-through-the-world net, so ask it that question.
+         */
+        return y < SUTRO_GROTTO.floorY + 0.2 ? SUTRO_GROTTO.floorY : null;
       }
       return sutroWalkSurfaceY(player.x, player.z);
     },

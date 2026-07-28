@@ -207,27 +207,63 @@ function apertureSpanAtZ(z: number): number | null {
   return Math.sqrt(r * r - dz * dz);
 }
 
-/** Accumulates the collision shell: flat triangle soup, one static body. */
+/**
+ * Accumulates the collision shell: flat triangle soup, one static body.
+ *
+ * WINDING IS NOT COSMETIC HERE. A static mesh collides on the front face of its
+ * triangles, so a floor wound the wrong way is a floor a capsule falls straight
+ * through — which is what this room did: the walker sank through the boards,
+ * the fell-through-the-world net snapped it back to standing height, and it
+ * sank again, sixty times a second. The whole gallery shook.
+ *
+ * The project's convention is `a→b→c` winding UP (see
+ * core/terrainCollisionPatch.ts). Rather than restate it per surface and get a
+ * sign wrong in a corner triangle, every face here is pushed with the point it
+ * must FACE, and the winding is derived.
+ */
 class Shell {
   readonly vertices: number[] = [];
   readonly indices: number[] = [];
 
-  triangle(a: readonly number[], b: readonly number[], c: readonly number[]): void {
+  /** Push one triangle, wound so its normal points toward `towards`. */
+  triangle(
+    a: readonly number[],
+    b: readonly number[],
+    c: readonly number[],
+    towards: readonly number[]
+  ): void {
+    const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+    const acx = c[0] - a[0], acy = c[1] - a[1], acz = c[2] - a[2];
+    const nx = aby * acz - abz * acy;
+    const ny = abz * acx - abx * acz;
+    const nz = abx * acy - aby * acx;
+    const facing =
+      nx * (towards[0] - a[0]) + ny * (towards[1] - a[1]) + nz * (towards[2] - a[2]);
+    const [p, q] = facing >= 0 ? [b, c] : [c, b];
     const base = this.vertices.length / 3;
-    this.vertices.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+    this.vertices.push(a[0], a[1], a[2], p[0], p[1], p[2], q[0], q[1], q[2]);
     this.indices.push(base, base + 1, base + 2);
   }
 
-  /** A flat rectangle in the y plane. */
+  /** A flat rectangle in the y plane, facing up — a floor. */
   slab(x0: number, x1: number, z0: number, z1: number, y: number): void {
-    this.triangle([x0, y, z0], [x1, y, z0], [x1, y, z1]);
-    this.triangle([x0, y, z0], [x1, y, z1], [x0, y, z1]);
+    const up = [(x0 + x1) * 0.5, y + 1, (z0 + z1) * 0.5];
+    this.triangle([x0, y, z0], [x1, y, z0], [x1, y, z1], up);
+    this.triangle([x0, y, z0], [x1, y, z1], [x0, y, z1], up);
   }
 
-  /** A vertical quad between two ground points. */
-  wall(x0: number, z0: number, x1: number, z1: number, yLow: number, yHigh: number): void {
-    this.triangle([x0, yLow, z0], [x1, yLow, z1], [x1, yHigh, z1]);
-    this.triangle([x0, yLow, z0], [x1, yHigh, z1], [x0, yHigh, z0]);
+  /** A vertical quad between two ground points, facing `towards`. */
+  wall(
+    x0: number,
+    z0: number,
+    x1: number,
+    z1: number,
+    yLow: number,
+    yHigh: number,
+    towards: readonly number[]
+  ): void {
+    this.triangle([x0, yLow, z0], [x1, yLow, z1], [x1, yHigh, z1], towards);
+    this.triangle([x0, yLow, z0], [x1, yHigh, z1], [x0, yHigh, z0], towards);
   }
 }
 
@@ -1057,18 +1093,22 @@ export function createSutroGrotto(options: { physics?: Physics } = {}): SutroGro
       shell.triangle(
         [CX + sx * POOL_R, FLOOR, CZ + sz * POOL_R],
         [CX + sx * POOL_R, FLOOR, CZ + sz * POOL_B],
-        [CX + sx * POOL_B, FLOOR, CZ + sz * POOL_R]
+        [CX + sx * POOL_B, FLOOR, CZ + sz * POOL_R],
+        [CX + sx * POOL_R, FLOOR + 1, CZ + sz * POOL_R]
       );
     }
-    // The basin: eight walls and an eight-triangle floor.
+    // The basin: eight walls facing IN, and an eight-triangle floor facing up.
+    const basinCentre = [CX, (SUTRO_GROTTO.poolFloorY + FLOOR) * 0.5, CZ];
+    const basinUp = [CX, SUTRO_GROTTO.poolFloorY + 1, CZ];
     for (let i = 0; i < copingVertices.length; i++) {
       const [ax, az] = copingVertices[i];
       const [bx, bz] = copingVertices[(i + 1) % copingVertices.length];
-      shell.wall(ax, az, bx, bz, SUTRO_GROTTO.poolFloorY, FLOOR);
+      shell.wall(ax, az, bx, bz, SUTRO_GROTTO.poolFloorY, FLOOR, basinCentre);
       shell.triangle(
         [CX, SUTRO_GROTTO.poolFloorY, CZ],
         [ax, SUTRO_GROTTO.poolFloorY, az],
-        [bx, SUTRO_GROTTO.poolFloorY, bz]
+        [bx, SUTRO_GROTTO.poolFloorY, bz],
+        basinUp
       );
     }
   }
