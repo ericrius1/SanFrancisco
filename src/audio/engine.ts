@@ -44,27 +44,85 @@ export class AudioEngine {
   #muffle!: BiquadFilterNode;
   #submersionTarget = 0;
   #submersion = 0;
+  /**
+   * Open-mic duck on everything the world makes. While the local mic is live,
+   * our own output is not just "the mix" — it is loudspeaker spill, on its way
+   * back into the microphone, where the browser's echo canceller has to strip
+   * it out of what the far end hears. Sustained tonal beds are the worst case
+   * an AEC can be handed: the hoverboard hum sits at 59/117 Hz and is the
+   * loudest single component in the mix while riding, a laptop speaker
+   * reproduces that much sub-bass NONLINEARLY, and an AEC can only model a
+   * linear echo path — so the residue it cannot cancel lands on the far end as
+   * crackle. Voice is deliberately exempt: ducking the conversation to protect
+   * the conversation is self-defeating (see net/voice.ts).
+   */
+  #micDuck = 1;
   #unlocked = false;
   #hold = 0;
   // Persistent activity holds keep the context running only while the page is
-  // visible. Page suspension always wins over every feature hold.
+  // visible. Page suspension wins over them, but not over a background hold.
   #persistent = 0;
+  // Background holds are the one exemption: while any is live a hidden page
+  // keeps the graph running with ONLY the voice group audible (see
+  // #groupTargets). Voice chat is the sole holder — a conversation should
+  // survive tabbing away, the world's music and ambience should not.
+  #background = 0;
   #pageVisible = typeof document === "undefined" || document.visibilityState === "visible";
 
   #onVisibilityChange = () => {
     this.#pageVisible = document.visibilityState === "visible";
+    this.#syncSuspension();
+  };
+
+  /** Group gains for the current visibility/background state. */
+  #groupTargets(): Record<AudioGroupName, number> {
+    if (this.#pageVisible) {
+      return {
+        music: musicAudioLevel() * this.#micDuck,
+        effects: effectsAudioLevel() * this.#micDuck,
+        world: soundscapeAudioLevel() * this.#micDuck,
+        voice: voiceAudioLevel()
+      };
+    }
+    // Hidden: everything the world makes is silence. Voice survives — at its
+    // normal level, because a ducked conversation is just a worse conversation.
+    return { music: 0, effects: 0, world: 0, voice: this.#background > 0 ? voiceAudioLevel() : 0 };
+  }
+
+  #wantRunning(): boolean {
+    if (!this.#pageVisible) return this.#background > 0;
+    return this.#hold > 0 || this.#persistent > 0;
+  }
+
+  /**
+   * Move the context and the mix across a visibility (or background-hold) edge.
+   *
+   * update() is driven by the rendered frame loop, which is parked while the
+   * page is hidden, so while hidden this edge has to set the mix itself —
+   * nothing else will run until the page comes back. While visible, update()
+   * still owns the mix: it eases levels instead of jumping them, so tabbing
+   * back fades the world in rather than slamming it on.
+   */
+  #syncSuspension(): void {
     const ctx = this.#ctx;
     if (!ctx || ctx.state === "closed") return;
-    if (!this.#pageVisible) {
+    if (!this.#wantRunning()) {
       // Suspending the context halts the entire Web Audio graph, including
       // oscillators, analysers, media-stream nodes and scheduled automation.
       if (ctx.state === "running") void ctx.suspend();
       return;
     }
-    if (this.#unlocked && (this.#hold > 0 || this.#persistent > 0) && ctx.state === "suspended") {
-      void ctx.resume();
+    if (this.#unlocked && ctx.state === "suspended") void ctx.resume();
+    // Only re-target a genuinely running graph: a ramp scheduled onto a frozen
+    // timeline never completes, and #levels would then disagree with the gains
+    // the graph actually holds.
+    if (this.#pageVisible || ctx.state !== "running") return;
+    const targets = this.#groupTargets();
+    for (const g of GROUPS) {
+      this.#levels[g] = targets[g];
+      this.#groups[g].gain.setTargetAtTime(targets[g], ctx.currentTime, 0.05);
     }
-  };
+  }
 
   constructor() {
     // Guarded so Node audio probes can import feature modules without a window.
@@ -99,6 +157,8 @@ export class AudioEngine {
       },
       hold: +this.#hold.toFixed(3),
       persistent: this.#persistent,
+      background: this.#background,
+      micDuck: +this.#micDuck.toFixed(3),
       pageVisible: this.#pageVisible,
       submersion: +this.#submersion.toFixed(3)
     };
@@ -162,22 +222,44 @@ export class AudioEngine {
     };
   }
 
+  /**
+   * A persistent hold that ALSO survives page suspension, for the one feature
+   * that has to keep sounding out of frame: voice chat. While one is live a
+   * hidden page keeps the context running and mixes every non-voice group to
+   * silence rather than freezing the graph. Everything else uses acquireHold.
+   */
+  acquireBackgroundHold(): () => void {
+    this.#persistent++;
+    this.#background++;
+    this.#syncSuspension();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#persistent = Math.max(0, this.#persistent - 1);
+      this.#background = Math.max(0, this.#background - 1);
+      this.#syncSuspension();
+    };
+  }
+
+  /**
+   * How far to pull the world down while the local microphone is live; 1 while
+   * it is off. Voice owns the policy and the number (net/voice.ts), the engine
+   * owns the mix, so this is a plain setter — update() eases the group gains
+   * toward it, which is what makes turning the mic on a fade rather than a step.
+   */
+  setMicDuck(factor: number): void {
+    this.#micDuck = factor > 0 ? (factor < 1 ? factor : 1) : 0;
+  }
+
   /** Advance group gains, the idle-suspend policy, and the listener once/frame. */
   update(dt: number, camera: { matrixWorld: unknown } | null): void {
     const ctx = this.#ctx;
     if (!ctx) return;
 
-    const visible = this.#pageVisible;
     this.#hold = Math.max(0, this.#hold - dt);
-    const wantRunning = visible && (this.#hold > 0 || this.#persistent > 0);
-
-    const vis = visible ? 1 : 0;
-    const targets: Record<AudioGroupName, number> = {
-      music: musicAudioLevel() * vis,
-      effects: effectsAudioLevel() * vis,
-      world: soundscapeAudioLevel() * vis,
-      voice: voiceAudioLevel() * vis
-    };
+    const wantRunning = this.#wantRunning();
+    const targets = this.#groupTargets();
 
     const running = ctx.state === "running";
     for (const g of GROUPS) {

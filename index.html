@@ -690,6 +690,140 @@
       #hud .player-locator-marker.edge .pl-arrow {
         display: inline-block;
       }
+      /* Emote wheel (J). Sits dead centre over the world, above the toolbar but
+         below the map/overlays — it is a legend for the number row, so it never
+         takes the pointer unless the player already has a cursor to click with.
+         Closed it is fully non-interactive AND unfocusable (visibility), so a
+         Tab press can never land on an invisible ring of buttons. */
+      #hud .emote-wheel {
+        position: absolute;
+        left: 50%;
+        top: 48%;
+        transform: translate(-50%, -50%) scale(0.9);
+        z-index: var(--z-panel);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transition:
+          opacity var(--dur) var(--ease),
+          transform var(--dur) var(--ease),
+          visibility 0s linear var(--dur);
+      }
+      #hud .emote-wheel.open {
+        opacity: 1;
+        visibility: visible;
+        transform: translate(-50%, -50%) scale(1);
+        transition:
+          opacity var(--dur) var(--ease),
+          transform var(--dur) var(--ease),
+          visibility 0s;
+      }
+      #hud .emote-wheel .emote-ring {
+        position: relative;
+        width: 316px;
+        height: 316px;
+        border-radius: var(--r-pill);
+        background: radial-gradient(
+          circle at 50% 50%,
+          rgba(10, 24, 36, 0.86) 0%,
+          rgba(10, 24, 36, 0.72) 52%,
+          rgba(10, 24, 36, 0) 74%
+        );
+      }
+      #hud .emote-wheel .emote-slot {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        width: 74px;
+        padding: 7px 4px 5px;
+        border-radius: var(--r-md);
+        cursor: pointer;
+        pointer-events: auto;
+        background: var(--surface-raised);
+        border: 1px solid var(--hairline-2);
+        color: var(--text);
+        font: 700 11px var(--font);
+        box-shadow: var(--shadow-sm), var(--edge-hi);
+        transition:
+          border-color var(--dur) var(--ease),
+          background var(--dur) var(--ease),
+          transform 0.12s var(--ease);
+      }
+      #hud .emote-wheel .emote-slot .ic {
+        font-size: 21px;
+        line-height: 1.1;
+      }
+      #hud .emote-wheel .emote-slot .lbl {
+        letter-spacing: 0.02em;
+      }
+      #hud .emote-wheel .emote-slot .num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 15px;
+        height: 15px;
+        padding: 0 4px;
+        border-radius: var(--r-xs);
+        background: var(--surface-sunken);
+        border: 1px solid var(--hairline-2);
+        color: var(--text-dim);
+        font: 700 9px var(--font);
+        font-variant-numeric: tabular-nums;
+        line-height: 1;
+      }
+      #hud .emote-wheel .emote-slot:hover {
+        border-color: var(--hairline-strong);
+        background: #1a3446;
+        transform: translate(-50%, -50%) translateY(-1px);
+      }
+      #hud .emote-wheel .emote-slot.active {
+        border-color: var(--accent);
+        color: var(--accent-strong);
+        background: #164046;
+        box-shadow: var(--shadow-sm), 0 0 0 1px var(--accent-line), 0 0 22px var(--accent-soft);
+      }
+      #hud .emote-wheel .emote-slot.active .num {
+        border-color: var(--accent-line);
+        color: var(--accent-strong);
+      }
+      #hud .emote-wheel .emote-hint {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        text-align: center;
+        text-shadow: 0 1px 3px rgba(2, 8, 14, 0.8);
+      }
+      #hud .emote-wheel .emote-hint-title {
+        color: var(--accent-strong);
+        font: 700 14px var(--font);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      #hud .emote-wheel .emote-hint-sub {
+        color: var(--text-mut);
+        font: 600 11px var(--font);
+      }
+      @media (max-width: 720px) {
+        #hud .emote-wheel .emote-ring {
+          width: 268px;
+          height: 268px;
+        }
+        #hud .emote-wheel .emote-slot {
+          width: 64px;
+          font-size: 10px;
+        }
+        #hud .emote-wheel .emote-slot .ic {
+          font-size: 18px;
+        }
+      }
       /* Full-width rail so the cluster can be centred, yet the flexible spacer
          pseudo-elements below keep it from ever sliding under the bottom-left
          audio panel: they grow equally (→ centred) until the left one hits its
@@ -2913,6 +3047,8 @@
       #hud .scooter-xy-canvas {
         filter: saturate(1.08) contrast(1.04) brightness(0.84);
       }
+      /* shared slider recipe — the scooter atelier authored it; the kite
+         atelier reuses it with its own accent (see .kite-slider below) */
       #hud .scooter-slider {
         position: relative;
         flex: 1 1 118px;
@@ -3002,6 +3138,49 @@
       #hud .car-slider output {
         color: #ffd0a1;
       }
+      /* kite atelier: the only atelier whose subject is already in the sky
+         behind the panel, so it carries no preview widget and stays narrow —
+         sail, dye, two dials. Sunset violet rather than the workshop lacquer:
+         this one is dyed cloth, not machined metal. */
+      #hud .board-panel.kite-panel {
+        width: min(330px, calc(100vw - 24px));
+        max-height: min(78dvh, 640px);
+        background:
+          radial-gradient(circle at 100% 0, rgba(180, 132, 255, 0.14), transparent 46%),
+          linear-gradient(150deg, rgba(31, 24, 52, 0.96), rgba(7, 14, 26, 0.97));
+        border-color: rgba(198, 155, 255, 0.28);
+        box-shadow:
+          0 18px 48px rgba(0, 6, 12, 0.54),
+          inset 0 1px 0 rgba(255, 255, 255, 0.07),
+          inset 3px 0 0 rgba(180, 132, 255, 0.13);
+      }
+      #hud .kite-panel .board-panel-head > span {
+        color: #d7bcff;
+      }
+      #hud .kite-note {
+        margin: -3px 0 1px;
+        padding-left: 58px;
+        color: rgba(226, 214, 255, 0.5);
+        font: 650 9px var(--font);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      #hud .kite-swatch {
+        /* two dye stops on the diagonal — see kiteSelector #dyeRow */
+        border-color: rgba(226, 214, 255, 0.28);
+      }
+      #hud .kite-panel .avatar-choice.on {
+        box-shadow: inset 0 -2px 0 rgba(198, 155, 255, 0.4);
+      }
+      #hud .kite-fly {
+        min-width: 96px;
+      }
+      #hud .kite-slider input[type="range"] {
+        accent-color: #b48cff;
+      }
+      #hud .kite-slider output {
+        color: #d7bcff;
+      }
       @media (max-width: 480px) {
         #hud .avatar-ui {
           right: max(8px, env(safe-area-inset-right));
@@ -3018,6 +3197,10 @@
         }
         #hud .avatar-ui.car-ui {
           right: max(58px, calc(env(safe-area-inset-right) + 58px));
+          top: max(68px, calc(env(safe-area-inset-top) + 68px));
+        }
+        #hud .avatar-ui.kite-ui {
+          right: max(8px, calc(env(safe-area-inset-right) + 8px));
           top: max(68px, calc(env(safe-area-inset-top) + 68px));
         }
         #hud .car-ui .car-panel {

@@ -714,6 +714,115 @@ const RING_FRAMINGS: readonly Framing[] = [
   }
 ];
 
+/**
+ * Three that are about the FLYERS, not only the kites.
+ *
+ * Everything before these stood a hundred metres back on a long lens, because
+ * that is the geometry in which a kite and a low sun share a frame. It works,
+ * and it also renders the people who are flying them as twelve-pixel specks —
+ * the beach reads as unmanned kites. These trade some of that reach for a
+ * camera at head height, forty-odd metres out, on a wide lens.
+ *
+ * The arithmetic that sets the numbers below: a runner is ~1.8 m and a kite
+ * flies ~30 m up. At 45 m on a 28 mm lens the vertical field is about 46°, so
+ * the runner covers a tenth of frame height — legible as a person, with a
+ * recognisable gait — while a target placed ~12 m up leaves the kite about 22°
+ * above centre, just inside the top. Aim at the kite instead and the runner
+ * drops off the bottom; aim at the runner and the kite leaves the top. The
+ * target has to sit between them, nearer the ground.
+ *
+ * Sunset, twilight, night — and the last one is shot into the water on purpose,
+ * because after dark the only thing still carrying light is the sea, and a
+ * flyer standing against sand is simply gone.
+ */
+const FLYER_FRAMINGS: readonly Framing[] = [
+  {
+    id: "16",
+    title: "Ocean Beach Kites · The Line",
+    // Sun a few minutes off the water: still a disc, still throwing shafts, and
+    // low enough to rake along the beach and light the runners from the side.
+    hour: 20.2,
+    exposure: 0.95,
+    mist: 0.75,
+    shafts: 1.35,
+    subject: 0,
+    frame: ({ u }, live, eye, target) => {
+      const drift = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      // Stood off the RUNNER, not the flock. Standing off the flock measures the
+      // distance to the KITES, and the people holding them are another forty
+      // metres downwind again — which is how the first cut put them at the very
+      // bottom edge, half of one of them outside the frame. Forty metres from
+      // the person is forty metres from the person.
+      eye.copy(live.runner)
+        .addScaledVector(live.sun, -mix(44, 37, drift))
+        .addScaledVector(along, mix(-26, 22, drift));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + 1.9;
+      target.copy(live.runner).addScaledVector(along, mix(-9, 7, drift));
+      // 10 m of look-up is the compromise the geometry allows: lower and the
+      // kites leave the top, higher and the sand goes with the flyers on it.
+      target.y = base + 10;
+      return mix(27, 30, drift);
+    }
+  },
+  {
+    id: "17",
+    title: "Ocean Beach Kites · Two on the Sand",
+    // Civil twilight. The sun is under, so nobody is lit from the front any
+    // more — the flyers read as silhouettes against a bright band of water,
+    // which is exactly why the camera sits low and shoots seaward.
+    hour: 20.95,
+    exposure: 1.0,
+    mist: 0.34,
+    shafts: 0.45,
+    subject: 4,
+    companion: 5,
+    frame: ({ u }, live, eye, target) => {
+      const push = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      // Anchored to the RUNNER, not the kite: this shot is about the two of
+      // them working the sled pair, and the kites can look after themselves in
+      // the upper half of the frame.
+      eye.copy(live.runner)
+        .addScaledVector(live.sun, -mix(34, 27, push))
+        .addScaledVector(along, mix(15, 7, push));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + 1.7;
+      target.copy(live.runner).addScaledVector(along, mix(3, -2, push));
+      target.y = base + mix(7, 8.5, push);
+      return mix(30, 34, push);
+    }
+  },
+  {
+    id: "18",
+    title: "Ocean Beach Kites · Night Flyers",
+    // Twenty past nine and properly dark: sixteen degrees under, moonlit, stars
+    // out. No shafts exist at this hour and asking for them would only prove
+    // the golden-hour gate works, so this is built from silhouette against the
+    // water sheen. Exposure opens further than anything else in the production.
+    hour: 21.9,
+    exposure: 1.24,
+    mist: 0.45,
+    shafts: 0,
+    subject: 6,
+    frame: ({ u }, live, eye, target) => {
+      const settle = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.runner)
+        .addScaledVector(live.sun, -mix(44, 38, settle))
+        .addScaledVector(along, mix(-18, 12, settle));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + 1.6;
+      target.copy(live.runner).addScaledVector(along, mix(-4, 4, settle));
+      // A touch higher than the twilight look: after dark the sky still holds a
+      // gradient and the sand holds nothing, so give the sky more of the frame.
+      target.y = base + mix(9, 11, settle);
+      return mix(29, 33, settle);
+    }
+  }
+];
+
 type KiteWindow = Window & typeof globalThis & { __sf?: { oceanBeachKite?: OceanBeachKiteEncounter } };
 
 function buildDemo(framing: Framing): Demo {
@@ -721,8 +830,6 @@ function buildDemo(framing: Framing): Demo {
   const seconds = framing.seconds ?? KITE_FESTIVAL_SECONDS;
   return {
     name,
-    // Depth-sampling passes: see the note in run(). Read before warmup.
-    multisample: false,
     run(ctx) {
       const { map, sky } = ctx;
       if (!map || !sky) {
@@ -745,7 +852,20 @@ function buildDemo(framing: Framing): Demo {
       // undo a multisampled depth buffer. That is exactly how this regressed —
       // it held while the depth consumers stayed quiet and broke the moment the
       // ocean rewrite added one that is always live.
-      ctx.setPostFx({ sceneSamples: 0, ink: false, dream: false, retro: false });
+      // contactShadows: false for the same family of reason. The complement's
+      // quad SAMPLES the beauty pass's depth attachment, and CityGen warms a
+      // second scene-pass render context through prepareSceneOwner while a
+      // capture is stepping frames. In that second context the depth is both
+      // the attachment and a binding, WebGPU rejects the command buffer, and
+      // the shot records clear colour — measured at ~70% of ten-second takes on
+      // one framing, with every failing run showing two `rt=output` contexts
+      // against the same "depth" texture and every clean one showing a single
+      // one. Driving the complement outside the pass (contactShadows.renderNow)
+      // roughly halves that; switching it off for the capture is what makes it
+      // zero. These are wide exteriors — kites thirty metres up, camera seventy
+      // to a hundred and forty back — and a close-contact darkening term
+      // contributes nothing at that range.
+      ctx.setPostFx({ sceneSamples: 0, contactShadows: false, ink: false, dream: false, retro: false });
       if (framing.mist !== undefined) OCEAN_KITE_TUNING.values.mistDensity = framing.mist;
       if (framing.shafts !== undefined) OCEAN_KITE_TUNING.values.shaftStrength = framing.shafts;
       ctx.input.suspended = true;
@@ -834,7 +954,7 @@ function buildDemo(framing: Framing): Demo {
   };
 }
 
-const ALL_FRAMINGS = [...FRAMINGS, ...EXTRA_FRAMINGS, ...LATE_FRAMINGS, ...RING_FRAMINGS];
+const ALL_FRAMINGS = [...FRAMINGS, ...EXTRA_FRAMINGS, ...LATE_FRAMINGS, ...FLYER_FRAMINGS, ...RING_FRAMINGS];
 
 export const kiteFestivalDemos: readonly Demo[] = ALL_FRAMINGS.map(buildDemo);
 export const KITE_FESTIVAL_TITLES: Readonly<Record<string, string>> = Object.fromEntries(

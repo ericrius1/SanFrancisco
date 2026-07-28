@@ -16,7 +16,7 @@ import {
   uv
 } from "three/tsl";
 import { bumpNormal } from "../tslUtil";
-import type { KiteDesign } from "./kiteDesigns";
+import type { KiteDesign, KitePalette } from "./kiteDesigns";
 
 export { KITE_DESIGNS, KITE_DESIGN_ORDER } from "./kiteDesigns";
 export type { KiteDesign, KiteDesignId } from "./kiteDesigns";
@@ -39,6 +39,8 @@ export type KiteClothState = {
 export type KiteCloth = {
   mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardNodeMaterial>;
   setState(state: KiteClothState): void;
+  /** Re-dye in place. Colours are uniforms, so this never recompiles. */
+  setPalette(palette: KitePalette): void;
   dispose(): void;
 };
 
@@ -52,8 +54,18 @@ export type KiteCloth = {
  * wind pressure bellies the panel out). One shader then serves a solid diamond,
  * a six-bladed rotor and a pierced box without knowing anything about any of
  * them.
+ *
+ * The dye is four colour UNIFORMS rather than four baked constants. The beach
+ * flyers set theirs once and never touch them again; the player's own kite
+ * re-dyes live from the atelier, and a uniform write is the difference between
+ * that being instant and it costing a WebGPU pipeline compile per swatch.
  */
-export function createKiteCloth(design: KiteDesign): KiteCloth {
+export function createKiteCloth(design: KiteDesign, initialPalette?: KitePalette): KiteCloth {
+  const dye = initialPalette ?? design.palette;
+  const clothDeep = uniform(new THREE.Color(dye.clothDeep));
+  const clothLight = uniform(new THREE.Color(dye.clothLight));
+  const glowLow = uniform(new THREE.Color(dye.glowLow));
+  const glowHigh = uniform(new THREE.Color(dye.glowHigh));
   const wind = uniform(1);
   const tautness = uniform(0.68);
   const billow = uniform(0.34);
@@ -89,7 +101,7 @@ export function createKiteCloth(design: KiteDesign): KiteCloth {
     metalness: 0
   });
   const verticalTint = uv().y.mul(0.58).add(0.18).clamp(0, 1);
-  const dyed = mix(color(design.palette.clothDeep), color(design.palette.clothLight), verticalTint);
+  const dyed = mix(clothDeep, clothLight, verticalTint);
   // Seams beside the spars stay a touch darker; the breathing panels catch more
   // of the sky and read as actual cloth instead of one flat card.
   material.colorNode = dyed.mul(float(0.88).add(slack.mul(0.12)));
@@ -108,7 +120,7 @@ export function createKiteCloth(design: KiteDesign): KiteCloth {
   const transmission = towardSun.pow(4.5).mul(backlight);
   const thinness = slack.mul(float(0.72).add(bulge.mul(0.28)));
   material.emissiveNode = mix(
-    mix(color(design.palette.glowLow), color(design.palette.glowHigh), towardSun.pow(3)),
+    mix(glowLow, glowHigh, towardSun.pow(3)),
     color(0xffb877),
     towardSun.pow(22)
   )
@@ -134,6 +146,12 @@ export function createKiteCloth(design: KiteDesign): KiteCloth {
       gustPhase.value = state.gustPhase;
       (sunDir.value as THREE.Vector3).copy(state.sunDir);
       backlight.value = THREE.MathUtils.clamp(state.backlight, 0, 1);
+    },
+    setPalette(palette) {
+      (clothDeep.value as THREE.Color).setHex(palette.clothDeep);
+      (clothLight.value as THREE.Color).setHex(palette.clothLight);
+      (glowLow.value as THREE.Color).setHex(palette.glowLow);
+      (glowHigh.value as THREE.Color).setHex(palette.glowHigh);
     },
     dispose() {
       mesh.geometry.dispose();

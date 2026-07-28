@@ -1,0 +1,25 @@
+Image brief — a lithographed poster that will hang, framed, on the timber wall of
+an indoor swimming hall in a stylised low-poly video game. PORTRAIT 2:3.
+
+Subject: a house bill boasting about the scale of the baths' own laundry and
+hire stock. The upper two thirds is a flat decorative arrangement of striped
+woollen bathing costumes hung in neat rows on a line, with stacks of folded white
+towels below them, drawn as a repeating ornamental pattern rather than a scene —
+the pleasure of the plate is the sheer countable quantity of it. Small attendants
+in white aprons at the base for scale. Warm, domestic, faintly comic in its pride.
+
+Style: 1890s American chromolithograph house bill. FLAT spot colours, hard
+silhouettes, visible flat colour separations, NO photorealism, NO gradients other
+than simple flat bands, no digital airbrush. Slight aged cream paper tone.
+
+Palette (use these, they must sit in a warm timber room): cream #f7eed6, warm
+gold #e8ab3f, coral #e07a4e, terracotta #a8412a, deep teal #12454a, mid teal
+#1f6b6b, sea green #2e7f6d, ink navy #1b2b45, moss #4d6b3a.
+
+Typography, spelled EXACTLY, in an elegant Didot-like serif, well kerned:
+  headline: TWENTY THOUSAND
+  subhead: BATHING SUITS
+  middle line: AND FORTY THOUSAND TOWELS
+  bottom rule line: FRESH LAUNDERED DAILY · HIRE INCLUDED
+Leave a clean margin — the poster gets a physical frame around it, so keep all
+type and key subject matter inside the middle 92% of the canvas.

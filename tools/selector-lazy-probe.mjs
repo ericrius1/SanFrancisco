@@ -73,7 +73,19 @@ const SELECTORS = [
   { id: "board", mode: "board", launcher: ".board-launcher-ui .board-toggle", chunk: "boardSelector", marker: ".board-picker-canvas" },
   { id: "scooter", mode: "scooter", launcher: ".scooter-launcher-ui .scooter-toggle", chunk: "scooterSelector", marker: ".scooter-color-input" },
   { id: "car", mode: "drive", launcher: ".car-launcher-ui .car-toggle", chunk: "carSelector", marker: ".car-panel" },
-  { id: "surfboard", mode: "surf", launcher: ".surfboard-launcher-ui .surfboard-toggle", chunk: "surfboardSelector", marker: ".surfboard-color-input" }
+  { id: "surfboard", mode: "surf", launcher: ".surfboard-launcher-ui .surfboard-toggle", chunk: "surfboardSelector", marker: ".surfboard-color-input" },
+  // The kite atelier is gated on WHERE you are, not what you are riding: its
+  // launcher only exists once you are standing on the Ocean Beach kite sand, so
+  // this one walks there first.
+  {
+    id: "kite",
+    mode: "walk",
+    prepare: `(()=>{const s=window.__sf,t=s.oceanKiteSite,x=t.x+30,z=t.z;` +
+      `s.player.teleportTo({x,y:s.map.effectiveGround(x,z),z,facing:-Math.PI/2,mode:"walk"});return true})()`,
+    launcher: ".kite-launcher-ui .kite-toggle",
+    chunk: "kiteSelector",
+    marker: ".kite-panel .kite-slider"
+  }
 ];
 
 async function main() {
@@ -130,8 +142,11 @@ async function main() {
       if (await ev(c, `window.__sf.player.mode===${JSON.stringify(s.mode)}`)) { switched = true; break; }
       await sleep(200);
     }
+    // Put the player wherever this selector's slot lives (kite: the beach).
+    if (s.prepare) await ev(c, s.prepare);
     // settle a few frames so syncCustomizerForMode reveals this mode's launcher
-    await ev(c, `(async()=>{const d=window.__sf.renderer.backend.device;for(let i=0;i<6;i++){window.__sf.tick(1/60);await d.queue.onSubmittedWorkDone();}})()`);
+    // (a proximity-gated slot also needs the gate's own update to see the move)
+    await ev(c, `(async()=>{const d=window.__sf.renderer.backend.device;for(let i=0;i<${s.prepare ? 30 : 6};i++){window.__sf.tick(1/60);await d.queue.onSubmittedWorkDone();}})()`);
     const mode = await ev(c, `window.__sf.player.mode`);
     const launcherVisible = await ev(c, `(()=>{const el=document.querySelector(${JSON.stringify(s.launcher)});return !!el && !el.closest('.avatar-ui')?.hidden;})()`);
     // Click the placeholder launcher → triggers the lazy import.

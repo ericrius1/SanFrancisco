@@ -1,6 +1,6 @@
 import type * as THREE from "three/webgpu";
 import { tunables } from "../core/persist";
-import { voiceAudioLevel } from "../core/audioSettings";
+import { saveMicOn, savedMicOn, voiceAudioLevel } from "../core/audioSettings";
 import { audioEngine } from "../audio/engine";
 import type { Net } from "./net";
 
@@ -32,18 +32,40 @@ import type { Net } from "./net";
  * Deliberately non-spatial: intelligibility beats immersion for chat.
  *
  * The engine owns the ctx and its gesture unlock — a listen-only player's
- * first input opens it, no local resume plumbing needed. Page suspension is a
- * hard boundary: hidden tabs close peer audio links and release mic capture;
- * both are restored on foreground without advancing any voice processing in
- * the background.
+ * first input opens it, no local resume plumbing needed.
+ *
+ * Backgrounding: voice is the ONE system that survives a hidden page, because
+ * being able to keep talking while you go do something else is the point of
+ * having it. A hidden tab parks the renderer and mixes music, effects and
+ * ambience to silence, but the mic, the peer connections, the voice group and
+ * the relay socket all stay up (see AudioEngine.acquireBackgroundHold and
+ * Net.setVoiceKeepAlive). What does stop is everything frame-driven: the
+ * roster scan, the speaking indicator and your own pose. So the set of people
+ * you can hear freezes as it was when you left, and re-forms when you return.
+ *
+ * Across refreshes: the mic is sticky. Turning it on stores that intent
+ * (core/audioSettings), and entering the world brings it back up — silently
+ * when the browser still holds the permission, otherwise on the next gesture
+ * (see restoreSavedMic). A refresh mid-conversation therefore costs you a few
+ * seconds of reconnecting, not your voice.
+ *
+ * Open mic = the world ducks. Anything our speakers play while the mic is live
+ * is echo the browser's canceller has to remove before the far end hears us,
+ * and it cannot do that for a loud sustained bed — so transmitting pulls
+ * music/effects/ambience down (VOICE_TUNING.worldDuck → AudioEngine.setMicDuck)
+ * and leaves voice itself alone. Without it, riding the hoverboard puts a
+ * 59/117 Hz drone at the top of the mix and the far end hears crackle.
  *
  * Privacy: mic off = track stopped and stream released (browser mic indicator
- * turns off), not just muted.
+ * turns off), not just muted. The stored intent is only ever "the player left
+ * with the mic on" — nothing restores capture that the browser hasn't already
+ * authorized, and a refused restore drops the intent instead of asking again.
  */
 
 export const VOICE_TUNING = tunables("voice", {
   volume: { v: 1, min: 0, max: 2, step: 0.05, label: "voice volume" },
-  audibleCount: { v: 3, min: 1, max: 8, step: 1, label: "hear closest N players" }
+  audibleCount: { v: 3, min: 1, max: 8, step: 1, label: "hear closest N players" },
+  worldDuck: { v: 0.35, min: 0, max: 1, step: 0.05, label: "duck world while mic on" }
 });
 
 const LINGER_MS = 10_000; // keep a link this long after it leaves both closest-sets
@@ -52,10 +74,22 @@ const MAX_PEERS = 8; // uplink cap: mic is re-encoded per peer (~32 kbps each)
 const RETRY_MS = 5000; // wait after a failed connection before re-offering
 const SPEAK_RMS = 0.015; // analyser RMS above this = "speaking"
 const SPEAK_HOLD_MS = 250; // indicator hold so it doesn't flicker between words
-const VOICE_BOOST = 1.35; // makeup on top of the compressor so voices sit above the world bed
+// Makeup for the leveler, which has no makeup stage of its own. Sized so a
+// talker leaves the chain at about the loudness they arrived at once the voice
+// group's gain is applied: the chain's job is to even talkers out, not to turn
+// the whole conversation down. This was never the wrong number — it was paired
+// with a compressor eating ~6 dB more than it needed to.
+// Verified by tools/voice-gain-staging-probe.mjs.
+const VOICE_BOOST = 1.35;
 // Keep loudspeaker spill below the browser AEC's working range while our mic is
 // live. This is intentionally mild: conversation remains full duplex, unlike a
 // hard gate that would cut off people talking over one another.
+//
+// This one covers the OTHER PLAYERS' voices only. The far bigger spill is the
+// world's own output — see VOICE_TUNING.worldDuck and AudioEngine.setMicDuck,
+// which duck music/effects/ambience for the same reason. Other people's speech
+// is the easy case for an echo canceller (intermittent, band-limited, and it is
+// what AEC3 is tuned for); a sustained synthetic bed is the hard one.
 const OPEN_MIC_PLAYBACK_DUCK = 0.72;
 
 type EchoCancellationMode = boolean | "all" | "remote-only";
@@ -89,6 +123,22 @@ async function preferAllPlaybackEchoCancellation(track: MediaStreamTrack) {
 }
 
 type Signal = { description?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit | null };
+
+type MicPermission = "granted" | "denied" | "prompt" | "unknown";
+
+/**
+ * What a mic request would do right now. "granted" is the one state that needs
+ * no user gesture — the browser remembered the grant, so capture can resume on
+ * its own. Browsers without a "microphone" descriptor (Firefox) report unknown.
+ */
+async function micPermission(): Promise<MicPermission> {
+  try {
+    const status = await navigator.permissions?.query({ name: "microphone" as PermissionName });
+    return (status?.state as MicPermission | undefined) ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 type Peer = {
   id: number;
@@ -127,28 +177,30 @@ export class Voice {
   #posOf: (id: number) => THREE.Vector3 | null;
   #selfPos: () => THREE.Vector3;
   #peers = new Map<number, Peer>();
-  // One engine hold, live while the mic is on OR ≥1 peer is wired. The audio
-  // engine's visibility gate still overrides it while the page is hidden.
+  // One engine hold, live while the mic is on OR ≥1 peer is wired. It is a
+  // BACKGROUND hold: unlike every other feature's, it outlives page suspension
+  // and keeps the voice group audible out of frame.
   #hold: (() => void) | null = null;
   #micTrack: MediaStreamTrack | null = null;
   #pageVisible = document.visibilityState === "visible";
   #micRestoreToken = 0;
+  #micOp: Promise<unknown> = Promise.resolve(); // one mic request at a time
+  #disarmGesture: (() => void) | null = null; // pending gesture-gated restore
   #scanAt = 0;
   #retryAt = new Map<number, number>(); // failed peers wait out RETRY_MS
 
   #onVisibilityChange = () => {
     this.#pageVisible = document.visibilityState === "visible";
-    if (!this.#pageVisible) {
-      // A disabled track can still leave browser capture/AEC work alive. Stop
-      // it outright, then reacquire the already-authorized source on resume.
-      this.#micRestoreToken++;
-      this.#micTrack?.stop();
-      this.#micTrack = null;
-      for (const id of [...this.#peers.keys()]) this.drop(id);
-      return;
-    }
+    // Voice is the one system that follows you out of the tab: mic capture and
+    // every wired peer stay exactly as they are, so a conversation survives
+    // going off to do something else. The topology does freeze — #scan is
+    // frame-driven and your pose stops moving — so who you can hear is
+    // whoever you could hear on the way out, until you come back.
+    if (!this.#pageVisible) return;
     this.#scanAt = 0;
-    if (this.micOn) void this.#restoreMicAfterForeground();
+    // Only a mic the platform took from us while hidden (a phone handing the
+    // device to another app) needs reacquiring here.
+    if (this.micOn && !this.#micTrack) void this.#restoreMicTrack();
   };
 
   constructor(net: Net, posOf: (id: number) => THREE.Vector3 | null, selfPos: () => THREE.Vector3) {
@@ -161,10 +213,36 @@ export class Voice {
 
   /* ---------------------------------------------------------------- mic */
 
-  /** Toggle the microphone. Resolves false if permission was denied. */
-  async setMic(on: boolean): Promise<boolean> {
+  /**
+   * Toggle the microphone (V key, HUD button). Resolves false if permission was
+   * denied. Records the intent so the next visit starts where this one left off.
+   */
+  setMic(on: boolean): Promise<boolean> {
+    this.#disarmGestureRestore(); // the player just said what they want; stop waiting
+    return this.#queueMic(on, true);
+  }
+
+  /**
+   * Mic requests run one at a time. Two overlapping grants would leave two live
+   * tracks with only one of them attached, so stopping the mic would no longer
+   * turn the browser's recording indicator off. Reachable by mashing V, and by
+   * the boot restore landing on the same gesture as the HUD button.
+   */
+  #queueMic(on: boolean, remember: boolean): Promise<boolean> {
+    const next = this.#micOp.then(
+      () => this.#applyMic(on, remember),
+      () => this.#applyMic(on, remember)
+    );
+    this.#micOp = next.catch(() => {});
+    return next;
+  }
+
+  async #applyMic(on: boolean, remember: boolean): Promise<boolean> {
     if (on === this.micOn) {
-      if (on && this.#pageVisible && !this.#micTrack) void this.#restoreMicAfterForeground();
+      if (on && !this.#micTrack) void this.#restoreMicTrack();
+      // Reconciles a stored intent the platform already broke: muting a mic
+      // that a phone call took away still has to clear "left with it on".
+      if (remember) saveMicOn(this.micOn);
       return true;
     }
     if (on) {
@@ -174,18 +252,73 @@ export class Voice {
       const track = await this.#requestMicTrack();
       if (!track) return false; // denied, no device, or no usable AEC
       this.micOn = true;
-      if (this.#pageVisible) this.#micTrack = track;
-      else track.stop();
+      this.#micTrack = track;
     } else {
       this.#micRestoreToken++;
       this.#micTrack?.stop(); // releases the device (browser mic indicator off)
       this.#micTrack = null;
       this.micOn = false;
     }
+    if (remember) saveMicOn(this.micOn);
     this.#refreshHold();
+    this.#syncMicDuck();
     for (const p of this.#peers.values()) this.#attachMic(p);
     this.onMicChange(this.micOn);
     return true;
+  }
+
+  /**
+   * Bring the mic back up if the player left with it on. Called once they are in
+   * the world rather than at construction — the browser's recording indicator
+   * has no business lighting up while someone is still at the name gate.
+   *
+   * A permission the browser still holds restores capture silently, with no
+   * prompt and nothing to click. Anything else means it genuinely forgot
+   * (Safari's per-session grant, a Firefox "allow once"), and only a gesture can
+   * ask again: one pointer/key event's worth of retry, after which the intent is
+   * dropped so a refusal never nags on every future visit.
+   */
+  async restoreSavedMic(): Promise<void> {
+    if (!savedMicOn() || this.micOn || this.#disarmGesture) return;
+    const permission = await micPermission();
+    if (permission === "denied") {
+      saveMicOn(false); // revoked at the browser level: the intent is unreachable
+      return;
+    }
+    // Entering by clicking Start is itself a gesture — Safari can restore on it.
+    const activated = navigator.userActivation?.isActive ?? false;
+    if ((permission === "granted" || activated) && (await this.#queueMic(true, true))) return;
+    this.#armGestureRestore();
+  }
+
+  /**
+   * One-shot: ask again for the stored mic on the next real user gesture.
+   *
+   * Deliberately `click` and not `pointerdown` (a tap raises click too): the HUD
+   * mic button's own handler runs first that way, so clicking it turns the mic on
+   * once instead of racing this listener into an immediate toggle back off. V is
+   * skipped here for the same reason — the keybinding already means "toggle the
+   * mic", and either of them alone gets there.
+   */
+  #armGestureRestore() {
+    const attempt = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.code === "KeyV") return;
+      this.#disarmGestureRestore();
+      void this.#queueMic(true, true).then((ok) => {
+        if (!ok) saveMicOn(false); // asked with a gesture in hand and still refused
+      });
+    };
+    this.#disarmGesture = () => {
+      window.removeEventListener("click", attempt);
+      window.removeEventListener("keydown", attempt);
+    };
+    window.addEventListener("click", attempt);
+    window.addEventListener("keydown", attempt);
+  }
+
+  #disarmGestureRestore() {
+    this.#disarmGesture?.();
+    this.#disarmGesture = null;
   }
 
   async #requestMicTrack(): Promise<MediaStreamTrack | null> {
@@ -214,16 +347,18 @@ export class Voice {
     return track;
   }
 
-  async #restoreMicAfterForeground() {
+  /** Re-acquire the already-authorized source after the platform took it away. */
+  async #restoreMicTrack() {
     const token = ++this.#micRestoreToken;
     const track = await this.#requestMicTrack();
-    if (token !== this.#micRestoreToken || !this.#pageVisible || !this.micOn) {
+    if (token !== this.#micRestoreToken || !this.micOn) {
       track?.stop();
       return;
     }
     if (!track) {
       this.micOn = false;
       this.#refreshHold();
+      this.#syncMicDuck(); // the world comes back up: nothing is transmitting now
       this.onMicChange(false);
       return;
     }
@@ -233,16 +368,38 @@ export class Voice {
 
   /**
    * Hold the shared context alive while the mic is on or any peer is wired;
-   * release when both are gone. Page visibility still overrides it. Edge-
+   * release when both are gone. This is the single definition of "a voice
+   * session is live", so it also arms the two things that keep one working
+   * out of frame: the engine's background exemption and the relay socket
+   * (RTC signaling rides it, and the server drops a silent player). Edge-
    * triggered from setMic and from peer add/drop — never per frame.
    */
   #refreshHold() {
     const want = this.micOn || this.#peers.size > 0;
-    if (want && !this.#hold) this.#hold = audioEngine.acquireHold();
+    if (want && !this.#hold) this.#hold = audioEngine.acquireBackgroundHold();
     else if (!want && this.#hold) {
       this.#hold();
       this.#hold = null;
     }
+    this.#net.setVoiceKeepAlive(want);
+  }
+
+  /**
+   * Tell the engine how hard to duck the world for the current mic state.
+   *
+   * An open mic turns our own speakers into the far end's noise source: the
+   * world bed goes out, comes back in through the microphone, and the browser's
+   * echo canceller has to subtract it from what everyone else hears. It cannot
+   * do that for a loud sustained bed — the hoverboard hum is the worst offender,
+   * a 59/117 Hz drone that is the loudest thing in the mix while riding and that
+   * a laptop speaker can only reproduce with distortion an AEC has no model for.
+   * Ducking the world while transmitting is what keeps the far end clean.
+   *
+   * Edge-triggered from the mic paths so it lands even if frames stop, and
+   * re-pushed per frame so live tuning of worldDuck takes effect immediately.
+   */
+  #syncMicDuck() {
+    audioEngine.setMicDuck(this.micOn ? VOICE_TUNING.values.worldDuck : 1);
   }
 
   /** Put the current mic track (or silence) on a peer's one audio m-line. */
@@ -300,7 +457,7 @@ export class Voice {
 
   /** Remote stream → hidden <audio> (Chrome quirk) → compressor → gain → voice group. */
   #wireAudio(p: Peer, stream: MediaStream) {
-    if (!this.#pageVisible || this.#peers.get(p.id) !== p) return;
+    if (this.#peers.get(p.id) !== p) return;
     // prewarmBus (not bus()) so the receive graph builds even when a remote
     // track arrives before any local gesture — audibility stays gated by the
     // engine's voice group gain and the suspended ctx; the background hold
@@ -318,14 +475,26 @@ export class Voice {
     p.gain?.disconnect();
     p.analyser?.disconnect();
     const src = ctx.createMediaStreamSource(stream);
-    // Voice leveler: browser AGC output varies a lot between mics; squash the
-    // dynamics so quiet talkers come through, then make up the level in #gain.
+    // Voice leveler: browser AGC output varies a lot between mics, so close the
+    // spread between a loud talker and a quiet one, then make the level back up
+    // in #gain (a DynamicsCompressorNode has no makeup stage of its own).
+    //
+    // It only has to LEVEL, not squash. The old -30 dB / 6:1 setting sat ~6 dB
+    // deeper on ordinary speech than this one, which VOICE_BOOST never paid
+    // back, so voices came out of the chain ~5 dB quieter than they went in.
+    // Sitting the threshold near the top of normal speech gets the same evening
+    // out of loud and quiet talkers while keeping the level they arrived with.
+    //
+    // Attack stays short enough to catch syllable peaks — with up to
+    // audibleCount talkers summing into a master that has no limiter, peak
+    // control here is what keeps the mix out of the clipper — while the long
+    // release keeps the gain steady between words instead of pumping.
     p.compressor = new DynamicsCompressorNode(ctx, {
-      threshold: -30,
-      knee: 15,
-      ratio: 6,
-      attack: 0.003,
-      release: 0.2
+      threshold: -20,
+      knee: 12,
+      ratio: 4,
+      attack: 0.006,
+      release: 0.25
     });
     p.gain = ctx.createGain();
     // No voiceAudioLevel() here — the engine's voice group gain applies it.
@@ -338,7 +507,7 @@ export class Voice {
   }
 
   async #handleSignal(from: number, sig: Signal) {
-    if (!this.#pageVisible || !sig || typeof sig !== "object") return;
+    if (!sig || typeof sig !== "object") return;
     // reactive path: the higher id builds its side when the offer arrives
     const p = this.#peers.get(from) ?? this.#createPeer(from, false);
     try {
@@ -377,9 +546,14 @@ export class Voice {
 
   /* ------------------------------------------------------------- update */
 
-  /** Per rendered frame: gains, speaking indicator, roster scan. */
+  /**
+   * Per rendered frame: gains, speaking indicator, roster scan. Never runs
+   * while hidden — the audio path keeps going without it, and scanning on a
+   * frozen roster of frozen positions would only churn connections.
+   */
   update() {
     if (!this.#pageVisible) return;
+    this.#syncMicDuck();
     const now = performance.now();
     if (now >= this.#scanAt) {
       this.#scanAt = now + SCAN_MS;
@@ -478,7 +652,10 @@ export class Voice {
     }) | undefined;
     return {
       mic: this.micOn,
+      savedMic: savedMicOn(), // what the next refresh will try to restore
+      awaitingGesture: !!this.#disarmGesture, // stored mic waiting on a click/keypress
       pageVisible: this.#pageVisible,
+      sessionLive: !!this.#hold, // mic on or ≥1 peer: what survives backgrounding
       capturing: this.#micTrack?.readyState === "live",
       micProcessing: micSettings ? {
         echoCancellation: micSettings.echoCancellation ?? "unknown",
@@ -489,6 +666,8 @@ export class Voice {
         contentHint: this.#micTrack?.contentHint || "none"
       } : null,
       ctx: audioEngine.debugState.ctx,
+      // 1 = world at full level, <1 = ducked because we are transmitting
+      worldDuck: audioEngine.debugState.micDuck,
       audibleCount: Math.max(1, Math.round(VOICE_TUNING.values.audibleCount)),
       peers: [...this.#peers.values()].map((p) => ({
         id: p.id,
@@ -502,11 +681,16 @@ export class Voice {
 
   dispose() {
     document.removeEventListener("visibilitychange", this.#onVisibilityChange);
+    this.#disarmGestureRestore();
     this.#micRestoreToken++;
-    void this.setMic(false);
+    // Teardown is not the player muting themselves: release the device without
+    // touching the stored intent, so a reload still comes back talking.
+    void this.#queueMic(false, false);
+    audioEngine.setMicDuck(1); // never leave the world ducked behind us
     for (const id of [...this.#peers.keys()]) this.drop(id);
     // Release our hold but never close the shared engine ctx.
     this.#hold?.();
     this.#hold = null;
+    this.#net.setVoiceKeepAlive(false);
   }
 }

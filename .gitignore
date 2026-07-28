@@ -1,4 +1,7 @@
-node_modules/
+# Bare name, not `node_modules/`: a worktree's dependencies are a SYMLINK back
+# to the main checkout, and git reads a symlink as a file, so the trailing-slash
+# form left it staged-able in every worktree.
+node_modules
 /dist/
 # Generated terrain tile bake (tools/bake-terrain-tiles.mjs). Rebuilt
 # automatically by the build's contract test when missing — never commit.

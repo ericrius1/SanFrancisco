@@ -902,11 +902,13 @@ export function createRenderPipeline(
     // pass actually executes and records its BundleGroups.
     scenePass.updateBeforeType = NodeUpdateType.RENDER;
     prePass.updateBeforeType = NodeUpdateType.RENDER;
-    // Contact samples scenePass depth from a nested QuadMesh render. Leaving it
-    // render-scoped here would retrigger the entire scene under a second render
-    // context and record duplicate BundleGroups. Its target was initialized by
-    // the covered pre-warm render (and by live frames before a late warmup), so
-    // frozen contact pixels are sufficient while the loading cover is opaque.
+    // Contact samples scenePass depth from a nested QuadMesh render, so it is
+    // permanently NONE now and driven explicitly from render(); this line only
+    // holds that invariant against a pass that arrives already render-scoped.
+    // Warmup does not call render(), so the complement simply does not refresh
+    // here — its target was initialized by the covered pre-warm render (and by
+    // live frames before a late warmup), and frozen contact pixels are
+    // sufficient while the loading cover is opaque.
     if (contactShadows.pass) contactShadows.pass.updateBeforeType = NodeUpdateType.NONE;
     try {
       const needsInkWarmup = scope === "full" || (activeVariantMask & INK_VARIANT_MASK) !== 0;
@@ -1009,6 +1011,14 @@ export function createRenderPipeline(
       pianoGodRaysRuntime?.update(pianoGodRaysCenter);
       pianoGodRaysRenderedFrames += 1;
     }
+    // Drive the contact complement HERE — top of the frame, before any pipeline
+    // render has opened a pass. Its quad samples the beauty pass's depth
+    // attachment, and WebGPU rejects a render pass that both writes and binds
+    // the same texture, taking the whole command buffer with it. Left to the
+    // node graph's FRAME scheduling it fired inside whatever pass was open when
+    // the graph first reached it, which made that rejection a coin flip: ~70% of
+    // ten-second captures came back as clear colour, the rest were fine.
+    contactShadows.renderNow(renderer);
     const fxaaActive = fxaaRequested && fxaaRuntime !== null;
     if (!fastCaptureTarget && !fxaaActive) {
       activePipeline.render();

@@ -79,12 +79,21 @@ export type DemoContext = {
 export type Demo = {
   name: string;
   /**
-   * Set false for a production whose passes SAMPLE scene depth. Cinematic pages
-   * otherwise turn on 4x multisampling, which multisamples the depth attachment
-   * too — and a multisampled depth texture cannot be bound as an ordinary one,
-   * so every command buffer that frame is rejected and the clip records cleared
-   * canvas. Asking from inside `run()` is too late: warmup has already
-   * allocated the targets by then. This is read before warmup.
+   * Opt IN to 4x cinematic multisampling. Off by default, and that default is
+   * load-bearing: MSAA multisamples the beauty pass's DEPTH attachment too, and
+   * a multisampled depth texture cannot be bound as an ordinary one. Several
+   * consumers bind exactly that (the contact-shadow complement, the underwater
+   * package in postfx), so the bind group is rejected, every command buffer
+   * that frame goes with it, and the clip records cleared canvas.
+   *
+   * This used to be an opt-OUT, which held only while no depth consumer was
+   * live. The ocean rewrite landed one that always is, and the two productions
+   * that had opted out were the only ones that still rendered — hoverboard came
+   * back at mean pixel 20 with 938 validation errors. Nothing opts in today; a
+   * production that wants it must first prove its passes touch no scene depth.
+   *
+   * Read before warmup, because warmup allocates the targets — asking from
+   * inside `run()` cannot undo a depth buffer that already exists.
    */
   multisample?: boolean;
   run(ctx: DemoContext): void;
@@ -147,5 +156,5 @@ export function runDemo(name: string, ctx: DemoContext) {
  * before it warms the pipeline up — see `Demo.multisample`.
  */
 export function demoWantsMultisampling(name: string): boolean {
-  return DEMOS[name]?.multisample !== false;
+  return DEMOS[name]?.multisample === true;
 }

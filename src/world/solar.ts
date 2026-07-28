@@ -91,6 +91,24 @@ export function sanFranciscoCivilNow(at = new Date()): SfCivilTime {
   return { year, month, day, hour: (h % 24) + m / 60 + s / 3600 }
 }
 
+/**
+ * Civil SF date+time at millisecond resolution.
+ *
+ * `Intl` resolves only to whole seconds, which is invisible for a sky or a
+ * clock face and very visible for anything that *moves* off the wall clock: the
+ * ghost ship's route steps a second of travel at a time, and at its climb-out
+ * speed that is a ~18 m lurch. Take the timezone answer for the containing
+ * second and add the remainder — exact, since offset changes land on second
+ * boundaries.
+ */
+export function sanFranciscoCivilAt(epochMs: number): SfCivilTime {
+  const second = Math.floor(epochMs / 1000) * 1000
+  const civil = sanFranciscoCivilNow(new Date(second))
+  const remainder = epochMs - second
+  if (remainder === 0) return civil
+  return sfCivilFromScalarDays(sfCivilScalarDays(civil) + remainder / 86_400_000)
+}
+
 /** Decimal SF hours only (0..24) — kept for HUD / scrub callers. */
 export function sanFranciscoTimeOfDay(at = new Date()): number {
   return sanFranciscoCivilNow(at).hour

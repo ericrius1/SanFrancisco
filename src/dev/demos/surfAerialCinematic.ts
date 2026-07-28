@@ -57,9 +57,6 @@ type SurfAerialWindow = Window &
  */
 export const surfAerialCinematic: Demo = {
   name: "surf-aerial",
-  // Depth-sampling passes: see the note in run(). Read before warmup, which is
-  // the only point at which declining multisampling still changes anything.
-  multisample: false,
   run(ctx) {
     const { map, sky } = ctx;
     if (!map || !sky) {

@@ -42,6 +42,8 @@ import {
  *   ← {t:"fw", id, d}                   relayed to everyone else
  *   → {t:"chat", text}                  ephemeral text chat (no persistence)
  *   ← {t:"chat", id, name, text}        relayed to everyone else
+ *   → {t:"emote", e}                    emote index (see player/emotes), -1 = stop
+ *   ← {t:"emote", id, e}                relayed to everyone else
  *   → {t:"rake", d:[[px,pz,cx,cz,ax,az,dx,dz,strength],...]} batched sand strokes
  *   ← {t:"rake", id, session, d:[[sequence,...stroke],...]} ordered echo to everyone
  *   → {t:"golf", k, d?|h?|p?|s?|r?}     golf events + cached state for late joins
@@ -116,6 +118,12 @@ export type NetStatus = "connecting" | "online" | "offline" | "full";
 
 const SEND_HZ = 12;
 const KEEPALIVE_MS = 2000; // resend an unchanged pose this often (server idle-timer food)
+// Same job for a hidden page, where sendState's frame loop is parked: far
+// slower, because nothing is moving and the only deadline is the server's
+// 5-minute idle drop. A page holding a live AudioContext (which is exactly
+// what a background voice session does) is exempt from the browser's
+// intensive timer throttling, so this fires on time.
+const BACKGROUND_KEEPALIVE_MS = 30_000;
 const MAX_PLAYER_RIDE_SEAT = MAX_PASSENGER_SEATS; // relay rejects rows past this
 const MAX_WORLD_RIDE_SEAT = 12;
 const NAME_MAX = 20;
@@ -410,6 +418,10 @@ export class Net {
   onFireworks: (id: number, rockets: number[][]) => void = () => {};
   /** Someone else sent a chat line (name is server-stamped from their roster). */
   onChat: (id: number, name: string, text: string) => void = () => {};
+  /** Someone else started an emote, or stopped one (`index` < 0). Looping
+   *  emotes re-send while held, so a repeat of the running index is a
+   *  keepalive, not a restart. */
+  onEmote: (id: number, index: number) => void = () => {};
   /** Canonical server-ordered rake segment. Return true once a live sand
    *  simulation consumed it; false keeps it cached for lazy replay. */
   onRakeStamp: (stamp: SharedRakeStamp) => boolean = () => false;
@@ -439,22 +451,69 @@ export class Net {
   #retryTimer: number | null = null;
   #closed = false;
   #pageVisible = document.visibilityState === "visible";
+  #voiceKeepAlive = false;
+  #backgroundKeepAliveTimer: number | null = null;
+  #lastStateRow: (number | string)[] | null = null;
   #onVisibilityChange = () => {
     this.#pageVisible = document.visibilityState === "visible";
     if (!this.#pageVisible) {
-      if (this.#retryTimer !== null) {
-        window.clearTimeout(this.#retryTimer);
-        this.#retryTimer = null;
-      }
-      if (this.#rakeFlushTimer !== null) {
-        window.clearTimeout(this.#rakeFlushTimer);
-        this.#rakeFlushTimer = null;
-      }
-      this.#ws?.close(1000, "page suspended");
+      if (this.#voiceKeepAlive) this.#startBackgroundKeepAlive();
+      else this.#suspendSocket();
       return;
     }
+    this.#stopBackgroundKeepAlive();
     if (!this.#closed && !this.#ws) this.#connect();
   };
+
+  /** Drop the connection for a hidden page with nothing left to keep alive. */
+  #suspendSocket() {
+    this.#stopBackgroundKeepAlive();
+    if (this.#retryTimer !== null) {
+      window.clearTimeout(this.#retryTimer);
+      this.#retryTimer = null;
+    }
+    if (this.#rakeFlushTimer !== null) {
+      window.clearTimeout(this.#rakeFlushTimer);
+      this.#rakeFlushTimer = null;
+    }
+    this.#ws?.close(1000, "page suspended");
+  }
+
+  /**
+   * Voice chat is the one system that keeps working while the page is hidden
+   * (src/net/voice.ts), and it needs this socket: RTC signaling rides it, and
+   * a player who stops sending state is dropped after the server's idle
+   * timeout. While a voice session is live, a hidden page therefore keeps the
+   * connection and a slow pose keepalive instead of closing everything.
+   */
+  setVoiceKeepAlive(on: boolean) {
+    if (on === this.#voiceKeepAlive) return;
+    this.#voiceKeepAlive = on;
+    if (this.#pageVisible) return;
+    if (!on) {
+      this.#suspendSocket();
+      return;
+    }
+    this.#startBackgroundKeepAlive();
+    if (!this.#closed && !this.#ws) this.#connect();
+  }
+
+  #startBackgroundKeepAlive() {
+    if (this.#backgroundKeepAliveTimer !== null) return;
+    this.#backgroundKeepAliveTimer = window.setInterval(() => {
+      if (this.#pageVisible || !this.#voiceKeepAlive) return;
+      const ws = this.#ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN || !this.selfId || !this.#lastStateRow) return;
+      this.#lastSentAt = performance.now();
+      ws.send(JSON.stringify({ t: "s", d: this.#lastStateRow }));
+    }, BACKGROUND_KEEPALIVE_MS);
+  }
+
+  #stopBackgroundKeepAlive() {
+    if (this.#backgroundKeepAliveTimer === null) return;
+    window.clearInterval(this.#backgroundKeepAliveTimer);
+    this.#backgroundKeepAliveTimer = null;
+  }
   #sendAt = 0;
   #lastSent = "";
   #lastSentAt = 0;
@@ -662,7 +721,7 @@ export class Net {
   }
 
   #connect() {
-    if (this.#closed || !this.#pageVisible || this.#ws) return;
+    if (this.#closed || (!this.#pageVisible && !this.#voiceKeepAlive) || this.#ws) return;
     this.#setStatus("connecting");
     let ws: WebSocket;
     try {
@@ -713,7 +772,7 @@ export class Net {
   }
 
   #scheduleRetry() {
-    if (this.#closed || !this.#pageVisible || this.#retryTimer !== null) return;
+    if (this.#closed || (!this.#pageVisible && !this.#voiceKeepAlive) || this.#retryTimer !== null) return;
     this.#retryTimer = window.setTimeout(() => {
       this.#retryTimer = null;
       this.#connect();
@@ -947,6 +1006,12 @@ export class Net {
         const name = String(msg.name ?? "");
         const text = String(msg.text ?? "");
         if (id !== this.selfId && this.roster.has(id) && name && text) this.onChat(id, name, text);
+        break;
+      }
+      case "emote": {
+        const id = msg.id as number;
+        const e = msg.e as number;
+        if (id !== this.selfId && this.roster.has(id) && Number.isInteger(e)) this.onEmote(id, e);
         break;
       }
       case "rake": {
@@ -1215,6 +1280,18 @@ export class Net {
     this.#ws.send(JSON.stringify({ t: "chat", text: clean }));
   }
 
+  /**
+   * Announce an emote by wire index (`player/emotes` EMOTES order), or -1 to
+   * stop. Fire-and-forget like paint and fireworks: nothing is cached, so a
+   * player who joins mid-dance picks it up on the sender's next keepalive
+   * rather than from server state.
+   */
+  sendEmote(index: number) {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    if (!Number.isInteger(index)) return;
+    this.#ws.send(JSON.stringify({ t: "emote", e: index }));
+  }
+
   /** Voice signaling: relay `payload` (SDP/ICE) to one peer through the server. */
   sendRtc(to: number, payload: unknown) {
     if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ t: "rtc", to, payload }));
@@ -1312,6 +1389,9 @@ export class Net {
       d.push(ride, Math.max(1, Math.min(capacity, Math.round(rideSeat || 1))));
     }
     const key = d.join(",");
+    // Kept even when the send below is skipped: it is the pose the background
+    // keepalive re-sends once the frame loop stops feeding this.
+    this.#lastStateRow = d;
     if (key === this.#lastSent && now - this.#lastSentAt < KEEPALIVE_MS) return;
     this.#lastSent = key;
     this.#lastSentAt = now;
@@ -1321,6 +1401,7 @@ export class Net {
   dispose() {
     this.#closed = true;
     document.removeEventListener("visibilitychange", this.#onVisibilityChange);
+    this.#stopBackgroundKeepAlive();
     if (this.#retryTimer !== null) window.clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
     this.#applyPendingRakesLocally();

@@ -27,6 +27,8 @@ import {  PAINT_COLORS } from "../../fx/graffiti";
 import {  ProxySet } from "../../core/worldQueries";
 import { createLazySelector } from "../../app/compose/selectorHub";
 import { Chat } from "../../ui/chat";
+import { EmoteWheel } from "../../ui/emoteWheel";
+import { emoteById, emoteIndex } from "../../player/emotes";
 import {    BALL_IMPACT_AUDIO_TUNING } from "../../audio";
 import { LOFI_MUSIC_TUNING } from "../../audio/music/tuning";
 import type {  } from "../../gameplay/creatures";
@@ -78,6 +80,7 @@ import {
   surfboardVisualKey,
   type SurfboardConfig
 } from "../../vehicles/surf";
+import { saveKiteConfig, type KiteConfig } from "../../world/oceanBeachKite/kiteConfig";
 import {
   GARDEN_XZ,
   GOLF_XZ,
@@ -392,13 +395,50 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     }
   });
   core.state.ensureSurfboardCustomizer = (open = false) => surfboard.ensure(open);
+  // The kite atelier is the one customizer gated on WHERE you are rather than
+  // what you are riding: your kite only exists on the Ocean Beach sand, so the
+  // slot follows the kite gate's proximity edge (set below, once that gate is
+  // built) instead of a player mode alone.
+  let inKiteRange = false;
+  const kite = createLazySelector(hudRoot, {
+    id: "kite",
+    launcherClass: "avatar-ui kite-ui kite-launcher-ui",
+    toggleClass: "avatar-toggle kite-toggle",
+    icon: "/ui/customizer-icons/kite.svg",
+    title: "Kite atelier",
+    ariaLabel: "Open kite atelier",
+    active: () => player.mode === "walk" && inKiteRange,
+    onLauncherClick: () => input.releaseLock(),
+    load: async () => {
+      const { KiteSelector } = await import("../../ui/kiteSelector");
+      const applyKiteConfig = (config: KiteConfig) => {
+        ctx.state.kiteConfig = config;
+        oceanKite.setKiteConfig(config);
+      };
+      return new KiteSelector(
+        ctx.state.kiteConfig,
+        (config) => {
+          applyKiteConfig(config);
+          saveKiteConfig(config);
+        },
+        // Slider drag: drive the kite that is already in the sky, but do not
+        // write a localStorage entry per pointer move.
+        applyKiteConfig,
+        () => {}
+      );
+    }
+  });
   // One top-right customizer slot: show only the active mode's atelier (or none).
   core.state.syncCustomizerForMode = (mode) => {
-    avatar.syncVisible(mode === "walk");
+    const kiteOwnsSlot = mode === "walk" && inKiteRange;
+    // On the kite beach the atelier you want on foot is the kite's, not the
+    // avatar's — one slot, and the kite is the thing that is only here.
+    avatar.syncVisible(mode === "walk" && !kiteOwnsSlot);
     board.syncVisible(mode === "board");
     scooter.syncVisible(mode === "scooter");
     car.syncVisible(mode === "drive");
     surfboard.syncVisible(mode === "surf");
+    kite.syncVisible(kiteOwnsSlot);
   };
   core.state.syncCustomizerForMode(player.mode);
   await constructionSlice();
@@ -520,6 +560,31 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     }
   );
   net.onChat = (_id, name, text) => chat.addMessage(name, text);
+  // Emotes: J opens the wheel, 1–8 pick (the digit row is routed here in
+  // frameBody while it is open). The player owns the emote's lifetime — it can
+  // end itself when the body is needed — so the network mirror hangs off
+  // player.onEmote rather than off the pick, and a held loop re-announces so a
+  // late joiner sees the dance already in progress.
+  //
+  // The re-announce interval sits comfortably inside remotes.ts's
+  // EMOTE_HOLD_MS, so one dropped keepalive never stops a friend's dance.
+  const EMOTE_KEEPALIVE_SEC = 2.5;
+  const emoteWheel = new EmoteWheel((id) => player.playEmote(id));
+  let emoteKeepAlive = 0;
+  player.onEmote = (id) => {
+    emoteWheel.setActive(id);
+    emoteKeepAlive = 0;
+    net.sendEmote(id ? emoteIndex(id) : -1);
+  };
+  const updateEmoteKeepAlive = (dt: number) => {
+    const id = player.activeEmote;
+    if (!id || !emoteById(id)?.loop) return;
+    emoteKeepAlive += dt;
+    if (emoteKeepAlive < EMOTE_KEEPALIVE_SEC) return;
+    emoteKeepAlive = 0;
+    net.sendEmote(emoteIndex(id));
+  };
+  net.onEmote = (id, index) => remotes.setEmote(id, index);
   // presence toast above the chat panel when someone new enters the world
   net.onJoin = (_id, name) => chat.showJoin(name);
   // golf: friends' swings/balls/scores replay here (owner-simulated snapshots)
@@ -540,7 +605,9 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
 
   // voice chat: P2P audio to the closest players at any distance,
   // signaled through the relay (src/net/voice.ts). Mic is opt-in — V key or
-  // the HUD mic button — and fully released when off.
+  // the HUD mic button — and fully released when off. Once opted in it sticks:
+  // main.ts calls voice.restoreSavedMic() when the player enters, so a refresh
+  // doesn't drop them out of a conversation.
   const voice = new Voice(
     net,
     (id) => remotes.positionOf(id),
@@ -790,6 +857,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     input,
     minimap,
     chat,
+    emoteWheel,
     closeConversation: () => ctx.state.beachPianist?.close() || buskerTalk.close(),
     getMissionDolores: () => core.state.missionDolores,
     markChatEscapeBlur: () => { skipChatRelock = true; }
@@ -897,8 +965,24 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
 
   // Kid-with-a-kite ambient encounter (lazy first-approach gate) — extracted
   // per docs/MAIN_DECOMPOSITION.md.
-  const oceanKite = createOceanKiteGate({ map, scene, renderer, camera, player, debugPanel });
+  const oceanKite = createOceanKiteGate({
+    map,
+    scene,
+    renderer,
+    camera,
+    player,
+    debugPanel,
+    // Walking onto (or off) the kite beach hands the single customizer slot to
+    // the kite atelier and back again.
+    onAtelierRangeChange: (inRange) => {
+      inKiteRange = inRange;
+      core.state.syncCustomizerForMode!(player.mode);
+    }
+  });
   import.meta.hot?.dispose(oceanKite.dispose);
+  // Seed the gate with the saved kite so a returning player's sail is already
+  // the right one the first time the encounter streams in.
+  oceanKite.setKiteConfig(ctx.state.kiteConfig);
   // renderFrame lives in main and predates this gate; hand it the kite's
   // sunset god-ray request so both areas arbitrate in one place.
   ctx.state.kiteGodRayArea = oceanKite.godRayArea;
@@ -1892,6 +1976,8 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     car,
     ensureCarCustomizer,
     chat,
+    emoteWheel,
+    updateEmoteKeepAlive,
     ridePos,
     rideQuat,
     voice,

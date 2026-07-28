@@ -1264,6 +1264,10 @@ function plateMuseumCurios({ w, h }) {
   };
 }
 
+// `draw` is optional. The first eight plates carry a vector implementation and
+// so survive on a machine with no image model; the plates added since are
+// source-only, and a missing source for one of those is a hard error rather
+// than a silently blank wall — see the bake loop.
 const PLATES = [
   { name: "hall-pacific-plunge", size: WIDE, draw: platePacificPlunge },
   { name: "hall-seal-rocks", size: WIDE, draw: plateSealRocks },
@@ -1272,7 +1276,16 @@ const PLATES = [
   { name: "bill-grand-opening", size: TALL, draw: plateGrandOpening },
   { name: "bill-swimming-carnival", size: TALL, draw: plateSwimmingCarnival },
   { name: "plate-tropical-ferns", size: TALL, draw: plateTropicalFerns },
-  { name: "plate-museum-curios", size: TALL, draw: plateMuseumCurios }
+  { name: "plate-museum-curios", size: TALL, draw: plateMuseumCurios },
+  { name: "hall-toboggan-slides", size: WIDE },
+  { name: "hall-tide-tunnel", size: WIDE },
+  { name: "hall-sutro-heights", size: WIDE },
+  { name: "hall-high-dive", size: TALL },
+  { name: "bill-sutro-railroad", size: TALL },
+  { name: "bill-bathing-suits", size: TALL },
+  { name: "bill-winter-sea", size: TALL },
+  { name: "plate-natatorium-section", size: TALL },
+  { name: "plate-pacific-shells", size: TALL }
 ];
 
 // ---------------------------------------------------------------------------
@@ -1370,6 +1383,14 @@ for (const plate of PLATES) {
       .removeAlpha()
       .png()
       .toBuffer();
+  } else if (!plate.draw) {
+    // A source-only plate with no source is a wall with a hole in it. Fail
+    // loudly and name the file to produce, rather than baking something blank.
+    throw new Error(
+      `${plate.name} has no vector fallback and no source. Generate it first:\n` +
+        `  node tools/generate-sutro-art.mjs ${plate.name}\n` +
+        `then accept it into ${path.relative(ROOT, SOURCE)}/${plate.name}.webp`
+    );
   } else {
     const drawn = plate.draw({ w: bigW, h: bigH });
     const svg =
