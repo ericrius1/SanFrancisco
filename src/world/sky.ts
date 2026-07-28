@@ -283,6 +283,18 @@ const SKY_DOME_RADIUS = 23000
 const SKY_DOME_RENDER_ORDER = -1000
 
 /**
+ * Where the mid-altitude gradient stop sits, in the SAME parameter the gradient
+ * already used: t = pow(saturate(d.y), 0.55). 0.55 puts it at d.y ≈ 0.337,
+ * about 20° above the horizon — high enough to read as its own band rather than
+ * as a thick horizon line, low enough that the zenith still owns the top half.
+ *
+ * #applySkyPalette's day and night band colours are mix(hor, zen, this) worked
+ * out by hand, so changing this constant WITHOUT re-deriving those two triples
+ * will tilt the daytime and night sky. Only the gold band is free.
+ */
+const SKY_BAND_T = 0.55
+
+/**
  * A custom analytic sky driving both the backdrop and the image-based lighting.
  * The dome is a single TSL gradient keyed off the live sun direction: zenith and
  * horizon palettes crossfade through day / golden hour / night, a warm wedge
@@ -389,6 +401,8 @@ export class Sky {
   // uniform's working-colour-space conversion would shift the palette.
   #uSkyZenith = uniform(new THREE.Vector3())
   #uSkyHorizon = uniform(new THREE.Vector3())
+  /** Mid-altitude band, the third gradient stop. See SKY_BAND_T. */
+  #uSkyBand = uniform(new THREE.Vector3())
   /** mix(hor, zen, 0.35) — the hemispheric mean the soften path collapses toward. */
   #uSkyMean = uniform(new THREE.Vector3())
   /** The night-brightness twilight lift, already folded to a colour. */
@@ -547,23 +561,62 @@ export class Sky {
     // depth-rejected behind everything else).
     const zen = this.#uSkyZenith as N
     const hor = this.#uSkyHorizon as N
+    const band = this.#uSkyBand as N
     const goldW = this.#uSkyGold as N
     return Fn(() => {
       const mu = dot(d, uSun)
 
-      // horizon-heavy gradient; below the horizon fall off toward ground haze
-      const grad = mix(hor, zen, pow(saturate(d.y), 0.55))
+      // Altitude parameter, unchanged: horizon-heavy so the interesting half of
+      // the sky gets most of the range.
+      const t = pow(saturate(d.y), 0.55)
+
+      // The gradient. THE DOME GETS THREE STOPS, THE IBL GETS TWO — deliberately.
+      // A two-stop ramp cannot produce what a real sunset does: it can only walk
+      // from orange to blue through the muddy grey in between, where the actual
+      // sky goes orange → violet → deep blue. That violet band is most of the
+      // difference between "warm sky" and "sunset".
+      //
+      // The environment path skips it because `#skyRadiance` is built TWICE per
+      // lit material (radiance and irradiance contexts, each isolated), so every
+      // term here is paid by every lit fragment in the world — the reason the
+      // phase weights were moved to the CPU in the first place. The IBL is a
+      // soft ambient term that `soften` collapses toward `#uSkyMean` anyway, and
+      // the mean already carries the band's energy (see #applySkyPalette), so
+      // the lighting picks up dusk's violet without paying for its shape.
+      const grad = opts.pointFeatures
+        ? mix(mix(hor, band, smoothstep(0, SKY_BAND_T, t)), zen, smoothstep(SKY_BAND_T, 1, t))
+        : mix(hor, zen, t)
       const below = smoothstep(0.0, -0.12, d.y)
       const sky = grad.mul(mix(float(1), float(0.35), below)).toVar()
       sky.addAssign(this.#uSkyTwilight as N)
 
-      // warm wedge gathering around the sun while it grazes the horizon
-      const wedge = pow(saturate(mu), 3.5)
+      // Warm wedge gathering around the sun while it grazes the horizon. The
+      // vertical reach was ±20° (smoothstep(0.35, …)), which clipped the glow
+      // into a band hugging the waterline; a real low sun throws light most of
+      // the way up the sky. Widened to ~38°, and it now fades THROUGH the
+      // horizon rather than at it, so the water below keeps the warm cast.
+      const wedge = pow(saturate(mu), 3.0)
         .mul(goldW)
-        .mul(smoothstep(0.35, 0.02, abs(d.y)))
-      sky.addAssign(vec3(1.0, 0.42, 0.16).mul(wedge).mul(0.85))
+        .mul(smoothstep(0.62, -0.06, abs(d.y)))
+      sky.addAssign(vec3(1.0, 0.44, 0.17).mul(wedge).mul(0.9))
 
       if (opts.pointFeatures) {
+        // Dome only: a broad magenta-leaning wash centred on the sun. This is
+        // the term that BENDS the gradient — where it overlaps the violet band
+        // the sky reads plum, and where it overlaps the gold wedge it reads
+        // ember, so the orange and the blue are joined by a hue arc instead of
+        // meeting in grey. Wider in azimuth than the gold wedge (pow 1.5 vs 3)
+        // and taller still, so it survives well above the warm band.
+        // Reach is the load-bearing number, not strength: let this climb toward
+        // the zenith and the whole upper sky turns pink and the deep blue never
+        // arrives. It has to die out ABOVE the violet band (~20°) so the band
+        // and the zenith own everything higher — the blue is what makes the
+        // orange read as sunset rather than as a wash.
+        const wash = pow(saturate(mu), 1.5)
+          .mul(goldW)
+          .mul(smoothstep(0.42, -0.12, abs(d.y)))
+        sky.addAssign(vec3(0.62, 0.20, 0.42).mul(wash).mul(0.26))
+
         // Dome only: the discs, moon and starfield still need the raw weights.
         const el = uSun.y // sun elevation, sin-scaled
         const dayW = smoothstep(0.02, 0.32, el)
@@ -1384,17 +1437,40 @@ export class Sky {
     const nightLit = nightW * lowSunLift
     const zen = this.#uSkyZenith.value as THREE.Vector3
     zen.set(
-      0.12 * dayW + 0.1 * goldW + 0.022 * nightLit,
-      0.34 * dayW + 0.15 * goldW + 0.032 * nightLit,
-      0.8 * dayW + 0.33 * goldW + 0.062 * nightLit
+      0.12 * dayW + 0.055 * goldW + 0.022 * nightLit,
+      0.34 * dayW + 0.085 * goldW + 0.032 * nightLit,
+      0.8 * dayW + 0.36 * goldW + 0.062 * nightLit
     )
     const hor = this.#uSkyHorizon.value as THREE.Vector3
     hor.set(
-      0.58 * dayW + 0.55 * goldW + 0.07 * nightLit,
-      0.75 * dayW + 0.34 * goldW + 0.098 * nightLit,
-      0.9 * dayW + 0.26 * goldW + 0.15 * nightLit
+      0.58 * dayW + 0.86 * goldW + 0.07 * nightLit,
+      0.75 * dayW + 0.36 * goldW + 0.098 * nightLit,
+      0.9 * dayW + 0.19 * goldW + 0.15 * nightLit
     )
-    ;(this.#uSkyMean.value as THREE.Vector3).lerpVectors(hor, zen, 0.35)
+    // The mid band (see SKY_BAND_T). Day and night deliberately carry the exact
+    // colour the old two-stop gradient already produced at that height —
+    // mix(hor, zen, SKY_BAND_T) evaluated by hand — so adding a third stop
+    // leaves noon and midnight bit-identical and changes only dusk. Gold is the
+    // one genuinely new authored colour in this function: the violet that makes
+    // a sunset read as a sunset rather than as an orange-to-blue ramp.
+    const band = this.#uSkyBand.value as THREE.Vector3
+    band.set(
+      0.364 * dayW + 0.25 * goldW + 0.0436 * nightLit,
+      0.5245 * dayW + 0.145 * goldW + 0.0617 * nightLit,
+      0.855 * dayW + 0.38 * goldW + 0.1016 * nightLit
+    )
+    // Hemispheric mean for the IBL's roughness collapse. The weights are chosen
+    // so that, wherever `band` sits on the line between hor and zen (day and
+    // night, by construction above), this reproduces the previous
+    // mix(hor, zen, 0.35) EXACTLY: 0.47 + 0.40·(1−t) = 0.65 and
+    // 0.13 + 0.40·t = 0.35 at t = SKY_BAND_T. Dusk therefore gains the band's
+    // contribution to ambient light without shifting any other hour.
+    const mean = this.#uSkyMean.value as THREE.Vector3
+    mean.set(
+      0.47 * hor.x + 0.4 * band.x + 0.13 * zen.x,
+      0.47 * hor.y + 0.4 * band.y + 0.13 * zen.y,
+      0.47 * hor.z + 0.4 * band.z + 0.13 * zen.z
+    )
     const twilight = goldW * lowSunW * (lift - 1)
     ;(this.#uSkyTwilight.value as THREE.Vector3).set(
       0.014 * twilight,

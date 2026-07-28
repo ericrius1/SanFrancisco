@@ -281,6 +281,22 @@ function sutroSpiralWalkSurfaceY(localX: number, localZ: number): number | null 
   return null;
 }
 
+/**
+ * The road pavilion floor and the doorway sill, MIRRORED from the built
+ * colliders (centres local (46.65, 63.1) 15.9 × 12.4 m and (37.6, 63.1)
+ * 2.2 × 5.0 m). They meet edge to edge at x 38.7, so the walk from the road
+ * doors to the head of the spiral is one continuous authored surface.
+ *
+ * Deliberately EXACT rather than padded. These two rectangles used to carry the
+ * recovery pad in their literals, which put a phantom 31.18 m floor over half a
+ * metre of open hillside on every side — and the terrace out there sits at
+ * 30 m, so the contract lifted anyone standing on it 1.2 m into the air, let
+ * them fall, and lifted them again.
+ */
+const ROAD_PAVILION_FLOOR = { minX: 38.7, maxX: 54.6, minZ: 56.9, maxZ: 69.3 } as const;
+const ROAD_THRESHOLD_SLAB = { minX: 36.5, maxX: 38.7, minZ: 60.6, maxZ: 65.6 } as const;
+const ROAD_LEVEL_Y = 31.18;
+
 const BEACH_ENTRY_STAIR: SutroStairSurface = {
   minAcross: 29.19,
   maxAcross: 37.39,
@@ -301,10 +317,31 @@ const ROAD_APPROACH_STAIR: SutroStairSurface = {
   steps: 5
 };
 
-// A capsule can move farther than a tread edge in one busy frame. Keep the
-// recovery contract slightly wider than the visible slabs so it catches that
-// edge crossing before the player falls to a lower hall surface.
-const ENTRY_RECOVERY_PAD = 0.45;
+// A capsule can move farther than a tread edge in one busy frame, so the
+// recovery contract stays a hair wider than the built slabs — but only a hair.
+// This used to be 0.45 m, which hung the stair's walk surface half a metre out
+// over the open stairwell and the terrace beside the road steps; standing under
+// one of those overhangs is what threw visitors into the air.
+const ENTRY_RECOVERY_PAD = 0.12;
+
+/**
+ * How far the recovery contract may lift a visitor, in metres.
+ *
+ * The deepest LEGITIMATE strand is the terrain handoff: the hall footprint
+ * lowers the ground to 2.07 while the built deck stands at 5.62, so a capsule
+ * caught in that frame is 3.55 m under its floor. A capsule further below an
+ * authored surface than that is not stranded beneath it — it is standing
+ * somewhere else entirely, on the deck under the spiral or on the terrace
+ * beside the pavilion — and hoisting it there is a teleport, not a rescue.
+ */
+const MAX_RECOVERY_LIFT = 4;
+
+/**
+ * A surface within this much of the feet counts as the one being stood on. The
+ * solver rests a capsule a skin width around its contact point, so the computed
+ * foot height wanders a few millimetres either side of the slab it is on.
+ */
+const SUPPORT_TOLERANCE = 0.06;
 
 function insideRect(x: number, z: number, minX: number, maxX: number, minZ: number, maxZ: number): boolean {
   return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
@@ -323,30 +360,83 @@ function stairSurfaceY(across: number, along: number, stair: SutroStairSurface):
   return stair.startY + (stair.endY - stair.startY) * step / (stair.steps - 1);
 }
 
-/** Walk surface for the rebuilt road switchback and lower beach entrance. */
-export function sutroEntryWalkSurfaceY(x: number, z: number): number | null {
-  const local = sutroWorldToLocal(x, z);
+/**
+ * Surface picking, in two buckets.
+ *
+ * The hall is a MULTI-LEVEL room and the point that proves it is the grand
+ * spiral: it crosses the deck it lands on, so almost every square metre of its
+ * annulus has two authored floors — a tread up to 25 m overhead and the deck
+ * underneath. Answering such a point with the topmost surface is what threw
+ * anyone walking beneath the stair onto the stair, and the same shape (a road
+ * slab over a hall floor) repeats at the doorway.
+ *
+ * So candidates are sorted against the visitor's feet: the highest surface AT
+ * OR BELOW them is what they are standing on, and only when nothing is under
+ * them at all does the lowest surface ABOVE them count as a floor they have
+ * been stranded beneath. Module-scope accumulators keep the per-frame query
+ * allocation-free; the resolver is synchronous and non-reentrant.
+ */
+let surfaceSupport = Number.NEGATIVE_INFINITY;
+let surfaceLedge = Number.POSITIVE_INFINITY;
+let surfaceFeetY: number | null = null;
 
-  // The road terrain is explicitly handed to a coherent pavilion floor.
-  if (insideRect(local.x, local.z, 38.25, 55.05, 56.45, 69.75)) return 31.18;
-  // Interior threshold slab carries the doorway onto the gallery's top flight.
-  if (insideRect(local.x, local.z, 36.5, 39.65, 60.5, 65.7)) return 31.18;
-  const roadY = stairSurfaceY(local.z, local.x, ROAD_APPROACH_STAIR);
-  if (roadY !== null) return roadY;
+function beginSurfaceQuery(feetY: number | null): void {
+  surfaceSupport = Number.NEGATIVE_INFINITY;
+  surfaceLedge = Number.POSITIVE_INFINITY;
+  surfaceFeetY = feetY;
+}
 
-  // The single helical descent. Checked before the flat aprons below so a
-  // capsule on a tread resolves to that tread, not to the deck beneath it.
-  const spiralY = sutroSpiralWalkSurfaceY(local.x, local.z);
-  if (spiralY !== null) return spiralY;
+function considerSurface(surface: number | null): void {
+  if (surface === null) return;
+  // No visitor to sort against (the pool climb-out probes a bare point): keep
+  // the highest authored surface, which is the historic answer.
+  if (surfaceFeetY === null || surface <= surfaceFeetY + SUPPORT_TOLERANCE) {
+    if (surface > surfaceSupport) surfaceSupport = surface;
+  } else if (surface < surfaceLedge) {
+    surfaceLedge = surface;
+  }
+}
+
+function resolveSurface(): number | null {
+  if (surfaceSupport > Number.NEGATIVE_INFINITY) return surfaceSupport;
+  if (surfaceFeetY === null || surfaceLedge === Number.POSITIVE_INFINITY) return null;
+  return surfaceLedge - surfaceFeetY <= MAX_RECOVERY_LIFT ? surfaceLedge : null;
+}
+
+/**
+ * Walk surface for the rebuilt road switchback and lower beach entrance.
+ *
+ * `feetY` is the WORLD height of the visitor's soles; omit it to ask for the
+ * highest authored entry surface at the point regardless of who is there.
+ */
+export function sutroEntryWalkSurfaceY(x: number, z: number, feetY: number | null = null): number | null {
+  beginSurfaceQuery(feetY);
+  addEntrySurfaces(sutroWorldToLocal(x, z));
+  return resolveSurface();
+}
+
+/** Offer every authored entry surface at a LOCAL point to the open query. */
+function addEntrySurfaces(local: { x: number; z: number }): void {
+  // The road terrain is explicitly handed to a coherent pavilion floor, and the
+  // interior threshold slab carries the doorway onto the gallery's top flight.
+  if (insideRect(local.x, local.z, ROAD_PAVILION_FLOOR.minX, ROAD_PAVILION_FLOOR.maxX, ROAD_PAVILION_FLOOR.minZ, ROAD_PAVILION_FLOOR.maxZ)) {
+    considerSurface(ROAD_LEVEL_Y);
+  }
+  if (insideRect(local.x, local.z, ROAD_THRESHOLD_SLAB.minX, ROAD_THRESHOLD_SLAB.maxX, ROAD_THRESHOLD_SLAB.minZ, ROAD_THRESHOLD_SLAB.maxZ)) {
+    considerSurface(ROAD_LEVEL_Y);
+  }
+  considerSurface(stairSurfaceY(local.z, local.x, ROAD_APPROACH_STAIR));
+  // The single helical descent. Offered alongside the flat slabs it passes
+  // under rather than after them, so a visitor on the top treads resolves to
+  // the tread they are on and not to the threshold sill a metre above it.
+  considerSurface(sutroSpiralWalkSurfaceY(local.x, local.z));
   // Foot apron butting the fan onto the deck (authored 2 cm under the fan).
-  if (insideRect(local.x, local.z, 18.51, 25.52, 41.58, 49.98)) return 5.76;
+  if (insideRect(local.x, local.z, 18.51, 25.52, 41.58, 49.98)) considerSurface(5.76);
 
   // The beach stair runs along local x, so swap the axes for the shared helper.
-  const beachY = stairSurfaceY(local.z, local.x, BEACH_ENTRY_STAIR);
-  if (beachY !== null) return beachY;
-  if (insideRect(local.x, local.z, -64.5, -62, 28.79, 37.79)) return 1.75;
-  if (insideRect(local.x, local.z, -38.6, -33.9, 28.79, 37.79)) return 5.66;
-  return null;
+  considerSurface(stairSurfaceY(local.z, local.x, BEACH_ENTRY_STAIR));
+  if (insideRect(local.x, local.z, -64.5, -62, 28.79, 37.79)) considerSurface(1.75);
+  if (insideRect(local.x, local.z, -38.6, -33.9, 28.79, 37.79)) considerSurface(5.66);
 }
 
 export { SUTRO_BATHS_ARRIVAL, distanceToSutroBaths };
@@ -364,20 +454,31 @@ export function poolAtLocal(x: number, z: number, inset = 0): SutroPoolSpec | nu
 }
 
 /**
- * Returns the lowest authored walk surface beneath a visitor inside the hall.
+ * The authored walk surface a visitor at (x, z) is standing on — or, when
+ * nothing is under them, the one they have been stranded just beneath.
  *
  * The streamed Box3D colliders remain the primary collision source. This is a
  * recovery contract for the frame in which those bodies replace the old
  * terrain, or for an unusually fast capsule that crosses a thin floor slab.
  * Pool footprints deliberately resolve to the basin instead of the deck so a
  * visitor can still step into and wade through every bath.
+ *
+ * `feetY` is the WORLD height of the visitor's soles. Pass it: without it the
+ * query cannot tell the deck from the stair 25 m above the same spot, and
+ * answers with the stair. Omitting it (the pool climb-out, which probes a bare
+ * point beside a bath) keeps the plain highest-surface answer.
  */
-export function sutroWalkSurfaceY(x: number, z: number): number | null {
-  const entrySurface = sutroEntryWalkSurfaceY(x, z);
-  if (entrySurface !== null) return entrySurface;
-  if (!inSutroBathsHall(x, z)) return null;
+export function sutroWalkSurfaceY(x: number, z: number, feetY: number | null = null): number | null {
   const local = sutroWorldToLocal(x, z);
-  return poolAtLocal(local.x, local.z) ? SUTRO_BATHS.basinY : SUTRO_BATHS.deckY;
+  beginSurfaceQuery(feetY);
+  addEntrySurfaces(local);
+  if (
+    Math.abs(local.x) <= SUTRO_BATHS.hallHalfWidth &&
+    Math.abs(local.z) <= SUTRO_BATHS.halfLength
+  ) {
+    considerSurface(poolAtLocal(local.x, local.z) ? SUTRO_BATHS.basinY : SUTRO_BATHS.deckY);
+  }
+  return resolveSurface();
 }
 
 /** True when a WORLD-space point sits inside any of the seven pool rectangles. */

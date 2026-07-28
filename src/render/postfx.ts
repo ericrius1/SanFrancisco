@@ -18,10 +18,10 @@ import {
   luminance,
   saturation,
   getViewPosition,
-  unpackRGBToNormal,
-  renderOutput
+  unpackRGBToNormal
 } from "three/tsl";
 import { tunables } from "../core/persist";
+import { createGrade } from "./grade";
 import type { PianoGodRaysParams } from "./pianoGodRaysTypes";
 
 /**
@@ -256,6 +256,12 @@ export function createPostFx(deps: {
 }) {
   const { sceneTex, normalTex, depthTex, camera, contactFactorAt } = deps;
 
+  // The display transform. ONE instance shared by every cached variant: its LUT
+  // is a single texture whose contents are swapped on a look change, so all
+  // eight style graphs (and the god-ray family) stay valid and no look switch
+  // ever costs a shader compile.
+  const grade = createGrade();
+
   // object-reference uniform: uploads the camera's current inverse projection
   // every frame, reversed-z included
   const projInv = uniform(camera.projectionMatrixInverse);
@@ -383,7 +389,13 @@ export function createPostFx(deps: {
         lin = linUw;
       }
 
-      const c = renderOutput(vec4(lin, 1)).rgb.toVar();
+      // ---- THE SEAM. Above this line everything is scene-linear HDR; below it
+      // everything is display-referred sRGB in 0..1. This used to be
+      // renderOutput(), which resolved three's ACESFilmic from the pipeline's
+      // node context; the grade owns the curve now (render/grade.ts), and
+      // renderCore.ts sets renderer.toneMapping = NoToneMapping so nothing
+      // applies a second one. Exposure still rides on renderer.toneMappingExposure.
+      const c = grade.toDisplay(lin).toVar();
 
       // ---- ink / ukiyo-e: one shared edge field from normal + depth jumps
       if (ink) {
@@ -567,5 +579,5 @@ export function createPostFx(deps: {
     sourceTexture: any
   ) => build(requestedMask & POSTFX_ALL, sourceTexture);
 
-  return { get, getWithSceneTexture };
+  return { get, getWithSceneTexture, grade };
 }
