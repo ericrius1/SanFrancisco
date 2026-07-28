@@ -128,6 +128,9 @@ export async function installDebugSurfaces(
       m9Leak: () => sharedMaterialLeakSnapshot(),
       getPaintAudio: () => core.state.paintAudio,
       getBubbleAudio: () => core.state.bubbleAudio,
+      // Lazily built on approach, so this has to stay a live read: the boot
+      // snapshot would freeze it at null for the whole session.
+      getShorebreak: () => core.currentShorebreak(),
       boardSelector: board,
       getBoardSelector: () => board.get(),
       getCarSelector: () => car.get(),
