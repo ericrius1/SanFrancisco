@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import type { Physics } from "../../core/physics";
+import { WALK_CAPSULE_HALF_EXTENT } from "../../player/walk";
 import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import type { AuthoredRegionStreamer } from "../authoredRegions";
 import { registerSwimVolume } from "../swimVolumes";
@@ -479,7 +480,11 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     },
     takeFloorHandoffHeight(player, playerMode) {
       if (!hasFloorRecovery || disposed || playerMode !== "walk") return null;
-      return sutroWalkSurfaceY(player.x, player.z);
+      // The visitor's SOLES, not the body centre: the hall stacks floors (the
+      // spiral crosses the deck it lands on), so the contract can only name the
+      // right one if it knows the height the walker is actually standing at.
+      const feetY = player.y === undefined ? null : player.y - WALK_CAPSULE_HALF_EXTENT;
+      return sutroWalkSurfaceY(player.x, player.z, feetY);
     },
     tuningDescriptor() {
       return {
