@@ -23,7 +23,7 @@ const PRODUCTION_DURATIONS = Object.freeze({
     `twitter-summer-${String(index + 1).padStart(2, "0")}`,
     7.5
   ])),
-  ...Object.fromEntries(Array.from({ length: 15 }, (_, index) => [
+  ...Object.fromEntries(Array.from({ length: 18 }, (_, index) => [
     `ocean-beach-kite-${String(index + 1).padStart(2, "0")}`,
     10
   ])),
@@ -101,7 +101,7 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 3.65, id: "stream", description: "wings tuck into the Palace flyby exit" },
     { time: 4.55, id: "resolve", description: "golden tail stream resolves over the rotunda" }
   ]),
-  ...Object.fromEntries(Array.from({ length: 15 }, (_, index) => {
+  ...Object.fromEntries(Array.from({ length: 18 }, (_, index) => {
     const shot = index + 1;
     return [`ocean-beach-kite-${String(shot).padStart(2, "0")}`, Object.freeze([
       { time: 0, id: "wind", description: `look ${shot} opens on the onshore wind` },
@@ -418,7 +418,9 @@ const KITE_EVENING = Object.freeze({
   // out there — pad already dropped a fifth, chimes already gone — so the three
   // past the end of golden hour all sit at 1 rather than being given a range
   // the instruments cannot spend. Their difference is on screen, not in the mix.
-  11: 0.78, 12: 0.92, 13: 1.0, 14: 1.0, 15: 1.0
+  11: 0.78, 12: 0.92, 13: 1.0, 14: 1.0, 15: 1.0,
+  // 16-18 are the flyer-scale looks: sunset, civil twilight, night.
+  16: 0.6, 17: 1.0, 18: 1.0
 });
 
 function scoreOceanBeachKite(mix, shot) {

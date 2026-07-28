@@ -3047,6 +3047,8 @@
       #hud .scooter-xy-canvas {
         filter: saturate(1.08) contrast(1.04) brightness(0.84);
       }
+      /* shared slider recipe — the scooter atelier authored it; the kite
+         atelier reuses it with its own accent (see .kite-slider below) */
       #hud .scooter-slider {
         position: relative;
         flex: 1 1 118px;
@@ -3136,6 +3138,49 @@
       #hud .car-slider output {
         color: #ffd0a1;
       }
+      /* kite atelier: the only atelier whose subject is already in the sky
+         behind the panel, so it carries no preview widget and stays narrow —
+         sail, dye, two dials. Sunset violet rather than the workshop lacquer:
+         this one is dyed cloth, not machined metal. */
+      #hud .board-panel.kite-panel {
+        width: min(330px, calc(100vw - 24px));
+        max-height: min(78dvh, 640px);
+        background:
+          radial-gradient(circle at 100% 0, rgba(180, 132, 255, 0.14), transparent 46%),
+          linear-gradient(150deg, rgba(31, 24, 52, 0.96), rgba(7, 14, 26, 0.97));
+        border-color: rgba(198, 155, 255, 0.28);
+        box-shadow:
+          0 18px 48px rgba(0, 6, 12, 0.54),
+          inset 0 1px 0 rgba(255, 255, 255, 0.07),
+          inset 3px 0 0 rgba(180, 132, 255, 0.13);
+      }
+      #hud .kite-panel .board-panel-head > span {
+        color: #d7bcff;
+      }
+      #hud .kite-note {
+        margin: -3px 0 1px;
+        padding-left: 58px;
+        color: rgba(226, 214, 255, 0.5);
+        font: 650 9px var(--font);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      #hud .kite-swatch {
+        /* two dye stops on the diagonal — see kiteSelector #dyeRow */
+        border-color: rgba(226, 214, 255, 0.28);
+      }
+      #hud .kite-panel .avatar-choice.on {
+        box-shadow: inset 0 -2px 0 rgba(198, 155, 255, 0.4);
+      }
+      #hud .kite-fly {
+        min-width: 96px;
+      }
+      #hud .kite-slider input[type="range"] {
+        accent-color: #b48cff;
+      }
+      #hud .kite-slider output {
+        color: #d7bcff;
+      }
       @media (max-width: 480px) {
         #hud .avatar-ui {
           right: max(8px, env(safe-area-inset-right));
@@ -3152,6 +3197,10 @@
         }
         #hud .avatar-ui.car-ui {
           right: max(58px, calc(env(safe-area-inset-right) + 58px));
+          top: max(68px, calc(env(safe-area-inset-top) + 68px));
+        }
+        #hud .avatar-ui.kite-ui {
+          right: max(8px, calc(env(safe-area-inset-right) + 8px));
           top: max(68px, calc(env(safe-area-inset-top) + 68px));
         }
         #hud .car-ui .car-panel {

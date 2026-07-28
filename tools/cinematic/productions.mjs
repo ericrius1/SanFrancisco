@@ -159,7 +159,10 @@ const DEFINITIONS = Object.freeze({
     [12, "Ocean Beach Kites · The Last Shafts"],
     [13, "Ocean Beach Kites · Civil Twilight"],
     [14, "Ocean Beach Kites · After the Light"],
-    [15, "Ocean Beach Kites · Nautical"]
+    [15, "Ocean Beach Kites · Nautical"],
+    [16, "Ocean Beach Kites · The Line"],
+    [17, "Ocean Beach Kites · Two on the Sand"],
+    [18, "Ocean Beach Kites · Night Flyers"]
   ].map(([index, title]) => {
     const suffix = String(index).padStart(2, "0");
     const id = `ocean-beach-kite-${suffix}`;
@@ -174,7 +177,7 @@ const DEFINITIONS = Object.freeze({
       audio: Object.freeze({
         profile: "ocean-beach-kite",
         index,
-        description: `Sunset onshore wind, surf wash and kite fabric — look ${index} of fifteen.`
+        description: `Sunset onshore wind, surf wash and kite fabric — look ${index} of eighteen.`
       })
     })];
   })),

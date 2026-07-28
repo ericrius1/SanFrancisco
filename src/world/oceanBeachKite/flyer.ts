@@ -7,7 +7,7 @@ import { attachToHand, wristTargetForGrip, type GripSpec } from "../../player/he
 import { buildRig, poseWalk, type Rig } from "../../player/rig";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { createKiteCloth, type KiteCloth, type KiteClothState } from "./kiteCloth";
-import type { KiteDesign } from "./kiteDesigns";
+import type { KiteDesign, KitePalette } from "./kiteDesigns";
 import {
   createGroundRunner,
   KITE_FIGURES,
@@ -42,6 +42,21 @@ const REEL_GRIP: GripSpec = {
   curl: 0.92
 };
 
+/**
+ * A hand to fly from that this module does not own — the local player's.
+ *
+ * The owner rewrites both vectors in place every frame; the flyer only reads
+ * them. `velocity` is the ONLY pilot input an anchored kite gets, which is the
+ * whole point: walk across the wind and your own kite swings, exactly as the
+ * beach flyers' running does for theirs.
+ */
+export type KiteAnchor = {
+  /** World position the line leaves from. */
+  position: THREE.Vector3;
+  /** World velocity of that hand, m/s. */
+  velocity: THREE.Vector3;
+};
+
 export type KiteFlyerOptions = {
   map: WorldMap;
   design: KiteDesign;
@@ -71,6 +86,18 @@ export type KiteFlyerOptions = {
    * its own. Set by the encounter, which calls adoptFigure() each frame.
    */
   ledByTroupe?: boolean;
+  /** Dye override. Defaults to the sail's own authored palette. */
+  palette?: KitePalette;
+  /**
+   * Fly off this hand instead of an authored ground runner. An anchored flyer
+   * builds no person and no reel, runs no choreography, and lets the pilot's
+   * own motion be the only steering there is.
+   */
+  anchor?: KiteAnchor;
+  /** 0..1 across the tuned line range. Anchored flyers only; figures own it otherwise. */
+  lineDial?: number;
+  /** Multiplies the deployed tail length. */
+  tailScale?: number;
 };
 
 export type KiteFlyerFrame = {
@@ -125,8 +152,21 @@ export class KiteFlyer {
 
   #map: WorldMap;
   #lane: { x: number; z: number };
-  #rig: Rig;
-  #reel: ReelProp;
+  /** Null for an anchored flyer: nobody is standing there. */
+  #rig: Rig | null = null;
+  #reel: ReelProp | null = null;
+  #anchor: KiteAnchor | null;
+  #palette: KitePalette;
+  #sparMaterial: THREE.MeshStandardMaterial | null = null;
+  #accentMaterial: THREE.MeshStandardMaterial | null = null;
+  #hemMaterial: THREE.LineBasicMaterial | null = null;
+  #reelBodyMaterial: THREE.MeshStandardMaterial | null = null;
+  #lineDial: number;
+  #tailScale: number;
+  /** Anchored launch ramp: 0 the instant the line goes tight, 1 once it flies. */
+  #launchRamp: number;
+  /** Pilot ground velocity — the runner's, or the anchor hand's. */
+  #pilot = { vx: 0, vz: 0 };
   #cloth: KiteCloth;
   #kite = new THREE.Group();
   #bridleKnot = new THREE.Object3D();
@@ -134,7 +174,7 @@ export class KiteFlyer {
   #tether: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   #tetherMaterial: THREE.LineBasicMaterial;
   #tail: KiteTail;
-  #runner: ReturnType<typeof createGroundRunner>;
+  #runner: ReturnType<typeof createGroundRunner> | null = null;
   #window = createWindWindow();
 
   #ownedGeometries: THREE.BufferGeometry[] = [];
@@ -203,6 +243,13 @@ export class KiteFlyer {
     this.#mirror = options.mirror ? -1 : 1;
     this.#spanScale = options.spanScale ?? 1;
     this.#ledByTroupe = Boolean(options.ledByTroupe);
+    this.#anchor = options.anchor ?? null;
+    this.#palette = options.palette ?? this.design.palette;
+    this.#lineDial = THREE.MathUtils.clamp(options.lineDial ?? 0.5, 0, 1);
+    this.#tailScale = Math.max(0, options.tailScale ?? 1);
+    // An anchored kite is handed to a player who is already standing there, so
+    // it launches from cold; the beach flyers have their own authored launch.
+    this.#launchRamp = this.#anchor ? 0 : 1;
 
     const tuning = OCEAN_KITE_TUNING.values;
     this.#lineLength = tuning.minLineLength * this.design.lineScale;
@@ -210,21 +257,24 @@ export class KiteFlyer {
 
     const startZ = options.lane.z;
     const startX = options.beachX(startZ) + 8;
-    this.#runner = createGroundRunner({
-      site: this.#lane,
-      beachX: options.beachX,
-      start: { x: startX, z: startZ, yaw: Math.PI }
-    });
+    this.group.name = this.#anchor
+      ? `ocean_beach_player_kite_${this.design.id}`
+      : `ocean_beach_kite_flyer_${this.design.id}`;
 
-    this.group.name = `ocean_beach_kite_flyer_${this.design.id}`;
-    this.#rig = buildRig(avatarFromSeed(options.seed));
-    this.#rig.group.name = `ocean_beach_kite_flyer_rig_${this.design.id}`;
-    this.group.add(this.#rig.group);
+    if (!this.#anchor) {
+      this.#runner = createGroundRunner({
+        site: this.#lane,
+        beachX: options.beachX,
+        start: { x: startX, z: startZ, yaw: Math.PI }
+      });
+      this.#rig = buildRig(avatarFromSeed(options.seed));
+      this.#rig.group.name = `ocean_beach_kite_flyer_rig_${this.design.id}`;
+      this.group.add(this.#rig.group);
+      this.#reel = this.#buildReel();
+      attachToHand(this.#rig, "R", this.#reel.group, REEL_GRIP);
+    }
 
-    this.#reel = this.#buildReel();
-    attachToHand(this.#rig, "R", this.#reel.group, REEL_GRIP);
-
-    this.#cloth = createKiteCloth(this.design);
+    this.#cloth = createKiteCloth(this.design, this.#palette);
     this.#buildKite();
     this.#kite.name = `ocean_beach_${this.design.id}_kite`;
     this.group.add(this.#kite);
@@ -248,9 +298,9 @@ export class KiteFlyer {
     // The tail lives in world space because its shape is the kite's history,
     // not anything the kite's own matrix can carry.
     this.#tail = createKiteTail({
-      ribbonNear: this.design.palette.tailA,
-      ribbonFar: this.design.palette.tailB,
-      bows: this.design.palette.bows
+      ribbonNear: this.#palette.tailA,
+      ribbonFar: this.#palette.tailB,
+      bows: this.#palette.bows
     });
     this.group.add(this.#tail.mesh, this.#tail.bows);
 
@@ -263,11 +313,15 @@ export class KiteFlyer {
       this.#lineTarget = this.#lineLength;
     }
 
-    const ground = this.#map.groundTop(startX, startZ);
-    this.#rig.group.position.set(startX, ground + RIG_HIP_HEIGHT, startZ);
-    poseWalk(this.#rig, 0, 1);
-    this.#rig.group.updateMatrixWorld(true);
-    this.#tetherStart.set(startX, ground + 1.35, startZ);
+    if (this.#rig) {
+      const ground = this.#map.groundTop(startX, startZ);
+      this.#rig.group.position.set(startX, ground + RIG_HIP_HEIGHT, startZ);
+      poseWalk(this.#rig, 0, 1);
+      this.#rig.group.updateMatrixWorld(true);
+      this.#tetherStart.set(startX, ground + 1.35, startZ);
+    } else {
+      this.#tetherStart.copy(this.#anchor!.position);
+    }
   }
 
   /** Second-stage seed: needs the encounter's wind axes and a view point. */
@@ -303,8 +357,9 @@ export class KiteFlyer {
     const spool = new THREE.Group();
     const wood = this.#ownMaterial(new THREE.MeshStandardMaterial({ color: 0x704728, roughness: 0.74 }));
     const violet = this.#ownMaterial(
-      new THREE.MeshStandardMaterial({ color: this.design.palette.clothLight, roughness: 0.62 })
+      new THREE.MeshStandardMaterial({ color: this.#palette.clothLight, roughness: 0.62 })
     );
+    this.#reelBodyMaterial = violet;
     const brass = this.#ownMaterial(
       new THREE.MeshStandardMaterial({ color: 0xc99b52, roughness: 0.42, metalness: 0.4 })
     );
@@ -345,14 +400,17 @@ export class KiteFlyer {
     enableShadowLayer(this.#cloth.mesh, SHADOW_LAYERS.HERO_DYNAMIC);
 
     const spar = this.#ownMaterial(
-      new THREE.MeshStandardMaterial({ color: this.design.palette.spar, roughness: 0.78 })
+      new THREE.MeshStandardMaterial({ color: this.#palette.spar, roughness: 0.78 })
     );
     const accent = this.#ownMaterial(
-      new THREE.MeshStandardMaterial({ color: this.design.palette.spar, roughness: 0.66 })
+      new THREE.MeshStandardMaterial({ color: this.#palette.spar, roughness: 0.66 })
     );
     const hem = this.#ownMaterial(
-      new THREE.LineBasicMaterial({ color: this.design.palette.hem, opacity: 0.9, transparent: true })
+      new THREE.LineBasicMaterial({ color: this.#palette.hem, opacity: 0.9, transparent: true })
     );
+    this.#sparMaterial = spar;
+    this.#accentMaterial = accent;
+    this.#hemMaterial = hem;
     const frame = this.design.buildFrame({
       own: (geometry) => this.#ownGeometry(geometry),
       spar,
@@ -420,6 +478,21 @@ export class KiteFlyer {
     const scale = this.design.lineScale;
     const minLine = Math.min(tuning.minLineLength, tuning.maxLineLength - 1) * scale;
     const maxLine = Math.max(tuning.maxLineLength * scale, minLine + 1);
+    // An anchored kite has no authored figure to reel for it: the dial IS the
+    // reel, and the same rate limit makes letting line out read as letting line
+    // out rather than as the kite teleporting further away.
+    if (this.#anchor) {
+      this.#lineTarget = THREE.MathUtils.lerp(minLine, maxLine, this.#lineDial);
+      const previous = this.#lineLength;
+      const maxStep = Math.max(0.1, tuning.reelRate) * dt;
+      this.#lineLength += THREE.MathUtils.clamp(
+        this.#lineTarget - this.#lineLength,
+        -maxStep,
+        maxStep
+      );
+      this.#lineChange = this.#lineLength - previous;
+      return;
+    }
     const figure = this.#currentFigure();
     if (figure.reel === 0 || figure.line === undefined) {
       this.#lineTarget = this.#lineLength;
@@ -434,7 +507,25 @@ export class KiteFlyer {
     this.#lineChange = this.#lineLength - previous;
   }
 
+  /**
+   * The anchored counterpart of #updateRunner: no legs to pose, no reel to
+   * swing, no footprints in the sand. The line simply starts wherever the owner
+   * put the hand this frame, and the hand's own velocity becomes pilot input.
+   */
+  #updateAnchor(frame: KiteFlyerFrame): void {
+    const anchor = this.#anchor!;
+    this.#tetherStart.copy(anchor.position);
+    this.#pilot.vx = anchor.velocity.x;
+    this.#pilot.vz = anchor.velocity.z;
+    // Ramp the launch over a couple of seconds. Snapping a 4 m sail to full
+    // window energy on frame one looks like a spawn, not like a launch.
+    this.#launchRamp = Math.min(1, this.#launchRamp + frame.dt * 0.55);
+    this.#tug *= Math.exp(-frame.dt * 2.4);
+  }
+
   #updateRunner(frame: KiteFlyerFrame): void {
+    const rig = this.#rig!;
+    const reel = this.#reel!;
     const tuning = OCEAN_KITE_TUNING.values;
     const figure = this.#currentFigure();
     const slow = Math.min(tuning.slowRunSpeed, tuning.fastRunSpeed);
@@ -442,18 +533,20 @@ export class KiteFlyer {
     const turnSign = (this.#figureFlip ? -1 : 1) * this.#mirror;
     const dt = frame.dt;
 
-    this.#runner.update(dt, {
+    this.#runner!.update(dt, {
       speed: THREE.MathUtils.lerp(slow, fast, figure.speed),
       turn: figure.turn * tuning.turnRate * turnSign,
       halfSpan: frame.halfSpan * this.#spanScale,
       beachDepth: frame.beachDepth,
       response: figure.name === "sprint" || figure.name === "launch" ? 3.2 : 1.9
     });
-    const runner = this.#runner.state;
+    const runner = this.#runner!.state;
+    this.#pilot.vx = runner.vx;
+    this.#pilot.vz = runner.vz;
 
     const ground = this.#map.groundTop(runner.x, runner.z);
-    this.#rig.group.position.set(runner.x, ground + RIG_HIP_HEIGHT, runner.z);
-    this.#rig.group.rotation.set(0, runner.yaw, runner.lean);
+    rig.group.position.set(runner.x, ground + RIG_HIP_HEIGHT, runner.z);
+    rig.group.rotation.set(0, runner.yaw, runner.lean);
 
     // Stride is driven by ground speed OR by how hard they are pivoting, so a
     // spin has quick shuffling feet instead of a frozen pair of legs.
@@ -464,13 +557,13 @@ export class KiteFlyer {
       0,
       1
     );
-    poseWalk(this.#rig, this.#stride, runBlend);
+    poseWalk(rig, this.#stride, runBlend);
 
     // Body layer: eyes on the kite, chest following them round. `watch` is what
     // separates a jogger from someone flying something.
-    this.#rig.group.updateWorldMatrix(true, false);
+    rig.group.updateWorldMatrix(true, false);
     this.#kiteLocal.copy(this.kitePosition);
-    this.#rig.group.worldToLocal(this.#kiteLocal);
+    rig.group.worldToLocal(this.#kiteLocal);
     const horizontal = Math.hypot(this.#kiteLocal.x, this.#kiteLocal.z);
     const lookYaw = THREE.MathUtils.clamp(
       Math.atan2(-this.#kiteLocal.x, -this.#kiteLocal.z),
@@ -483,11 +576,11 @@ export class KiteFlyer {
       1.15
     );
     const watch = THREE.MathUtils.clamp(figure.watch, 0, 1);
-    this.#rig.head.rotation.y += lookYaw * watch;
-    this.#rig.head.rotation.x -= lookPitch * watch * 0.82;
-    this.#rig.torso.rotation.y += lookYaw * watch * 0.32;
+    rig.head.rotation.y += lookYaw * watch;
+    rig.head.rotation.x -= lookPitch * watch * 0.82;
+    rig.torso.rotation.y += lookYaw * watch * 0.32;
     // Watching something high pulls the whole spine back a little.
-    this.#rig.torso.rotation.x -= lookPitch * watch * 0.16;
+    rig.torso.rotation.x -= lookPitch * watch * 0.16;
 
     // Hands. Both stay on the reel — that is how a spool is actually held — but
     // the reel itself travels: up toward the kite while watching, back into the
@@ -506,44 +599,50 @@ export class KiteFlyer {
       -0.34 - watch * 0.05 + this.#tug * 0.2 - haulCycle * 0.06
     );
     this.#rightWrist.copy(this.#targetLocal);
-    this.#rig.group.localToWorld(this.#rightWrist);
-    this.#handAim.copy(this.#rig.group.quaternion);
-    setHandTarget(this.#rig, "R", this.#rightHandTarget);
+    rig.group.localToWorld(this.#rightWrist);
+    this.#handAim.copy(rig.group.quaternion);
+    setHandTarget(rig, "R", this.#rightHandTarget);
     // getWorldPosition refreshes only the reel's ancestor chain; avoid a full
     // rig traversal between the two IK solves.
-    this.#reel.guideGrip.getWorldPosition(this.#leftGrip);
-    wristTargetForGrip(this.#rig, "L", this.#leftGrip, this.#handAim, this.#leftWrist);
-    setHandTarget(this.#rig, "L", this.#leftHandTarget);
+    reel.guideGrip.getWorldPosition(this.#leftGrip);
+    wristTargetForGrip(rig, "L", this.#leftGrip, this.#handAim, this.#leftWrist);
+    setHandTarget(rig, "L", this.#leftHandTarget);
 
     // The prop follows actual signed line travel. It stops exactly when the
     // tether stops, even if a long authored figure still has time remaining.
     this.#reelSpin += this.#lineChange / 0.095;
-    this.#reel.spool.rotation.x = this.#reelSpin;
-    this.#reel.lineKnot.getWorldPosition(this.#tetherStart);
+    reel.spool.rotation.x = this.#reelSpin;
+    reel.lineKnot.getWorldPosition(this.#tetherStart);
   }
 
   #updateFlight(frame: KiteFlyerFrame): void {
     const tuning = OCEAN_KITE_TUNING.values;
     const figure = this.#currentFigure();
-    const runner = this.#runner.state;
+    const pilot = this.#pilot;
     const dt = frame.dt;
     const wind = tuning.windStrength * (0.72 + frame.gust * tuning.gustResponse * 0.72);
     this.#lastWind = wind;
 
-    let launchGate = 1;
-    if (figure.name === "launch" && this.#figureIndex === 0) {
-      launchGate = smooth01(this.#figureTime / Math.max(0.1, figure.seconds * 0.82));
+    // An anchored kite has no choreography to steer it and no authored launch:
+    // it comes up on its own ramp and everything after that is the player's own
+    // feet, arriving through pilotLateral/pilotUpwind below.
+    let launchGate = this.#anchor ? smooth01(this.#launchRamp) : 1;
+    let steer = 0;
+    if (!this.#anchor) {
+      if (figure.name === "launch" && this.#figureIndex === 0) {
+        launchGate = smooth01(this.#figureTime / Math.max(0.1, figure.seconds * 0.82));
+      }
+      const flip = (this.#figureFlip ? -1 : 1) * this.#mirror;
+      steer = (figure.steer ?? 0) * flip * tuning.steerAuthority;
     }
-
-    const flip = (this.#figureFlip ? -1 : 1) * this.#mirror;
     this.#window.update({
       dt,
       elapsed: frame.elapsed,
       wind,
       gust: frame.gust,
-      steer: (figure.steer ?? 0) * flip * tuning.steerAuthority,
-      pilotLateral: runner.vx * frame.crosswind.x + runner.vz * frame.crosswind.z,
-      pilotUpwind: -(runner.vx * frame.wind.x + runner.vz * frame.wind.z),
+      steer,
+      pilotLateral: pilot.vx * frame.crosswind.x + pilot.vz * frame.crosswind.z,
+      pilotUpwind: -(pilot.vx * frame.wind.x + pilot.vz * frame.wind.z),
       tug: this.#tug,
       lift: tuning.lift,
       drag: tuning.drag,
@@ -653,7 +752,10 @@ export class KiteFlyer {
       this.kitePosition.y - ground - this.design.height * 0.5 - 0.2
     );
     const deployed = smooth01((this.#window.state.energy - 0.04) / 0.55);
-    this.#tailLength = Math.min(availableDrop, THREE.MathUtils.lerp(0.12, 9.5, deployed));
+    this.#tailLength = Math.min(
+      availableDrop,
+      THREE.MathUtils.lerp(0.12, 9.5, deployed) * this.#tailScale
+    );
     this.#tail.update({
       dt,
       elapsed,
@@ -680,9 +782,10 @@ export class KiteFlyer {
 
   update(frame: KiteFlyerFrame): void {
     if (this.#disposed) return;
-    if (!this.#ledByTroupe) this.#advanceFigure(frame.dt);
+    if (!this.#ledByTroupe && !this.#anchor) this.#advanceFigure(frame.dt);
     this.#updateLineLength(frame.dt);
-    this.#updateRunner(frame);
+    if (this.#anchor) this.#updateAnchor(frame);
+    else this.#updateRunner(frame);
     this.#updateFlight(frame);
     this.#updateTether(frame.elapsed);
     this.#updateTail(frame.dt, frame.elapsed, frame.view, frame.backlight);
@@ -705,6 +808,35 @@ export class KiteFlyer {
     this.#tetherMaterial.color
       .copy(TETHER_COOL)
       .lerp(TETHER_WARM, THREE.MathUtils.clamp(backlight * 1.4, 0, 1));
+  }
+
+  /**
+   * Re-dye a live kite. Every colour on it is a uniform or a material property,
+   * so a swatch press costs no geometry and no pipeline compile — which is what
+   * makes the atelier's swatch row feel like a swatch row.
+   */
+  setPalette(palette: KitePalette): void {
+    if (this.#disposed) return;
+    this.#palette = palette;
+    this.#cloth.setPalette(palette);
+    this.#sparMaterial?.color.setHex(palette.spar);
+    this.#accentMaterial?.color.setHex(palette.spar);
+    this.#hemMaterial?.color.setHex(palette.hem);
+    this.#reelBodyMaterial?.color.setHex(palette.clothLight);
+    this.#tail.setPalette({
+      ribbonNear: palette.tailA,
+      ribbonFar: palette.tailB,
+      bows: palette.bows
+    });
+  }
+
+  /** 0..1 across the tuned line range. Anchored flyers only. */
+  setLineDial(dial: number): void {
+    this.#lineDial = THREE.MathUtils.clamp(dial, 0, 1);
+  }
+
+  setTailScale(scale: number): void {
+    this.#tailScale = Math.max(0, scale);
   }
 
   get figure(): KiteFigureName {
@@ -734,11 +866,14 @@ export class KiteFlyer {
     this.#figureTime = leader.figureTime;
     this.#figureFlip = leader.figureFlip;
   }
+  /** Where the flyer stands — the rig's hips, or the anchored hand itself. */
   get runnerPosition(): THREE.Vector3 {
-    return this.#rig.group.position;
+    return this.#rig ? this.#rig.group.position : this.#tetherStart;
   }
   get runnerSpeed(): number {
-    return this.#runner.state.speed;
+    return this.#runner
+      ? this.#runner.state.speed
+      : Math.hypot(this.#pilot.vx, this.#pilot.vz);
   }
   get lineLength(): number {
     return this.#lineLength;
@@ -773,7 +908,9 @@ export class KiteFlyer {
     this.#disposed = true;
     this.#cloth.dispose();
     this.#tail.dispose();
-    for (const material of Object.values(this.#rig.avatar.materials)) material.dispose();
+    if (this.#rig) {
+      for (const material of Object.values(this.#rig.avatar.materials)) material.dispose();
+    }
     for (const geometry of new Set(this.#ownedGeometries)) geometry.dispose();
     for (const material of new Set(this.#ownedMaterials)) material.dispose();
     this.group.removeFromParent();
