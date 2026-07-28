@@ -45,6 +45,11 @@ type BoatState = {
   speed: number;
   /** True while the walk controller has the capsule in water. */
   swimming?: boolean;
+  /** How much hull is in the water (vehicles/boat/buoyancy): 1 on her lines,
+   *  0 flying off a crest. A hull in mid-air is not disturbing any water. */
+  hullSub?: number;
+  /** Closing speed of a splashdown this frame (m/s), 0 otherwise. */
+  slamSpeed?: number;
 };
 
 // prog < 0 = spawn delay still counting down (advances on the same clock)
@@ -214,8 +219,14 @@ export class WakeRipples {
     this.#swimDistAcc = 0;
     this.#swimIdleAcc = 0;
 
+    // A hull that just came down off a crest throws a proper splash.
+    if ((boat.slamSpeed ?? 0) > 2) {
+      const p = boat.renderPosition;
+      this.burst(p.x, p.z, elapsed, 5 + Math.min(boat.slamSpeed!, 10) * 0.9);
+    }
+
     // shed new rings by distance travelled, so boost naturally packs the wake
-    if (boat.mode !== "boat" || h < MIN_SPEED) {
+    if (boat.mode !== "boat" || h < MIN_SPEED || (boat.hullSub ?? 1) < 0.15) {
       this.#boatDistAcc = 0;
       return;
     }
