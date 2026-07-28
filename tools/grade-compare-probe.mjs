@@ -13,9 +13,18 @@
  *   SF_SPAWN   spawn key                (default: oceanBeach)
  *   SF_FACE    sun | none               (default: sun — aim the camera at the sunset)
  *   SF_PITCH   chase pitch in radians   (default: 0.02)
- *   SF_LUTSIZE re-bake the LUT at this edge length before shooting (fidelity check)
+ *   SF_LUTSIZE re-bake the LUT at this edge length before shooting
+ *   SF_LUTAB   also shoot the SAME frame at this edge length, as a near-truth
+ *              reference to diff the shipped LUT against (fidelity check)
+ *   SF_GREYCARDS=1  raise the "/" calibration chart and report where the 18%
+ *              card lands, in stops vs photographic neutral
  *   SF_TAG     filename prefix
  *   SF_SHOT_OUT output dir              (default: .data/grade-shots)
+ *
+ * Every plate is gated on the canvas actually advancing — see settleUntilLive.
+ * Without that gate this probe will happily write a stale frame whose log line
+ * describes the state you asked for, which is the single most expensive failure
+ * mode in this harness.
  */
 
 import { access, mkdir } from "node:fs/promises";
@@ -171,6 +180,35 @@ try {
     }
   };
 
+  /**
+   * Refuse to hand back a frozen canvas.
+   *
+   * Everything else this probe checks reads the SCENE GRAPH, which is exactly
+   * why a stale plate slips through: the sun elevation and camera heading are
+   * already correct while the pixels are minutes old. The one signal that comes
+   * from the pixels is that the ocean never stops moving — so two byte-identical
+   * screenshots mean rendering is stalled, not that the world is calm.
+   *
+   * This fires for real. Running the probe while `npm run build` had the machine
+   * at load average 70+ stretched compiles past the settle window and produced a
+   * confident midday inland plate for a sunset request.
+   */
+  const settleUntilLive = async (label) => {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await settle(attempt === 0 ? 14 : 8);
+      const a = await page.screenshot();
+      await page.evaluate(() => { for (let i = 0; i < 4; i++) window.__sf.tick(1 / 30); });
+      await page.waitForTimeout(200);
+      const b = await page.screenshot();
+      if (!a.equals(b)) return;
+      console.log(`[cmp]   canvas frozen (${label}), attempt ${attempt + 1} — settling further`);
+    }
+    throw new Error(
+      `canvas never advanced for ${label}: the renderer is holding frames (a compile in ` +
+      `flight, or the machine is loaded). The plate would be stale — refusing to write it.`
+    );
+  };
+
   // Clean plate: Tab fades the HUD. It is read via input.pressed("Tab") inside
   // the frame body, so in manual mode the press lands on the NEXT tick.
   await page.keyboard.press("Tab");
@@ -191,7 +229,7 @@ try {
   // happily reads sand and sky, which is how the first look of a run came back
   // two stops brighter than every other look in the same sweep.
   await page.evaluate((tod) => window.__sf.sky.setTimeOfDay(tod), TIMES[0]);
-  await settle();
+  await settleUntilLive("prime");
   console.log("[cmp] primed");
 
   for (const time of TIMES) {
@@ -201,7 +239,7 @@ try {
         sf.pipeline.grade.setLook(lookId);
         sf.sky.setTimeOfDay(tod);
       }, { tod: time, lookId: look });
-      await settle();
+      await settleUntilLive(`${look} @ t=${time}`);
 
       const info = await page.evaluate(() => {
         const sf = window.__sf;
