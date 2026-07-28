@@ -196,6 +196,22 @@ const FOG_WALL_EXTINCTION_LENGTH = 40
 // the same octaves read as rolling pockets over streets and water.
 const FOG_DENSITY_MIN = 0.6
 const FOG_DENSITY_MAX = 1.4
+// Floating-world guard. The marine bank may wash geometry TOWARD the fog
+// colour but never fully erase it: an uncapped bank whose colour sits on the
+// horizon gradient turns every fogged hillside and building base into "sky",
+// so ridge tops, lit roof rows and lone towers read as crescents and boxes
+// floating above nothing (the Sutro Baths window/flyover artifact). Capping
+// the bank keeps ~10% of the surface's own colour at full wash — a silhouette,
+// not a hole. The cull-edge veil is unioned separately and still completes to
+// a full fade, so the streamed edge keeps hiding pop-in.
+const FOG_BANK_MAX = 0.9
+// Colour grade for fragments deep inside the marine layer: the bank's body
+// takes a slightly deeper tone than the shared horizon fog colour, so a fogged
+// coastline reads as a fog DECK sitting under the sky instead of as sky
+// itself — the other half of the floating-world read. The grade fades back to
+// the shared colour across the cull-edge veil (the dome handoff must keep its
+// exact colour match) and collapses to identity when weather fog is off.
+const FOG_DECK_TONE = 0.86
 const FOG_SKY_BLEND_HEIGHT = 0.08 // match the visible horizon over its lowest ~5°
 const FOG_GOLD_LIGHT = 0.48 // neutral dusk fog: dimmer, never orange/grey
 const FOG_NIGHT_LIGHT = 0.12 // moonlit bank without a daylight-white night seam
@@ -375,6 +391,9 @@ export class Sky {
   // first live frame instead of briefly assuming a fully fogged backdrop.
   #uFogEnabled = uniform(0)
   #uFogBackdrop = uniform(0)
+  // Strength of the FOG_DECK_TONE grade, resolved on the CPU from the live
+  // bank density (0 with weather fog off / clear air, so the grade is inert).
+  #uFogDeck = uniform(0)
   // Void-realm ramp (docs/VOID_STREAM_REWRITE.md M2): 0 = normal sky, 1 = the
   // dark holo void. A pure uniform multiply on dome/IBL radiance and on fog
   // opacity — light-set membership and light intensities are never touched.
@@ -966,7 +985,11 @@ export class Sky {
 
     // Probabilistic union, identical to the reference for bank + haze and extended
     // by only the narrow cull fade: 1 - (1-bank)(1-haze)(1-edge)(1-mist).
+    // The bank alone is clamped to FOG_BANK_MAX (floating-world guard); the
+    // edge veil still reaches 1 through the union, so the streamed edge fades
+    // out completely exactly as before.
     const clear = bankFog
+      .min(FOG_BANK_MAX)
       .oneMinus()
       .mul(distHaze.oneMinus())
       .mul(edgeFade.oneMinus())
@@ -994,8 +1017,32 @@ export class Sky {
     // Keep the official reference colour in color-managed form. It reads milky
     // white under ACES and now agrees with the visible horizon instead of resolving
     // to the old #4d5358 charcoal attractor.
+    //
+    // FOG_DECK_TONE grade: deliberately cheap (uniforms + positionWorld only —
+    // no noise, no shared branch state; the horizontal distance is recomputed
+    // locally for the same WGSL-materialization reason the wall block documents
+    // above). Where the veil takes over (deckEdgeKeep → 0) or the CPU resolves
+    // clear air (#uFogDeck = 0) the grade is exactly 1 and the colour is
+    // bit-identical to the shared horizon fog colour.
+    const deckL = (cameraPosition as N).xz
+      .sub((positionWorld as N).xz)
+      .length()
+    const deckEdgeKeep = smoothstep(
+      this.#uFogEdgeStart as N,
+      this.#uFogEdgeEnd as N,
+      deckL
+    ).oneMinus()
+    const deckDepth = (this.#uFogTop as N)
+      .sub(y)
+      .div((this.#uFogTop as N).sub(base).max(1))
+      .saturate()
+    const deckGrade = mix(
+      float(1),
+      float(FOG_DECK_TONE),
+      deckDepth.mul(deckEdgeKeep).mul(this.#uFogDeck as N)
+    )
     return tslFog(
-      color(FOG_COLOR).mul(this.#uFogLight as N),
+      color(FOG_COLOR).mul(this.#uFogLight as N).mul(deckGrade),
       // Void realm: fog fades out with the void ramp (a uniform multiply on
       // the fog factor — the graph and pipeline are unchanged).
       combinedFactor.mul((this.#uVoid as N).oneMinus())
@@ -1073,6 +1120,12 @@ export class Sky {
     this.#uFogEdgeStrength.value = resolved.farWeatherOpacity
     this.#uFogEnabled.value = resolved.weatherEnabled ? 1 : 0
     this.#uFogBackdrop.value = resolved.farWeatherOpacity
+    // Deck grade strength follows the live bank density so a barely-there bank
+    // barely grades, a real marine layer reads as a deck, and clear air / fog
+    // off leaves the colour untouched.
+    this.#uFogDeck.value = resolved.weatherEnabled
+      ? Math.min(1, resolved.bankDensity * 3)
+      : 0
   }
 
   #fogWeatherMode(): FogWeatherMode {
