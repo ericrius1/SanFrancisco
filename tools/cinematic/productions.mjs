@@ -202,6 +202,32 @@ const DEFINITIONS = Object.freeze({
         description: `The sun held inside the sunwheel — eclipse look ${index} of five.`
       })
     })];
+  })),
+  // Five seconds each, inside the restored hall, at a standing person's eye
+  // height. No avatar, no camera move to speak of — one held look per moment.
+  ...Object.fromEntries([
+    [1, "Sutro Baths · Still Water", "Someone floating in the great plunge, watched from the coping."],
+    [2, "Sutro Baths · The Long View", "Two on the window bench, the Pacific going down in front of them."],
+    [3, "Sutro Baths · Tea in the Windows", "Three at tea in the ocean gallery, lamp lit, sunset behind."],
+    [4, "Sutro Baths · The Hot Bath", "Two talking chest-deep in the hot bath, steam off the water."],
+    [5, "Sutro Baths · The Plunge Edge", "Two sitting with their feet in the plunge, candles down the coping."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `sutro-moment-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 5,
+      seed: (0x53_55_54_00 + index * 0x101) >>> 0,
+      posterAt: 3.2,
+      stillTimes: Object.freeze([0.2, 1.2, 2.5, 3.8, 4.8]),
+      audio: Object.freeze({
+        profile: "sutro-moment",
+        index,
+        description
+      })
+    })];
   }))
 });
 
