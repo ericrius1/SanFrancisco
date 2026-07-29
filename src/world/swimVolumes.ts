@@ -21,6 +21,7 @@
  */
 
 import { waterHeight } from "./heightmap";
+import { inInteriorVolume } from "./interiorVolumes";
 
 export type SwimVolume = {
   readonly id: string;
@@ -112,5 +113,21 @@ export function submergibleWaterY(
 ): number {
   const volume = swimVolumeAt(x, z, y);
   if (volume) return volume.surfaceY;
+  /**
+   * An authored room below the terrain is DRY, and nothing about a 2D water
+   * query can know that.
+   *
+   * This is the answer four separate submersion consumers act on — the DOM
+   * waterline veil, the GPU Beer-Lambert package, the underwater volume and the
+   * splash emitter — and each of them decides for itself, from its own eased
+   * state, whether to paint. One of them getting a "yes" down here is a sheet
+   * of water hanging in a timber gallery thirty-one metres under the deck, and
+   * chasing which one is the wrong shape of fix: the QUESTION is what is wrong.
+   *
+   * Registered swim volumes still answer first, so the basin inside such a room
+   * is real water you can dive in and be shaded for. Everything else in it is
+   * air, unconditionally.
+   */
+  if (y !== undefined && inInteriorVolume(x, y, z)) return Number.NaN;
   return map.isWater(x, z) ? waterHeight(x, z, time) : Number.NaN;
 }

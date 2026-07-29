@@ -54,6 +54,7 @@ import {
   subscribeBehindTheScenes
 } from "../../ui/behindTheScenesHost";
 import { Tutorial } from "../../ui/tutorial";
+import { TUTORIAL_ZONE_ARRIVAL } from "../../world/tutorialZone/meta";
 import { DebugPanel } from "../../ui/debug";
 import { DebugOverlays } from "../../ui/overlays";
 import { OVERLAY_TUNING } from "../../ui/overlays/tuning";
@@ -914,7 +915,26 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     pressed: (c) => input.pressed(c),
     mapOpen: () => minimap.expanded,
     teleport: (t) => navigation.teleportToPose(t),
-    message: (m, s) => hud.message(m, s)
+    message: (m, s) => hud.message(m, s),
+    // The flight school. `zone` is null until the site is resident, and every
+    // step that reads it has a body-only fallback — starting the tutorial from
+    // the far side of the city must never wait on a chunk.
+    zone: () => core.state.tutorialZone?.progress ?? null,
+    // `sites` is declared further down this function; the button that calls
+    // this cannot be clicked before then, so the closure never hits the TDZ.
+    goToZone: () => {
+      void sites.ensure("tutorial-zone");
+      navigation.teleportToPose(
+        {
+          x: TUTORIAL_ZONE_ARRIVAL.x,
+          y: map.groundTop(TUTORIAL_ZONE_ARRIVAL.x, TUTORIAL_ZONE_ARRIVAL.z) + 1.2,
+          z: TUTORIAL_ZONE_ARRIVAL.z,
+          facing: TUTORIAL_ZONE_ARRIVAL.heading,
+          mode: "walk"
+        },
+        "Flight School"
+      );
+    }
   });
   navigation.onTeleported = () => {
     jumpLandingAudio.reset();
@@ -1629,6 +1649,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       core.state.coronaHeights = r.coronaHeights;
       core.state.landsEnd = r.landsEnd;
       core.state.waveOrgan = r.waveOrgan;
+      core.state.tutorialZone = r.tutorialZone;
       // Beach Pianist keeps two concerns in main (they read main-local state the
       // controller can't see): its debug tuning folder and piano-only god-ray
       // ownership. HEAD ran these inside loadBeachPianist / its unloader;
@@ -1759,7 +1780,18 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
             // its boiler-room footprint alongside the authored Tea Garden and
             // the six source-authored Fort Mason replacements.
             isTeaGardenBuilding(key, index) ||
-            (key === "1_12" && index === 0) ||
+            // The Point Lobos headland. Five OSM footprints land on the cliff
+            // between the restored hall and the Cliff House shelf, isolated from
+            // the Richmond grid that starts 400 m inland at 60-80 m elevation.
+            // From the hall's ocean window they are the first thing in frame and
+            // they read as slabs hanging over the water, because at deck height
+            // the coastal land beyond subtends under a degree and hazes out to
+            // the same value as the sea while the walls stay dark. #2 is the
+            // clearest evidence that they were never meant to be here: its roof
+            // (21.4 m) sits below the terrain under it (23.4 m), so it is a
+            // fully buried building that still draws. Removing the cluster
+            // restores an empty headland; the Richmond skyline is untouched.
+            (key === "1_12" && [0, 1, 2, 3, 4].includes(index)) ||
             (key === "10_8" && [0, 19, 20, 22, 23, 24].includes(index))
         },
         {
