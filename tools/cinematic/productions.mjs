@@ -206,6 +206,31 @@ const DEFINITIONS = Object.freeze({
       })
     })];
   })),
+  // The two twenty-second surf films. Longer than anything else in the kite
+  // family because the thing they are about has a sixteen-second period: a ten
+  // second clip of Ocean Beach catches one wave, and the point of these is a
+  // set arriving, breaking and washing out while the festival flies over it.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Surf · The Set", "A crane off the break: wave height to fifteen metres while a set goes off under the whole festival."],
+    [2, "Ocean Beach Surf · The Waterline", "Head height at the water's edge, tracking the beach as flyer after flyer crosses the sun."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-surf-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 20,
+      seed: (0x53_52_46_00 + index * 0x101) >>> 0,
+      posterAt: 13.2,
+      stillTimes: Object.freeze([0.3, 2.4, 4.8, 7.2, 9.6, 12, 14.4, 16.8, 19.2]),
+      audio: Object.freeze({
+        profile: "ocean-beach-surf",
+        index,
+        description
+      })
+    })];
+  })),
   // The two travelling shots: kite festival to Sutro Baths in one unbroken move.
   // Fifteen seconds each, and the stills are weighted toward the back half
   // because that is where the shot changes — the beach run is one continuous

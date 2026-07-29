@@ -508,8 +508,15 @@ export class Water {
       // Only the displaced near sheet participates in the Ocean Beach face;
       // its coarse row is cut out below where the high-resolution surf sheet
       // replaces it, preventing two transparent versions of the same wave.
+      // Has this crest thrown yet? Everything below hangs off this one number.
+      // A swell that has not reached the bar is GLASS — emerald, dark, no foam
+      // anywhere on it — and the same swell twenty metres further in is
+      // aerated white water from crown to apron. Before this channel existed
+      // both states were shaded identically and the entire beach was a single
+      // pale wash: waves visibly rolled through, and none of them ever broke.
+      const broke = displace > 0 ? surfField.breaking.toVar() : float(0);
       const surfFaceTint = displace > 0
-        ? smoothstep(0.12, 0.82, surfField.face).toVar()
+        ? smoothstep(0.12, 0.82, surfField.face).mul(broke.mul(0.8).oneMinus()).toVar()
         : float(0);
       // Height alone used to bleach the entire upper half of every swell. The
       // analytic lip/whitewater channels keep pale water confined to the thin
@@ -517,16 +524,28 @@ export class Water {
       // emerald wall beneath it for the rider to carve against.
       const crestRipple = sin(pxz.y.mul(0.47).sub(t.mul(2.1))).mul(0.5).add(0.5);
       const crestBreakup = smoothstep(
-        0.5,
-        0.9,
+        0.35,
+        0.85,
         oceanFoam.mul(0.5).add(crestRipple.mul(0.5))
       );
-      const surfCrest = displace > 0
-        ? smoothstep(0.66, 0.96, surfField.lip)
-            .mul(crestBreakup)
-            .mul(0.06)
-            .add(surfField.white.mul(0.035))
+      // The crown goes near-solid white and the apron behind it stays white
+      // for the fifty-odd metres the analytic `white` channel spans. max(),
+      // not add(): the two overlap, and summing them clipped the overlap into
+      // one flat plateau with no edge where the lip actually is.
+      const lipFoam = displace > 0
+        ? smoothstep(0.22, 0.8, surfField.lip)
+            .mul(crestBreakup.mul(0.24).add(0.76))
+            .mul(broke)
+            .toVar()
         : float(0);
+      const apronFoam = displace > 0
+        ? surfField.white
+            .mul(1.7)
+            .mul(crestBreakup.mul(0.38).add(0.62))
+            .mul(broke)
+            .toVar()
+        : float(0);
+      const surfCrest = max(lipFoam, apronFoam).toVar();
       const foamTotal = clamp(
         foam.mul(surfFaceTint.mul(0.85).oneMinus()).add(surfCrest),
         0,
@@ -661,6 +680,15 @@ export class Water {
         bedGain: BED_GAIN,
         foam: foamTotal,
         foamAlbedo: color(0xdfe8e6),
+        // Only the analytic breaking channel is aerated whitewater; the bay's
+        // spectral foam is spent bubbles and stays a flat raft. Build-time
+        // gated to the displaced sheet, so the far annulus emits none of it.
+        // The CROWN is weighted far above the apron behind it: the pitching
+        // lip is the thinnest, most aerated water on the wave and the only
+        // part the sun genuinely shines through, and giving both the same
+        // weight flattened the whole break into one even white plateau with
+        // no edge to read the wave's shape against.
+        foamGlow: displace > 0 ? lipFoam.mul(2.1).add(apronFoam.mul(0.55)) : undefined,
         // Crest subsurface (SoT trick): the cascades' 1−Jacobian mask IS the set
         // of folding, thin crests, so the glow rides exactly the pitching tops.
         // It lives inside the BRDF now so it gets the view dependence it needs —
@@ -669,14 +697,41 @@ export class Water {
         skyRadiance: (dir, level) => this.#sky.envRadiance(dir, level)
       });
 
-      // While the surf overlay is live, standing swell must stay luminous water
-      // on its sun-shadowed side too — an unlit backside rendered near-black
-      // against the bright bay ("dark hole behind the wave"). Build-time gated
-      // to the displaced sheet; scaled by uSurfing.
+      // A standing swell lit THROUGH. Two jobs from one term:
+      //
+      // While the surf overlay is live it keeps the wave's sun-shadowed side
+      // luminous water rather than the near-black hole it rendered as against
+      // the bright bay. And whenever the sun is low and BEYOND the wave — the
+      // whole of golden hour on a west-facing beach — an unbroken face is a
+      // pane of backlit water and the brightest green thing on the sea, which
+      // is most of what a sunset set actually looks like.
+      //
+      // The gates are geometric, so it costs nothing when the geometry is
+      // wrong: it needs the camera looking sunward (viewDir·sun), a sun near
+      // the horizon, and a face that has not yet gone to foam — light does not
+      // pass through aerated white water. Build-time gated to the displaced
+      // sheet; the surfing term keeps that overlay at least as strong as it was.
+      // Foam, not `broke`, is what closes this term off. `broke` is a per-CREST
+      // number — it says the wave has gone, and dimming the glow by it also
+      // dims the trough and the shoulder either side, while still letting a
+      // green wash sit on top of the white water itself. Aerated foam is
+      // opaque: subtracting the actual foam coverage puts the glow exactly
+      // where light still passes and nowhere else, which is what stops the
+      // whitewater reading as pale mint instead of white.
+      const sunward = saturate(viewDir.dot(this.#uSunDir)).toVar();
+      const foamClear = foamTotal.oneMinus().toVar();
       const surfWallGlow = displace > 0
-        ? vec3(0.02, 0.3, 0.18)
+        ? vec3(0.045, 0.34, 0.2)
             .mul(smoothstep(1.2, 6.0, surfField.height))
-            .mul(this.#uSurfing)
+            // Squared: half-foam is already mostly aerated, and a linear
+            // falloff left a green wash lying over the whitewater.
+            .mul(foamClear.mul(foamClear))
+            .mul(
+              sunward
+                .mul(sunward)
+                .mul(saturate(float(1).sub(this.#uSunDir.y.mul(3.4))))
+                .add(this.#uSurfing)
+            )
             .mul(0.5 * LIGHT_SCALE)
         : vec3(0);
       // The mx_noise sun sparkle is GONE — one 3D gradient-noise evaluation
@@ -696,7 +751,9 @@ export class Water {
       const emeraldVein = surfFaceTint
         .mul(surfFaceTint)
         .mul(surfFaceTint)
-        .mul(smoothstep(0.35, 0.8, veinBreak));
+        .mul(smoothstep(0.35, 0.8, veinBreak))
+        // Same rule as the wall glow: no green marbling on top of white water.
+        .mul(foamClear.mul(foamClear));
       // Added into colorNode rather than emissiveNode: with `lights = false`
       // the outgoing light IS diffuseColor.rgb, so the two are identical here —
       // one fewer node, and the whole surface stays one expression.

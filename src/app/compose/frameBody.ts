@@ -39,7 +39,7 @@ import type {  } from "../../player/types";
 import {
   PAINTBALL_SPEED
 } from "../../fx/paintball";
-import {  oceanWaveEnergyAt } from "../../audio/waveAudio";
+import {  oceanWaveEnergyAt, type WaveListener } from "../../audio/waveAudio";
 import {  ABANDONED_MOUNT_PROMPT } from "../../gameplay/abandonedMounts";
 import type {  } from "../../gameplay/creatures";
 import type {  } from "../../gameplay/forest";
@@ -87,6 +87,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
   const { water, underwater, hud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
   const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, emoteWheel, updateEmoteKeepAlive, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
+  // Reused every frame by the wave-audio listener below; the basis extraction
+  // wants three vectors and only one of them is interesting.
+  const waveListener: WaveListener = { x: 0, z: 0, rightX: 1, rightZ: 0 };
+  const waveRight = new THREE.Vector3();
+  const waveUp = new THREE.Vector3();
+  const waveForward = new THREE.Vector3();
   const state = {
     cineHook: null as (((dt: number) => void) | null),
   };
@@ -1653,7 +1659,22 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     );
     waveEnergy.level *= sutroWaveMix;
     waveEnergy.breaking *= sutroWaveMix;
-    waveAudio.update(frameDt, waveEnergy);
+    // The ears go with the LENS, not the body. Ordinarily they are the same
+    // place, but in a scripted shot the body is parked at the site while the
+    // camera is a hundred metres down the beach, and a crash has to be panned
+    // and delayed from where it is being watched.
+    waveListener.x = camera.position.x;
+    waveListener.z = camera.position.z;
+    // Camera right in world XZ: the x/z row of the view matrix basis.
+    camera.matrixWorld.extractBasis(waveRight, waveUp, waveForward);
+    const rightLen = Math.hypot(waveRight.x, waveRight.z) || 1;
+    waveListener.rightX = waveRight.x / rightLen;
+    waveListener.rightZ = waveRight.z / rightLen;
+    // `surfaceTime`, NOT elapsed: it is the clock the water is actually
+    // displaced with this frame (they diverge in surf mode, where the swell
+    // runs on player.time), and a crash has to be scheduled off the same clock
+    // that decides where the crest is or the sound drifts off the picture.
+    waveAudio.update(frameDt, waveEnergy, waveListener, surfaceTime);
     // Explicit E/B is the normal exit. This far-away guard only repairs external
     // teleports that bypass NavigationController; the ride itself never beaches.
     if (player.mode === "surf") {
