@@ -44,8 +44,8 @@ export const SURF_FILM_SECONDS = 20;
 const PREROLL_FRAMES = 600;
 
 /**
- * Metres the lens is kept INLAND of the most seaward hand on the beach.
- * +X is shoreward here, so this is a lower bound on eye.x. See `seawardHandX`.
+ * Metres the lens is kept INLAND of the most inland hand on the beach.
+ * +X is shoreward here, so this is a lower bound on eye.x. See `inlandHandX`.
  */
 const HAND_MARGIN = 18;
 
@@ -60,18 +60,25 @@ type Live = {
   /** World X of the waterline at this Z. */
   shoreX: (z: number) => number;
   /**
-   * The most SEAWARD hand on the beach, and the most seaward kite.
+   * The most INLAND hand on the beach — the largest runner X, since +X is
+   * shoreward here.
    *
-   * A shot has to stand inland of both, and this is why. A tether runs from a
-   * kite twenty metres up down to a hand at chest height, and if the lens is
-   * between those two points the lower half of the line is behind the camera:
-   * what is left in frame is a line descending out of a kite and stopping in
-   * mid-air over the sea, with no person on the end of it. That is exactly
-   * what "there's a kite in the water" turned out to be — not a kite that had
-   * ditched, but a camera parked in the middle of somebody's line.
+   * A shot has to stand inland of every hand, and this is the one that decides
+   * it. A tether runs from a kite twenty metres up down to a hand at chest
+   * height, and if the lens sits between those two points the lower half of
+   * that line is behind the camera: what is left in frame is a line descending
+   * out of a kite and stopping in mid-air over the sea, with nobody on the end
+   * of it. That is what "there's a kite in the water" turned out to be — not a
+   * kite that had ditched, but a camera parked in the middle of somebody's
+   * line.
+   *
+   * The first cut of this clamp used the most SEAWARD hand, which is the wrong
+   * end: a lens inland of the seaward-most flyer can still be seaward of one
+   * standing further up the beach, and four of the eight failed exactly there
+   * (gaps of −4 to −12 m). Kites fly downwind, which here is seaward of their
+   * hands, so clearing the inland-most hand clears every kite too.
    */
-  seawardHandX: number;
-  seawardKiteX: number;
+  inlandHandX: number;
 };
 
 type Film = {
@@ -247,7 +254,7 @@ const FILMS: readonly Film[] = [
      *
      *   · it must look WNW into the sun, or there are no shafts at all
      *   · it must stand inland of every hand, or a tether crosses the sea and
-     *     reads as a kite in the water (see `seawardHandX`)
+     *     reads as a kite in the water (see `inlandHandX`)
      *   · the prism's fan leaves the far side from the sun and tilts down, so
      *     its smear lands about forty metres INLAND of its own sail — between
      *     the lens and the kite, which means the lens wants some height and a
@@ -369,10 +376,9 @@ function buildFilm(film: Film): Demo {
       let clock = 0;
       const breakX = (z: number) => oceanBeachBreakX(z, clock);
 
-      // Smallest X across every hand and every sail — the seaward extreme of
-      // the whole festival, refreshed each frame with the flock.
-      let seawardHandX = site.x;
-      let seawardKiteX = site.x;
+      // Largest X across every hand — the most INLAND flyer on the beach,
+      // refreshed each frame with the flock. See `inlandHandX`.
+      let inlandHandX = site.x;
 
       const readFlock = () => {
         const state = win.__sf?.oceanBeachKite?.debugState();
@@ -386,15 +392,12 @@ function buildFilm(film: Film): Demo {
           runner.set(site.x, groundY, site.z);
           kite.set(site.x - 40, groundY + 30, site.z);
           flock.copy(kite);
-          seawardHandX = site.x;
-          seawardKiteX = site.x - 40;
+          inlandHandX = site.x;
           return true;
         }
-        seawardHandX = Infinity;
-        seawardKiteX = Infinity;
+        inlandHandX = -Infinity;
         for (const flyer of state.flyers) {
-          seawardHandX = Math.min(seawardHandX, flyer.runner[0]);
-          seawardKiteX = Math.min(seawardKiteX, flyer.kite[0]);
+          inlandHandX = Math.max(inlandHandX, flyer.runner[0]);
         }
         const subject = state.flyers[Math.min(film.subject, state.flyers.length - 1)];
         kite.set(subject.kite[0], subject.kite[1], subject.kite[2]);
@@ -457,17 +460,15 @@ function buildFilm(film: Film): Demo {
                 ground,
                 breakX,
                 shoreX,
-                seawardHandX,
-                seawardKiteX
+                inlandHandX
               };
               const focal = film.frame(sample, live, eye, target);
               // The hard guarantee, applied after the framing has had its say:
-              // the lens never gets to stand seaward of a hand. Every tether on
-              // the beach then runs away from the camera and lands on a person
-              // standing on sand, which is the only thing that stops a line
-              // reading as a line into the water. `HAND_MARGIN` also keeps the
-              // nearest flyer out of the very edge of the frame.
-              eye.x = Math.max(eye.x, seawardHandX + HAND_MARGIN);
+              // the lens never gets to stand seaward of ANY hand. Every tether
+              // on the beach then runs away from the camera and lands on a
+              // person standing on sand, which is the only thing that stops a
+              // line reading as a line into the water.
+              eye.x = Math.max(eye.x, inlandHandX + HAND_MARGIN);
               setPose(out, eye, target, focal);
 
               // Steer the world's streaming focus, every frame.
