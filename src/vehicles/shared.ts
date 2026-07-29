@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { waterHeight } from "../world/heightmap";
+import { seaTime, waterHeight } from "../world/heightmap";
 import { movingPlatformAt } from "../world/movingPlatforms";
 import type { PlayerCtx } from "../player/types";
 
@@ -182,12 +182,12 @@ export function enterOnWater(ctx: PlayerCtx) {
     ctx.map.bridgeDeck(px, pz) === -Infinity &&
     ctx.map.groundHeight(px, pz) <= BOAT_NAV_DEPTH;
   if (openHere) {
-    ctx.position.y = waterHeight(px, pz, ctx.time) + 0.5;
+    ctx.position.y = waterHeight(px, pz, seaTime()) + 0.5;
     return;
   }
   const spot = findWater(ctx);
   if (spot) {
-    ctx.position.set(spot.x, waterHeight(spot.x, spot.z, ctx.time) + 0.5, spot.z);
+    ctx.position.set(spot.x, waterHeight(spot.x, spot.z, seaTime()) + 0.5, spot.z);
     return;
   }
   ctx.position.y = Math.max(ctx.position.y, ctx.map.effectiveGround(px, pz) + 0.8);

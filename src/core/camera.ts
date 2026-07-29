@@ -2,7 +2,7 @@ import * as THREE from "three/webgpu"
 import type { Input } from "./input"
 import type { Player } from "../player/player"
 import type { PlayerMode } from "../player/types"
-import { waterHeight, type WorldMap } from "../world/heightmap"
+import { seaTime, waterHeight, type WorldMap } from "../world/heightmap"
 import { oceanBeachWaveHeight } from "../world/oceanBeachWaves"
 import { swimVolumeAt } from "../world/swimVolumes"
 import type { Physics } from "./physics"
@@ -330,10 +330,10 @@ export class ChaseCamera {
       const pool = swimVolumeAt(anchor.x, anchor.z)
       const waterY = pool
         ? pool.surfaceY
-        : waterHeight(anchor.x, anchor.z, player.time)
+        : waterHeight(anchor.x, anchor.z, seaTime())
       const calmY = pool
         ? pool.surfaceY
-        : waterY - oceanBeachWaveHeight(anchor.x, anchor.z, player.time)
+        : waterY - oceanBeachWaveHeight(anchor.x, anchor.z, seaTime())
       const seabed = pool ? pool.floorY : this.#map.effectiveGround(anchor.x, anchor.z)
       // threshold sits well below the surface-swim rest (~0.5 m down) so bobbing
       // at the top keeps the eye above water; only a committed dive ducks it under
@@ -348,7 +348,7 @@ export class ChaseCamera {
         const camWater =
           (camPool
             ? camPool.surfaceY
-            : waterHeight(this.#chasePos.x, this.#chasePos.z, player.time)) + 0.55
+            : waterHeight(this.#chasePos.x, this.#chasePos.z, seaTime())) + 0.55
         if (this.#chasePos.y < camWater) this.#chasePos.y = camWater
       }
     }
@@ -426,7 +426,7 @@ export class ChaseCamera {
         )
         this.#chasePos.y = Math.max(
           this.#chasePos.y,
-          Math.max(waterHeight(this.#chasePos.x, this.#chasePos.z, player.time), 0) + tuning.waterClearance
+          Math.max(waterHeight(this.#chasePos.x, this.#chasePos.z, seaTime()), 0) + tuning.waterClearance
         )
         this.#target.set(
           anchor.x + forwardX * tuning.lookAhead,
@@ -654,7 +654,7 @@ export class ChaseCamera {
           : waterHeight(
               this.camera.position.x,
               this.camera.position.z,
-              player.time
+              seaTime()
             )) + 0.55
       if (this.camera.position.y < camWater) this.camera.position.y = camWater
       if (this.#orbitViewPos.y < camWater) this.#orbitViewPos.y = camWater

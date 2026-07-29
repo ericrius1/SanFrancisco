@@ -8,6 +8,7 @@ import { CAMERA_TUNING,  CONFIG,  FOLIAGE_TUNING, RENDER_TUNING, START, START_DE
 import { resetAllTweaks } from "../../core/persist";
 import {  formatInteractPrompt, localizeInteractText } from "../../core/input";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "../../world/oceanBeachWaves";
+import { setSeaTime } from "../../world/heightmap";
 import { tetherTreeCullFocus } from "../../world/vegetation/treeCullFocus";
 import { renderNativeTreeForestFarCulls } from "../../world/nativeTreeForest/farCullRegistry";
 import {  SKY_TUNING } from "../../world/sky";
@@ -1562,6 +1563,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // ctx.state.elapsed here let the visible crest and barrel envelope drift away after
     // loading, pause, or deterministic headless stepping.
     const surfaceTime = player.mode === "surf" ? player.time : ctx.state.elapsed;
+    // Publish the sea clock: everything that physically rides the surface
+    // (hull buoyancy, swim waterline, camera wave clearance) samples
+    // waterHeight at exactly this t — the one the water is displaced with.
+    setSeaTime(surfaceTime);
     water.echoes.beginFrame(surfaceTime, camera);
     const activeEchoMesh = player.meshes[player.mode];
     const birdReady = player.mode !== "bird" || Boolean(activeEchoMesh.userData.rig);

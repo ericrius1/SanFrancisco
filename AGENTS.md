@@ -19,9 +19,17 @@
 
 # Runnable feature handoffs
 
-- When a feature is completed in a git worktree, keep a local preview running from that exact worktree and share a clickable `http://localhost:<port>/?autostart=1` link in the final response (verify it returns 200 first). A filesystem path, worktree path, screenshot, or render link is not a substitute for the running link.
-- Use a plain background/session dev server. Do NOT set up OS-level services (launchd, LaunchAgents, cron, etc.) to make the preview outlive the session — the user prefers to just ask for a fresh link if the server has stopped.
-- The main-repo dev server on the default port (5179) serves the MAIN repo, not the worktree, so start the worktree preview on its own port (the `sf-verify` launch config uses 5240).
+- When a feature is completed in a git worktree, end the final response with a `bash` code block the user can press play on to start the preview himself. Do NOT hand over a bare `http://localhost:<port>` link to a server you started — those servers exit with the session, and another worktree can then grab the port and silently serve a different build.
+- One command, in this shape: `cd <absolute worktree path>` first, an uncontested port with `--strictPort` (a squatted port must error, never silently serve someone else's code), `SF_RELAY_PORT` set to port + 3000, and `--open` carrying the query that lands him where the feature is.
+
+  ```
+  cd <worktree> && SF_RELAY_PORT=<port+3000> npm run dev -- --port <port> --strictPort --open "/?autostart=1"
+  ```
+
+- Verify the command before handing it over: run it, `curl` a file you changed to confirm the server serves THAT worktree, then stop it so his press-play gets a clean start against `--strictPort`.
+- Pick the port by probing for a free pair (dev + relay) — other live worktree sessions squat 5240-5242. The main-repo server on 5179 serves the MAIN repo, not the worktree.
+- A filesystem path, worktree path, screenshot, or render link is not a substitute for the runnable command.
+- Do NOT set up OS-level services (launchd, LaunchAgents, cron, etc.) to make a preview outlive the session — he prefers to just press play again.
 
 # Video rendering
 
