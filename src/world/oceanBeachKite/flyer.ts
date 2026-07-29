@@ -406,8 +406,15 @@ export class KiteFlyer {
     // The sail and its frame are the occluders the whole sunset depends on —
     // they have to be in the shadow map for the god-ray raymarch to have
     // anything to carve, and for the kite to lay its own shape on the sand.
-    this.#cloth.mesh.castShadow = true;
-    enableShadowLayer(this.#cloth.mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+    //
+    // Except the prism, which is the one sail that is not an occluder at all.
+    // A spectral design casts nothing anywhere, so the warm shafts stop at its
+    // silhouette and `prismLight` is the only light it throws; the shadow it
+    // would otherwise lay on the beach lands the better part of a kilometre
+    // downsun at these hours and is no loss.
+    const casts = !this.design.spectral;
+    this.#cloth.mesh.castShadow = casts;
+    if (casts) enableShadowLayer(this.#cloth.mesh, SHADOW_LAYERS.HERO_DYNAMIC);
 
     const spar = this.#ownMaterial(
       new THREE.MeshStandardMaterial({ color: this.#palette.spar, roughness: 0.78 })
@@ -428,7 +435,7 @@ export class KiteFlyer {
       hem
     });
     for (const part of frame) {
-      if (part instanceof THREE.Mesh) {
+      if (part instanceof THREE.Mesh && casts) {
         part.castShadow = true;
         enableShadowLayer(part, SHADOW_LAYERS.HERO_DYNAMIC);
       }
@@ -926,6 +933,14 @@ export class KiteFlyer {
   }
   get kiteTarget(): THREE.Vector3 {
     return this.#kiteTarget;
+  }
+  /**
+   * The sail's live orientation. Handed out live rather than copied, on the
+   * same contract as `kitePosition`: the prism rig holds onto it and reads the
+   * roll every frame to swing its fan with the bank.
+   */
+  get kiteOrientation(): THREE.Quaternion {
+    return this.#kite.quaternion;
   }
   get swing(): number {
     return this.#window.state.swing;

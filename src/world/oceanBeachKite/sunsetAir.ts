@@ -84,8 +84,14 @@ export type SunsetAirState = {
   haze: number;
 };
 
-/** One kite's live position and how wide a fan its silhouette throws. */
-export type RayAnchor = { position: THREE.Vector3; spread: number };
+/**
+ * One kite's live position and how wide a fan its silhouette throws.
+ *
+ * A spectral anchor is handed over to `prismLight` instead and never gets a
+ * warm fan here — it is not an occluder, it is a disperser, and giving it both
+ * would put orange shafts and a rainbow out of the same silhouette.
+ */
+export type RayAnchor = { position: THREE.Vector3; spread: number; spectral?: boolean };
 
 export type SunsetAir = {
   group: THREE.Group;
@@ -334,7 +340,7 @@ export function createSunsetAir(opts: {
      */
     litAmount: number;
   };
-  const fans: Fan[] = opts.anchors.map((anchor, fanIndex) => {
+  const fans: Fan[] = opts.anchors.filter((anchor) => !anchor.spectral).map((anchor, fanIndex) => {
     const meshes: THREE.Mesh[] = [];
     const splay: { angle: number; roll: number; rollRate: number }[] = [];
     for (let i = 0; i < SHAFT_COUNT; i++) {
