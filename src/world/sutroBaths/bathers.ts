@@ -156,7 +156,13 @@ function surfaceForPose(pose: BatherPose): number {
     case "wade":
       return SUTRO_BATHS.waterY - 0.48; // feet below the surface on a shallow ledge
     case "wadeChat":
-      return SUTRO_BATHS.waterY - 1.37; // standing on the basin step, water at mid-chest
+      // Water at mid-chest, which is what this line has always claimed and has
+      // never done. These rigs are almost exactly 2 m tall (measured: hot-2's
+      // bounds run 3.809..5.804), so sinking them 1.37 m left 69% of the body
+      // under a surface that hides everything below it — on a close lens the
+      // pair read as two heads sitting on trays. 1.05 leaves a little under half
+      // the body proud, which is chest-deep.
+      return SUTRO_BATHS.waterY - 1.05;
     case "sitChair":
     case "sitBench":
       // Seated bathers normally take their height from a parlour seat; this is
