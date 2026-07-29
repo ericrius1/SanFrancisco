@@ -14,8 +14,55 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
     parser.add_argument("--site", required=True)
+    parser.add_argument(
+        "--allow-arrival-move",
+        action="store_true",
+        help="publish an ARRIVAL pose that disagrees with data/authored-regions.json",
+    )
     values = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     return parser.parse_args(values)
+
+
+# Poses live to 6 decimal places; anything past a millimetre or a milliradian is
+# a real move, not export rounding.
+ARRIVAL_EPSILON = 1e-3
+
+
+def assert_arrival_matches_manifest(exported, committed, allow_move):
+    """Refuse to silently revert a spawn pose that was retuned in the repo.
+
+    `sync-authored-region.py` seeds the ARRIVAL empty ONCE and then leaves it
+    alone by design ("without overwriting artist edits") — so a .blend that
+    predates a manifest change still holds the old pose, and this export would
+    quietly write it back over the new one. That is exactly how the Sutro Baths
+    arrival would have snapped from the middle of the bath hall back to the
+    south end on the next bake, with nothing in the diff to explain it.
+
+    A deliberate re-authoring in Blender is still fine: pass
+    `--allow-arrival-move` (bake:region forwards extra args) and the printed
+    pose is what to copy into data/authored-regions.json in the same commit.
+    """
+    if exported is None or committed is None:
+        return
+    drift = {
+        key: (committed.get(key), exported.get(key))
+        for key in ("x", "y", "z", "heading")
+        if abs(float(exported[key]) - float(committed.get(key, exported[key]))) > ARRIVAL_EPSILON
+    }
+    if exported["spawnKey"] != committed.get("spawnKey"):
+        drift["spawnKey"] = (committed.get("spawnKey"), exported["spawnKey"])
+    if not drift:
+        return
+    detail = ", ".join(f"{key}: manifest {was} vs blend {now}" for key, (was, now) in drift.items())
+    if allow_move:
+        print(f"[authored-site] ARRIVAL moved in Blender ({detail}) — "
+              f"copy this pose into data/authored-regions.json: {json.dumps(exported)}")
+        return
+    raise RuntimeError(
+        f"AUTHORING/ARRIVAL disagrees with data/authored-regions.json ({detail}). "
+        "The .blend is stale: move the empty to the manifest pose, or re-export with "
+        "--allow-arrival-move and copy the printed pose into the manifest in the same commit."
+    )
 
 
 def load_region(repo, site):
@@ -134,6 +181,9 @@ def main():
             "z": round(-location.y, 6),
             "heading": round(euler.z, 6),
         }
+        assert_arrival_matches_manifest(
+            arrival_payload, config.get("arrival"), args.allow_arrival_move
+        )
 
     terrain_payload = None
     if config.get("terrain"):

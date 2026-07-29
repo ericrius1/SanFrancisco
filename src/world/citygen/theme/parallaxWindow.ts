@@ -36,7 +36,7 @@ import {
   dot,
   normalize,
 } from "three/tsl";
-import { LIGHT_SCALE } from "../../../config";
+import { WINDOW_LIT_DENSITY, WINDOW_LIT_DIM, WINDOW_LIT_EMISSIVE } from "../../../config";
 import { WINDOW_GLOW_W } from "../../facade";
 import { cameraCutawayMask } from "../../../render/cameraCutaway";
 
@@ -61,7 +61,9 @@ export interface ZoneLook {
   light: [number, number]; // lamp colour range (warm → cool), mixed per-pane
 }
 
-// Zone → look. Only the day tint, the lit fraction and the lamp colour differ now:
+// Zone → look. `litChance` is the AUTHORED fraction; every consumer scales it by
+// config.WINDOW_LIT_DENSITY, so change the mood per zone here and the citywide
+// density there. Only the day tint, the lit fraction and the lamp colour differ:
 //  • residential: dark warm glass, ~1/4 lit, warm lamps.
 //  • commercial:  lighter shopfront glass, mostly lit, cooler retail lighting.
 //  • loft:        darkest glass, sparsely lit, warm bulbs.
@@ -121,9 +123,11 @@ export function makeParallaxGlass(
     .toVar();
   const h = (k: number): N => hash(cellKey.add(uint(k)));
 
-  // per-window identity: lit/dark + lamp tint
-  const lit = step(float(1.0 - look.litChance), h(3)); // litChance fraction lit
+  // per-window identity: lit/dark + lamp tint + how bright this room burns
+  const lit = step(float(1.0 - look.litChance * WINDOW_LIT_DENSITY), h(3));
   const lightCol = mix(col(look.light[0]), col(look.light[1]), h(4));
+  const hb = h(5);
+  const brightness = mix(float(WINDOW_LIT_DIM), float(1.0), hb.mul(hb));
   const flatGlass = col(look.glass);
 
   // --- day surface: dark glass + grazing sky sheen -----------------------------
@@ -140,9 +144,13 @@ export function makeParallaxGlass(
   // Gated by the sky's twilight weight (WINDOW_GLOW_W) so the glow only reads
   // after dusk — same gate as the baked facades. A hard grazing cutoff kills
   // sub-pixel emissive shimmer on near-edge-on facades.
-  const EMIT = 2.0 * LIGHT_SCALE; // matches the baked city's window-glow scale
   const glowGraze = smoothstep(0.01, 0.06, facing);
-  const emissive = lightCol.mul(lit).mul(EMIT).mul(glowGraze).mul(WINDOW_GLOW_W);
+  const emissive = lightCol
+    .mul(lit)
+    .mul(brightness)
+    .mul(WINDOW_LIT_EMISSIVE) // citywide peak — shared with every other tier
+    .mul(glowGraze)
+    .mul(WINDOW_GLOW_W);
 
   mat.colorNode = surface;
   mat.emissiveNode = emissive;

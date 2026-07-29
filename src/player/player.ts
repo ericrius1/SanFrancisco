@@ -56,7 +56,7 @@ import {
 } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
 import type { HangGliderFlightProfile } from "../vehicles/plane/hangGliderPhysics";
-import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
+import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, SPEEDBOAT_HULL, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
 import { buildBoardMesh, activateBoardSurface, animateBoard, updateBoardSurface, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
 import {
@@ -414,7 +414,7 @@ export class Player {
       scooter: new ScooterController(),
       plane: new FlyController(),
       boat: new BoatController(),
-      speedboat: new BoatController(SPEEDBOAT_TUNING),
+      speedboat: new BoatController(SPEEDBOAT_TUNING, SPEEDBOAT_HULL),
       drone: new DroneController(this.meshes.drone),
       board: new BoardController(),
       surf: new SurfController(),
@@ -630,6 +630,11 @@ export class Player {
     this.#firstPersonView = active;
     this.meshes.walk.visible =
       this.mode === "walk" && !active && !this.#externalEmbodimentHidden;
+    // Stock drone (and custom flyers) have no cockpit to sit in — hide the
+    // whole chassis so first person is a clean immersive fly cam.
+    if (this.mode === "drone") {
+      this.meshes.drone.visible = !active && !this.#externalEmbodimentHidden;
+    }
     this.#riderRig.group.visible =
       !(active && (this.mode === "board" || (this.mode === "drone" && this.#broomRigAttached)));
     this.#surfRig.group.visible = !(active && this.mode === "surf");
@@ -649,7 +654,9 @@ export class Player {
   /** Let an in-world activity rig embody the local player without moving the camera target. */
   setExternalEmbodimentHidden(hidden: boolean) {
     this.#externalEmbodimentHidden = hidden;
-    this.meshes[this.mode].visible = !hidden && (this.mode !== "walk" || !this.#firstPersonView);
+    const hideForFirstPerson =
+      this.#firstPersonView && (this.mode === "walk" || this.mode === "drone");
+    this.meshes[this.mode].visible = !hidden && !hideForFirstPerson;
   }
 
   #destroyBody() {
@@ -1001,6 +1008,22 @@ export class Player {
 
   get surfTelemetry(): SurfTelemetry {
     return this.#modes.surf.telemetry;
+  }
+
+  /** How much of the boat's hull is in the water — 1 on her lines, 0 flying off
+   *  a crest. 1 in every non-boat mode. Read by the wake (no rings from a hull
+   *  that is airborne). */
+  get hullSub(): number {
+    if (this.mode === "boat") return this.#modes.boat.hullSub;
+    if (this.mode === "speedboat") return this.#modes.speedboat.hullSub;
+    return 1;
+  }
+
+  /** Closing speed of a boat splashdown on this step (m/s), 0 otherwise. */
+  get slamSpeed(): number {
+    if (this.mode === "boat") return this.#modes.boat.slamSpeed;
+    if (this.mode === "speedboat") return this.#modes.speedboat.slamSpeed;
+    return 0;
   }
 
   /** Exact sole-to-deck gaps used by surf QA and cinematic regression checks. */
@@ -1711,7 +1734,10 @@ export class Player {
       next.add(this.#riderRig.group);
       this.#broomRigAttached = true;
     }
-    setEmbodimentVisible(next, this.mode === "drone");
+    setEmbodimentVisible(
+      next,
+      this.mode === "drone" && !(this.#firstPersonView || this.#externalEmbodimentHidden)
+    );
     if (this.mode === "drone") this.#lightPool.claim(next);
   }
 

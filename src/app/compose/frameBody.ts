@@ -1568,6 +1568,9 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     const surfTubeVisibility =
       player.mode === "surf" ? chase.surfCameraDiagnostics()?.tubeBlend ?? 0 : 0;
     ctx.state.oceanBeachWaves?.update(surfaceTime, player.renderPosition, surfTubeVisibility);
+    // Waves running up the sand. Same clock as the break offshore, so the wave
+    // you watched stand up is the one that washes over your feet.
+    core.updateShorebreak(frameDt, surfaceTime);
     // Safety net for restored/direct surf transitions. Entry preparation keeps
     // its newly constructed mesh alive until the mode switch commits; otherwise
     // the activity visual is disposed on the first non-surf frame.

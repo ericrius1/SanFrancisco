@@ -140,9 +140,17 @@ export async function resolveInitialArrival({
     map.meta.spawns[START_DEFAULTS.spawn];
   // A zone arrival owns its destination outright; never let a random landmark's
   // authored region (spawnKey is random for keyless zones) leak into the chain.
-  const authoredStart = invite || resumed || zoneArrival
+  // A zone that NAMES a spawn key is the opposite case: that key's authored pose
+  // IS the pocket's destination, and it has to win, because the open-ground
+  // search below cannot stand inside an authored building — every candidate on
+  // the Sutro bath deck is inches from a built collider, so the spiral pushed
+  // the arrival 88 m out and 25 m up onto the Point Lobos road, which is the
+  // walk-in route, not the room.
+  const authoredStart = invite || resumed
     ? null
-    : requestedAuthoredSpawn ?? authoredRegions.arrivalForKey(spawnKey);
+    : zoneArrival
+      ? (zone!.spawnKey ? authoredRegions.arrivalForKey(zone!.spawnKey) : null)
+      : requestedAuthoredSpawn ?? authoredRegions.arrivalForKey(spawnKey);
   // The pocket's own arrival pose: a curated spawn point when the zone names one,
   // otherwise a walk-mode pose at the site centre. The open-ground search below
   // still refines it onto movement-safe ground.

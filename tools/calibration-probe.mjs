@@ -2,11 +2,11 @@
 // ANGLE-metal), enables the grey-card chart (src/ui/calibrationChart.ts), pins a
 // set of times of day over Marina Green, and for each one samples the rendered
 // pixels of every calibration sphere. Prints measured display values next to a
-// textbook prediction (sun-only Lambert → three's ACES fit → sRGB), plus how many
+// textbook prediction (sun-only Lambert → the live grade → sRGB), plus how many
 // stops the 18% card sits above/below photographic neutral. This is the referee
 // for any exposure / light-ratio / grading change.
 //
-//   node tools/calibration-probe.mjs
+//   node --experimental-strip-types tools/calibration-probe.mjs
 // Env:
 //   SF_PROBE_OUT  out dir (default .data/calibration-probe)
 //   SF_PROBE_URL  existing vite (default http://127.0.0.1:5191 — starts its own)
@@ -21,11 +21,12 @@
 // should sit ABOVE predicted; big gaps beyond the configured IBL fill mean the
 // mental model of the pipeline is wrong somewhere.
 
+import { evaluateLook, findLook } from "../src/render/gradeLooks.ts";
+import { decodePng, sampleDisc } from "./lib/pngSample.mjs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -39,36 +40,25 @@ const W = 1280, H = 720;
 const SPOT = { x: -700, z: -2380 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---- three's ACES filmic fit (Stephen Hill), exposure/0.6 pre-scale included --
-const M_IN = [
-  [0.59719, 0.35458, 0.04823],
-  [0.07600, 0.90834, 0.01566],
-  [0.02840, 0.13383, 0.83777]
-];
-const M_OUT = [
-  [1.60475, -0.53108, -0.07367],
-  [-0.10208, 1.10813, -0.00605],
-  [-0.00327, -0.07276, 1.07602]
-];
-const mulM = (m, v) => m.map((r) => r[0] * v[0] + r[1] * v[1] + r[2] * v[2]);
-const rrtOdt = (v) =>
-  v.map((x) => (x * (x + 0.0245786) - 0.000090537) / (x * (0.983729 * x + 0.4329510) + 0.238081));
-const acesToneMap = (rgb, exposure) => {
-  const pre = rgb.map((x) => (x * exposure) / 0.6);
-  return mulM(M_OUT, rrtOdt(mulM(M_IN, pre))).map((x) => Math.min(1, Math.max(0, x)));
-};
-const srgbEncode = (x) => (x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055);
+// ---- display transform ------------------------------------------------------
+// The prediction runs the SAME code the renderer bakes into its LUT, imported
+// from the single source of truth rather than transcribed. It used to be a hand
+// copy of three's ACES fit, which was correct while the renderer used ACES and
+// became a silent lie the moment it did not — a referee that measures against a
+// stale model reports drift as calibration error. Whatever look is live in the
+// page is the look predicted here, including the legacy `aces` one.
 const srgbDecode = (x) => (x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4));
 const lum = (rgb) => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
 const linLum = (srgbRgb) => lum(srgbRgb.map(srgbDecode));
 
 /** Sun-only Lambert prediction; measured-minus-predicted contains analytic IBL. */
 function predict(state, albedo, ndl) {
+  const look = findLook(state.gradeLook);
   const rad = [0, 1, 2].map((i) => {
     const sun = state.sunC[i] * state.sunI * ndl;
-    return (sun * albedo) / Math.PI;
+    return (sun * albedo * state.exposure) / Math.PI;
   });
-  return acesToneMap(rad, state.exposure).map(srgbEncode);
+  return evaluateLook(look, rad[0], rad[1], rad[2]);
 }
 
 // -------------------------------------------------------- harness (fog-probe) --
@@ -130,6 +120,7 @@ const STATE_EXPR = `(()=>{const s=window.__sf.sky,sun=s.sun;
   return {exposure:window.__sf.renderer.toneMappingExposure,
     sunI:sun.intensity,sunC:sun.color.toArray(),sunDir:d.toArray(),
     environmentI:window.__sf.scene.environmentIntensity,
+    gradeLook:window.__sf.pipeline.grade.activeLookId(),
     elev:s.sunElevation};})()`;
 
 // Each sphere's screen-space disc + camera-facing normal terms. Pixel sampling
@@ -153,75 +144,6 @@ const GEOM_EXPR = `(()=>{const sf=window.__sf,THREE=sf.THREE,cam=sf.camera,chart
   return out;})()`;
 
 // ---- minimal PNG decode (8-bit RGB/RGBA, non-interlaced — what CDP emits) ----
-function decodePng(buf) {
-  let off = 8, w = 0, h = 0, colorType = 0;
-  const idat = [];
-  while (off < buf.length) {
-    const len = buf.readUInt32BE(off);
-    const type = buf.toString("ascii", off + 4, off + 8);
-    const data = buf.subarray(off + 8, off + 8 + len);
-    if (type === "IHDR") {
-      w = data.readUInt32BE(0); h = data.readUInt32BE(4);
-      colorType = data[9];
-      if (data[8] !== 8 || (colorType !== 6 && colorType !== 2) || data[12] !== 0)
-        throw new Error(`unsupported PNG (depth ${data[8]} color ${colorType} interlace ${data[12]})`);
-    } else if (type === "IDAT") idat.push(data);
-    else if (type === "IEND") break;
-    off += 12 + len;
-  }
-  const raw = zlib.inflateSync(Buffer.concat(idat));
-  const bpp = colorType === 6 ? 4 : 3;
-  const stride = w * bpp;
-  const out = new Uint8Array(w * h * 4);
-  let prev = new Uint8Array(stride);
-  for (let y = 0; y < h; y++) {
-    const filter = raw[y * (stride + 1)];
-    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
-    const cur = new Uint8Array(stride);
-    for (let x = 0; x < stride; x++) {
-      const a = x >= bpp ? cur[x - bpp] : 0, b = prev[x], cc = x >= bpp ? prev[x - bpp] : 0;
-      let v = line[x];
-      if (filter === 1) v += a;
-      else if (filter === 2) v += b;
-      else if (filter === 3) v += (a + b) >> 1;
-      else if (filter === 4) {
-        const p = a + b - cc, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - cc);
-        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : cc;
-      }
-      cur[x] = v & 255;
-    }
-    for (let x = 0; x < w; x++) {
-      const o = (y * w + x) * 4, i = x * bpp;
-      out[o] = cur[i]; out[o + 1] = cur[i + 1]; out[o + 2] = cur[i + 2];
-      out[o + 3] = colorType === 6 ? cur[i + 3] : 255;
-    }
-    prev = cur;
-  }
-  return { w, h, data: out };
-}
-
-/** Brightest pixel in the disc (≈ the sunlit point) + mean 3×3 at centre. */
-function sampleDisc(png, cx, cy, pr) {
-  let maxL = -1, maxPix = [0, 0, 0];
-  const sum = [0, 0, 0];
-  let cnt = 0;
-  const R = Math.ceil(pr);
-  for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
-    if (dx * dx + dy * dy > pr * pr) continue;
-    const x = Math.round(cx + dx), y = Math.round(cy + dy);
-    if (x < 0 || y < 0 || x >= png.w || y >= png.h) continue;
-    const i = (y * png.w + x) * 4;
-    const r = png.data[i], g = png.data[i + 1], b = png.data[i + 2];
-    const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    if (L > maxL) { maxL = L; maxPix = [r, g, b]; }
-    if (dx * dx + dy * dy <= 4) { sum[0] += r; sum[1] += g; sum[2] += b; cnt++; }
-  }
-  return {
-    max: maxPix.map((x) => x / 255),
-    center: sum.map((x) => x / (cnt || 1) / 255)
-  };
-}
-
 async function main() {
   mkdirSync(OUT, { recursive: true });
   const dev = await startDevIfNeeded();
@@ -234,16 +156,22 @@ async function main() {
     "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps`
   ], { cwd: ROOT, stdio: "ignore" });
   await sleep(2500);
+  // Match on the URL, not on target.type: current headless Chrome reports the
+  // app tab as type "other" rather than "page", and the old filter also hard-
+  // coded 127.0.0.1 so any SF_PROBE_URL using localhost found nothing. Both
+  // failed identically with "no app page target", which reads like the app
+  // never booted rather than like a stale predicate.
+  const host = new URL(SERVER_URL).host;
   let page;
   for (let i = 0; i < 60; i++) {
     try {
       const list = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
-      page = list.find((t) => t.type === "page" && t.url.includes("127.0.0.1") && t.webSocketDebuggerUrl);
+      page = list.find((t) => t.webSocketDebuggerUrl && typeof t.url === "string" && t.url.includes(host));
       if (page) break;
     } catch {}
     await sleep(400);
   }
-  if (!page) throw new Error("no app page target");
+  if (!page) throw new Error(`no app page target for ${host} on CDP port ${port}`);
   const c = new Cdp(page.webSocketDebuggerUrl);
   c.onEvent = (m) => {
     if (m.method === "Runtime.exceptionThrown") {
