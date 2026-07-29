@@ -54,7 +54,16 @@ type Look = {
   eye: [readonly [number, number, number], readonly [number, number, number]];
   /** What the look is on, at u=0 and u=1, hall-local. */
   at: [readonly [number, number, number], readonly [number, number, number]];
-  /** Focal length in millimetres, start and end. */
+  /**
+   * Focal length in millimetres, start and end.
+   *
+   * Judge these ONLY from the cinematic stills. tools/sutro-moment-framing-probe
+   * drives the free cam, where setting camera.fov has no effect on the rendered
+   * projection — every look there renders at the app's own default, so a lens
+   * chosen against that probe comes out far too long once ShotCamera applies it
+   * for real. The first pass picked 45-105 mm that way and every frame arrived
+   * cropped into somebody's ear.
+   */
   lens: [number, number];
 };
 
@@ -102,7 +111,7 @@ const LOOKS: readonly (Look & { title: string })[] = [
       [-26.0, WATER + 0.2, -8.8],
       [-25.6, WATER + 0.24, -7.7]
     ],
-    lens: [50, 50]
+    lens: [24, 26]
   },
   {
     id: "long-view",
@@ -134,7 +143,7 @@ const LOOKS: readonly (Look & { title: string })[] = [
       [-34.3, DECK + 0.98, 6.1],
       [-34.5, DECK + 0.94, 6.0]
     ],
-    lens: [45, 45]
+    lens: [28, 30]
   },
   {
     id: "hot-bath",
@@ -142,9 +151,9 @@ const LOOKS: readonly (Look & { title: string })[] = [
     // Across bath four at sutro-hot-1/2 (measured at local [3.5, 3.5] and
     // [5.9, 4.4]) talking chest-deep, steam between lens and subject. Shot from
     // the deck SPINE, local x -10..-4 — the first cut stood the camera at x
-    // -2.4, inside the pool's own footprint. Pressed right up to the coping and
-    // on a long lens, because a chest-deep person shows only about 0.8 m of
-    // themselves and this is the longest sightline of the five.
+    // -2.4, inside the pool's own footprint. Pressed right up to the coping,
+    // because a chest-deep person shows only about 0.8 m of themselves and this
+    // is the longest sightline of the five.
     eye: [
       [-4.7, DECK + EYE, 5.9],
       [-4.5, DECK + EYE - 0.02, 5.0]
@@ -153,15 +162,15 @@ const LOOKS: readonly (Look & { title: string })[] = [
       [4.4, WATER + 0.9, 3.9],
       [4.6, WATER + 0.94, 3.8]
     ],
-    lens: [105, 105]
+    lens: [50, 52]
   },
   {
     id: "plunge-edge",
     title: "The Plunge Edge",
     // Down the west coping at sutro-sit-1/2 (measured at local [-32.2, -25.4]
     // and [-32.2, -23.2]), feet in the plunge, candle line at local x -32.4
-    // running away behind them. Closer and longer than the first cut, which
-    // left the bottom third of frame as bare deck.
+    // running away behind them. Closer than the first cut, which left the
+    // bottom third of frame as bare deck.
     eye: [
       [-33.4, DECK + EYE, -29.9],
       [-33.2, DECK + EYE - 0.02, -28.4]
@@ -170,7 +179,7 @@ const LOOKS: readonly (Look & { title: string })[] = [
       [-32.3, DECK + 0.6, -24.8],
       [-32.2, DECK + 0.65, -24.2]
     ],
-    lens: [70, 70]
+    lens: [35, 36]
   }
 ] as const;
 
