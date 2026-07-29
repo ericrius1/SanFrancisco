@@ -705,7 +705,28 @@ export function createOptionalSites({
         physics,
         authoredRegions,
         sky,
-        onExteriorThinned: applySutroExteriorThinning
+        onExteriorThinned: applySutroExteriorThinning,
+        hud,
+        // The drain and the upwelling under it are a continuous swim, not a
+        // teleport: no cover, no place history, and the facing and camera are
+        // left exactly as the player had them, because the cut lands inside a
+        // dark bore where the only tell would be the world rotating. This is
+        // deliberately NOT worldArrival.arrive — the destination is the same
+        // tile, already collided and already resident, and the cover would
+        // announce a transition the geometry is trying not to have.
+        relocate: (pose) => {
+          const facing = pose.heading ?? player.heading - Math.PI;
+          // restoreState (not teleportTo): the room is 31 m below groundTop and
+          // teleportTo would clamp the landing up onto the terrain.
+          player.restoreState({
+            x: pose.x,
+            y: pose.y,
+            z: pose.z,
+            heading: facing + Math.PI,
+            mode: "walk"
+          });
+          chase.cutTo(player);
+        }
       });
       // The geographic tile already owns and displays the period hall. Warm only
       // its optional living layer (foliage, bathers and nearby effects) here.

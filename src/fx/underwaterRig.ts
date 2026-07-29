@@ -101,7 +101,7 @@ export function updateUnderwaterFx(deps: {
   const cz = camera.position.z;
   // NaN when the column is dry. Authored pools (the Sutro baths) resolve here
   // as well as the bay — see world/swimVolumes.ts.
-  const surfaceY = submergibleWaterY(map, cx, cz, time);
+  const surfaceY = submergibleWaterY(map, cx, cz, time, camera.position.y);
   const overWater = !Number.isNaN(surfaceY);
   if (!overWater && ease < 0.002) {
     ease = 0;
@@ -138,7 +138,7 @@ export function updateUnderwaterFx(deps: {
   // reads as dirt, and it is lit by lamps rather than by the sun — so an
   // evening dive must not inherit the open-water rig's near-black sunless
   // grading. Clearer water, lit floor, no motes.
-  const pool = overWater ? swimVolumeAt(cx, cz) : null;
+  const pool = overWater ? swimVolumeAt(cx, cz, camera.position.y) : null;
   const lightUp = THREE.MathUtils.clamp(SUN_DIR.y * 2.8, pool ? 0.55 : 0.06, 1);
   if (volumeReady && volume) {
     volume.update(camera, time, ease, lightUp, {

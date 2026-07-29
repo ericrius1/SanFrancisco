@@ -117,6 +117,7 @@ import { twitterSummerShot08 } from "./demos/twitterSummerShot08";
 import { afterlightCinematic } from "./demos/afterlightCinematic";
 import { surfAerialCinematic } from "./demos/surfAerialCinematic";
 import { kiteFestivalDemos } from "./demos/kiteFestivalCinematic";
+import { sutroMomentDemos } from "./demos/sutroMomentsCinematic";
 import { kiteToSutroDemos } from "./demos/kiteToSutroCinematic";
 import { phoenixPalaceFlyby } from "./demos/phoenixPalaceFlyby";
 
@@ -140,6 +141,7 @@ const DEMOS: Record<string, Demo> = {
   [surfAerialCinematic.name]: surfAerialCinematic,
   [phoenixPalaceFlyby.name]: phoenixPalaceFlyby,
   ...Object.fromEntries(kiteFestivalDemos.map((demo) => [demo.name, demo])),
+  ...Object.fromEntries(sutroMomentDemos.map((demo) => [demo.name, demo])),
   ...Object.fromEntries(kiteToSutroDemos.map((demo) => [demo.name, demo]))
 };
 

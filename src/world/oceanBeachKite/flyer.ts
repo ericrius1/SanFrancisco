@@ -5,6 +5,7 @@ import { avatarFromSeed } from "../../player/avatar";
 import { setHandTarget, type HandTarget } from "../../player/handIK";
 import { attachToHand, wristTargetForGrip, type GripSpec } from "../../player/held";
 import { buildRig, poseWalk, type Rig } from "../../player/rig";
+import { FootfallTracker, type SandPrintSink } from "../../fx/sandPrints";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { createKiteCloth, type KiteCloth, type KiteClothState } from "./kiteCloth";
 import type { KiteDesign, KitePalette } from "./kiteDesigns";
@@ -98,6 +99,12 @@ export type KiteFlyerOptions = {
   lineDial?: number;
   /** Multiplies the deployed tail length. */
   tailScale?: number;
+  /**
+   * Where this flyer's footfalls go. Shared with the player's — the runtime
+   * owns the rules (sand only, near the player only), so a runner just reports
+   * that a foot landed. Anchored flyers have no feet and ignore it.
+   */
+  prints?: SandPrintSink;
 };
 
 export type KiteFlyerFrame = {
@@ -189,6 +196,8 @@ export class KiteFlyer {
   #tug = 0;
   #haul = 0;
   #stride = 0;
+  #prints: SandPrintSink | null;
+  #footfalls = new FootfallTracker();
   #lineLength: number;
   #lineTarget: number;
   #lineChange = 0;
@@ -247,6 +256,7 @@ export class KiteFlyer {
     this.#palette = options.palette ?? this.design.palette;
     this.#lineDial = THREE.MathUtils.clamp(options.lineDial ?? 0.5, 0, 1);
     this.#tailScale = Math.max(0, options.tailScale ?? 1);
+    this.#prints = options.prints ?? null;
     // An anchored kite is handed to a player who is already standing there, so
     // it launches from cold; the beach flyers have their own authored launch.
     this.#launchRamp = this.#anchor ? 0 : 1;
@@ -396,8 +406,15 @@ export class KiteFlyer {
     // The sail and its frame are the occluders the whole sunset depends on —
     // they have to be in the shadow map for the god-ray raymarch to have
     // anything to carve, and for the kite to lay its own shape on the sand.
-    this.#cloth.mesh.castShadow = true;
-    enableShadowLayer(this.#cloth.mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+    //
+    // Except the prism, which is the one sail that is not an occluder at all.
+    // A spectral design casts nothing anywhere, so the warm shafts stop at its
+    // silhouette and `prismLight` is the only light it throws; the shadow it
+    // would otherwise lay on the beach lands the better part of a kilometre
+    // downsun at these hours and is no loss.
+    const casts = !this.design.spectral;
+    this.#cloth.mesh.castShadow = casts;
+    if (casts) enableShadowLayer(this.#cloth.mesh, SHADOW_LAYERS.HERO_DYNAMIC);
 
     const spar = this.#ownMaterial(
       new THREE.MeshStandardMaterial({ color: this.#palette.spar, roughness: 0.78 })
@@ -418,7 +435,7 @@ export class KiteFlyer {
       hem
     });
     for (const part of frame) {
-      if (part instanceof THREE.Mesh) {
+      if (part instanceof THREE.Mesh && casts) {
         part.castShadow = true;
         enableShadowLayer(part, SHADOW_LAYERS.HERO_DYNAMIC);
       }
@@ -558,6 +575,27 @@ export class KiteFlyer {
       1
     );
     poseWalk(rig, this.#stride, runBlend);
+
+    // …and the same stride leaves prints where those feet land. Off the same
+    // phase the pose reads, so a print appears under the foot that planted it.
+    if (this.#prints?.active) {
+      const steps = this.#footfalls.advance(this.#stride, true);
+      if (steps > 0) {
+        // Facing, not velocity: a flyer pivoting on the spot still plants feet.
+        const forwardX = -Math.sin(runner.yaw);
+        const forwardZ = -Math.cos(runner.yaw);
+        for (let i = 0; i < steps; i++) {
+          this.#prints.stamp(
+            runner.x + forwardX * 0.14,
+            runner.z + forwardZ * 0.14,
+            forwardX,
+            forwardZ,
+            this.#footfalls.nextFoot(),
+            0.72 + THREE.MathUtils.clamp(runner.speed / 9, 0, 1) * 0.4
+          );
+        }
+      }
+    }
 
     // Body layer: eyes on the kite, chest following them round. `watch` is what
     // separates a jogger from someone flying something.
@@ -895,6 +933,14 @@ export class KiteFlyer {
   }
   get kiteTarget(): THREE.Vector3 {
     return this.#kiteTarget;
+  }
+  /**
+   * The sail's live orientation. Handed out live rather than copied, on the
+   * same contract as `kitePosition`: the prism rig holds onto it and reads the
+   * roll every frame to swing its fan with the bank.
+   */
+  get kiteOrientation(): THREE.Quaternion {
+    return this.#kite.quaternion;
   }
   get swing(): number {
     return this.#window.state.swing;

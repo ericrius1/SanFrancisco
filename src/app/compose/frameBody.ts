@@ -85,7 +85,7 @@ import type { MainCtx } from "./ctx";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
   const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, emoteWheel, updateEmoteKeepAlive, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
   const state = {
     cineHook: null as (((dt: number) => void) | null),
@@ -404,11 +404,17 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
    * from outside your own head. So the hall still reads as interior for pace and
    * reverb, and the camera is simply left however the visitor had it — C keeps
    * cycling third/first/orbit in there like anywhere else.
+   *
+   * The sunken gallery under the baths goes the OTHER way and takes the eye rig:
+   * it is a 23 m-wide corridor thirty-one metres under the ground, where a chase
+   * boom has nowhere to sit and the terrain "floor" the boom clamps against is
+   * high above its ceiling.
    */
   const syncIndoorState = () => {
     const inRoom =
       (citygenRing.current?.isPlayerInside() ?? false) ||
-      (core.state.missionDolores?.isPlayerInside(player.position) ?? false);
+      (core.state.missionDolores?.isPlayerInside(player.position) ?? false) ||
+      (core.state.sutroBaths?.isPlayerInGrotto(player.position) ?? false);
     player.indoor = inRoom || (core.state.sutroBaths?.isPlayerInside(player.position) ?? false);
     chase.indoor = inRoom; // blend into the indoor eye rig
   };
@@ -875,6 +881,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !core.state.waveOrgan?.tryInteract(player, hud) &&
       !core.state.tutorialZone?.tryInteract(player, hud) &&
       !core.state.missionDolores?.tryInteract(player.position, player.mode, hud) &&
+      !core.state.sutroBaths?.tryInteract(player.position, player.mode) &&
       !core.state.hangGliding?.tryInteract(player, hud, input, chase) &&
       !core.state.afterlight?.tryInteract(player, hud)
     ) {
@@ -1626,6 +1633,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     wake.update(frameDt, surfaceTime, player);
     boardWake.update(frameDt, surfaceTime, player);
     skidMarks.update(frameDt, ctx.state.elapsed, player);
+    sandPrints.update(frameDt, ctx.state.elapsed, player);
     birdTrails.update(ctx.state.elapsed, player);
     splashes.update(frameDt, surfaceTime, player);
     core.state.surfExperience?.update(frameDt, player.mode, player.surfTelemetry);

@@ -29,6 +29,7 @@ import type { PlayerMode } from "../../player/types";
 import { FX } from "../../fx/fx";
 import { BoardWake, WakeRipples } from "../../fx/wake";
 import { SkidMarks } from "../../fx/skidMarks";
+import { SandPrints } from "../../fx/sandPrints";
 import { BirdTrails } from "../../fx/birdTrail";
 import { WaterSplashes } from "../../fx/splash";
 import { Fireworks } from "../../fx/fireworks";
@@ -200,6 +201,11 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   const wake = new WakeRipples(scene);
   const boardWake = new BoardWake(scene, map, wake);
   const skidMarks = new SkidMarks(scene, map);
+  // Footprints in sand. Builds nothing until a walker approaches a beach, and
+  // hands its one small pipeline to the detached compile lane when it does.
+  const sandPrints = new SandPrints(scene, map, (root) =>
+    warmHiddenRoot(renderer, camera, scene, root)
+  );
   const splashes = new WaterSplashes(scene, wake, map);
   const fireworks = new Fireworks(renderer, scene, map);
   // Compile the optional firework renderer under the loading cover. Its audio
@@ -1088,6 +1094,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     wake,
     boardWake,
     skidMarks,
+    sandPrints,
     splashes,
     fireworks,
     gameplaySfxBus,

@@ -185,7 +185,9 @@ export class WalkController implements ModeController {
     // An authored pool (the Sutro baths) wins over the bay: its surface is
     // fixed, and the bed you must not burrow into is its built basin rather
     // than the terrain, which down there sits well below the hall floor.
-    const pool = swimVolumeAt(ctx.position.x, ctx.position.z);
+    // …and it is a VOLUME, not a column: the sunken gallery under the Sutro
+    // plunge is dry air inside that pool's own footprint, so the depth goes in.
+    const pool = swimVolumeAt(ctx.position.x, ctx.position.z, ctx.position.y);
     // seaTime(), not ctx.time: the swim waterline must be the rendered surface
     // (the sim clock drifts seconds away from the render clock — see heightmap).
     const waterY = pool ? pool.surfaceY : waterHeight(ctx.position.x, ctx.position.z, seaTime());
