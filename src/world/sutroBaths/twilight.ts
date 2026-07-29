@@ -89,6 +89,7 @@ export type SutroTwilightState = {
   twilightHour: number;
   lampGlow: number;
   exteriorThinned: boolean;
+  observerOutside: boolean;
   authorityHeld: boolean;
 };
 
@@ -97,7 +98,19 @@ export type SutroTwilight = {
   readonly depth: number;
   /** 0 lamps dark → 1 lamps carrying the room. */
   readonly lampGlow: number;
-  update(dt: number, player: { x: number; y?: number; z: number }): void;
+  /**
+   * `observer` is the RENDER CAMERA's world position when it can differ from
+   * the player — freecam, cinematic rigs, view mode. Thinning answers "can
+   * anyone still see the city from here", and during a cinematic flyover the
+   * someone is the camera: a shot that leaves the hall while the player stands
+   * inside must see the full far world, not a bare thinned one. Omitted (probe
+   * stubs, chase play) it defaults to the player's answer.
+   */
+  update(
+    dt: number,
+    player: { x: number; y?: number; z: number },
+    observer?: { x: number; y: number; z: number }
+  ): void;
   /** Hand the world clock back at once (site sleep, dispose, perf suppression). */
   release(): void;
   debugState(): SutroTwilightState;
@@ -211,6 +224,13 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
   let solvedDay = -1;
   let worldHour = 12;
   let exteriorThinned = false;
+  /**
+   * Latched "the render camera is clearly outside the hall" flag, with its own
+   * ±2 m hysteresis band so a chase camera orbiting a player who stands near
+   * the glass cannot flap the thinning (and the MSAA reallocation coupled to
+   * it) on and off.
+   */
+  let observerOutside = false;
   let authorityHeld = false;
   let pocketHour = sunsetHour;
   /** The latch: what the sky is fading TOWARD. Flipped only by the hysteresis. */
@@ -253,7 +273,7 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
     get lampGlow() {
       return depth;
     },
-    update(dt, player) {
+    update(dt, player, observer) {
       // The depth ramp runs on the WALL clock, not the world clock: the
       // "freeze the world, keep walking" mode drives this site with dt = 0 to
       // hold its bathers and water still, and a visitor who walks in under that
@@ -343,13 +363,39 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       pocketHour = mixHours(sunsetHour, twilightHour, swing);
       sky.setTimeAuthority(mixHours(worldHour, pocketHour, smooth01(skyBlend)));
 
-      setThinned(latchInset > (exteriorThinned ? THIN_OFF_INSET : THIN_ON_INSET));
+      // The camera's own inside/outside answer, matching the player's rule:
+      // wall inset gated by vertical containment (over the roof = outside).
+      // The release threshold sits INSIDE the wall (4 m) on purpose: the mass
+      // reveal of a hundred-plus far-world roots races the occlusion gates for
+      // a beat, and a camera that has already crossed the glass films that
+      // beat as buildings assembling in mid-air. Released while the camera is
+      // still approaching the wall, the transition settles behind the hall's
+      // own silhouette before there is any line of sight to film it.
+      if (observer) {
+        const observerHeight =
+          smooth01((observer.y - (SUTRO_BATHS.basinY - 6)) / 6) *
+          smooth01((SUTRO_BATHS.roofApexY + 12 - observer.y) / 10);
+        const observerInset = observerHeight > 0.5
+          ? sutroHallWallInset(observer.x, observer.z)
+          : LATCH_OUT_INSET - 1;
+        if (observerOutside ? observerInset > 8 : observerInset < 4) {
+          observerOutside = !observerOutside;
+        }
+      } else {
+        observerOutside = false;
+      }
+
+      setThinned(
+        !observerOutside &&
+        latchInset > (exteriorThinned ? THIN_OFF_INSET : THIN_ON_INSET)
+      );
     },
     release() {
       releaseAuthority();
       setThinned(false);
       depth = 0;
       inside = false;
+      observerOutside = false;
       skyBlend = 0;
       // The next visit is a fresh arrival, and must snap rather than sweep.
       needsSnap = true;
@@ -364,6 +410,7 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
         twilightHour,
         lampGlow: depth,
         exteriorThinned,
+        observerOutside,
         authorityHeld
       };
     }

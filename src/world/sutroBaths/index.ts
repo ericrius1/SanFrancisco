@@ -416,7 +416,7 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       if (waterDistance <= STEAM_LOAD_DISTANCE) loadNearEffects(camera);
       if (!awake) return;
 
-      twilight.update(dt, player);
+      twilight.update(dt, player, camera.position);
       // One layer per frame until the site is fully present (see wakeStages).
       // A stage that returns true has more to hand out and keeps its turn.
       if (wakeStage < wakeStages.length && !wakeStages[wakeStage]()) wakeStage++;

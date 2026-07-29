@@ -4,6 +4,11 @@ import { tunables } from "../../core/persist";
  * One current arcade-surf schema. The controller is velocity-owned and samples
  * one authoritative `waterHeight()` floor in ride, air landing and
  * recovery. Values intentionally favour readable, forgiving play over weight.
+ *
+ * Control model: the mouse/trackpad IS the board. Horizontal motion turns the
+ * nose (screen-relative, so "push right, go right" never inverts), vertical
+ * motion sets how high you ride on the wall, and Space is the only button.
+ * Keyboard A/D + W/S and the pad sticks feed the exact same two channels.
  */
 export const SURF_TUNING = tunables("movement.surf", {
   // The rider starts already standing and moving; a short window softens the
@@ -15,25 +20,41 @@ export const SURF_TUNING = tunables("movement.surf", {
   speedResponse: { v: 4.4, min: 0.5, max: 8, step: 0.1, label: "speed response" },
   speedDecay: { v: 0.35, min: 0, max: 3, step: 0.05, label: "over-trim bleed" },
   stallResponse: { v: 6.5, min: 1, max: 16, step: 0.25, label: "stall response" },
-  // A/D swings the rail relative to remembered travel and clamps short of
-  // vertical; W/S owns stable face placement regardless of peel direction.
+
+  // --- mouse / trackpad steering ---------------------------------------------
+  // Radians of nose swing per mouse pixel. ~260 px sweeps a quarter turn, so a
+  // relaxed wrist covers every line on the wave without ever running out of desk
+  // (pointer lock has no edges).
+  mouseTurn: { v: 0.0042, min: 0.001, max: 0.02, step: 0.0005, label: "mouse turn per px" },
+  // Face placement per mouse pixel: ~230 px from the trough to the lip.
+  mouseFace: { v: 0.0045, min: 0.001, max: 0.02, step: 0.0005, label: "mouse climb per px" },
+  // Keyboard/left-stick equivalent turn rate (rad/s at full deflection).
+  keyTurnRate: { v: 1.9, min: 0.4, max: 4, step: 0.05, label: "key turn rate" },
+  // Ceiling on how fast the nose can come around however hard the mouse is
+  // whipped — the board keeps its weight, and the camera keeps up.
+  maxTurnRate: { v: 3.6, min: 0.8, max: 8, step: 0.1, label: "max turn rate" },
+  // Hands off the mouse: the nose eases back onto the nearest down-the-line
+  // heading. This is the whole reason surfing stays easy — you cannot get lost.
+  trimAssist: { v: 1.35, min: 0, max: 6, step: 0.05, label: "auto-trim strength" },
+  // Turning faster than this fully suspends auto-trim (rad/s).
+  trimIdleRate: { v: 0.35, min: 0.05, max: 2, step: 0.05, label: "auto-trim release rate" },
+  // Mouse-Y self-centre: let go and the board settles back to the trim line.
+  faceReturn: { v: 0.85, min: 0, max: 4, step: 0.05, label: "face self-centre" },
+  faceInputResponse: { v: 9, min: 1, max: 18, step: 0.25, label: "face response" },
+  yawResponse: { v: 6.5, min: 1, max: 14, step: 0.25, label: "recovery heading response" },
+  carveResponse: { v: 8.5, min: 1, max: 18, step: 0.25, label: "rail response" },
   carveYawAngle: { v: 0.68, min: 0.2, max: 1.05, step: 0.01, label: "recovery heading angle" },
-  carveMaxAngle: { v: 1.12, min: 0.4, max: 1.5, step: 0.02, label: "max rail swing" },
-  yawResponse: { v: 6.5, min: 1, max: 14, step: 0.25, label: "carve heading response" },
-  carveResponse: { v: 8.5, min: 1, max: 18, step: 0.25, label: "rail swing response" },
-  faceInputResponse: { v: 7.5, min: 1, max: 18, step: 0.25, label: "W/S face response" },
-  steerFaceInfluence: { v: 0.2, min: 0, max: 0.65, step: 0.01, label: "carve face influence" },
-  steerEnergyInfluence: { v: 0.28, min: 0, max: 1, step: 0.02, label: "carve energy influence" },
-  pumpGain: { v: 5.2, min: 0, max: 16, step: 0.2, label: "W pump gain" },
-  // Deliberate roundhouse: double-tap the carve direction. Holding full lock
-  // is ordinary hard carving and must never reverse on its own.
-  cutbackTapWindow: { v: 0.34, min: 0.15, max: 0.8, step: 0.01, label: "cutback double-tap window" },
-  // The nose is the face position: full crestward carve parks this close to
-  // the lip; full beachward carve drops this far below the trim line.
+  // Aiming the nose up the wall also climbs it, so mouse-X alone can set up a
+  // launch — you never have to think in two separate axes.
+  steerFaceInfluence: { v: 0.36, min: 0, max: 0.8, step: 0.01, label: "turn face influence" },
+  steerEnergyInfluence: { v: 0.28, min: 0, max: 1, step: 0.02, label: "turn energy influence" },
+  pumpGain: { v: 5.2, min: 0, max: 16, step: 0.2, label: "climb pump gain" },
+  // The nose is the face position: full crestward turn parks this close to
+  // the lip; full beachward turn drops this far below the trim line.
   faceLineLipOffset: { v: 1.7, min: 1.3, max: 4, step: 0.05, label: "lip hold distance" },
   faceLineDropRange: { v: 6.2, min: 2, max: 8, step: 0.1, label: "drop range" },
   // Carve energy loop: dropping down the face is free speed, climbing bleeds a
-  // little back — pumping IS the W/S rhythm, not a boost button.
+  // little back — pumping IS the up/down rhythm, not a boost button.
   dropCarveGain: { v: 9.5, min: 0, max: 24, step: 0.25, label: "drop-in speed gain" },
   climbCarveCost: { v: 6.5, min: 0, max: 16, step: 0.2, label: "climb speed cost" },
 
@@ -42,7 +63,7 @@ export const SURF_TUNING = tunables("movement.surf", {
   // Neutral line sits up in the pocket on the standing green wall — not down on
   // the spent apron where the rider read as floating on the flat distant ocean.
   faceOffset: { v: 8.8, min: 4.5, max: 11, step: 0.1, label: "neutral face line" },
-  faceTrack: { v: 2.35, min: 0.2, max: 6, step: 0.05, label: "face spring" },
+  faceTrack: { v: 2.9, min: 0.2, max: 6, step: 0.05, label: "face spring" },
   recoveryFaceTrack: { v: 2.2, min: 0.5, max: 8, step: 0.1, label: "recovery magnet" },
   maxFaceCorrection: { v: 13, min: 4, max: 30, step: 0.5, label: "max cross-face speed" },
   railGrip: { v: 10.5, min: 2, max: 24, step: 0.25, label: "rail adhesion" },
@@ -67,40 +88,41 @@ export const SURF_TUNING = tunables("movement.surf", {
   pitchFollow: { v: 1, min: 0, max: 1.5, step: 0.02, label: "pitch follow" },
   pitchResponse: { v: 8, min: 2, max: 18, step: 0.25, label: "pitch response" },
 
-  // Lip pop is explicit: W climbs/pumps and Space/A chooses when to leave the
-  // water. The lip thresholds keep the larger pop more forgiving than a sim.
-  manualLaunchMinSpeed: { v: 11, min: 5, max: 28, step: 0.5, label: "Space pop min speed" },
-  manualLaunchLip: { v: 0.18, min: 0.05, max: 0.8, step: 0.02, label: "Space pop lip" },
-  manualLaunchCrest: { v: 6.8, min: 3, max: 12, step: 0.1, label: "Space pop crest dist" },
-  // Pop height: readable aerial without flinging the chase cam into the sky.
-  launchVelocity: { v: 6.5, min: 2, max: 18, step: 0.2, label: "launch lift" },
-  launchSpeedLift: { v: 0.16, min: 0, max: 0.5, step: 0.01, label: "speed lift" },
-  launchLipLift: { v: 3.2, min: 0, max: 8, step: 0.1, label: "lip lift" },
-  // Vertical momentum carries: hitting the lip while still climbing (W held)
-  // adds real height — big airs come from reading the wave.
+  // --- jumping ---------------------------------------------------------------
+  // Space is never a dead button and never gated: every press leaves the water.
+  // Height is earned smoothly by riding high and fast, so a beginner still gets
+  // a satisfying hop from anywhere on the wall.
+  jumpVelocity: { v: 7.2, min: 2, max: 14, step: 0.1, label: "base pop" },
+  launchSpeedLift: { v: 0.14, min: 0, max: 0.5, step: 0.01, label: "speed lift" },
+  // Crest distance at which the height bonus has faded to zero.
+  launchCrestRange: { v: 10, min: 3, max: 16, step: 0.25, label: "lip bonus range" },
+  launchLipLift: { v: 5.6, min: 0, max: 10, step: 0.1, label: "lip lift" },
+  // Vertical momentum carries: hitting the lip while still climbing adds real
+  // height — big airs come from reading the wave.
   launchClimbLift: { v: 0.62, min: 0, max: 1.5, step: 0.02, label: "climb-rate lift" },
-  launchCooldown: { v: 0.75, min: 0.3, max: 4, step: 0.05, label: "launch cooldown" },
-  popBuffer: { v: 0.22, min: 0.05, max: 0.6, step: 0.01, label: "pop input buffer" },
-  // Space away from the lip is a small chop hop, never a dead button.
-  ollieVelocity: { v: 4.6, min: 1.5, max: 10, step: 0.1, label: "ollie lift" },
-  ollieSpeedLift: { v: 0.06, min: 0, max: 0.3, step: 0.01, label: "ollie speed lift" },
-  ollieCooldown: { v: 0.5, min: 0.2, max: 2, step: 0.05, label: "ollie cooldown" },
-  gravity: { v: 15.5, min: 6, max: 30, step: 0.25, label: "air gravity" },
-  // Aerials are natural surf pops, not trick rotations. Vertical speed raises
-  // the nose on ascent and lowers it on descent while roll settles back toward
-  // level for a readable, feet-planted landing.
+  maxLaunchVelocity: { v: 14.5, min: 6, max: 26, step: 0.5, label: "pop ceiling" },
+  launchCooldown: { v: 0.28, min: 0.05, max: 2, step: 0.01, label: "launch cooldown" },
+  popBuffer: { v: 0.28, min: 0.05, max: 0.6, step: 0.01, label: "pop input buffer" },
+  gravity: { v: 13.5, min: 6, max: 30, step: 0.25, label: "air gravity" },
+  // Airborne steering: the same mouse keeps working, scaled down so a jump is a
+  // controllable arc you can spin for style and still land clean.
+  airTurnScale: { v: 0.85, min: 0, max: 2, step: 0.05, label: "air turn scale" },
+  airPitchInput: { v: 0.42, min: 0, max: 1, step: 0.02, label: "air nose authority" },
   airPitchScale: { v: 0.024, min: 0.005, max: 0.06, step: 0.001, label: "air pitch from lift" },
-  airPitchLimit: { v: 0.48, min: 0.12, max: 0.8, step: 0.01, label: "air pitch limit" },
+  airPitchLimit: { v: 0.55, min: 0.12, max: 0.9, step: 0.01, label: "air pitch limit" },
   airAlignResponse: { v: 7.5, min: 2, max: 18, step: 0.25, label: "air pose settle" },
+  // Big airs with a full meter drop into Flow automatically — the reward for
+  // reading the wave, with no extra button to remember.
+  flowAutoLaunchSpeed: { v: 12.5, min: 6, max: 24, step: 0.5, label: "auto-flow pop speed" },
 
   // forgiving magnetic landing + on-surface recovery
-  landingMagnet: { v: 1.05, min: 0.2, max: 2.5, step: 0.05, label: "landing magnet" },
-  softLandingSpeed: { v: 11, min: 3, max: 24, step: 0.5, label: "soft landing" },
-  hardLandingRange: { v: 34, min: 5, max: 50, step: 0.5, label: "landing forgiveness" },
+  landingMagnet: { v: 1.35, min: 0.2, max: 2.5, step: 0.05, label: "landing magnet" },
+  softLandingSpeed: { v: 13, min: 3, max: 24, step: 0.5, label: "soft landing" },
+  hardLandingRange: { v: 40, min: 5, max: 50, step: 0.5, label: "landing forgiveness" },
   recoveryQuality: { v: 0.08, min: 0, max: 0.75, step: 0.01, label: "assist threshold" },
-  recoveryDuration: { v: 0.48, min: 0.15, max: 2.5, step: 0.05, label: "auto-save time" },
+  recoveryDuration: { v: 0.4, min: 0.15, max: 2.5, step: 0.05, label: "auto-save time" },
   recoverySpeed: { v: 9, min: 3, max: 18, step: 0.25, label: "recovery speed" },
-  recoveryLaunchLock: { v: 0.85, min: 0.2, max: 2, step: 0.05, label: "recovery launch lock" },
+  recoveryLaunchLock: { v: 0.3, min: 0.05, max: 2, step: 0.05, label: "recovery launch lock" },
 
   // Earned tube ride: climb onto the signed tube line, stay supported, then
   // either pump through or stall to let the roof wrap over the camera.

@@ -659,46 +659,20 @@ export function createOptionalSites({
     refreshOptionalSiteDebug();
   };
 
-  // --- Sutro Baths pocket: the far world is not observable from inside ------
-  // Deep in the restored hall the only things beyond the glass are ocean, sky
-  // and the pocket's own twilight. These roots are kilometres inland or behind
-  // the cliff, so while the visitor is inside they are hidden outright: no
-  // streaming churn, no radius mutation that a mode switch could strand, and an
-  // exact restore because only roots that were VISIBLE get collected.
-  // Newly streamed far-world roots stay visible until the next transition,
-  // which is harmless — streaming has long settled by the time you are inside.
-  const SUTRO_THINNED_ROOT_PREFIXES = [
-    "cityGen",
-    "wildlands_",
-    "TrafficLightRig",
-    "tileBuildingBatch",
-    "tileRoadBatch",
-    "tileShadowProxy:",
-    "landmarkShadowProxy",
-    "golf",
-    "palace_fine_arts_lagoon",
-    "ocean-beach-surf-shack"
-  ];
-  const sutroThinnedRoots: THREE.Object3D[] = [];
+  // --- Sutro Baths pocket: quality switch only, no exterior hiding ----------
+  // This latch used to ALSO hide every far-world root (cityGen, tile batches,
+  // wildlands…) while the visitor was deep in the hall. That hide was measured
+  // at ~0.2 ms of frame time in the latched pocket (33.4 ms thinned vs 33.7 ms
+  // restored on the M5 Air reference pose — the occlusion gates and frustum
+  // already retire what the glass hall hides), and it was the source of a
+  // family of filmable artifacts: the far city popping in/out through the
+  // south glass as the latch flipped, and the batch birth wipe re-running over
+  // half-revealed buildings — "floating boxes" — whenever a camera left the
+  // hall mid-transition. The far world now simply stays resident; the latch
+  // keeps driving pocketQuality (4x MSAA on the beauty pass), which is where
+  // the pocket's budget actually goes.
   const applySutroExteriorThinning = (thinned: boolean): void => {
-    // Same latch, two consequences. Hiding the city frees a large amount of
-    // per-frame budget; pocketQuality is what spends it (4x MSAA on the beauty
-    // pass, paid for by a wall-clock frame cap). Driving both from one
-    // already-hysteretic signal is deliberate — two latches on the same
-    // threshold could disagree, and the MSAA change reallocates a render target.
     setPocketCommitted(thinned);
-    if (thinned) {
-      if (sutroThinnedRoots.length > 0) return;
-      for (const child of scene.children) {
-        if (!child.visible || !child.name) continue;
-        if (!SUTRO_THINNED_ROOT_PREFIXES.some((prefix) => child.name.startsWith(prefix))) continue;
-        child.visible = false;
-        sutroThinnedRoots.push(child);
-      }
-      return;
-    }
-    for (const root of sutroThinnedRoots) root.visible = true;
-    sutroThinnedRoots.length = 0;
   };
 
   const loadSutroBaths = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
