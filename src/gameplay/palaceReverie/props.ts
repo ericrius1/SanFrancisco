@@ -29,7 +29,7 @@ export class ReverieProps {
   constructor(map: WorldMap) {
     this.group.name = "palace-reverie-props";
     const wood = new THREE.MeshStandardNodeMaterial({
-      color: new THREE.Color(0x5a3d28).convertSRGBToLinear(),
+      color: new THREE.Color(0x5a3d28),
       roughness: 0.9,
       metalness: 0
     });
@@ -58,20 +58,20 @@ export class ReverieProps {
 
     this.#canvasMat = new THREE.MeshStandardNodeMaterial({
       map: this.#canvasTex,
-      color: new THREE.Color(0xffffff).convertSRGBToLinear(),
-      emissive: new THREE.Color(0xffc878).convertSRGBToLinear(),
+      color: new THREE.Color(0xffffff),
+      emissive: new THREE.Color(0xffc878),
       emissiveIntensity: 0.15 * LIGHT_SCALE,
       roughness: 0.7,
       metalness: 0
     });
     const iron = new THREE.MeshStandardNodeMaterial({
-      color: new THREE.Color(0x2a2a2e).convertSRGBToLinear(),
+      color: new THREE.Color(0x2a2a2e),
       roughness: 0.55,
       metalness: 0.4
     });
     this.#paintMat = new THREE.MeshStandardNodeMaterial({
-      color: new THREE.Color(0x2a6a88).convertSRGBToLinear(),
-      emissive: new THREE.Color(0x4a90b0).convertSRGBToLinear(),
+      color: new THREE.Color(0x2a6a88),
+      emissive: new THREE.Color(0x4a90b0),
       emissiveIntensity: 0.2 * LIGHT_SCALE,
       roughness: 0.45,
       metalness: 0.1
@@ -104,8 +104,8 @@ export class ReverieProps {
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 2.1, 8), iron);
     pole.position.y = 1.05;
     this.#rookLampMat = new THREE.MeshStandardNodeMaterial({
-      color: new THREE.Color(0xffe0a0).convertSRGBToLinear(),
-      emissive: new THREE.Color(0xffb040).convertSRGBToLinear(),
+      color: new THREE.Color(0xffe0a0),
+      emissive: new THREE.Color(0xffb040),
       emissiveIntensity: 1.2 * LIGHT_SCALE,
       roughness: 0.35,
       metalness: 0
