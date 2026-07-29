@@ -1,0 +1,25 @@
+Image brief — a lithographed poster that will hang, framed, on the timber wall of
+an indoor swimming hall in a stylised low-poly video game. LANDSCAPE 3:2.
+
+Subject: the interior of the Sutro Baths in 1896, seen from the gallery above the
+great salt-water plunge, at the moment the toboggan slides are running. Three long
+wooden slides run down into the green water, bathers in dark full-body costumes
+shooting down them and throwing up flat white sheets of spray; more bathers on
+springboards and hanging from trapeze rings over the water; the vast arched glass
+roof of iron ribs above, daylight coming through it in flat pale bands. Busy,
+joyful, lots of small figures.
+
+Style: 1890s American chromolithograph poster. FLAT spot colours, hard
+silhouettes, visible flat colour separations, NO photorealism, NO gradients other
+than simple flat bands, no digital airbrush. Slight aged cream paper tone.
+
+Palette (use these, they must sit in a warm timber room): cream #f7eed6, warm
+gold #e8ab3f, coral #e07a4e, terracotta #a8412a, deep teal #12454a, mid teal
+#1f6b6b, sea green #2e7f6d, ink navy #1b2b45, moss #4d6b3a.
+
+Typography, spelled EXACTLY, in an elegant Didot-like serif, well kerned:
+  headline: THE TOBOGGAN SLIDES
+  subhead: SPRINGBOARDS · RINGS · TRAPEZE
+  bottom rule line: SEVEN BATHS UNDER ONE ROOF
+Leave a clean margin — the poster gets a physical frame around it, so keep all
+type and key subject matter inside the middle 92% of the canvas.

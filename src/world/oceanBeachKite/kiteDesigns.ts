@@ -1,23 +1,30 @@
 import * as THREE from "three/webgpu";
 
 /**
- * Five kites, built around what they do to light rather than what they look
- * like on the ground.
+ * Six kites, built around what they do to light rather than what they look
+ * like on the ground. Five of them cut it; the prism bends it.
  *
  * The god-ray pass raymarches a 1024² shadow map covering 220 m — roughly
  * 0.21 m per texel — so a hollow only becomes a shaft if it is comfortably
  * wider than half a metre. Every aperture here is sized against that budget:
  * the sunwheel's eye is 2 m across, the lantern's cells and windows are
  * 0.85–1.9 m, the sled's vents are 0.95 m wide, the centipede's pupils
- * 0.92–1.10 m, and no blade gap drops under 0.35 m. Detail finer than that is
- * for the eye, not for the light.
+ * 0.92–1.10 m, the prism's eye is 2.1 m on a side over slots 0.58 m wide, and
+ * no blade gap drops under 0.35 m. Detail finer than that is for the eye, not
+ * for the light.
  *
  * Geometry is emitted as plain parameterised grids — rectangles and polar
  * segments — so every hole is an exact absence of triangles rather than a
  * triangulated cut or an alpha test the depth pass would have to honour.
  */
 
-export type KiteDesignId = "diamond" | "sunwheel" | "lantern" | "sled" | "centipede";
+export type KiteDesignId =
+  | "diamond"
+  | "sunwheel"
+  | "lantern"
+  | "sled"
+  | "centipede"
+  | "prism";
 
 export type KitePalette = {
   clothDeep: number;
@@ -51,6 +58,14 @@ export type KiteDesign = {
   raySpread: number;
   /** How much cloth this design shows; scales the transmission glow. */
   glowScale: number;
+  /**
+   * This sail disperses rather than occludes. A spectral design is deliberately
+   * kept OUT of both shadow paths — it casts nothing, so the shared warm fan in
+   * `sunsetAir` and the raymarched god-ray pass have nothing of it to carve —
+   * and `prismLight` gives it a rainbow of its own instead. The cloth shader
+   * also lays a spectrum across the sail itself.
+   */
+  spectral?: boolean;
   palette: KitePalette;
   buildCloth(): THREE.BufferGeometry;
   buildFrame(context: FrameContext): THREE.Object3D[];
@@ -728,6 +743,206 @@ function centipedeFrame(ctx: FrameContext): THREE.Object3D[] {
   return parts;
 }
 
+// --------------------------------------------------------------- the prism
+
+/**
+ * The one sail on the beach that is not trying to cut the light into bars.
+ *
+ * It is a triangle with a triangle taken out of it — the album cover, flown —
+ * over a comb of six tall slots that flare as they fall. The hollow eye is 2.1 m
+ * on a side, ten texels of the god-ray shadow map across, and the slots are
+ * 0.58 m at the batten widening to 0.65 m at the hem: the widest apertures here
+ * after the sunwheel's.
+ *
+ * None of which it uses for shadows. `spectral` keeps this kite out of every
+ * shadow map (see `KiteDesign.spectral`), so the warm shafts every other design
+ * throws are simply absent from it, and `prismLight` hangs a dispersed spectrum
+ * off the same silhouette instead — a white beam in from the sun, a rainbow fan
+ * out the far side, and a smear of it lying on the sand underneath.
+ */
+const PRISM_SIDE = 5;
+const PRISM_HEIGHT = (PRISM_SIDE * Math.sqrt(3)) / 2;
+/** Apex above the centroid, base below it — the equilateral 2:1 split. */
+const PRISM_APEX_Y = (PRISM_HEIGHT * 2) / 3;
+const PRISM_BASE_Y = -PRISM_HEIGHT / 3;
+/** Inner triangle as a fraction of the outer; 0.42 leaves a 2.1 m eye. */
+const PRISM_EYE = 0.42;
+const PRISM_SKIRT_BOTTOM = PRISM_BASE_Y - 1.51;
+/** The comb flares as it falls, so the slots splay like the spectrum does. */
+const PRISM_SKIRT_FLARE = 1.12;
+const PRISM_SLOTS = 6;
+/** Slot width as a fraction of the batten; ribs take whatever is left. */
+const PRISM_SLOT_FRACTION = 0.116;
+
+const PRISM_SPAN_X = PRISM_SIDE * PRISM_SKIRT_FLARE;
+const PRISM_SPAN_Y = PRISM_APEX_Y - PRISM_SKIRT_BOTTOM;
+
+/** Outer triangle, apex first, counter-clockwise. */
+const PRISM_CORNERS: readonly (readonly [number, number])[] = [
+  [0, PRISM_APEX_Y],
+  [-PRISM_SIDE * 0.5, PRISM_BASE_Y],
+  [PRISM_SIDE * 0.5, PRISM_BASE_Y]
+];
+
+function prismInner(index: number): [number, number] {
+  const [x, y] = PRISM_CORNERS[index % PRISM_CORNERS.length];
+  return [x * PRISM_EYE, y * PRISM_EYE];
+}
+
+function prismUv(x: number, y: number): [number, number] {
+  return [x / PRISM_SPAN_X + 0.5, (y - PRISM_SKIRT_BOTTOM) / PRISM_SPAN_Y];
+}
+
+function prismCloth(): THREE.BufferGeometry {
+  const buffers = newBuffers();
+
+  // The triangular annulus, cut at the corner bisectors into three trapezoids.
+  // Each one is laced along all four of its edges — two hems and two struts —
+  // so the default slack is exactly right and the eye stays a clean hole.
+  for (let limb = 0; limb < PRISM_CORNERS.length; limb++) {
+    const outerA = PRISM_CORNERS[limb];
+    const outerB = PRISM_CORNERS[(limb + 1) % PRISM_CORNERS.length];
+    const innerA = prismInner(limb);
+    const innerB = prismInner(limb + 1);
+    const at = (u: number, v: number): [number, number] => [
+      THREE.MathUtils.lerp(
+        THREE.MathUtils.lerp(outerA[0], outerB[0], u),
+        THREE.MathUtils.lerp(innerA[0], innerB[0], u),
+        v
+      ),
+      THREE.MathUtils.lerp(
+        THREE.MathUtils.lerp(outerA[1], outerB[1], u),
+        THREE.MathUtils.lerp(innerA[1], innerB[1], u),
+        v
+      )
+    ];
+    emitPatch(buffers, {
+      nu: 10,
+      nv: 4,
+      point: (u, v, out) => {
+        const [x, y] = at(u, v);
+        out.set(x, y, 0);
+      },
+      normal: (_u, _v, out) => out.set(0, 0, 1),
+      uv: (u, v) => {
+        const [x, y] = at(u, v);
+        return prismUv(x, y);
+      }
+    });
+  }
+
+  // The comb. Only the ribs are emitted; the six slots between them are an
+  // exact absence of triangles, which is what the light comes through.
+  const rib = (1 - PRISM_SLOTS * PRISM_SLOT_FRACTION) / (PRISM_SLOTS + 1);
+  const pitch = rib + PRISM_SLOT_FRACTION;
+  // One tent across the WHOLE comb rather than one per rib: seven separately
+  // feathered ribs would band the panel and its spectrum with it.
+  const tent = (n: number, v: number) =>
+    Math.cos(n * Math.PI) * smooth01(v / 0.35) * smooth01((1 - v) / 0.3);
+  for (let slat = 0; slat <= PRISM_SLOTS; slat++) {
+    const start = -0.5 + slat * pitch;
+    const at = (u: number, v: number): [number, number] => {
+      const n = THREE.MathUtils.lerp(start, start + rib, u);
+      const width = THREE.MathUtils.lerp(PRISM_SIDE, PRISM_SIDE * PRISM_SKIRT_FLARE, v);
+      return [n * width, THREE.MathUtils.lerp(PRISM_BASE_Y, PRISM_SKIRT_BOTTOM, v)];
+    };
+    emitPatch(buffers, {
+      nu: 2,
+      nv: 8,
+      point: (u, v, out) => {
+        const [x, y] = at(u, v);
+        out.set(x, y, 0);
+      },
+      normal: (_u, _v, out) => out.set(0, 0, 1),
+      uv: (u, v) => {
+        const [x, y] = at(u, v);
+        return prismUv(x, y);
+      },
+      // Sewn to the batten above and the hem below, and hemmed down both slot
+      // edges — a slot mouth on a real kite is bound or it frays open.
+      slack: (u, v) => edgeFalloff(u, 0.4) * edgeFalloff(v, 0.28),
+      bulge: (u, v) => {
+        const n = THREE.MathUtils.lerp(start, start + rib, u);
+        return tent(n, v);
+      }
+    });
+  }
+  return finishCloth(buffers, 1.45);
+}
+
+function prismFrame(ctx: FrameContext): THREE.Object3D[] {
+  const parts: THREE.Object3D[] = [];
+
+  /** Lay a spar along a 2D segment; the cylinder's native axis is +Y. */
+  const strut = (
+    a: readonly [number, number],
+    b: readonly [number, number],
+    radius: number,
+    material: THREE.Material,
+    name: string
+  ) => {
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const length = Math.hypot(dx, dy);
+    const mesh = new THREE.Mesh(
+      ctx.own(new THREE.CylinderGeometry(radius, radius, length, 6)),
+      material
+    );
+    mesh.name = name;
+    mesh.position.set((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, 0.04);
+    mesh.rotation.z = Math.atan2(-dx, dy);
+    parts.push(mesh);
+  };
+
+  for (let i = 0; i < PRISM_CORNERS.length; i++) {
+    const outerA = PRISM_CORNERS[i];
+    const outerB = PRISM_CORNERS[(i + 1) % PRISM_CORNERS.length];
+    strut(outerA, outerB, 0.034, ctx.spar, `kite_prism_edge_${i}`);
+    // Corner bisectors: where the three trapezoids meet, and what holds the
+    // eye open against a sail that would otherwise close it.
+    strut(prismInner(i), outerA, 0.026, ctx.spar, `kite_prism_bisector_${i}`);
+    strut(prismInner(i), prismInner(i + 1), 0.022, ctx.accent, `kite_prism_eye_${i}`);
+  }
+
+  const hemWidth = PRISM_SIDE * PRISM_SKIRT_FLARE * 0.5;
+  strut(
+    [-hemWidth, PRISM_SKIRT_BOTTOM],
+    [hemWidth, PRISM_SKIRT_BOTTOM],
+    0.026,
+    ctx.accent,
+    "kite_prism_hem_batten"
+  );
+
+  // The sewn outline: the triangle, then down and around the comb. Slot mouths
+  // are bound individually so every aperture reads as a finished edge.
+  const outline: THREE.Vector3[] = [];
+  const edge = (a: readonly [number, number], b: readonly [number, number]) => {
+    outline.push(new THREE.Vector3(a[0], a[1], 0.02), new THREE.Vector3(b[0], b[1], 0.02));
+  };
+  for (let i = 0; i < PRISM_CORNERS.length; i++) {
+    edge(PRISM_CORNERS[i], PRISM_CORNERS[(i + 1) % PRISM_CORNERS.length]);
+  }
+  edge([-PRISM_SIDE * 0.5, PRISM_BASE_Y], [-hemWidth, PRISM_SKIRT_BOTTOM]);
+  edge([PRISM_SIDE * 0.5, PRISM_BASE_Y], [hemWidth, PRISM_SKIRT_BOTTOM]);
+  edge([-hemWidth, PRISM_SKIRT_BOTTOM], [hemWidth, PRISM_SKIRT_BOTTOM]);
+  const rib = (1 - PRISM_SLOTS * PRISM_SLOT_FRACTION) / (PRISM_SLOTS + 1);
+  const pitch = rib + PRISM_SLOT_FRACTION;
+  for (let slot = 0; slot < PRISM_SLOTS; slot++) {
+    const left = -0.5 + slot * pitch + rib;
+    const right = left + PRISM_SLOT_FRACTION;
+    for (const n of [left, right]) {
+      edge([n * PRISM_SIDE, PRISM_BASE_Y], [n * PRISM_SIDE * PRISM_SKIRT_FLARE, PRISM_SKIRT_BOTTOM]);
+    }
+  }
+  const hem = new THREE.LineSegments(
+    ctx.own(new THREE.BufferGeometry().setFromPoints(outline)),
+    ctx.hem
+  );
+  hem.name = "kite_prism_hem";
+  parts.push(hem);
+  return parts;
+}
+
 // ----------------------------------------------------------------- designs
 
 export const KITE_DESIGNS: Readonly<Record<KiteDesignId, KiteDesign>> = {
@@ -890,6 +1105,44 @@ export const KITE_DESIGNS: Readonly<Record<KiteDesignId, KiteDesign>> = {
     },
     buildCloth: centipedeCloth,
     buildFrame: centipedeFrame
+  },
+  prism: {
+    id: "prism",
+    label: "spectrum prism",
+    clothMeshName: "ocean_beach_prism_kite_gpu_cloth",
+    width: PRISM_SPAN_X,
+    height: PRISM_SPAN_Y,
+    cullPad: 1.45,
+    // Towed from a long three-leg bridle standing well off the sail: the comb
+    // hangs below the tow point, so the whole kite pitches nose-high and the
+    // spectrum falls away from the eye instead of across it.
+    bridle: [0, 0.35, 1.4],
+    tailAnchor: [0, PRISM_SKIRT_BOTTOM, 0.02],
+    lineScale: 1.18,
+    // Never actually consumed — a spectral kite is skipped by the shared warm
+    // fan — but the prism rig reads it as the half-angle its own spectrum
+    // splays through, which is what makes the rainbow a fan and not a bar.
+    raySpread: 0.3,
+    glowScale: 1.24,
+    spectral: true,
+    palette: {
+      // Black sleeve, graphite prism: the sail is nearly a hole in the sky
+      // until the sun gets behind it, and then the whole spectrum arrives at
+      // once. Everything coloured on this kite is light rather than dye.
+      clothDeep: 0x090b14,
+      clothLight: 0x2b3350,
+      glowLow: 0x6a2fd0,
+      glowHigh: 0x4fe0ff,
+      spar: 0x2a2f3d,
+      hem: 0xcfd8ff,
+      // The tail is the one piece of pigment: red at the hem running to violet
+      // at its tip, with the four bows between them stepping through the band.
+      tailA: 0xff4d3a,
+      tailB: 0x9b5cff,
+      bows: [0xff5a3c, 0xffd24a, 0x4fd97a, 0x4aa8ff]
+    },
+    buildCloth: prismCloth,
+    buildFrame: prismFrame
   }
 };
 
@@ -899,5 +1152,6 @@ export const KITE_DESIGN_ORDER: readonly KiteDesignId[] = [
   "sunwheel",
   "lantern",
   "sled",
-  "centipede"
+  "centipede",
+  "prism"
 ];

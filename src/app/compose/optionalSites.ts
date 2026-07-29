@@ -32,6 +32,7 @@ import { HANG_GLIDING_SITE } from "../../gameplay/hangGliding/meta";
 import { LANDS_END_CENTER } from "../../world/landsEnd/meta";
 import { WAVE_ORGAN_CENTER } from "../../world/waveOrgan/meta";
 import { BEACH_PIANIST_CENTER } from "../../world/beachPianist/meta";
+import { TUTORIAL_ZONE_CENTER } from "../../world/tutorialZone/meta";
 import { SUTRO_BATHS_ARRIVAL } from "../../world/spawnPoints";
 import type { WorldMap } from "../../world/heightmap";
 import type { Physics } from "../../core/physics";
@@ -61,6 +62,7 @@ import type { PalaceReverieGame } from "../../gameplay/palaceReverie";
 import type { LandsEndRegion } from "../../world/landsEnd";
 import type { WaveOrgan } from "../../world/waveOrgan";
 import type { BeachPianist } from "../../world/beachPianist";
+import type { TutorialZone } from "../../world/tutorialZone";
 import type { AfterlightExperience } from "../../gameplay/afterlight";
 import type { HangGlidingExperience } from "../../gameplay/hangGliding";
 import type { PickleballController } from "../systems/pickleball";
@@ -82,7 +84,8 @@ export type OptionalSiteId =
   | "sutro-baths"
   | "pup"
   | "fort-mason-ensemble"
-  | "beach-pianist";
+  | "beach-pianist"
+  | "tutorial-zone";
 type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
 type OptionalSiteStage = () => Promise<void>;
 type OptionalSiteCompile = (
@@ -142,6 +145,7 @@ export type OptionalSiteRefs = {
   waveOrgan: WaveOrgan | null;
   beachPianist: BeachPianist | null;
   sutroBaths: SutroBaths | null;
+  tutorialZone: TutorialZone | null;
 };
 
 export function createOptionalSites({
@@ -241,6 +245,7 @@ export function createOptionalSites({
   let waveOrgan: WaveOrgan | null = null;
   let beachPianist: BeachPianist | null = null;
   let sutroBaths: SutroBaths | null = null;
+  let tutorialZone: TutorialZone | null = null;
   let pickleballController: PickleballController | null = null;
   let siteFoliage: SiteFoliageStreamer | null = null;
   // Zone-only boot allowlist (independent of the perf A/B flags). Cleared by
@@ -353,7 +358,8 @@ export function createOptionalSites({
       landsEnd,
       waveOrgan,
       beachPianist,
-      sutroBaths
+      sutroBaths,
+      tutorialZone
     });
   };
 
@@ -644,6 +650,19 @@ export function createOptionalSites({
     refreshOptionalSiteDebug();
   };
 
+  const loadTutorialZone = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
+    const { createTutorialZone } = await import("../../world/tutorialZone");
+    await stage();
+    // Construction installs a ground overlay and static bodies it owns; past
+    // this point only admission waits, never aborts.
+    const zone = createTutorialZone(map, physics, scene);
+    await prepareOptionalRoot("tutorial zone", zone.root, waitStage, compile);
+    tutorialZone = zone;
+    optionalSiteGateRegistrations["tutorial-zone"] = siteGate.register(zone.siteHooks());
+    sky.invalidateStaticShadows();
+    refreshOptionalSiteDebug();
+  };
+
   const loadBeachPianist = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { BeachPianist: LoadedBeachPianist } = await import("../../world/beachPianist");
     await stage();
@@ -659,46 +678,20 @@ export function createOptionalSites({
     refreshOptionalSiteDebug();
   };
 
-  // --- Sutro Baths pocket: the far world is not observable from inside ------
-  // Deep in the restored hall the only things beyond the glass are ocean, sky
-  // and the pocket's own twilight. These roots are kilometres inland or behind
-  // the cliff, so while the visitor is inside they are hidden outright: no
-  // streaming churn, no radius mutation that a mode switch could strand, and an
-  // exact restore because only roots that were VISIBLE get collected.
-  // Newly streamed far-world roots stay visible until the next transition,
-  // which is harmless — streaming has long settled by the time you are inside.
-  const SUTRO_THINNED_ROOT_PREFIXES = [
-    "cityGen",
-    "wildlands_",
-    "TrafficLightRig",
-    "tileBuildingBatch",
-    "tileRoadBatch",
-    "tileShadowProxy:",
-    "landmarkShadowProxy",
-    "golf",
-    "palace_fine_arts_lagoon",
-    "ocean-beach-surf-shack"
-  ];
-  const sutroThinnedRoots: THREE.Object3D[] = [];
+  // --- Sutro Baths pocket: quality switch only, no exterior hiding ----------
+  // This latch used to ALSO hide every far-world root (cityGen, tile batches,
+  // wildlands…) while the visitor was deep in the hall. That hide was measured
+  // at ~0.2 ms of frame time in the latched pocket (33.4 ms thinned vs 33.7 ms
+  // restored on the M5 Air reference pose — the occlusion gates and frustum
+  // already retire what the glass hall hides), and it was the source of a
+  // family of filmable artifacts: the far city popping in/out through the
+  // south glass as the latch flipped, and the batch birth wipe re-running over
+  // half-revealed buildings — "floating boxes" — whenever a camera left the
+  // hall mid-transition. The far world now simply stays resident; the latch
+  // keeps driving pocketQuality (4x MSAA on the beauty pass), which is where
+  // the pocket's budget actually goes.
   const applySutroExteriorThinning = (thinned: boolean): void => {
-    // Same latch, two consequences. Hiding the city frees a large amount of
-    // per-frame budget; pocketQuality is what spends it (4x MSAA on the beauty
-    // pass, paid for by a wall-clock frame cap). Driving both from one
-    // already-hysteretic signal is deliberate — two latches on the same
-    // threshold could disagree, and the MSAA change reallocates a render target.
     setPocketCommitted(thinned);
-    if (thinned) {
-      if (sutroThinnedRoots.length > 0) return;
-      for (const child of scene.children) {
-        if (!child.visible || !child.name) continue;
-        if (!SUTRO_THINNED_ROOT_PREFIXES.some((prefix) => child.name.startsWith(prefix))) continue;
-        child.visible = false;
-        sutroThinnedRoots.push(child);
-      }
-      return;
-    }
-    for (const root of sutroThinnedRoots) root.visible = true;
-    sutroThinnedRoots.length = 0;
   };
 
   const loadSutroBaths = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
@@ -712,7 +705,28 @@ export function createOptionalSites({
         physics,
         authoredRegions,
         sky,
-        onExteriorThinned: applySutroExteriorThinning
+        onExteriorThinned: applySutroExteriorThinning,
+        hud,
+        // The drain and the upwelling under it are a continuous swim, not a
+        // teleport: no cover, no place history, and the facing and camera are
+        // left exactly as the player had them, because the cut lands inside a
+        // dark bore where the only tell would be the world rotating. This is
+        // deliberately NOT worldArrival.arrive — the destination is the same
+        // tile, already collided and already resident, and the cover would
+        // announce a transition the geometry is trying not to have.
+        relocate: (pose) => {
+          const facing = pose.heading ?? player.heading - Math.PI;
+          // restoreState (not teleportTo): the room is 31 m below groundTop and
+          // teleportTo would clamp the landing up onto the terrain.
+          player.restoreState({
+            x: pose.x,
+            y: pose.y,
+            z: pose.z,
+            heading: facing + Math.PI,
+            mode: "walk"
+          });
+          chase.cutTo(player);
+        }
       });
       // The geographic tile already owns and displays the period hall. Warm only
       // its optional living layer (foliage, bathers and nearby effects) here.
@@ -795,6 +809,12 @@ export function createOptionalSites({
     optionalWorldSite({ id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, load: loadLandsEnd }),
     optionalWorldSite({ id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, load: loadWaveOrgan }),
     optionalWorldSite({ id: "beach-pianist", label: "Beach Pianist", ...BEACH_PIANIST_CENTER, load: loadBeachPianist }),
+    optionalWorldSite({
+      id: "tutorial-zone",
+      label: "Crissy Field · Flight School",
+      ...TUTORIAL_ZONE_CENTER,
+      load: loadTutorialZone
+    }),
     optionalWorldSite({
       id: "sutro-baths",
       label: "Sutro Baths · 1896",
@@ -1000,7 +1020,8 @@ export function createOptionalSites({
     "sutro-baths": true,
     pup: true,
     "fort-mason-ensemble": true,
-    "beach-pianist": true
+    "beach-pianist": true,
+    "tutorial-zone": true
   };
   let optionalSitePerfGating = false;
   const OPTIONAL_SITE_GATE_ID: Partial<Record<OptionalSiteId, string>> = {
@@ -1009,7 +1030,8 @@ export function createOptionalSites({
     palace: "palace-reverie",
     afterlight: "afterlight",
     "hang-gliding": "hang-gliding",
-    pup: "pup"
+    pup: "pup",
+    "tutorial-zone": "tutorial-zone"
   };
   const optionalSitePerfAllowed = (id: OptionalSiteId): boolean =>
     !optionalSitePerfGating || optionalSitePerfEnabled[id];
@@ -1049,6 +1071,9 @@ export function createOptionalSites({
         break;
       case "wave-organ":
         if (!on && waveOrgan) waveOrgan.group.visible = false;
+        break;
+      case "tutorial-zone":
+        if (!on && tutorialZone) tutorialZone.root.visible = false;
         break;
       case "beach-pianist":
         beachPianist?.setPerfSuppressed(!on);
@@ -1125,6 +1150,11 @@ export function createOptionalSites({
         return {
           runtime: waveOrgan?.group.visible ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(waveOrgan?.group)
+        };
+      case "tutorial-zone":
+        return {
+          runtime: tutorialZone?.root.visible ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(tutorialZone?.root)
         };
       case "beach-pianist":
         return {
@@ -1329,6 +1359,14 @@ export function createOptionalSites({
     "wave-organ": () => {
       waveOrgan?.dispose();
       waveOrgan = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    "tutorial-zone": () => {
+      optionalSiteGateRegistrations["tutorial-zone"]?.dispose();
+      delete optionalSiteGateRegistrations["tutorial-zone"];
+      tutorialZone?.dispose();
+      tutorialZone = null;
       sky.invalidateStaticShadows();
       refreshOptionalSiteDebug();
     },

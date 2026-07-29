@@ -7,10 +7,13 @@
 import * as THREE from "three/webgpu";
 import {
   attribute, normalWorld, positionGeometry, uv, float, color, mix, step, fract,
-  floor as tslFloor, hash, uniform, vec3,
+  floor as tslFloor, hash, uniform, vec3, smoothstep, fwidth,
 } from "three/tsl";
 import type { BuildingSpec } from "../core/types";
-import { EXPOSURE_REBASE } from "../../../config";
+import {
+  EXPOSURE_REBASE, WINDOW_LIT_BRIGHTNESS_MEAN, WINDOW_LIT_DENSITY,
+  WINDOW_LIT_DIM, WINDOW_LIT_EMISSIVE,
+} from "../../../config";
 import { WINDOW_GLOW_W } from "../../facade";
 import { ensureCCW, triangulate } from "../core/footprint";
 import { bodyColour } from "../render";
@@ -30,6 +33,12 @@ const WIN_SPACING = 2.4;   // ~metres between window centres (column target)
 // self-lit body tint — MATCHES makeWallMaterial (theme/materials.ts), both
 // carrying the exposure re-anchor factor (config.EXPOSURE_REBASE)
 const BODY_EMISSIVE = 0.3 * EXPOSURE_REBASE;
+// Window rect inside one cell (see the step() bounds below) and its area — the
+// analytic average the grid collapses to once a cell falls under a pixel.
+const WIN_U0 = 0.22, WIN_U1 = 0.82, WIN_V0 = 0.30, WIN_V1 = 0.86;
+const WIN_AREA = (WIN_U1 - WIN_U0) * (WIN_V1 - WIN_V0);
+// Authored lit fraction for the far tier, scaled by the citywide density knob.
+const LIT_FRACTION = 0.3 * WINDOW_LIT_DENSITY;
 
 // `lodVisibility` already costs one float per vertex. Pack the building's base
 // height + a stable stagger seed into that same channel so the arrival growth
@@ -56,9 +65,11 @@ registerSharedMaterialLeakCounter("cityGenChunkLodBeauty", () =>
 );
 
 /** The one material every LOD building shares — per-vertex body colour with a
- *  darkened window grid + a deterministic ~30% of windows lit warm. Carries the
- *  SAME faint self-lit body tint as the near mesh's wall material so the far
- *  building reads as the same colour, not a dark olive silhouette. */
+ *  darkened window grid + a deterministic slice of windows lit warm, at the same
+ *  peak/density as every near tier (config.WINDOW_LIT_*) so a district doesn't
+ *  change character as the detail ring reaches it. Carries the SAME faint
+ *  self-lit body tint as the near mesh's wall material so the far building reads
+ *  as the same colour, not a dark olive silhouette. */
 export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   if (sharedMat) return sharedMat;
   // This is an exterior shell. Keeping it front-sided prevents its gray roof
@@ -90,15 +101,42 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   m.opacityNode = (step as any)(0.5, packedVisibility);
   const body = attribute("color", "vec3") as unknown as ReturnType<typeof color>;
   const isRoof = step(0.5, normalWorld.y.abs());
+  const wall = float(1).sub(isRoof);
   const u = uv().x, v = uv().y;              // already in window-cell units
   const cu = fract(u), cv = fract(v);
-  const inU = step(0.22, cu).mul(step(cu, 0.82));
-  const inV = step(0.30, cv).mul(step(cv, 0.86));
-  const winMask = inU.mul(inV).mul(float(1).sub(isRoof));
+  // Screen-space size of one window cell. Everything below is written against it
+  // because this tier spans 150 m → 2.8 km: the same grid is a crisp rectangle on
+  // the next block and a small fraction of a pixel across the bay.
+  const du = (fwidth as any)(u), dv = (fwidth as any)(v);
+  const halfU = du.mul(0.5).clamp(1e-4, 0.25);
+  const halfV = dv.mul(0.5).clamp(1e-4, 0.25);
+  // Pixel-wide edges instead of step(): a hard grid this small crawls badly once
+  // its lit panes are bright enough to see.
+  const spanU = smoothstep(float(WIN_U0).sub(halfU), float(WIN_U0).add(halfU), cu)
+    .mul(smoothstep(float(WIN_U1).sub(halfU), float(WIN_U1).add(halfU), cu).oneMinus());
+  const spanV = smoothstep(float(WIN_V0).sub(halfV), float(WIN_V0).add(halfV), cv)
+    .mul(smoothstep(float(WIN_V1).sub(halfV), float(WIN_V1).add(halfV), cv).oneMinus());
+  const winCell = spanU.mul(spanV);
+  // Past ~1 cell/pixel no filter can recover the grid — dissolve to its analytic
+  // average so a far district reads as an even glow, not a field of fireflies,
+  // and resolves back into individual panes as you walk in.
+  const resolve = smoothstep(0.4, 1.1, du.max(dv)).oneMinus();
+  const winMask = mix(float(WIN_AREA), winCell, resolve).mul(wall);
   m.colorNode = mix(body, color(new THREE.Color(0x1b1f27)), winMask);
   const cellId = tslFloor(u).add(tslFloor(v).mul(31.0));
+  // Which panes are lit, and how brightly — a second hash so brightness doesn't
+  // correlate with the lit/dark draw. Same curve as the near tiers
+  // (config.windowLitBrightness).
+  const litSel = step(float(1 - LIT_FRACTION), hash(cellId));
+  const hb = hash(cellId.add(17.0));
+  const brightness = mix(float(WINDOW_LIT_DIM), float(1), hb.mul(hb));
+  const litCell = winCell.mul(litSel).mul(brightness);
+  const litAvg = float(WIN_AREA * LIT_FRACTION * WINDOW_LIT_BRIGHTNESS_MEAN);
   // lit windows gate on the sky's twilight weight, same as the near facades
-  const litWin = winMask.mul(step(0.7, hash(cellId))).mul(color(new THREE.Color(0xffdca0))).mul(0.7 * EXPOSURE_REBASE).mul(WINDOW_GLOW_W);
+  const litWin = color(new THREE.Color(0xffdca0))
+    .mul(mix(litAvg, litCell, resolve).mul(wall))
+    .mul(WINDOW_LIT_EMISSIVE)
+    .mul(WINDOW_GLOW_W);
   // faint self-lit body tint on the SOLID wall only (not the glass) so shaded
   // façades don't read near-black — the near mesh's wall material does the same.
   const bodyTint = body.mul(BODY_EMISSIVE).mul(float(1).sub(winMask));

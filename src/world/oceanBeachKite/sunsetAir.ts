@@ -52,6 +52,10 @@ const SHAFT_COUNT = 6;
  * invisible mesh leaves the render list and a zero-width one does not.
  */
 const MAX_LIT_FANS = 3;
+/** Per-second rate the eased lit amount chases its target; ~0.4 s to settle. */
+const LIT_FADE_RATE = 6;
+/** How much better a challenger must score to evict a currently-lit fan. */
+const LIT_INCUMBENT_BONUS = 1.4;
 const SHAFT_LENGTH = 38;
 const SHAFT_WIDTH = 2.6;
 /** Under this range the kite is the subject and its shafts are just a smear. */
@@ -80,8 +84,14 @@ export type SunsetAirState = {
   haze: number;
 };
 
-/** One kite's live position and how wide a fan its silhouette throws. */
-export type RayAnchor = { position: THREE.Vector3; spread: number };
+/**
+ * One kite's live position and how wide a fan its silhouette throws.
+ *
+ * A spectral anchor is handed over to `prismLight` instead and never gets a
+ * warm fan here — it is not an occluder, it is a disperser, and giving it both
+ * would put orange shafts and a rainbow out of the same silhouette.
+ */
+export type RayAnchor = { position: THREE.Vector3; spread: number; spectral?: boolean };
 
 export type SunsetAir = {
   group: THREE.Group;
@@ -321,8 +331,16 @@ export function createSunsetAir(opts: {
     distance: number;
     /** False once a better-aligned kite has taken this fan's budget. */
     lit: boolean;
+    /**
+     * Eased 0..1 follow of `lit`. The budget is a hard three, but seven kites
+     * compete for it and the ranking swaps whenever two of them cross, so
+     * spending it instantly is a fan appearing or vanishing between one frame
+     * and the next — which is precisely what it looked like. Width and halo
+     * scale by this, so a fan losing its slot shrinks out over a beat instead.
+     */
+    litAmount: number;
   };
-  const fans: Fan[] = opts.anchors.map((anchor, fanIndex) => {
+  const fans: Fan[] = opts.anchors.filter((anchor) => !anchor.spectral).map((anchor, fanIndex) => {
     const meshes: THREE.Mesh[] = [];
     const splay: { angle: number; roll: number; rollRate: number }[] = [];
     for (let i = 0; i < SHAFT_COUNT; i++) {
@@ -343,7 +361,17 @@ export function createSunsetAir(opts: {
     halo.frustumCulled = false;
     halo.renderOrder = 9;
     shaftGroup.add(halo);
-    return { anchor, meshes, halo, splay, strength: 0, haloStrength: 0, distance: 1, lit: true };
+    return {
+      anchor,
+      meshes,
+      halo,
+      splay,
+      strength: 0,
+      haloStrength: 0,
+      distance: 1,
+      lit: true,
+      litAmount: 0
+    };
   });
   group.add(shaftGroup);
 
@@ -405,14 +433,26 @@ export function createSunsetAir(opts: {
       shaftStrength.value = peakShaft;
       haloStrength.value = peakHalo;
 
-      // Rank by strength and light only the leaders.
+      // Rank by strength and light only the leaders — but rank the incumbents
+      // with a bonus. Seven kites drifting through their wind windows cross each
+      // other's alignment constantly, and a bare sort hands the budget back and
+      // forth every few frames. A challenger has to be clearly better, not
+      // momentarily better, before it takes a lit fan's place.
       if (fans.length > MAX_LIT_FANS) {
         order.length = 0;
         for (let i = 0; i < fans.length; i++) order.push(i);
-        order.sort((a, b) => fans[b].strength - fans[a].strength);
+        const ranked = (fan: Fan) => fan.strength * (fan.lit ? LIT_INCUMBENT_BONUS : 1);
+        order.sort((a, b) => ranked(fans[b]) - ranked(fans[a]));
         for (let rank = 0; rank < order.length; rank++) {
           fans[order[rank]].lit = rank < MAX_LIT_FANS;
         }
+      }
+      // Ease every fan toward its target before anything reads it, so gaining
+      // and losing the budget are both ramps rather than steps.
+      const litFollow = Math.min(1, o.dt * LIT_FADE_RATE);
+      for (const fan of fans) {
+        fan.litAmount += ((fan.lit ? 1 : 0) - fan.litAmount) * litFollow;
+        if (fan.litAmount < 0.002) fan.litAmount = 0;
       }
 
       // The sun's travel direction, and a stable frame perpendicular to it to
@@ -424,7 +464,10 @@ export function createSunsetAir(opts: {
       binormal.crossVectors(axis, perpendicular).normalize();
 
       for (const fan of fans) {
-        if (!fan.lit) {
+        // Visibility follows the EASED amount, not the boolean: a fan that just
+        // lost its slot keeps drawing until it has actually shrunk away.
+        const shouldDraw = fan.litAmount > 0;
+        if (!shouldDraw) {
           if (fan.halo.visible) {
             fan.halo.visible = false;
             for (const shaft of fan.meshes) shaft.visible = false;
@@ -444,7 +487,7 @@ export function createSunsetAir(opts: {
         // Small and faint on purpose: the halo is glare around the kite, and a
         // depth-ignoring sprite any larger simply erases the subject.
         const haloRelative = peakHalo > 1e-5 ? fan.haloStrength / peakHalo : 0;
-        fan.halo.scale.setScalar((2.2 + fan.distance * 0.022) * haloRelative);
+        fan.halo.scale.setScalar((2.2 + fan.distance * 0.022) * haloRelative * fan.litAmount);
 
         for (let i = 0; i < fan.meshes.length; i++) {
           const splay = fan.splay[i];
@@ -475,7 +518,8 @@ export function createSunsetAir(opts: {
             (0.6 + Math.sin(elapsed * 0.9 + i * 2.1) * 0.22 + tilt) *
             (1 + fan.distance / 150) *
             relative *
-            acrossView;
+            acrossView *
+            fan.litAmount;
         }
       }
     },

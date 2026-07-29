@@ -54,6 +54,7 @@ import {
   subscribeBehindTheScenes
 } from "../../ui/behindTheScenesHost";
 import { Tutorial } from "../../ui/tutorial";
+import { TUTORIAL_ZONE_ARRIVAL } from "../../world/tutorialZone/meta";
 import { DebugPanel } from "../../ui/debug";
 import { DebugOverlays } from "../../ui/overlays";
 import { OVERLAY_TUNING } from "../../ui/overlays/tuning";
@@ -80,6 +81,7 @@ import {
   surfboardVisualKey,
   type SurfboardConfig
 } from "../../vehicles/surf";
+import { saveKiteConfig, type KiteConfig } from "../../world/oceanBeachKite/kiteConfig";
 import {
   GARDEN_XZ,
   GOLF_XZ,
@@ -132,6 +134,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   ctx.late.net = net;
   const remotes = new RemotePlayers(scene);
   remotes.localPlayerPosition = () => player.renderPosition;
+  remotes.sandPrints = core.sandPrints;
   // net.onRakeStamp / onRakeReset are wired just after the Tea Garden controller
   // is created (below) — before then the core.state.garden cannot exist, and net's no-op
   // defaults absorb any rake hydration that arrives during a boot await; the
@@ -394,13 +397,50 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     }
   });
   core.state.ensureSurfboardCustomizer = (open = false) => surfboard.ensure(open);
+  // The kite atelier is the one customizer gated on WHERE you are rather than
+  // what you are riding: your kite only exists on the Ocean Beach sand, so the
+  // slot follows the kite gate's proximity edge (set below, once that gate is
+  // built) instead of a player mode alone.
+  let inKiteRange = false;
+  const kite = createLazySelector(hudRoot, {
+    id: "kite",
+    launcherClass: "avatar-ui kite-ui kite-launcher-ui",
+    toggleClass: "avatar-toggle kite-toggle",
+    icon: "/ui/customizer-icons/kite.svg",
+    title: "Kite atelier",
+    ariaLabel: "Open kite atelier",
+    active: () => player.mode === "walk" && inKiteRange,
+    onLauncherClick: () => input.releaseLock(),
+    load: async () => {
+      const { KiteSelector } = await import("../../ui/kiteSelector");
+      const applyKiteConfig = (config: KiteConfig) => {
+        ctx.state.kiteConfig = config;
+        oceanKite.setKiteConfig(config);
+      };
+      return new KiteSelector(
+        ctx.state.kiteConfig,
+        (config) => {
+          applyKiteConfig(config);
+          saveKiteConfig(config);
+        },
+        // Slider drag: drive the kite that is already in the sky, but do not
+        // write a localStorage entry per pointer move.
+        applyKiteConfig,
+        () => {}
+      );
+    }
+  });
   // One top-right customizer slot: show only the active mode's atelier (or none).
   core.state.syncCustomizerForMode = (mode) => {
-    avatar.syncVisible(mode === "walk");
+    const kiteOwnsSlot = mode === "walk" && inKiteRange;
+    // On the kite beach the atelier you want on foot is the kite's, not the
+    // avatar's — one slot, and the kite is the thing that is only here.
+    avatar.syncVisible(mode === "walk" && !kiteOwnsSlot);
     board.syncVisible(mode === "board");
     scooter.syncVisible(mode === "scooter");
     car.syncVisible(mode === "drive");
     surfboard.syncVisible(mode === "surf");
+    kite.syncVisible(kiteOwnsSlot);
   };
   core.state.syncCustomizerForMode(player.mode);
   await constructionSlice();
@@ -590,49 +630,87 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   // Webcam pose control is a first-use feature: neither LiteRT, its WebGPU
   // runtime, the model, nor camera permission is touched until this button.
   let mocapSession: import("../../mocap/poseMocapSession").PoseMocapSession | null = null;
-  const stopMocap = (announce = true) => {
-    mocapSession?.stop();
+  // Bumped by every start/stop/failure so a slow start that lands after the
+  // player changed their mind can never write to the button or the player.
+  let mocapRun = 0;
+  let mocapPending = false;
+  let mocapErrorTimer = 0;
+  const clearMocapError = () => {
+    if (!mocapErrorTimer) return;
+    window.clearTimeout(mocapErrorTimer);
+    mocapErrorTimer = 0;
+  };
+  /**
+   * A failure is a passing badge, not a mode: the button falls back to plain
+   * "Pose" so it can never park on "Retry pose" with no way out.
+   */
+  const failMocap = (badge: string, detail: string) => {
+    mocapRun++;
     mocapSession = null;
+    mocapPending = false;
     player.setMocapPoseDriver(null);
+    clearMocapError();
+    audioControls.setMocap("error", badge);
+    hud.message(detail, 4.5);
+    mocapErrorTimer = window.setTimeout(() => {
+      mocapErrorTimer = 0;
+      audioControls.setMocap("off");
+    }, 5000);
+  };
+  const stopMocap = (announce = true) => {
+    mocapRun++;
+    const cancelled = mocapPending;
+    const session = mocapSession;
+    mocapSession = null;
+    mocapPending = false;
+    session?.stop();
+    player.setMocapPoseDriver(null);
+    clearMocapError();
     audioControls.setMocap("off");
-    if (announce) hud.message("Webcam pose off", 2.4);
+    if (announce) hud.message(cancelled ? "Webcam pose start cancelled" : "Webcam pose off", 2.4);
   };
   const startMocap = async () => {
+    const run = ++mocapRun;
+    mocapPending = true;
+    clearMocapError();
     audioControls.setMocap("loading", "Loading WebGPU pose");
-    hud.message("Starting WebGPU webcam pose…", 3);
+    hud.message("Starting WebGPU webcam pose — click Pose again to cancel", 3);
     try {
       const { PoseMocapSession } = await import("../../mocap/poseMocapSession");
+      if (run !== mocapRun) return; // cancelled while the chunk was in flight
       const session = new PoseMocapSession({
         video: audioControls.mocapVideo,
         debugCanvas: audioControls.mocapDebugCanvas,
-        onState: (state, message) => audioControls.setMocap(state, message),
+        onState: (state, message) => {
+          if (run === mocapRun) audioControls.setMocap(state, message);
+        },
         onFatal: (error) => {
-          if (mocapSession !== session) return;
-          mocapSession = null;
-          player.setMocapPoseDriver(null);
-          audioControls.setMocap("error", "Pose stopped");
-          hud.message(`Webcam pose stopped — ${error.message}`, 4.5);
+          if (run !== mocapRun) return;
+          failMocap("Pose stopped", `Webcam pose stopped — ${error.message}`);
         }
       });
       mocapSession = session;
       await session.start();
-      if (mocapSession !== session) {
+      // start() resolves quietly when it was cancelled mid-flight; stopMocap
+      // already stopped this session, so just leave the off state alone.
+      if (run !== mocapRun) {
         session.stop();
         return;
       }
+      mocapPending = false;
       player.setMocapPoseDriver(session.poseDriver);
       hud.message("Webcam pose ready — step into view", 3.4);
     } catch (error) {
+      if (run !== mocapRun) return;
       mocapSession?.stop();
-      mocapSession = null;
-      player.setMocapPoseDriver(null);
       const message = error instanceof Error ? error.message : String(error);
-      audioControls.setMocap("error", "Pose unavailable");
-      hud.message(`Webcam pose unavailable — ${message}`, 4.8);
+      failMocap("Pose unavailable", `Webcam pose unavailable — ${message}`);
     }
   };
+  // One honest toggle: engaged (loading, searching, tracking) always turns off,
+  // and anything else starts. Cancelling a pending start counts as turning off.
   audioControls.onMocapToggle = () => {
-    if (mocapSession) stopMocap();
+    if (mocapSession || mocapPending) stopMocap();
     else void startMocap();
   };
   window.addEventListener("pagehide", () => stopMocap(false), { once: true });
@@ -837,7 +915,26 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     pressed: (c) => input.pressed(c),
     mapOpen: () => minimap.expanded,
     teleport: (t) => navigation.teleportToPose(t),
-    message: (m, s) => hud.message(m, s)
+    message: (m, s) => hud.message(m, s),
+    // The flight school. `zone` is null until the site is resident, and every
+    // step that reads it has a body-only fallback — starting the tutorial from
+    // the far side of the city must never wait on a chunk.
+    zone: () => core.state.tutorialZone?.progress ?? null,
+    // `sites` is declared further down this function; the button that calls
+    // this cannot be clicked before then, so the closure never hits the TDZ.
+    goToZone: () => {
+      void sites.ensure("tutorial-zone");
+      navigation.teleportToPose(
+        {
+          x: TUTORIAL_ZONE_ARRIVAL.x,
+          y: map.groundTop(TUTORIAL_ZONE_ARRIVAL.x, TUTORIAL_ZONE_ARRIVAL.z) + 1.2,
+          z: TUTORIAL_ZONE_ARRIVAL.z,
+          facing: TUTORIAL_ZONE_ARRIVAL.heading,
+          mode: "walk"
+        },
+        "Flight School"
+      );
+    }
   });
   navigation.onTeleported = () => {
     jumpLandingAudio.reset();
@@ -927,8 +1024,25 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
 
   // Kid-with-a-kite ambient encounter (lazy first-approach gate) — extracted
   // per docs/MAIN_DECOMPOSITION.md.
-  const oceanKite = createOceanKiteGate({ map, scene, renderer, camera, player, debugPanel });
+  const oceanKite = createOceanKiteGate({
+    map,
+    scene,
+    renderer,
+    camera,
+    player,
+    debugPanel,
+    sandPrints: core.sandPrints,
+    // Walking onto (or off) the kite beach hands the single customizer slot to
+    // the kite atelier and back again.
+    onAtelierRangeChange: (inRange) => {
+      inKiteRange = inRange;
+      core.state.syncCustomizerForMode!(player.mode);
+    }
+  });
   import.meta.hot?.dispose(oceanKite.dispose);
+  // Seed the gate with the saved kite so a returning player's sail is already
+  // the right one the first time the encounter streams in.
+  oceanKite.setKiteConfig(ctx.state.kiteConfig);
   // renderFrame lives in main and predates this gate; hand it the kite's
   // sunset god-ray request so both areas arbitrate in one place.
   ctx.state.kiteGodRayArea = oceanKite.godRayArea;
@@ -1475,16 +1589,26 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     // Selected park groundcover starts under the travel cover even when its
     // bundle was not previously resident. The authored Tea Garden owns its own
     // grass and is excluded so Hiro/Tea House remain the sole priority there.
-    const inPrimaryWildlands = WILD_REGIONS.some((region) =>
-      region.id !== "buenavista" &&
+    //
+    // Buena Vista is excluded from the TREE prime only. It owns its own canopy,
+    // so priming the primary Wildlands forest there would grow distant redwoods
+    // nobody asked for — but it does NOT own any grass: blades come from the
+    // shared citywide ring, which lives on this same owner. Gating the two
+    // together left the hill wooded and completely bald underneath unless the
+    // player happened to have visited GG Park, the Presidio, Marin, Twin Peaks
+    // or the golf course earlier in the session.
+    const nearDestination = (region: (typeof WILD_REGIONS)[number]): boolean =>
       destination.x >= region.minX - 320 && destination.x <= region.maxX + 320 &&
-      destination.z >= region.minZ - 320 && destination.z <= region.maxZ + 320
+      destination.z >= region.minZ - 320 && destination.z <= region.maxZ + 320;
+    const inAnyWildlands = WILD_REGIONS.some(nearDestination);
+    const inPrimaryWildlands = WILD_REGIONS.some(
+      (region) => region.id !== "buenavista" && nearDestination(region)
     );
-    if (inPrimaryWildlands && teaDistance >= 820) {
+    if (inAnyWildlands && teaDistance >= 820) {
       // Fire-and-forget FIRST: the groundcover await below can outlive the
       // supplemental 8 s abort on a cold cache, and the tree prime must not
       // die with it (it orders itself after the exhibit internally).
-      requestWildlandsTreePrime(destination);
+      if (inPrimaryWildlands) requestWildlandsTreePrime(destination);
       await prepareWildlandsGroundcoverAt(destination, signal);
     }
   };
@@ -1525,6 +1649,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       core.state.coronaHeights = r.coronaHeights;
       core.state.landsEnd = r.landsEnd;
       core.state.waveOrgan = r.waveOrgan;
+      core.state.tutorialZone = r.tutorialZone;
       // Beach Pianist keeps two concerns in main (they read main-local state the
       // controller can't see): its debug tuning folder and piano-only god-ray
       // ownership. HEAD ran these inside loadBeachPianist / its unloader;
@@ -1585,17 +1710,22 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     // Park): the spawn IS the destination, so its lawn and trees take the same
     // arrival lane a teleport would get (the garden owns its own foliage).
     const spawn = { x: player.position.x, z: player.position.z };
-    const bootInWildlands = WILD_REGIONS.some((region) =>
-      region.id !== "buenavista" &&
+    const nearSpawn = (region: (typeof WILD_REGIONS)[number]): boolean =>
       spawn.x >= region.minX - 320 && spawn.x <= region.maxX + 320 &&
-      spawn.z >= region.minZ - 320 && spawn.z <= region.maxZ + 320
+      spawn.z >= region.minZ - 320 && spawn.z <= region.maxZ + 320;
+    // Groundcover for any wild region, tree prime for the primary four only —
+    // same split as the teleport path above: Buena Vista owns its canopy but
+    // gets its grass from this shared owner.
+    const bootInWildlands = WILD_REGIONS.some(nearSpawn);
+    const bootInPrimaryWildlands = WILD_REGIONS.some(
+      (region) => region.id !== "buenavista" && nearSpawn(region)
     );
     if (bootInWildlands && bootTeaDistance >= 820) {
       wildlandsArrivalPriority = true;
       void prepareWildlandsGroundcoverAt(spawn).catch((error) =>
         console.warn("[core.state.wildlands] boot destination groundcover failed:", error)
       );
-      requestWildlandsTreePrime(spawn);
+      if (bootInPrimaryWildlands) requestWildlandsTreePrime(spawn);
     }
   });
 
@@ -1650,7 +1780,18 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
             // its boiler-room footprint alongside the authored Tea Garden and
             // the six source-authored Fort Mason replacements.
             isTeaGardenBuilding(key, index) ||
-            (key === "1_12" && index === 0) ||
+            // The Point Lobos headland. Five OSM footprints land on the cliff
+            // between the restored hall and the Cliff House shelf, isolated from
+            // the Richmond grid that starts 400 m inland at 60-80 m elevation.
+            // From the hall's ocean window they are the first thing in frame and
+            // they read as slabs hanging over the water, because at deck height
+            // the coastal land beyond subtends under a degree and hazes out to
+            // the same value as the sea while the walls stay dark. #2 is the
+            // clearest evidence that they were never meant to be here: its roof
+            // (21.4 m) sits below the terrain under it (23.4 m), so it is a
+            // fully buried building that still draws. Removing the cluster
+            // restores an empty headland; the Richmond skyline is untouched.
+            (key === "1_12" && [0, 1, 2, 3, 4].includes(index)) ||
             (key === "10_8" && [0, 19, 20, 22, 23, 24].includes(index))
         },
         {
@@ -1762,23 +1903,40 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       // local, shadows the Marin `forest` state field deliberately
       const forest = mod.createBuenaVistaTrees(map);
       core.state.buenaVistaTrees = forest;
+      // Published before the compiles, not after: probes measuring how long this
+      // hill takes to look wooded need to observe it DURING the build, and the
+      // late assignment made a forest that was already in the scene read as
+      // absent.
+      const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (h) Object.assign(h, { buenaVistaTrees: forest });
       forest.group.visible = true;
       await forest.ready;
       forest.update(camera.position);
+      // Near starts and later approaches use the same detached path; neither may
+      // leak an uncompiled tree material into the live renderer.
+      const compile = async (unit: THREE.Object3D) => {
+        await waitForWorldBackgroundWindow();
+        await renderer.compileAsync(unit, camera, scene);
+      };
+      // Attach on the distant canopy tier, not on the whole forest. Waiting for
+      // every design's canopy/grove/branch pipeline left Buena Vista visibly
+      // BALD for ~30 s after a first approach — the hill is wooded in the layout
+      // the entire time, it just has nothing compiled to draw with. The far tier
+      // is one compile and carries the whole silhouette; each chunk and near
+      // batch stays internally invisible until its own pipeline is warm, so
+      // attaching here cannot expose an uncompiled pipeline.
       try {
-        // Near starts and later approaches use the same detached path; neither
-        // may leak an uncompiled tree material into the live renderer.
-        await forest.prepareVisible(async (unit) => {
-          await waitForWorldBackgroundWindow();
-          await renderer.compileAsync(unit, camera, scene);
-        });
+        await forest.prepareCanopySilhouette(compile);
       } catch (err) {
-        console.warn(`[buena-vista] ${deferred ? "deferred" : "near"} tree compile failed:`, err);
+        console.warn(`[buena-vista] ${deferred ? "deferred" : "near"} canopy compile failed:`, err);
       }
       scene.add(forest.group);
       forest.group.visible = ctx.state.foliageOn;
-      const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-      if (h) Object.assign(h, { buenaVistaTrees: forest });
+      try {
+        await forest.prepareVisible(compile);
+      } catch (err) {
+        console.warn(`[buena-vista] ${deferred ? "deferred" : "near"} tree compile failed:`, err);
+      }
     };
     let buenaVistaTreesReady: Promise<unknown> | null = null;
     if (buenaVistaGates) {

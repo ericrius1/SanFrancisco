@@ -33,7 +33,6 @@ const ADOBE = new THREE.Color(0xdcc7a4);
 const ADOBE_TRIM = new THREE.Color(0xe8d9bd);
 const STONE_FLOOR = new THREE.Color(0xb08a63);
 const FLOOR_INLAY = new THREE.Color(0x8f6b48);
-const VAULT_CREAM = new THREE.Color(0xe6d8bf);
 const TERRACOTTA = new THREE.Color(0xa9573a);
 const WOOD = new THREE.Color(0x5a3e26);
 
@@ -293,8 +292,11 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
     const r = FOOT_HALF_W; // spans the full interior width
     const vaultLen = naveLen + 12; // reach past the apse mouth so the far end is roofed
     const vaultMidZ = naveMidZ + 4;
+    // Nothing pushed into `vault` is painted: the merged md_vault material below
+    // is map/emissiveMap-driven and never opts into vertexColors, so a "color"
+    // attribute here is pure per-vertex work thrown away at draw time. It also
+    // has to stay uniform — mergeGeometries requires matching attribute sets.
     const g = new THREE.CylinderGeometry(r, r, vaultLen, 28, 1, true, Math.PI / 2, Math.PI).toNonIndexed();
-    paint(g, VAULT_CREAM);
     g.rotateX(Math.PI / 2); // arch now rises in +Y, runs along Z
     g.scale(1, (VAULT_APEX - WALL_H) / r, 1); // flatten the arch height to the target apex
     g.translate(0, WALL_H, vaultMidZ);
@@ -305,7 +307,6 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
     // the same rear footprint as the apse wall and prevents a strip of night
     // sky from appearing above the stained glass when viewed from the nave.
     const apseCanopy = new THREE.CircleGeometry(APSE_RADIUS + 0.12, 36, Math.PI, Math.PI).toNonIndexed();
-    paint(apseCanopy, VAULT_CREAM);
     apseCanopy.rotateX(-Math.PI / 2);
     apseCanopy.translate(0, APSE_WALL_H, Z_APSE);
     vault.push(apseCanopy);
@@ -323,14 +324,12 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
     lunetteShape.lineTo(APSE_RADIUS, APSE_WALL_H);
     lunetteShape.closePath();
     const lunette = new THREE.ShapeGeometry(lunetteShape).toNonIndexed();
-    paint(lunette, VAULT_CREAM);
     lunette.translate(0, 0, Z_APSE - 0.04);
     vault.push(lunette);
 
     // painted ribs across the vault (thin arches spanning X at intervals along Z)
     for (let z = Z_ENTRANCE + 4; z <= Z_APSE - 2; z += 6.4) {
       const rib = new THREE.TorusGeometry(r - 0.05, 0.16, 5, 24, Math.PI).toNonIndexed();
-      paint(rib, ADOBE_TRIM);
       rib.scale(1, (VAULT_APEX - WALL_H) / r, 1);
       rib.translate(0, WALL_H, z);
       vault.push(rib);

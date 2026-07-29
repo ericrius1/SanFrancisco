@@ -24,6 +24,7 @@ import {
   POSTFX_PIANO_GOD_RAY_KEYS,
   applyPostFxParams
 } from "../render/postfx";
+import { GRADE_TUNING, type GradeRuntime } from "../render/grade";
 import { governorEffects } from "../render/adaptiveResolution";
 import { VOICE_TUNING } from "../net/voice";
 import { NATURE_AUDIO_TUNING } from "../audio";
@@ -54,6 +55,7 @@ type DebugRenderPipeline = {
   setWireframeLodGradient: (on: boolean) => void;
   warmupPostFx?: () => Promise<void>;
   contactShadows: Pick<ContactShadowComplement, "configure" | "setEnabled">;
+  grade: Pick<GradeRuntime, "setLook">;
 };
 
 export type DebugMonitorBinding = { refresh(): void };
@@ -810,6 +812,13 @@ export class DebugPanel {
     TEE_BEACON_TUNING.bind(golfBeacons);
 
     const lighting = advanced.addFolder({ title: "lighting", expanded: false });
+    // The display transform (render/gradeLooks.ts). "ACES (legacy)" is the curve
+    // that shipped before the grade landed, kept so the change stays judgeable
+    // side by side. Switching only re-bakes and re-uploads the 3D LUT — no
+    // pipeline reselect, no shader compile, no hitch.
+    GRADE_TUNING.bind(lighting, {
+      onChange: (_key, value) => this.#postfx?.grade.setLook(String(value))
+    });
     RENDER_TUNING.bind(lighting, {
       // greyCards is a persisted toggle only — main's tick polls the live value
       // and poses the calibration chart (src/ui/calibrationChart.ts).

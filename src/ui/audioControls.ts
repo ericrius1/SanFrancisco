@@ -32,7 +32,6 @@ export class AudioControls {
   #soundscapeSlider: HTMLInputElement;
   #voiceSlider!: HTMLInputElement;
   #mixerOpen = false;
-  #mocapState: MocapControlState = "off";
   #micNudgeShown = false;
   #micNudge: HTMLDivElement | null = null;
 
@@ -127,8 +126,11 @@ export class AudioControls {
     this.#mocapLabel.className = "label";
     this.#mocapLabel.textContent = "Pose";
     this.#mocap.append(this.#mocapIcon, this.#mocapLabel);
+    // Always live, including while loading: a start that stalls on a camera
+    // prompt or a slow model download must stay cancellable, or the button
+    // parks itself disabled with no way back.
     this.#mocap.addEventListener("click", () => {
-      if (this.#mocapState !== "loading") this.onMocapToggle();
+      this.onMocapToggle();
       this.#mocap.blur();
     });
 
@@ -238,18 +240,31 @@ export class AudioControls {
   }
 
   setMocap(state: MocapControlState, message = "WebGPU pose"): void {
-    this.#mocapState = state;
     const active = state === "loading" || state === "searching" || state === "tracking";
     this.#mocap.classList.toggle("on", state === "searching" || state === "tracking");
     this.#mocap.classList.toggle("off", state === "off");
     this.#mocap.classList.toggle("loading", state === "loading");
     this.#mocap.classList.toggle("error", state === "error");
-    this.#mocap.disabled = state === "loading";
     this.#mocap.setAttribute("aria-pressed", active ? "true" : "false");
-    this.#mocap.setAttribute("aria-label", active ? "Turn webcam pose control off" : "Drive avatar with webcam pose");
-    this.#mocap.title = active ? "webcam pose active — click to stop" : "drive your avatar from the webcam (WebGPU)";
+    this.#mocap.setAttribute(
+      "aria-label",
+      state === "loading"
+        ? "Cancel starting webcam pose control"
+        : active
+          ? "Turn webcam pose control off"
+          : "Drive avatar with webcam pose"
+    );
+    this.#mocap.title =
+      state === "loading"
+        ? "starting webcam pose — click to cancel"
+        : active
+          ? "webcam pose active — click to stop"
+          : state === "error"
+            ? "webcam pose failed — click to try again"
+            : "drive your avatar from the webcam (WebGPU)";
     this.#mocapIcon.textContent = state === "loading" ? "◌" : state === "tracking" ? "●" : "◉";
-    this.#mocapLabel.textContent = state === "tracking" ? "Pose on" : state === "error" ? "Retry pose" : "Pose";
+    this.#mocapLabel.textContent =
+      state === "tracking" ? "Pose on" : state === "loading" ? "Cancel" : state === "error" ? "Retry pose" : "Pose";
     this.#mocapStatus.textContent = message;
     this.#mocapPreview.hidden = state === "off" || state === "error";
   }

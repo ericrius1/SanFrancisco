@@ -159,7 +159,10 @@ const DEFINITIONS = Object.freeze({
     [12, "Ocean Beach Kites · The Last Shafts"],
     [13, "Ocean Beach Kites · Civil Twilight"],
     [14, "Ocean Beach Kites · After the Light"],
-    [15, "Ocean Beach Kites · Nautical"]
+    [15, "Ocean Beach Kites · Nautical"],
+    [16, "Ocean Beach Kites · The Line"],
+    [17, "Ocean Beach Kites · Two on the Sand"],
+    [18, "Ocean Beach Kites · Night Flyers"]
   ].map(([index, title]) => {
     const suffix = String(index).padStart(2, "0");
     const id = `ocean-beach-kite-${suffix}`;
@@ -174,7 +177,7 @@ const DEFINITIONS = Object.freeze({
       audio: Object.freeze({
         profile: "ocean-beach-kite",
         index,
-        description: `Sunset onshore wind, surf wash and kite fabric — look ${index} of fifteen.`
+        description: `Sunset onshore wind, surf wash and kite fabric — look ${index} of eighteen.`
       })
     })];
   })),
@@ -200,6 +203,79 @@ const DEFINITIONS = Object.freeze({
         profile: "ocean-beach-kite-ring",
         index,
         description: `The sun held inside the sunwheel — eclipse look ${index} of five.`
+      })
+    })];
+  })),
+  // The two travelling shots: kite festival to Sutro Baths in one unbroken move.
+  // Fifteen seconds each, and the stills are weighted toward the back half
+  // because that is where the shot changes — the beach run is one continuous
+  // idea, the crossing and the hall interior are four.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Kites · Over the Headland"],
+    [2, "Ocean Beach Kites · In From the Sea"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `kite-to-sutro-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 15,
+      seed: (0x46_4c_59_00 + index * 0x101) >>> 0,
+      posterAt: 12.6,
+      stillTimes: Object.freeze([0.3, 2.2, 4.6, 7.4, 9.6, 11.2, 12.4, 13.4, 14.6]),
+      audio: Object.freeze({
+        profile: "kite-to-sutro",
+        index,
+        description: `Onshore wind and surf carried into the bath hall — flight ${index} of two.`
+      })
+    })];
+  })),
+  // Five seconds each, inside the restored hall, at a standing person's eye
+  // height. No avatar, no camera move to speak of — one held look per moment.
+  ...Object.fromEntries([
+    [1, "Sutro Baths · Still Water", "Someone floating in the great plunge, watched from the coping."],
+    [2, "Sutro Baths · The Long View", "Two on the window bench, the Pacific going down in front of them."],
+    [3, "Sutro Baths · Tea in the Windows", "Three at tea in the ocean gallery, lamp lit, sunset behind."],
+    [4, "Sutro Baths · The Hot Bath", "Two talking chest-deep in the hot bath, steam off the water."],
+    [5, "Sutro Baths · The Plunge Edge", "Two sitting with their feet in the plunge, candles down the coping."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `sutro-moment-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 5,
+      seed: (0x53_55_54_00 + index * 0x101) >>> 0,
+      posterAt: 3.2,
+      stillTimes: Object.freeze([0.2, 1.2, 2.5, 3.8, 4.8]),
+      audio: Object.freeze({
+        profile: "sutro-moment",
+        index,
+        description
+      })
+    })];
+  })),
+  // The two wide ones: ten seconds apiece, the room itself as the subject.
+  ...Object.fromEntries([
+    [1, "Sutro Baths · The Hall", "The length of the room from the north end, pools running away under the glass."],
+    [2, "Sutro Baths · The Ocean Window", "Down the west gallery, colonnade one side and the whole Pacific the other."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `sutro-vista-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 10,
+      seed: (0x56_49_53_00 + index * 0x101) >>> 0,
+      posterAt: 6.4,
+      stillTimes: Object.freeze([0.3, 2.2, 4.4, 6.6, 8.8, 9.7]),
+      audio: Object.freeze({
+        profile: "sutro-vista",
+        index,
+        description
       })
     })];
   }))

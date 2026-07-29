@@ -271,10 +271,17 @@ const run = async () => {
     );
     expect("inside-lamps-up", inside.twilight?.lampGlow > 0.9, inside);
     expect("inside-exterior-thinned", inside.twilight?.exteriorThinned === true, inside);
+    // The latch used to hide the far-world roots outright; that hide was
+    // measured at ~0.2 ms (the occlusion gates already retire what the hall
+    // occludes) and caused filmable pop/birth-wipe artifacts through the glass
+    // (floating building tops), so it now drives only pocketQuality. The
+    // occlusion gates may still hide individual roots as the viewpoint moves —
+    // that is their job — but the shared city batches, whose wholesale blanking
+    // WAS the pocket hide, must remain visible through the visit.
     expect(
-      "inside-thinning-hid-something",
-      inside.rootsTotal === 0 || inside.unrestored.length > 0,
-      { justHidden: inside.unrestored.length, hidden: inside.rootsHidden, total: inside.rootsTotal }
+      "inside-thinning-keeps-city-batches",
+      inside.unrestored.filter((name) => /^tile(Building|Road)Batch/.test(name)).length === 0,
+      { justHidden: inside.unrestored, hidden: inside.rootsHidden, total: inside.rootsTotal }
     );
 
     // --- the EDGE of the pocket ---------------------------------------------
@@ -298,10 +305,15 @@ const run = async () => {
     ]) {
       await stand(point);
       const edge = await snapshot();
+      // chase.indoor is deliberately NOT part of this assertion any more:
+      // frameBody's syncIndoorState splits the body's indoor state from the
+      // camera's, and Sutro's hall intentionally leaves the eye rig free (a
+      // 152 m glass hall has room for any shot). The pocket's own latch and
+      // clock authority are what these stands guard.
       const indoorCamera = await page.evaluate(() => window.__sf.chase?.indoor === true);
       expect(
         `edge-${label}-still-inside`,
-        edge.twilight?.inside === true && edge.authority !== null && indoorCamera,
+        edge.twilight?.inside === true && edge.authority !== null,
         { ...edge, indoorCamera }
       );
       expect(`edge-${label}-room-still-lit`, edge.twilight?.lampGlow > 0.6, edge);

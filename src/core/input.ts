@@ -26,6 +26,10 @@ import { INPUT_TUNING } from "../config";
  * input path. `device` tracks whichever input was touched last; the HUD swaps
  * its control labels off it.
  *
+ * Surf is the one mode that steers with the pointer itself: its mouse and
+ * right-stick motion lands on surfDX/surfDY (the board) and never on the
+ * camera's mouseDX/mouseDY, which stay exactly zero there.
+ *
  * Board mode steals right-stick Y for deck pitch / air flips (stick back =
  * nose up); only right-stick X still feeds mouselook there, with an extra
  * axial deadzone (boardLookXDeadzone) so near-vertical flip holds don't yaw
@@ -37,6 +41,18 @@ import { INPUT_TUNING } from "../config";
 // after deadzone + response curve (curve lives in INPUT_TUNING.lookResponse)
 const LOOK_X = 1150;
 const LOOK_Y = 720;
+
+/** Surf reads the right stick as a board control; a look-speed sweep would be a
+ *  wild turn, so the same rail is scaled to a comfortable carve rate. */
+const SURF_PAD_STEER = 0.3;
+
+/**
+ * Backoff for a refused pointer-lock request, in ms. Spans past Chrome's ~1.25 s
+ * post-Esc cooldown so a single click still lands, and then stops — a lock that
+ * is still refused after 2.4 s is being refused for a reason, and the next press
+ * asks again from scratch.
+ */
+const LOCK_RETRY_DELAYS_MS = [280, 700, 1400] as const;
 
 /** Radial deadzone then optional power curve. Keeps direction; remaps magnitude. */
 function shapeStick(x: number, y: number, deadzone: number, curve: number): [number, number] {
@@ -157,6 +173,17 @@ export class Input {
   keys = new Set<string>();
   mouseDX = 0;
   mouseDY = 0;
+  /**
+   * Surf steers with the mouse itself, so its deltas ride a dedicated rail
+   * instead of the camera's. `mouseDX/mouseDY` stay exactly zero in that mode —
+   * the authored surf camera can never be swivelled — while these carry the same
+   * physical motion to the board. Cleared by endFrame() like the look deltas.
+   */
+  surfDX = 0;
+  surfDY = 0;
+  /** Last absolute cursor position, for the unlocked surf-steering fallback. */
+  #lastClientX: number | null = null;
+  #lastClientY: number | null = null;
   wheel = 0;
   wheelX = 0;
   firePressed = false;
@@ -166,6 +193,8 @@ export class Input {
   #wantLocked = false;
   /** Invalidates rejected/late request promises without touching a newer gesture. */
   #lockRequestGeneration = 0;
+  /** Retries used by the CURRENT lock intent; reset by every fresh request. */
+  #lockRetries = 0;
   /**
    * True while our own `exitPointerLock` is in flight. Distinguishes that from a
    * native Esc/browser unlock so a `requestLock()` that raced the exit is not
@@ -215,6 +244,8 @@ export class Input {
       this.#suspensionHolds.add(reason);
       this.mouseDX = 0;
       this.mouseDY = 0;
+      this.surfDX = 0;
+      this.surfDY = 0;
       this.wheel = 0;
       this.wheelX = 0;
       this.firePressed = false;
@@ -252,9 +283,14 @@ export class Input {
     axis: (pair, value) =>
       this.#scriptAxes.set(pair, Math.max(-1, Math.min(1, value))),
     look: (dx, dy) => {
-      // same gates as the physical devices: no look while suspended, and surf's
-      // authored camera treats all look input as a mathematical no-op
-      if (this.suspended || this.#mode === "surf") return;
+      // same gates as the physical devices: no look while suspended, and surf
+      // routes the same motion to the board instead of its authored camera
+      if (this.suspended) return;
+      if (this.#mode === "surf") {
+        this.surfDX += dx;
+        this.surfDY += dy;
+        return;
+      }
       this.mouseDX += dx;
       this.mouseDY += dy;
     },
@@ -349,6 +385,7 @@ export class Input {
         return;
       }
       this.locked = nowLocked;
+      this.#forgetCursorAnchor();
       if (!this.locked) this.fireHeld = false;
       this.onLockChange(this.locked);
       if (!nowLocked) {
@@ -362,6 +399,14 @@ export class Input {
 
     el.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
+      // A press on the canvas IS the request for the world back, so reconcile
+      // the Command clutch against this event's own modifier state first. The
+      // clutch is released by a Meta keyup, and a keyup is exactly what the OS
+      // eats when it takes the keyboard mid-chord — ⌘⇧4 for a screenshot, ⌘-Tab
+      // away. Left stale, `#metaHeld` is non-empty for ever and `requestLock`
+      // below files intent it will never act on: the click looks dead and there
+      // is no key that fixes it.
+      this.#reconcileModifiers(e);
       if (this.suspended) return;
       // Scene click re-captures. HUD/UI sits above the canvas so those presses
       // never reach here — only a real world click re-locks. Capture on the
@@ -391,13 +436,30 @@ export class Input {
       const holdScrub = this.keys.has("KeyZ") || this.keys.has("KeyN");
       if (this.suspended && !holdScrub) return;
       if (this.locked || holdScrub) {
-        // Surf owns a locked authored camera. Pointer lock can stay captured, but
-        // physical mouse motion must be a mathematical no-op for that activity.
+        // Surf owns a locked authored camera. Pointer lock stays captured and the
+        // physical motion still matters — it steers the BOARD, never the eye, so
+        // it lands on the surf rail and remains a no-op for every camera path.
         if (this.#mode !== "surf" || holdScrub) {
           this.mouseDX += e.movementX;
           this.mouseDY += e.movementY;
+        } else {
+          this.surfDX += e.movementX;
+          this.surfDY += e.movementY;
         }
         if (this.locked) return;
+      }
+      // Unlocked surf still has to steer. Pointer lock is the normal state, but
+      // a browser can decline it (no transient activation, post-Esc cooldown,
+      // free-cursor mode) and without a fallback the ENTIRE control scheme would
+      // silently do nothing. Screen-space travel is the same physical motion, so
+      // difference the absolute cursor and feed the same rail.
+      if (this.#mode === "surf" && !holdScrub) {
+        if (this.#lastClientX !== null && this.#lastClientY !== null) {
+          this.surfDX += e.clientX - this.#lastClientX;
+          this.surfDY += e.clientY - this.#lastClientY;
+        }
+        this.#lastClientX = e.clientX;
+        this.#lastClientY = e.clientY;
       }
       // free cursor / unlocked: track the absolute pointer as NDC (-1..1)
       this.mouseNDCx = (e.clientX / window.innerWidth) * 2 - 1;
@@ -420,6 +482,13 @@ export class Input {
     );
   }
 
+  /** Drop the unlocked-steering anchor so the next move is a delta from where
+   *  the cursor actually is, never a jump across a lock/mode transition. */
+  #forgetCursorAnchor(): void {
+    this.#lastClientX = null;
+    this.#lastClientY = null;
+  }
+
   #setDevice(device: "kb" | "pad") {
     if (this.device === device) return;
     this.device = device;
@@ -432,6 +501,9 @@ export class Input {
     this.#mode = mode;
     this.mouseDX = 0;
     this.mouseDY = 0;
+    this.surfDX = 0;
+    this.surfDY = 0;
+    this.#forgetCursorAnchor();
     this.firePressed = false;
     this.fireHeld = false;
     this.#padFireHeld = false;
@@ -573,12 +645,21 @@ export class Input {
     // Post-deadzone sticks/triggers for the expanded map (readable while suspended).
     this.#mapPadAxes = { lx, ly, rx: rxLin, ry: ryLin, lt, rt };
 
-    // right stick = mouselook; works without pointer lock except in surf's
-    // authored camera. Board keeps stick-X look but routes stick-Y to deck pitch.
+    // right stick = mouselook; works without pointer lock. Surf is the exception
+    // both ways: its camera is authored, so the stick steers the board instead.
+    // Board keeps stick-X look but routes stick-Y to deck pitch.
     // Pitch polarity is the global INPUT_TUNING toggle.
     // Sensitivity is applied once in ChaseCamera (same path as mouse) — do not
     // multiply it here or pad look scales with lookSensitivity².
-    if (!this.suspended && this.#mode !== "surf") {
+    if (!this.suspended && this.#mode === "surf") {
+      // Surf: the right stick is a board control on the same rail as the mouse
+      // (deflection = turn rate / climb rate), never a camera stick.
+      // No pitch-invert here: that preference is about looking around, and this
+      // stick is not a camera. Stick up climbs the wave face, always.
+      const [rx, ry] = shapeStick(rxLin, ryLin, 0, tune.lookResponse);
+      this.surfDX += rx * LOOK_X * dt * SURF_PAD_STEER;
+      this.surfDY += ry * LOOK_Y * dt * SURF_PAD_STEER;
+    } else if (!this.suspended) {
       if (this.#mode === "board") {
         // Axial look-X deadzone on the raw axis (not radial) so holding mostly
         // up/down for flips stays camera-stable until a deliberate horizontal push.
@@ -629,6 +710,8 @@ export class Input {
     this.#activityCaptured = true;
     this.mouseDX = 0;
     this.mouseDY = 0;
+    this.surfDX = 0;
+    this.surfDY = 0;
     this.wheel = 0;
     this.wheelX = 0;
     this.firePressed = false;
@@ -659,6 +742,18 @@ export class Input {
       !this.freeCursor &&
       (this.locked || this.#wantLocked || document.pointerLockElement === this.#el);
     if (this.#resumeLockAfterMeta) this.#dropLock();
+  }
+
+  /**
+   * Drop a Command clutch the browser never told us had ended.
+   *
+   * Every real mouse and key event carries the live modifier state, so an event
+   * that says Command is up is proof the clutch is over whatever we missed.
+   */
+  #reconcileModifiers(event: MouseEvent | KeyboardEvent): void {
+    if (event.metaKey || this.#metaHeld.size === 0) return;
+    this.#metaHeld.clear();
+    this.#resumeLockAfterMeta = false;
   }
 
   #endMomentaryCursor(event: KeyboardEvent): void {
@@ -723,19 +818,50 @@ export class Input {
   #tryRequestLock() {
     if (!this.#wantLocked || this.freeCursor || this.#metaHeld.size > 0) return;
     if (document.pointerLockElement === this.#el) return;
-    const generation = ++this.#lockRequestGeneration;
-    // Chrome returns a promise and rejects during the post-Esc cooldown —
-    // clear only this request's intent; a later gesture owns a newer generation.
+    this.#lockRetries = 0;
+    this.#issueLockRequest(++this.#lockRequestGeneration);
+  }
+
+  #issueLockRequest(generation: number): void {
     try {
       const p = this.#el.requestPointerLock() as unknown as Promise<void> | undefined;
-      p?.catch(() => {
-        if (generation === this.#lockRequestGeneration && document.pointerLockElement !== this.#el) {
-          this.#wantLocked = false;
-        }
-      });
+      p?.catch(() => this.#onLockRequestRejected(generation));
     } catch {
-      if (generation === this.#lockRequestGeneration) this.#wantLocked = false;
+      this.#onLockRequestRejected(generation);
     }
+  }
+
+  /**
+   * A refused request is usually "not yet", not "no".
+   *
+   * Chrome blocks `requestPointerLock` for ~1.25 s after a native Esc release,
+   * and refuses outright while the document is still settling focus after the
+   * OS took it — which is precisely the state a click is in when it comes back
+   * from a screenshot or an app switch. Both clear on their own in well under a
+   * second, so abandoning the intent on the first rejection is what turns "click
+   * the scene to capture" into a button that does nothing.
+   *
+   * The retries are bounded and generation-guarded: any newer intent, any real
+   * grant, a release, free cursor or a suspension all end the chain, and the
+   * next press starts a fresh one.
+   */
+  #onLockRequestRejected(generation: number): void {
+    if (generation !== this.#lockRequestGeneration) return;
+    if (document.pointerLockElement === this.#el) return;
+    if (this.#lockRetries >= LOCK_RETRY_DELAYS_MS.length) {
+      this.#wantLocked = false;
+      return;
+    }
+    const delay = LOCK_RETRY_DELAYS_MS[this.#lockRetries++];
+    window.setTimeout(() => {
+      if (generation !== this.#lockRequestGeneration || !this.#wantLocked) return;
+      if (document.pointerLockElement === this.#el) return;
+      if (this.suspended || this.freeCursor || this.#metaHeld.size > 0) {
+        this.#wantLocked = false;
+        return;
+      }
+      this.#issueLockRequest(generation);
+    }, delay);
   }
 
   releaseLock() {
@@ -851,6 +977,8 @@ export class Input {
     this.#activityCaptured = false;
     this.mouseDX = 0;
     this.mouseDY = 0;
+    this.surfDX = 0;
+    this.surfDY = 0;
     this.wheel = 0;
     this.wheelX = 0;
     this.firePressed = false;

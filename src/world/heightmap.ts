@@ -672,6 +672,30 @@ export function chopZone(x: number, z: number): number {
   return s * s * (3 - 2 * s);
 }
 
+/**
+ * The sea clock: the exact `t` the frame loop hands the water renderer this
+ * frame (state.elapsed normally, the player's fixed-step clock in surf mode —
+ * see frameBody's surfaceTime). Anything that physically rides the surface —
+ * hull buoyancy, swim waterline, camera wave clearance — must sample
+ * `waterHeight` at THIS clock, not at its own. The sim clock pauses through
+ * arrival holds and car rides while the render clock never stops, so within
+ * minutes they sit seconds apart: far more than the ~4 s period of the hero
+ * swell, i.e. a hull tracking the sim-clock sea flies over rendered troughs
+ * and buries itself in rendered crests while being exactly right about a sea
+ * nobody can see. Consumers read a value published at the previous frame's
+ * water update — one render frame stale, a phase error of well under a degree.
+ */
+let seaClock = 0;
+
+export function setSeaTime(t: number): void {
+  seaClock = t;
+}
+
+/** The clock the rendered water surface is currently displaced with. */
+export function seaTime(): number {
+  return seaClock;
+}
+
 /** CPU-side water surface height (matches the shader's swell + zone chop). */
 export function waterHeight(x: number, z: number, t: number): number {
   let h =

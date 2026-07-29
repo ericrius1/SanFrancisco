@@ -28,7 +28,7 @@ import { grassyGround, nearAnyWildRegion } from "./layout";
 import { GRASS_TUNING } from "../../config";
 
 export const WILD_GRASS_SPACING = 0.68;
-export const WILD_GRASS_RING_RADIUS = 110;
+export const WILD_GRASS_RING_RADIUS = 132;
 /** Retained as the authoring/debug reference cell; rendering no longer owns tiles. */
 export const WILD_GRASS_TILE_SIZE = 28;
 /** Maximum player motion before the paged field and GPU compactors retarget. */
@@ -64,9 +64,31 @@ export type WildGrassLayerSpec = {
   fadeBand: number;
   wind: "full" | "lite";
   interactionSlots: number;
+  /** Decorrelates this layer's anchors from the other stride-1 layers. These four
+   *  layers are ADDITIVE (they accumulate coverage in the bands they overlap),
+   *  not a handoff ladder, so each needs its own scatter — see the note on the
+   *  specs below. */
+  placementSalt: number;
+  /** Candidate planes per cell. Defaults to MAX_DENSITY_LAYERS. Every plane costs
+   *  a persistent 48-byte instance slot across the layer's whole candidate
+   *  square, so the widest layer pays for one far out of proportion to what it
+   *  buys — see `far` below. */
+  densityLayers?: number;
   geometry: MicroGeometrySpec | CurvedGeometrySpec;
 };
 
+/**
+ * The four additive layers. `near`, `mid` and `hero` share `gridStride: 1` and
+ * therefore reconstruct the SAME canonical cells; before they carried distinct
+ * `placementSalt`s they also produced bit-identical anchors, so all three drew
+ * their clusters stacked on one another (measured: 683 distinct positions shared
+ * 100% between the three layers, and 3 co-located instances per position from
+ * the density layers on top of that). The field was ~2.2 tufts/m² with half a
+ * metre of bare ground between them, which is why blades had to be authored
+ * absurdly wide to read as cover at all. With the salts the same instance count
+ * lands on ~3× as many distinct positions, so the blades can be authored fine
+ * and the field still closes up.
+ */
 export const WILD_GRASS_LAYER_SPECS = {
   far: {
     gridStride: 2,
@@ -76,7 +98,18 @@ export const WILD_GRASS_LAYER_SPECS = {
     fadeBand: 30,
     wind: "lite",
     interactionSlots: 0,
-    geometry: { kind: "micro", blades: 4, width: 0.064, radius: 0.68, lean: 0.2 }
+    // Its own stride already decorrelates it from the three stride-1 layers.
+    placementSalt: 0,
+    // Two planes, not three. This layer's candidate square is ~60% of the whole
+    // placement's instance memory, and at the default density (2.1) the third
+    // plane's `fill` is only ~0.1 — it keeps a tenth of its candidates while
+    // costing a full slot for every cell out to the ring. Dropping it funds the
+    // reach from 110 m to 132 m inside the same storage budget for ~4% density.
+    densityLayers: 2,
+    // Carries the whole 60 m → ring-edge band alone, so it leans on blade COUNT
+    // rather than blade width; the material's screen-width widening keeps each
+    // one about a pixel out there without making them ribbons at your feet.
+    geometry: { kind: "micro", blades: 13, width: 0.030, radius: 0.68, lean: 0.22 }
   },
   mid: {
     gridStride: 1,
@@ -85,7 +118,9 @@ export const WILD_GRASS_LAYER_SPECS = {
     fadeBand: 22,
     wind: "lite",
     interactionSlots: 0,
-    geometry: { kind: "micro", blades: 2, width: 0.05, radius: 0.34, lean: 0.23 }
+    placementSalt: 0x2f1b7c9,
+    densityLayers: MAX_DENSITY_LAYERS,
+    geometry: { kind: "micro", blades: 6, width: 0.026, radius: 0.36, lean: 0.24 }
   },
   near: {
     gridStride: 1,
@@ -94,7 +129,9 @@ export const WILD_GRASS_LAYER_SPECS = {
     fadeBand: 12,
     wind: "full",
     interactionSlots: 4,
-    geometry: { kind: "micro", blades: 6, width: 0.038, radius: 0.42, lean: 0.27 }
+    placementSalt: 0x51e3d17,
+    densityLayers: MAX_DENSITY_LAYERS,
+    geometry: { kind: "micro", blades: 10, width: 0.017, radius: 0.40, lean: 0.27 }
   },
   hero: {
     gridStride: 1,
@@ -103,7 +140,9 @@ export const WILD_GRASS_LAYER_SPECS = {
     fadeBand: 8,
     wind: "full",
     interactionSlots: 12,
-    geometry: { kind: "curved", blades: 2, segments: 1, width: 0.048, radius: 0.25, curvature: 0.3 }
+    placementSalt: 0x7a95b33,
+    densityLayers: MAX_DENSITY_LAYERS,
+    geometry: { kind: "curved", blades: 5, segments: 1, width: 0.019, radius: 0.26, curvature: 0.3 }
   }
 } as const satisfies Record<WildGrassLayerName, WildGrassLayerSpec>;
 
@@ -118,7 +157,7 @@ export function wildGrassLayerTriangles(spec: WildGrassLayerSpec): number {
 /** Fixed GPU output capacity for one layer at the current density-slider ceiling. */
 export function wildGrassGpuCandidateCapacity(
   spec: WildGrassLayerSpec,
-  densityLayers = MAX_DENSITY_LAYERS
+  densityLayers = spec.densityLayers ?? MAX_DENSITY_LAYERS
 ): Readonly<{ side: number; capacity: number }> {
   const step = WILD_GRASS_SPACING * spec.gridStride;
   const reach = Math.ceil(spec.visibleRadius / step) + 1;
@@ -266,7 +305,14 @@ export function createWildGrass(
     const geometry = createLayerGeometry(spec);
     sourceGeometries.push(geometry);
     return {
-      spec: { name, gridStride: spec.gridStride, visibleRadius: spec.visibleRadius, fadeBand: spec.fadeBand },
+      spec: {
+        name,
+        gridStride: spec.gridStride,
+        visibleRadius: spec.visibleRadius,
+        fadeBand: spec.fadeBand,
+        placementSalt: spec.placementSalt,
+        densityLayers: spec.densityLayers
+      },
       geometry,
       // Materials read instance data through the per-frame frustum-culled
       // visible-index indirection, so only surviving blades reach the vertex shader.
@@ -280,6 +326,9 @@ export function createWildGrass(
           interactionSlots: spec.interactionSlots,
           fadeMode: "rank",
           fadeBand: spec.fadeBand,
+          // Authored near-field width; the material widens it with camera
+          // distance so this layer's far edge never drops below ~a pixel.
+          bladeWidth: spec.geometry.width,
           indirectSource: source
         });
         materials.push(material);

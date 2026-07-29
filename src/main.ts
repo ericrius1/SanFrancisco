@@ -56,6 +56,7 @@ import {
   randomSurfboardConfig,
   setLocalSurfboardConfig,
 } from "./vehicles/surf";
+import { loadSavedKite, normalizeKiteConfig } from "./world/oceanBeachKite/kiteConfig";
 import {  ModeDiscovery, ALL_MODES } from "./player/discovery";
 import { BootScreen } from "./app/bootScreen";
 import { startFrameDriver } from "./app/frameDriver";
@@ -272,6 +273,9 @@ async function boot() {
   let surfboardCustomized = savedSurfboard !== null;
   let surfboardConfig = savedSurfboard ?? randomSurfboardConfig();
   setLocalSurfboardConfig(surfboardConfig);
+  // Kite identity is boot-resident data only (no THREE, no geometry): the sail
+  // itself is built by the Ocean Beach chunk when you are actually on that sand.
+  let kiteConfig = loadSavedKite() ?? normalizeKiteConfig({});
   const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig, surfboardConfig, carConfig);
   player.holdForWorldArrival("boot-arrival");
   let initialCollisionEpoch = physics.prepareCollisionArrival(player.position);
@@ -773,6 +777,7 @@ async function boot() {
     if (!input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
     if (!input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
     if (player.mode === "plane") player.steerFly(input, frameDt);
+    if (player.mode === "surf") player.steerSurf(input, frameDt);
     chase.lookDir(aim);
     tracer.begin("physics");
     physics.maintainStreaming(player.position);
@@ -997,6 +1002,8 @@ async function boot() {
       set scooterConfig(v) { scooterConfig = v as never; },
       get surfboardConfig() { return surfboardConfig; },
       set surfboardConfig(v) { surfboardConfig = v as never; },
+      get kiteConfig() { return kiteConfig; },
+      set kiteConfig(v) { kiteConfig = v as never; },
       get siteFoliage() { return siteFoliage; },
       set siteFoliage(v) { siteFoliage = v as never; },
       get prepareDestinationEssentials() { return prepareDestinationEssentials; },

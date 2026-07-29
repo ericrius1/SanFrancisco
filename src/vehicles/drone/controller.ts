@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import { BodyType } from "../../core/physics";
-import { waterHeight } from "../../world/heightmap";
+import { seaTime, waterHeight } from "../../world/heightmap";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { DRONE_TUNING } from "./tuning";
@@ -106,7 +106,7 @@ export class DroneController implements ModeController {
     // soft floor (street or water surface) + the same ceiling as the plane
     const floor = Math.max(
       ctx.map.effectiveGround(ctx.position.x, ctx.position.z),
-      waterHeight(ctx.position.x, ctx.position.z, ctx.time)
+      waterHeight(ctx.position.x, ctx.position.z, seaTime())
     );
     if (ctx.position.y < floor + 0.6) {
       w.setBodyTransform(ctx.body, [ctx.position.x, floor + 0.6, ctx.position.z], [q.x, q.y, q.z, q.w]);

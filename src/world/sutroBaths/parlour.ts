@@ -110,9 +110,14 @@ const BENCHES: readonly {
   // A bench is the one seat these blocky avatars read perfectly on, so the
   // gallery uses it rather than a steamer chair whose backrest and occupant
   // could never be made to agree.
-  { id: "window-bench", lx: -36.2, lz: -3, face: -1.5, length: 2.4, seats: [-0.6, 0.6] },
-  { id: "window-north", lx: -36.2, lz: -41, face: -1.5, length: 2.4, seats: [-0.6, 0.6] },
-  { id: "window-south", lx: -36.2, lz: 21, face: -1.5, length: 2.4, seats: [-0.6, 0.6] },
+  // Facing the horizon means facing local -x, and a seat with yaw f looks along
+  // (-sin f, -cos f) — so that is f = +pi/2. These three carried -1.5, which
+  // aims (+1, 0): the whole ocean gallery sat with its back to the Pacific,
+  // staring at the inland wall. Caught by filming the bench from behind and
+  // getting two faces looking down the lens.
+  { id: "window-bench", lx: -36.2, lz: -3, face: Math.PI / 2, length: 2.4, seats: [-0.6, 0.6] },
+  { id: "window-north", lx: -36.2, lz: -41, face: Math.PI / 2, length: 2.4, seats: [-0.6, 0.6] },
+  { id: "window-south", lx: -36.2, lz: 21, face: Math.PI / 2, length: 2.4, seats: [-0.6, 0.6] },
   // north end of the great plunge, facing back down the hall
   { id: "north-bench", lx: -20, lz: -60.5, face: 0.05, length: 2.4, seats: [-0.62, 0.62] }
 ] as const;
@@ -487,7 +492,11 @@ export function createSutroParlour(): SutroParlour {
     dummy.scale.set(bench.length, 1, 1);
     dummy.updateMatrix();
     benchSeat.mesh.setMatrixAt(index, dummy.matrix);
-    place(dummy, bench.lx - 0.3 * s, bench.lz + 0.3 * c, BENCH_PAD_Y + 0.2, bench.face);
+    // The backrest goes BEHIND the sitter, which is the reverse of the look
+    // direction (-sin f, -cos f) — so +0.3 * (sin f, cos f). The x term used to
+    // be negated, which is invisible on a bench facing along z (sin f ~ 0) and
+    // puts the backrest across the sitter's chest on one facing along x.
+    place(dummy, bench.lx + 0.3 * s, bench.lz + 0.3 * c, BENCH_PAD_Y + 0.2, bench.face);
     dummy.scale.set(bench.length, 1, 1);
     dummy.updateMatrix();
     benchBack.mesh.setMatrixAt(index, dummy.matrix);

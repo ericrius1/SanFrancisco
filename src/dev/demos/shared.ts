@@ -1,5 +1,6 @@
 // Reusable building blocks for cinematic demos (see ./buskersCinematic.ts).
 
+import { setEmbodimentVisible } from "../../player/embodimentVisibility";
 import type { DemoContext } from "../demo";
 
 /**
@@ -68,6 +69,40 @@ export function freezeAndBuryPlayer(ctx: DemoContext, x: number, z: number) {
 
   repin({ x, y: buriedY, z }, ctx);
   return { x, y: buriedY, z };
+}
+
+/**
+ * Freeze the player WHERE THEY STAND and hide the avatar, instead of burying it.
+ *
+ * `freezeAndBuryPlayer` drops the body 300 m down, which is fine anywhere the
+ * world only needs an XZ to stream against. It is wrong inside the Sutro Baths
+ * pocket: that site latches its held sunset hour on the player being inside the
+ * hall, and the latch has a hard vertical gate (basin floor − 6 m up to roof
+ * apex + 12 m, sutroBaths/twilight.ts). A buried player reads as outside, the
+ * pocket releases, and the shot loses both its hour and its exterior thinning
+ * partway through the take.
+ *
+ * So: keep the body standing in the room, stop everything that could move it,
+ * and take the avatar out of the frame by visibility. `setEmbodimentVisible` is
+ * the correct switch — a character rig is one merged SkinnedMesh whose parts are
+ * Bones, so hiding children individually does nothing.
+ */
+export function freezePlayerInPlace(ctx: DemoContext, x: number, y: number, z: number) {
+  const { player } = ctx;
+  player.position.set(x, y, z);
+  player.renderPosition.set(x, y, z);
+  player.velocity.set(0, 0, 0);
+  player.syncMesh(0);
+
+  setEmbodimentVisible(player.meshes.walk, false);
+
+  player.update = () => {};
+  player.afterSteps = () => {};
+  player.syncMesh = () => {};
+
+  const at = { x, y, z };
+  repin(at, ctx);
+  return at;
 }
 
 /** Re-pin the (still-stepping) player body to a fixed spot with zero velocity. */

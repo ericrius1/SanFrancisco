@@ -3,10 +3,11 @@ import { BodyType } from "../core/physics";
 import type { Physics } from "../core/physics";
 import type { PlayerMode } from "../player/types";
 import { DEFAULT_DRIVE_SPEC } from "../player/types";
-import { waterHeight, type WorldMap } from "../world/heightmap";
+import { seaTime, waterHeight, type WorldMap } from "../world/heightmap";
 import { buildCarMesh, localCarConfig } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
-import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
+import { buildBoatMesh, buildSpeedboatMesh, SAILBOAT_HULL, SPEEDBOAT_HULL } from "../vehicles/boat";
+import { makeHullFloat, sampleHullFloat } from "../vehicles/boat/buoyancy";
 import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, localBoardConfig } from "../vehicles/board";
 import { activateBirdAssets, buildBirdMesh, type BirdRig } from "../vehicles/bird";
@@ -211,8 +212,18 @@ const V = {
   linear: new THREE.Vector3(),
   fwd: new THREE.Vector3(),
   quat: new THREE.Quaternion(),
+  yaw: new THREE.Quaternion(),
+  pos: new THREE.Vector3(),
+  up: new THREE.Vector3(0, 1, 0),
   euler: new THREE.Euler(0, 0, 0, "YXZ")
 };
+
+/** Unmanned hulls float on the same four-probe model the player's boats use
+ *  (vehicles/boat/buoyancy) — a bay full of boats pasted flat on the swell
+ *  while the player's own rides it reads worse than either alone. Nobody is
+ *  driving, so they get one shared heave damping rather than per-boat tuning. */
+const MOUNT_HULL_FLOAT = makeHullFloat();
+const MOUNT_HEAVE_DAMP = 7;
 
 function disposeObject(root: THREE.Object3D) {
   const ownedDispose = root.userData.dispose as (() => void) | undefined;
@@ -462,11 +473,11 @@ export class AbandonedMounts {
     }
     if (mode === "boat" || mode === "speedboat") {
       // scattered bay boats sail themselves: seed a heading from the release
-      // facing + a desynced bob clock (persistent ones actually wander)
+      // facing (persistent ones actually wander). No bob clock — the swell
+      // itself desyncs them now that they float on real buoyancy.
       V.fwd.set(0, 0, -1).applyQuaternion(pose.quaternion);
       item.wanderYaw = Math.atan2(-V.fwd.x, -V.fwd.z);
       item.wanderTimer = 2 + Math.random() * 3;
-      item.animT = Math.random() * 10;
     }
     this.#items.push(item);
     // cap only the transient mounts; scattered persistent boats never get evicted
@@ -508,17 +519,18 @@ export class AbandonedMounts {
       let vz = vel.linear[2] * linearDamp;
 
       if (item.mode === "boat" || item.mode === "speedboat") {
-        const targetY = waterHeight(t.position[0], t.position[2], this.#time) + 0.15;
-        vy = THREE.MathUtils.clamp((targetY - t.position[1]) * 6 + vy * 0.2, -7, 7);
+        // A drifting hull is buoyant, not sprung: she rides the swell, and the
+        // solver keeps whatever roll the last wave left her with.
+        vy = this.#floatHull(item, t, vy, dt);
       } else if (item.mode === "board") {
         const surf = Math.max(
           this.#map.rideGround(t.position[0], t.position[2], t.position[1]),
-          waterHeight(t.position[0], t.position[2], this.#time)
+          waterHeight(t.position[0], t.position[2], seaTime())
         );
         const targetY = surf + 1.0;
         vy = t.position[1] < targetY + 4 ? THREE.MathUtils.clamp((targetY - t.position[1]) * 9 + vy * 0.18, -10, 14) : vy - 16 * dt;
       } else if (item.mode === "surf") {
-        const targetY = waterHeight(t.position[0], t.position[2], this.#time) + 0.2;
+        const targetY = waterHeight(t.position[0], t.position[2], seaTime()) + 0.2;
         vy = THREE.MathUtils.clamp((targetY - t.position[1]) * 8 + vy * 0.15, -9, 12);
       }
 
@@ -528,6 +540,22 @@ export class AbandonedMounts {
         [vel.angular[0] * angularDamp, vel.angular[1] * angularDamp, vel.angular[2] * angularDamp]
       );
     }
+  }
+
+  /**
+   * One step of hull buoyancy for an unmanned boat: returns the new vertical
+   * velocity and leaves the wave plane it fitted in `MOUNT_HULL_FLOAT.normal`
+   * for the caller's attitude. Same four-probe model as the player's boats, so
+   * a moored hull and a driven one answer the same wave the same way.
+   */
+  #floatHull(item: AbandonedMount, t: { position: number[]; rotation: number[] }, vy: number, dt: number): number {
+    const hull = item.mode === "speedboat" ? SPEEDBOAT_HULL : SAILBOAT_HULL;
+    V.pos.set(t.position[0], t.position[1], t.position[2]);
+    V.quat.set(t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]);
+    // seaTime(), not #time: an unmanned hull must bob on the same rendered sea
+    // as everything else, and this class's private clock is a third clock.
+    sampleHullFloat(hull, V.pos, V.quat, vy, seaTime(), MOUNT_HEAVE_DAMP, MOUNT_HULL_FLOAT);
+    return THREE.MathUtils.clamp(vy + MOUNT_HULL_FLOAT.accelY * dt, -12, 12);
   }
 
   /**
@@ -637,17 +665,17 @@ export class AbandonedMounts {
 
     const fwdX = -Math.sin(yaw);
     const fwdZ = -Math.cos(yaw);
-    // ride the swell: spring toward the wave surface, same as the float path
-    const targetY = waterHeight(x, z, this.#time) + 0.15;
+    // ride the swell on the same hull buoyancy the player's boats use
     const vel = w.getBodyVelocity(item.handle);
-    const vy = THREE.MathUtils.clamp((targetY - y) * 6 + vel.linear[1] * 0.2, -7, 7);
+    const vy = this.#floatHull(item, t, vel.linear[1], dt);
     w.setBodyVelocity(item.handle, [fwdX * cruise, vy, fwdZ * cruise], [0, 0, 0]);
 
-    // face the way it's sailing, with a gentle heel/pitch for life
-    const roll = Math.sin(this.#time * 0.6 + (item.animT ?? 0)) * 0.05;
-    const pitch = Math.sin(this.#time * 0.5 + (item.animT ?? 0) + 1.3) * 0.03;
-    V.euler.set(pitch, yaw, roll);
-    V.quat.setFromEuler(V.euler);
+    // Lie along the wave she is on, nose-first: yaw is hers, trim is the sea's.
+    // (The old cosmetic sine heel read as a boat pasted flat on the swell the
+    // moment the player's own hull started answering it.)
+    V.quat
+      .setFromUnitVectors(V.up, MOUNT_HULL_FLOAT.normal)
+      .multiply(V.yaw.setFromAxisAngle(V.up, yaw));
     w.setBodyTransform(item.handle, [x, y, z], [V.quat.x, V.quat.y, V.quat.z, V.quat.w]);
   }
 
