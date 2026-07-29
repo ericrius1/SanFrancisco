@@ -164,6 +164,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     palaceReverie: null as (PalaceReverieGame | null),
     landsEnd: null as (LandsEndRegion | null),
     waveOrgan: null as (WaveOrgan | null),
+    tutorialZone: null as (import("../../world/tutorialZone").TutorialZone | null),
     unregisterBeachPianistTuning: null as ((() => void) | null),
     afterlight: null as (AfterlightExperience | null),
     hangGliding: null as (HangGlidingExperience | null),

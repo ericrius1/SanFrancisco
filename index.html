@@ -1489,6 +1489,20 @@
       #hud .tutorial-panel.swap {
         animation: hudswap 0.28s ease;
       }
+      /* The expanded map (--z-map) covers the whole viewport, and #hud is
+         position:fixed — which makes it a stacking context, so nothing inside
+         it can rise above the map on its own. The tutorial's last chapter is
+         *about* the map, so while it is open the hud is lifted over it and the
+         checklist moves to the foot of the screen, clear of the map's own
+         controls. Scoped to this one moment: the rest of the time the hud
+         belongs under the map, as it always has. */
+      #hud.tutorial-over-map {
+        z-index: calc(var(--z-map) + 1);
+      }
+      #hud.tutorial-over-map .tutorial-panel {
+        top: auto;
+        bottom: 20px;
+      }
       #hud .tutorial-panel .tut-top {
         display: flex;
         justify-content: space-between;

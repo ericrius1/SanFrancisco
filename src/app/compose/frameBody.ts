@@ -879,6 +879,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !netW.state.fortMasonEnsemble?.tryInteract(player.renderPosition, player.mode) &&
       !core.state.landsEnd?.keeper.tryInteract(player, hud) &&
       !core.state.waveOrgan?.tryInteract(player, hud) &&
+      !core.state.tutorialZone?.tryInteract(player, hud) &&
       !core.state.missionDolores?.tryInteract(player.position, player.mode, hud) &&
       !core.state.sutroBaths?.tryInteract(player.position, player.mode) &&
       !core.state.hangGliding?.tryInteract(player, hud, input, chase) &&
@@ -1345,6 +1346,14 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         core.state.waveOrgan?.update(frameDt, ctx.state.elapsed, player.position, player.mode === "walk" ? hud : null);
       } else if (core.state.waveOrgan) {
         core.state.waveOrgan.group.visible = false;
+      }
+      if (sites.perfAllowed("tutorial-zone")) {
+        // The field watches the body, not the keyboard: gates walked, metres
+        // sprinted, laps driven, rings flown. ui/tutorial.ts reads the totals.
+        core.state.tutorialZone?.update(frameDt, ctx.state.elapsed, player, hud);
+        core.state.tutorialZone?.updatePrompt(player, hud);
+      } else if (core.state.tutorialZone) {
+        core.state.tutorialZone.root.visible = false;
       }
       if (sites.perfAllowed("beach-pianist")) {
         ctx.state.beachPianist?.setPerfSuppressed(false);

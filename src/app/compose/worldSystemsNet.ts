@@ -54,6 +54,7 @@ import {
   subscribeBehindTheScenes
 } from "../../ui/behindTheScenesHost";
 import { Tutorial } from "../../ui/tutorial";
+import { TUTORIAL_ZONE_ARRIVAL } from "../../world/tutorialZone/meta";
 import { DebugPanel } from "../../ui/debug";
 import { DebugOverlays } from "../../ui/overlays";
 import { OVERLAY_TUNING } from "../../ui/overlays/tuning";
@@ -914,7 +915,26 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     pressed: (c) => input.pressed(c),
     mapOpen: () => minimap.expanded,
     teleport: (t) => navigation.teleportToPose(t),
-    message: (m, s) => hud.message(m, s)
+    message: (m, s) => hud.message(m, s),
+    // The flight school. `zone` is null until the site is resident, and every
+    // step that reads it has a body-only fallback — starting the tutorial from
+    // the far side of the city must never wait on a chunk.
+    zone: () => core.state.tutorialZone?.progress ?? null,
+    // `sites` is declared further down this function; the button that calls
+    // this cannot be clicked before then, so the closure never hits the TDZ.
+    goToZone: () => {
+      void sites.ensure("tutorial-zone");
+      navigation.teleportToPose(
+        {
+          x: TUTORIAL_ZONE_ARRIVAL.x,
+          y: map.groundTop(TUTORIAL_ZONE_ARRIVAL.x, TUTORIAL_ZONE_ARRIVAL.z) + 1.2,
+          z: TUTORIAL_ZONE_ARRIVAL.z,
+          facing: TUTORIAL_ZONE_ARRIVAL.heading,
+          mode: "walk"
+        },
+        "Flight School"
+      );
+    }
   });
   navigation.onTeleported = () => {
     jumpLandingAudio.reset();
@@ -1629,6 +1649,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       core.state.coronaHeights = r.coronaHeights;
       core.state.landsEnd = r.landsEnd;
       core.state.waveOrgan = r.waveOrgan;
+      core.state.tutorialZone = r.tutorialZone;
       // Beach Pianist keeps two concerns in main (they read main-local state the
       // controller can't see): its debug tuning folder and piano-only god-ray
       // ownership. HEAD ran these inside loadBeachPianist / its unloader;
