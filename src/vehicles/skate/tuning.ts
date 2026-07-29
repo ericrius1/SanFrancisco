@@ -50,7 +50,7 @@ export const SKATE_TUNING = tunables("movement.skate", {
   grindMin: { v: 2.4, min: 0.5, max: 10, step: 0.1, label: "min grind speed" },
   grindPop: { v: 6.2, min: 1, max: 16, step: 0.1, label: "pop-out" },
   /** How fast the balance meter runs away when you leave it alone. */
-  grindDrift: { v: 0.72, min: 0, max: 4, step: 0.02, label: "grind drift" },
+  grindDrift: { v: 0.45, min: 0, max: 4, step: 0.02, label: "grind drift" },
   grindCorrect: { v: 1.9, min: 0.2, max: 6, step: 0.05, label: "grind correction" },
 
   // --- manuals -------------------------------------------------------------

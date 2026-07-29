@@ -646,7 +646,10 @@ export class SkateController implements ModeController {
     this.book.hold(TRICK_POINTS.grindPerSecond * dt);
 
     // Balance: an inverted pendulum you keep upright with the carve keys.
-    this.balance += this.balance * t.grindDrift * dt + (this.#noise - 0.5) * 0.9 * dt;
+    // Rails run 20-100 m now, so an uncorrected grind has to survive several
+    // seconds rather than one. Drift is still exponential — it just gives you
+    // time to notice the meter and answer it.
+    this.balance += this.balance * t.grindDrift * dt + (this.#noise - 0.5) * 0.55 * dt;
     this.balance -= steer * t.grindCorrect * dt;
     this.lean = this.balance * 0.4;
     this.pitch =
