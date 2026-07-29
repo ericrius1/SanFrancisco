@@ -184,6 +184,56 @@ const LOOKS: readonly (Look & { title: string })[] = [
 ] as const;
 
 export const SUTRO_MOMENT_SECONDS = 5;
+export const SUTRO_VISTA_SECONDS = 10;
+
+/**
+ * The two wide ones. Ten seconds each, and the subject is the room rather than
+ * anybody in it: the whole volume of glass and iron with the Pacific behind it,
+ * and the cast reading as a population going about a quiet evening.
+ *
+ * These are the only cameras here that move meaningfully. A held look works at
+ * five seconds because there is one thing to see; ten seconds on a hall this
+ * size wants the parallax of a slow drift to say how big it is, so each one
+ * travels a few metres and lets the ironwork slide past the sunset.
+ *
+ * Still nobody's point of view but a person's — both stay at deck level rather
+ * than craning, because the hall reads as enormous from down among the pools and
+ * merely large from up in the roof.
+ */
+const VISTAS: readonly (Look & { title: string })[] = [
+  {
+    id: "vista-hall",
+    title: "The Hall",
+    // North end of the deck spine, drifting south down the length of the room.
+    // The great plunge runs away on the right, the graduated baths on the left,
+    // and the ocean glass carries the sunset along the far wall.
+    eye: [
+      [-7.2, DECK + EYE, -58],
+      [-7.4, DECK + EYE + 0.05, -44]
+    ],
+    at: [
+      [-16, DECK + 5.5, 24],
+      [-19, DECK + 4.6, 30]
+    ],
+    lens: [21, 22]
+  },
+  {
+    id: "vista-ocean",
+    title: "The Ocean Window",
+    // Standing off the west gallery looking down its length: the colonnade and
+    // the hung plates on one side, the whole ocean wall and the sun on the
+    // other, and the tea tables strung out between them.
+    eye: [
+      [-27.5, DECK + EYE, -34],
+      [-28.6, DECK + EYE + 0.04, -22]
+    ],
+    at: [
+      [-36.5, DECK + 3.2, 26],
+      [-37.5, DECK + 2.6, 32]
+    ],
+    lens: [24, 25]
+  }
+] as const;
 
 /** Where the frozen body waits: deep inside the hall, off every sightline. */
 const PLAYER_HOLD = L(-14, DECK + 0.1, -66);
@@ -298,4 +348,36 @@ function buildDefinition(
   };
 }
 
-export const sutroMomentDemos: readonly Demo[] = LOOKS.map(buildMoment);
+function buildVista(look: Look & { title: string }, index: number): Demo {
+  return {
+    name: `sutro-vista-${String(index + 1).padStart(2, "0")}`,
+    run(ctx) {
+      if (!ctx.map || !ctx.sky) {
+        console.warn(`[demo:${look.id}] map or sky unavailable`);
+        return;
+      }
+      cleanPlate(ctx.hud);
+      ctx.input.suspended = true;
+      ctx.setPostFx?.({ ink: false, dream: false, retro: false });
+      ctx.sky.cycleEnabled = false;
+
+      const sf = (window as unknown as SutroWindow).__sf;
+      sf?.worldCursor?.setEnabled?.(false);
+      const held = { x: PLAYER_HOLD[0], y: PLAYER_HOLD[1], z: PLAYER_HOLD[2] };
+      repin(held, ctx);
+
+      void waitForTheHall().then(() => {
+        freezePlayerInPlace(ctx, held.x, held.y, held.z);
+        const definition = buildDefinition(look, held, ctx, sf);
+        armCinematic(ctx, { ...definition, duration: SUTRO_VISTA_SECONDS, shots: [
+          { ...definition.shots[0], end: SUTRO_VISTA_SECONDS }
+        ] });
+      });
+    }
+  };
+}
+
+export const sutroMomentDemos: readonly Demo[] = [
+  ...LOOKS.map(buildMoment),
+  ...VISTAS.map(buildVista)
+];

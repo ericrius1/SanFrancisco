@@ -104,9 +104,9 @@ const BATHERS: readonly BatherSpec[] = [
   { seed: "sutro-swim-1", pool: "great-plunge", lx: -22, lz: -30, face: Math.PI, pose: "crawl", drift: 0.62 },
   { seed: "sutro-swim-2", pool: "great-plunge", lx: -18, lz: 6, face: 0, pose: "breast", drift: -0.44 },
   { seed: "sutro-swim-3", pool: "great-plunge", lx: -26, lz: -8, face: Math.PI, pose: "backFloat", drift: 0.14 },
-  { seed: "sutro-sit-1", pool: "great-plunge", lx: -32.2, lz: -25.4, face: -1.5, pose: "sitEdge", talk: "plunge-edge" },
-  { seed: "sutro-sit-2", pool: "great-plunge", lx: -32.2, lz: -23.2, face: -1.9, pose: "sitEdge", talk: "plunge-edge" },
-  { seed: "sutro-sit-3", pool: "great-plunge", lx: -8.9, lz: 14, face: 1.55, pose: "sitEdge" },
+  { seed: "sutro-sit-1", pool: "great-plunge", lx: -31.3, lz: -25.4, face: -1.5, pose: "sitEdge", talk: "plunge-edge" },
+  { seed: "sutro-sit-2", pool: "great-plunge", lx: -31.3, lz: -23.2, face: -1.9, pose: "sitEdge", talk: "plunge-edge" },
+  { seed: "sutro-sit-3", pool: "great-plunge", lx: -9.7, lz: 14, face: 1.55, pose: "sitEdge" },
   { seed: "sutro-wade-1", pool: "great-plunge", lx: -12.5, lz: 22, face: 2.6, pose: "wade" },
 
   // ---- warm graduated baths (east row, x[-4,19]) -------------------------
@@ -114,8 +114,8 @@ const BATHERS: readonly BatherSpec[] = [
   { seed: "sutro-hot-1", pool: "bath-four", lx: 3.5, lz: 3.5, face: 1.1, pose: "wadeChat", talk: "hot-bath" },
   { seed: "sutro-hot-2", pool: "bath-four", lx: 5.9, lz: 4.4, face: -1.9, pose: "wadeChat", talk: "hot-bath" },
   { seed: "sutro-hot-3", pool: "bath-five", lx: 11, lz: 21.5, face: Math.PI, pose: "backFloat" },
-  { seed: "sutro-sit-4", pool: "bath-two", lx: 7.5, lz: -38.6, face: 0.05, pose: "sitEdge" },
-  { seed: "sutro-sit-5", pool: "bath-five", lx: 14, lz: 27.4, face: Math.PI, pose: "sitEdge" },
+  { seed: "sutro-sit-4", pool: "bath-two", lx: 7.5, lz: -37.3, face: Math.PI, pose: "sitEdge" },
+  { seed: "sutro-sit-5", pool: "bath-five", lx: 14, lz: 26.3, face: 0, pose: "sitEdge" },
   { seed: "sutro-cross-1", pool: "deck", lx: -6.6, lz: -6, face: 1.4, pose: "sitCross", talk: "deck-mid" },
   { seed: "sutro-cross-2", pool: "deck", lx: -6.6, lz: -3.6, face: 1.9, pose: "sitCross", talk: "deck-mid" },
   { seed: "sutro-sun-1", pool: "deck", lx: -8.4, lz: -36, face: 1.5, pose: "sunbathe" },

@@ -228,6 +228,28 @@ const DEFINITIONS = Object.freeze({
         description
       })
     })];
+  })),
+  // The two wide ones: ten seconds apiece, the room itself as the subject.
+  ...Object.fromEntries([
+    [1, "Sutro Baths · The Hall", "The length of the room from the north end, pools running away under the glass."],
+    [2, "Sutro Baths · The Ocean Window", "Down the west gallery, colonnade one side and the whole Pacific the other."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `sutro-vista-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 10,
+      seed: (0x56_49_53_00 + index * 0x101) >>> 0,
+      posterAt: 6.4,
+      stillTimes: Object.freeze([0.3, 2.2, 4.4, 6.6, 8.8, 9.7]),
+      audio: Object.freeze({
+        profile: "sutro-vista",
+        index,
+        description
+      })
+    })];
   }))
 });
 

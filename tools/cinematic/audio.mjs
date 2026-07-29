@@ -34,6 +34,10 @@ const PRODUCTION_DURATIONS = Object.freeze({
   ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
     `sutro-moment-${String(index + 1).padStart(2, "0")}`,
     5
+  ])),
+  ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => [
+    `sutro-vista-${String(index + 1).padStart(2, "0")}`,
+    10
   ]))
 });
 
@@ -220,6 +224,8 @@ export async function renderCinematicAudio(production, outputPath) {
     scoreOceanBeachKiteRing(mix, Number(id.slice(-2)));
   } else if (id.startsWith("ocean-beach-kite-")) {
     scoreOceanBeachKite(mix, Number(id.slice(-2)));
+  } else if (id.startsWith("sutro-vista-")) {
+    scoreSutroVista(mix, Number(id.slice(-2)));
   } else if (id.startsWith("sutro-moment-")) {
     scoreSutroMoment(mix, Number(id.slice(-2)));
   } else {
@@ -318,6 +324,38 @@ function scoreSutroMoment(mix, look) {
     addSoftThump(mix, { start: 1.62, duration: 0.55, gain: 0.026, pan: -0.24 });
     addSoftThump(mix, { start: 3.28, duration: 0.6, gain: 0.02, pan: -0.18 });
   }
+}
+
+/**
+ * Ten seconds of room, for the two wide looks. Same principle as the held
+ * moments — the hall's own sound rather than a score — but a bigger space needs
+ * a longer, slower bed and more of it, because there is more room in frame and
+ * the camera is travelling through it.
+ */
+function scoreSutroVista(mix, look) {
+  const inner = look === 1;
+  addPad(mix, {
+    start: 0,
+    duration: 10,
+    notes: inner ? [38, 45, 50, 57, 62] : [40, 47, 52, 59, 64, 71],
+    gain: 0.032,
+    pan: 0,
+    brightness: inner ? 0.34 : 0.52
+  });
+  // The ocean look has the Pacific on the other side of the glass all the way
+  // down its length; the hall look is enclosed and drier.
+  addAir(mix, { start: 0, duration: 10, gain: inner ? 0.02 : 0.034, panDrift: 0.6 });
+  addFoley(mix, { start: 0, duration: 10, gain: 0.022, pan: 0, character: "cloth" });
+  // Two small events, well apart, so ten seconds has some shape without
+  // becoming a rhythm.
+  addSoftThump(mix, { start: 2.6, duration: 0.9, gain: 0.024, pan: inner ? -0.3 : 0.25 });
+  addChime(mix, {
+    start: 6.3,
+    midi: inner ? 79 : 86,
+    duration: 1.6,
+    gain: 0.015,
+    pan: inner ? 0.3 : -0.28
+  });
 }
 
 function scorePhoenixPalaceFlyby(mix) {
