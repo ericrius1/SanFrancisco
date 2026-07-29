@@ -100,8 +100,19 @@ for (const replacement of metadata.replaces ?? []) {
     }
   }
 }
+// NEVER re-quantize the tile here. It arrives already quantized
+// (KHR_mesh_quantization, 16-bit positions over the 800 m tile) — the same
+// state tools/optimize-tiles.mjs refuses to touch a second time. Running
+// quantize() again recomputes each mesh's quantization volume and rewrites its
+// node transform, which translated tile_1_12's entire building mesh +2.748 m
+// upward on EVERY bake: a ratchet that reached +16.5 m over four commits and
+// left Sutro Heights visibly floating when seen from Ocean Beach.
+//
+// Removing triangles cannot invalidate the existing quantization, so the tile
+// only needs re-emitting. EXT_meshopt_compression survives the round-trip on
+// the Document read from disk, so the rewritten tile stays compressed.
 if (removedNodes || removedTriangles) {
-  await baseDoc.transform(prune(), meshopt({ encoder: MeshoptEncoder, level: "high", quantizePosition: 16 }));
+  await baseDoc.transform(prune());
   await fs.writeFile(tilePath, await io.writeBinary(baseDoc));
 }
 
