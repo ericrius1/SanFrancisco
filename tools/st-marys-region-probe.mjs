@@ -157,6 +157,20 @@ async function main() {
     assert("cathedral boot: no page exceptions", near.exceptions.length === 0,
       near.exceptions.slice(0, 2).join(" | "));
     await shot(c, "arrival");
+    // back off the plaza so the cupola and the crowd are both in frame
+    await c.send("Input.dispatchKeyEvent", { type: "keyDown", code: "KeyS", key: "s", windowsVirtualKeyCode: 83 });
+    await sleep(7000);
+    await c.send("Input.dispatchKeyEvent", { type: "keyUp", code: "KeyS", key: "s", windowsVirtualKeyCode: 83 });
+    await sleep(1500);
+    await shot(c, "rave-day");
+    // hold Z to run the clock into the night, when the projection gain rises
+    await c.send("Input.dispatchKeyEvent", { type: "keyDown", code: "KeyZ", key: "z", windowsVirtualKeyCode: 90 });
+    await sleep(14000);
+    await c.send("Input.dispatchKeyEvent", { type: "keyUp", code: "KeyZ", key: "z", windowsVirtualKeyCode: 90 });
+    await sleep(2500);
+    const sun = await ev(c, `window.__sf?.sky?.sunElevationDeg ?? null`);
+    console.log("[probe] sun elevation after clock run:", sun);
+    await shot(c, "rave-night");
     // walk straight down the aisle: through the doors into the nave
     await c.send("Input.dispatchKeyEvent", { type: "keyDown", code: "KeyW", key: "w", windowsVirtualKeyCode: 87 });
     await sleep(9500);

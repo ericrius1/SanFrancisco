@@ -127,7 +127,7 @@
       "arrival": {
         "spawnKey": "stMarys",
         "x": 1634.9,
-        "y": 66.0,
+        "y": 62.6,
         "z": 614.7,
         "heading": -2.9894
       },
@@ -137,7 +137,7 @@
       "replaces": [],
       "terrain": {
         "mode": "flat-ownership",
-        "groundY": 64.6,
+        "groundY": 61.2,
         "footprints": [
           {
             "id": "cathedral-plaza",

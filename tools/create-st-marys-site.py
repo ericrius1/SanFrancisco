@@ -34,7 +34,12 @@ TILE = "11_11"
 CENTER_X = 1642.02
 CENTER_Z = 661.16
 YAW = 0.152
-FLOOR = 64.6
+# Cathedral Hill terrain reads 58.1 m at the site centre and slopes from ~62.8
+# on the Geary (north) side down to ~56 on the south. The plaza datum sits just
+# under the north sidewalk; the SKIRT below carries the podium down to grade on
+# the low sides, exactly like the real building's garage wall.
+FLOOR = 61.2
+SKIRT_BOTTOM = -16.0         # local z: below every nearby terrain sample
 
 # --- primary dimensions (meters, local frame: x east, y north, z above plaza)
 PODIUM_HALF = 38.85          # 255 ft square podium
@@ -129,18 +134,18 @@ def travertine_pixels():
 
 
 def coffer_pixels():
-    """Nervi's triangular precast coffers for the shell interior."""
-    size = 1024
-    period, row = 128, 64
+    """Precast concrete for the coffered vault. The coffers themselves are real
+    geometry now, so this is only the surface: the warm olive-khaki cast stone
+    the reference photographs read as, with faint per-panel tonal variation."""
+    rng = np.random.default_rng(19)
+    size = 512
+    img = np.ones((size, size, 4), dtype=np.float32)
+    img[..., :3] = np.array([0.545, 0.520, 0.372])
     x = np.arange(size)[None, :]
     y = np.arange(size)[:, None]
-    img = np.ones((size, size, 4), dtype=np.float32)
-    cell = ((y // row) * 977 + ((x + y) // period) * 331 + ((x - y) // period) * 173) % 17
-    img[..., :3] = (0.615 + cell[..., None] * 0.004)
-    ribs = ((x + y) % period < 5) | ((x - y) % period < 5) | (y % row < 4)
-    img[np.broadcast_to(ribs, (size, size)), :3] = 0.40
-    depth = np.minimum((x + y) % period, np.minimum((x - y) % period, y % row)) / 24.0
-    img[..., :3] *= (0.86 + 0.14 * np.clip(depth, 0, 1))[..., None]
+    panel = ((x // 48) * 733 + (y // 48) * 419) % 11
+    img[..., :3] *= (0.94 + panel[..., None] * 0.011)
+    img[..., :3] += rng.normal(0.0, 0.010, (size, size, 1))
     img[..., :3] = np.clip(img[..., :3], 0.0, 1.0)
     img[..., 3] = 1.0
     return img
@@ -178,6 +183,30 @@ def stained_glass_pixels(stops_list, seed):
         img[k : k + 2, :, :3] *= 0.24
     for k in (0, 41, 84, 126):
         img[:, k : k + 2, :3] *= 0.24
+    img[..., :3] = np.clip(img[..., :3], 0.0, 1.0)
+    img[..., 3] = 1.0
+    return img
+
+
+def chapel_window_pixels():
+    """The dense faceted-glass wall of the side chapel: hot reds and ambers
+    shot through with cobalt, leaded into small irregular cells."""
+    rng = np.random.default_rng(29)
+    size = 512
+    img = np.ones((size, size, 4), dtype=np.float32)
+    cell = 16
+    palette = np.array([
+        [0.86, 0.16, 0.07], [0.95, 0.44, 0.09], [0.97, 0.74, 0.18],
+        [0.62, 0.09, 0.11], [0.12, 0.28, 0.68], [0.08, 0.45, 0.55],
+        [0.75, 0.62, 0.14], [0.35, 0.06, 0.16],
+    ])
+    weights = np.array([0.2, 0.18, 0.16, 0.14, 0.12, 0.08, 0.08, 0.04])
+    tiles = rng.choice(len(palette), size=(size // cell, size // cell), p=weights)
+    img[..., :3] = np.repeat(np.repeat(palette[tiles], cell, axis=0), cell, axis=1)
+    img[..., :3] *= (0.78 + rng.random((size // cell, size // cell, 1)).repeat(cell, 0).repeat(cell, 1) * 0.44)
+    lead = (np.arange(size) % cell) < 2
+    img[lead, :, :3] *= 0.18
+    img[:, lead, :3] *= 0.18
     img[..., :3] = np.clip(img[..., :3], 0.0, 1.0)
     img[..., 3] = 1.0
     return img
@@ -317,6 +346,18 @@ def rotate_quarter(x, y, quarter):
     return x, y
 
 
+def shell_point(quarter, mirror, u, t, half, arm, z0, z1_seam, z1_corner):
+    """The saddle surface at continuous (u, t) — the coffer builder needs to
+    evaluate between grid lines, so the ruling lives in one function."""
+    sx, sz = seam_profile(t, half, arm, z0, z1_seam)
+    cr, cz = corner_profile(t, half, z0, z1_corner)
+    x = sx + (cr - sx) * u
+    y = GLASS_HW + (cr - GLASS_HW) * u
+    z = sz + (cz - sz) * u
+    rx, ry = rotate_quarter(x, mirror * y, quarter)
+    return (rx, ry, z)
+
+
 def shell_surface_verts(half, arm, z0, z1_seam, z1_corner):
     """All 8 patch grids. Verts are shared within a patch only: the corner
     arrises between faces keep split normals so they read as crisp edges
@@ -368,22 +409,56 @@ def build_shell(target, root, mat_out, mat_in):
 
     outer = mesh_object(target, root, "cupola_shell", verts, faces, mat_out, uvs=shell_uv, smooth=True)
 
-    # inner coffered surface (reversed winding), slightly inset
-    iverts, igrids = shell_surface_verts(
-        CUPOLA_HALF - SHELL_T, ARM_HALF - 0.45, SHELL_Z0, ARM_TIP_Z - 0.5, SHELL_TOP - 0.5
-    )
-    ifaces = []
-    for grid, mirror in igrids:
-        for it in range(SEG_T):
-            for iu in range(SEG_U):
-                quad = (grid[it][iu], grid[it][iu + 1], grid[it + 1][iu + 1], grid[it + 1][iu])
-                ifaces.append(quad[::-1] if mirror < 0 else quad)
+    # Inner surface: Nervi's precast triangular coffers, as real recessed
+    # geometry rather than a painted grid. Every cell of a coarse (u, t) grid
+    # splits into two triangles; each triangle's rim stays on the rib plane
+    # while its inset copy sits on a deeper plane, so one quad per edge is both
+    # the rib face and the sloped coffer wall — a truncated-pyramid recess in
+    # 7 triangles, with no winding ambiguity. ~2700 coffers, against the real
+    # ceiling's 1,680 in 128 sizes.
+    COF_T, COF_U = 24, 7
+    RIB = 0.19          # inset fraction toward the triangle centroid
+    DEPTH = 0.34        # recess depth (toward the outer shell)
+    rim_half = CUPOLA_HALF - SHELL_T
+    pan_half = CUPOLA_HALF - SHELL_T + DEPTH
+    rim = dict(half=rim_half, arm=ARM_HALF - 0.45, z0=SHELL_Z0,
+               z1_seam=ARM_TIP_Z - 0.5, z1_corner=SHELL_TOP - 0.5)
+    pan = dict(half=pan_half, arm=ARM_HALF - 0.45 + DEPTH, z0=SHELL_Z0,
+               z1_seam=ARM_TIP_Z - 0.5, z1_corner=SHELL_TOP - 0.5)
+
+    cverts = []
+    cfaces = []
+
+    def emit(quarter, mirror, uv_t, plane):
+        cverts.append(shell_point(quarter, mirror, uv_t[0], uv_t[1], **plane))
+        return len(cverts) - 1
+
+    for quarter in range(4):
+        for mirror in (1, -1):
+            for it in range(COF_T):
+                t0, t1 = it / COF_T, (it + 1) / COF_T
+                for iu in range(COF_U):
+                    u0, u1 = iu / COF_U, (iu + 1) / COF_U
+                    quad = ((u0, t0), (u1, t0), (u1, t1), (u0, t1))
+                    for tri in ((0, 1, 2), (0, 2, 3)):
+                        params = [quad[k] for k in tri]
+                        cu = sum(p[0] for p in params) / 3
+                        ct = sum(p[1] for p in params) / 3
+                        inset = [(p[0] + (cu - p[0]) * RIB, p[1] + (ct - p[1]) * RIB) for p in params]
+                        rim_i = [emit(quarter, mirror, p, rim) for p in params]
+                        pan_i = [emit(quarter, mirror, p, pan) for p in inset]
+                        for k in range(3):
+                            n = (k + 1) % 3
+                            wall = (rim_i[k], rim_i[n], pan_i[n], pan_i[k])
+                            cfaces.append(wall[::-1] if mirror < 0 else wall)
+                        panel = tuple(pan_i)
+                        cfaces.append(panel[::-1] if mirror < 0 else panel)
 
     def coffer_uv(vertex_index, vs):
         x, y, z = vs[vertex_index]
-        return ((abs(x) + abs(y)) / 17.0, z / 17.0)
+        return ((abs(x) + abs(y)) / 6.0, z / 6.0)
 
-    mesh_object(target, root, "cupola_coffered_interior", iverts, ifaces, mat_in, uvs=coffer_uv, smooth=True)
+    mesh_object(target, root, "cupola_coffered_interior", cverts, cfaces, mat_in, uvs=coffer_uv)
 
     # base rim ring closing outer to inner at the clerestory line
     rim_verts = []
@@ -460,12 +535,19 @@ def build_baldacchino(target, root, gold):
     """Richard Lippold's baldacchino, stylized: tiers of slender gold rods in
     alternating triangular rings — a shimmering veil over the altar — with the
     gold crucifix suspended at its heart."""
-    rod = add_box(target, root, "baldacchino_rod_seed", (0, 0, 0), (0.06, 0.06, 1.05), gold)
-    radii = [5.2, 4.6, 4.0, 3.4, 2.9, 2.6, 2.6, 2.9, 3.4, 4.0, 4.6, 5.2]
-    rods_per_side = 7
-    for tier, radius in enumerate(radii):
-        z = 23.6 - tier * 0.92
-        spin = tier * math.pi / 6
+    # The reference photographs read as a shower of gold wires falling fifteen
+    # storeys: wide and dense at the top, tapering to a point above the altar.
+    # Triangular tiers, counter-rotated so the veil never looks like a fence.
+    rod = add_box(target, root, "baldacchino_rod_seed", (0, 0, 0), (0.05, 0.05, 0.85), gold)
+    TIERS = 19
+    Z_TOP, Z_BOT = 35.5, 13.4
+    R_TOP, R_BOT = 7.6, 1.9
+    for tier in range(TIERS):
+        f = tier / (TIERS - 1)
+        z = Z_TOP + (Z_BOT - Z_TOP) * f
+        radius = R_TOP + (R_BOT - R_TOP) * (f ** 0.78)
+        spin = tier * 0.41
+        rods_per_side = max(3, int(round(9 * (1.0 - f * 0.55))))
         corners = [
             (math.cos(spin + k * 2 * math.pi / 3) * radius,
              math.sin(spin + k * 2 * math.pi / 3) * radius)
@@ -475,16 +557,22 @@ def build_baldacchino(target, root, gold):
             ax, ay = corners[side]
             bx, by = corners[(side + 1) % 3]
             for k in range(rods_per_side):
-                f = (k + 0.5) / rods_per_side
-                x = ax + (bx - ax) * f
-                y = ay + (by - ay) * f
-                jitter = 0.20 * math.sin(tier * 2.4 + side * 1.7 + k * 3.1)
+                g = (k + 0.5) / rods_per_side
+                x = ax + (bx - ax) * g
+                y = ay + (by - ay) * g
+                jitter = 0.34 * math.sin(tier * 2.4 + side * 1.7 + k * 3.1)
                 duplicate_linked(rod, target, root, f"baldacchino_rod_{tier}_{side}_{k}",
                                  (x, y, z + jitter))
     rod.hide_render = True
     rod.hide_viewport = True
-    add_box(target, root, "baldacchino_crucifix", (0, 0, 11.6), (0.075, 0.075, 1.35), gold)
-    add_box(target, root, "baldacchino_crucifix_arm", (0, 0, 12.15), (0.72, 0.075, 0.075), gold)
+    # suspension wires up into the cupola, and the crucifix at the heart
+    for k in range(3):
+        angle = k * 2 * math.pi / 3
+        add_box(target, root, f"baldacchino_wire_{k}",
+                (math.cos(angle) * R_TOP * 0.72, math.sin(angle) * R_TOP * 0.72, 43.0),
+                (0.035, 0.035, 8.0), gold)
+    add_box(target, root, "baldacchino_crucifix", (0, 0, 11.2), (0.08, 0.08, 1.55), gold)
+    add_box(target, root, "baldacchino_crucifix_arm", (0, 0, 11.85), (0.82, 0.08, 0.08), gold)
 
 
 def build(args):
@@ -550,6 +638,8 @@ def build(args):
 
     travertine = textured_material("St Mary travertine panels", travertine_img, 0.86)
     coffer = textured_material("Nervi triangular coffers", coffer_img, 0.94)
+    chapel_img = write_image(textures / "chapel-window.png", "st-marys chapel glass", chapel_window_pixels())
+    chapel_glass = textured_material("Chapel faceted glass wall", chapel_img, 0.3, emission_strength=0.9)
     apex_glass = material("Prismatic apex glass", (*GLASS_APEX,), 0.2,
                           emission=(*GLASS_APEX,), emission_strength=0.8)
     white_slab = material("Precast fascia white", (0.84, 0.825, 0.79), 0.82)
@@ -564,6 +654,11 @@ def build(args):
     stage("materials ready")
 
     # ------------------------------------------------------------------ plaza
+    # Podium skirt: the garage mass under the plaza. Buried where the hill is
+    # high, a travertine retaining wall where it falls away to the south — the
+    # plaza can never read as floating regardless of the terrain beneath it.
+    add_box(exterior, root, "podium_skirt", (1.0, 4.0, (PLAZA_TOP + SKIRT_BOTTOM) / 2),
+            (45.6, 50.6, (PLAZA_TOP - SKIRT_BOTTOM) / 2), travertine, uv_scale=16.0)
     add_box(exterior, root, "plaza_platform", (1.0, 4.0, PLAZA_TOP / 2), (45.0, 50.0, PLAZA_TOP / 2), brick)
     add_box(exterior, root, "plaza_step_mid", (1.0, 4.0, 0.45), (46.5, 51.5, 0.45), step_stone)
     add_box(exterior, root, "plaza_step_low", (1.0, 4.0, 0.225), (48.0, 53.0, 0.225), step_stone)
@@ -571,6 +666,15 @@ def build(args):
         add_box(exterior, root, f"geary_stair_{step}",
                 (0.0, 54.6 + step * 1.5, (PLAZA_TOP - step * 0.45) / 2),
                 (15.0, 0.75, (PLAZA_TOP - step * 0.45) / 2), step_stone)
+    # South and east flights walk the hill down off the raised plaza.
+    for step in range(9):
+        drop = step * 0.62
+        add_box(exterior, root, f"south_stair_{step}",
+                (0.0, -(48.6 + step * 1.35), PLAZA_TOP / 2 - drop),
+                (13.0, 0.68, PLAZA_TOP / 2 + drop), step_stone)
+        add_box(exterior, root, f"east_stair_{step}",
+                (46.6 + step * 1.35, 4.0, PLAZA_TOP / 2 - drop),
+                (0.68, 12.0, PLAZA_TOP / 2 + drop), step_stone)
     stage("plaza ready")
 
     # ----------------------------------------------------------------- podium
@@ -584,8 +688,17 @@ def build(args):
     add_box(exterior, root, "roof_deck_s", (0, -ring_c, roof_z), (PODIUM_HALF, ring_w, roof_h), white_slab)
     add_box(exterior, root, "roof_deck_e", (ring_c, 0, roof_z), (ring_w, ROOF_HOLE, roof_h), white_slab)
     add_box(exterior, root, "roof_deck_w", (-ring_c, 0, roof_z), (ring_w, ROOF_HOLE, roof_h), white_slab)
-    add_box(exterior, root, "mezzanine_band", (0, 0, (BAND_TOP + GLASS_TOP) / 2),
-            (GLASS_HALF + 0.45, GLASS_HALF + 0.45, (BAND_TOP - GLASS_TOP) / 2), travertine, uv_scale=12.4)
+    # Perimeter band only — a solid slab here would cap the nave and hide the
+    # whole cupola from inside.
+    band_z = (BAND_TOP + GLASS_TOP) / 2
+    band_h = (BAND_TOP - GLASS_TOP) / 2
+    band_r = GLASS_HALF + 0.45
+    for axis, (bx, by, hx, hy) in enumerate((
+        (0, band_r, band_r, 0.55), (0, -band_r, band_r, 0.55),
+        (band_r, 0, 0.55, band_r), (-band_r, 0, 0.55, band_r),
+    )):
+        add_box(exterior, root, f"mezzanine_band_{axis}", (bx, by, band_z),
+                (hx, hy, band_h), travertine, uv_scale=12.4)
     # curtain walls as four slabs so the north entry bay stays genuinely open
     glass_z = (GLASS_TOP + PLAZA_TOP) / 2
     glass_h = (GLASS_TOP - PLAZA_TOP) / 2
@@ -669,19 +782,55 @@ def build(args):
     lippold_gold = material("Lippold gold rods", (0.95, 0.78, 0.35), 0.32, 0.9,
                             emission=(1.0, 0.82, 0.4), emission_strength=0.85)
     build_baldacchino(furniture, root, lippold_gold)
+
+    # --- north-west chapel: the faceted glass wall and the bronze crucifix ---
+    chapel_x, chapel_y = -26.5, 26.5
+    add_box(interior, root, "chapel_wall", (chapel_x, chapel_y, FLOOR_Z + 4.6),
+            (7.0, 0.5, 4.6), travertine, yaw=math.pi / 4, uv_scale=12.4)
+    add_box(interior, root, "chapel_glass_wall", (chapel_x - 1.3, chapel_y + 1.3, FLOOR_Z + 4.3),
+            (6.0, 0.14, 4.0), chapel_glass, yaw=math.pi / 4)
+    # a restrained geometric corpus on the cross, as at the real shrine
+    cross_x, cross_y = chapel_x + 0.75, chapel_y - 0.75
+    add_box(furniture, root, "chapel_cross_upright", (cross_x, cross_y, FLOOR_Z + 5.0),
+            (0.16, 0.16, 2.5), bronze, yaw=math.pi / 4)
+    add_box(furniture, root, "chapel_cross_arm", (cross_x, cross_y, FLOOR_Z + 6.0),
+            (1.5, 0.16, 0.16), bronze, yaw=math.pi / 4)
+    add_box(furniture, root, "chapel_corpus_torso", (cross_x + 0.2, cross_y - 0.2, FLOOR_Z + 5.6),
+            (0.34, 0.2, 0.72), bronze, yaw=math.pi / 4)
+    add_box(furniture, root, "chapel_corpus_legs", (cross_x + 0.2, cross_y - 0.2, FLOOR_Z + 4.5),
+            (0.22, 0.2, 0.6), bronze, yaw=math.pi / 4)
+    add_box(furniture, root, "chapel_corpus_arms", (cross_x + 0.2, cross_y - 0.2, FLOOR_Z + 6.0),
+            (1.1, 0.18, 0.16), bronze, yaw=math.pi / 4)
+    add_box(furniture, root, "chapel_corpus_head", (cross_x + 0.22, cross_y - 0.22, FLOOR_Z + 6.5),
+            (0.2, 0.18, 0.24), bronze, yaw=math.pi / 4)
+    for k in (-1, 0, 1):
+        kx = chapel_x + 3.0 + k * 1.6 * math.cos(math.pi / 4)
+        ky = chapel_y - 3.0 + k * 1.6 * math.sin(math.pi / 4)
+        add_box(furniture, root, f"chapel_kneeler_{k}", (kx, ky, FLOOR_Z + 0.24),
+                (0.7, 0.28, 0.24), wood, yaw=math.pi / 4)
+    collider(collider_collection, "sm_chapel_wall", (chapel_x, chapel_y, FLOOR_Z + 4.6),
+             (7.0, 0.6, 4.6), yaw=math.pi / 4)
     pew_seat = add_box(furniture, root, "pew_seed", (0, 0, FLOOR_Z + 0.42), (2.6, 0.24, 0.06), wood)
     pew_back = add_box(furniture, root, "pew_seed_back", (0, 0.28, FLOOR_Z + 0.7), (2.6, 0.06, 0.34), wood)
-    banks = ((0.0, (0, 1)), (math.pi / 2, (1, 0)), (-math.pi / 2, (-1, 0)), (math.pi, (0, -1)))
-    for yaw_bank, (dx, dy) in banks[:3]:
+    # Pews fan around the central sanctuary in three wedges, every bench turned
+    # to face the altar with processional aisles between the lanes.
+    # West, south and east wedges — the north quadrant stays clear for the
+    # processional aisle in from the Geary doors.
+    PEW_BANKS = (math.pi, -math.pi / 2, 0.0)
+    for bank, base_angle in enumerate(PEW_BANKS):
         for row in range(9):
-            r = 12.5 + row * 2.05
+            r = 12.8 + row * 2.05
             for lane in (-1, 1):
-                # lanes sit either side of a 4 m processional aisle
-                off_x, off_y = -dy * lane * 4.6, dx * lane * 4.6
-                duplicate_linked(pew_seat, furniture, root, f"pew_{dx}_{dy}_{row}_{lane}",
-                                 (dx * r + off_x, dy * r + off_y, 0), yaw_bank)
-                duplicate_linked(pew_back, furniture, root, f"pewback_{dx}_{dy}_{row}_{lane}",
-                                 (dx * (r + 0.55) + off_x, dy * (r + 0.55) + off_y, 0), yaw_bank)
+                spread = math.atan2(lane * 4.6, r)
+                for wedge in range(3):
+                    angle = base_angle + spread + (wedge - 1) * math.atan2(lane * 2.55, r)
+                    px, py = math.cos(angle) * r, math.sin(angle) * r
+                    yaw_bench = angle + math.pi / 2
+                    duplicate_linked(pew_seat, furniture, root,
+                                     f"pew_{bank}_{row}_{lane}_{wedge}", (px, py, 0), yaw_bench)
+                    bx, by = math.cos(angle) * (r + 0.55), math.sin(angle) * (r + 0.55)
+                    duplicate_linked(pew_back, furniture, root,
+                                     f"pewback_{bank}_{row}_{lane}_{wedge}", (bx, by, 0), yaw_bench)
     for seed in (pew_seat, pew_back):
         seed.hide_render = True
         seed.hide_viewport = True
@@ -712,6 +861,12 @@ def build(args):
     collider(collider_collection, "sm_steps_e", (49.0, 4, 0.45), (2.6, 52.0, 0.45))
     collider(collider_collection, "sm_steps_w", (-47.0, 4, 0.45), (2.6, 52.0, 0.45))
     collider(collider_collection, "sm_stair_geary", (0, 56.4, 0.65), (15.2, 3.0, 0.65))
+    for step in range(9):
+        drop = step * 0.62
+        collider(collider_collection, f"sm_south_stair_{step}", (0.0, -(48.6 + step * 1.35), PLAZA_TOP / 2 - drop),
+                 (13.0, 0.7, PLAZA_TOP / 2 + drop))
+        collider(collider_collection, f"sm_east_stair_{step}", (46.6 + step * 1.35, 4.0, PLAZA_TOP / 2 - drop),
+                 (0.7, 12.0, PLAZA_TOP / 2 + drop))
     wall_z = (BAND_TOP + FLOOR_Z) / 2
     wall_h = (BAND_TOP - FLOOR_Z) / 2
     collider(collider_collection, "sm_wall_e", (GLASS_HALF, 0, wall_z), (0.6, GLASS_HALF + 0.4, wall_h))
@@ -754,11 +909,17 @@ def build(args):
     collider(collider_collection, "sm_sanctuary_step", (0, 0, FLOOR_Z + 0.14), (8.6, 8.6, 0.14))
     collider(collider_collection, "sm_predella", (0, 0, FLOOR_Z + 0.25), (7.6, 7.6, 0.27))
     collider(collider_collection, "sm_altar", (0, 0, FLOOR_Z + 0.95), (1.6, 0.9, 0.5))
-    # pew banks collide as lane pairs so the processional aisles stay walkable
-    for lane in (-1, 1):
-        collider(collider_collection, f"sm_pews_w_{lane}", (-21.5, lane * 4.6, FLOOR_Z + 0.55), (9.6, 2.8, 0.55))
-        collider(collider_collection, f"sm_pews_n_{lane}", (lane * 4.6, 21.5, FLOOR_Z + 0.55), (2.8, 9.6, 0.55))
-        collider(collider_collection, f"sm_pews_e_{lane}", (21.5, lane * 4.6, FLOOR_Z + 0.55), (9.6, 2.8, 0.55))
+    # One radial box per pew column, matching the fan — the wedges between them
+    # and the whole north quadrant stay walkable.
+    for bank, base_angle in enumerate(PEW_BANKS):
+        for lane in (-1, 1):
+            for wedge in range(3):
+                r_mid = 21.0
+                spread = math.atan2(lane * 4.6, r_mid)
+                angle = base_angle + spread + (wedge - 1) * math.atan2(lane * 2.55, r_mid)
+                collider(collider_collection, f"sm_pews_{bank}_{lane}_{wedge}",
+                         (math.cos(angle) * r_mid, math.sin(angle) * r_mid, FLOOR_Z + 0.55),
+                         (8.4, 1.15, 0.55), yaw=angle)
     collider(collider_collection, "sm_organ", (13.5, -20.5, FLOOR_Z + 2.0), (2.8, 2.5, 2.0))
     collider(collider_collection, "sm_ambo", (-4.2, 3.4, FLOOR_Z + 1.1), (0.6, 0.55, 0.65))
     collider(collider_collection, "sm_cathedra", (0, -6.2, FLOOR_Z + 1.5), (1.0, 0.9, 1.6))
@@ -775,7 +936,7 @@ def build(args):
     bpy.ops.object.light_add(type="AREA", location=root.matrix_world @ Vector((0.0, 0.0, 30.0)))
     nave_glow = bpy.context.object
     nave_glow.name = "Blender preview nave glow"
-    nave_glow.data.energy = 34000
+    nave_glow.data.energy = 11000
     nave_glow.data.shape = "DISK"
     nave_glow.data.size = 24
     nave_glow.data.color = (1.0, 0.74, 0.5)
@@ -787,7 +948,7 @@ def build(args):
     bpy.ops.object.light_add(type="AREA", location=root.matrix_world @ Vector((0.0, 0.0, 50.0)))
     apex_shaft = bpy.context.object
     apex_shaft.name = "Blender preview apex shaft"
-    apex_shaft.data.energy = 80000
+    apex_shaft.data.energy = 22000
     apex_shaft.data.shape = "DISK"
     apex_shaft.data.size = 7
     apex_shaft.data.color = (1.0, 0.88, 0.62)
@@ -799,7 +960,7 @@ def build(args):
         bpy.ops.object.light_add(type="AREA", location=root.matrix_world @ Vector((lx, ly, 32.0)))
         fill = bpy.context.object
         fill.name = f"Blender preview {GLASS_ELEMENTS[quarter][0]} fill"
-        fill.data.energy = 14000
+        fill.data.energy = 6000
         fill.data.shape = "DISK"
         fill.data.size = 9
         fill.data.color = tint
@@ -811,7 +972,7 @@ def build(args):
         bpy.ops.object.light_add(type="AREA", location=root.matrix_world @ Vector((wx, wy, 10.0)))
         wash = bpy.context.object
         wash.name = f"Blender preview {GLASS_ELEMENTS[quarter][0]} vault wash"
-        wash.data.energy = 26000
+        wash.data.energy = 9000
         wash.data.shape = "DISK"
         wash.data.size = 12
         wash.data.color = (1.0, 0.9, 0.74)
@@ -837,7 +998,7 @@ def build(args):
     move_to(nave_camera, preview)
     if scene.world is None:
         scene.world = bpy.data.worlds.new("St Marys preview world")
-    scene.world.color = (0.16, 0.17, 0.22)
+    scene.world.color = (0.24, 0.25, 0.30)
 
     bpy.ops.wm.save_as_mainfile(filepath=str(output))
     print(f"[st-marys] saved {output}")

@@ -1480,7 +1480,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // Grace Cathedral: the authored GLB owns the physical glass; this nested
     // runtime only animates bounded colored shafts while a visitor is inside.
     if (!worldArrival.active) core.state.graceCathedral?.update(player.position, ctx.state.elapsed);
-    if (!worldArrival.active) core.state.stMarys?.update(player.position, ctx.state.elapsed);
+    // St Mary's: interior god rays plus the plaza projection rave and crowd.
+    if (!worldArrival.active) core.state.stMarys?.update(player.position, ctx.state.elapsed, frameDt);
     const museumFloorHandoff = worldArrival.active
       ? null
       : core.state.missionDolores?.takeFloorHandoffHeight(player.position, player.mode);

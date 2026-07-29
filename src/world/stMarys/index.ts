@@ -1,10 +1,8 @@
 import * as THREE from "three/webgpu";
 import { batchStaticSiblings } from "../staticBatch";
+import { FLOOR_Y, YAW, localToWorld, worldToLocal } from "./geometry";
+import { createStMarysRave, type StMarysRave } from "./rave";
 
-const CENTER_X = 1642.02;
-const CENTER_Z = 661.16;
-const FLOOR_Y = 64.6;
-const YAW = 0.152;
 const LOCAL_Y = new THREE.Vector3(0, 1, 0);
 
 // The four window lines carry the four elements — matched to the baked glass:
@@ -23,26 +21,8 @@ type BeamMaterial = THREE.MeshBasicNodeMaterial & { userData: { baseOpacity?: nu
 
 export interface StMarysRuntime {
   readonly group: THREE.Group;
-  update(playerPosition: THREE.Vector3, elapsed: number): void;
+  update(playerPosition: THREE.Vector3, elapsed: number, dt: number): void;
   dispose(): void;
-}
-
-function localToWorld(lx: number, ly: number, lz: number, out = new THREE.Vector3()): THREE.Vector3 {
-  const c = Math.cos(YAW);
-  const s = Math.sin(YAW);
-  return out.set(
-    CENTER_X + lx * c - ly * s,
-    FLOOR_Y + lz,
-    CENTER_Z - lx * s - ly * c
-  );
-}
-
-function worldToLocal(position: THREE.Vector3): { x: number; y: number } {
-  const dx = position.x - CENTER_X;
-  const dz = position.z - CENTER_Z;
-  const c = Math.cos(YAW);
-  const s = Math.sin(YAW);
-  return { x: c * dx - s * dz, y: -s * dx - c * dz };
 }
 
 function makeSoftDiscTexture(): THREE.CanvasTexture {
@@ -203,9 +183,14 @@ export function createStMarysRuntime(scene: THREE.Scene): StMarysRuntime {
     landmarkPass: false
   });
 
+  // The plaza rave is a sibling layer with its own, much wider residency —
+  // the show is meant to be seen from the street, not only from the nave.
+  const rave: StMarysRave = createStMarysRave(scene);
+
   return {
     group,
-    update(playerPosition, elapsed) {
+    update(playerPosition, elapsed, dt) {
+      rave.update(playerPosition, elapsed, dt);
       const local = worldToLocal(playerPosition);
       const visible =
         Math.abs(local.x) < 42 && Math.abs(local.y) < 42 &&
@@ -222,6 +207,7 @@ export function createStMarysRuntime(scene: THREE.Scene): StMarysRuntime {
       dust.position.y = Math.sin(elapsed * 0.16) * 0.09;
     },
     dispose() {
+      rave.dispose();
       group.removeFromParent();
       group.traverse((object) => {
         const mesh = object as THREE.Mesh;
