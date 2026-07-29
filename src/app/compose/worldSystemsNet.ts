@@ -133,6 +133,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   ctx.late.net = net;
   const remotes = new RemotePlayers(scene);
   remotes.localPlayerPosition = () => player.renderPosition;
+  remotes.sandPrints = core.sandPrints;
   // net.onRakeStamp / onRakeReset are wired just after the Tea Garden controller
   // is created (below) — before then the core.state.garden cannot exist, and net's no-op
   // defaults absorb any rake hydration that arrives during a boot await; the
@@ -972,6 +973,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     camera,
     player,
     debugPanel,
+    sandPrints: core.sandPrints,
     // Walking onto (or off) the kite beach hands the single customizer slot to
     // the kite atelier and back again.
     onAtelierRangeChange: (inRange) => {

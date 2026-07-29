@@ -84,7 +84,7 @@ import type { MainCtx } from "./ctx";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
   const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, emoteWheel, updateEmoteKeepAlive, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
   const state = {
     cineHook: null as (((dt: number) => void) | null),
@@ -1588,6 +1588,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     wake.update(frameDt, surfaceTime, player);
     boardWake.update(frameDt, surfaceTime, player);
     skidMarks.update(frameDt, ctx.state.elapsed, player);
+    sandPrints.update(frameDt, ctx.state.elapsed, player);
     birdTrails.update(ctx.state.elapsed, player);
     splashes.update(frameDt, surfaceTime, player);
     core.state.surfExperience?.update(frameDt, player.mode, player.surfTelemetry);

@@ -31,7 +31,7 @@ export async function installDebugSurfaces(
   }
 ): Promise<void> {
   const { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, scheduler, chase, map, input, sky, worldArrival, voidRealm, audioEngine } = ctx;
-  const { hud, fx, fireworks, graffiti, bubbles, setTool, setColor, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, nature, dogParkAudio, ballImpactAudio, boardWake, abandonedMounts, embodiments, paintballs, paintSkins, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, ensureSurfRuntime, setFoliageVisible, buskers, buskerTalk, siteGate } = core;
+  const { hud, fx, fireworks, graffiti, bubbles, sandPrints, setTool, setColor, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, nature, dogParkAudio, ballImpactAudio, boardWake, abandonedMounts, embodiments, paintballs, paintSkins, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, ensureSurfRuntime, setFoliageVisible, buskers, buskerTalk, siteGate } = core;
   const { debugPanel, net, remotes, voice, minimap, playerLocator, ghostShipBeacon, switchMode, buildShareUrl, tutorial, teleportToTarget, debugOverlays, calibrationChart, ensureCarCustomizer, lazyRegionTimings, sites, teaGarden, oceanKite, board, car, applyBoardConfig } = netW;
   // `__sf.tick` is the deterministic-capture entry (perf/calibration probes,
   // cinematic reels), so it must go through the frame driver's manual tick: a
@@ -83,7 +83,7 @@ export async function installDebugSurfaces(
       dynRes: extra.dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING,
       RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks,
       graffiti, bubbles, setTool, setColor, sky, farOcclusion: extra.farOcclusion, debugPanel, CONFIG,
-      THREE, tick, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
+      THREE, tick, splashes, sandPrints, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
       audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
       doorAudio, nature, lofiMusic: core.lofiMusic, dogParkAudio, ballImpactAudio, net, remotes, voice,
       minimap, playerLocator, boardWake, abandonedMounts, ghostShipBeacon,
