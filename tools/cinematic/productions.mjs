@@ -205,6 +205,31 @@ const DEFINITIONS = Object.freeze({
         description: `The sun held inside the sunwheel — eclipse look ${index} of five.`
       })
     })];
+  })),
+  // The two travelling shots: kite festival to Sutro Baths in one unbroken move.
+  // Fifteen seconds each, and the stills are weighted toward the back half
+  // because that is where the shot changes — the beach run is one continuous
+  // idea, the crossing and the hall interior are four.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Kites · Over the Headland"],
+    [2, "Ocean Beach Kites · In From the Sea"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `kite-to-sutro-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 15,
+      seed: (0x46_4c_59_00 + index * 0x101) >>> 0,
+      posterAt: 12.6,
+      stillTimes: Object.freeze([0.3, 2.2, 4.6, 7.4, 9.6, 11.2, 12.4, 13.4, 14.6]),
+      audio: Object.freeze({
+        profile: "kite-to-sutro",
+        index,
+        description: `Onshore wind and surf carried into the bath hall — flight ${index} of two.`
+      })
+    })];
   }))
 });
 
