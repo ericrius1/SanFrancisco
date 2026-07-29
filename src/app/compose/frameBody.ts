@@ -388,6 +388,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       sky.update(ctx.state.elapsed, camera.position, player.renderPosition);
       applyLightFrontRamps();
       hud.update(frameDt);
+      // The checklist has to keep thinking while the map is up. Its last
+      // chapter is ABOUT the map — "press M", then pan/zoom/pick/teleport — and
+      // the only branch that can observe either is this one. Left out, the step
+      // asking you to open the map was checked by code that stops running the
+      // moment you open it, so the card never advanced and the panel never
+      // lifted above the map that was covering it.
+      tutorial.update(frameDt);
       input.endFrame();
       renderFrame();
   };

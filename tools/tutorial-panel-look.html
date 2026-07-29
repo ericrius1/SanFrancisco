@@ -38,7 +38,7 @@
   const state = { mode: "walk", pos: { x: -1560, y: 3, z: -1560 }, mouseDelta: 0, down: {}, pressed: {}, mapOpen: false, zone: zone() }
   const ctx = {
     mode: () => state.mode, pos: () => state.pos, mouseDelta: () => 0,
-    down: () => false, pressed: () => false, mapOpen: () => false,
+    down: () => false, pressed: () => false, mapOpen: () => state.mapOpen,
     teleport: () => {}, message: () => {}, zone: () => state.zone, goToZone: () => {}
   }
 
@@ -82,6 +82,16 @@
   shoot(`${chapter()} — step 2, part done`, 0.55)
   skip.click(); t.update(1 / 60)
   shoot(`${chapter()} — step 3, part done`, 0.3)
+  // The map chapter, with the map open — the card that has to survive being
+  // drawn over by the expanded map, and the one that explains the whole map in
+  // a single beat.
+  advanceTo("Anywhere")
+  shoot(`${chapter()} — step 1`, 0)
+  state.mapOpen = true
+  skip.click()
+  t.update(1 / 60)
+  shoot(`${chapter()} — step 2, map open`, 0)
+
   advanceTo("Congratulations")
   shoot(chapter())
 

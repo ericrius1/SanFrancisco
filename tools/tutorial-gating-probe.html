@@ -309,6 +309,28 @@
     check("the next instruction exists once the map is open",
       objective().includes("teleport"),
       `reads "${objective()}"`)
+    check("the map card explains pan, zoom and picking in the same beat",
+      ["pan", "zoom", "pick"].every((w) => objective().toLowerCase().includes(w)),
+      `reads "${objective()}"`)
+  }
+
+  // ── P: opening the map must ADVANCE the step, with no skip involved ──────
+  // The live bug: the game loop returns early while the map is open, so
+  // tutorial.update() stopped being called — the step asking you to open the
+  // map was checked by code that stops running the moment you open it. The
+  // checklist sat on "press M" forever with the map in front of it.
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    for (let i = 0; i < 40 && !objective().includes("open the city map"); i++) { skip.click(); run(t, s, 1 / 60) }
+    const before = objective()
+    s.mapOpen = true
+    run(t, s, 2) // ticking only — nothing clicked
+    check("opening the map advances the checklist on its own",
+      objective() !== before && objective().includes("teleport"),
+      `"${before}" → "${objective()}"`)
   }
 
   // ── M: skipping right through must never show the same card twice ────────
