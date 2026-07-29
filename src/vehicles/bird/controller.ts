@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import { BodyType } from "../../core/physics";
-import { waterHeight } from "../../world/heightmap";
+import { seaTime, waterHeight } from "../../world/heightmap";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import type { BirdRig } from "./mesh";
@@ -189,7 +189,7 @@ export class BirdController implements ModeController {
     // floor: over the bay it's the swell itself — skim it; over land, graze
     const overWater = ctx.map.isWater(ctx.position.x, ctx.position.z);
     const floor = overWater
-      ? waterHeight(ctx.position.x, ctx.position.z, ctx.time) + 0.12
+      ? waterHeight(ctx.position.x, ctx.position.z, seaTime()) + 0.12
       : ctx.map.effectiveGround(ctx.position.x, ctx.position.z) + 0.5;
     if (ctx.position.y < floor) {
       w.setBodyTransform(ctx.body, [ctx.position.x, floor, ctx.position.z], [q.x, q.y, q.z, q.w]);

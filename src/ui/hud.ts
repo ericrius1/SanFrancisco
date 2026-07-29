@@ -75,13 +75,11 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Click"], label: "shoot" }
   ],
   surf: [
-    { c: ["Locked"], label: "camera frames the shore" },
-    { c: ["A", "D"], label: "carve left · right" },
-    { c: ["W"], label: "climb the face · pump" },
-    { c: ["S"], label: "stall in the pocket · barrel" },
-    { c: ["A", "A"], label: "double-tap = cutback" },
-    { c: ["Space"], label: "jump · natural air off the lip" },
-    { c: ["X"], label: "flow when ready" },
+    { c: ["Mouse ↔"], label: "carve — keep turning to cut back" },
+    { c: ["Mouse ↑"], label: "climb toward the lip" },
+    { c: ["Mouse ↓"], label: "drop for speed · stall for the barrel" },
+    { c: ["Space"], label: "jump — bigger the higher you ride" },
+    { c: ["Mouse"], label: "spins and steers in the air too" },
     { c: ["E"], label: "exit to beach" }
   ],
   bird: [
@@ -169,11 +167,10 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["X"], label: "shoot" }
   ],
   surf: [
-    { c: ["Locked"], label: "camera frames the shore" },
-    { c: ["LS ↔"], label: "carve · double-flick = cutback" },
-    { c: ["LS ↕", "RT", "LT"], label: "climb/pump · stall" },
-    { c: ["A"], label: "jump · natural air off the lip" },
-    { c: ["X"], label: "flow when ready" },
+    { c: ["RS ↔", "LS ↔"], label: "carve — keep turning to cut back" },
+    { c: ["RS ↕", "LS ↕"], label: "climb the face · drop or stall" },
+    { c: ["A"], label: "jump — bigger the higher you ride" },
+    { c: ["RS"], label: "spins and steers in the air too" },
     { c: ["Y"], label: "exit to beach" }
   ],
   bird: [
@@ -193,7 +190,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   drive: "LB boost · RB power-slide with steer · release for a snap boost · Space handbrake",
   scooter: "LB power-slide with steer · ramps launch cleanly · rear seat fits a friend",
   board: "White glow = nose · pull right stick back in the air to flip",
-  surf: "W climbs and pumps · S stalls in the pocket for a barrel · double-tap A/D to cut back",
+  surf: "Steer with the mouse · push up to climb toward the lip · Space launches — the higher you are, the bigger",
   bird: "Three-seat saddle — two friends can press E nearby and fly with you"
 }
 

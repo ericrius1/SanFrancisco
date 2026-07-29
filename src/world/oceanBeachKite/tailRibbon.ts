@@ -39,6 +39,8 @@ export type KiteTail = {
   mesh: THREE.Mesh;
   bows: THREE.Group;
   update(o: KiteTailUpdate): void;
+  /** Re-dye in place; every ribbon/bow colour is a uniform, so this is free. */
+  setPalette(palette: KiteTailPalette): void;
   dispose(): void;
 };
 
@@ -81,8 +83,10 @@ export function createKiteTail(palette: KiteTailPalette): KiteTail {
     transparent: true,
     depthWrite: false
   });
+  const ribbonNear = uniform(new THREE.Color(palette.ribbonNear));
+  const ribbonFar = uniform(new THREE.Color(palette.ribbonFar));
   const along = uv().y;
-  material.colorNode = mix(color(palette.ribbonNear), color(palette.ribbonFar), along.mul(0.9));
+  material.colorNode = mix(ribbonNear, ribbonFar, along.mul(0.9));
   // Thin dyed nylon lit from behind stops being purple and becomes a filament
   // of the sunset itself — brightest out at the whipping tip.
   material.emissiveNode = mix(color(0xd9612a), color(0xffc27e), along)
@@ -103,13 +107,15 @@ export function createKiteTail(palette: KiteTailPalette): KiteTail {
   const bowGeometry = new THREE.PlaneGeometry(0.52, 0.24);
   const bowMaterials: THREE.MeshStandardNodeMaterial[] = [];
   const bowMeshes: THREE.Mesh[] = [];
-  const bowColors = palette.bows;
+  const bowColors = Array.from({ length: BOW_COUNT }, (_, i) =>
+    uniform(new THREE.Color(palette.bows[i]))
+  );
   for (let i = 0; i < BOW_COUNT; i++) {
     const bowMaterial = new THREE.MeshStandardNodeMaterial({
       side: THREE.DoubleSide,
       roughness: 0.72
     });
-    bowMaterial.colorNode = color(bowColors[i]);
+    bowMaterial.colorNode = bowColors[i];
     bowMaterial.emissiveNode = color(0xffb469).mul(backlight).mul(0.9);
     const bow = new THREE.Mesh(bowGeometry, bowMaterial);
     bow.name = `ocean_beach_kite_tail_bow_${i}`;
@@ -278,6 +284,13 @@ export function createKiteTail(palette: KiteTailPalette): KiteTail {
         bowSide.copy(bowUp).cross(bowNormal).normalize();
         bow.quaternion.setFromRotationMatrix(bowBasis.makeBasis(bowSide, bowUp, bowNormal));
         bow.scale.x = 0.85 + Math.sin(o.elapsed * 4.1 + i * 1.7) * 0.15;
+      }
+    },
+    setPalette(next) {
+      (ribbonNear.value as THREE.Color).setHex(next.ribbonNear);
+      (ribbonFar.value as THREE.Color).setHex(next.ribbonFar);
+      for (let i = 0; i < BOW_COUNT; i++) {
+        (bowColors[i].value as THREE.Color).setHex(next.bows[i]);
       }
     },
     dispose() {

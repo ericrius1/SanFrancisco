@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" width="44" height="44" role="img" aria-label="Kite">
+  <!--
+    The customizer slot's other five icons are baked images; this one is drawn,
+    so it stays a couple of hundred bytes and re-tints with the panel instead of
+    needing a bake. A diamond on a slack line with four bows: the same reading
+    the atelier's default sail gives from the sand.
+  -->
+  <defs>
+    <linearGradient id="kite-sail" x1="0" y1="0" x2="0.65" y2="1">
+      <stop offset="0" stop-color="#c69bff"/>
+      <stop offset="0.55" stop-color="#8d55e6"/>
+      <stop offset="1" stop-color="#4b1f91"/>
+    </linearGradient>
+    <linearGradient id="kite-sail-lit" x1="0" y1="0" x2="1" y2="0.8">
+      <stop offset="0" stop-color="#ffd9a8" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#ffd9a8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- line, hanging the way a line with slack in it actually hangs -->
+  <path d="M20.5 25.8 Q17.6 33.4 12.4 38.2" fill="none" stroke="#f0e6ff" stroke-opacity="0.62"
+        stroke-width="1.1" stroke-linecap="round"/>
+
+  <!-- sail -->
+  <path d="M20.5 4.6 L32.4 15.4 L20.5 25.8 L8.6 15.4 Z" fill="url(#kite-sail)"/>
+  <path d="M20.5 4.6 L32.4 15.4 L20.5 25.8 Z" fill="url(#kite-sail-lit)"/>
+
+  <!-- spine and cross spar, drawn dark across the cloth -->
+  <path d="M20.5 4.6 L20.5 25.8 M8.6 15.4 L32.4 15.4" fill="none" stroke="#3a2416"
+        stroke-opacity="0.72" stroke-width="1.05" stroke-linecap="round"/>
+  <!-- hem -->
+  <path d="M20.5 4.6 L32.4 15.4 L20.5 25.8 L8.6 15.4 Z" fill="none" stroke="#e6ccff"
+        stroke-opacity="0.55" stroke-width="0.9" stroke-linejoin="round"/>
+
+  <!-- tail: the ribbon carries on where the sail stops, with its four bows -->
+  <path d="M20.5 25.8 Q23.6 30.2 21.2 33.6 Q18.8 37 21.9 40.4" fill="none" stroke="#c48bf5"
+        stroke-opacity="0.85" stroke-width="1.15" stroke-linecap="round"/>
+  <g stroke-linecap="round" stroke-width="1.5">
+    <path d="M20.4 28.4 h2.9" stroke="#f0d27a"/>
+    <path d="M20.1 32.2 h2.9" stroke="#ffb27a"/>
+    <path d="M19 36.1 h2.9" stroke="#d08cf5"/>
+    <path d="M20.4 39.6 h2.9" stroke="#ffc8f0"/>
+  </g>
+</svg>

@@ -31,7 +31,7 @@ export async function installDebugSurfaces(
   }
 ): Promise<void> {
   const { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, scheduler, chase, map, input, sky, worldArrival, voidRealm, audioEngine } = ctx;
-  const { hud, fx, fireworks, graffiti, bubbles, setTool, setColor, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, nature, dogParkAudio, ballImpactAudio, boardWake, abandonedMounts, embodiments, paintballs, paintSkins, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, ensureSurfRuntime, setFoliageVisible, buskers, buskerTalk, siteGate } = core;
+  const { hud, fx, fireworks, graffiti, bubbles, sandPrints, setTool, setColor, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, nature, dogParkAudio, ballImpactAudio, boardWake, abandonedMounts, embodiments, paintballs, paintSkins, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, water, ensureSurfRuntime, setFoliageVisible, buskers, buskerTalk, siteGate } = core;
   const { debugPanel, net, remotes, voice, minimap, playerLocator, ghostShipBeacon, switchMode, buildShareUrl, tutorial, teleportToTarget, debugOverlays, calibrationChart, ensureCarCustomizer, lazyRegionTimings, sites, teaGarden, oceanKite, board, car, applyBoardConfig } = netW;
   // `__sf.tick` is the deterministic-capture entry (perf/calibration probes,
   // cinematic reels), so it must go through the frame driver's manual tick: a
@@ -83,7 +83,7 @@ export async function installDebugSurfaces(
       dynRes: extra.dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING,
       RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks,
       graffiti, bubbles, setTool, setColor, sky, farOcclusion: extra.farOcclusion, debugPanel, CONFIG,
-      THREE, tick, splashes, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
+      THREE, tick, splashes, sandPrints, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
       audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
       doorAudio, nature, lofiMusic: core.lofiMusic, dogParkAudio, ballImpactAudio, net, remotes, voice,
       minimap, playerLocator, boardWake, abandonedMounts, ghostShipBeacon,
@@ -128,6 +128,9 @@ export async function installDebugSurfaces(
       m9Leak: () => sharedMaterialLeakSnapshot(),
       getPaintAudio: () => core.state.paintAudio,
       getBubbleAudio: () => core.state.bubbleAudio,
+      // Lazily built on approach, so this has to stay a live read: the boot
+      // snapshot would freeze it at null for the whole session.
+      getShorebreak: () => core.currentShorebreak(),
       boardSelector: board,
       getBoardSelector: () => board.get(),
       getCarSelector: () => car.get(),
@@ -138,6 +141,9 @@ export async function installDebugSurfaces(
       teaGardenBuildingSwapState: teaGarden.buildingSwapState,
       ensureOceanBeachKite: oceanKite.ensure,
       oceanKiteSite: oceanKite.site,
+      getKiteConfig: () => ({ ...ctx.state.kiteConfig }),
+      setKiteConfig: oceanKite.setKiteConfig,
+      kiteAtelierInRange: oceanKite.inAtelierRange,
       // renderIdle: probes MUST wait for this before capture phases — while the
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
@@ -241,7 +247,7 @@ export async function installDebugSurfaces(
       // which only fires once the player is near. Put the body on the beach and
       // resolve the encounter here, so frame zero already has seven kites up
       // rather than an empty sky that fills in over the first second.
-      if (name.startsWith("ocean-beach-kite-")) {
+      if (name.startsWith("ocean-beach-kite-") || name.startsWith("kite-to-sutro-")) {
         const beach = oceanKite.site;
         player.teleportTo({
           x: beach.x + 18,
@@ -251,6 +257,13 @@ export async function installDebugSurfaces(
           mode: "walk"
         });
         await oceanKite.ensure();
+        // The flights end inside the bath hall, and its living layer (bathers,
+        // steam, planting) is an OptionalSite gated at 500 m — the kite beach is
+        // 534 m out, so it would otherwise start loading only once the camera was
+        // already most of the way there and pop in under the lens. Force it
+        // resident before the shot arms; `ensure` also pins it against the
+        // distance unload while the flight is still down on the sand.
+        if (name.startsWith("kite-to-sutro-")) await sites.ensure("sutro-baths");
         return;
       }
       const site: OptionalSiteId | null =

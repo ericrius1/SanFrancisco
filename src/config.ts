@@ -16,6 +16,38 @@ export const EXPOSURE_REBASE = 0.13
 // the old artistic sun), carried through the exposure re-anchor above.
 export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE
 
+/* ------------------------------------------------------- night lit windows */
+// FOUR façade tiers draw lit windows and every one of them is visible at once
+// from any hill, so their look is authored HERE rather than in any single tier:
+//   • citygen/render/moduleLayer.ts  — instanced glass on the detail ring
+//   • citygen/theme/parallaxWindow.ts — the per-material glass fallback
+//   • citygen/render/lod.ts          — the merged far chunk prisms
+//   • world/facadeBaked.ts           — the baked OSM city beyond citygen
+// They previously disagreed by ~48× (the chunk prisms were authored against
+// EXPOSURE_REBASE while everyone else used LIGHT_SCALE), which read as a ring of
+// light travelling with the player over an unlit skyline.
+
+/** Scale on each tier's AUTHORED lit fraction — fewer panes on, spread wider,
+ *  so a fully lit city reads as scattered rooms rather than a solid wall. */
+export const WINDOW_LIT_DENSITY = 0.5
+
+/** Peak emissive of the brightest window (linear). Sized so the hottest pane
+ *  sits just under the display transform's clip instead of blooming to white. */
+export const WINDOW_LIT_EMISSIVE = 1.0 * LIGHT_SCALE
+
+/** Dimmest lit window as a fraction of peak. */
+export const WINDOW_LIT_DIM = 0.28
+
+/** Per-window brightness from a 0..1 hash: squaring biases the population toward
+ *  dim rooms so only a few panes reach peak. TSL tiers inline the same curve —
+ *  `mix(WINDOW_LIT_DIM, 1, h.mul(h))` — keep the two in step. */
+export const windowLitBrightness = (h: number): number =>
+  WINDOW_LIT_DIM + (1 - WINDOW_LIT_DIM) * h * h
+
+/** Mean of `windowLitBrightness` over a uniform hash (∫h² = 1/3) — the far tier
+ *  needs it to average a sub-pixel window grid analytically. */
+export const WINDOW_LIT_BRIGHTNESS_MEAN = WINDOW_LIT_DIM + (1 - WINDOW_LIT_DIM) / 3
+
 /**
  * Universal render settings live with the systems they configure: drawing-buffer
  * pixel ratio in RENDER_TUNING (default 1, slider 0.5–2; devicePixelRatio is

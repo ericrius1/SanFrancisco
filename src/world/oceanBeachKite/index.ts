@@ -2,12 +2,39 @@ import * as THREE from "three/webgpu";
 import type { WorldMap } from "../heightmap";
 import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import { KITE_DESIGNS, KITE_DESIGN_ORDER, type KiteDesignId } from "./kiteDesigns";
-import { KiteFlyer, type KiteFlyerFrame } from "./flyer";
+import { kiteBuildKey, kiteColorway, type KiteConfig } from "./kiteConfig";
+import { KiteFlyer, type KiteAnchor, type KiteFlyerFrame } from "./flyer";
+import type { SandPrintSink } from "../../fx/sandPrints";
 import type { KiteFigureName } from "./choreography";
 import { createSunsetAir, type SunsetAir } from "./sunsetAir";
+import { createPrismLight, type PrismLight } from "./prismLight";
 import { bindOceanKiteTuning, OCEAN_KITE_TUNING } from "./tuning";
 
 export type OceanBeachKiteSite = { x: number; z: number };
+
+/**
+ * The local player, as far as their own kite is concerned: the hand the line
+ * leaves from and how fast it is travelling. Absent on a frame means "nobody is
+ * holding a line" — headless probes drive the encounter without one.
+ */
+export type OceanBeachKitePilot = {
+  hand: THREE.Vector3;
+  velocity: THREE.Vector3;
+};
+
+export type OceanBeachKiteOptions = {
+  /**
+   * Compile a freshly built object before it joins the scene. The gate owns the
+   * renderer, so it passes this in; without it a design swap in the atelier
+   * would land its pipeline compile on the frame the player pressed the button.
+   */
+  warmup?: (object: THREE.Object3D) => Promise<void>;
+  /**
+   * The world's footprint runtime. Runners on the sand report their footfalls
+   * to it; the runtime decides whether any of them are worth drawing.
+   */
+  sandPrints?: SandPrintSink;
+};
 
 export type OceanBeachKiteFlyerState = {
   design: KiteDesignId;
@@ -53,8 +80,17 @@ export type OceanBeachKiteEncounter = {
     elapsed: number,
     player: { x: number; z: number },
     gust: number,
-    view?: THREE.Vector3
+    view?: THREE.Vector3,
+    pilot?: OceanBeachKitePilot
   ): void;
+  /**
+   * Fly the player's own kite off their hand, or pack it away with `null` /
+   * `flying: false`. A new sail rebuilds (warmed up first); a new dye, line
+   * length or tail is absorbed by the kite that is already up.
+   */
+  setPlayerKite(config: KiteConfig | null): void;
+  /** The player's kite, for probes and the atelier's own sanity checks. */
+  playerKiteFlying(): boolean;
   setAwake(awake: boolean): void;
   syncTuning(): void;
   tuningDescriptor(): DebugFeatureTuningRegistration;
@@ -137,7 +173,13 @@ const LANES: readonly KiteLane[] = [
   { design: "sled", seed: "ocean-beach-sled-partner", offset: 1.85, spanScale: 0.55, startFigure: 8, startPhase: 1.2, troupe: "deltas", mirror: true },
 
   // Far south: the centipede, alone, on the longest line of anyone.
-  { design: "centipede", seed: "ocean-beach-centipede-flyer", offset: 2.85, spanScale: 0.8, startFigure: 5, startPhase: 3.3 }
+  { design: "centipede", seed: "ocean-beach-centipede-flyer", offset: 2.85, spanScale: 0.8, startFigure: 5, startPhase: 3.3 },
+
+  // The far end of the line, and deliberately out on its own: the prism throws
+  // a forty-metre spectrum that lands on the sand beside it, and standing it in
+  // among the troupes would put that fan straight through somebody else's kite.
+  // Appended rather than inserted — the cinematics address flyers by index.
+  { design: "prism", seed: "ocean-beach-prism-flyer", offset: 3.85, spanScale: 0.72, startFigure: 4, startPhase: 1.8 }
 ];
 
 type RouteSample = { x: number; z: number };
@@ -153,11 +195,26 @@ class KiteEncounter implements OceanBeachKiteEncounter {
 
   #map: WorldMap;
   #site: OceanBeachKiteSite;
+  #warmup: ((object: THREE.Object3D) => Promise<void>) | null;
   #route: RouteSample[];
   #flyers: KiteFlyer[] = [];
+  /** The player's own kite: one more flyer, with the player where the rig goes. */
+  #playerKite: KiteFlyer | null = null;
+  #playerConfig: KiteConfig | null = null;
+  #playerBuildKey = "";
+  #playerGeneration = 0;
+  #pilotSeen = false;
+  #pilotAnchor: KiteAnchor = {
+    position: new THREE.Vector3(),
+    velocity: new THREE.Vector3()
+  };
   /** Followers that take a leader's figure clock every frame. */
   #troupe: { follower: KiteFlyer; leader: KiteFlyer }[] = [];
   #air: SunsetAir;
+  /** One per spectral sail on the beach; empty unless a prism is flying. */
+  #prisms: PrismLight[] = [];
+  /** The player's own, if they picked the prism. Rebuilt with the sail. */
+  #playerPrism: PrismLight | null = null;
   #debug = new THREE.Group();
   #runnerMarker: THREE.Mesh;
   #targetMarker: THREE.Mesh;
@@ -179,7 +236,7 @@ class KiteEncounter implements OceanBeachKiteEncounter {
   #crosswind = new THREE.Vector3(1, 0, 0);
   #windBearing = Number.NaN;
   #frame: KiteFlyerFrame;
-  #rayAnchors: { position: THREE.Vector3; spread: number }[] = [];
+  #rayAnchors: { position: THREE.Vector3; spread: number; spectral?: boolean }[] = [];
   #godRayCenter = new THREE.Vector3();
 
   #monitor = {
@@ -195,9 +252,10 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     cloth: "WebGPU vertex cloth"
   };
 
-  constructor(map: WorldMap, site: OceanBeachKiteSite) {
+  constructor(map: WorldMap, site: OceanBeachKiteSite, options?: OceanBeachKiteOptions) {
     this.#map = map;
     this.#site = { ...site };
+    this.#warmup = options?.warmup ?? null;
     this.#applyWindBearing();
     this.group.name = "ocean_beach_kite_encounter";
 
@@ -221,7 +279,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
         startAirborne: lane.startFigure !== 0,
         spanScale: lane.spanScale,
         mirror: lane.mirror,
-        ledByTroupe: Boolean(leader)
+        ledByTroupe: Boolean(leader),
+        prints: options?.sandPrints
       });
       if (lane.troupe && !leader) leaders.set(lane.troupe, flyer);
       else if (leader) this.#troupe.push({ follower: flyer, leader });
@@ -229,8 +288,25 @@ class KiteEncounter implements OceanBeachKiteEncounter {
       this.group.add(flyer.group);
       this.#rayAnchors.push({
         position: flyer.kitePosition,
-        spread: flyer.design.raySpread
+        spread: flyer.design.raySpread,
+        spectral: flyer.design.spectral
       });
+      // A spectral sail casts nothing, so the warm fan has no work to do on it.
+      // It gets a dispersed spectrum of its own instead — one rig per prism,
+      // reading the same live position and orientation the kite already owns.
+      if (flyer.design.spectral) {
+        const prism = createPrismLight({
+          anchor: {
+            position: flyer.kitePosition,
+            quaternion: flyer.kiteOrientation,
+            spread: flyer.design.raySpread
+          },
+          ground: (x, z) => map.groundTop(x, z),
+          water: (x, z) => map.isWater(x, z)
+        });
+        this.#prisms.push(prism);
+        this.group.add(prism.group);
+      }
     }
 
     this.#air = createSunsetAir({
@@ -379,6 +455,110 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     this.#kiteMarker.position.copy(primary.tetherEnd);
   }
 
+  /** Line length and tail are dials on a live kite; the sail is not. */
+  #dressPlayerKite(config: KiteConfig): void {
+    const kite = this.#playerKite;
+    if (!kite) return;
+    const colorway = kiteColorway(config.colorway);
+    kite.setPalette(colorway.palette ?? KITE_DESIGNS[config.design].palette);
+    kite.setLineDial(config.line / 100);
+    // 0 leaves a stub rather than nothing: a kite with no tail at all wanders,
+    // and the ribbon is half of what makes the flight legible from the sand.
+    kite.setTailScale(0.22 + (config.tail / 100) * 1.32);
+  }
+
+  #retirePlayerKite(): void {
+    this.#playerGeneration++;
+    this.#playerKite?.dispose();
+    this.#playerKite = null;
+    this.#playerPrism?.dispose();
+    this.#playerPrism = null;
+    this.#playerBuildKey = "";
+  }
+
+  async #buildPlayerKite(config: KiteConfig): Promise<void> {
+    const generation = ++this.#playerGeneration;
+    const buildKey = kiteBuildKey(config);
+    const design = KITE_DESIGNS[config.design];
+    const colorway = kiteColorway(config.colorway);
+    const kite = new KiteFlyer({
+      map: this.#map,
+      design,
+      // Unused by an anchored flyer (no rig is built), but the option is not
+      // optional and a stable string keeps the group names deterministic.
+      seed: "ocean-beach-player-kite",
+      lane: { x: this.#site.x, z: this.#site.z },
+      beachX: (z) => this.#routeX(z),
+      startFigure: 0,
+      startPhase: 0,
+      startAirborne: true,
+      palette: colorway.palette ?? design.palette,
+      anchor: this.#pilotAnchor,
+      lineDial: config.line / 100,
+      tailScale: 0.22 + (config.tail / 100) * 1.32
+    });
+    kite.place(this.#siteWind, this.#viewPoint);
+    try {
+      // Detached warmup: the sail must not compile on the frame the player
+      // pressed a swatch. Same contract the gate uses for the whole encounter.
+      if (this.#warmup) await this.#warmup(kite.group);
+    } catch (error) {
+      console.warn("[ocean kite] player kite warmup failed", error);
+    }
+    // The player can re-pick, pack away or walk off the beach mid-compile.
+    if (generation !== this.#playerGeneration || this.#disposed) {
+      kite.dispose();
+      return;
+    }
+    this.#playerKite?.dispose();
+    this.#playerKite = kite;
+    this.#playerBuildKey = buildKey;
+    this.group.add(kite.group);
+    // Your prism disperses too. It is the one sail whose whole point is light it
+    // makes rather than light it blocks, so handing the player a black triangle
+    // and no spectrum would be handing them the half of it that does nothing.
+    this.#playerPrism?.dispose();
+    this.#playerPrism = null;
+    if (design.spectral) {
+      this.#playerPrism = createPrismLight({
+        anchor: {
+          position: kite.kitePosition,
+          quaternion: kite.kiteOrientation,
+          spread: design.raySpread
+        },
+        ground: (x, z) => this.#map.groundTop(x, z),
+        water: (x, z) => this.#map.isWater(x, z)
+      });
+      this.group.add(this.#playerPrism.group);
+    }
+    // Deliberately NOT added to #rayAnchors: the sunset shaft fan and the god-ray
+    // shadow map are both sized around the FLOCK's mean kite, and the player can
+    // stand a hundred metres up the beach from it. Their sail is still a shadow
+    // caster, so it carves the rays whenever it is inside that map — it just
+    // never drags the map away from the seven kites the pass was built for.
+  }
+
+  setPlayerKite(config: KiteConfig | null): void {
+    if (this.#disposed) return;
+    this.#playerConfig = config;
+    if (!config || !config.flying) {
+      this.#retirePlayerKite();
+      return;
+    }
+    // Nothing to anchor to until the gate has told us where the player is; the
+    // next update() with a pilot picks this up.
+    if (!this.#pilotSeen) return;
+    if (this.#playerKite && this.#playerBuildKey === kiteBuildKey(config)) {
+      this.#dressPlayerKite(config);
+      return;
+    }
+    void this.#buildPlayerKite(config);
+  }
+
+  playerKiteFlying(): boolean {
+    return Boolean(this.#playerKite);
+  }
+
   setAwake(awake: boolean): void {
     if (this.#disposed || this.#awake === awake) return;
     this.#awake = awake;
@@ -391,9 +571,20 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     elapsed: number,
     player: { x: number; z: number },
     gust: number,
-    view?: THREE.Vector3
+    view?: THREE.Vector3,
+    pilot?: OceanBeachKitePilot
   ): void {
     if (this.#disposed) return;
+    if (pilot) {
+      this.#pilotAnchor.position.copy(pilot.hand);
+      this.#pilotAnchor.velocity.copy(pilot.velocity);
+      // First hand of the session: a config that arrived before we knew where
+      // the player was has been waiting for exactly this.
+      if (!this.#pilotSeen) {
+        this.#pilotSeen = true;
+        if (this.#playerConfig?.flying) this.setPlayerKite(this.#playerConfig);
+      }
+    }
     const distance = Math.hypot(player.x - this.#site.x, player.z - this.#site.z);
     this.#playerDistance = distance;
     if (this.#awake ? distance > SLEEP_DISTANCE : distance < WAKE_DISTANCE) {
@@ -426,6 +617,9 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     // always mid-way through the same shape on the same frame.
     for (const { follower, leader } of this.#troupe) follower.adoptFigure(leader);
     for (const flyer of this.#flyers) flyer.update(frame);
+    // The player's kite runs the same frame as everyone else's: same wind, same
+    // gust, same sunset. It only differs in who is holding the line.
+    this.#playerKite?.update(frame);
 
     this.#air.update({
       dt,
@@ -434,6 +628,17 @@ class KiteEncounter implements OceanBeachKiteEncounter {
       shafts: tuning.shaftStrength,
       enabled: tuning.sunsetAir
     });
+    // After the flyers have moved and after the air, on the same frame's
+    // positions: the prism's landing solve marches from a kite that has already
+    // been placed, so its smear can never trail the sail by a frame.
+    const prismFrame = {
+      dt,
+      camera: this.#viewPoint,
+      strength: tuning.shaftStrength * tuning.prismStrength,
+      enabled: tuning.sunsetAir && tuning.prismLight
+    };
+    for (const prism of this.#prisms) prism.update(prismFrame);
+    this.#playerPrism?.update(prismFrame);
     this.syncTuning();
 
     // Tweakpane refreshes monitors at 4 Hz; match that cadence so the hot path
@@ -461,6 +666,7 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     const golden = this.#air.state.golden;
     const backlight = this.#air.state.backlight;
     for (const flyer of this.#flyers) flyer.syncAppearance(this.#lastElapsed, golden, backlight);
+    this.#playerKite?.syncAppearance(this.#lastElapsed, golden, backlight);
     this.#updateDebug();
     this.group.visible = this.#awake && tuning.enabled;
   }
@@ -500,10 +706,17 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     this.#godRaysHeld =
       this.#air.state.golden > 0.2 && this.#playerDistance <= radius && this.group.visible;
     // One shadow map has to cover every kite on the beach, so centre it on the
-    // flock rather than on whichever one happens to be nearest.
+    // flock rather than on whichever one happens to be nearest — and on the
+    // CASTING flock, since a spectral sail contributes nothing to the map and
+    // would only drag it away from the six kites that do.
     this.#godRayCenter.set(0, 0, 0);
-    for (const flyer of this.#flyers) this.#godRayCenter.add(flyer.kitePosition);
-    this.#godRayCenter.multiplyScalar(1 / Math.max(1, this.#flyers.length));
+    let casters = 0;
+    for (const flyer of this.#flyers) {
+      if (flyer.design.spectral) continue;
+      this.#godRayCenter.add(flyer.kitePosition);
+      casters++;
+    }
+    this.#godRayCenter.multiplyScalar(1 / Math.max(1, casters));
     return { active: this.#godRaysHeld, center: this.#godRayCenter };
   }
 
@@ -547,9 +760,14 @@ class KiteEncounter implements OceanBeachKiteEncounter {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#playerGeneration++;
+    this.#playerKite?.dispose();
+    this.#playerKite = null;
     for (const flyer of this.#flyers) flyer.dispose();
     this.#flyers.length = 0;
     this.#troupe.length = 0;
+    for (const prism of this.#prisms) prism.dispose();
+    this.#prisms.length = 0;
     this.#air.dispose();
     for (const geometry of new Set(this.#ownedGeometries)) geometry.dispose();
     for (const material of new Set(this.#ownedMaterials)) material.dispose();
@@ -560,9 +778,10 @@ class KiteEncounter implements OceanBeachKiteEncounter {
 
 export function createOceanBeachKiteEncounter(
   map: WorldMap,
-  site: OceanBeachKiteSite
+  site: OceanBeachKiteSite,
+  options?: OceanBeachKiteOptions
 ): OceanBeachKiteEncounter {
-  return new KiteEncounter(map, site);
+  return new KiteEncounter(map, site, options);
 }
 
 export { KITE_DESIGNS, KITE_DESIGN_ORDER };

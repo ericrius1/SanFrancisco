@@ -33,7 +33,9 @@ import {
   cameraPosition, positionWorld, positionGeometry, attribute,
   textureLoad, vertexStage, transformNormalToView,
 } from "three/tsl";
-import { EXPOSURE_REBASE, LIGHT_SCALE } from "../../../config";
+import {
+  EXPOSURE_REBASE, WINDOW_LIT_DENSITY, WINDOW_LIT_EMISSIVE, windowLitBrightness,
+} from "../../../config";
 import { WINDOW_GLOW_W } from "../../facade";
 import { moduleBuckets, BUCKET_GLASS, BUCKET_TRIM } from "../theme/moduleDefs";
 import { MODULE_KIND_COUNT, type ModuleInstance } from "../core/types";
@@ -167,10 +169,11 @@ function makeGlassMaterial(fadeTex: THREE.DataTexture): THREE.MeshStandardNodeMa
   const inv = facing.oneMinus().clamp(0.0, 1.0);
   const fresnel = inv.mul(inv).mul(inv);
   m.colorNode = mix(nodes.tint, skyCol, fresnel.mul(0.5));
-  // night emissive: per-instance lamp colour (zero when unlit), gated by the
-  // twilight weight + a grazing cutoff (sub-pixel emissive shimmer guard)
+  // night emissive: per-instance lamp colour (zero when unlit, already carrying
+  // this pane's brightness draw), gated by the twilight weight + a grazing cutoff
+  // (sub-pixel emissive shimmer guard)
   const glowGraze = smoothstep(0.01, 0.06, facing);
-  m.emissiveNode = nodes.glow.mul(float(2.0 * LIGHT_SCALE)).mul(glowGraze).mul(WINDOW_GLOW_W as N);
+  m.emissiveNode = nodes.glow.mul(float(WINDOW_LIT_EMISSIVE)).mul(glowGraze).mul(WINDOW_GLOW_W as N);
   m.metalnessNode = float(0.0);
   // fade × the hide-glass flag (interior look-out dithers the pane fully away)
   m.opacityNode = nodes.fade
@@ -384,11 +387,17 @@ export function createModuleLayer(scene: THREE.Object3D): ModuleLayer {
         writeInstance(tb, ti, inst, opts.matrix, slot, _color.set(trimHex), zero);
         placed.push([tb, ti]);
         // per-pane lit/lamp identity precomputed here (replaces the old
-        // shader-side world-corner hash — same litChance/lamp mix per zone)
+        // shader-side world-corner hash — same litChance/lamp mix per zone).
+        // The lamp colour also carries this room's brightness draw, so the
+        // shader multiplies by one shared peak and nothing else.
         const gb = bucketFor(inst.module, true);
         const gi = takeIndex(gb);
-        const lit = jitter() < zone.litChance;
-        if (lit) lamp.copy(warm).lerp(cool, jitter()); else { jitter(); lamp.copy(zero); }
+        const lit = jitter() < zone.litChance * WINDOW_LIT_DENSITY;
+        // Draw the same number of jitters either way so a pane's identity never
+        // depends on its neighbours' lit/dark outcome.
+        const tone = jitter(), bright = jitter();
+        if (lit) lamp.copy(warm).lerp(cool, tone).multiplyScalar(windowLitBrightness(bright));
+        else lamp.copy(zero);
         writeInstance(gb, gi, inst, opts.matrix, slot, glassTint, lamp);
         placed.push([gb, gi]);
       }

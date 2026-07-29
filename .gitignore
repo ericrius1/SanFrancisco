@@ -2,6 +2,9 @@
 # to the main checkout, and git reads a symlink as a file, so the trailing-slash
 # form left it staged-able in every worktree.
 node_modules
+# Per-checkout Vite dep-optimizer cache (see vite.config.ts `cacheDir`). It
+# cannot live in node_modules, because that symlink makes it shared.
+.vite-cache
 /dist/
 # Generated terrain tile bake (tools/bake-terrain-tiles.mjs). Rebuilt
 # automatically by the build's contract test when missing — never commit.

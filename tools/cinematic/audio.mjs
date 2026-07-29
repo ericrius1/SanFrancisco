@@ -23,7 +23,7 @@ const PRODUCTION_DURATIONS = Object.freeze({
     `twitter-summer-${String(index + 1).padStart(2, "0")}`,
     7.5
   ])),
-  ...Object.fromEntries(Array.from({ length: 15 }, (_, index) => [
+  ...Object.fromEntries(Array.from({ length: 18 }, (_, index) => [
     `ocean-beach-kite-${String(index + 1).padStart(2, "0")}`,
     10
   ])),
@@ -38,6 +38,10 @@ const PRODUCTION_DURATIONS = Object.freeze({
   ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => [
     `sutro-vista-${String(index + 1).padStart(2, "0")}`,
     10
+  ])),
+  ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => [
+    `kite-to-sutro-${String(index + 1).padStart(2, "0")}`,
+    15
   ]))
 });
 
@@ -109,7 +113,7 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 3.65, id: "stream", description: "wings tuck into the Palace flyby exit" },
     { time: 4.55, id: "resolve", description: "golden tail stream resolves over the rotunda" }
   ]),
-  ...Object.fromEntries(Array.from({ length: 15 }, (_, index) => {
+  ...Object.fromEntries(Array.from({ length: 18 }, (_, index) => {
     const shot = index + 1;
     return [`ocean-beach-kite-${String(shot).padStart(2, "0")}`, Object.freeze([
       { time: 0, id: "wind", description: `look ${shot} opens on the onshore wind` },
@@ -132,6 +136,16 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
       { time: 0, id: "arrive", description: `summer movement ${shot} arrives` },
       { time: 3.25, id: "lift", description: `summer movement ${shot} camera/action lift` },
       { time: 6.55, id: "handoff", description: `summer movement ${shot} transition handoff` }
+    ])];
+  })),
+  ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => {
+    const shot = index + 1;
+    return [`kite-to-sutro-${String(shot).padStart(2, "0")}`, Object.freeze([
+      { time: 0, id: "beach", description: `flight ${shot} opens on the flyers and their kites` },
+      { time: 2.5, id: "launch", description: `the camera leaves the sand and runs north` },
+      { time: 8.2, id: "headland", description: `the Point Lobos crossing` },
+      { time: 11, id: "threshold", description: `the bath hall's glass takes the lens` },
+      { time: 12.3, id: "hall", description: `inside, gliding the length of the pools` }
     ])];
   }))
 });
@@ -217,6 +231,8 @@ export async function renderCinematicAudio(production, outputPath) {
     scoreSurfAerial(mix);
   } else if (id === "phoenix-palace-flyby") {
     scorePhoenixPalaceFlyby(mix);
+  } else if (id.startsWith("kite-to-sutro-")) {
+    scoreKiteToSutro(mix, Number(id.slice(-2)));
   } else if (id.startsWith("ocean-beach-kite-ring-")) {
     // Must precede the general kite branch: `ocean-beach-kite-ring-03` also
     // starts with "ocean-beach-kite-", and its last two characters would read
@@ -534,7 +550,9 @@ const KITE_EVENING = Object.freeze({
   // out there — pad already dropped a fifth, chimes already gone — so the three
   // past the end of golden hour all sit at 1 rather than being given a range
   // the instruments cannot spend. Their difference is on screen, not in the mix.
-  11: 0.78, 12: 0.92, 13: 1.0, 14: 1.0, 15: 1.0
+  11: 0.78, 12: 0.92, 13: 1.0, 14: 1.0, 15: 1.0,
+  // 16-18 are the flyer-scale looks: sunset, civil twilight, night.
+  16: 0.6, 17: 1.0, 18: 1.0
 });
 
 function scoreOceanBeachKite(mix, shot) {
@@ -608,6 +626,77 @@ function scoreOceanBeachKite(mix, shot) {
     pan: -0.3
   });
   addChime(mix, { start: 8.9, midi: 59, duration: 1.6, gain: 0.024 + evening * 0.012, pan: 0.08 });
+}
+
+/**
+ * The two travelling shots. Not the ten-second beach arrangement stretched:
+ * that one is a place, and these are a journey out of one place into another.
+ *
+ * The arc is three rooms. Open on the beach with the festival's own wind, sail
+ * chatter and surf; lose the ripstop and gain speed as the camera leaves the
+ * sand (one long rising whoosh for the run north, a second for the headland);
+ * and then, at 11 s, the outdoor air is cut away under a low sustained chord and
+ * a pair of long bells. That cut is the picture's threshold — the frame passes
+ * through the hall's glass at almost exactly that second — and the mix has to
+ * make the same move the picture does, because a beach wind bed still running
+ * under an enclosed room is the one thing that would make the interior read as
+ * outdoors.
+ */
+function scoreKiteToSutro(mix, shot) {
+  // Flight 2 is shot half an hour later with the disc on the water; it gets the
+  // lower voicing and a touch more weight under it.
+  const late = shot === 2 ? 1 : 0;
+
+  // ---- the beach, and the flight out of it -------------------------------
+  addPad(mix, {
+    start: 0,
+    duration: 11.4,
+    notes: late ? [38, 45, 50, 57, 62] : [41, 48, 53, 60, 65],
+    gain: 0.04,
+    pan: 0,
+    brightness: 0.6 - late * 0.12
+  });
+  // Wind runs from frame zero to the threshold and stops there. The release is
+  // long enough (1.4 s inside the pad's own tail) to read as the room changing
+  // rather than as an edit.
+  addAir(mix, { start: 0, duration: 11.3, gain: 0.031 - late * 0.004, panDrift: 0.85 });
+  // Ripstop, only while there are kites in shot to make it.
+  addFoley(mix, { start: 0.15, duration: 3.4, gain: 0.017, pan: -0.2, character: "grass" });
+  addFoley(mix, { start: 1.1, duration: 2.2, gain: 0.013, pan: 0.28, character: "grass" });
+  // Two sets breaking under the beach run.
+  addWhoosh(mix, { start: 0.5, duration: 3.2, gain: 0.05, panFrom: -0.6, panTo: -0.05, direction: "in" });
+  addWhoosh(mix, { start: 3.4, duration: 3.4, gain: 0.055, panFrom: 0.55, panTo: 0.1, direction: "in" });
+  // The travel itself: one long accelerating rush across the middle of the clip,
+  // panned right to left the way the coast passes the lens.
+  addWhoosh(mix, { start: 2.4, duration: 5.6, gain: 0.062, panFrom: 0.35, panTo: -0.4, direction: "in" });
+  // The headland crossing — bigger, and low enough to be felt.
+  addWhoosh(mix, { start: 7.8, duration: 3.4, gain: 0.07, panFrom: -0.3, panTo: 0.3, direction: "in" });
+  addSub(mix, { start: 8.1, duration: 1.9, fromHz: 54, toHz: 34, gain: 0.055 + late * 0.014 });
+  addChime(mix, { start: 2.2, midi: 76 - late * 4, duration: 2.2, gain: 0.026, pan: 0.24 });
+
+  // ---- the threshold, and the hall ---------------------------------------
+  // The pass through the glass. A single bright transient with nothing after it
+  // on that side of the stereo field, so the next thing heard is the room.
+  addWhoosh(mix, { start: 10.5, duration: 1.5, gain: 0.052, panFrom: 0.1, panTo: -0.15, direction: "out" });
+  // Iron, glass and seven pools of water: a low sustained chord with a fifth
+  // above it, held to the last frame and never resolved.
+  addPad(mix, {
+    start: 11,
+    duration: 4,
+    notes: late ? [33, 40, 45, 52, 57, 64] : [36, 43, 48, 55, 60, 67],
+    gain: 0.058,
+    pan: 0,
+    brightness: 0.34
+  });
+  addSub(mix, { start: 11.1, duration: 2.6, fromHz: 44, toHz: 33, gain: 0.05 });
+  // Two long bells down the length of the room, wide apart so the hall's size is
+  // in the stereo picture rather than only in the reverb-like pad.
+  addChime(mix, { start: 11.35, midi: 62 - late * 2, duration: 3.4, gain: 0.034, pan: -0.34 });
+  addChime(mix, { start: 12.7, midi: 69 - late * 2, duration: 2.3, gain: 0.028, pan: 0.36 });
+  // The pools. Any character other than "grass"/"board" takes addFoley's slow,
+  // dark default — 5.8 events a second through a soft filter, which is water
+  // moving in a stone basin rather than fabric or a deck.
+  addFoley(mix, { start: 11.2, duration: 3.7, gain: 0.012, pan: 0.06, character: "water" });
 }
 
 /**

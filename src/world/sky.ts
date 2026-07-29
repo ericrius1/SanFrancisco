@@ -196,6 +196,22 @@ const FOG_WALL_EXTINCTION_LENGTH = 40
 // the same octaves read as rolling pockets over streets and water.
 const FOG_DENSITY_MIN = 0.6
 const FOG_DENSITY_MAX = 1.4
+// Floating-world guard. The marine bank may wash geometry TOWARD the fog
+// colour but never fully erase it: an uncapped bank whose colour sits on the
+// horizon gradient turns every fogged hillside and building base into "sky",
+// so ridge tops, lit roof rows and lone towers read as crescents and boxes
+// floating above nothing (the Sutro Baths window/flyover artifact). Capping
+// the bank keeps ~10% of the surface's own colour at full wash — a silhouette,
+// not a hole. The cull-edge veil is unioned separately and still completes to
+// a full fade, so the streamed edge keeps hiding pop-in.
+const FOG_BANK_MAX = 0.9
+// Colour grade for fragments deep inside the marine layer: the bank's body
+// takes a slightly deeper tone than the shared horizon fog colour, so a fogged
+// coastline reads as a fog DECK sitting under the sky instead of as sky
+// itself — the other half of the floating-world read. The grade fades back to
+// the shared colour across the cull-edge veil (the dome handoff must keep its
+// exact colour match) and collapses to identity when weather fog is off.
+const FOG_DECK_TONE = 0.86
 const FOG_SKY_BLEND_HEIGHT = 0.08 // match the visible horizon over its lowest ~5°
 const FOG_GOLD_LIGHT = 0.48 // neutral dusk fog: dimmer, never orange/grey
 const FOG_NIGHT_LIGHT = 0.12 // moonlit bank without a daylight-white night seam
@@ -283,6 +299,18 @@ const SKY_DOME_RADIUS = 23000
 const SKY_DOME_RENDER_ORDER = -1000
 
 /**
+ * Where the mid-altitude gradient stop sits, in the SAME parameter the gradient
+ * already used: t = pow(saturate(d.y), 0.55). 0.55 puts it at d.y ≈ 0.337,
+ * about 20° above the horizon — high enough to read as its own band rather than
+ * as a thick horizon line, low enough that the zenith still owns the top half.
+ *
+ * #applySkyPalette's day and night band colours are mix(hor, zen, this) worked
+ * out by hand, so changing this constant WITHOUT re-deriving those two triples
+ * will tilt the daytime and night sky. Only the gold band is free.
+ */
+const SKY_BAND_T = 0.55
+
+/**
  * A custom analytic sky driving both the backdrop and the image-based lighting.
  * The dome is a single TSL gradient keyed off the live sun direction: zenith and
  * horizon palettes crossfade through day / golden hour / night, a warm wedge
@@ -363,6 +391,9 @@ export class Sky {
   // first live frame instead of briefly assuming a fully fogged backdrop.
   #uFogEnabled = uniform(0)
   #uFogBackdrop = uniform(0)
+  // Strength of the FOG_DECK_TONE grade, resolved on the CPU from the live
+  // bank density (0 with weather fog off / clear air, so the grade is inert).
+  #uFogDeck = uniform(0)
   // Void-realm ramp (docs/VOID_STREAM_REWRITE.md M2): 0 = normal sky, 1 = the
   // dark holo void. A pure uniform multiply on dome/IBL radiance and on fog
   // opacity — light-set membership and light intensities are never touched.
@@ -389,6 +420,8 @@ export class Sky {
   // uniform's working-colour-space conversion would shift the palette.
   #uSkyZenith = uniform(new THREE.Vector3())
   #uSkyHorizon = uniform(new THREE.Vector3())
+  /** Mid-altitude band, the third gradient stop. See SKY_BAND_T. */
+  #uSkyBand = uniform(new THREE.Vector3())
   /** mix(hor, zen, 0.35) — the hemispheric mean the soften path collapses toward. */
   #uSkyMean = uniform(new THREE.Vector3())
   /** The night-brightness twilight lift, already folded to a colour. */
@@ -547,23 +580,62 @@ export class Sky {
     // depth-rejected behind everything else).
     const zen = this.#uSkyZenith as N
     const hor = this.#uSkyHorizon as N
+    const band = this.#uSkyBand as N
     const goldW = this.#uSkyGold as N
     return Fn(() => {
       const mu = dot(d, uSun)
 
-      // horizon-heavy gradient; below the horizon fall off toward ground haze
-      const grad = mix(hor, zen, pow(saturate(d.y), 0.55))
+      // Altitude parameter, unchanged: horizon-heavy so the interesting half of
+      // the sky gets most of the range.
+      const t = pow(saturate(d.y), 0.55)
+
+      // The gradient. THE DOME GETS THREE STOPS, THE IBL GETS TWO — deliberately.
+      // A two-stop ramp cannot produce what a real sunset does: it can only walk
+      // from orange to blue through the muddy grey in between, where the actual
+      // sky goes orange → violet → deep blue. That violet band is most of the
+      // difference between "warm sky" and "sunset".
+      //
+      // The environment path skips it because `#skyRadiance` is built TWICE per
+      // lit material (radiance and irradiance contexts, each isolated), so every
+      // term here is paid by every lit fragment in the world — the reason the
+      // phase weights were moved to the CPU in the first place. The IBL is a
+      // soft ambient term that `soften` collapses toward `#uSkyMean` anyway, and
+      // the mean already carries the band's energy (see #applySkyPalette), so
+      // the lighting picks up dusk's violet without paying for its shape.
+      const grad = opts.pointFeatures
+        ? mix(mix(hor, band, smoothstep(0, SKY_BAND_T, t)), zen, smoothstep(SKY_BAND_T, 1, t))
+        : mix(hor, zen, t)
       const below = smoothstep(0.0, -0.12, d.y)
       const sky = grad.mul(mix(float(1), float(0.35), below)).toVar()
       sky.addAssign(this.#uSkyTwilight as N)
 
-      // warm wedge gathering around the sun while it grazes the horizon
-      const wedge = pow(saturate(mu), 3.5)
+      // Warm wedge gathering around the sun while it grazes the horizon. The
+      // vertical reach was ±20° (smoothstep(0.35, …)), which clipped the glow
+      // into a band hugging the waterline; a real low sun throws light most of
+      // the way up the sky. Widened to ~38°, and it now fades THROUGH the
+      // horizon rather than at it, so the water below keeps the warm cast.
+      const wedge = pow(saturate(mu), 3.0)
         .mul(goldW)
-        .mul(smoothstep(0.35, 0.02, abs(d.y)))
-      sky.addAssign(vec3(1.0, 0.42, 0.16).mul(wedge).mul(0.85))
+        .mul(smoothstep(0.62, -0.06, abs(d.y)))
+      sky.addAssign(vec3(1.0, 0.44, 0.17).mul(wedge).mul(0.9))
 
       if (opts.pointFeatures) {
+        // Dome only: a broad magenta-leaning wash centred on the sun. This is
+        // the term that BENDS the gradient — where it overlaps the violet band
+        // the sky reads plum, and where it overlaps the gold wedge it reads
+        // ember, so the orange and the blue are joined by a hue arc instead of
+        // meeting in grey. Wider in azimuth than the gold wedge (pow 1.5 vs 3)
+        // and taller still, so it survives well above the warm band.
+        // Reach is the load-bearing number, not strength: let this climb toward
+        // the zenith and the whole upper sky turns pink and the deep blue never
+        // arrives. It has to die out ABOVE the violet band (~20°) so the band
+        // and the zenith own everything higher — the blue is what makes the
+        // orange read as sunset rather than as a wash.
+        const wash = pow(saturate(mu), 1.5)
+          .mul(goldW)
+          .mul(smoothstep(0.42, -0.12, abs(d.y)))
+        sky.addAssign(vec3(0.62, 0.20, 0.42).mul(wash).mul(0.26))
+
         // Dome only: the discs, moon and starfield still need the raw weights.
         const el = uSun.y // sun elevation, sin-scaled
         const dayW = smoothstep(0.02, 0.32, el)
@@ -913,7 +985,11 @@ export class Sky {
 
     // Probabilistic union, identical to the reference for bank + haze and extended
     // by only the narrow cull fade: 1 - (1-bank)(1-haze)(1-edge)(1-mist).
+    // The bank alone is clamped to FOG_BANK_MAX (floating-world guard); the
+    // edge veil still reaches 1 through the union, so the streamed edge fades
+    // out completely exactly as before.
     const clear = bankFog
+      .min(FOG_BANK_MAX)
       .oneMinus()
       .mul(distHaze.oneMinus())
       .mul(edgeFade.oneMinus())
@@ -941,8 +1017,32 @@ export class Sky {
     // Keep the official reference colour in color-managed form. It reads milky
     // white under ACES and now agrees with the visible horizon instead of resolving
     // to the old #4d5358 charcoal attractor.
+    //
+    // FOG_DECK_TONE grade: deliberately cheap (uniforms + positionWorld only —
+    // no noise, no shared branch state; the horizontal distance is recomputed
+    // locally for the same WGSL-materialization reason the wall block documents
+    // above). Where the veil takes over (deckEdgeKeep → 0) or the CPU resolves
+    // clear air (#uFogDeck = 0) the grade is exactly 1 and the colour is
+    // bit-identical to the shared horizon fog colour.
+    const deckL = (cameraPosition as N).xz
+      .sub((positionWorld as N).xz)
+      .length()
+    const deckEdgeKeep = smoothstep(
+      this.#uFogEdgeStart as N,
+      this.#uFogEdgeEnd as N,
+      deckL
+    ).oneMinus()
+    const deckDepth = (this.#uFogTop as N)
+      .sub(y)
+      .div((this.#uFogTop as N).sub(base).max(1))
+      .saturate()
+    const deckGrade = mix(
+      float(1),
+      float(FOG_DECK_TONE),
+      deckDepth.mul(deckEdgeKeep).mul(this.#uFogDeck as N)
+    )
     return tslFog(
-      color(FOG_COLOR).mul(this.#uFogLight as N),
+      color(FOG_COLOR).mul(this.#uFogLight as N).mul(deckGrade),
       // Void realm: fog fades out with the void ramp (a uniform multiply on
       // the fog factor — the graph and pipeline are unchanged).
       combinedFactor.mul((this.#uVoid as N).oneMinus())
@@ -1020,6 +1120,12 @@ export class Sky {
     this.#uFogEdgeStrength.value = resolved.farWeatherOpacity
     this.#uFogEnabled.value = resolved.weatherEnabled ? 1 : 0
     this.#uFogBackdrop.value = resolved.farWeatherOpacity
+    // Deck grade strength follows the live bank density so a barely-there bank
+    // barely grades, a real marine layer reads as a deck, and clear air / fog
+    // off leaves the colour untouched.
+    this.#uFogDeck.value = resolved.weatherEnabled
+      ? Math.min(1, resolved.bankDensity * 3)
+      : 0
   }
 
   #fogWeatherMode(): FogWeatherMode {
@@ -1384,17 +1490,40 @@ export class Sky {
     const nightLit = nightW * lowSunLift
     const zen = this.#uSkyZenith.value as THREE.Vector3
     zen.set(
-      0.12 * dayW + 0.1 * goldW + 0.022 * nightLit,
-      0.34 * dayW + 0.15 * goldW + 0.032 * nightLit,
-      0.8 * dayW + 0.33 * goldW + 0.062 * nightLit
+      0.12 * dayW + 0.055 * goldW + 0.022 * nightLit,
+      0.34 * dayW + 0.085 * goldW + 0.032 * nightLit,
+      0.8 * dayW + 0.36 * goldW + 0.062 * nightLit
     )
     const hor = this.#uSkyHorizon.value as THREE.Vector3
     hor.set(
-      0.58 * dayW + 0.55 * goldW + 0.07 * nightLit,
-      0.75 * dayW + 0.34 * goldW + 0.098 * nightLit,
-      0.9 * dayW + 0.26 * goldW + 0.15 * nightLit
+      0.58 * dayW + 0.86 * goldW + 0.07 * nightLit,
+      0.75 * dayW + 0.36 * goldW + 0.098 * nightLit,
+      0.9 * dayW + 0.19 * goldW + 0.15 * nightLit
     )
-    ;(this.#uSkyMean.value as THREE.Vector3).lerpVectors(hor, zen, 0.35)
+    // The mid band (see SKY_BAND_T). Day and night deliberately carry the exact
+    // colour the old two-stop gradient already produced at that height —
+    // mix(hor, zen, SKY_BAND_T) evaluated by hand — so adding a third stop
+    // leaves noon and midnight bit-identical and changes only dusk. Gold is the
+    // one genuinely new authored colour in this function: the violet that makes
+    // a sunset read as a sunset rather than as an orange-to-blue ramp.
+    const band = this.#uSkyBand.value as THREE.Vector3
+    band.set(
+      0.364 * dayW + 0.25 * goldW + 0.0436 * nightLit,
+      0.5245 * dayW + 0.145 * goldW + 0.0617 * nightLit,
+      0.855 * dayW + 0.38 * goldW + 0.1016 * nightLit
+    )
+    // Hemispheric mean for the IBL's roughness collapse. The weights are chosen
+    // so that, wherever `band` sits on the line between hor and zen (day and
+    // night, by construction above), this reproduces the previous
+    // mix(hor, zen, 0.35) EXACTLY: 0.47 + 0.40·(1−t) = 0.65 and
+    // 0.13 + 0.40·t = 0.35 at t = SKY_BAND_T. Dusk therefore gains the band's
+    // contribution to ambient light without shifting any other hour.
+    const mean = this.#uSkyMean.value as THREE.Vector3
+    mean.set(
+      0.47 * hor.x + 0.4 * band.x + 0.13 * zen.x,
+      0.47 * hor.y + 0.4 * band.y + 0.13 * zen.y,
+      0.47 * hor.z + 0.4 * band.z + 0.13 * zen.z
+    )
     const twilight = goldW * lowSunW * (lift - 1)
     ;(this.#uSkyTwilight.value as THREE.Vector3).set(
       0.014 * twilight,
