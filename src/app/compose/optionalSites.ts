@@ -32,6 +32,7 @@ import { HANG_GLIDING_SITE } from "../../gameplay/hangGliding/meta";
 import { LANDS_END_CENTER } from "../../world/landsEnd/meta";
 import { WAVE_ORGAN_CENTER } from "../../world/waveOrgan/meta";
 import { BEACH_PIANIST_CENTER } from "../../world/beachPianist/meta";
+import { TUTORIAL_ZONE_CENTER } from "../../world/tutorialZone/meta";
 import { SUTRO_BATHS_ARRIVAL } from "../../world/spawnPoints";
 import type { WorldMap } from "../../world/heightmap";
 import type { Physics } from "../../core/physics";
@@ -61,6 +62,7 @@ import type { PalaceReverieGame } from "../../gameplay/palaceReverie";
 import type { LandsEndRegion } from "../../world/landsEnd";
 import type { WaveOrgan } from "../../world/waveOrgan";
 import type { BeachPianist } from "../../world/beachPianist";
+import type { TutorialZone } from "../../world/tutorialZone";
 import type { AfterlightExperience } from "../../gameplay/afterlight";
 import type { HangGlidingExperience } from "../../gameplay/hangGliding";
 import type { PickleballController } from "../systems/pickleball";
@@ -82,7 +84,8 @@ export type OptionalSiteId =
   | "sutro-baths"
   | "pup"
   | "fort-mason-ensemble"
-  | "beach-pianist";
+  | "beach-pianist"
+  | "tutorial-zone";
 type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
 type OptionalSiteStage = () => Promise<void>;
 type OptionalSiteCompile = (
@@ -142,6 +145,7 @@ export type OptionalSiteRefs = {
   waveOrgan: WaveOrgan | null;
   beachPianist: BeachPianist | null;
   sutroBaths: SutroBaths | null;
+  tutorialZone: TutorialZone | null;
 };
 
 export function createOptionalSites({
@@ -241,6 +245,7 @@ export function createOptionalSites({
   let waveOrgan: WaveOrgan | null = null;
   let beachPianist: BeachPianist | null = null;
   let sutroBaths: SutroBaths | null = null;
+  let tutorialZone: TutorialZone | null = null;
   let pickleballController: PickleballController | null = null;
   let siteFoliage: SiteFoliageStreamer | null = null;
   // Zone-only boot allowlist (independent of the perf A/B flags). Cleared by
@@ -353,7 +358,8 @@ export function createOptionalSites({
       landsEnd,
       waveOrgan,
       beachPianist,
-      sutroBaths
+      sutroBaths,
+      tutorialZone
     });
   };
 
@@ -644,6 +650,19 @@ export function createOptionalSites({
     refreshOptionalSiteDebug();
   };
 
+  const loadTutorialZone = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
+    const { createTutorialZone } = await import("../../world/tutorialZone");
+    await stage();
+    // Construction installs a ground overlay and static bodies it owns; past
+    // this point only admission waits, never aborts.
+    const zone = createTutorialZone(map, physics, scene);
+    await prepareOptionalRoot("tutorial zone", zone.root, waitStage, compile);
+    tutorialZone = zone;
+    optionalSiteGateRegistrations["tutorial-zone"] = siteGate.register(zone.siteHooks());
+    sky.invalidateStaticShadows();
+    refreshOptionalSiteDebug();
+  };
+
   const loadBeachPianist = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { BeachPianist: LoadedBeachPianist } = await import("../../world/beachPianist");
     await stage();
@@ -795,6 +814,12 @@ export function createOptionalSites({
     optionalWorldSite({ id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, load: loadLandsEnd }),
     optionalWorldSite({ id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, load: loadWaveOrgan }),
     optionalWorldSite({ id: "beach-pianist", label: "Beach Pianist", ...BEACH_PIANIST_CENTER, load: loadBeachPianist }),
+    optionalWorldSite({
+      id: "tutorial-zone",
+      label: "Crissy Field · Flight School",
+      ...TUTORIAL_ZONE_CENTER,
+      load: loadTutorialZone
+    }),
     optionalWorldSite({
       id: "sutro-baths",
       label: "Sutro Baths · 1896",
@@ -1000,7 +1025,8 @@ export function createOptionalSites({
     "sutro-baths": true,
     pup: true,
     "fort-mason-ensemble": true,
-    "beach-pianist": true
+    "beach-pianist": true,
+    "tutorial-zone": true
   };
   let optionalSitePerfGating = false;
   const OPTIONAL_SITE_GATE_ID: Partial<Record<OptionalSiteId, string>> = {
@@ -1009,7 +1035,8 @@ export function createOptionalSites({
     palace: "palace-reverie",
     afterlight: "afterlight",
     "hang-gliding": "hang-gliding",
-    pup: "pup"
+    pup: "pup",
+    "tutorial-zone": "tutorial-zone"
   };
   const optionalSitePerfAllowed = (id: OptionalSiteId): boolean =>
     !optionalSitePerfGating || optionalSitePerfEnabled[id];
@@ -1049,6 +1076,9 @@ export function createOptionalSites({
         break;
       case "wave-organ":
         if (!on && waveOrgan) waveOrgan.group.visible = false;
+        break;
+      case "tutorial-zone":
+        if (!on && tutorialZone) tutorialZone.root.visible = false;
         break;
       case "beach-pianist":
         beachPianist?.setPerfSuppressed(!on);
@@ -1125,6 +1155,11 @@ export function createOptionalSites({
         return {
           runtime: waveOrgan?.group.visible ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(waveOrgan?.group)
+        };
+      case "tutorial-zone":
+        return {
+          runtime: tutorialZone?.root.visible ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(tutorialZone?.root)
         };
       case "beach-pianist":
         return {
@@ -1329,6 +1364,14 @@ export function createOptionalSites({
     "wave-organ": () => {
       waveOrgan?.dispose();
       waveOrgan = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    "tutorial-zone": () => {
+      optionalSiteGateRegistrations["tutorial-zone"]?.dispose();
+      delete optionalSiteGateRegistrations["tutorial-zone"];
+      tutorialZone?.dispose();
+      tutorialZone = null;
       sky.invalidateStaticShadows();
       refreshOptionalSiteDebug();
     },

@@ -1,13 +1,21 @@
+import { MENU_MODES } from "../player/discovery"
+import { distanceToTutorialZone } from "../world/tutorialZone/meta"
+import type { TutorialZoneProgress } from "../world/tutorialZone"
 import type { PlayerMode } from "../player/types"
 
 /**
  * Interactive tutorial: a chaptered checklist that watches real play instead
  * of narrating over it. The "Tutorial" button (top-right, under Share) is
- * always on screen outside immersive mode; clicking it walks a newcomer from
- * WASD through stepping inside a building, the vehicle roster, and the
- * map/teleport flow. main.ts feeds it a thin context of getters plus one-shot
- * events (note("teleport") etc.) — the tutorial never reaches into game objects
- * itself.
+ * always on screen outside immersive mode; clicking it takes a newcomer to the
+ * flight school on the Crissy Field airfield and walks them from WASD through a
+ * door, a lap, a bowl and six rings over the bay.
+ *
+ * The field (world/tutorialZone) is a real place with its own gates, hurdle and
+ * rings; it publishes plain totals through `ctx.zone`. This file only reads
+ * them. Every zone-backed step also has a body-only fallback — the same check
+ * the tutorial used before there was a field — so a player who starts the
+ * tutorial while the site is still streaming, or who wanders off it entirely,
+ * still makes progress by doing the thing. Nothing here can softlock on a chunk.
  */
 
 export interface TutorialCtx {
@@ -19,6 +27,10 @@ export interface TutorialCtx {
   mapOpen: () => boolean
   teleport: (t: { x: number; y: number; z: number; facing: number; mode: PlayerMode }) => void
   message: (text: string, seconds?: number) => void
+  /** Live totals from the flight school, or null until the site is resident. */
+  zone?: () => TutorialZoneProgress | null
+  /** Arrive at the field's west gate (and start loading it). */
+  goToZone?: () => void
 }
 
 /** Per-step scratch state: an accumulator, a baseline, and the last position. */
@@ -60,70 +72,141 @@ function climbed(ctx: TutorialCtx, st: Scratch, want: number, active: boolean): 
 
 const shiftDown = (ctx: TutorialCtx) => ctx.down("ShiftLeft") || ctx.down("ShiftRight")
 
+/**
+ * The number key that switches to `mode`: the MENU_MODES order IS the key row
+ * (frameBody maps Digit i → MENU_MODES[i - 1]), so never hardcode the digit —
+ * reordering the roster would silently teach newcomers the wrong keys.
+ */
+const modeKey = (mode: PlayerMode) => `${MENU_MODES.indexOf(mode) + 1}`
+
+/** A "press N to hop on X" step, with the digit read off the roster. */
+const modeStep = (mode: PlayerMode, text: string): Step => ({
+  keys: [modeKey(mode)],
+  text,
+  check: (c) => c.mode() === mode
+})
+
+const COUNT_WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+const countWord = (n: number) => COUNT_WORDS[n] ?? `${n}`
+
+/**
+ * Progress for a step the flight school can measure, never below what the
+ * player's own body already earned.
+ *
+ * Both readings are taken every frame — the fallback has an accumulator that
+ * would otherwise sit at zero — and the larger wins. That is what keeps the
+ * two sources from fighting: a step part-finished on the lawn does not reset
+ * when the field finishes streaming in, and a step finished out in the city
+ * completes without the field at all.
+ */
+function zoneOr(
+  ctx: TutorialCtx,
+  read: (zone: TutorialZoneProgress) => number | boolean,
+  fallback: number | boolean
+): number {
+  const asNumber = (v: number | boolean) => (typeof v === "boolean" ? (v ? 1 : 0) : v)
+  const zone = ctx.zone?.() ?? null
+  return Math.max(asNumber(fallback), zone ? asNumber(read(zone)) : 0)
+}
+
 const CHAPTERS: Chapter[] = [
   {
-    title: "First steps",
+    title: "The airfield",
+    onEnter: (c) =>
+      c.message("Crissy Field — the Army taught people to fly here. Everything on this field is a thing to try.", 5),
     steps: [
-      { keys: ["1"], text: "to get on your own two feet", check: (c) => c.mode() === "walk" },
+      modeStep("walk", "to get on your own two feet"),
       {
         keys: ["Mouse"],
         action: "Move",
-        text: "to look around",
+        text: "to look around — find the windsock",
         hint: "click the city first if the cursor is loose — Esc or L lets it go",
         check: (c, _dt, st) => (st.n += c.mouseDelta()) / 400
       },
       {
         keys: ["W", "A", "S", "D"],
         action: "Use",
-        text: "to take a stroll",
-        check: (c, _dt, st) => traveled(c, st, 12, c.mode() === "walk")
+        text: "to walk through all three bunting gates",
+        check: (c, _dt, st) =>
+          zoneOr(c, (z) => z.gatesPassed / 3, traveled(c, st, 26, c.mode() === "walk"))
       },
       {
         keys: ["Shift"],
         action: "Hold",
-        text: "to sprint",
-        check: (c, _dt, st) => traveled(c, st, 22, c.mode() === "walk" && shiftDown(c))
+        text: "to sprint the chalk lane between the bollards",
+        check: (c, _dt, st) =>
+          zoneOr(c, (z) => z.sprintMeters / 26, traveled(c, st, 22, c.mode() === "walk" && shiftDown(c)))
       },
-      { keys: ["Space"], text: "to jump", check: (c) => c.mode() === "walk" && c.pressed("Space") }
-    ]
-  },
-  {
-    title: "Step inside",
-    onEnter: (c) => c.message("Every building has a front door — press E at the door to open it, then walk in", 4),
-    steps: [
       {
-        keys: ["E"],
-        action: "Press",
-        text: "at a front door to open it, then step inside",
-        check: (c, _dt, st) => traveled(c, st, 15, c.mode() === "walk")
+        keys: ["Space"],
+        text: "to jump the hay bales at the end of the lane",
+        check: (c) => zoneOr(c, (z) => z.hurdleCleared, c.mode() === "walk" && c.pressed("Space"))
       }
     ]
   },
   {
-    title: "Wheels & wings",
-    onEnter: (c) => c.message("Seven ways to get around — the number keys switch between them", 4),
+    title: "The cottage",
+    onEnter: (c) =>
+      c.message("The hut on the north side has a door. Every front door in the city works the same way.", 4.5),
     steps: [
-      { keys: ["2"], text: "to summon the car", check: (c) => c.mode() === "drive" },
+      {
+        keys: ["E"],
+        action: "Press",
+        text: "at the cottage door to open it, then step inside",
+        hint: "stand close — the prompt appears when you are in reach",
+        check: (c, _dt, st) => zoneOr(c, (z) => z.cottageVisited, traveled(c, st, 15, c.mode() === "walk"))
+      }
+    ]
+  },
+  {
+    title: "The oval",
+    onEnter: (c) => {
+      const n = countWord(MENU_MODES.length)
+      c.message(
+        `${n[0].toUpperCase()}${n.slice(1)} ways to get around — the number keys switch between them. Start with the car, on the track.`,
+        5
+      )
+    },
+    steps: [
+      modeStep("drive", "to summon the car"),
       {
         keys: ["W"],
         action: "Hold",
-        text: "to burn some rubber",
-        hint: "Shift boosts · Space drifts",
-        check: (c, _dt, st) => traveled(c, st, 80, c.mode() === "drive")
-      },
-      { keys: ["6"], text: "to hop on the hoverboard", check: (c) => c.mode() === "board" },
-      { keys: ["Space"], text: "to ollie", check: (c) => c.mode() === "board" && c.pressed("Space") },
-      { keys: ["7"], text: "to become the phoenix", check: (c) => c.mode() === "bird" },
+        text: "to drive a full lap of the oval",
+        hint: "Shift boosts · Space drifts · the banking holds you through the bends",
+        check: (c, _dt, st) => zoneOr(c, (z) => z.lapFraction, traveled(c, st, 240, c.mode() === "drive"))
+      }
+    ]
+  },
+  {
+    title: "The bowl",
+    onEnter: (c) => c.message("Concrete bowl on the south-west corner — ride in, and come out of it flying.", 4),
+    steps: [
+      modeStep("board", "to hop on the hoverboard"),
       {
         keys: ["Space"],
-        text: "to flap and climb 20 m into the sky",
-        hint: "look down + Shift to dive",
-        check: (c, _dt, st) => climbed(c, st, 20, c.mode() === "bird")
+        text: "to ollie out of the bowl and hang in the air",
+        hint: "drop in from the deck, carry your speed up the far wall",
+        check: (c) => zoneOr(c, (z) => z.bowlAir / 0.6, c.mode() === "board" && c.pressed("Space") ? 1 : 0)
+      }
+    ]
+  },
+  {
+    title: "Out over the bay",
+    onEnter: (c) => c.message("Six rings climb off the bowl and out over the water. Fly them in order.", 4.5),
+    steps: [
+      modeStep("bird", "to become the phoenix"),
+      {
+        keys: ["Space"],
+        text: "to flap through all six rings",
+        hint: "look down + Shift to dive · the lit ring is your next one",
+        check: (c, _dt, st) => zoneOr(c, (z) => z.ringsFlown / 6, climbed(c, st, 30, c.mode() === "bird"))
       }
     ]
   },
   {
     title: "Anywhere, instantly",
+    onEnter: (c) => c.message("Last thing: the map. It goes anywhere in the city, from anywhere in the city.", 4),
     steps: [
       { keys: ["M"], text: "to open the city map", check: (c) => c.mapOpen() },
       {
@@ -218,6 +301,10 @@ export class Tutorial {
     this.#advance = 0
     this.#panel.style.display = ""
     this.#btnLabel.textContent = "End tutorial"
+    // Take them to the field — unless they are already standing on it, in which
+    // case moving them would be the rudest possible way to begin.
+    const p = this.#ctx.pos()
+    if (distanceToTutorialZone(p.x, p.z) > 40) this.#ctx.goToZone?.()
     CHAPTERS[0].onEnter?.(this.#ctx)
     this.#enterStep()
   }
