@@ -25,6 +25,7 @@ import type { CoronaHeightsPark } from "../../world/coronaHeights";
 import type { MissionDoloresMuseum } from "../../world/missionDolores";
 import { MD_CENTER as MISSION_DOLORES_CENTER } from "../../world/missionDolores/layout";
 import type { GraceCathedralRuntime } from "../../world/graceCathedral";
+import type { StMarysRuntime } from "../../world/stMarys";
 import type { PlayerMode } from "../../player/types";
 import { FX } from "../../fx/fx";
 import { BoardWake, WakeRipples } from "../../fx/wake";
@@ -155,6 +156,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     coronaHeights: null as (CoronaHeightsPark | null),
     missionDolores: null as (MissionDoloresMuseum | null),
     graceCathedral: null as (GraceCathedralRuntime | null),
+    stMarys: null as (StMarysRuntime | null),
     sutroBaths: null as (import("../../world/sutroBaths").SutroBaths | null),
     museumBookOpen: false as any,
     citygen: null as ({ update?: (dt: number) => void; [k: string]: unknown } | null),
@@ -812,6 +814,37 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     unwatchGraceCathedral();
     state.graceCathedral?.dispose();
     state.graceCathedral = null;
+  });
+  // St Mary's rides the same rails: the baked GLB streams via the generic
+  // authored-region gate; the dalle-de-verre god-ray layer is a nested lazy
+  // boundary that lives and dies with region residency.
+  let stMarysEpoch = 0;
+  const unwatchStMarys = authoredRegions.watch(
+    "st-marys",
+    (root: THREE.Object3D) => {
+      const epoch = ++stMarysEpoch;
+      void import("../../world/stMarys")
+        .then(({ createStMarysRuntime }) => {
+          if (epoch !== stMarysEpoch || !root.parent) return;
+          state.stMarys?.dispose();
+          const runtime = createStMarysRuntime(scene);
+          state.stMarys = runtime;
+          void warmHiddenRoot(renderer, camera, scene, runtime.group).catch((error) => {
+            console.warn("[st-marys] atmosphere warmup failed", error);
+          });
+        })
+        .catch((error) => console.warn("[st-marys] atmosphere unavailable", error));
+    },
+    () => {
+      stMarysEpoch++;
+      state.stMarys?.dispose();
+      state.stMarys = null;
+    }
+  );
+  import.meta.hot?.dispose(() => {
+    unwatchStMarys();
+    state.stMarys?.dispose();
+    state.stMarys = null;
   });
   const gardenDisplacer: GroundDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];

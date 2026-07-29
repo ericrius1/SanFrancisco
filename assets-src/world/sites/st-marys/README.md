@@ -17,8 +17,21 @@ The project uses real-world scale and placement:
   apply modifiers).
 - Dalle-de-verre stained-glass bands (1.83 m) rising from the four compass
   points, folding over the arm tips into the ridge skylights of the cross.
-- 55 ft golden summit cross; walkable nave with central sanctuary, pews on
-  three sides, and the Ruffatti organ hint.
+  Each face carries its element — gold air (east), green earth (north), red
+  fire (west), blue water (south) — meeting in a prismatic apex.
+- 55 ft golden summit cross.
+- A real interior: the nave opens straight up into the coffered cupola through
+  the roof-deck annulus; Richard Lippold's baldacchino (tiers of emissive gold
+  rods with the suspended crucifix) hangs over the Botticino sanctuary with
+  altar, ambo and cathedra; pews flank processional aisles on three sides; the
+  Ruffatti organ rises on its flaring pedestal.
+- `BLENDER_PREVIEW_ONLY` carries a light rig (apex shaft, element fills, vault
+  washes) so the .blend opens readable — none of it exports.
+
+The in-game god rays are not baked into the GLB: `src/world/stMarys/index.ts`
+is a disposable atmosphere layer (elemental beams, floor pools, the apex
+column, dust motes) that attaches via `authoredRegions.watch("st-marys", ...)`
+only while the region is resident, mirroring Grace Cathedral's layer.
 
 Architectural references: <https://smcsf.org/a-sacred-space>,
 <https://c20society.org.uk/building-of-the-month/cathedral-of-st-mary-of-the-assumption-san-francisco>,

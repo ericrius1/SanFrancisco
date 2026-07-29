@@ -157,17 +157,17 @@ async function main() {
     assert("cathedral boot: no page exceptions", near.exceptions.length === 0,
       near.exceptions.slice(0, 2).join(" | "));
     await shot(c, "arrival");
-    // back away up the plaza for an exterior view of the cupola
-    await c.send("Input.dispatchKeyEvent", { type: "keyDown", code: "KeyS", key: "s", windowsVirtualKeyCode: 83 });
-    await sleep(9000);
-    await c.send("Input.dispatchKeyEvent", { type: "keyUp", code: "KeyS", key: "s", windowsVirtualKeyCode: 83 });
-    await sleep(1200);
-    await shot(c, "backed-off");
-    // C toggles the wider view camera
-    await c.send("Input.dispatchKeyEvent", { type: "keyDown", code: "KeyC", key: "c", windowsVirtualKeyCode: 67 });
-    await c.send("Input.dispatchKeyEvent", { type: "keyUp", code: "KeyC", key: "c", windowsVirtualKeyCode: 67 });
-    await sleep(2500);
-    await shot(c, "view-toggle");
+    // walk straight down the aisle: through the doors into the nave
+    await c.send("Input.dispatchKeyEvent", { type: "keyDown", code: "KeyW", key: "w", windowsVirtualKeyCode: 87 });
+    await sleep(9500);
+    await c.send("Input.dispatchKeyEvent", { type: "keyUp", code: "KeyW", key: "w", windowsVirtualKeyCode: 87 });
+    await sleep(1500);
+    await shot(c, "nave-godrays");
+    await c.send("Input.dispatchKeyEvent", { type: "keyDown", code: "KeyW", key: "w", windowsVirtualKeyCode: 87 });
+    await sleep(3000);
+    await c.send("Input.dispatchKeyEvent", { type: "keyUp", code: "KeyW", key: "w", windowsVirtualKeyCode: 87 });
+    await sleep(1500);
+    await shot(c, "sanctuary");
     c.close();
   } finally {
     try { proc.kill("SIGKILL"); } catch {}
