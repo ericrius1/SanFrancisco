@@ -71,8 +71,18 @@ const QUERY = `(() => {
     if (!bb) return;
     const pos = new THREE.Vector3();
     o.getWorldPosition(pos);
+    // Report hall-LOCAL x/z too. The cast table in bathers.ts is written in
+    // local coordinates, and aiming cameras by reading those numbers off the
+    // page put a 105 mm lens on two people who turned out to be nowhere near
+    // where the arithmetic said. Measure the rigs instead.
+    const YAW = -0.077;
+    const dx = pos.x - -6125;
+    const dz = pos.z - 1117;
+    const lx = Math.cos(YAW) * dx - Math.sin(YAW) * dz;
+    const lz = Math.sin(YAW) * dx + Math.cos(YAW) * dz;
     out.bathers.push({
       node: o.name || o.type,
+      local: [Number(lx.toFixed(2)), Number(lz.toFixed(2))],
       worldY: Number(pos.y.toFixed(3)),
       bbY: [Number(bb.min.toFixed(3)), Number(bb.max.toFixed(3))],
       aboveWater: Number((bb.min - WATER_Y).toFixed(3)),
@@ -162,9 +172,9 @@ async function main() {
       );
     }
     process.stdout.write(`\n--- rigs, lowest first (aboveWater = bbox bottom minus 5.18) ---\n`);
-    for (const b of data.bathers.slice(0, 24)) {
+    for (const b of data.bathers.slice(0, 40)) {
       process.stdout.write(
-        `  bb=[${b.bbY}] aboveWater=${String(b.aboveWater).padStart(7)} order=${b.renderOrder} ${b.node}\n`
+        `  local=[${String(b.local[0]).padStart(7)},${String(b.local[1]).padStart(7)}] bb=[${b.bbY}] aboveWater=${String(b.aboveWater).padStart(7)} ${b.node}\n`
       );
     }
     process.stdout.write(`\nWrote ${OUT}/float.json\n`);

@@ -139,33 +139,38 @@ const LOOKS: readonly (Look & { title: string })[] = [
   {
     id: "hot-bath",
     title: "The Hot Bath",
-    // Across bath four at sutro-hot-1/2 talking chest-deep, steam between lens
-    // and subject. Shot from the deck SPINE (local x -10..-4): the first cut
-    // stood the camera at x -2.4, which is inside the pool's own footprint.
+    // Across bath four at sutro-hot-1/2 (measured at local [3.5, 3.5] and
+    // [5.9, 4.4]) talking chest-deep, steam between lens and subject. Shot from
+    // the deck SPINE, local x -10..-4 — the first cut stood the camera at x
+    // -2.4, inside the pool's own footprint. Pressed right up to the coping and
+    // on a long lens, because a chest-deep person shows only about 0.8 m of
+    // themselves and this is the longest sightline of the five.
     eye: [
-      [-6.6, DECK + EYE, 6.4],
-      [-6.2, DECK + EYE - 0.02, 5.5]
+      [-4.7, DECK + EYE, 5.9],
+      [-4.5, DECK + EYE - 0.02, 5.0]
     ],
     at: [
-      [4.6, WATER + 0.95, 4.0],
-      [4.8, WATER + 0.99, 3.9]
+      [4.4, WATER + 0.9, 3.9],
+      [4.6, WATER + 0.94, 3.8]
     ],
-    lens: [62, 62]
+    lens: [105, 105]
   },
   {
     id: "plunge-edge",
     title: "The Plunge Edge",
-    // Down the west coping at sutro-sit-1/2, feet in the plunge, with the
-    // candle line at local x -32.4 running away behind them.
+    // Down the west coping at sutro-sit-1/2 (measured at local [-32.2, -25.4]
+    // and [-32.2, -23.2]), feet in the plunge, candle line at local x -32.4
+    // running away behind them. Closer and longer than the first cut, which
+    // left the bottom third of frame as bare deck.
     eye: [
-      [-33.6, DECK + EYE, -31.8],
-      [-33.4, DECK + EYE - 0.02, -29.6]
+      [-33.4, DECK + EYE, -29.9],
+      [-33.2, DECK + EYE - 0.02, -28.4]
     ],
     at: [
-      [-32.3, DECK + 0.55, -24.6],
-      [-32.2, DECK + 0.62, -23.9]
+      [-32.3, DECK + 0.6, -24.8],
+      [-32.2, DECK + 0.65, -24.2]
     ],
-    lens: [45, 45]
+    lens: [70, 70]
   }
 ] as const;
 

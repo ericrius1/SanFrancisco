@@ -92,36 +92,43 @@ const LOOKS = [
   },
   {
     id: "04-hot-bath",
-    // From the deck SPINE (x -10..-4, between the plunge and the graduated
-    // baths) across bath four at sutro-hot-1/2, (3.5, 3.5) and (5.9, 4.4).
-    // The earlier eye at x -2 was standing inside the pool itself.
+    // Across bath four at sutro-hot-1/2, (3.5, 3.5) and (5.9, 4.4).
+    //
+    // Two revisions. The first stood at x -2.4, inside the pool's own footprint
+    // (the baths run x -4..19). The second moved to the spine at x -6.6 with a
+    // 62 mm lens and made the pair specks in an empty pool: chest-deep people
+    // show maybe 0.8 m of themselves, so at that range they are a few per cent
+    // of frame height. Now as close to the coping as the deck allows, on a long
+    // lens, so two heads and shoulders actually fill the frame.
     eye: [
-      [-6.6, DECK + EYE, 6.4],
-      [-6.4, DECK + EYE, 5.9],
-      [-6.2, DECK + EYE - 0.02, 5.5]
+      [-4.7, DECK + EYE, 5.9],
+      [-4.6, DECK + EYE, 5.4],
+      [-4.5, DECK + EYE - 0.02, 5.0]
     ],
     at: [
-      [4.6, WATER + 0.95, 4.0],
-      [4.7, WATER + 0.97, 3.95],
-      [4.8, WATER + 0.99, 3.9]
+      [4.4, WATER + 0.9, 3.9],
+      [4.5, WATER + 0.92, 3.85],
+      [4.6, WATER + 0.94, 3.8]
     ],
-    lens: 62
+    lens: 105
   },
   {
     id: "05-plunge-edge",
     // Down the west coping at sutro-sit-1/2, (-32.2, -25.4) and (-32.2, -23.2),
-    // with the candle line at x -32.4 running away behind them.
+    // with the candle line at x -32.4 running away behind them. Closer and
+    // longer than the first pass, which left a third of the frame as bare deck
+    // and put the pair small and off to one side.
     eye: [
-      [-33.6, DECK + EYE, -31.8],
-      [-33.5, DECK + EYE, -30.6],
-      [-33.4, DECK + EYE - 0.02, -29.6]
+      [-33.4, DECK + EYE, -29.9],
+      [-33.3, DECK + EYE, -29.1],
+      [-33.2, DECK + EYE - 0.02, -28.4]
     ],
     at: [
-      [-32.3, DECK + 0.55, -24.6],
-      [-32.3, DECK + 0.6, -24.2],
-      [-32.2, DECK + 0.62, -23.9]
+      [-32.3, DECK + 0.6, -24.8],
+      [-32.3, DECK + 0.63, -24.5],
+      [-32.2, DECK + 0.65, -24.2]
     ],
-    lens: 45
+    lens: 70
   }
 ];
 
@@ -215,11 +222,25 @@ async function main() {
         const at = L(...look.at[index]);
         await page.evaluate(
           ([e, a, lens]) => {
-            const cam = window.__sf.camera;
-            // Focal length to vertical FOV on a 36 mm-wide full-frame back.
-            cam.fov = 2 * Math.atan(24 / (2 * lens)) * (180 / Math.PI);
+            const w = window;
+            const cam = w.__sf.camera;
+            const fov = 2 * Math.atan(24 / (2 * lens)) * (180 / Math.PI);
+            // The app rewrites camera.fov every tick (speed/mode framing), so a
+            // one-shot assignment is gone by the next frame and every "lens"
+            // here silently rendered at the default ~70 deg. That made subjects
+            // look five times smaller than the focal length implied and sent me
+            // chasing a framing bug that did not exist. Hold it instead, and
+            // clear the previous hold so successive looks do not stack.
+            if (w.__framingHold) clearInterval(w.__framingHold);
+            w.__framingHold = setInterval(() => {
+              if (cam.fov !== fov) {
+                cam.fov = fov;
+                cam.updateProjectionMatrix();
+              }
+            }, 16);
+            cam.fov = fov;
             cam.updateProjectionMatrix();
-            window.__sfFreeCam(e, a);
+            w.__sfFreeCam(e, a);
           },
           [eye, at, look.lens]
         );
