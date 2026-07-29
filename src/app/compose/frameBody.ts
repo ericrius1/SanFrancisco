@@ -495,6 +495,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (paused) {
       ctx.state.accumulator += frameDt; // no ctx.state.elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
+      if (player.mode === "surf") player.steerSurf(input, frameDt);
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
         player.requestSurfJump();
@@ -624,11 +625,17 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     setLocalSurfboardConfig(config);
     player.setSurfboardConfig(config);
     const request = ++netW.state.surfEntryRequest;
+    // Surf steers with the pointer, so capture it HERE — inside the keypress
+    // that started the activity. Asking after the await below would routinely
+    // land outside the browser's transient-activation window on a cold chunk
+    // load and be refused, leaving the whole control scheme dead.
+    input.requestLock();
     // Full preparation (camera + runtime + a fresh embodiment compile if the
     // grabbed board differs) so the first ridden frame is stall-free.
     void prepareSurfEntry().then(() => {
       if (request !== netW.state.surfEntryRequest || player.mode !== "walk") return;
       navigation.switchMode("surf");
+      input.requestLock();
     });
   };
 
@@ -909,11 +916,14 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
           // With no specific nearby action, E keeps the convenient broad beach
           // entry. Load camera + activity runtime before the first surf frame.
           const request = ++netW.state.surfEntryRequest;
+          // Capture the pointer inside the E keypress itself — see startSurfFromShack.
+          input.requestLock();
           void prepareSurfEntry().then((ready) => {
             if (!ready || request !== netW.state.surfEntryRequest || player.mode !== "walk") return;
             if (!nearOceanBeachShore(player.position.x, player.position.z)) return;
             player.trySwitch("surf");
-            hud.message("You're surfing — A/D carve · W climb + pump · S stall · E exits", 1);
+            input.requestLock();
+            hud.message("You're surfing — MOVE THE MOUSE to carve and climb · SPACE jumps · E exits", 2.4);
           });
         }
       }
@@ -1168,6 +1178,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
 
     // fly: mouse steers the plane at frame rate; W/S throttle happens in the fixed step
     if (player.mode === "plane") player.steerFly(input, frameDt);
+    // surf: the pointer IS the board — same frame-rate steering contract
+    if (player.mode === "surf") player.steerSurf(input, frameDt);
     // Latch hoverboard ollies at render-frame rate. On high-refresh displays a
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.

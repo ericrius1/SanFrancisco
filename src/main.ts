@@ -777,6 +777,7 @@ async function boot() {
     if (!input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
     if (!input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
     if (player.mode === "plane") player.steerFly(input, frameDt);
+    if (player.mode === "surf") player.steerSurf(input, frameDt);
     chase.lookDir(aim);
     tracer.begin("physics");
     physics.maintainStreaming(player.position);

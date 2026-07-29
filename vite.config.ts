@@ -229,6 +229,18 @@ const inGameShotPlugin = (): Plugin => ({
 // alias it to the WebGPU build so there is a single module/class instance and no
 // duplicate-three "instanceof" breakage.
 export default defineConfig({
+  // Vite's default cacheDir is `<root>/node_modules/.vite`, and a worktree's
+  // node_modules is a SYMLINK back to the main checkout — so every worktree
+  // dev server plus the main one resolved to the SAME physical dep-optimizer
+  // cache. Whichever server re-optimized last rewrote deps/ under all the
+  // others: in-flight imports 404 mid-rewrite ("Failed to fetch dynamically
+  // imported module"), and the survivors end up serving one chunk under
+  // several `?v=` hashes, which the browser loads as several separate copies
+  // of three.js. Duplicate three means duplicate TSL module state, so `Fn()`
+  // registers a shader stack that `If()`/`addAssign` in the other copy cannot
+  // see ("Cannot read properties of null (reading 'If')"). Anchor the cache to
+  // this config file's own directory, which is unique per checkout.
+  cacheDir: fileURLToPath(new URL(".vite-cache", import.meta.url)),
   plugins: [relayPlugin(), starlinkApiPlugin(), softHmrPlugin(), nativeFoliageBasisPlugin(), inGameShotPlugin()],
   define: {
     "import.meta.env.SF_FULL_RELOAD": FULL_RELOAD_ENABLED
