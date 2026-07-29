@@ -5,6 +5,7 @@ import { avatarFromSeed } from "../../player/avatar";
 import { setHandTarget, type HandTarget } from "../../player/handIK";
 import { attachToHand, wristTargetForGrip, type GripSpec } from "../../player/held";
 import { buildRig, poseWalk, type Rig } from "../../player/rig";
+import { FootfallTracker, type SandPrintSink } from "../../fx/sandPrints";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { createKiteCloth, type KiteCloth, type KiteClothState } from "./kiteCloth";
 import type { KiteDesign, KitePalette } from "./kiteDesigns";
@@ -98,6 +99,12 @@ export type KiteFlyerOptions = {
   lineDial?: number;
   /** Multiplies the deployed tail length. */
   tailScale?: number;
+  /**
+   * Where this flyer's footfalls go. Shared with the player's — the runtime
+   * owns the rules (sand only, near the player only), so a runner just reports
+   * that a foot landed. Anchored flyers have no feet and ignore it.
+   */
+  prints?: SandPrintSink;
 };
 
 export type KiteFlyerFrame = {
@@ -189,6 +196,8 @@ export class KiteFlyer {
   #tug = 0;
   #haul = 0;
   #stride = 0;
+  #prints: SandPrintSink | null;
+  #footfalls = new FootfallTracker();
   #lineLength: number;
   #lineTarget: number;
   #lineChange = 0;
@@ -247,6 +256,7 @@ export class KiteFlyer {
     this.#palette = options.palette ?? this.design.palette;
     this.#lineDial = THREE.MathUtils.clamp(options.lineDial ?? 0.5, 0, 1);
     this.#tailScale = Math.max(0, options.tailScale ?? 1);
+    this.#prints = options.prints ?? null;
     // An anchored kite is handed to a player who is already standing there, so
     // it launches from cold; the beach flyers have their own authored launch.
     this.#launchRamp = this.#anchor ? 0 : 1;
@@ -558,6 +568,27 @@ export class KiteFlyer {
       1
     );
     poseWalk(rig, this.#stride, runBlend);
+
+    // …and the same stride leaves prints where those feet land. Off the same
+    // phase the pose reads, so a print appears under the foot that planted it.
+    if (this.#prints?.active) {
+      const steps = this.#footfalls.advance(this.#stride, true);
+      if (steps > 0) {
+        // Facing, not velocity: a flyer pivoting on the spot still plants feet.
+        const forwardX = -Math.sin(runner.yaw);
+        const forwardZ = -Math.cos(runner.yaw);
+        for (let i = 0; i < steps; i++) {
+          this.#prints.stamp(
+            runner.x + forwardX * 0.14,
+            runner.z + forwardZ * 0.14,
+            forwardX,
+            forwardZ,
+            this.#footfalls.nextFoot(),
+            0.72 + THREE.MathUtils.clamp(runner.speed / 9, 0, 1) * 0.4
+          );
+        }
+      }
+    }
 
     // Body layer: eyes on the kite, chest following them round. `watch` is what
     // separates a jogger from someone flying something.

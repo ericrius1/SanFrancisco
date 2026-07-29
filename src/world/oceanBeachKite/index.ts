@@ -4,6 +4,7 @@ import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import { KITE_DESIGNS, KITE_DESIGN_ORDER, type KiteDesignId } from "./kiteDesigns";
 import { kiteBuildKey, kiteColorway, type KiteConfig } from "./kiteConfig";
 import { KiteFlyer, type KiteAnchor, type KiteFlyerFrame } from "./flyer";
+import type { SandPrintSink } from "../../fx/sandPrints";
 import type { KiteFigureName } from "./choreography";
 import { createSunsetAir, type SunsetAir } from "./sunsetAir";
 import { bindOceanKiteTuning, OCEAN_KITE_TUNING } from "./tuning";
@@ -27,6 +28,11 @@ export type OceanBeachKiteOptions = {
    * would land its pipeline compile on the frame the player pressed the button.
    */
   warmup?: (object: THREE.Object3D) => Promise<void>;
+  /**
+   * The world's footprint runtime. Runners on the sand report their footfalls
+   * to it; the runtime decides whether any of them are worth drawing.
+   */
+  sandPrints?: SandPrintSink;
 };
 
 export type OceanBeachKiteFlyerState = {
@@ -262,7 +268,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
         startAirborne: lane.startFigure !== 0,
         spanScale: lane.spanScale,
         mirror: lane.mirror,
-        ledByTroupe: Boolean(leader)
+        ledByTroupe: Boolean(leader),
+        prints: options?.sandPrints
       });
       if (lane.troupe && !leader) leaders.set(lane.troupe, flyer);
       else if (leader) this.#troupe.push({ follower: flyer, leader });

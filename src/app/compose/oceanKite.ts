@@ -8,6 +8,7 @@ import type { WorldMap } from "../../world/heightmap";
 import type { Player } from "../../player/player";
 import type { DebugPanel } from "../../ui/debug";
 import type { KiteConfig } from "../../world/oceanBeachKite/kiteConfig";
+import type { SandPrintSink } from "../../fx/sandPrints";
 
 type OceanBeachKiteEncounter = import("../../world/oceanBeachKite").OceanBeachKiteEncounter;
 
@@ -39,6 +40,7 @@ export function createOceanKiteGate({
   camera,
   player,
   debugPanel,
+  sandPrints,
   onAtelierRangeChange
 }: {
   map: WorldMap;
@@ -47,6 +49,8 @@ export function createOceanKiteGate({
   camera: THREE.Camera;
   player: Player;
   debugPanel: DebugPanel;
+  /** Shared footprint runtime — the beach runners leave prints in the sand. */
+  sandPrints?: SandPrintSink;
   /** Fired when the kite atelier's HUD slot should appear or disappear. */
   onAtelierRangeChange?: (inRange: boolean) => void;
 }): {
@@ -107,7 +111,8 @@ export function createOceanKiteGate({
           // uses for the whole feature.
           warmup: async (object) => {
             await renderer.compileAsync(object, camera, scene);
-          }
+          },
+          sandPrints
         });
         // compileAsync skips invisible roots. Prepare the feature while detached,
         // and temporarily un-cull its descendants so an approach from outside
