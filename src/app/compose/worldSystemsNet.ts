@@ -1759,7 +1759,18 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
             // its boiler-room footprint alongside the authored Tea Garden and
             // the six source-authored Fort Mason replacements.
             isTeaGardenBuilding(key, index) ||
-            (key === "1_12" && index === 0) ||
+            // The Point Lobos headland. Five OSM footprints land on the cliff
+            // between the restored hall and the Cliff House shelf, isolated from
+            // the Richmond grid that starts 400 m inland at 60-80 m elevation.
+            // From the hall's ocean window they are the first thing in frame and
+            // they read as slabs hanging over the water, because at deck height
+            // the coastal land beyond subtends under a degree and hazes out to
+            // the same value as the sea while the walls stay dark. #2 is the
+            // clearest evidence that they were never meant to be here: its roof
+            // (21.4 m) sits below the terrain under it (23.4 m), so it is a
+            // fully buried building that still draws. Removing the cluster
+            // restores an empty headland; the Richmond skyline is untouched.
+            (key === "1_12" && [0, 1, 2, 3, 4].includes(index)) ||
             (key === "10_8" && [0, 19, 20, 22, 23, 24].includes(index))
         },
         {
