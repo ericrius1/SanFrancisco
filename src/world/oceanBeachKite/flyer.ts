@@ -430,6 +430,7 @@ export class KiteFlyer {
     this.#hemMaterial = hem;
     const frame = this.design.buildFrame({
       own: (geometry) => this.#ownGeometry(geometry),
+      ownMaterial: (material) => this.#ownMaterial(material),
       spar,
       accent,
       hem

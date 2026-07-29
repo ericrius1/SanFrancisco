@@ -43,6 +43,12 @@ export const SURF_FILM_SECONDS = 20;
 /** Encounter frames run before the shot arms — see `preroll` below. */
 const PREROLL_FRAMES = 600;
 
+/**
+ * Metres the lens is kept INLAND of the most seaward hand on the beach.
+ * +X is shoreward here, so this is a lower bound on eye.x. See `seawardHandX`.
+ */
+const HAND_MARGIN = 18;
+
 type Live = {
   kite: THREE.Vector3;
   runner: THREE.Vector3;
@@ -53,6 +59,19 @@ type Live = {
   breakX: (z: number) => number;
   /** World X of the waterline at this Z. */
   shoreX: (z: number) => number;
+  /**
+   * The most SEAWARD hand on the beach, and the most seaward kite.
+   *
+   * A shot has to stand inland of both, and this is why. A tether runs from a
+   * kite twenty metres up down to a hand at chest height, and if the lens is
+   * between those two points the lower half of the line is behind the camera:
+   * what is left in frame is a line descending out of a kite and stopping in
+   * mid-air over the sea, with no person on the end of it. That is exactly
+   * what "there's a kite in the water" turned out to be — not a kite that had
+   * ditched, but a camera parked in the middle of somebody's line.
+   */
+  seawardHandX: number;
+  seawardKiteX: number;
 };
 
 type Film = {
@@ -199,6 +218,82 @@ const FILMS: readonly Film[] = [
       target.y = base + mix(13, 11.5, track);
       return mix(26, 29, track);
     }
+  },
+  {
+    id: "04",
+    title: "Ocean Beach Surf · The Prism",
+    // 20.24: the disc is still whole on the water and the golden-hour air is at
+    // full strength, which is the only window in which the prism has a beam
+    // bright enough to be worth dispersing.
+    hour: 20.24,
+    exposure: 0.94,
+    // The thickest air of any of these films, and the strongest shafts. Every
+    // other look treats marine layer as a cost; this one is ABOUT it — light in
+    // the air is a volume effect, and without something for it to hang in there
+    // is nothing between the sail and the sand.
+    // 1.05 opened on a grey wash — at nine metres looking WNW into that much
+    // marine layer the first seconds were fog and nothing else. 0.82 still
+    // carries the spectrum through the air and lets the beach exist.
+    mist: 0.82,
+    shafts: 2,
+    // Flyer 7 is the prism, out on the south end of the line on its own so its
+    // forty-metre spectrum never lands through somebody else's kite.
+    subject: 7,
+    /**
+     * The rainbow shot.
+     *
+     * Three constraints fix this camera and there is very little slack once all
+     * three are satisfied:
+     *
+     *   · it must look WNW into the sun, or there are no shafts at all
+     *   · it must stand inland of every hand, or a tether crosses the sea and
+     *     reads as a kite in the water (see `seawardHandX`)
+     *   · the prism's fan leaves the far side from the sun and tilts down, so
+     *     its smear lands about forty metres INLAND of its own sail — between
+     *     the lens and the kite, which means the lens wants some height and a
+     *     downward cast or the sand it falls on is never in frame
+     *
+     * So: a low crane over the dry sand a hundred metres south-east of the
+     * prism, descending and drifting north up the line. The prism sits in the
+     * middle distance with its spectrum lying on the beach NEARER than it is,
+     * and the other six kites recede beyond it toward the headland — which is
+     * what puts it in the midground rather than at either end of the depth.
+     */
+    frame: ({ u }, live, eye, target) => {
+      const drift = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      // Anchored on the prism's own RUNNER, because the spectrum is cast
+      // relative to that flyer and this whole shot is measured off where it
+      // falls — not off the flock mean, which is eighty metres up the beach.
+      const anchor = live.runner;
+      eye.copy(anchor)
+        .addScaledVector(live.sun, -mix(96, 84, drift))
+        // Drift north, from behind the prism to level with it, so the line of
+        // kites opens out across the frame as the shot goes. Starting only
+        // thirty metres back rather than sixty: from further south the opening
+        // frame had the prism small and the beach out of shot entirely.
+        .addScaledVector(along, mix(-34, -2, drift));
+      const base = live.ground(eye.x, eye.z);
+      // Nine metres down to five: high enough to see the sand the spectrum is
+      // lying on, low enough that the kites stay well clear of the horizon.
+      // Descending, so the rainbow rises through frame as the lens drops to it.
+      eye.y = base + mix(7.5, 4.6, drift);
+      // Aim between the sail and the lit sand — a point below and inland of the
+      // kite — so the beam runs down through the middle of the frame.
+      target.copy(anchor).addScaledVector(along, mix(4, 20, drift));
+      // Starts aimed LOW — the sand and the spectrum on it have to be in the
+      // first frame, not arrive at second ten — and lifts as the crane falls,
+      // which is what walks the kites down into the frame from the top.
+      target.y = base + mix(6, 11.5, drift);
+      return mix(31, 27, drift);
+    },
+    // The surf still has to break behind all of it, so the streaming focus goes
+    // out onto the water abreast of the prism rather than sitting on the dry
+    // sand with the camera.
+    focus: ({ u }, live, out) => {
+      const z = live.runner.z - mix(20, 70, smoothstep(u));
+      out.set(live.shoreX(z) - 70, 0, z);
+    }
   }
 ];
 
@@ -263,6 +358,11 @@ function buildFilm(film: Film): Demo {
       let clock = 0;
       const breakX = (z: number) => oceanBeachBreakX(z, clock);
 
+      // Smallest X across every hand and every sail — the seaward extreme of
+      // the whole festival, refreshed each frame with the flock.
+      let seawardHandX = site.x;
+      let seawardKiteX = site.x;
+
       const readFlock = () => {
         const state = win.__sf?.oceanBeachKite?.debugState();
         if (!state || !state.flyers.length) {
@@ -275,7 +375,15 @@ function buildFilm(film: Film): Demo {
           runner.set(site.x, groundY, site.z);
           kite.set(site.x - 40, groundY + 30, site.z);
           flock.copy(kite);
+          seawardHandX = site.x;
+          seawardKiteX = site.x - 40;
           return true;
+        }
+        seawardHandX = Infinity;
+        seawardKiteX = Infinity;
+        for (const flyer of state.flyers) {
+          seawardHandX = Math.min(seawardHandX, flyer.runner[0]);
+          seawardKiteX = Math.min(seawardKiteX, flyer.kite[0]);
         }
         const subject = state.flyers[Math.min(film.subject, state.flyers.length - 1)];
         kite.set(subject.kite[0], subject.kite[1], subject.kite[2]);
@@ -293,6 +401,24 @@ function buildFilm(film: Film): Demo {
       const arm = () => armCinematic(ctx, {
         name,
         duration: SURF_FILM_SECONDS,
+        /**
+         * Open on a fade from black, and close on one.
+         *
+         * Partly because that is how you open a film. But it also covers a real
+         * problem the capture harness cannot: its pre-roll settles the world
+         * with forty-eight ZERO-dt frames, which lets asynchronous streaming
+         * and shader compilation finish but advances nothing that ramps on time
+         * — and the ocean's spectral cascades are the second kind. The first
+         * half-second of a shot therefore renders a flat grey sea that has not
+         * spun up yet, most visible in a wide opening frame with the whole bay
+         * in it. Six-tenths of a second of fade is longer than that takes.
+         */
+        frame: (time) => {
+          const up = Math.min(1, Math.max(0, time / 0.6));
+          const down = Math.min(1, Math.max(0, (SURF_FILM_SECONDS - time) / 0.5));
+          const ramp = up * up * (3 - 2 * up) * (down * down * (3 - 2 * down));
+          ctx.setExposure(film.exposure * ramp);
+        },
         shots: [
           {
             id: film.id,
@@ -310,8 +436,25 @@ function buildFilm(film: Film): Demo {
               sun.normalize();
               clock = sample.localTime;
               readFlock();
-              const live = { kite, runner, flock, sun, ground, breakX, shoreX };
+              const live = {
+                kite,
+                runner,
+                flock,
+                sun,
+                ground,
+                breakX,
+                shoreX,
+                seawardHandX,
+                seawardKiteX
+              };
               const focal = film.frame(sample, live, eye, target);
+              // The hard guarantee, applied after the framing has had its say:
+              // the lens never gets to stand seaward of a hand. Every tether on
+              // the beach then runs away from the camera and lands on a person
+              // standing on sand, which is the only thing that stops a line
+              // reading as a line into the water. `HAND_MARGIN` also keeps the
+              // nearest flyer out of the very edge of the frame.
+              eye.x = Math.max(eye.x, seawardHandX + HAND_MARGIN);
               setPose(out, eye, target, focal);
 
               // Steer the world's streaming focus, every frame.

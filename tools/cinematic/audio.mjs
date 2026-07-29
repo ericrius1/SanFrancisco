@@ -43,7 +43,7 @@ const PRODUCTION_DURATIONS = Object.freeze({
     `kite-to-sutro-${String(index + 1).padStart(2, "0")}`,
     15
   ])),
-  ...Object.fromEntries(Array.from({ length: 3 }, (_, index) => [
+  ...Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
     `ocean-beach-surf-${String(index + 1).padStart(2, "0")}`,
     20
   ]))
@@ -131,7 +131,7 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
   // visible stretch of beach goes off inside a few seconds, and then there is
   // a lull with nothing in it but the roar of the last one walking in and the
   // wash of the one before that arriving at the sand.
-  ...Object.fromEntries(Array.from({ length: 3 }, (_, index) => {
+  ...Object.fromEntries(Array.from({ length: 4 }, (_, index) => {
     const shot = index + 1;
     return [`ocean-beach-surf-${String(shot).padStart(2, "0")}`, Object.freeze([
       { time: 0, id: "wind", description: `surf film ${shot} opens on the onshore wind` },

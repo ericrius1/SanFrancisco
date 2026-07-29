@@ -213,7 +213,8 @@ const DEFINITIONS = Object.freeze({
   ...Object.fromEntries([
     [1, "Ocean Beach Surf · The Set", "A crane off the break: wave height to fifteen metres while a set goes off under the whole festival."],
     [2, "Ocean Beach Surf · The Waterline", "Head height at the water's edge, tracking the beach as flyer after flyer crosses the sun."],
-    [3, "Ocean Beach Surf · The Gulls", "The waterline again with the disc still on the water, tracking back as gulls work the air over the break."]
+    [3, "Ocean Beach Surf · The Gulls", "The waterline again with the disc still on the water, tracking back as gulls work the air over the break."],
+    [4, "Ocean Beach Surf · The Prism", "A low crane over the dry sand as the prism kite splits the last of the sun and lays a spectrum on the beach."]
   ].map(([index, title, description]) => {
     const suffix = String(index).padStart(2, "0");
     const id = `ocean-beach-surf-${suffix}`;
