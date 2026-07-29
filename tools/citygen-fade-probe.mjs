@@ -35,18 +35,26 @@ async function main() {
     await c.send("Page.enable"); await c.send("Runtime.enable"); await c.send("Network.enable"); await c.send("Network.setCacheDisabled", { cacheDisabled: true });
     await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
     await c.send("Page.navigate", { url: `http://127.0.0.1:${vitePort}/?autostart=1&fullfps=1` });
-    await waitEval(c, "Boolean(window.__sf && window.__sf.citygenRing)", 120000);
-    await evaluate(c, `(()=>{const s=window.__sf; s.sky.cycleEnabled=false; s.sky.setTimeOfDay(10.5); try{s.scene.environmentIntensity=0.35;}catch{} try{if(s.aiCars){s.aiCars.prePhysics=()=>{};s.aiCars.update=()=>{};if(s.aiCars.postPhysics)s.aiCars.postPhysics=()=>{};}}catch{} if(!window.__f){window.__f=1;s.chase.update=()=>{};s.player.update=()=>{};} return 1;})()`);
+    // The citygen ring is zone-boot deferred (post-reveal + exterior pipeline
+    // prepare) — wait for the RING, not just the ref that exists at boot.
+    await waitEval(c, "Boolean(window.__sf && window.__sf.citygenRing && window.__sf.citygenRing.current)", 240000);
+    await evaluate(c, `(()=>{const s=window.__sf; s.sky.cycleEnabled=false; s.sky.setTimeOfDay(10.5); s.hud?.setHidden?.(true); try{s.scene.environmentIntensity=0.35;}catch{} try{if(s.aiCars){s.aiCars.prePhysics=()=>{};s.aiCars.update=()=>{};if(s.aiCars.postPhysics)s.aiCars.postPhysics=()=>{};}}catch{} if(!window.__f){window.__f=1;s.chase.update=()=>{};s.player.update=()=>{};} return 1;})()`);
     const gy = await evaluate(c, "window.__sf.map.groundHeight(900,2400)");
     const setCam = (px, py, pz, lx, ly, lz) => evaluate(c, `(()=>{const c=window.__sf.camera;c.position.set(${px},${py},${pz});c.lookAt(${lx},${ly},${lz});return 1;})()`);
     // teleport in; capture during the first fade-ins, then after settling
     await evaluate(c, `(()=>{const s=window.__sf,p=s.player;const y=s.map.groundHeight(900,2400)+2;p.position.set(900,y,2400);p.renderPosition.copy(p.position);s.physics.world.setBodyTransform(p.body,[900,y,2400],[0,0,0,1]);return 1;})()`);
-    for (let i = 0; i < 30; i++) await tick(c); // stream tiles first (no fade yet — loads start after)
-    // now force a fresh batch of loads to fade: nudge player slightly + capture mid-fade
-    for (let i = 0; i < 3; i++) await tick(c);
+    // Cells hydrate/publish in real time (build-lane slices + one chunk merge per
+    // frame), so gate the captures on streaming STATE, not a fixed tick count.
+    // Mid = first cells published while others still hydrate: pre-masked tiles
+    // sit empty and published cells' buildings are mid birth-grow.
+    await waitEval(c, "(()=>{const r=window.__sf.citygenRing.current;if(!r)return false;const s=r.stats();return s.cellsReady>=1;})()", 240000);
     await setCam(870, gy + 6, 2370, 905, gy + 8, 2405);
     await shot(c, "citygen_fade_mid.jpg");
-    for (let i = 0; i < 40; i++) await tick(c);
+    // Done = hydration drained + detail meshes built; give the crossfade/birth
+    // ramps a few real seconds to settle before the settled capture.
+    await waitEval(c, "(()=>{const s=window.__sf.citygenRing.current.stats();return s.hydrationQueued===0&&s.cellsReady>0&&s.detail>0;})()", 240000);
+    await sleep(4000);
+    for (let i = 0; i < 10; i++) await tick(c);
     await setCam(870, gy + 6, 2370, 905, gy + 8, 2405);
     await shot(c, "citygen_fade_done.jpg");
     console.log("[probe] stats:", JSON.stringify(await evaluate(c, "window.__sf.citygenRing.current.stats()")));

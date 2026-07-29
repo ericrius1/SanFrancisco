@@ -8,6 +8,7 @@ import { CAMERA_TUNING,  CONFIG,  FOLIAGE_TUNING, RENDER_TUNING, START, START_DE
 import { resetAllTweaks } from "../../core/persist";
 import {  formatInteractPrompt, localizeInteractText } from "../../core/input";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "../../world/oceanBeachWaves";
+import { setSeaTime } from "../../world/heightmap";
 import { tetherTreeCullFocus } from "../../world/vegetation/treeCullFocus";
 import { renderNativeTreeForestFarCulls } from "../../world/nativeTreeForest/farCullRegistry";
 import {  SKY_TUNING } from "../../world/sky";
@@ -495,6 +496,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (paused) {
       ctx.state.accumulator += frameDt; // no ctx.state.elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
+      if (player.mode === "surf") player.steerSurf(input, frameDt);
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
         player.requestSurfJump();
@@ -624,11 +626,17 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     setLocalSurfboardConfig(config);
     player.setSurfboardConfig(config);
     const request = ++netW.state.surfEntryRequest;
+    // Surf steers with the pointer, so capture it HERE — inside the keypress
+    // that started the activity. Asking after the await below would routinely
+    // land outside the browser's transient-activation window on a cold chunk
+    // load and be refused, leaving the whole control scheme dead.
+    input.requestLock();
     // Full preparation (camera + runtime + a fresh embodiment compile if the
     // grabbed board differs) so the first ridden frame is stall-free.
     void prepareSurfEntry().then(() => {
       if (request !== netW.state.surfEntryRequest || player.mode !== "walk") return;
       navigation.switchMode("surf");
+      input.requestLock();
     });
   };
 
@@ -910,11 +918,14 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
           // With no specific nearby action, E keeps the convenient broad beach
           // entry. Load camera + activity runtime before the first surf frame.
           const request = ++netW.state.surfEntryRequest;
+          // Capture the pointer inside the E keypress itself — see startSurfFromShack.
+          input.requestLock();
           void prepareSurfEntry().then((ready) => {
             if (!ready || request !== netW.state.surfEntryRequest || player.mode !== "walk") return;
             if (!nearOceanBeachShore(player.position.x, player.position.z)) return;
             player.trySwitch("surf");
-            hud.message("You're surfing — A/D carve · W climb + pump · S stall · E exits", 1);
+            input.requestLock();
+            hud.message("You're surfing — MOVE THE MOUSE to carve and climb · SPACE jumps · E exits", 2.4);
           });
         }
       }
@@ -1169,6 +1180,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
 
     // fly: mouse steers the plane at frame rate; W/S throttle happens in the fixed step
     if (player.mode === "plane") player.steerFly(input, frameDt);
+    // surf: the pointer IS the board — same frame-rate steering contract
+    if (player.mode === "surf") player.steerSurf(input, frameDt);
     // Latch hoverboard ollies at render-frame rate. On high-refresh displays a
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
@@ -1265,12 +1278,21 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !worldArrival.active &&
       core.state.wakeDeferredWildlandsGolf &&
       (
-        // Buena Vista owns the Corona skyline separately. Wake the primary
-        // Wildlands only on a real approach to one of its four regions. The
-        // authored Tea Garden owns its immediate foliage and keeps this broader
-        // park/core.state.golf bundle asleep until the player leaves that site.
+        // Buena Vista owns the Corona SKYLINE separately — its canopy is a
+        // separate forest so a Corona visit cannot grow distant redwoods in GG
+        // Park. It does not own any grass, though: blades come from the shared
+        // citywide ring that lives on this bundle, so leaving Buena Vista out of
+        // this wake left a wooded hill standing on bald ground. Approaching it
+        // wakes the bundle; the primary regions' own trees stay unmaterialized
+        // because chunk residency is distance-driven and they are kilometres
+        // away. The authored Tea Garden owns its immediate foliage and keeps
+        // this broader park/core.state.golf bundle asleep until the player
+        // leaves that site.
         (
-          nearPrimaryWildRegion(player.position.x, player.position.z, 320) &&
+          (
+            nearPrimaryWildRegion(player.position.x, player.position.z, 320) ||
+            nearBuenaVista(player.position.x, player.position.z, 320)
+          ) &&
           Math.hypot(
             player.position.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
             player.position.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
@@ -1550,6 +1572,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // ctx.state.elapsed here let the visible crest and barrel envelope drift away after
     // loading, pause, or deterministic headless stepping.
     const surfaceTime = player.mode === "surf" ? player.time : ctx.state.elapsed;
+    // Publish the sea clock: everything that physically rides the surface
+    // (hull buoyancy, swim waterline, camera wave clearance) samples
+    // waterHeight at exactly this t — the one the water is displaced with.
+    setSeaTime(surfaceTime);
     water.echoes.beginFrame(surfaceTime, camera);
     const activeEchoMesh = player.meshes[player.mode];
     const birdReady = player.mode !== "bird" || Boolean(activeEchoMesh.userData.rig);

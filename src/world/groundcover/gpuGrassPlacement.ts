@@ -91,6 +91,16 @@ export type GpuGrassLayerSpec = Readonly<{
    *  whose consumer expresses density through its own keep shape (wildflowers)
    *  wants exactly one. */
   densityLayers?: number;
+  /** Decorrelates this layer's scatter from every other layer on the same
+   *  `gridStride`. Layers sharing a stride reconstruct the SAME canonical cells,
+   *  and every placement hash is keyed on those cells alone — so without a salt
+   *  they land on bit-identical anchors and stack instead of filling the gaps
+   *  between each other. Additive layers (a near/mid/hero grass ladder that is
+   *  meant to accumulate coverage) want distinct odd salts here; a real LOD
+   *  ladder that hands off through `minRadius` wants them to MATCH, so the same
+   *  cluster is drawn by exactly one rung. Default 0 keeps the historical
+   *  scatter. */
+  placementSalt?: number;
   /** `average` seats a cluster on its footprint mean (blades hug the surface);
    *  `lowest` seats it on the footprint minimum, so a wildflower's wide skirt of
    *  petals never floats off a rise. */
@@ -144,6 +154,12 @@ export type GpuGrassStyleContext = Readonly<{
   /** Density-layer salt as uint / float — fold into hashes to decorrelate layers. */
   salt: N;
   saltF: N;
+  /** Per-candidate hash seed: mixes `base` with this candidate's density layer
+   *  and the layer's `placementSalt`. Prefer this over folding `saltF` into a
+   *  hash as an epsilon — a fractional dither of ~1e-5 leaves two density layers
+   *  on the same anchor, which is a stack rather than a scatter. Identity
+   *  (`seed(b) === b`) on density layer 0 with no placement salt. */
+  seed: (base: number) => N;
   /** World XZ (vec2) and fitted ground Y (float) of the candidate. */
   world: N;
   groundY: N;
@@ -157,8 +173,8 @@ export type GpuGrassStyleContext = Readonly<{
   /** Placement density and patchiness uniform nodes. */
   density: N;
   patchiness: N;
-  /** Canonical integer hash → [0,1). */
-  hash01: (gx: N, gz: N, salt: number) => N;
+  /** Canonical integer hash → [0,1). Accepts a `seed(...)` node as the salt. */
+  hash01: (gx: N, gz: N, salt: number | N) => N;
   /** Distance from the placement focus (metres). */
   distance: N;
   /** The layer this candidate belongs to. */
@@ -203,7 +219,7 @@ export type GpuGrassLayerInput = Readonly<{
   capacityFraction?: number;
 }>;
 
-const uintHash = (gx: N, gz: N, salt: number): N => {
+const uintHash = (gx: N, gz: N, salt: number | N): N => {
   const ux = uint(gx.add(int(WORLD_CELL_OFFSET)));
   const uz = uint(gz.add(int(WORLD_CELL_OFFSET)));
   const h = ux.mul(uint(374761393))
@@ -216,7 +232,7 @@ const uintHash = (gx: N, gz: N, salt: number): N => {
   return h;
 };
 
-const hash01 = (gx: N, gz: N, salt: number): N =>
+const hash01 = (gx: N, gz: N, salt: number | N): N =>
   float(uintHash(gx, gz, salt)).mul(HASH_TO_UNIT);
 
 // Must be an exact multiple of the field's toroidal width: unlike a hash offset,
@@ -252,37 +268,35 @@ const nearestField = (field: FoliageField, world: N): N => {
 // The shared wildlands meadow styling — extracted verbatim so it is the default
 // hook when a consumer passes no `style`. Output is bit-identical to the former
 // inline block; consumers (e.g. the botanical garden) supply their own hook.
-const defaultGrassStyle: GpuGrassStyleHook = ({ gx, gz, saltF, eco, patch, style, patchiness, hash01 }) => {
+const defaultGrassStyle: GpuGrassStyleHook = ({ gx, gz, eco, patch, style, patchiness, hash01, seed }) => {
   const vigour = mix(float(1), eco.w, patchiness.clamp(0, 1));
   const tallChance = float(0.23).mul(float(0.78).add(patch.mul(0.48)));
-  const tall = hash01(gx, gz, 31).add(saltF.mul(0.0000002980232239)).fract()
-    .lessThan(tallChance);
-  const tallHeight = float(0.9).add(
-    hash01(gx, gz, 37).add(saltF.mul(0.0000003576278687)).fract().mul(0.7)
-  );
-  const shortHeight = float(0.45).add(
-    hash01(gx, gz, 41).add(saltF.mul(0.0000004172325134)).fract().mul(0.4)
-  );
+  const tall = hash01(gx, gz, seed(31)).lessThan(tallChance);
+  const tallHeight = float(0.9).add(hash01(gx, gz, seed(37)).mul(0.7));
+  const shortHeight = float(0.45).add(hash01(gx, gz, seed(41)).mul(0.4));
   const height = select(tall, tallHeight, shortHeight)
     .mul(vigour)
     .mul(float(0.94).add(style.mul(0.12)));
   const spread = select(tall, float(1.04), float(0.86))
-    .mul(float(0.86).add(
-      hash01(gx, gz, 43).add(saltF.mul(0.0000004768371582)).fract().mul(0.32)
-    ))
+    .mul(float(0.86).add(hash01(gx, gz, seed(43)).mul(0.32)))
     .mul(float(0.94).add(vigour.mul(0.06)));
-  const brightness = float(0.86).add(
-    hash01(gx, gz, 29).add(saltF.mul(0.000000536441803)).fract().mul(0.24)
-  );
+  const brightness = float(0.86).add(hash01(gx, gz, seed(29)).mul(0.24));
   const dry = float(1).sub(patch).mul(float(0.12).add(patchiness.mul(0.1)))
     .add(style.sub(0.5).mul(0.035)).clamp(0, 1);
-  const yaw = hash01(gx, gz, 47).add(saltF.mul(0.0000006556510925)).fract()
-    .mul(Math.PI * 2);
+  const yaw = hash01(gx, gz, seed(47)).mul(Math.PI * 2);
   const wind = float(0.72).add(height.mul(0.34)).mul(select(tall, float(1.08), float(1)));
+  // Red and blue were crushed hard enough (0.60 / 0.40) that the blade field
+  // rendered as a far more saturated green than the ground it stands on, so the
+  // edge of the blade ring showed up as a colour step against the terrain and
+  // every gap between blades read as bare dirt. Measured against the rendered
+  // terrain (tools/foliage-look-shot.mjs reports the band ratio), the field was
+  // 18% short in red and 38% short in blue; these lift it onto the ground's
+  // colour while keeping grass unmistakably green. The physical reading is
+  // skylight — real grass is not a pure-green emitter.
   const color = vec3(
-    brightness.mul(float(0.6).add(dry.mul(0.28))),
-    brightness.mul(float(0.92).sub(dry.mul(0.14))),
-    brightness.mul(float(0.4).sub(dry.mul(0.06)))
+    brightness.mul(float(0.70).add(dry.mul(0.26))),
+    brightness.mul(float(0.96).sub(dry.mul(0.14))),
+    brightness.mul(float(0.66).sub(dry.mul(0.08)))
   );
   return { height, spread, yaw, wind, color };
 };
@@ -443,12 +457,25 @@ export function createGpuGrassPlacement(
       const gx = centerGx.add(localX);
       const gz = centerGz.add(localZ);
       const salt = densityLayer.mul(uint(101));
+      // The decorrelating hash seed. Every placement hash is keyed on the
+      // canonical cell alone, so the density layers used to differ by nothing
+      // but a ~1e-5 additive dither on the R2 offset — i.e. every extra layer
+      // stacked a second cluster on the SAME anchor (measured: 3 instances per
+      // distinct anchor) instead of filling the half-metre gap beside it. Same
+      // story across layers sharing a gridStride. Folding the salt into the
+      // integer seed makes each (layer, density layer) an independent point set.
+      // Deliberately identity for density layer 0 with no placement salt, so the
+      // wildflower ladder's single-layer rungs keep their exact prior scatter.
+      const saltSeed = densityLayer.mul(uint(0x9e3779b1))
+        .add(uint((input.spec.placementSalt ?? 0) >>> 0))
+        .toVar();
+      const seed = (base: number): N => uint(base).add(saltSeed);
 
-      // R2 low-discrepancy offsets with a small world-hash dither. The output
-      // remains inside its canonical cell, so motion changes candidates without
-      // making existing blades swim.
-      const h0 = hash01(gx, gz, 11).add(float(salt).mul(0.0000001192092896));
-      const h1 = hash01(gx, gz, 988).add(float(salt).mul(0.0000001788139343));
+      // R2 low-discrepancy offsets with a world-hash dither. The output remains
+      // inside its canonical cell, so motion changes candidates without making
+      // existing blades swim.
+      const h0 = hash01(gx, gz, seed(11));
+      const h1 = hash01(gx, gz, seed(988));
       const ox = float(gx).mul(R2_A1).add(float(gz).mul(R2_A2)).add(h0.mul(0.5)).fract();
       const oz = float(gx).mul(R2_A2).add(float(gz).mul(R2_A1)).add(h1.mul(0.5)).fract();
       const world = vec2(
@@ -491,6 +518,7 @@ export function createGpuGrassPlacement(
         density: densityNode,
         patchiness: patchinessNode,
         hash01,
+        seed,
         distance,
         spec: input.spec
       };
@@ -510,7 +538,7 @@ export function createGpuGrassPlacement(
             float(1),
             fill.mul(mix(float(1), patchShape, patchinessNode.clamp(0, 1))).clamp(0, 1)
           );
-          return hash01(gx, gz, 23).add(float(salt).mul(0.0000002384185791)).fract().lessThanEqual(keep);
+          return hash01(gx, gz, seed(23)).lessThanEqual(keep);
         })();
       const accepted = authoredDensity.greaterThan(0)
         .and(rolled)
@@ -524,8 +552,7 @@ export function createGpuGrassPlacement(
           // Fade rank stays here (not in the hook): the per-frame cull pass reads
           // the SAME expression as its extinction threshold, so styling can never
           // desynchronize the edge dissolve.
-          const rank = hash01(gx, gz, 59).add(float(salt).mul(0.0000005960464478)).fract()
-            .mul(0.996).add(0.002);
+          const rank = hash01(gx, gz, seed(59)).mul(0.996).add(0.002);
           transforms.element(outputIndex).assign(vec4(world.x, groundY, world.y, styled.yaw));
           shapes.element(outputIndex).assign(vec4(styled.spread, styled.height, styled.wind, radiusNode));
           colors.element(outputIndex).assign(vec4(styled.color, rank));

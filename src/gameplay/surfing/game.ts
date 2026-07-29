@@ -47,8 +47,8 @@ export class SurfExperience {
       <div class="surf-combo" data-surf-combo>x1</div>
       <div class="surf-status" data-surf-status>DROP IN</div>
       <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>X</b></div>
-      <div class="surf-meter surf-launch-meter"><span>LIP</span><i data-surf-launch></i><b>SPACE</b></div>
-      <div class="surf-controls">A/D CARVE · W CLIMB + PUMP · S STALL FOR BARREL · SPACE JUMP · E EXIT</div>`;
+      <div class="surf-meter surf-launch-meter"><span>POP</span><i data-surf-launch></i><b>SPACE</b></div>
+      <div class="surf-controls">MOUSE ↔ CARVE · MOUSE ↕ CLIMB / STALL · SPACE JUMP · E EXIT</div>`;
     this.#scoreEl = this.root.querySelector("[data-surf-score]")!;
     this.#comboEl = this.root.querySelector("[data-surf-combo]")!;
     this.#statusEl = this.root.querySelector("[data-surf-status]")!;
@@ -113,13 +113,19 @@ export class SurfExperience {
     if (surf.landingSerial !== this.#landingSerial) {
       this.#landingSerial = surf.landingSerial;
       if (surf.landedAirTime > 0.24) {
-        const label = surf.landedAirTime > 0.85 ? "BIG AIR" : "CLEAN LANDING";
+        // A committed rotation renames the trick — spinning the board on the way
+        // down is the reason to steer in the air at all.
+        const spins = Math.floor((Math.abs(surf.landedSpin) + 0.45) / (Math.PI * 2));
+        const label = spins > 0
+          ? `${spins * 360} SPIN`
+          : surf.landedAirTime > 0.85
+            ? "BIG AIR"
+            : "CLEAN LANDING";
         const points = Math.round(
-          (180 +
-            surf.landedAirTime * 420) *
+          (180 + surf.landedAirTime * 420 + spins * 320) *
             (0.55 + surf.landingQuality * 0.45)
         );
-        this.#award(points, label, "landing");
+        this.#award(points, label, "landing", spins > 0 ? "air" : "good");
       }
     }
     if (surf.cutbackSerial !== this.#cutbackSerial) {
@@ -191,18 +197,20 @@ export class SurfExperience {
       this.#status(`FLOW  ${surf.riderMotionRate.toFixed(2)}×`, "flow");
     } else if (surf.airborne) {
       this.#status(`AIR ${surf.airTime.toFixed(1)}s`, "air");
+    } else if (surf.lipReadiness > 0.72) {
+      // The actionable prompt wins over the meter notice: being up here with a
+      // full pop bar is exactly the moment to teach the jump.
+      this.#status("SPACE — LAUNCH IT", "air");
     } else if (surf.flowReady) {
-      this.#status("X — FLOW READY", "flow");
-    } else if (surf.lipReadiness > 0.82) {
-      this.#status("SPACE — POP THE LIP", "air");
+      this.#status("FLOW READY — GO BIG", "flow");
     } else if (surf.stalling) {
-      this.#status("CARVE TOWARD THE BEACH FOR SPEED", "");
+      this.#status("MOUSE DOWN — DROP FOR SPEED", "");
     } else if (surf.lip > 0.56) {
       this.#status("ON THE LIP", "air");
     } else if (surf.face > 0.34) {
       this.#status("IN THE POCKET", "good");
     } else {
-      this.#status("FIND THE FACE", "");
+      this.#status("MOUSE UP — CLIMB THE FACE", "");
     }
 
     this.#scoreEl.textContent = Math.floor(this.#score).toLocaleString();

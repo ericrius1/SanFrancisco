@@ -503,7 +503,16 @@ function inMeadow(x: number, z: number): boolean {
 // zone noise so neighbours share a species — real stands, not salt-and-pepper.
 // Marin has NO matrix: it stays open golden hills (groves + lone oaks only).
 
-type MatrixSpec = { density: number; standThresh: number; species: (zone: number, x: number) => number };
+type MatrixSpec = {
+  density: number;
+  standThresh: number;
+  species: (zone: number, x: number) => number;
+  /** Grid pitch for this region's matrix, in metres. Defaults to MATRIX_CELL.
+   *  This — not `density` — is what caps a region's canopy: density only thins
+   *  the cells that exist, so a region already keeping most of its cells cannot
+   *  get denser without a finer pitch. */
+  cell?: number;
+};
 const MATRIX: Partial<Record<WildRegionId, MatrixSpec>> = {
   ggpark: {
     density: 0.46,
@@ -528,6 +537,14 @@ const MATRIX: Partial<Record<WildRegionId, MatrixSpec>> = {
     // Compact, continuously wooded urban hill. The groves establish its mass;
     // this matrix stitches them together into a canopy instead of isolated
     // specimen dots. Oaks stay common around the summit opening.
+    //
+    // The 11 m shared pitch was the real cap here: the park is only ~151k m², so
+    // it offered ~1250 cells, and at 0.66 × stand the whole hill could never
+    // hold more than ~600 trees — one per ~260 m², a savanna, not the closed
+    // eucalyptus canopy Buena Vista actually is. An 8 m pitch nearly doubles the
+    // cells; the global 5.5 m min-spacing hash still thins the result, so this
+    // fills the stands rather than stacking trunks.
+    cell: 8,
     density: 0.66,
     standThresh: 0.26,
     species: (zone) => zone < 0.32
@@ -751,12 +768,13 @@ export function collectWildTrees(
     const spec = MATRIX[region.id];
     if (!spec) return; // Marin: no matrix, stays open
     const salt = 6000 + region.id.length * 17;
+    const cell = spec.cell ?? MATRIX_CELL;
     let gx = 0;
-    for (let x = region.minX; x <= region.maxX; x += MATRIX_CELL, gx++) {
+    for (let x = region.minX; x <= region.maxX; x += cell, gx++) {
       let gz = 0;
-      for (let z = region.minZ; z <= region.maxZ; z += MATRIX_CELL, gz++) {
-        const px = x + (hash2(gx, gz, salt) - 0.5) * MATRIX_CELL * 1.4;
-        const pz = z + (hash2(gx, gz, salt + 1) - 0.5) * MATRIX_CELL * 1.4;
+      for (let z = region.minZ; z <= region.maxZ; z += cell, gz++) {
+        const px = x + (hash2(gx, gz, salt) - 0.5) * cell * 1.4;
+        const pz = z + (hash2(gx, gz, salt + 1) - 0.5) * cell * 1.4;
         // stand mask: smooth so stands have dense hearts + feathered edges
         const stand = smoothstep(spec.standThresh - 0.05, spec.standThresh + 0.12, valueNoise(px, pz, 300, salt + 2));
         if (stand <= 0) continue;

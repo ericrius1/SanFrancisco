@@ -140,6 +140,11 @@ interface Tiles {
   unsuppressBuilding(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
   suppressBuildingMesh(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
   unsuppressBuildingMesh(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
+  /** Optional batched forms of the mesh-only suppress/restore (one alive-row
+   *  sync instead of per-building syncs). The hydration pre-mask hides a whole
+   *  tile's shells at once; hosts without them fall back to per-building calls. */
+  suppressBuildingMeshBatch?(key: string, indices: readonly number[]): void;
+  unsuppressBuildingMeshBatch?(key: string, indices: readonly number[]): void;
   /** Authored replacements (landmarks, bespoke sites) own these footprints and
    *  must never be materialized or revived by the procedural building ring. */
   isBuildingSuppressed?(key: string, index: number): boolean;
@@ -1579,6 +1584,58 @@ export async function createCityGenRing(
     }
   };
 
+  // ---- hydration shell pre-mask ----------------------------------------------
+  // The moment a cell is WANTED (queued for hydration), its baked far shells are
+  // mesh-masked. Without this, an arrival/teleport showed every surrounding
+  // tile's baked building shells for the full hydrate→merge→publish pipeline
+  // (~15-25 s), reading as floating facade tops over hills that occlude their
+  // bases; each cell then swapped its shells out abruptly at publish. Masking at
+  // queue time makes hydration read as buildings BIRTHING into an intact
+  // landscape (publishChunk stamps the chunk birth) instead of a stale skyline
+  // dissolving tile-by-tile. The registry guarantees restore: a dropped or
+  // emptied request unmasks (pump drop paths + scan sweep + dispose), and a
+  // loaded cell hands ownership to its entries, whose existing restore paths
+  // (retireEntry, publish rollback) already revive the baked meshes.
+  const maskedShellCells = new Map<string, number[]>();
+  const setShellMeshesSuppressed = (key: string, indices: readonly number[], suppressed: boolean) => {
+    if (suppressed) {
+      if (ctx.tiles.suppressBuildingMeshBatch) ctx.tiles.suppressBuildingMeshBatch(key, indices);
+      else for (const i of indices) ctx.tiles.suppressBuildingMesh(key, i, { invalidateShadows: false });
+    } else {
+      if (ctx.tiles.unsuppressBuildingMeshBatch) ctx.tiles.unsuppressBuildingMeshBatch(key, indices);
+      else for (const i of indices) ctx.tiles.unsuppressBuildingMesh(key, i, { invalidateShadows: false });
+    }
+  };
+  const maskCellShells = (key: string) => {
+    if (maskedShellCells.has(key)) return;
+    // Same eligibility materializeBuilding applies, read straight off the packed
+    // grid (or the retained rich-cell cache) — no Entry hydration happens here.
+    let indices: number[];
+    const cached = materializedCells.get(key);
+    if (cached) indices = cached.map((e) => e.i);
+    else {
+      indices = [];
+      const range = cellRanges.get(key);
+      if (grid && range) {
+        for (let p = range[0]; p < range[1]; p++) {
+          if (!READY.has(grid.archetypes[grid.archetypeCodes[p]])) continue;
+          const i = grid.sourceIndices[p];
+          if (ctx.tiles.isBuildingSuppressed?.(key, i) || opts.excludeBuilding?.(key, i)) continue;
+          indices.push(i);
+        }
+      }
+    }
+    if (!indices.length) return;
+    setShellMeshesSuppressed(key, indices, true);
+    maskedShellCells.set(key, indices);
+  };
+  const unmaskCellShells = (key: string) => {
+    const indices = maskedShellCells.get(key);
+    if (!indices) return;
+    maskedShellCells.delete(key);
+    setShellMeshesSuppressed(key, indices, false);
+  };
+
   // ---- cell load / unload -----------------------------------------------------
   const disposeCellChunk = (cell: CellState) => {
     cell.frontGateHandle?.cancel();
@@ -1589,6 +1646,20 @@ export async function createCityGenRing(
     cell.chunk = null;
   };
   const loadCell = (key: string, entries: Entry[]) => {
+    // Queue-time shell-mask handoff: every materialized entry's baked shell is
+    // (re)asserted hidden for the chunk-building phase — from here on the
+    // per-entry paths own restoration (retireEntry on unload, publishChunk's
+    // rollback on failure). Any pre-masked building the hydration did NOT
+    // materialize (exclusion landed mid-flight) is unmasked now, or nothing
+    // would ever revive it.
+    const masked = maskedShellCells.get(key);
+    maskedShellCells.delete(key);
+    if (masked) {
+      const materialized = new Set(entries.map((e) => e.i));
+      const orphaned = masked.filter((i) => !materialized.has(i));
+      if (orphaned.length) setShellMeshesSuppressed(key, orphaned, false);
+    }
+    setShellMeshesSuppressed(key, entries.map((e) => e.i), true);
     const [ix, iz] = key.split("_").map(Number);
     const cell: CellState = { key, ix, iz, entries,
       // conform LOD chunk buildings to terrain (highest ground under each footprint
@@ -1703,6 +1774,7 @@ export async function createCityGenRing(
     if (activeCellHydration && !cellRequestIsCurrent(activeCellHydration)) {
       if (pendingCells.get(activeCellHydration.key) === activeCellHydration.generation) {
         pendingCells.delete(activeCellHydration.key);
+        unmaskCellShells(activeCellHydration.key);
       }
       activeCellHydration = null;
     }
@@ -1713,7 +1785,12 @@ export async function createCityGenRing(
         return;
       }
       if (!cellRequestIsCurrent(request)) {
-        if (pendingCells.get(request.key) === request.generation) pendingCells.delete(request.key);
+        // A same-key request under a NEWER generation keeps the mask — only a
+        // request that dies without a successor restores the baked shells.
+        if (pendingCells.get(request.key) === request.generation) {
+          pendingCells.delete(request.key);
+          unmaskCellShells(request.key);
+        }
         continue;
       }
       const cached = materializedCells.get(request.key);
@@ -1721,6 +1798,7 @@ export async function createCityGenRing(
         touchMaterializedCell(request.key, cached);
         pendingCells.delete(request.key);
         if (cached.length) loadCell(request.key, cached);
+        else unmaskCellShells(request.key);
         if (cellQueue.length) return "again";
         cellHydrationScheduled = false;
         return;
@@ -1728,6 +1806,7 @@ export async function createCityGenRing(
       const range = cellRanges.get(request.key);
       if (!range) {
         pendingCells.delete(request.key);
+        unmaskCellShells(request.key);
         continue;
       }
       activeCellHydration = { ...request, cursor: range[0], end: range[1], entries: [] };
@@ -1748,6 +1827,7 @@ export async function createCityGenRing(
     activeCellHydration = null;
     if (pendingCells.get(task.key) === task.generation) pendingCells.delete(task.key);
     if (cellRequestWithinRange(task) && task.entries.length) loadCell(task.key, task.entries);
+    else unmaskCellShells(task.key); // dropped or hydrated empty — restore the baked shells
     if (cellQueue.length) return "again";
     cellHydrationScheduled = false;
     return;
@@ -1772,6 +1852,11 @@ export async function createCityGenRing(
         ctx.tiles.suppressBuildingMesh(e.key, e.i, { invalidateShadows: false });
         suppressed.push(e);
       }
+      // The tile's shells were masked back at queue time, so publication is no
+      // longer an atomic same-silhouette swap: stamp the shared-material birth
+      // so this cell's buildings GROW in (the same ramp the front-gate reveal
+      // uses) instead of popping into an empty block.
+      cell.chunk.markVisibleBirth(materializeField.worldTime.value as number);
       cell.phase = "ready";
       tracer.count("citygenChunkPublish");
     } catch (error) {
@@ -1992,6 +2077,18 @@ export async function createCityGenRing(
       for (const cellRequest of wantedCells) {
         pendingCells.set(cellRequest.key, cellRequest.generation);
         cellQueue.push(cellRequest);
+        // Hide this tile's baked shells NOW (see the pre-mask block above):
+        // hydration must read as buildings arriving, not shells lingering.
+        maskCellShells(cellRequest.key);
+      }
+      // Sweep masks whose request died without reaching a pump restore path —
+      // a teleport clears the queue wholesale before the pump can see it. The
+      // invariant after every scan: masked ⇒ pending (loaded cells hand their
+      // mask to per-entry ownership in loadCell).
+      if (maskedShellCells.size) {
+        for (const key of [...maskedShellCells.keys()]) {
+          if (!pendingCells.has(key) && !loaded.has(key)) unmaskCellShells(key);
+        }
       }
       ensureCellHydrationPump();
 
@@ -2163,6 +2260,9 @@ export async function createCityGenRing(
       cellQueue.length = 0;
       activeCellHydration = null;
       pendingCells.clear();
+      // Restore shells of never-loaded masked cells; loaded cells restore
+      // theirs per entry through finishCellRetirementNow below.
+      for (const key of [...maskedShellCells.keys()]) unmaskCellShells(key);
       if (activeDetailBuild) clearTimeout(activeDetailBuild.timer);
       activeDetailBuild = null;
       detailBuildQueue.length = 0;

@@ -93,16 +93,42 @@ assert(r2Spacing.nearTouching < hashSpacing.nearTouching * 0.4,
 assert.deepEqual(r2Offset(-413, 271, 11), r2Offset(-413, 271, 11),
   "R2 offsets must remain deterministic at negative world cells");
 
-assert.equal(WILD_GRASS_RING_RADIUS, 110, "far field must reach 110m");
+assert.equal(WILD_GRASS_RING_RADIUS, 132, "far field must reach 132m");
 assert.deepEqual(wildGrassLayersAt(0), ["far", "mid", "near", "hero"]);
 assert.deepEqual(wildGrassLayersAt(20), ["far", "mid", "near"]);
 assert.deepEqual(wildGrassLayersAt(40), ["far", "mid"]);
 assert.deepEqual(wildGrassLayersAt(90), ["far"]);
-assert.deepEqual(wildGrassLayersAt(111), []);
+assert.deepEqual(wildGrassLayersAt(133), []);
+// Per-cell ideal, so it counts blade strips and not the extra distinct anchors
+// the salts above unlock — the real close-field gain is roughly this × the
+// density layers that now land on their own spots instead of stacking.
 assert(
-  wildGrassBladeDensityAt(0) >= 23,
-  `close field must exceed 23 blade strips/m², got ${wildGrassBladeDensityAt(0)}`
+  wildGrassBladeDensityAt(0) >= 48,
+  `close field must exceed 48 blade strips/m², got ${wildGrassBladeDensityAt(0)}`
 );
+
+// The additive layers must SCATTER, not STACK. near/mid/hero share gridStride 1,
+// so they reconstruct identical canonical cells and every placement hash is
+// keyed on those cells alone — without distinct salts all three land on
+// bit-identical anchors (this shipped: measured 683 anchors shared 100% across
+// the three layers, plus 3 co-located instances each from the density layers,
+// i.e. a 2.2 tuft/m² field pretending to be a 15 tuft/m² one). Any layer added
+// on an existing stride needs its own salt here, or it is drawing someone
+// else's clusters a second time.
+const saltsByStride = new Map();
+for (const [name, spec] of Object.entries(WILD_GRASS_LAYER_SPECS)) {
+  assert.equal(typeof spec.placementSalt, "number", `${name} must declare a placementSalt`);
+  const peers = saltsByStride.get(spec.gridStride) ?? [];
+  for (const [peerName, peerSalt] of peers) {
+    assert.notEqual(
+      spec.placementSalt, peerSalt,
+      `${name} and ${peerName} share gridStride ${spec.gridStride} AND a placement salt — ` +
+      "they will scatter onto identical anchors and stack instead of accumulating coverage"
+    );
+  }
+  peers.push([name, spec.placementSalt]);
+  saltsByStride.set(spec.gridStride, peers);
+}
 
 for (const [name, spec] of Object.entries(WILD_GRASS_LAYER_SPECS)) {
   assert(spec.fadeBand >= 8, `${name} fade must be a broad rank-staggered band`);
@@ -135,7 +161,10 @@ let capacity = 0;
 for (const [name, spec] of Object.entries(WILD_GRASS_LAYER_SPECS)) {
   const gpu = wildGrassGpuCandidateCapacity(spec);
   assert.equal(gpu.side % 2, 1, `${name} candidate square must have one stable centre cell`);
-  assert(gpu.capacity > gpu.side ** 2 * 2, `${name} capacity must cover all three density layers`);
+  assert.equal(
+    gpu.capacity, gpu.side ** 2 * (spec.densityLayers ?? 3),
+    `${name} capacity must cover exactly its declared density layers`
+  );
   capacity += gpu.capacity;
 
   const step = 0.68 * spec.gridStride;
@@ -155,9 +184,12 @@ for (const [name, spec] of Object.entries(WILD_GRASS_LAYER_SPECS)) {
   flatTriangles += triangles;
 }
 assert.equal(Object.keys(flatLayers).length, 4);
-assert.equal(capacity, 204204, "fixed GPU candidate capacity changed unexpectedly");
+assert.equal(capacity, 201731, "fixed GPU candidate capacity changed unexpectedly");
 assert(flatCount > 45_000, `flat default field lost too much coverage (${flatCount})`);
-assert(flatTriangles < 200_000, `default compacted geometry exceeded its envelope (${flatTriangles})`);
+// Envelope raised deliberately with the density pass: the ring reaches 132 m and
+// every layer carries several times the blades it used to. This is the budget
+// ceiling — a change that pushes past it is trading frame time, not free.
+assert(flatTriangles < 600_000, `default compacted geometry exceeded its envelope (${flatTriangles})`);
 assert(capacity * 48 < 10 * 1024 * 1024, "GPU output buffers must stay below 10MiB");
 
 console.log("wild grass additive layer contract: ok", JSON.stringify({
