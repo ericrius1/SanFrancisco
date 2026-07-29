@@ -1,0 +1,457 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>surf feel harness</title>
+<!--
+  Deterministic surf-handling harness. Open /tools/surf-feel-harness.html on the
+  dev server: it imports the REAL controller, camera and wave field and runs them
+  against a stub physics solver, so the handling numbers below (turn rate, trim
+  recovery, climb range, jump apex and hang time, camera containment) can be
+  re-measured in under a second while tuning.
+
+  This is the fast inner loop, not the acceptance gate — tools/surf-probe.mjs
+  still drives the same contract through the real app in headless WebGPU.
+-->
+<pre id="out" style="font:12px ui-monospace,monospace;white-space:pre-wrap"></pre>
+<script type="module">
+  import * as THREE from "three/webgpu";
+  import { SurfController } from "/src/vehicles/surf/controller.ts";
+  import { SurfCameraController } from "/src/vehicles/surf/camera.ts";
+  import { Input } from "/src/core/input.ts";
+  import { waterHeight } from "/src/world/heightmap.ts";
+  import { nearestOceanBeachCrest, OCEAN_BEACH_SURF } from "/src/world/oceanBeachWaves.ts";
+
+  const lines = [];
+  const log = (...a) => {
+    lines.push(a.join(" "));
+    document.getElementById("out").textContent = lines.join("\n");
+  };
+  const DT = 1 / 60;
+
+  function makeInput() {
+    return {
+      suspended: false,
+      surfDX: 0,
+      surfDY: 0,
+      keys: new Set(),
+      presses: new Set(),
+      axis(neg, pos) {
+        return (this.keys.has(pos) ? 1 : 0) - (this.keys.has(neg) ? 1 : 0);
+      },
+      pressed(c) {
+        return this.presses.has(c);
+      },
+      down(c) {
+        return this.keys.has(c);
+      },
+      held(c) {
+        return this.keys.has(c);
+      }
+    };
+  }
+
+  function makeWorld(state) {
+    let next = 1;
+    return {
+      createBox() {
+        return next++;
+      },
+      setBodyGravityScale() {},
+      setBodyAwake() {},
+      setBodyVelocity(_b, lin) {
+        state.v = [lin[0], lin[1], lin[2]];
+      },
+      setBodyTransform(_b, pos) {
+        state.pos = [pos[0], pos[1], pos[2]];
+      },
+      getBodyVelocity() {
+        return { linear: state.v, angular: [0, 0, 0] };
+      }
+    };
+  }
+
+  function makeSim() {
+    const state = { v: [0, 0, 0], pos: [0, 0, 0] };
+    const world = makeWorld(state);
+    const ctx = {
+      physics: { world },
+      map: {},
+      body: 0,
+      position: new THREE.Vector3(OCEAN_BEACH_SURF.entryX, 0, OCEAN_BEACH_SURF.entryZ),
+      quaternion: new THREE.Quaternion(),
+      velocity: new THREE.Vector3(),
+      speed: 0,
+      heading: 0,
+      time: 12,
+      indoor: false,
+      raking: false,
+      driveSpec: {},
+      snapRenderPose() {}
+    };
+    const controller = new SurfController();
+    controller.enter(ctx);
+    ctx.body = controller.spawnBody(ctx, 0);
+    const input = makeInput();
+    const camera = new THREE.PerspectiveCamera(60, 1.6, 0.1, 1000);
+    const rig = new SurfCameraController(60);
+    const player = {
+      renderPosition: new THREE.Vector3(),
+      surfTelemetry: controller.telemetry,
+      time: ctx.time
+    };
+
+    function step(frames, drive = () => {}) {
+      const trace = [];
+      for (let i = 0; i < frames; i++) {
+        input.presses.clear();
+        input.surfDX = 0;
+        input.surfDY = 0;
+        drive(i, input, controller);
+        if (input.presses.has("Space")) controller.requestJump();
+        // frame-rate steering, exactly like frameBody.ts
+        controller.steerSurf(input, DT);
+        ctx.time += DT;
+        const frame = { camYaw: 0, aim: new THREE.Vector3(), v: { linear: state.v } };
+        controller.update(ctx, DT, input, frame);
+        // stand in for the physics solver: integrate the committed velocity
+        ctx.position.x += state.v[0] * DT;
+        ctx.position.z += state.v[2] * DT;
+        ctx.position.y += state.v[1] * DT;
+        player.renderPosition.copy(ctx.position);
+        player.time = ctx.time;
+        rig.update(DT, camera, player);
+        const cam = rig.diagnostics();
+        // telemetry is one long-lived mutable object — snapshot what we read
+        const t = controller.telemetry;
+        trace.push({
+          t: {
+            phase: t.phase,
+            clearance: t.clearance,
+            speed: t.speed,
+            surfaceY: t.surfaceY,
+            boardYaw: t.boardYaw,
+            lineDirection: t.lineDirection,
+            airSpin: t.airSpin,
+            waveSerial: t.waveSerial,
+            crestDistance: t.crestDistance
+          },
+          cam,
+          camCrest: nearestOceanBeachCrest(cam.position.x, cam.position.z, ctx.time).distance,
+          pos: ctx.position.clone(),
+          v: [...state.v]
+        });
+      }
+      return trace;
+    }
+
+    return { ctx, controller, input, step, rig, player };
+  }
+
+  const finite = (v) => Number.isFinite(v);
+  let failures = 0;
+  function check(ok, label, evidence) {
+    if (!ok) failures++;
+    log(`${ok ? "PASS" : "FAIL"}  ${label}${evidence === undefined ? "" : "  " + JSON.stringify(evidence)}`);
+  }
+
+  // --- 1. neutral cruise -----------------------------------------------------
+  {
+    const sim = makeSim();
+    const trace = sim.step(60 * 25);
+    let minClear = Infinity,
+      minSpeed = Infinity,
+      maxYawOff = 0,
+      minCamWater = Infinity,
+      minCamCrest = Infinity,
+      allFinite = true,
+      behind = 1;
+    const phases = new Set();
+    for (const f of trace) {
+      phases.add(f.t.phase);
+      minClear = Math.min(minClear, f.t.clearance);
+      minSpeed = Math.min(minSpeed, f.t.speed);
+      const base = f.t.lineDirection > 0 ? Math.PI : 0;
+      maxYawOff = Math.max(
+        maxYawOff,
+        Math.abs(Math.atan2(Math.sin(f.t.boardYaw - base), Math.cos(f.t.boardYaw - base)))
+      );
+      minCamWater = Math.min(minCamWater, f.cam.waterClearance);
+      behind = Math.min(behind, f.cam.behindAlignment);
+      minCamCrest = Math.min(minCamCrest, f.camCrest);
+      allFinite &&= finite(f.cam.position.x) && finite(f.cam.position.y) && finite(f.pos.y);
+    }
+    check(allFinite && minClear >= -0.001, "neutral 25 s never sinks the hull", { minClear });
+    check(minSpeed >= 5, "neutral 25 s never stalls out", { minSpeed });
+    check([...phases].every((p) => ["ride", "air", "recover"].includes(p)), "phases stay in the endless loop", [...phases]);
+    check(maxYawOff < 0.5, "hands off, auto-trim holds the down-line heading", { maxYawOffDeg: (maxYawOff * 180) / Math.PI });
+    check(minCamWater > 0.4, "camera never dips into the water", { minCamWater });
+    check(minCamCrest > 0.6, "camera never crosses the crest into the wave", { minCamCrest });
+    check(behind > 0.55, "camera stays behind the rider", { behind });
+  }
+
+  // --- 2. mouse steering -----------------------------------------------------
+  {
+    const sim = makeSim();
+    sim.step(30);
+    const before = sim.controller.telemetry.boardYaw;
+    // a 250 px flick right, held for 20 frames
+    const right = sim.step(20, (i, input) => {
+      input.surfDX = 12.5;
+    });
+    const turned = sim.controller.telemetry.boardYaw;
+    const dYaw = Math.atan2(Math.sin(turned - before), Math.cos(turned - before));
+    check(dYaw < -0.7, "a 250 px mouse-right flick swings the nose right ~45°+", {
+      deg: (dYaw * 180) / Math.PI
+    });
+    // hands off — the trim spring straightens the board out again
+    sim.step(150);
+    const base = sim.controller.telemetry.lineDirection > 0 ? Math.PI : 0;
+    const off = Math.abs(
+      Math.atan2(
+        Math.sin(sim.controller.telemetry.boardYaw - base),
+        Math.cos(sim.controller.telemetry.boardYaw - base)
+      )
+    );
+    check(off < 0.3, "hands off, the board settles back onto the line", { offDeg: (off * 180) / Math.PI });
+    void right;
+
+    // keep turning the same way: the ride genuinely comes around = cutback
+    const dirBefore = sim.controller.telemetry.lineDirection;
+    const cutBefore = sim.controller.telemetry.cutbackSerial;
+    sim.step(140, (i, input) => {
+      input.surfDX = 9;
+    });
+    check(
+      sim.controller.telemetry.cutbackSerial > cutBefore,
+      "holding a turn comes all the way around into a scored cutback",
+      {
+        dirBefore,
+        after: sim.controller.telemetry.lineDirection,
+        cutbacks: sim.controller.telemetry.cutbackSerial - cutBefore
+      }
+    );
+  }
+
+  // --- 3. mouse-up climbs, mouse-down drops ----------------------------------
+  {
+    const sim = makeSim();
+    sim.step(40);
+    const start = sim.controller.telemetry.crestDistance;
+    sim.step(150, (i, input) => {
+      input.surfDY = -6;
+    });
+    const climbed = sim.controller.telemetry.crestDistance;
+    check(climbed < start - 3, "mouse up climbs the face toward the lip", { start, climbed });
+    const power = sim.controller.telemetry.lipReadiness;
+    check(power > 0.6, "the POP meter fills as you climb", { power });
+    sim.step(150, (i, input) => {
+      input.surfDY = 6;
+    });
+    check(sim.controller.telemetry.crestDistance > climbed + 2, "mouse down drops back down the face", {
+      climbed,
+      dropped: sim.controller.telemetry.crestDistance
+    });
+  }
+
+  // --- 4. jumping ------------------------------------------------------------
+  function measureJump(climbFrames) {
+    const sim = makeSim();
+    sim.step(40);
+    if (climbFrames) sim.step(climbFrames, (i, input) => (input.surfDY = -6));
+    const launchSerial = sim.controller.telemetry.launchSerial;
+    let apex = 0;
+    let airFrames = 0;
+    const baseY = sim.ctx.position.y;
+    const trace = sim.step(240, (i, input) => {
+      if (i === 0) input.presses.add("Space");
+      if (climbFrames && i < 20) input.surfDY = -6;
+    });
+    for (const f of trace) {
+      if (f.t.phase === "air") {
+        airFrames++;
+        apex = Math.max(apex, f.pos.y - f.t.surfaceY);
+      }
+    }
+    return {
+      launched: sim.controller.telemetry.launchSerial > launchSerial,
+      apex,
+      airTime: airFrames * DT,
+      landed: sim.controller.telemetry.landingSerial,
+      phase: sim.controller.telemetry.phase,
+      baseY
+    };
+  }
+  {
+    const flat = measureJump(0);
+    check(flat.launched && flat.airTime > 0.9 && flat.apex > 1.5, "Space from a neutral trim is a real jump", flat);
+    const big = measureJump(150);
+    check(big.launched && big.airTime > 1.6 && big.apex > 4, "Space high on the face is a big air", big);
+    check(
+      big.apex > flat.apex * 1.4 && big.airTime > flat.airTime * 1.25,
+      "climbing is visibly rewarded with height and hang time",
+      { flatApex: flat.apex, bigApex: big.apex, flatAir: flat.airTime, bigAir: big.airTime }
+    );
+    check(flat.phase === "ride" && big.phase === "ride", "both land back onto a clean ride", {
+      flat: flat.phase,
+      big: big.phase
+    });
+  }
+
+  // --- 5. air steering + spin ------------------------------------------------
+  {
+    const sim = makeSim();
+    sim.step(40);
+    sim.step(120, (i, input) => (input.surfDY = -6));
+    const trace = sim.step(260, (i, input) => {
+      if (i === 0) input.presses.add("Space");
+      if (i > 2) input.surfDX = 14;
+    });
+    let maxSpin = 0;
+    let minCamWater = Infinity;
+    for (const f of trace) {
+      maxSpin = Math.max(maxSpin, Math.abs(f.t.airSpin));
+      minCamWater = Math.min(minCamWater, f.cam.waterClearance);
+    }
+    check(maxSpin > 3, "steering in the air spins the board", { spinDeg: (maxSpin * 180) / Math.PI });
+    check(sim.controller.telemetry.phase !== "air", "the spin still lands", {
+      phase: sim.controller.telemetry.phase,
+      landedSpin: sim.controller.telemetry.landedSpin
+    });
+    check(minCamWater > 0.4, "camera survives a spinning air", { minCamWater });
+  }
+
+  // --- 6. camera through a hard reversal ------------------------------------
+  {
+    const sim = makeSim();
+    sim.step(60);
+    let worstCrest = Infinity;
+    let worstWater = Infinity;
+    let maxCamStep = 0;
+    let prev = null;
+    let prevWave = null;
+    let prevRider = null;
+    let worstStep = null;
+    for (let k = 0; k < 6; k++) {
+      const dir = k % 2 === 0 ? 11 : -11;
+      const trace = sim.step(110, (i, input) => (input.surfDX = dir));
+      for (const f of trace) {
+        worstCrest = Math.min(worstCrest, f.camCrest);
+        worstWater = Math.min(worstWater, f.cam.waterClearance);
+        // a next-wave handoff is a deliberate hard cut behind the whitewater
+        // transition — everything else must be continuous
+        if (prev && prevWave === f.t.waveSerial) {
+          const step = Math.hypot(
+            f.cam.position.x - prev.x,
+            f.cam.position.y - prev.y,
+            f.cam.position.z - prev.z
+          );
+          if (step > maxCamStep) {
+            maxCamStep = step;
+            worstStep = {
+              wave: f.t.waveSerial,
+              prevWave,
+              snapped: f.cam.snapped,
+              riderPrev: prevRider,
+              riderNow: [f.pos.x, f.pos.z],
+              phase: f.t.phase
+            };
+          }
+        }
+        prev = f.cam.position;
+        prevWave = f.t.waveSerial;
+        prevRider = [f.pos.x, f.pos.z];
+      }
+    }
+    check(worstCrest > 0.5, "repeated hard reversals never push the eye through the crest", { worstCrest });
+    check(worstWater > 0.4, "repeated hard reversals never dunk the eye", { worstWater });
+    check(maxCamStep < 1.2, "camera motion stays continuous (no snaps)", {
+      maxCamStepPerFrame: maxCamStep,
+      worstStep
+    });
+  }
+
+  // --- 6b. keys and stick agree with the mouse -------------------------------
+  // Sign regression guard: A/D (and the pad left stick, which shares this rail)
+  // must carve the SAME way the mouse does. They were reversed once.
+  {
+    const turnBy = (drive) => {
+      const sim = makeSim();
+      sim.step(30);
+      const before = sim.controller.telemetry.boardYaw;
+      sim.step(24, drive);
+      const after = sim.controller.telemetry.boardYaw;
+      return Math.atan2(Math.sin(after - before), Math.cos(after - before));
+    };
+    const mouseRight = turnBy((i, input) => (input.surfDX = 10));
+    const keyD = turnBy((i, input) => input.keys.add("KeyD"));
+    const keyA = turnBy((i, input) => input.keys.add("KeyA"));
+    check(
+      mouseRight < -0.2 && keyD < -0.2 && keyA > 0.2,
+      "D carves the same way as mouse-right, A the other — never reversed",
+      {
+        mouseRightDeg: (mouseRight * 180) / Math.PI,
+        keyDDeg: (keyD * 180) / Math.PI,
+        keyADeg: (keyA * 180) / Math.PI
+      }
+    );
+  }
+
+  // --- 7. the pointer actually reaches the board, locked or not --------------
+  {
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    const input = new Input(el);
+    input.setMode("surf");
+
+    const move = (opts) => {
+      const event = new MouseEvent("mousemove", { bubbles: true, ...opts });
+      try {
+        Object.defineProperties(event, {
+          movementX: { value: opts.movementX ?? 0 },
+          movementY: { value: opts.movementY ?? 0 }
+        });
+      } catch {}
+      window.dispatchEvent(event);
+    };
+
+    // pointer-locked: raw movement deltas, and the camera rail stays untouched
+    input.locked = true;
+    move({ movementX: 120, movementY: -80, clientX: 500, clientY: 300 });
+    const locked = { surf: [input.surfDX, input.surfDY], look: [input.mouseDX, input.mouseDY] };
+    check(
+      locked.surf[0] === 120 && locked.surf[1] === -80 && locked.look[0] === 0 && locked.look[1] === 0,
+      "pointer-locked mouse steers the board and never the camera",
+      locked
+    );
+
+    // unlocked (lock refused / Esc / free cursor): screen travel still steers
+    input.endFrame();
+    input.locked = false;
+    move({ clientX: 500, clientY: 300 });
+    const firstMove = [input.surfDX, input.surfDY];
+    move({ clientX: 640, clientY: 240 });
+    const unlocked = { first: firstMove, then: [input.surfDX, input.surfDY], look: [input.mouseDX, input.mouseDY] };
+    check(
+      firstMove[0] === 0 && firstMove[1] === 0 &&
+        unlocked.then[0] === 140 && unlocked.then[1] === -60 && unlocked.look[0] === 0,
+      "unlocked mouse still steers (anchors first, then differences screen travel)",
+      unlocked
+    );
+
+    // leaving surf must not leak steering into the next mode
+    input.endFrame();
+    input.setMode("walk");
+    input.locked = true;
+    move({ movementX: 55, movementY: 25, clientX: 700, clientY: 260 });
+    const walk = { surf: [input.surfDX, input.surfDY], look: [input.mouseDX, input.mouseDY] };
+    check(
+      walk.surf[0] === 0 && walk.surf[1] === 0 && walk.look[0] === 55 && walk.look[1] === 25,
+      "leaving surf hands the mouse straight back to the camera",
+      walk
+    );
+    el.remove();
+  }
+
+  log("");
+  log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);
+  window.__surfHarness = { failures, lines };
+</script>

@@ -1001,6 +1001,14 @@ export class Player {
     if (this.mode === "surf") this.#modes.surf.requestJump();
   }
 
+  /** Surf steers with the pointer at render-frame rate, like the plane's fly
+   *  steering: a frame can render without a fixed step (or with three), and
+   *  mouse deltas are per-frame quantities that must be banked exactly once. */
+  steerSurf(input: Input, dt: number) {
+    if (this.mode !== "surf") return;
+    this.#modes.surf.steerSurf(input, dt);
+  }
+
   requestSurfFlow() {
     if (this.mode === "surf") return this.#modes.surf.requestFlow();
     return false;
