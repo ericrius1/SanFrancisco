@@ -430,6 +430,7 @@ export class KiteFlyer {
     this.#hemMaterial = hem;
     const frame = this.design.buildFrame({
       own: (geometry) => this.#ownGeometry(geometry),
+      ownMaterial: (material) => this.#ownMaterial(material),
       spar,
       accent,
       hem
@@ -684,7 +685,13 @@ export class KiteFlyer {
       tug: this.#tug,
       lift: tuning.lift,
       drag: tuning.drag,
-      launchGate
+      launchGate,
+      // Authored flyers keep their kites HIGH — the whole festival is seen
+      // from a beach-length away, and a low kite reads as a kite in the sea
+      // (see the note on elevationFloor). Ramped by the launch gate so the
+      // arrival's ground start is untouched. The player's own kite keeps the
+      // full window: they fly it from arm's length, where low is just low.
+      elevationFloor: this.#anchor ? 0 : 0.54 * launchGate
     });
     const flight = this.#window.state;
 
@@ -724,9 +731,20 @@ export class KiteFlyer {
 
     // A kite never touches the sand. The floor also guarantees the tail always
     // has room to hang: it keeps `availableDrop` in #updateTail positive, which
-    // is what holds the measured tail-to-sand clearance at its intended 0.2 m
+    // is what holds the measured tail-to-sand clearance at its intended value
     // instead of letting a low pass eat into it.
-    const floor = this.surfaceBelowKite() + this.design.height * 0.5 + 0.62;
+    //
+    // Authored flyers carry a much higher floor than the physical one, ramped
+    // in with the launch gate: this is the hard backstop under the elevation
+    // floor above, so no combination of figure, gust and spring overshoot can
+    // ever put a festival kite low enough to project into the sea from a
+    // distant lens. Twelve metres, not two — the number is set by camera
+    // geometry, not by collision.
+    const floor =
+      this.surfaceBelowKite() +
+      this.design.height * 0.5 +
+      0.62 +
+      (this.#anchor ? 0 : 12 * launchGate);
     if (this.kitePosition.y < floor) {
       this.kitePosition.y = floor;
       if (this.#kiteVelocity.y < 0) this.#kiteVelocity.y = 0;
@@ -784,10 +802,23 @@ export class KiteFlyer {
   #updateTail(dt: number, elapsed: number, view: THREE.Vector3, backlight: number): void {
     // The tail may never touch the sand: the probe measures exactly this
     // clearance, and a tail dragging through the beach reads as a bug.
+    //
+    // For AUTHORED flyers the clearance is seven metres, not twenty
+    // centimetres, and the reason is a lens, not a collision. The kite fix
+    // (elevation floor + altitude backstop in #updateFlight) put every SAIL
+    // safely above the wave line — and the films still showed "a kite in the
+    // ocean", because the diamond's ribbon hung from the sail all the way
+    // down to its 0.2 m clearance, and from a head-height camera a hundred
+    // metres back everything below about eight metres projects onto the strip
+    // of sea between the surf and the sky. The tail END is the lowest point
+    // of the whole silhouette; it has to clear the same band the sail does.
+    // The player's own kite keeps the sand-tickling 0.2 m — from arm's
+    // length that is charm, not a bug.
     const ground = this.surfaceBelowKite();
+    const clearance = this.#anchor ? 0.2 : 7.5;
     const availableDrop = Math.max(
       0,
-      this.kitePosition.y - ground - this.design.height * 0.5 - 0.2
+      this.kitePosition.y - ground - this.design.height * 0.5 - clearance
     );
     const deployed = smooth01((this.#window.state.energy - 0.04) / 0.55);
     this.#tailLength = Math.min(

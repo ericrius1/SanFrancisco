@@ -109,8 +109,19 @@ const SLEEP_DISTANCE = 520;
 const GOD_RAY_DISTANCE = 190;
 const GOD_RAY_EXIT_DISTANCE = 240;
 const ROUTE_STEP = 5;
-// Dry-sand offset east of the live waterline so the runner stays off the wet edge.
-const BEACH_RUNNER_PAD = 12;
+/**
+ * Dry-sand offset east of the live waterline.
+ *
+ * Sized for the KITE, not for the flyer's feet. This site's wind is offshore
+ * by design (292° WNW — see OCEAN_KITE_TUNING.windBearing, which explains why),
+ * so the cloth hangs downwind of the hand, out toward the water: at full line
+ * and a low elevation that is about thirty metres of westward reach. A pad
+ * that only kept the runner off the wet edge therefore put kites out over the
+ * surf, and the lower ones read as floating in it. Thirty metres of pad keeps
+ * the whole flock over sand at every point in every figure, and thirty metres
+ * up the beach is where people stand to fly a kite anyway.
+ */
+const BEACH_RUNNER_PAD = 30;
 
 /**
  * Walk east (shoreward) from just offshore of the anchor until `isWater` flips
