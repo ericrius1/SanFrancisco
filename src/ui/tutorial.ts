@@ -317,10 +317,14 @@ const CHAPTERS: Chapter[] = [
     steps: [
       { keys: ["M"], text: "to open the city map", check: (c) => c.mapOpen() },
       {
-        keys: ["Enter"],
-        action: "Click anywhere on the map, then press",
-        text: "to teleport there — the last thing to learn",
-        hint: "drag to pan · scroll to zoom · Esc closes the map",
+        // One card for the whole map, because you are looking at the map when
+        // you read it: panning, zooming and picking are no use as a separate
+        // beat you meet before the map is open, or as a footnote after you
+        // have already teleported.
+        keys: ["Drag", "Scroll", "Click", "Enter"],
+        action: "Use",
+        text: "to pan, zoom, pick a spot, and teleport there",
+        hint: "the labelled dots are landmarks — click one, or click any spot on the map · Esc closes it and leaves you where you are",
         check: (_c, _dt, _st, ev) => (ev.get("teleport") ?? 0) >= 1
       }
     ]
