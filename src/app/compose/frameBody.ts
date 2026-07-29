@@ -95,6 +95,15 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   const waveForward = new THREE.Vector3();
   const state = {
     cineHook: null as (((dt: number) => void) | null),
+    // Cinematic sea-clock pin. The world's sea clock is `ctx.state.elapsed`,
+    // which carries boot wall-clock — so a capture replay lands on an
+    // arbitrary wave phase every run, and no film can schedule a wave to
+    // break at a chosen shot second. A demo that needs the sea to be
+    // phase-deterministic writes `pin + localTime` here every frame (from the
+    // cine hook, which runs earlier in this same tick); everything downstream
+    // of `surfaceTime` — water displacement, shorebreak, spray, wave audio —
+    // then rides the pinned clock coherently.
+    seaTimePin: null as number | null,
   };
   await constructionSlice();
 
@@ -1593,7 +1602,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // exact clock to the displaced ocean and lazy face/roof too; using render
     // ctx.state.elapsed here let the visible crest and barrel envelope drift away after
     // loading, pause, or deterministic headless stepping.
-    const surfaceTime = player.mode === "surf" ? player.time : ctx.state.elapsed;
+    const surfaceTime = state.seaTimePin ?? (player.mode === "surf" ? player.time : ctx.state.elapsed);
     // Publish the sea clock: everything that physically rides the surface
     // (hull buoyancy, swim waterline, camera wave clearance) samples
     // waterHeight at exactly this t — the one the water is displaced with.

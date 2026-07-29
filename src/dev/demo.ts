@@ -71,6 +71,12 @@ export type DemoContext = {
   /** Install (or clear, with null) a per-frame cinematic hook that owns the
    * camera + player pose. main runs it in place of the chase camera. */
   setCine: (fn: ((dt: number) => void) | null) => void;
+  /** Pin the sea clock (null to release). The live sea clock carries boot
+   * wall-clock, so wave phase differs every capture run; a film that must
+   * schedule a break at a known shot second writes `pin + localTime` here
+   * each frame and the whole surf stack (water, shorebreak, spray, wave
+   * audio) rides the pinned clock together. */
+  setSeaTimePin?: (t: number | null) => void;
   setExposure: (v: number) => void;
   setPostFx: (values: Record<string, number | boolean>) => void;
 };
