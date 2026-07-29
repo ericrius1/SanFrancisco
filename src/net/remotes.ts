@@ -17,6 +17,7 @@ import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, animateBoard, boardFromSeed, boardVisualKey, normalizeBoardConfig, type BoardConfig } from "../vehicles/board";
 import { activateBirdAssets, buildBirdMesh, type BirdRig } from "../vehicles/bird";
 import { PhoenixPoser, RemotePhoenixFlight } from "../vehicles/bird/pose";
+import { FootfallTracker, type SandPrintSink } from "../fx/sandPrints";
 import { FEATHER_RANK, publishFeatherDrive } from "../vehicles/bird/wind";
 import { activateSurfboardAssets, animateSurfboard, buildSurfboardMesh } from "../vehicles/surf";
 import { animateSkate, buildSkateMesh, skateHueFor, SKATE_RIG_ROOT_Y } from "../vehicles/skate";
@@ -158,6 +159,8 @@ type Avatar = {
   rig: Rig | null; // character rig of the current embodiment (walk/board/drive)
   buffer: NetSample[];
   strideT: number;
+  /** Turns their walk cycle into footfalls, for prints in sand. */
+  footfalls: FootfallTracker;
   animT: number;
   speed: number; // from the last snapshot (drives the walk cycle)
   vy: number; // vertical velocity estimate (air poses)
@@ -193,7 +196,8 @@ const TMP = {
   pa: new THREE.Vector3(),
   pb: new THREE.Vector3(),
   qa: new THREE.Quaternion(),
-  qb: new THREE.Quaternion()
+  qb: new THREE.Quaternion(),
+  fwd: new THREE.Vector3()
 };
 
 function avatarForInfo(info: RemoteInfo): AvatarTraits {
@@ -262,6 +266,10 @@ export class RemotePlayers {
   localDriveMesh: () => THREE.Group | null = () => null;
   /** Local render position for distance-gating optional remote cosmetics. */
   localPlayerPosition: () => THREE.Vector3 | null = () => null;
+  /** The world's footprint runtime — a remote walking a beach leaves prints in
+   *  the same pool the local player does. Set by main; null until then, and in
+   *  probes that build a RemotePlayers on its own. */
+  sandPrints: SandPrintSink | null = null;
   /** Deterministic public-world ride resolver. Negative ids never alias a
    * server-assigned player id, so they remain safe across reconnects. */
   worldRidePose: (
@@ -529,6 +537,7 @@ export class RemotePlayers {
       rig: null,
       buffer: [],
       strideT: 0,
+      footfalls: new FootfallTracker(),
       animT: Math.random() * 10,
       speed: 0,
       vy: 0,
@@ -1031,13 +1040,38 @@ export class RemotePlayers {
         return;
       }
       const h = a.speed;
-      if (Math.abs(a.vy) > 3.2) {
+      const airborne = Math.abs(a.vy) > 3.2;
+      if (airborne) {
         poseAir(rig);
       } else if (h > 0.35) {
         a.strideT += dt * (3.0 + h * 1.05);
         poseWalk(rig, a.strideT, THREE.MathUtils.clamp((h - 5.2) / 6.3, 0, 1));
       } else {
         poseIdle(rig, a.animT);
+      }
+      // Their feet leave the same prints in sand mine do. The runtime owns
+      // every rule about whether one is worth drawing; this only reports the
+      // footfall, off the same phase their visible legs are posed from.
+      const prints = this.sandPrints;
+      if (prints?.active && !airborne && h > 0.42) {
+        const steps = a.footfalls.advance(a.strideT, true);
+        if (steps > 0) {
+          TMP.fwd.set(0, 0, -1).applyQuaternion(a.root.quaternion);
+          const forwardX = TMP.fwd.x;
+          const forwardZ = TMP.fwd.z;
+          for (let i = 0; i < steps; i++) {
+            prints.stamp(
+              a.root.position.x + forwardX * 0.14,
+              a.root.position.z + forwardZ * 0.14,
+              forwardX,
+              forwardZ,
+              a.footfalls.nextFoot(),
+              0.72 + THREE.MathUtils.clamp((h - 1.4) / 8, 0, 1) * 0.4
+            );
+          }
+        }
+      } else if (airborne) {
+        a.footfalls.advance(0, false);
       }
       // Emote layer over that base — same gates the emoting player applied
       // locally, so what their friends see matches what they see themselves.

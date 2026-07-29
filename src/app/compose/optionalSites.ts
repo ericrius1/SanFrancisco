@@ -33,6 +33,7 @@ import { LANDS_END_CENTER } from "../../world/landsEnd/meta";
 import { WAVE_ORGAN_CENTER } from "../../world/waveOrgan/meta";
 import { BEACH_PIANIST_CENTER } from "../../world/beachPianist/meta";
 import { SKATE_PLAZA_CENTER } from "../../world/skatePlaza/meta";
+import { TUTORIAL_ZONE_CENTER } from "../../world/tutorialZone/meta";
 import { SUTRO_BATHS_ARRIVAL } from "../../world/spawnPoints";
 import type { WorldMap } from "../../world/heightmap";
 import type { Physics } from "../../core/physics";
@@ -63,6 +64,7 @@ import type { LandsEndRegion } from "../../world/landsEnd";
 import type { WaveOrgan } from "../../world/waveOrgan";
 import type { BeachPianist } from "../../world/beachPianist";
 import type { SkatePlaza } from "../../world/skatePlaza";
+import type { TutorialZone } from "../../world/tutorialZone";
 import type { AfterlightExperience } from "../../gameplay/afterlight";
 import type { HangGlidingExperience } from "../../gameplay/hangGliding";
 import type { PickleballController } from "../systems/pickleball";
@@ -71,6 +73,10 @@ import { setPocketCommitted } from "../../render/pocketQuality";
 type Nature = ReturnType<typeof createNatureSoundscape>;
 type SiteGate = ReturnType<typeof createSiteGate>;
 type SutroBaths = import("../../world/sutroBaths").SutroBaths;
+type MarinHeadlandsTunnels = import("../../world/marinHeadlands").MarinHeadlandsTunnels;
+// Streaming anchor only. The geographic alignments remain in the dynamically
+// imported feature chunk, so a clean boot fetches zero Marin tunnel code.
+const MARIN_HEADLANDS_TUNNELS_CENTER = { x: -3976, z: -5810 } as const;
 
 export type OptionalSiteId =
   | "goldman"
@@ -85,7 +91,9 @@ export type OptionalSiteId =
   | "skate-plaza"
   | "pup"
   | "fort-mason-ensemble"
-  | "beach-pianist";
+  | "beach-pianist"
+  | "marin-headlands"
+  | "tutorial-zone";
 type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
 type OptionalSiteStage = () => Promise<void>;
 type OptionalSiteCompile = (
@@ -127,6 +135,11 @@ type OptionalWorldSite = {
   load: (context: OptionalSiteLoadContext) => Promise<void>;
   /** A false value prevents automatic import; explicit debug loads still work. */
   available?: () => boolean;
+  /** Per-site scenery radius. Large silhouette features can hydrate before
+   * they enter the camera frustum without making every gameplay site eager. */
+  loadDistance: number;
+  /** Hysteresis boundary for complete teardown after leaving the feature. */
+  unloadDistance: number;
 };
 
 /** Live instances the controller owns; main mirrors these into its aliases +
@@ -146,6 +159,7 @@ export type OptionalSiteRefs = {
   beachPianist: BeachPianist | null;
   skatePlaza: SkatePlaza | null;
   sutroBaths: SutroBaths | null;
+  tutorialZone: TutorialZone | null;
 };
 
 export function createOptionalSites({
@@ -246,6 +260,8 @@ export function createOptionalSites({
   let skatePlaza: SkatePlaza | null = null;
   let beachPianist: BeachPianist | null = null;
   let sutroBaths: SutroBaths | null = null;
+  let marinHeadlands: MarinHeadlandsTunnels | null = null;
+  let tutorialZone: TutorialZone | null = null;
   let pickleballController: PickleballController | null = null;
   let siteFoliage: SiteFoliageStreamer | null = null;
   // Zone-only boot allowlist (independent of the perf A/B flags). Cleared by
@@ -253,7 +269,6 @@ export function createOptionalSites({
   let zoneRestriction: ReadonlySet<OptionalSiteId> | null = zoneAllowlist ?? null;
   const zoneAllowed = (id: OptionalSiteId): boolean => !zoneRestriction || zoneRestriction.has(id);
   const OPTIONAL_SITE_APPROACH_RADIUS = 500;
-  const OPTIONAL_SITE_RECHECK_RADIUS = OPTIONAL_SITE_APPROACH_RADIUS * 1.25;
   const OPTIONAL_SITE_UNLOAD_RADIUS = 1000;
   const OPTIONAL_SITE_STARVATION_CAP_MS = 2500;
   const waitForOptionalSiteStage = () => waitForWorldBackgroundWindow(700);
@@ -263,6 +278,8 @@ export function createOptionalSites({
     error instanceof DOMException && error.name === "AbortError";
   const optionalSiteDistance = (site: OptionalWorldSite): number =>
     Math.hypot(player.position.x - site.x, player.position.z - site.z);
+  const optionalSiteRecheckDistance = (site: OptionalWorldSite): number =>
+    site.loadDistance * 1.25;
   // rAF raced against a timeout: a hidden tab has no presentation frames, and
   // an rAF-only wait would deadlock the load exactly like the tea-garden
   // backgrounded-tab build once did.
@@ -333,7 +350,7 @@ export function createOptionalSites({
       if (
         !site.forced && !site.priority &&
         (site.state === "queued" || site.state === "loading") &&
-        optionalSiteDistance(site) > OPTIONAL_SITE_RECHECK_RADIUS
+        optionalSiteDistance(site) > optionalSiteRecheckDistance(site)
       ) {
         site.controller?.abort(optionalSiteAbortError());
         throw optionalSiteAbortError();
@@ -359,7 +376,8 @@ export function createOptionalSites({
       waveOrgan,
       beachPianist,
       skatePlaza,
-      sutroBaths
+      sutroBaths,
+      tutorialZone
     });
   };
 
@@ -650,6 +668,19 @@ export function createOptionalSites({
     refreshOptionalSiteDebug();
   };
 
+  const loadTutorialZone = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
+    const { createTutorialZone } = await import("../../world/tutorialZone");
+    await stage();
+    // Construction installs a ground overlay and static bodies it owns; past
+    // this point only admission waits, never aborts.
+    const zone = createTutorialZone(map, physics, scene);
+    await prepareOptionalRoot("tutorial zone", zone.root, waitStage, compile);
+    tutorialZone = zone;
+    optionalSiteGateRegistrations["tutorial-zone"] = siteGate.register(zone.siteHooks());
+    sky.invalidateStaticShadows();
+    refreshOptionalSiteDebug();
+  };
+
   const loadBeachPianist = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { BeachPianist: LoadedBeachPianist } = await import("../../world/beachPianist");
     await stage();
@@ -663,6 +694,21 @@ export function createOptionalSites({
     beachPianist = site;
     sky.invalidateStaticShadows();
     refreshOptionalSiteDebug();
+  };
+
+  const loadMarinHeadlands = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
+    const { createMarinHeadlandsTunnels } = await import("../../world/marinHeadlands");
+    await stage();
+    const headlands = createMarinHeadlandsTunnels(map, physics, tiles);
+    try {
+      await prepareOptionalRoot("marin-headlands", headlands.root, stage, compile);
+      headlands.addTo(scene);
+      marinHeadlands = headlands;
+      sky.invalidateStaticShadows();
+    } catch (error) {
+      headlands.dispose();
+      throw error;
+    }
   };
 
   const loadSkatePlaza = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
@@ -703,7 +749,28 @@ export function createOptionalSites({
         physics,
         authoredRegions,
         sky,
-        onExteriorThinned: applySutroExteriorThinning
+        onExteriorThinned: applySutroExteriorThinning,
+        hud,
+        // The drain and the upwelling under it are a continuous swim, not a
+        // teleport: no cover, no place history, and the facing and camera are
+        // left exactly as the player had them, because the cut lands inside a
+        // dark bore where the only tell would be the world rotating. This is
+        // deliberately NOT worldArrival.arrive — the destination is the same
+        // tile, already collided and already resident, and the cover would
+        // announce a transition the geometry is trying not to have.
+        relocate: (pose) => {
+          const facing = pose.heading ?? player.heading - Math.PI;
+          // restoreState (not teleportTo): the room is 31 m below groundTop and
+          // teleportTo would clamp the landing up onto the terrain.
+          player.restoreState({
+            x: pose.x,
+            y: pose.y,
+            z: pose.z,
+            heading: facing + Math.PI,
+            mode: "walk"
+          });
+          chase.cutTo(player);
+        }
       });
       // The geographic tile already owns and displays the period hall. Warm only
       // its optional living layer (foliage, bathers and nearby effects) here.
@@ -741,9 +808,11 @@ export function createOptionalSites({
 
   const optionalWorldSite = (
     base: Pick<OptionalWorldSite, "id" | "label" | "x" | "z" | "load"> &
-      Partial<Pick<OptionalWorldSite, "available">>
+      Partial<Pick<OptionalWorldSite, "available" | "loadDistance" | "unloadDistance">>
   ): OptionalWorldSite => ({
     ...base,
+    loadDistance: base.loadDistance ?? OPTIONAL_SITE_APPROACH_RADIUS,
+    unloadDistance: base.unloadDistance ?? OPTIONAL_SITE_UNLOAD_RADIUS,
     state: "dormant",
     forced: false,
     priority: false,
@@ -788,9 +857,23 @@ export function createOptionalSites({
     optionalWorldSite({ id: "beach-pianist", label: "Beach Pianist", ...BEACH_PIANIST_CENTER, load: loadBeachPianist }),
     optionalWorldSite({
       id: "skate-plaza",
-      label: "GG Park Skate Plaza",
+      label: "GG Park Skatepark",
       ...SKATE_PLAZA_CENTER,
       load: loadSkatePlaza
+    }),
+    optionalWorldSite({
+      id: "marin-headlands",
+      label: "Marin Headlands · tunnels",
+      ...MARIN_HEADLANDS_TUNNELS_CENTER,
+      loadDistance: 3400,
+      unloadDistance: 4400,
+      load: loadMarinHeadlands
+    }),
+    optionalWorldSite({
+      id: "tutorial-zone",
+      label: "Crissy Field · Flight School",
+      ...TUTORIAL_ZONE_CENTER,
+      load: loadTutorialZone
     }),
     optionalWorldSite({
       id: "sutro-baths",
@@ -998,7 +1081,9 @@ export function createOptionalSites({
     "skate-plaza": true,
     pup: true,
     "fort-mason-ensemble": true,
-    "beach-pianist": true
+    "beach-pianist": true,
+    "marin-headlands": true,
+    "tutorial-zone": true
   };
   let optionalSitePerfGating = false;
   const OPTIONAL_SITE_GATE_ID: Partial<Record<OptionalSiteId, string>> = {
@@ -1007,7 +1092,8 @@ export function createOptionalSites({
     palace: "palace-reverie",
     afterlight: "afterlight",
     "hang-gliding": "hang-gliding",
-    pup: "pup"
+    pup: "pup",
+    "tutorial-zone": "tutorial-zone"
   };
   const optionalSitePerfAllowed = (id: OptionalSiteId): boolean =>
     !optionalSitePerfGating || optionalSitePerfEnabled[id];
@@ -1048,11 +1134,17 @@ export function createOptionalSites({
       case "wave-organ":
         if (!on && waveOrgan) waveOrgan.group.visible = false;
         break;
+      case "tutorial-zone":
+        if (!on && tutorialZone) tutorialZone.root.visible = false;
+        break;
       case "skate-plaza":
         if (!on && skatePlaza) skatePlaza.group.visible = false;
         break;
       case "beach-pianist":
         beachPianist?.setPerfSuppressed(!on);
+        break;
+      case "marin-headlands":
+        if (marinHeadlands) marinHeadlands.root.visible = on;
         break;
       case "sutro-baths":
         sutroBaths?.setPerfSuppressed(!on);
@@ -1127,6 +1219,11 @@ export function createOptionalSites({
           runtime: waveOrgan?.group.visible ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(waveOrgan?.group)
         };
+      case "tutorial-zone":
+        return {
+          runtime: tutorialZone?.root.visible ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(tutorialZone?.root)
+        };
       case "skate-plaza":
         return {
           // Pure static architecture: resident means done, there is no sim.
@@ -1137,6 +1234,11 @@ export function createOptionalSites({
         return {
           runtime: beachPianist?.group.visible ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(beachPianist?.group)
+        };
+      case "marin-headlands":
+        return {
+          runtime: marinHeadlands?.root.visible ? "STATIC" : "SLEEP",
+          sceneState: optionalSiteSceneState(marinHeadlands?.root)
         };
       case "sutro-baths":
         return {
@@ -1339,6 +1441,14 @@ export function createOptionalSites({
       sky.invalidateStaticShadows();
       refreshOptionalSiteDebug();
     },
+    "tutorial-zone": () => {
+      optionalSiteGateRegistrations["tutorial-zone"]?.dispose();
+      delete optionalSiteGateRegistrations["tutorial-zone"];
+      tutorialZone?.dispose();
+      tutorialZone = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
     "beach-pianist": () => {
       beachPianist?.dispose();
       beachPianist = null;
@@ -1352,6 +1462,11 @@ export function createOptionalSites({
       skatePlaza = null;
       sky.invalidateStaticShadows();
       refreshOptionalSiteDebug();
+    },
+    "marin-headlands": () => {
+      marinHeadlands?.dispose();
+      marinHeadlands = null;
+      sky.invalidateStaticShadows();
     },
     "sutro-baths": () => {
       sutroBaths?.dispose();
@@ -1385,19 +1500,19 @@ export function createOptionalSites({
     for (const site of optionalWorldSites) {
       const destDistance = Math.hypot(destination.x - site.x, destination.z - site.z);
       const inFlight = site.state === "queued" || site.state === "loading";
-      if (inFlight && !site.forced && destDistance > OPTIONAL_SITE_RECHECK_RADIUS) {
+      if (inFlight && !site.forced && destDistance > optionalSiteRecheckDistance(site)) {
         site.controller?.abort(optionalSiteAbortError());
       }
     }
     let nearest: OptionalWorldSite | null = null;
-    let nearestDistance = OPTIONAL_SITE_APPROACH_RADIUS;
+    let nearestDistance = Infinity;
     for (const site of optionalWorldSites) {
       if (site.state === "ready" || site.state === "failed") continue;
       if (!zoneAllowed(site.id)) continue;
       if (!optionalSitePerfAllowed(site.id)) continue;
       if (site.available?.() === false) continue;
       const destDistance = Math.hypot(destination.x - site.x, destination.z - site.z);
-      if (destDistance <= nearestDistance) {
+      if (destDistance <= site.loadDistance && destDistance <= nearestDistance) {
         nearest = site;
         nearestDistance = destDistance;
       }
@@ -1416,7 +1531,7 @@ export function createOptionalSites({
       // Ordinary travel out of residency: retire a ready site with a teardown
       // (hysteresis: load ≤ 500 m, unload ≥ 1 km) and abort an in-flight build
       // the player has clearly walked away from.
-      if (site.state === "ready" && !site.forced && distance >= OPTIONAL_SITE_UNLOAD_RADIUS) {
+      if (site.state === "ready" && !site.forced && distance >= site.unloadDistance) {
         const runtime = optionalSiteRuntimeState(site).runtime;
         const busy = runtime === "ACTIVE" || runtime === "DETAIL" ||
           (site.id === "goldman" && (pickleballController?.playing ?? false));
@@ -1424,13 +1539,13 @@ export function createOptionalSites({
       } else if (
         (site.state === "queued" || site.state === "loading") &&
         !site.forced && !site.priority &&
-        distance > OPTIONAL_SITE_RECHECK_RADIUS
+        distance > optionalSiteRecheckDistance(site)
       ) {
         site.controller?.abort(optionalSiteAbortError());
       } else if (site.state === "dormant") {
         // Starvation cap anchor: first moment the player is inside the
         // approach radius. Cleared when they wander back out.
-        if (distance <= OPTIONAL_SITE_APPROACH_RADIUS) {
+        if (distance <= site.loadDistance) {
           if (site.eligibleSince === 0) site.eligibleSince = now;
         } else {
           site.eligibleSince = 0;
@@ -1443,7 +1558,7 @@ export function createOptionalSites({
     if (sutroBaths?.debugState().nearEffectsLoading) return;
     if (optionalWorldSites.some((site) => site.state === "queued" || site.state === "loading")) return;
     let nearest: OptionalWorldSite | null = null;
-    let nearestDistanceSq = OPTIONAL_SITE_APPROACH_RADIUS * OPTIONAL_SITE_APPROACH_RADIUS;
+    let nearestDistanceSq = Infinity;
     for (const site of optionalWorldSites) {
       if (site.state !== "dormant") continue;
       if (!zoneAllowed(site.id)) continue;
@@ -1452,7 +1567,7 @@ export function createOptionalSites({
       const dx = player.position.x - site.x;
       const dz = player.position.z - site.z;
       const distanceSq = dx * dx + dz * dz;
-      if (distanceSq <= nearestDistanceSq) {
+      if (distanceSq <= site.loadDistance * site.loadDistance && distanceSq <= nearestDistanceSq) {
         nearest = site;
         nearestDistanceSq = distanceSq;
       }

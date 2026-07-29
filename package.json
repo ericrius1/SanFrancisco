@@ -22,6 +22,8 @@
     "build:building-facade-textures": "node tools/build-building-facade-textures.mjs",
     "test:building-facades": "node tools/building-facade-contract-test.mjs",
     "build:fort-mason": "node tools/build-fort-mason-site.mjs",
+    "build:st-marys": "node tools/build-st-marys-site.mjs",
+    "build:world-master": "node tools/create-world-master.mjs",
     "test:native-trees": "node --experimental-strip-types src/world/treeCompiler/probe.ts && node --experimental-strip-types src/world/vegetation/nativeTreeRecipes.probe.ts",
     "test:native-tree-lod-transition": "node --experimental-strip-types tools/native-tree-lod-transition-test.mjs",
     "precompress": "node tools/precompress-dist.mjs",

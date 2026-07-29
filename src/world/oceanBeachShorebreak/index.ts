@@ -27,8 +27,6 @@ import {
   float,
   max,
   mix,
-  mx_fractal_noise_float,
-  mx_noise_float,
   positionLocal,
   positionWorld,
   saturate,
@@ -39,7 +37,7 @@ import {
 import { materializeAmount } from "../../render/materialize";
 import { oceanBeachApproxShoreX } from "../oceanBeachWaves";
 import type { WorldMap } from "../heightmap";
-import { SHOREBREAK, shorebreakHandoff, swashState, swashWetness } from "./swash";
+import { SHOREBREAK, beachFbm, beachNoise, shorebreakHandoff, swashState, swashWetness } from "./swash";
 
 type N = any;
 
@@ -298,29 +296,36 @@ export class OceanBeachShorebreak {
     // throws tongues of water ahead of itself. Displacing the water LINE (in
     // elevation, world-locked, drifting slowly) rather than fading the alpha
     // is what buys those tongues — and it costs the same two noise fetches.
-    const edgeJitter = mx_noise_float(vec3(p.x.mul(0.05), p.y.mul(0.055), t.mul(0.09)))
+    // Signed, so it can push the water line either way. The clock rides the
+    // lattice coordinates rather than a third noise axis: at these rates it is
+    // a metre or two a second of drift along the sand, which is what a foam
+    // edge does anyway, and it costs a hash instead of a whole extra octave.
+    const edgeJitter = beachNoise(p.x.mul(0.05).add(t.mul(0.09)), p.y.mul(0.055).sub(t.mul(0.06)))
+      .mul(2)
+      .sub(1)
       .mul(0.17)
-      .add(mx_noise_float(vec3(p.x.mul(0.22), p.y.mul(0.24), t.mul(0.4))).mul(0.05))
+      .add(
+        beachNoise(p.x.mul(0.22).add(t.mul(0.4)), p.y.mul(0.24).sub(t.mul(0.31)))
+          .mul(2)
+          .sub(1)
+          .mul(0.05)
+      )
       .toVar();
     const s = shorebreakSurface(p.y, sandY, shoreX, run, t, edgeJitter);
     const wet = swashWetness(sandY, s.state).toVar();
 
     // Foam lace rides WITH the front: measuring it behind the edge glues the
     // fizz to the water's leading line as it races up the sand.
-    const lace = mx_fractal_noise_float(
-      vec3(s.behind.mul(0.38), p.y.mul(0.34), t.mul(0.6)),
-      3
-    ).mul(0.5).add(0.5).toVar();
-    const fizz = mx_noise_float(vec3(s.behind.mul(1.5), p.y.mul(1.4), t.mul(2.1)))
-      .mul(0.5)
-      .add(0.5)
-      .toVar();
+    const lace = beachFbm(s.behind.mul(0.38), p.y.mul(0.34).add(t.mul(0.6))).toVar();
+    const fizz = beachNoise(
+      s.behind.mul(1.5).add(t.mul(1.3)),
+      p.y.mul(1.4).add(t.mul(2.1))
+    ).toVar();
     // Sand foam is world-locked instead: what the water strands stays stuck to
-    // the beach and does not slide along under the next wash.
-    const grime = mx_noise_float(vec3(p.x.mul(0.42), p.y.mul(0.3), t.mul(0.03)))
-      .mul(0.5)
-      .add(0.5)
-      .toVar();
+    // the beach and does not slide along under the next wash. It was already
+    // creeping at 0.03/s, which nothing could see; now it genuinely does not
+    // move, and the clock term is gone with it.
+    const grime = beachNoise(p.x.mul(0.42), p.y.mul(0.3)).toVar();
 
     const rim = smoothstep(0, SHOREBREAK.edgeReach, s.behind).oneMinus();
     // The crash itself: thick, bright, turbulent, and spent within a few

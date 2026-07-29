@@ -2,7 +2,7 @@ import * as THREE from "three/webgpu"
 import type { Input } from "./input"
 import type { Player } from "../player/player"
 import type { PlayerMode } from "../player/types"
-import { waterHeight, type WorldMap } from "../world/heightmap"
+import { seaTime, waterHeight, type WorldMap } from "../world/heightmap"
 import { oceanBeachWaveHeight } from "../world/oceanBeachWaves"
 import { swimVolumeAt } from "../world/swimVolumes"
 import type { Physics } from "./physics"
@@ -318,8 +318,14 @@ export class ChaseCamera {
     // used to pin the camera on the surface, so diving or a sinking car left the
     // view locked overhead. Following down to the bay floor lets the shot stay on
     // the player underwater; the seabed clamp still stops it clipping through.
+    // …but only outdoors. Inside a building the terrain is not the camera's
+    // floor, and for a room BELOW it the clamp is actively wrong: the sunken
+    // gallery under Sutro Baths is 31 m under a groundTop of 2 m, so this would
+    // haul the boom up through the ceiling and into the rock every frame of the
+    // blend into the eye rig. Indoors the chase pose is on its way to first
+    // person anyway (`indoorTarget`, below) and wants to stay near the body.
     const floor = this.#map.effectiveGround(cx, cz) + 0.7
-    if (this.#chasePos.y < floor) this.#chasePos.y = floor
+    if (!this.indoor && this.#chasePos.y < floor) this.#chasePos.y = floor
     // Swim camera: surface rest stays above the live waterline (a low boom must
     // not flash the underwater overlay); a committed dive still ducks under.
     // Dive detection uses the calm/mean surface — Ocean Beach crests otherwise
@@ -331,13 +337,13 @@ export class ChaseCamera {
       // An authored pool is still, so its surface is its own calm line and its
       // basin is the bed. Diving in a 2.6 m bath is a shorter drop than the
       // open-bay threshold expects, hence the tighter dive clearance.
-      const pool = swimVolumeAt(anchor.x, anchor.z)
+      const pool = swimVolumeAt(anchor.x, anchor.z, anchor.y)
       const waterY = pool
         ? pool.surfaceY
-        : waterHeight(anchor.x, anchor.z, player.time)
+        : waterHeight(anchor.x, anchor.z, seaTime())
       const calmY = pool
         ? pool.surfaceY
-        : waterY - oceanBeachWaveHeight(anchor.x, anchor.z, player.time)
+        : waterY - oceanBeachWaveHeight(anchor.x, anchor.z, seaTime())
       const seabed = pool ? pool.floorY : this.#map.effectiveGround(anchor.x, anchor.z)
       // threshold sits well below the surface-swim rest (~0.5 m down) so bobbing
       // at the top keeps the eye above water; only a committed dive ducks it under
@@ -348,11 +354,11 @@ export class ChaseCamera {
         this.#chasePos.y = Math.min(this.#chasePos.y, waterY - 0.8)
       } else if (player.swimming) {
         surfaceSwimCam = true
-        const camPool = swimVolumeAt(this.#chasePos.x, this.#chasePos.z)
+        const camPool = swimVolumeAt(this.#chasePos.x, this.#chasePos.z, this.#chasePos.y)
         const camWater =
           (camPool
             ? camPool.surfaceY
-            : waterHeight(this.#chasePos.x, this.#chasePos.z, player.time)) + 0.55
+            : waterHeight(this.#chasePos.x, this.#chasePos.z, seaTime())) + 0.55
         if (this.#chasePos.y < camWater) this.#chasePos.y = camWater
       }
     }
@@ -430,7 +436,7 @@ export class ChaseCamera {
         )
         this.#chasePos.y = Math.max(
           this.#chasePos.y,
-          Math.max(waterHeight(this.#chasePos.x, this.#chasePos.z, player.time), 0) + tuning.waterClearance
+          Math.max(waterHeight(this.#chasePos.x, this.#chasePos.z, seaTime()), 0) + tuning.waterClearance
         )
         this.#target.set(
           anchor.x + forwardX * tuning.lookAhead,
@@ -651,14 +657,14 @@ export class ChaseCamera {
     // chase endpoint immediately, but the smoothed orbit can trail below the
     // waterline for a few frames and flash the underwater overlay.
     if (surfaceSwimCam && firstPersonBlend < 0.5) {
-      const camPool = swimVolumeAt(this.camera.position.x, this.camera.position.z)
+      const camPool = swimVolumeAt(this.camera.position.x, this.camera.position.z, this.camera.position.y)
       const camWater =
         (camPool
           ? camPool.surfaceY
           : waterHeight(
               this.camera.position.x,
               this.camera.position.z,
-              player.time
+              seaTime()
             )) + 0.55
       if (this.camera.position.y < camWater) this.camera.position.y = camWater
       if (this.#orbitViewPos.y < camWater) this.#orbitViewPos.y = camWater

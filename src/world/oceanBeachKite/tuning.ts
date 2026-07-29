@@ -48,6 +48,15 @@ export const OCEAN_KITE_TUNING = tunables("oceanBeach.kite", {
   clothBacklight: { v: 1, min: 0, max: 2, step: 0.02, label: "cloth transmission" },
   volumetricRays: { v: true, label: "raymarched god rays" },
 
+  /**
+   * The prism kite's dispersed spectrum: the beam in, the rainbow fan out and
+   * the smear it lays on the sand. It rides on top of `shaftStrength` rather
+   * than beside it — a shot that thins the light out should thin this out too —
+   * and this dial is the ratio between them.
+   */
+  prismLight: { v: true, label: "prism spectrum" },
+  prismStrength: { v: 1, min: 0, max: 2.5, step: 0.02, label: "prism strength" },
+
   showLandmarks: { v: false, label: "attachment landmarks" }
 });
 
@@ -90,7 +99,9 @@ const OCEAN_KITE_TUNING_FOLDERS: readonly {
       "mistDensity",
       "shaftStrength",
       "clothBacklight",
-      "volumetricRays"
+      "volumetricRays",
+      "prismLight",
+      "prismStrength"
     ]
   },
   {

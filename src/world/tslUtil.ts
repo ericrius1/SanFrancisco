@@ -1,4 +1,4 @@
-import { positionView, normalView, sin, cos, smoothstep, exp, fract, floor, mix, step, clamp, float } from "three/tsl";
+import { positionView, normalView, sin, cos, smoothstep, exp, fract, floor, min, mix, step, clamp, float } from "three/tsl";
 import { OCEAN_BEACH_SURF } from "./oceanBeachWaves";
 
 /**
@@ -66,6 +66,19 @@ export function oceanBeachTubeRoofFractionNode(u: any): any {
 }
 
 /**
+ * GPU twin of oceanBeachBreakX(): the wandering line offshore of the waterline
+ * where crests begin to throw. `shore` is the caller's already-computed
+ * waterline fit, so this costs two sines on top of it.
+ */
+export function oceanBeachBreakXNode(shore: any, z: any, t: any): any {
+  const b = OCEAN_BEACH_SURF;
+  const bar = sin(z.mul(0.0034).sub(t.mul(0.006))).mul(0.46)
+    .add(sin(z.mul(0.0098).add(1.7)).mul(0.28))
+    .add(sin(z.mul(0.026).add(0.9)).mul(0.26));
+  return shore.sub(b.breakOffset).sub(bar.mul(b.breakBarAmp));
+}
+
+/**
  * WebGPU twin of the analytic Ocean Beach wave field. Returns every channel the
  * surf visuals need from ONE evaluation so the green face mesh, the bay water
  * tint and (via oceanBeachSwell) the displaced height all read the same crest:
@@ -74,6 +87,7 @@ export function oceanBeachTubeRoofFractionNode(u: any): any {
  *   lip     — 0..1 breaking crest band (the white pitching lip)
  *   white   — 0..1 spent whitewater shoreward of the break
  *   mask    — 0 outside the strip, feathered inside
+ *   breaking— 0 green wall … 1 thrown, for the crest this sample belongs to
  * `x`/`z`/`t` are float nodes in world space / seconds. Mirrors
  * sampleOceanBeachWave() in oceanBeachWaves.ts — keep the two in step.
  */
@@ -82,7 +96,10 @@ export function oceanBeachSurfField(x: any, z: any, t: any) {
   // Twin of oceanBeachApproxShoreX(z) — keep coefficients in lockstep.
   const shore = float(-6323).add(z.mul(0.08504)).add(z.mul(z).mul(0.00000743));
   const shoreCap = shore; // CPU also min()'s with maxX; maxX is always shoreward of the fit.
-  const xMask = smoothstep(b.minX, b.minX + 70, x)
+  // Twin of oceanBeachOffshoreX(): a strip of a minimum WIDTH, not a straight
+  // offshore line, so the curving north end gets a surf zone too.
+  const offshore = min(float(b.minX), shore.sub(b.stripWidth)).toVar();
+  const xMask = smoothstep(offshore, offshore.add(70), x)
     .mul(smoothstep(shoreCap.sub(70), shoreCap, x).oneMinus());
   const zMask = smoothstep(b.minZ, b.minZ + 180, z)
     .mul(smoothstep(b.maxZ - 180, b.maxZ, z).oneMinus());
@@ -112,7 +129,15 @@ export function oceanBeachSurfField(x: any, z: any, t: any) {
     .mul(smoothstep(float(b.faceWidth).add(5), float(b.faceWidth).add(14), d))
     .mul(clamp(float(1).sub(d.sub(b.faceWidth).div(52)), 0, 1));
   const barrel = mask.mul(oceanBeachBarrelEnvelopeNode(z, t));
-  return { height, face, lip, white, mask, crestD: d, amp, barrel };
+  // Has THIS crest thrown yet? `x.sub(d)` is the crest's own X, so the whole
+  // wave answers together instead of each pixel deciding for itself — which is
+  // what makes a wave break as one wall rather than dissolving pixel by pixel.
+  const breaking = smoothstep(
+    0,
+    b.breakThrow,
+    x.sub(d).sub(oceanBeachBreakXNode(shore, z, t))
+  ).toVar();
+  return { height, face, lip, white, mask, crestD: d, amp, barrel, breaking };
 }
 
 /** WebGPU twin of oceanBeachWaveHeight(): periodic shoreward swell with a

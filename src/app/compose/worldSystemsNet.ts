@@ -55,6 +55,7 @@ import {
   subscribeBehindTheScenes
 } from "../../ui/behindTheScenesHost";
 import { Tutorial } from "../../ui/tutorial";
+import { TUTORIAL_ZONE_ARRIVAL } from "../../world/tutorialZone/meta";
 import { DebugPanel } from "../../ui/debug";
 import { DebugOverlays } from "../../ui/overlays";
 import { OVERLAY_TUNING } from "../../ui/overlays/tuning";
@@ -134,6 +135,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   ctx.late.net = net;
   const remotes = new RemotePlayers(scene);
   remotes.localPlayerPosition = () => player.renderPosition;
+  remotes.sandPrints = core.sandPrints;
   // net.onRakeStamp / onRakeReset are wired just after the Tea Garden controller
   // is created (below) — before then the core.state.garden cannot exist, and net's no-op
   // defaults absorb any rake hydration that arrives during a boot await; the
@@ -629,49 +631,87 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   // Webcam pose control is a first-use feature: neither LiteRT, its WebGPU
   // runtime, the model, nor camera permission is touched until this button.
   let mocapSession: import("../../mocap/poseMocapSession").PoseMocapSession | null = null;
-  const stopMocap = (announce = true) => {
-    mocapSession?.stop();
+  // Bumped by every start/stop/failure so a slow start that lands after the
+  // player changed their mind can never write to the button or the player.
+  let mocapRun = 0;
+  let mocapPending = false;
+  let mocapErrorTimer = 0;
+  const clearMocapError = () => {
+    if (!mocapErrorTimer) return;
+    window.clearTimeout(mocapErrorTimer);
+    mocapErrorTimer = 0;
+  };
+  /**
+   * A failure is a passing badge, not a mode: the button falls back to plain
+   * "Pose" so it can never park on "Retry pose" with no way out.
+   */
+  const failMocap = (badge: string, detail: string) => {
+    mocapRun++;
     mocapSession = null;
+    mocapPending = false;
     player.setMocapPoseDriver(null);
+    clearMocapError();
+    audioControls.setMocap("error", badge);
+    hud.message(detail, 4.5);
+    mocapErrorTimer = window.setTimeout(() => {
+      mocapErrorTimer = 0;
+      audioControls.setMocap("off");
+    }, 5000);
+  };
+  const stopMocap = (announce = true) => {
+    mocapRun++;
+    const cancelled = mocapPending;
+    const session = mocapSession;
+    mocapSession = null;
+    mocapPending = false;
+    session?.stop();
+    player.setMocapPoseDriver(null);
+    clearMocapError();
     audioControls.setMocap("off");
-    if (announce) hud.message("Webcam pose off", 2.4);
+    if (announce) hud.message(cancelled ? "Webcam pose start cancelled" : "Webcam pose off", 2.4);
   };
   const startMocap = async () => {
+    const run = ++mocapRun;
+    mocapPending = true;
+    clearMocapError();
     audioControls.setMocap("loading", "Loading WebGPU pose");
-    hud.message("Starting WebGPU webcam pose…", 3);
+    hud.message("Starting WebGPU webcam pose — click Pose again to cancel", 3);
     try {
       const { PoseMocapSession } = await import("../../mocap/poseMocapSession");
+      if (run !== mocapRun) return; // cancelled while the chunk was in flight
       const session = new PoseMocapSession({
         video: audioControls.mocapVideo,
         debugCanvas: audioControls.mocapDebugCanvas,
-        onState: (state, message) => audioControls.setMocap(state, message),
+        onState: (state, message) => {
+          if (run === mocapRun) audioControls.setMocap(state, message);
+        },
         onFatal: (error) => {
-          if (mocapSession !== session) return;
-          mocapSession = null;
-          player.setMocapPoseDriver(null);
-          audioControls.setMocap("error", "Pose stopped");
-          hud.message(`Webcam pose stopped — ${error.message}`, 4.5);
+          if (run !== mocapRun) return;
+          failMocap("Pose stopped", `Webcam pose stopped — ${error.message}`);
         }
       });
       mocapSession = session;
       await session.start();
-      if (mocapSession !== session) {
+      // start() resolves quietly when it was cancelled mid-flight; stopMocap
+      // already stopped this session, so just leave the off state alone.
+      if (run !== mocapRun) {
         session.stop();
         return;
       }
+      mocapPending = false;
       player.setMocapPoseDriver(session.poseDriver);
       hud.message("Webcam pose ready — step into view", 3.4);
     } catch (error) {
+      if (run !== mocapRun) return;
       mocapSession?.stop();
-      mocapSession = null;
-      player.setMocapPoseDriver(null);
       const message = error instanceof Error ? error.message : String(error);
-      audioControls.setMocap("error", "Pose unavailable");
-      hud.message(`Webcam pose unavailable — ${message}`, 4.8);
+      failMocap("Pose unavailable", `Webcam pose unavailable — ${message}`);
     }
   };
+  // One honest toggle: engaged (loading, searching, tracking) always turns off,
+  // and anything else starts. Cancelling a pending start counts as turning off.
   audioControls.onMocapToggle = () => {
-    if (mocapSession) stopMocap();
+    if (mocapSession || mocapPending) stopMocap();
     else void startMocap();
   };
   window.addEventListener("pagehide", () => stopMocap(false), { once: true });
@@ -876,7 +916,26 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     pressed: (c) => input.pressed(c),
     mapOpen: () => minimap.expanded,
     teleport: (t) => navigation.teleportToPose(t),
-    message: (m, s) => hud.message(m, s)
+    message: (m, s) => hud.message(m, s),
+    // The flight school. `zone` is null until the site is resident, and every
+    // step that reads it has a body-only fallback — starting the tutorial from
+    // the far side of the city must never wait on a chunk.
+    zone: () => core.state.tutorialZone?.progress ?? null,
+    // `sites` is declared further down this function; the button that calls
+    // this cannot be clicked before then, so the closure never hits the TDZ.
+    goToZone: () => {
+      void sites.ensure("tutorial-zone");
+      navigation.teleportToPose(
+        {
+          x: TUTORIAL_ZONE_ARRIVAL.x,
+          y: map.groundTop(TUTORIAL_ZONE_ARRIVAL.x, TUTORIAL_ZONE_ARRIVAL.z) + 1.2,
+          z: TUTORIAL_ZONE_ARRIVAL.z,
+          facing: TUTORIAL_ZONE_ARRIVAL.heading,
+          mode: "walk"
+        },
+        "Flight School"
+      );
+    }
   });
   navigation.onTeleported = () => {
     jumpLandingAudio.reset();
@@ -973,6 +1032,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     camera,
     player,
     debugPanel,
+    sandPrints: core.sandPrints,
     // Walking onto (or off) the kite beach hands the single customizer slot to
     // the kite atelier and back again.
     onAtelierRangeChange: (inRange) => {
@@ -1595,6 +1655,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       core.state.coronaHeights = r.coronaHeights;
       core.state.landsEnd = r.landsEnd;
       core.state.waveOrgan = r.waveOrgan;
+      core.state.tutorialZone = r.tutorialZone;
       // Beach Pianist keeps two concerns in main (they read main-local state the
       // controller can't see): its debug tuning folder and piano-only god-ray
       // ownership. HEAD ran these inside loadBeachPianist / its unloader;
@@ -1727,7 +1788,18 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
             // its boiler-room footprint alongside the authored Tea Garden and
             // the six source-authored Fort Mason replacements.
             isTeaGardenBuilding(key, index) ||
-            (key === "1_12" && index === 0) ||
+            // The Point Lobos headland. Five OSM footprints land on the cliff
+            // between the restored hall and the Cliff House shelf, isolated from
+            // the Richmond grid that starts 400 m inland at 60-80 m elevation.
+            // From the hall's ocean window they are the first thing in frame and
+            // they read as slabs hanging over the water, because at deck height
+            // the coastal land beyond subtends under a degree and hazes out to
+            // the same value as the sea while the walls stay dark. #2 is the
+            // clearest evidence that they were never meant to be here: its roof
+            // (21.4 m) sits below the terrain under it (23.4 m), so it is a
+            // fully buried building that still draws. Removing the cluster
+            // restores an empty headland; the Richmond skyline is untouched.
+            (key === "1_12" && [0, 1, 2, 3, 4].includes(index)) ||
             (key === "10_8" && [0, 19, 20, 22, 23, 24].includes(index))
         },
         {

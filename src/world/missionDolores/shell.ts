@@ -23,13 +23,18 @@ import {
   Z_ENTRANCE
 } from "./layout";
 
-/** Local face colours, pushed through sRGB→linear like the baked landmarks. */
-const ADOBE = new THREE.Color(0xdcc7a4).convertSRGBToLinear();
-const ADOBE_TRIM = new THREE.Color(0xe8d9bd).convertSRGBToLinear();
-const STONE_FLOOR = new THREE.Color(0xb08a63).convertSRGBToLinear();
-const FLOOR_INLAY = new THREE.Color(0x8f6b48).convertSRGBToLinear();
-const TERRACOTTA = new THREE.Color(0xa9573a).convertSRGBToLinear();
-const WOOD = new THREE.Color(0x5a3e26).convertSRGBToLinear();
+/** Local face colours. `THREE.ColorManagement` is on, so `new THREE.Color(hex)`
+ *  already decodes sRGB into the linear working space — which is exactly what
+ *  `paint()` needs, since vertex-colour attributes are consumed as-is and are
+ *  never colour-managed. An extra `.convertSRGBToLinear()` here would decode a
+ *  second time; that crushed darks hardest (wood ~11x, floor ~4x) and drained
+ *  the chroma these hexes are chosen for. */
+const ADOBE = new THREE.Color(0xdcc7a4);
+const ADOBE_TRIM = new THREE.Color(0xe8d9bd);
+const STONE_FLOOR = new THREE.Color(0xb08a63);
+const FLOOR_INLAY = new THREE.Color(0x8f6b48);
+const TERRACOTTA = new THREE.Color(0xa9573a);
+const WOOD = new THREE.Color(0x5a3e26);
 
 const WALL_T = WALL_THICKNESS;
 const APSE_WALL_H = WALL_H + 0.8;
@@ -346,7 +351,13 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
     for (const g of list) g.dispose();
     group.add(mesh);
   };
-  addMerged(stone, 0, "md_walls", { emissive: ADOBE_TRIM, emissiveIntensity: 0.1 });
+  // Faint warm bounce, NOT a brightness clawback. This was 0.1 while the albedo
+  // was double-decoded, where it out-ran the reflected term (~0.046 emissive vs
+  // ~0.063 reflected) and flattened the nave into a uniform haze that ate the
+  // depth cues and the glass. Sized against correctly-decoded adobe it only has
+  // to stand in for the warm inter-reflection this no-GI interior cannot cast,
+  // so it sits well under the reflected term instead of replacing it.
+  addMerged(stone, 0, "md_walls", { emissive: ADOBE_TRIM, emissiveIntensity: 0.03 });
   addMerged(trim, 0, "md_trim");
   addMerged(floors, 0, "md_floor", { roughness: 0.9 });
   addMerged(woodG, 0, "md_doors", { roughness: 0.7 });

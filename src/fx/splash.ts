@@ -206,7 +206,7 @@ export class WaterSplashes {
     }
     // NaN when the column is dry — land dipping below y=0 near shore is not
     // water. Authored pools resolve here too (world/swimVolumes.ts).
-    const h = submergibleWaterY(this.#map, p.x, p.z, elapsed);
+    const h = submergibleWaterY(this.#map, p.x, p.z, elapsed, p.y);
     if (Number.isNaN(h)) {
       this.#prevY = p.y;
       return;

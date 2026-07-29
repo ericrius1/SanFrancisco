@@ -8,6 +8,7 @@ import { CAMERA_TUNING,  CONFIG,  FOLIAGE_TUNING, RENDER_TUNING, START, START_DE
 import { resetAllTweaks } from "../../core/persist";
 import {  formatInteractPrompt, localizeInteractText } from "../../core/input";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "../../world/oceanBeachWaves";
+import { setSeaTime } from "../../world/heightmap";
 import { tetherTreeCullFocus } from "../../world/vegetation/treeCullFocus";
 import { renderNativeTreeForestFarCulls } from "../../world/nativeTreeForest/farCullRegistry";
 import {  SKY_TUNING } from "../../world/sky";
@@ -38,7 +39,7 @@ import type {  } from "../../player/types";
 import {
   PAINTBALL_SPEED
 } from "../../fx/paintball";
-import {  oceanWaveEnergyAt } from "../../audio/waveAudio";
+import {  oceanWaveEnergyAt, type WaveListener } from "../../audio/waveAudio";
 import {  ABANDONED_MOUNT_PROMPT } from "../../gameplay/abandonedMounts";
 import type {  } from "../../gameplay/creatures";
 import type {  } from "../../gameplay/forest";
@@ -86,7 +87,7 @@ import type { MainCtx } from "./ctx";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
 
   // One place decides what the trick HUD sees; the three frame paths (live,
   // world-frozen, fully paused) all call it right after hud.update so the combo
@@ -127,6 +128,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     });
   };
   const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, emoteWheel, updateEmoteKeepAlive, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
+  // Reused every frame by the wave-audio listener below; the basis extraction
+  // wants three vectors and only one of them is interesting.
+  const waveListener: WaveListener = { x: 0, z: 0, rightX: 1, rightZ: 0 };
+  const waveRight = new THREE.Vector3();
+  const waveUp = new THREE.Vector3();
+  const waveForward = new THREE.Vector3();
   const state = {
     cineHook: null as (((dt: number) => void) | null),
   };
@@ -429,6 +436,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       applyLightFrontRamps();
       hud.update(frameDt);
       updateSkateHud(frameDt);
+      // The checklist has to keep thinking while the map is up. Its last
+      // chapter is ABOUT the map — "press M", then pan/zoom/pick/teleport — and
+      // the only branch that can observe either is this one. Left out, the step
+      // asking you to open the map was checked by code that stops running the
+      // moment you open it, so the card never advanced and the panel never
+      // lifted above the map that was covering it.
+      tutorial.update(frameDt);
       input.endFrame();
       renderFrame();
   };
@@ -445,11 +459,17 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
    * from outside your own head. So the hall still reads as interior for pace and
    * reverb, and the camera is simply left however the visitor had it — C keeps
    * cycling third/first/orbit in there like anywhere else.
+   *
+   * The sunken gallery under the baths goes the OTHER way and takes the eye rig:
+   * it is a 23 m-wide corridor thirty-one metres under the ground, where a chase
+   * boom has nowhere to sit and the terrain "floor" the boom clamps against is
+   * high above its ceiling.
    */
   const syncIndoorState = () => {
     const inRoom =
       (citygenRing.current?.isPlayerInside() ?? false) ||
-      (core.state.missionDolores?.isPlayerInside(player.position) ?? false);
+      (core.state.missionDolores?.isPlayerInside(player.position) ?? false) ||
+      (core.state.sutroBaths?.isPlayerInGrotto(player.position) ?? false);
     player.indoor = inRoom || (core.state.sutroBaths?.isPlayerInside(player.position) ?? false);
     chase.indoor = inRoom; // blend into the indoor eye rig
   };
@@ -917,7 +937,9 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !netW.state.fortMasonEnsemble?.tryInteract(player.renderPosition, player.mode) &&
       !core.state.landsEnd?.keeper.tryInteract(player, hud) &&
       !core.state.waveOrgan?.tryInteract(player, hud) &&
+      !core.state.tutorialZone?.tryInteract(player, hud) &&
       !core.state.missionDolores?.tryInteract(player.position, player.mode, hud) &&
+      !core.state.sutroBaths?.tryInteract(player.position, player.mode) &&
       !core.state.hangGliding?.tryInteract(player, hud, input, chase) &&
       !core.state.afterlight?.tryInteract(player, hud)
     ) {
@@ -1386,6 +1408,14 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       } else if (core.state.waveOrgan) {
         core.state.waveOrgan.group.visible = false;
       }
+      if (sites.perfAllowed("tutorial-zone")) {
+        // The field watches the body, not the keyboard: gates walked, metres
+        // sprinted, laps driven, rings flown. ui/tutorial.ts reads the totals.
+        core.state.tutorialZone?.update(frameDt, ctx.state.elapsed, player, hud);
+        core.state.tutorialZone?.updatePrompt(player, hud);
+      } else if (core.state.tutorialZone) {
+        core.state.tutorialZone.root.visible = false;
+      }
       if (sites.perfAllowed("beach-pianist")) {
         ctx.state.beachPianist?.setPerfSuppressed(false);
         ctx.state.beachPianist?.update(frameDt, ctx.state.elapsed, player.position, camera, windGustValue());
@@ -1520,6 +1550,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // Grace Cathedral: the authored GLB owns the physical glass; this nested
     // runtime only animates bounded colored shafts while a visitor is inside.
     if (!worldArrival.active) core.state.graceCathedral?.update(player.position, ctx.state.elapsed);
+    // St Mary's: interior god rays plus the plaza projection rave and crowd.
+    if (!worldArrival.active) core.state.stMarys?.update(player.position, ctx.state.elapsed, frameDt);
     const museumFloorHandoff = worldArrival.active
       ? null
       : core.state.missionDolores?.takeFloorHandoffHeight(player.position, player.mode);
@@ -1610,6 +1642,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // ctx.state.elapsed here let the visible crest and barrel envelope drift away after
     // loading, pause, or deterministic headless stepping.
     const surfaceTime = player.mode === "surf" ? player.time : ctx.state.elapsed;
+    // Publish the sea clock: everything that physically rides the surface
+    // (hull buoyancy, swim waterline, camera wave clearance) samples
+    // waterHeight at exactly this t — the one the water is displaced with.
+    setSeaTime(surfaceTime);
     water.echoes.beginFrame(surfaceTime, camera);
     const activeEchoMesh = player.meshes[player.mode];
     const birdReady = player.mode !== "bird" || Boolean(activeEchoMesh.userData.rig);
@@ -1660,6 +1696,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     wake.update(frameDt, surfaceTime, player);
     boardWake.update(frameDt, surfaceTime, player);
     skidMarks.update(frameDt, ctx.state.elapsed, player);
+    sandPrints.update(frameDt, ctx.state.elapsed, player);
     birdTrails.update(ctx.state.elapsed, player);
     splashes.update(frameDt, surfaceTime, player);
     core.state.surfExperience?.update(frameDt, player.mode, player.surfTelemetry);
@@ -1688,7 +1725,22 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     );
     waveEnergy.level *= sutroWaveMix;
     waveEnergy.breaking *= sutroWaveMix;
-    waveAudio.update(frameDt, waveEnergy);
+    // The ears go with the LENS, not the body. Ordinarily they are the same
+    // place, but in a scripted shot the body is parked at the site while the
+    // camera is a hundred metres down the beach, and a crash has to be panned
+    // and delayed from where it is being watched.
+    waveListener.x = camera.position.x;
+    waveListener.z = camera.position.z;
+    // Camera right in world XZ: the x/z row of the view matrix basis.
+    camera.matrixWorld.extractBasis(waveRight, waveUp, waveForward);
+    const rightLen = Math.hypot(waveRight.x, waveRight.z) || 1;
+    waveListener.rightX = waveRight.x / rightLen;
+    waveListener.rightZ = waveRight.z / rightLen;
+    // `surfaceTime`, NOT elapsed: it is the clock the water is actually
+    // displaced with this frame (they diverge in surf mode, where the swell
+    // runs on player.time), and a crash has to be scheduled off the same clock
+    // that decides where the crest is or the sound drifts off the picture.
+    waveAudio.update(frameDt, waveEnergy, waveListener, surfaceTime);
     // Explicit E/B is the normal exit. This far-away guard only repairs external
     // teleports that bypass NavigationController; the ride itself never beaches.
     if (player.mode === "surf") {
