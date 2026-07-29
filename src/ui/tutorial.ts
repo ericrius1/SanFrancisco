@@ -57,6 +57,8 @@ type Step = {
   action?: string
   text: string
   hint?: string
+  /** Elide this step entirely when it is already satisfied as it opens. */
+  skipIfSatisfied?: boolean
   onEnter?: (ctx: TutorialCtx) => void
   /** Progress 0..1 (booleans read as done/not); ev counts one-shot events. */
   check: (ctx: TutorialCtx, dt: number, st: Scratch, ev: Map<string, number>) => number | boolean
@@ -180,6 +182,7 @@ function travelStep(
     action: "Head",
     text,
     hint,
+    skipIfSatisfied: true,
     check: (c, dt, st) =>
       zoneOr(
         c,
@@ -309,8 +312,10 @@ const CHAPTERS: Chapter[] = [
     steps: [
       { keys: ["M"], text: "to open the city map", check: (c) => c.mapOpen() },
       {
-        text: "pick a landmark and press Enter — the last thing to learn",
-        hint: "drag pans · click a spot, then Enter to teleport",
+        keys: ["Enter"],
+        action: "Click anywhere on the map, then press",
+        text: "to teleport there — the last thing to learn",
+        hint: "drag to pan · scroll to zoom · Esc closes the map",
         check: (_c, _dt, _st, ev) => (ev.get("teleport") ?? 0) >= 1
       }
     ]
@@ -329,6 +334,7 @@ const DONE_KEY = "sf-tutorial-done"
 export class Tutorial {
   #ctx: TutorialCtx
   #btnLabel: HTMLSpanElement
+  #hud: HTMLElement
   #panel: HTMLDivElement
   #chEl: HTMLElement
   #progEl: HTMLElement
@@ -358,6 +364,7 @@ export class Tutorial {
   constructor(ctx: TutorialCtx) {
     this.#ctx = ctx
     const hud = document.getElementById("hud")!
+    this.#hud = hud
 
     // the launch button — parked under Share; Tab fades it with the rest of the HUD
     const ui = document.createElement("div")
@@ -399,8 +406,15 @@ export class Tutorial {
     this.#dotsEl = this.#panel.querySelector(".tut-dots")!
     this.#skipBtn = this.#panel.querySelector(".tut-skip")!
     this.#exitBtn = this.#panel.querySelector(".tut-exit")!
+    // Skip must always mean skip. It used to no-op for the 0.85 s a completed
+    // step spends celebrating, and during a step whose card had just opened —
+    // clicking and having nothing happen reads as a broken button, so a press
+    // now cancels any pending advance and moves on immediately.
     this.#skipBtn.addEventListener("click", () => {
-      if (this.#advance <= 0 && !this.#done) this.#next()
+      if (this.#active && !this.#done) {
+        this.#advance = 0
+        this.#next()
+      }
     })
     this.#exitBtn.addEventListener("click", () => this.stop(false))
     hud.appendChild(this.#panel)
@@ -427,6 +441,7 @@ export class Tutorial {
   stop(done: boolean) {
     this.#active = false
     this.#done = false
+    this.#hud.classList.remove("tutorial-over-map")
     this.#panel.style.display = "none"
     this.#btnLabel.textContent = "Tutorial"
     if (done) {
@@ -470,7 +485,12 @@ export class Tutorial {
   }
 
   update(dt: number) {
-    if (!this.#active || this.#done) return
+    if (!this.#active) return
+    // The last chapter asks you to open the map, and the map is drawn over the
+    // whole hud — so the instructions for using it were behind it. Lift the hud
+    // for exactly as long as the map is up.
+    this.#hud.classList.toggle("tutorial-over-map", this.#ctx.mapOpen())
+    if (this.#done) return
     if (this.#advance > 0) {
       this.#advance -= dt
       if (this.#advance <= 0) this.#next()
@@ -487,23 +507,41 @@ export class Tutorial {
   }
 
   #next() {
+    if (this.#advanceIndex()) this.#enterStep()
+  }
+
+  /** Move to the next step, or finish. False once the finale has taken over. */
+  #advanceIndex(): boolean {
     this.#si++
     if (this.#si >= CHAPTERS[this.#ci].steps.length) {
       this.#ci++
       this.#si = 0
       if (this.#ci >= CHAPTERS.length) {
         this.#finale()
-        return
+        return false
       }
       CHAPTERS[this.#ci].onEnter?.(this.#ctx)
     }
-    this.#enterStep()
+    return true
   }
 
   #enterStep() {
-    this.#scratch = freshScratch()
     this.#events.clear()
     this.#advance = 0
+    // A "head over there" beat you are already standing on must not open at
+    // all. Opening it and ticking it a frame later is what makes the checklist
+    // look like it is advancing on its own — you see a card you never had a
+    // chance to read. Only travel beats are elided this way; a real objective
+    // always gets its card, even if you happen to satisfy it instantly.
+    for (let guard = 0; guard < 32; guard++) {
+      const pending = CHAPTERS[this.#ci].steps[this.#si]
+      if (!pending.skipIfSatisfied) break
+      const probe = freshScratch()
+      const r = pending.check(this.#ctx, 0, probe, this.#events)
+      if ((typeof r === "boolean" ? (r ? 1 : 0) : r) < 1) break
+      if (!this.#advanceIndex()) return
+    }
+    this.#scratch = freshScratch()
     const ch = CHAPTERS[this.#ci]
     const step = ch.steps[this.#si]
     step.onEnter?.(this.#ctx)

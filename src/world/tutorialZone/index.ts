@@ -22,7 +22,8 @@ import type { GameSite } from "../../gameplay/siteGate";
 import {
   BOWL,
   COTTAGE,
-  FLIGHT_RINGS,
+  buildFlightRings,
+  type FlightRing,
   HURDLE,
   SPRINT,
   STATION_ANCHORS,
@@ -110,6 +111,8 @@ export class TutorialZone {
   #map: WorldMap;
   #physics: Physics;
   #grades: ZoneGrades;
+  /** The ring course, laid out against the real waterline at construction. */
+  #course: FlightRing[];
   #overlay: (x: number, z: number, base: number) => number;
   #groundMats = createGroundMaterials();
   #propMats = createPropMaterials();
@@ -144,8 +147,11 @@ export class TutorialZone {
     this.root.name = "tutorial_zone";
 
     // Datums first: they must read the ground as it is BEFORE this site's own
-    // overlay exists, or every surface would stack on the last one's lift.
+    // overlay exists, or every surface would stack on the last one's lift. The
+    // ring course is resolved here for the same reason — it hunts the waterline
+    // by sampling ground, and the overlay would answer for the field itself.
     this.#grades = sampleZoneGrades(map);
+    this.#course = buildFlightRings(map);
 
     for (const mesh of [
       buildTrackDeck(map, this.#grades, this.#groundMats),
@@ -156,7 +162,7 @@ export class TutorialZone {
       this.root.add(mesh);
     }
 
-    const props = buildZoneProps(map, this.#grades, this.#propMats);
+    const props = buildZoneProps(map, this.#grades, this.#propMats, this.#course);
     for (const mesh of props.meshes) this.root.add(mesh);
     for (const ring of props.rings) this.root.add(ring);
     this.root.add(props.windsock);
@@ -246,15 +252,23 @@ export class TutorialZone {
   // -- site gate ------------------------------------------------------------
 
   siteHooks(): GameSite {
+    // The pads have to cover the ring course, not just the field. The last hoop
+    // is over half a kilometre out over the bay, and a pad that stopped at the
+    // lawn would put the site to sleep — freezing ring progress and flipping
+    // `watching` off — halfway through the flight it is measuring. Derived from
+    // the course so the two cannot drift apart.
+    const reach = this.#course.reduce(
+      (far, ring) => Math.max(far, Math.hypot(ring.u, ring.v)),
+      0
+    );
+    const activatePad = Math.max(260, reach - Math.min(TUTORIAL_ZONE_HALF_U, TUTORIAL_ZONE_HALF_V) + 120);
     return {
       id: "tutorial-zone",
       contains: (x, z, pad) =>
         Math.abs(x - TUTORIAL_ZONE_CENTER.x) <= TUTORIAL_ZONE_HALF_U + pad &&
         Math.abs(z - TUTORIAL_ZONE_CENTER.z) <= TUTORIAL_ZONE_HALF_V + pad,
-      // Generous pads: the ring course tops out 34 m up and reads as landscape
-      // from well outside the field.
-      activatePad: 260,
-      deactivatePad: 330,
+      activatePad,
+      deactivatePad: activatePad + 90,
       setAwake: (on) => {
         this.#awake = on;
         this.root.visible = on;
@@ -385,11 +399,11 @@ export class TutorialZone {
     // Flight rings, in order. Tested against the whole step, not the frame's
     // end point: a phoenix at full dive covers metres per frame and would fly
     // clean through a point test.
-    const ring = FLIGHT_RINGS[this.#ringIndex];
+    const ring = this.#course[this.#ringIndex];
     if (ring) {
       const mesh = this.#rings[this.#ringIndex];
       const cx = zoneWorldX(ring.u);
-      const cy = mesh ? mesh.position.y : 0;
+      const cy = ring.y;
       const cz = zoneWorldZ(ring.v);
       const sx = p.x - prev.x;
       const sy = p.y - prev.y;
@@ -407,9 +421,9 @@ export class TutorialZone {
         }
         this.#ringIndex++;
         hud?.message(
-          this.#ringIndex === FLIGHT_RINGS.length
+          this.#ringIndex === this.#course.length
             ? "Every ring — the city is yours"
-            : `Ring ${this.#ringIndex} of ${FLIGHT_RINGS.length}`,
+            : `Ring ${this.#ringIndex} of ${this.#course.length}`,
           1.6
         );
       }
@@ -435,7 +449,7 @@ export class TutorialZone {
   }
 
   get progress(): TutorialZoneProgress {
-    const firstRing = FLIGHT_RINGS[0];
+    const firstRing = this.#course[0];
     return {
       watching: this.#awake && !this.#disposed,
       gatesPassed: this.#gates,

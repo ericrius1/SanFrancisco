@@ -134,8 +134,16 @@
     const { TutorialZone } = await import("/src/world/tutorialZone/index.ts")
     const L = await import("/src/world/tutorialZone/layout.ts")
 
+    // Land out to v = −60, open water beyond — enough of a coastline for the
+    // ring course to find a waterline to start from.
     const GROUND = 3
-    const fakeMap = { groundTop: () => GROUND, setGroundTopOverlay() {}, clearGroundTopOverlay() {} }
+    const SHORE_V = -60
+    const fakeMap = {
+      meta: { seaLevel: 0 },
+      groundTop: (_x, z) => (z - (-1560) <= SHORE_V ? -6 : GROUND),
+      setGroundTopOverlay() {},
+      clearGroundTopOverlay() {}
+    }
     let body = 1
     const fakePhysics = {
       world: { createBox: () => body++, setBodyTransform() {}, destroyBody() {} },
@@ -162,21 +170,50 @@
     check("a lap counts clockwise", cw >= 0.98, `lapFraction ${cw.toFixed(3)}`)
     check("a lap counts anticlockwise too", ccw >= 0.98, `lapFraction ${ccw.toFixed(3)}`)
 
+    // The course must begin over water, not on the lawn.
+    const course = L.buildFlightRings(fakeMap)
+    check("the ring course starts past the waterline",
+      course[0].v < SHORE_V,
+      `first hoop at v ${course[0].v.toFixed(0)}, shore at v ${SHORE_V}`)
+    {
+      const gaps = course.slice(1).map((r, i) => Math.hypot(r.u - course[i].u, r.v - course[i].v))
+      const minGap = Math.min(...gaps)
+      check("hoops are spread far enough to fly between",
+        minGap > 100 && Math.min(...course.map((r) => r.radius)) >= 10,
+        `${minGap.toFixed(0)} m apart, radii ${course[0].radius}→${course[5].radius} m`)
+    }
+
     // Fly the ring course through each hoop's centre, in order.
     {
       const z = makeZone()
       let t = 0
-      let prev = { u: L.FLIGHT_RINGS[0].u, v: L.FLIGHT_RINGS[0].v + 30, h: L.FLIGHT_RINGS[0].height }
-      for (const r of L.FLIGHT_RINGS) {
-        for (let i = 1; i <= 12; i++) {
-          const k = i / 12
-          z.update(1 / 60, (t += 1 / 60), at(prev.u + (r.u - prev.u) * k, prev.v + (r.v - prev.v) * k, GROUND + prev.h + (r.height - prev.h) * k, "bird"), hudSink)
+      let prev = { u: course[0].u, v: course[0].v + 60, y: course[0].y }
+      for (const r of course) {
+        // Small steps: the swept test is exact, but a stride over 25 m reads as
+        // a teleport and is skipped by design.
+        const steps = Math.ceil(Math.hypot(r.u - prev.u, r.v - prev.v) / 12) + 1
+        for (let i = 1; i <= steps; i++) {
+          const k = i / steps
+          z.update(1 / 60, (t += 1 / 60), at(prev.u + (r.u - prev.u) * k, prev.v + (r.v - prev.v) * k, prev.y + (r.y - prev.y) * k, "bird"), hudSink)
         }
-        prev = { u: r.u, v: r.v, h: r.height }
+        prev = { u: r.u, v: r.v, y: r.y }
       }
       const flown = z.progress.ringsFlown
       z.dispose()
       check("flying each hoop's centre passes all six rings", flown === 6, `ringsFlown ${flown}/6`)
+    }
+
+    // The site gate must stay awake for the whole course, or ring progress
+    // freezes and `watching` drops out halfway through the flight.
+    {
+      const z = makeZone()
+      const hooks = z.siteHooks()
+      const last = course[course.length - 1]
+      const inside = hooks.contains(L.zoneWorldX(last.u), L.zoneWorldZ(last.v), hooks.deactivatePad)
+      z.dispose()
+      check("the field stays awake out at the last hoop",
+        inside,
+        `deactivatePad ${hooks.deactivatePad.toFixed(0)} m covers a hoop ${Math.hypot(last.u, last.v).toFixed(0)} m out`)
     }
 
     // Distances the checklist steers by must actually point somewhere.
@@ -209,6 +246,64 @@
       chapter.includes("Congratulations") && hud.querySelector(".tut-text").textContent.includes("teleport") &&
         getComputedStyle(hud.querySelector(".tutorial-panel")).display !== "none",
       `panel still up, reading "${chapter}"`)
+  }
+
+  // ── J: skip always skips, even mid-celebration ───────────────────────────
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    const before = objective()
+    s.zone.gatesPassed = 3
+    run(t, s, 1 / 60) // step now complete: the 0.85 s advance window is open
+    hud.querySelector(".tut-skip").click()
+    run(t, s, 1 / 60)
+    check("skip works during the completion pause",
+      objective() !== before,
+      `"${before}" → "${objective()}"`)
+  }
+
+  // ── K: a travel beat you have already arrived at never opens ─────────────
+  {
+    const s = makeState(ZONE())
+    s.zone.toBowl = 0 // already standing on the bowl
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    for (const n of ["gatesPassed", "sprintMeters", "hurdleCleared", "cottageVisited"]) s.zone[n] = 99
+    s.zone.lapFraction = 2
+    s.zone.toStartLine = 0
+    // Follow the checklist honestly: each mode beat wants that mode selected.
+    for (let i = 0; i < 40 && !objective().includes("air off the bowl"); i++) {
+      const o = objective()
+      if (o.includes("car")) s.mode = "drive"
+      else if (o.includes("hoverboard")) s.mode = "board"
+      else if (o.includes("phoenix")) s.mode = "bird"
+      run(t, s, 0.5)
+    }
+    check("the bowl travel beat is elided when you are already there",
+      objective().includes("air off the bowl"),
+      `landed on "${objective()}" without a "head west" card`)
+  }
+
+  // ── L: the map chapter's instructions survive the map opening ────────────
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    for (let i = 0; i < 40 && !objective().includes("open the city map"); i++) { skip.click(); run(t, s, 1 / 60) }
+    s.mapOpen = true
+    run(t, s, 0.5)
+    check("the hud is lifted over the expanded map",
+      hud.classList.contains("tutorial-over-map"),
+      `hud carries .tutorial-over-map while the map is up`)
+    skip.click()
+    run(t, s, 1 / 60)
+    check("the next instruction exists once the map is open",
+      objective().includes("teleport"),
+      `reads "${objective()}"`)
   }
 
   window.__RESULT = { pass: results.every((r) => r.pass), results }

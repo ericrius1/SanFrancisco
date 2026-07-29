@@ -148,29 +148,77 @@ export const BOWL_RAIL = {
 } as const;
 
 /**
- * Flight rings: six hoops climbing north off the bowl deck and out over the
- * shore, drifting west so the last one frames the Golden Gate. Heights are
- * metres above one datum — the ground under the first ring — so the course
- * climbs in a straight line instead of following the seabed down once it
- * leaves the shore (see the ring datum in props.ts).
+ * Flight rings: six hoops running north out over the bay, drifting west so the
+ * last one frames the Golden Gate.
  *
- * Sized for a newcomer on their first flight, not for a course record. The
- * hoops are wide (6–8 m radius) and sit ~22 m apart, which is the part that
- * actually makes them flyable: a phoenix at speed covers the gap in about a
- * second, and a tighter spacing leaves no room to correct a line before the
- * next hoop is already past. The climb is shallow for the same reason — 4 m of
- * altitude per 22 m of travel is a glide, not a scramble.
+ * The course starts at the WATERLINE, not on the lawn. A newcomer who has just
+ * become the phoenix needs the stretch between the bowl and the shore to get
+ * off the ground and pointed before the first hoop matters — a course that
+ * starts underfoot is a course you have already missed by the time you are
+ * flying. Where that waterline is depends on the terrain, so the hoops are laid
+ * out against the real heightmap at build time rather than authored by hand.
+ *
+ * Sized for a first flight, not a course record: the hoops are wide, they sit
+ * far enough apart that a phoenix at speed gets several seconds to spot and
+ * correct a line, and the climb is gentle enough to hold while looking ahead.
+ * `y` is an absolute altitude — the course is over open water, so measuring
+ * hoops against the ground beneath them would follow the seabed down exactly
+ * where the flight is meant to be rising.
  */
-export type FlightRing = { u: number; v: number; height: number; radius: number };
+export type FlightRing = { u: number; v: number; y: number; radius: number };
 
-export const FLIGHT_RINGS: readonly FlightRing[] = [
-  { u: -62, v: 8, height: 8, radius: 8 },
-  { u: -66, v: -14, height: 12, radius: 7.6 },
-  { u: -71, v: -36, height: 16, radius: 7.2 },
-  { u: -77, v: -58, height: 20, radius: 6.8 },
-  { u: -84, v: -80, height: 24, radius: 6.4 },
-  { u: -92, v: -102, height: 28, radius: 6 }
-];
+export const RING_COURSE = {
+  count: 6,
+  /** Metres between hoops, along the course bearing. */
+  spacing: 110,
+  /** Course bearing in local metres: north, drifting west. Normalised at use. */
+  du: -0.27,
+  dv: -1,
+  /** Altitude of the first hoop over the water, and the climb hoop to hoop. */
+  baseHeight: 20,
+  climb: 6,
+  /** Hoop radius, first hoop to last. */
+  radius0: 14,
+  radiusStep: -0.6,
+  /** How far past the waterline the first hoop sits. */
+  shoreMargin: 15,
+  /** How far out to look for the waterline before giving up. */
+  searchRange: 900
+} as const;
+
+type RingGround = { groundTop(x: number, z: number): number; meta: { seaLevel: number } };
+
+/** Lay the ring course out from the bowl, starting where the water starts. */
+export function buildFlightRings(map: RingGround): FlightRing[] {
+  const sea = map.meta.seaLevel;
+  const len = Math.hypot(RING_COURSE.du, RING_COURSE.dv);
+  const du = RING_COURSE.du / len;
+  const dv = RING_COURSE.dv / len;
+
+  let shore = -1;
+  for (let d = 0; d <= RING_COURSE.searchRange; d += 4) {
+    const u = BOWL.cu + du * d;
+    const v = BOWL.cv + dv * d;
+    if (map.groundTop(zoneWorldX(u), zoneWorldZ(v)) <= sea) {
+      shore = d;
+      break;
+    }
+  }
+  // No waterline in range — an unloaded heightmap, or a map this site was
+  // dropped onto inland. Start clear of the field rather than throwing.
+  if (shore < 0) shore = 260;
+
+  const start = shore + RING_COURSE.shoreMargin;
+  return Array.from({ length: RING_COURSE.count }, (_, i) => {
+    const d = start + i * RING_COURSE.spacing;
+    return {
+      u: BOWL.cu + du * d,
+      v: BOWL.cv + dv * d,
+      y: sea + RING_COURSE.baseHeight + i * RING_COURSE.climb,
+      radius: RING_COURSE.radius0 + i * RING_COURSE.radiusStep
+    };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // The authored ground field
