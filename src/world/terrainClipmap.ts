@@ -697,9 +697,16 @@ export class TerrainClipmap {
       .max(0.001);
     const surface = surfaceSample.div(surfaceWeight);
     const urban = color(0xa19d96);
-    // Warmed toward the retired lawn-drape palette (PARK_COLOR mixed with its
-    // grass noise) so parks keep their pre-consolidation richness.
-    const grass = color(0x7aa163);
+    // Matched to what the wildlands blade field actually renders as. This is the
+    // colour BENEATH the grass, and past the blade ring it IS the grass — so any
+    // gap between the two reads as bald ground: the meadow used to end in a hard
+    // band edge with pale sage beyond it, and every downward view showed dark
+    // speckles scattered on a slab instead of one continuous field. Measured by
+    // sampling the rendered blade band against the bare terrain beyond it
+    // (tools/foliage-look-shot.mjs) and scaling this albedo by the ratio; a
+    // straight sRGB scale is right because the tone curve is ~a power law.
+    // Re-measure with that probe if the blade palette or the grade moves.
+    const grass = color(0x659447);
     const sand = color(0xd1c49f);
     const bayFloor = color(0x466c68);
     const rock = color(0x878178);

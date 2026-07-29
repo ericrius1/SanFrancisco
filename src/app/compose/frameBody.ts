@@ -1264,12 +1264,21 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !worldArrival.active &&
       core.state.wakeDeferredWildlandsGolf &&
       (
-        // Buena Vista owns the Corona skyline separately. Wake the primary
-        // Wildlands only on a real approach to one of its four regions. The
-        // authored Tea Garden owns its immediate foliage and keeps this broader
-        // park/core.state.golf bundle asleep until the player leaves that site.
+        // Buena Vista owns the Corona SKYLINE separately — its canopy is a
+        // separate forest so a Corona visit cannot grow distant redwoods in GG
+        // Park. It does not own any grass, though: blades come from the shared
+        // citywide ring that lives on this bundle, so leaving Buena Vista out of
+        // this wake left a wooded hill standing on bald ground. Approaching it
+        // wakes the bundle; the primary regions' own trees stay unmaterialized
+        // because chunk residency is distance-driven and they are kilometres
+        // away. The authored Tea Garden owns its immediate foliage and keeps
+        // this broader park/core.state.golf bundle asleep until the player
+        // leaves that site.
         (
-          nearPrimaryWildRegion(player.position.x, player.position.z, 320) &&
+          (
+            nearPrimaryWildRegion(player.position.x, player.position.z, 320) ||
+            nearBuenaVista(player.position.x, player.position.z, 320)
+          ) &&
           Math.hypot(
             player.position.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
             player.position.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
