@@ -506,9 +506,9 @@ const LATE_FRAMINGS: readonly Framing[] = [
     id: "15",
     title: "Ocean Beach Kites · Nautical",
     // Eleven and a half degrees under, the darkest this set goes. Everything is
-    // silhouette and the last cold band over the sea. Widest lens and the lowest
-    // eye in the whole production: from the sand the kites sit against sky, and
-    // sky is the only thing still carrying light.
+    // silhouette and the last cold band over the sea. Widest lens of the fifteen
+    // and the lowest eye in the whole production: from the sand the kites sit
+    // against sky, and sky is the only thing still carrying light.
     hour: 21.45,
     exposure: 1.12,
     mist: 0.55,
@@ -525,6 +525,282 @@ const LATE_FRAMINGS: readonly Framing[] = [
       target.copy(live.flock).addScaledVector(along, mix(-6, 6, track));
       target.y = base + 12 + (live.flock.y - base) * 0.34;
       return mix(34, 38, track);
+    }
+  }
+];
+
+/**
+ * Five seven-second looks that live in the last hour of light, and the first
+ * five in this production whose point of difference is the CAMERA rather than
+ * the clock. The twenty before them are, with two exceptions, the same rig: an
+ * eye standing on the sand a hundred metres downsun of the flock, at head
+ * height, looking back up at the kites. That geometry is correct — it is the
+ * only one in which kite and sun share a frame — and it has been shot twenty
+ * ways.
+ *
+ * So each of these breaks it somewhere specific and pays for it:
+ *
+ *   dusk-01  travels, where every other shot stands still or crawls
+ *   dusk-02  puts the eye AT kite altitude and looks level, not up
+ *   dusk-03  stands two body-lengths from a flyer instead of a hundred metres
+ *   dusk-04  compresses the whole beach onto the longest lens here
+ *   dusk-05  looks UP, which the distance rule exists to avoid
+ *
+ * Seven seconds each, and mostly past sunset: one at 20.02 with the disc still
+ * on the water and full shafts, then 20.44, 20.66, 20.94 and 21.16 — sunset is
+ * 20.33, civil twilight ends around 20.88, and the golden air this feature runs
+ * on is gone by 21.10. Only the first of the five has a sun to point at.
+ */
+const DUSK_FRAMINGS: readonly Framing[] = [
+  {
+    id: "dusk-01",
+    title: "Ocean Beach Kites · Down the Line",
+    // Nineteen minutes to sunset: the disc is still above the water and golden
+    // is at full, which is what a travelling shot wants. Move the camera at
+    // 21.16 and there is nothing for the parallax to move against.
+    hour: 20.02,
+    seconds: 7,
+    exposure: 0.92,
+    mist: 0.95,
+    shafts: 1.6,
+    subject: 0,
+    // Forty-eight metres of lateral dolly at walking-eye height, down the
+    // inland side of the line of flyers. Every other look in this production is
+    // a camera that drifts; this one goes somewhere, and the near runners sweep
+    // past against the fixed sun while the far ones barely move — the only shot
+    // here with real parallax in it.
+    //
+    // A hundred metres back, which the first cut got wrong at sixty. Distance
+    // is what sets the kites' elevation, and elevation is what decides whether
+    // the waterline survives: at sixty metres they sit twenty-six degrees up,
+    // the lens has to tilt to hold them, and the horizon leaves the bottom of
+    // frame with the beach and the flyers going with it. At a hundred they are
+    // fifteen degrees up, the tilt halves, and sand, surf, sun and seven kites
+    // are one picture. The flyers are small on purpose.
+    frame: ({ u }, live, eye, target) => {
+      const run = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.flock)
+        .addScaledVector(live.sun, -mix(104, 92, run))
+        .addScaledVector(along, mix(-26, 22, run));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + 1.7;
+      // The look leads the move at the top of the shot and gives that lead away
+      // to the sun by the end, so the dolly arrives somewhere instead of merely
+      // passing through. Target is built off the EYE, not off the flock: a
+      // travelling shot that keeps aiming at the same point is a pan, and pans
+      // cancel the parallax the move exists for.
+      //
+      // The lead is bounded by the lens rather than chosen: twenty metres of it
+      // at fifty-two out is twenty-one degrees off the sun, and a 32 mm frame
+      // is twenty-nine degrees wide either side. Push the lead further and the
+      // shot spends its first seconds with the sun outside the picture, which
+      // is what the first cut did.
+      target.copy(eye)
+        .addScaledVector(along, mix(20, 5, run))
+        .addScaledVector(live.sun, mix(52, 62, run));
+      target.y = base + mix(9, 10.5, run);
+      return mix(32, 40, run);
+    }
+  },
+  {
+    id: "dusk-02",
+    title: "Ocean Beach Kites · Level with the Flock",
+    // Seven minutes past sunset, golden still full: the sky has its colour and
+    // the sea has a band, and from up here both are horizon rather than ceiling.
+    hour: 20.44,
+    // Stopped down, and thinner air than the sand-level looks run, for the same
+    // reason dusk-04 is: a hundred metres of marine layer between an airborne
+    // camera and the flock is a hundred metres more than a camera standing
+    // under them looks through, and metered like one of those the whole frame
+    // came back a flat peach wash with the kites barely on it.
+    exposure: 0.8,
+    seconds: 7,
+    mist: 0.35,
+    // Shafts pulled back too, which is the opposite of what a backlit shot
+    // normally wants. Pointed straight into the glow from an airborne camera
+    // the fans bloom over the cloth instead of behind it, and the kites lose
+    // the edge that makes them kites. 1.15 keeps the rays and gives the shapes
+    // back.
+    shafts: 1.15,
+    subject: 0,
+    // The eye goes up to the kites instead of looking up at them — twenty-odd
+    // metres of air under it, a hundred metres back, trucking sideways.
+    //
+    // It sits deliberately a few metres BELOW the flock. Level with them and
+    // the kites land on the horizon line and read as smudges on the sea; four
+    // metres under and they lift clear of it, sky behind, with the waterline
+    // and the wet sand stacked underneath.
+    //
+    // And the lens tilts UP from there, by about four degrees, which is not a
+    // taste decision. Aimed below its own eye this shot fills the lower half of
+    // frame with open water at a shallow grazing angle, and that is the view
+    // that trips the depth read/write hazard in the water passes — the same one
+    // shot 13 hit. Every command buffer for the whole take was rejected: 868
+    // validation errors, seven identical frames, a clip of the boot image. Four
+    // degrees up puts the waterline in the bottom third with the kites just
+    // over centre, and the pass is quiet.
+    frame: ({ u }, live, eye, target) => {
+      const truck = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.flock)
+        .addScaledVector(live.sun, -mix(102, 92, truck))
+        .addScaledVector(along, mix(20, -16, truck));
+      // Floored well clear of the sand: the flock's own altitude swings by ten
+      // metres as the figures run, and without this a low pass would put the
+      // camera in the dunes rather than in the air.
+      eye.y = Math.max(live.ground(eye.x, eye.z) + 9, live.flock.y - mix(5, 9, truck));
+      target.copy(live.flock).addScaledVector(along, mix(-5, 4, truck));
+      target.y = live.flock.y + mix(2.5, -3, truck);
+      return mix(52, 44, truck);
+    }
+  },
+  {
+    id: "dusk-03",
+    title: "Ocean Beach Kites · Over the Shoulder",
+    // Twenty minutes under. No disc left, but the band behind the flyer is at
+    // its hottest and the shafts still rake along the sand toward the camera.
+    hour: 20.66,
+    exposure: 0.94,
+    seconds: 7,
+    // Thin air and hard shafts — the same combination shot 12 arrived at, and
+    // for the same reason: past sunset there is no disc left to punch through a
+    // heavy marine layer, so thick fog reads as a flat wash instead of as fog.
+    mist: 0.55,
+    shafts: 1.8,
+    subject: 4,
+    // Five metres behind a sled flyer's shoulder, pushing in to under three.
+    // The one shot in the production with a person in the near field: they are
+    // most of the frame, black, with the line leaving out of the top corner and
+    // the rest of the beach small and backlit past them.
+    //
+    // Being this close is normally what breaks these shots — a camera beside a
+    // flyer is looking steeply up at a kite with the sun nowhere in shot. Here
+    // the kite is MEANT to be out of frame. The subject is the silhouette, and
+    // the sun's own line-of-sight sits just past their shoulder, which is
+    // exactly what the distance rule is protecting everywhere else.
+    frame: ({ u }, live, eye, target) => {
+      const push = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.runner)
+        .addScaledVector(live.sun, -mix(6.8, 4.8, push))
+        .addScaledVector(along, mix(1.7, -1, push));
+      eye.y = live.ground(eye.x, eye.z) + 1.55;
+      // Aim at the chest, rising to the head as the lens gets longer — so the
+      // push walks their feet out of the bottom of frame rather than shrinking
+      // them in it.
+      //
+      // Measured off the SAND under them, not off `runner.y`. runnerPosition is
+      // the rig's root and the root sits at about hip height, so aiming a
+      // "head height" 1.5 m above it aims 0.65 m over the actual head. From a
+      // hundred metres that is nothing and shot 04 ignores it; from five it is
+      // seven degrees, and the first master of this spent its last two seconds
+      // on an empty sky with the top of a head along the bottom edge.
+      target.copy(live.runner);
+      target.y = live.ground(live.runner.x, live.runner.z) + mix(1.2, 1.5, push);
+      return mix(38, 50, push);
+    }
+  },
+  {
+    id: "dusk-04",
+    title: "Ocean Beach Kites · The Long Band",
+    // Civil twilight, near its end. The sky is a narrow hot strip over the water
+    // under deep blue, and a long lens is the instrument that strip wants.
+    hour: 20.94,
+    // 0.86, well under the 0.95–1.12 the other post-sunset looks run. Those all
+    // stand sixty to a hundred metres out; this one is at a hundred and sixty
+    // through a telephoto, and that much air is itself a brightening, low-
+    // contrast filter. Metered like them the frame came back a pale wash with
+    // grey kites in it. Stopping down is what turns the band back into a band
+    // and the kites back into silhouettes.
+    exposure: 0.86,
+    seconds: 7,
+    // 0.12, following shot 13's lesson to its end: from this far out at this
+    // hour the world's own aerial perspective is already more haze than the
+    // frame can carry, and any marine layer on top of it is pure contrast loss.
+    mist: 0.12,
+    shafts: 0.55,
+    subject: 6,
+    // The longest lens outside the eclipse set: 62→74 mm, which compresses the
+    // dune line, the surf, the band and seven kites into four flat stacked
+    // strips with no depth left in them at all. The opposite instrument to
+    // dusk-03's, on the same beach.
+    //
+    // It started at 80→94 and had to come back. A telephoto here is threading
+    // the horizon and the kites through one frame, and the gap between them
+    // grows every time the flock climbs: at 94 mm the window was under a degree
+    // wide and any gust that lifted the kites pushed the waterline off the
+    // bottom, leaving a whole second of bare sky. Ten millimetres of lens is
+    // worth far less than the four degrees of margin they buy.
+    //
+    // A hundred and ten metres, not the hundred and sixty this started on.
+    // Compression is the lens's job, not the tripod's, and every extra metre at
+    // this hour is bought with contrast: at a hundred and sixty the frame came
+    // back the same grey-peach wash shot 13 got, and stopping down could darken
+    // it but not put the difference between kite and sky back. Shot 13 solved
+    // this by walking in and so does this.
+    //
+    // The tilt is solved rather than dialled — a telephoto that holds the kites
+    // loses the horizon and vice versa, so the aim rides a fixed fraction of
+    // the live flock height and stays between the two as the lens closes in.
+    frame: ({ u }, live, eye, target) => {
+      const drift = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.flock)
+        .addScaledVector(live.sun, -mix(114, 102, drift))
+        .addScaledVector(along, mix(-14, 12, drift));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + 2.6;
+      target.copy(live.flock).addScaledVector(along, mix(-4, 3, drift));
+      // The aim tracks an eighth of the live flock height, so a gust that lifts
+      // the kites lifts the frame with them — enough to keep them off the top
+      // edge, gentle enough that the waterline never leaves the bottom.
+      target.y = base + mix(11.7, 12.4, drift) + (live.flock.y - base) * 0.12;
+      return mix(62, 74, drift);
+    }
+  },
+  {
+    id: "dusk-05",
+    title: "Ocean Beach Kites · Under the Wing",
+    // 21.16 — six minutes past the end of golden hour. There are no shafts to
+    // ask for and no disc to stand downsun of, which is precisely what unlocks
+    // this angle: the distance rule exists to keep the sun in frame, and once
+    // there is no sun the rule has nothing left to protect.
+    hour: 21.16,
+    exposure: 1.06,
+    mist: 0.45,
+    seconds: 7,
+    shafts: 0,
+    subject: 0,
+    // So: fifty metres out instead of a hundred, and the only shot here that
+    // looks UP. Seven black kites fill the top two-thirds of a wide frame with
+    // the last cold band pinned along the very bottom edge, and the camera
+    // walks a forty-degree arc around the flock so their outlines cross and
+    // separate against the gradient rather than sitting still on it.
+    //
+    // Fifty and not thirty, because everything here aims at the MEAN kite and
+    // seven of them are strung eighty metres along the sand. At thirty that
+    // spread is a hundred degrees wide — wider than any lens — and the shot
+    // spends half its length framing empty sky between two kites at opposite
+    // edges. Fifty brings the spread inside a 30 mm frame and only costs four
+    // degrees of the elevation this angle exists for.
+    frame: ({ u }, live, eye, target) => {
+      const swing = easeInOutCubic(u);
+      const angle = mix(-0.34, 0.3, swing);
+      const away = new THREE.Vector3(
+        -live.sun.x * Math.cos(angle) + live.sun.z * Math.sin(angle),
+        0,
+        -live.sun.z * Math.cos(angle) - live.sun.x * Math.sin(angle)
+      ).normalize();
+      eye.copy(live.flock).addScaledVector(away, mix(52, 44, swing));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + 1.6;
+      target.copy(live.flock);
+      // Aimed well under the kites, not at them: at this range aiming AT the
+      // flock is thirty degrees of tilt and the horizon falls off the bottom
+      // with the last light in the picture going with it.
+      target.y = base + mix(19, 17, swing);
+      return mix(30, 26, swing);
     }
   }
 ];
@@ -954,7 +1230,14 @@ function buildDemo(framing: Framing): Demo {
   };
 }
 
-const ALL_FRAMINGS = [...FRAMINGS, ...EXTRA_FRAMINGS, ...LATE_FRAMINGS, ...FLYER_FRAMINGS, ...RING_FRAMINGS];
+const ALL_FRAMINGS = [
+  ...FRAMINGS,
+  ...EXTRA_FRAMINGS,
+  ...LATE_FRAMINGS,
+  ...FLYER_FRAMINGS,
+  ...RING_FRAMINGS,
+  ...DUSK_FRAMINGS
+];
 
 export const kiteFestivalDemos: readonly Demo[] = ALL_FRAMINGS.map(buildDemo);
 export const KITE_FESTIVAL_TITLES: Readonly<Record<string, string>> = Object.fromEntries(

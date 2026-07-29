@@ -42,6 +42,10 @@ const PRODUCTION_DURATIONS = Object.freeze({
   ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => [
     `kite-to-sutro-${String(index + 1).padStart(2, "0")}`,
     15
+  ])),
+  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
+    `ocean-beach-kite-dusk-${String(index + 1).padStart(2, "0")}`,
+    7
   ]))
 });
 
@@ -128,6 +132,15 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
       { time: 0, id: "wind", description: `eclipse look ${shot} opens off the axis` },
       { time: 2.6, id: "align", description: `the sun settles into the wheel's hub` },
       { time: 5.1, id: "surf", description: `a set breaks under the held ring` }
+    ])];
+  })),
+  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
+    const shot = index + 1;
+    return [`ocean-beach-kite-dusk-${String(shot).padStart(2, "0")}`, Object.freeze([
+      { time: 0, id: "wind", description: `dusk look ${shot} opens on the offshore evening` },
+      { time: 2.2, id: "flutter", description: `ripstop takes the gust as the move settles` },
+      { time: 4.3, id: "surf", description: `a set breaks under the last of the light` },
+      { time: 6.1, id: "settle", description: `the beach hands the shot over to the sky` }
     ])];
   })),
   ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
@@ -238,6 +251,9 @@ export async function renderCinematicAudio(production, outputPath) {
     // starts with "ocean-beach-kite-", and its last two characters would read
     // as look 3 of a ten-second arrangement inside a seven-second clip.
     scoreOceanBeachKiteRing(mix, Number(id.slice(-2)));
+  } else if (id.startsWith("ocean-beach-kite-dusk-")) {
+    // Same trap, same fix: this one must also outrun the general kite branch.
+    scoreOceanBeachKiteDusk(mix, Number(id.slice(-2)));
   } else if (id.startsWith("ocean-beach-kite-")) {
     scoreOceanBeachKite(mix, Number(id.slice(-2)));
   } else if (id.startsWith("sutro-vista-")) {
@@ -751,6 +767,100 @@ function scoreOceanBeachKiteRing(mix, shot) {
     direction: "in"
   });
   addSub(mix, { start: 5.05, duration: 1.4, fromHz: 50, toHz: 32, gain: 0.05 + evening * 0.018 });
+}
+
+/**
+ * The dusk set, seven seconds each. Neither of the other two kite arrangements
+ * fits these: the festival's ten-second one resolves at 8.9 and cutting it at
+ * seven decapitates its ending, and the eclipse's is a single held chord for a
+ * single held event — but every one of these five MOVES, and a drone under a
+ * dolly reads as a drone under nothing.
+ *
+ * So this one moves too, in the only way seven seconds allows: one chord that
+ * gives way to a lower one at 3.4, roughly where each shot's easing is steepest,
+ * with the surf set peaking after the handover and resolving on a low bell at
+ * 6.1. Everything is written to finish inside the running time.
+ *
+ * Keyed to each look's hour rather than its index, and the walk is much longer
+ * than the eclipse set's: 20.02 still has a disc on the water, 21.16 is past the
+ * end of golden hour with nothing left but the gradient.
+ */
+const DUSK_EVENING = Object.freeze({ 1: 0.12, 2: 0.5, 3: 0.68, 4: 0.88, 5: 1.0 });
+
+function scoreOceanBeachKiteDusk(mix, shot) {
+  const evening = clamp01(DUSK_EVENING[shot] ?? 0.6);
+  // The upper chord: present at the top of the clip, gone by the halfway mark.
+  addPad(mix, {
+    start: 0,
+    duration: 4.2,
+    notes: evening < 0.55 ? [45, 52, 57, 64, 69] : [43, 50, 55, 62, 67],
+    gain: 0.046 - evening * 0.008,
+    pan: -0.06,
+    brightness: 0.64 - evening * 0.28
+  });
+  // The lower one it hands over to, arriving under the steepest part of the
+  // move and holding to the cut.
+  addPad(mix, {
+    start: 3.4,
+    duration: 3.6,
+    notes: evening < 0.55 ? [38, 45, 50, 57, 62] : [33, 40, 45, 52, 57],
+    gain: 0.044 + evening * 0.016,
+    pan: 0.05,
+    brightness: 0.5 - evening * 0.22
+  });
+  // Offshore evening wind, and it never stops. Wider drift than the eclipse
+  // set's because on four of these five the camera itself is travelling.
+  addAir(mix, { start: 0, duration: 7, gain: 0.031 - evening * 0.006, panDrift: 1 });
+  // Ripstop, landing on the "flutter" cue.
+  addFoley(mix, {
+    start: 0.3,
+    duration: 6.4,
+    gain: 0.014 - evening * 0.004,
+    pan: -0.2,
+    character: "grass"
+  });
+  addFoley(mix, {
+    start: 2.2,
+    duration: 2.4,
+    gain: 0.018 - evening * 0.006,
+    pan: 0.28,
+    character: "grass"
+  });
+  // Two sets rather than one: a small early one to establish the water, and the
+  // real one peaking at the "surf" cue with a sub under its collapse.
+  addWhoosh(mix, {
+    start: 0.4,
+    duration: 2.8,
+    gain: 0.042,
+    panFrom: -0.55,
+    panTo: -0.08,
+    direction: "in"
+  });
+  addWhoosh(mix, {
+    start: 2.6,
+    duration: 3.6,
+    gain: 0.058 + evening * 0.014,
+    panFrom: 0.5,
+    panTo: -0.15,
+    direction: "in"
+  });
+  addSub(mix, { start: 4.35, duration: 1.5, fromHz: 51, toHz: 32, gain: 0.052 + evening * 0.02 });
+  // One bright bell early, dimming to nothing across the set, and one low one
+  // on the resolve that gets stronger as the sky takes the picture over.
+  addChime(mix, {
+    start: 1.5,
+    midi: 76 - Math.round(evening * 6),
+    duration: 2.2,
+    gain: 0.028 * (1 - evening * 0.85),
+    pan: 0.22
+  });
+  addChime(mix, {
+    start: 6.1,
+    midi: 57,
+    duration: 0.85,
+    gain: 0.022 + evening * 0.014,
+    pan: -0.1
+  });
 }
 
 function scoreLandsEnd(mix) {

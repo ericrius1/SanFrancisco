@@ -206,6 +206,32 @@ const DEFINITIONS = Object.freeze({
       })
     })];
   })),
+  // The dusk set: seven seconds each, mostly past sunset, and the five that
+  // move the camera rather than the clock.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Kites · Down the Line"],
+    [2, "Ocean Beach Kites · Level with the Flock"],
+    [3, "Ocean Beach Kites · Over the Shoulder"],
+    [4, "Ocean Beach Kites · The Long Band"],
+    [5, "Ocean Beach Kites · Under the Wing"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-kite-dusk-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 7,
+      seed: (0x44_53_4b_00 + index * 0x101) >>> 0,
+      posterAt: 4.4,
+      stillTimes: Object.freeze([0.3, 1.4, 2.6, 3.8, 5, 6.2, 6.8]),
+      audio: Object.freeze({
+        profile: "ocean-beach-kite-dusk",
+        index,
+        description: `Late sunset into twilight — dusk look ${index} of five.`
+      })
+    })];
+  })),
   // The two travelling shots: kite festival to Sutro Baths in one unbroken move.
   // Fifteen seconds each, and the stills are weighted toward the back half
   // because that is where the shot changes — the beach run is one continuous

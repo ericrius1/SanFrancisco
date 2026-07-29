@@ -19,7 +19,7 @@ customization film, an 11-second sunset dog-park film, and the eight-shot,
 | `tools/cinematic/transition.mjs` | Deterministic picture/audio transition and final assembly. |
 | `tools/cinematic/delivery.mjs` | Platform delivery derivatives, validation, and quality-comparison manifests. |
 | `tools/render-cinematic.mjs` | CLI orchestration and process cleanup. |
-| `src/dev/demos/kiteFestivalCinematic.ts` | One parameterised family that exports five `Demo`s (`ocean-beach-kite-01`…`05`). All five film the same live seven-flyer encounter from different places at different hours; only the camera and the clock differ. |
+| `src/dev/demos/kiteFestivalCinematic.ts` | One parameterised family that exports every `ocean-beach-kite-*` `Demo`. All of them film the same live seven-flyer encounter; the framing table supplies the hour, exposure, per-shot fog and shafts, subject, and camera. |
 | `src/dev/demos/kiteToSutroCinematic.ts` | Two fifteen-second flights (`kite-to-sutro-01`/`02`) that leave the same encounter, cross the Point Lobos headland and finish inside the restored Sutro Baths. The only cinematics that travel: each frame drives `player.position`/`renderPosition` along the camera rail so tile streaming, the 32 m hero shadow cascade and the bath hall's near-effects follow the lens, and `ensureDemoSite` force-loads the `sutro-baths` optional site before the shot arms rather than letting it pop in at the 500 m gate mid-flight. |
 | `tools/render-twitter-summer.mjs` | Eight independently renderable shots, exact-duration assembly, seven motivated transitions, review artifacts, and X derivatives. |
 
@@ -59,12 +59,15 @@ npm run render:cinematics
 # Rebuild only the combined film from existing individual masters.
 npm run render:cinematic -- --combine
 
-# The five Ocean Beach kite-festival looks (sunset through blue hour).
-# One live encounter, five cameras, five wall-clock minutes:
-#   01 the whole beach   19.46   02 two sunwheels   19.66   03 the centipede 19.90
-#   04 running the sand  20.14   05 blue hour       20.78
-npm run render:cinematic -- ocean-beach-kite-01 --stills   # composition check
-npm run render:cinematic -- ocean-beach-kite-01 --full
+# The Ocean Beach kite looks. One live encounter, twenty-five cameras.
+#   01–15  ten seconds each, 14.35 through 21.45 — the festival read as a scene
+#   ring-01…05  seven seconds, the sun held inside the sunwheel's hub
+#   dusk-01…05  seven seconds, mostly past sunset, and the five that move the
+#               camera rather than the clock: a travelling dolly (20.02), an eye
+#               at kite altitude (20.44), a flyer in the near field (20.66), a
+#               160 m telephoto (20.94), and the only shot that looks up (21.16)
+npm run render:cinematic -- ocean-beach-kite-dusk-01 --stills   # composition check
+npm run render:cinematic -- ocean-beach-kite-dusk-01 --full
 
 # The two travelling shots: kite festival to Sutro Baths in one unbroken move,
 # fifteen seconds each. Unlike the static kite set these move the PLAYER along
@@ -200,6 +203,17 @@ fills the next. Its canvas overlay mirrors the deterministic DOM film layer so
 titles and letterbox bars are included before WebCodecs encoding. Do not replace
 either synchronization scheme with a JavaScript-only wait: a tick completing
 does not mean WebGPU has finished drawing the pixels being captured.
+
+One composition failure is worth stating as a rule because it has now cost two
+shots. A camera that fills the lower half of frame with open water at a shallow
+grazing angle trips a depth read/write hazard in the water passes: every command
+buffer that frame is rejected, the canvas keeps whatever it last composited, and
+the take records as a run of identical frames. It is silent in the camera audit
+and shows up only as `GPUValidationError` lines in the manifest diagnostics and
+as byte-identical review stills. Both fixes were framing, not renderer changes —
+anchor wide shots to the flock/site mean so the eye stays over land, and tilt up
+so the waterline sits in the bottom third. **Check the still hashes**, not just
+the contact sheet: identical frames are the signature.
 
 Camera rails are preflight-sampled before frame zero. The audit reports terrain
 clearance, optional line-of-sight occlusion, excessive per-sample travel, and
