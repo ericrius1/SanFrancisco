@@ -117,6 +117,7 @@ import { twitterSummerShot08 } from "./demos/twitterSummerShot08";
 import { afterlightCinematic } from "./demos/afterlightCinematic";
 import { surfAerialCinematic } from "./demos/surfAerialCinematic";
 import { kiteFestivalDemos } from "./demos/kiteFestivalCinematic";
+import { kiteToSutroDemos } from "./demos/kiteToSutroCinematic";
 import { phoenixPalaceFlyby } from "./demos/phoenixPalaceFlyby";
 
 const DEMOS: Record<string, Demo> = {
@@ -138,7 +139,8 @@ const DEMOS: Record<string, Demo> = {
   [afterlightCinematic.name]: afterlightCinematic,
   [surfAerialCinematic.name]: surfAerialCinematic,
   [phoenixPalaceFlyby.name]: phoenixPalaceFlyby,
-  ...Object.fromEntries(kiteFestivalDemos.map((demo) => [demo.name, demo]))
+  ...Object.fromEntries(kiteFestivalDemos.map((demo) => [demo.name, demo])),
+  ...Object.fromEntries(kiteToSutroDemos.map((demo) => [demo.name, demo]))
 };
 
 export function runDemo(name: string, ctx: DemoContext) {

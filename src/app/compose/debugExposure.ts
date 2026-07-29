@@ -247,7 +247,7 @@ export async function installDebugSurfaces(
       // which only fires once the player is near. Put the body on the beach and
       // resolve the encounter here, so frame zero already has seven kites up
       // rather than an empty sky that fills in over the first second.
-      if (name.startsWith("ocean-beach-kite-")) {
+      if (name.startsWith("ocean-beach-kite-") || name.startsWith("kite-to-sutro-")) {
         const beach = oceanKite.site;
         player.teleportTo({
           x: beach.x + 18,
@@ -257,6 +257,13 @@ export async function installDebugSurfaces(
           mode: "walk"
         });
         await oceanKite.ensure();
+        // The flights end inside the bath hall, and its living layer (bathers,
+        // steam, planting) is an OptionalSite gated at 500 m — the kite beach is
+        // 534 m out, so it would otherwise start loading only once the camera was
+        // already most of the way there and pop in under the lens. Force it
+        // resident before the shot arms; `ensure` also pins it against the
+        // distance unload while the flight is still down on the sand.
+        if (name.startsWith("kite-to-sutro-")) await sites.ensure("sutro-baths");
         return;
       }
       const site: OptionalSiteId | null =
