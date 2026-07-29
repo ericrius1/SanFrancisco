@@ -82,7 +82,7 @@ export class UnderwaterOverlay {
       cz = camera.position.z;
     // only over actual water — land dipping just below y=0 near shore isn't
     // "underwater". Authored pools count as water too (world/swimVolumes.ts).
-    const wy = submergibleWaterY(this.#map, cx, cz, timeSec);
+    const wy = submergibleWaterY(this.#map, cx, cz, timeSec, camera.position.y);
     // Small hysteresis so a crest cresting under a high surf eye does not flash
     // the underwater overlay when clearance is only centimetres.
     const depth = Number.isNaN(wy) ? -1 : wy - camera.position.y - 0.45; // >0 = submerged

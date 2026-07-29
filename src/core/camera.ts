@@ -314,8 +314,14 @@ export class ChaseCamera {
     // used to pin the camera on the surface, so diving or a sinking car left the
     // view locked overhead. Following down to the bay floor lets the shot stay on
     // the player underwater; the seabed clamp still stops it clipping through.
+    // …but only outdoors. Inside a building the terrain is not the camera's
+    // floor, and for a room BELOW it the clamp is actively wrong: the sunken
+    // gallery under Sutro Baths is 31 m under a groundTop of 2 m, so this would
+    // haul the boom up through the ceiling and into the rock every frame of the
+    // blend into the eye rig. Indoors the chase pose is on its way to first
+    // person anyway (`indoorTarget`, below) and wants to stay near the body.
     const floor = this.#map.effectiveGround(cx, cz) + 0.7
-    if (this.#chasePos.y < floor) this.#chasePos.y = floor
+    if (!this.indoor && this.#chasePos.y < floor) this.#chasePos.y = floor
     // Swim camera: surface rest stays above the live waterline (a low boom must
     // not flash the underwater overlay); a committed dive still ducks under.
     // Dive detection uses the calm/mean surface — Ocean Beach crests otherwise
@@ -327,7 +333,7 @@ export class ChaseCamera {
       // An authored pool is still, so its surface is its own calm line and its
       // basin is the bed. Diving in a 2.6 m bath is a shorter drop than the
       // open-bay threshold expects, hence the tighter dive clearance.
-      const pool = swimVolumeAt(anchor.x, anchor.z)
+      const pool = swimVolumeAt(anchor.x, anchor.z, anchor.y)
       const waterY = pool
         ? pool.surfaceY
         : waterHeight(anchor.x, anchor.z, seaTime())
@@ -344,7 +350,7 @@ export class ChaseCamera {
         this.#chasePos.y = Math.min(this.#chasePos.y, waterY - 0.8)
       } else if (player.swimming) {
         surfaceSwimCam = true
-        const camPool = swimVolumeAt(this.#chasePos.x, this.#chasePos.z)
+        const camPool = swimVolumeAt(this.#chasePos.x, this.#chasePos.z, this.#chasePos.y)
         const camWater =
           (camPool
             ? camPool.surfaceY
@@ -647,7 +653,7 @@ export class ChaseCamera {
     // chase endpoint immediately, but the smoothed orbit can trail below the
     // waterline for a few frames and flash the underwater overlay.
     if (surfaceSwimCam && firstPersonBlend < 0.5) {
-      const camPool = swimVolumeAt(this.camera.position.x, this.camera.position.z)
+      const camPool = swimVolumeAt(this.camera.position.x, this.camera.position.z, this.camera.position.y)
       const camWater =
         (camPool
           ? camPool.surfaceY

@@ -404,11 +404,17 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
    * from outside your own head. So the hall still reads as interior for pace and
    * reverb, and the camera is simply left however the visitor had it — C keeps
    * cycling third/first/orbit in there like anywhere else.
+   *
+   * The sunken gallery under the baths goes the OTHER way and takes the eye rig:
+   * it is a 23 m-wide corridor thirty-one metres under the ground, where a chase
+   * boom has nowhere to sit and the terrain "floor" the boom clamps against is
+   * high above its ceiling.
    */
   const syncIndoorState = () => {
     const inRoom =
       (citygenRing.current?.isPlayerInside() ?? false) ||
-      (core.state.missionDolores?.isPlayerInside(player.position) ?? false);
+      (core.state.missionDolores?.isPlayerInside(player.position) ?? false) ||
+      (core.state.sutroBaths?.isPlayerInGrotto(player.position) ?? false);
     player.indoor = inRoom || (core.state.sutroBaths?.isPlayerInside(player.position) ?? false);
     chase.indoor = inRoom; // blend into the indoor eye rig
   };
@@ -874,6 +880,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !core.state.landsEnd?.keeper.tryInteract(player, hud) &&
       !core.state.waveOrgan?.tryInteract(player, hud) &&
       !core.state.missionDolores?.tryInteract(player.position, player.mode, hud) &&
+      !core.state.sutroBaths?.tryInteract(player.position, player.mode) &&
       !core.state.hangGliding?.tryInteract(player, hud, input, chase) &&
       !core.state.afterlight?.tryInteract(player, hud)
     ) {
