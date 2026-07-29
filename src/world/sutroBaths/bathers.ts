@@ -37,6 +37,8 @@ import { SEATS } from "./parlour";
  */
 
 const RIG_STAND_Y = 0.92; // rig group origin (hips) above the feet
+/** Coping stone above the deck, measured off the built floor (5.82 vs 5.62). */
+const COPING_RISE = 0.2;
 /** Everything here moves at three-quarters speed. It is that kind of afternoon. */
 const RELAX = 0.75;
 
@@ -104,8 +106,8 @@ const BATHERS: readonly BatherSpec[] = [
   { seed: "sutro-swim-1", pool: "great-plunge", lx: -22, lz: -30, face: Math.PI, pose: "crawl", drift: 0.62 },
   { seed: "sutro-swim-2", pool: "great-plunge", lx: -18, lz: 6, face: 0, pose: "breast", drift: -0.44 },
   { seed: "sutro-swim-3", pool: "great-plunge", lx: -26, lz: -8, face: Math.PI, pose: "backFloat", drift: 0.14 },
-  { seed: "sutro-sit-1", pool: "great-plunge", lx: -31.3, lz: -25.4, face: -1.5, pose: "sitEdge", talk: "plunge-edge" },
-  { seed: "sutro-sit-2", pool: "great-plunge", lx: -31.3, lz: -23.2, face: -1.9, pose: "sitEdge", talk: "plunge-edge" },
+  { seed: "sutro-sit-1", pool: "great-plunge", lx: -31.1, lz: -25.4, face: -1.5, pose: "sitEdge", talk: "plunge-edge" },
+  { seed: "sutro-sit-2", pool: "great-plunge", lx: -31.1, lz: -23.2, face: -1.9, pose: "sitEdge", talk: "plunge-edge" },
   { seed: "sutro-sit-3", pool: "great-plunge", lx: -9.7, lz: 14, face: 1.55, pose: "sitEdge" },
   { seed: "sutro-wade-1", pool: "great-plunge", lx: -12.5, lz: 22, face: 2.6, pose: "wade" },
 
@@ -148,7 +150,13 @@ function surfaceForPose(pose: BatherPose): number {
     case "backFloat":
       return SUTRO_BATHS.waterY - 0.05 - RIG_STAND_Y;
     case "sitEdge":
-      return SUTRO_BATHS.deckY - RIG_STAND_Y + 0.14; // hips ~ deck level
+      // On the COPING, which is not the deck. Raycasting the built floor at the
+      // plunge's west rim gives 5.82 for the walkable stone against a deckY of
+      // 5.62, so seating these hips off deckY buried everyone 0.2 m inside the
+      // ledge — which is exactly what it looked like. groundTop cannot tell you
+      // this: the authored region declares flat ownership at 2.07, so every
+      // sample inside the hall returns 2.07 no matter what is built there.
+      return SUTRO_BATHS.deckY + COPING_RISE - RIG_STAND_Y + 0.14;
     case "sitCross":
       return SUTRO_BATHS.deckY - RIG_STAND_Y + 0.3;
     case "sunbathe":
