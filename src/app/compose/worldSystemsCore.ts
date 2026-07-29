@@ -536,6 +536,63 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     shorebreak?.dispose();
     shorebreak = null;
   };
+  // The plume a breaking crest throws. Same landscape, same approach gate as
+  // the shorebreak sheet, so it rides that function's proximity test rather
+  // than adding a second one — but its own module, because it lives offshore
+  // at the break line and shares nothing with the wash on the sand.
+  let spray: import("../../world/oceanBeachSpray").OceanBeachSpray | null = null;
+  let sprayLoading: Promise<void> | null = null;
+  const ensureSpray = () => {
+    if (spray || sprayLoading) return sprayLoading ?? Promise.resolve();
+    sprayLoading = import("../../world/oceanBeachSpray")
+      .then(async ({ OceanBeachSpray }) => {
+        const field = new OceanBeachSpray(sky);
+        try {
+          await renderer.compileAsync(field.group, camera, scene);
+        } catch (error) {
+          console.warn("[ocean-spray] warmup compile failed", error);
+        }
+        scene.add(field.group);
+        spray = field;
+      })
+      .catch((error) => console.warn("[ocean-spray] failed to load", error))
+      .finally(() => {
+        sprayLoading = null;
+      });
+    return sprayLoading;
+  };
+  const releaseSpray = () => {
+    spray?.dispose();
+    spray = null;
+  };
+  // Background gulls over the same water. Same gate again: they are part of
+  // what the beach looks like, not an activity, and nothing outside it should
+  // fetch a byte of them.
+  let gulls: import("../../world/oceanBeachGulls").OceanBeachGulls | null = null;
+  let gullsLoading: Promise<void> | null = null;
+  const ensureGulls = () => {
+    if (gulls || gullsLoading) return gullsLoading ?? Promise.resolve();
+    gullsLoading = import("../../world/oceanBeachGulls")
+      .then(async ({ OceanBeachGulls }) => {
+        const flock = new OceanBeachGulls(sky);
+        try {
+          await renderer.compileAsync(flock.group, camera, scene);
+        } catch (error) {
+          console.warn("[ocean-gulls] warmup compile failed", error);
+        }
+        scene.add(flock.group);
+        gulls = flock;
+      })
+      .catch((error) => console.warn("[ocean-gulls] failed to load", error))
+      .finally(() => {
+        gullsLoading = null;
+      });
+    return gullsLoading;
+  };
+  const releaseGulls = () => {
+    gulls?.dispose();
+    gulls = null;
+  };
   /**
    * Per-frame: load on approach, drop once the player has genuinely left. The
    * proximity test is the boot-resident one from oceanBeachWaves — asking the
@@ -547,13 +604,16 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     const { x, z } = player.position;
     if (nearOceanBeachShore(x, z, { shorePad: 620, inlandPad: 400, zPad: 300 })) {
       void ensureShorebreak();
-    } else if (
-      shorebreak &&
-      !nearOceanBeachShore(x, z, { shorePad: 1250, inlandPad: 900, zPad: 800 })
-    ) {
-      releaseShorebreak();
+      void ensureSpray();
+      void ensureGulls();
+    } else if (!nearOceanBeachShore(x, z, { shorePad: 1250, inlandPad: 900, zPad: 800 })) {
+      if (shorebreak) releaseShorebreak();
+      if (spray) releaseSpray();
+      if (gulls) releaseGulls();
     }
     shorebreak?.update(time, dt, player.renderPosition);
+    spray?.update(time, dt, player.renderPosition);
+    gulls?.update(time, dt, player.renderPosition);
   };
 
   let surfFlowFx = 0;

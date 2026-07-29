@@ -15,6 +15,23 @@ type OceanBeachKiteEncounter = import("../../world/oceanBeachKite").OceanBeachKi
 const KITE_BEACH_Z = 1650;
 const OCEAN_KITE_LOAD_DISTANCE = 650;
 /**
+ * How long the detached shader warmup is allowed to hold the flock back.
+ *
+ * The warmup below compiles the whole encounter — eight sails of node cloth,
+ * eight rigs, the tail ribbons, the prism's spectrum and the sunset-air
+ * raymarch — before anything is added to the scene, so that nothing compiles
+ * on a frame the player is watching. That is the right instinct and it was
+ * unbounded, which is the bug: measured on a cold pipeline cache,
+ * `compileAsync` on this group took **five minutes forty-eight seconds**,
+ * against 118 ms to actually BUILD the thing. For all of it the beach was
+ * empty, and then eight kites appeared at once.
+ *
+ * So the warmup keeps running, but it stops being a gate. Past this budget the
+ * flock goes in regardless and whatever is left compiles as it is first drawn.
+ * A hitch of a frame or two beats a beach with no kites on it.
+ */
+const OCEAN_KITE_WARMUP_BUDGET_MS = 2500;
+/**
  * Close enough that a kite atelier is a thing you would open. Hysteresis so
  * pacing the boundary does not strobe the HUD's customizer slot.
  */
@@ -123,12 +140,28 @@ export function createOceanKiteGate({
           culling.set(object, object.frustumCulled);
           object.frustumCulled = false;
         });
-        try {
-          await renderer.compileAsync(encounter.group, camera, scene);
-        } catch (error) {
-          console.warn("[ocean kite] detached shader warmup failed", error);
-        } finally {
+        // Time-boxed. `compileAsync` cannot be cancelled, so the loser of this
+        // race is simply no longer awaited — it finishes warming in the
+        // background and the pipelines it produces are still used.
+        let warmed = false;
+        const warmup = renderer
+          .compileAsync(encounter.group, camera, scene)
+          .catch((error) => console.warn("[ocean kite] detached shader warmup failed", error))
+          .finally(() => {
+            warmed = true;
+            for (const [object, frustumCulled] of culling) object.frustumCulled = frustumCulled;
+          });
+        await Promise.race([
+          warmup,
+          new Promise((resolve) => setTimeout(resolve, OCEAN_KITE_WARMUP_BUDGET_MS))
+        ]);
+        if (!warmed) {
+          // Restore culling now; the warmup's own `finally` will set it again
+          // from the same map, to the same values, whenever it lands.
           for (const [object, frustumCulled] of culling) object.frustumCulled = frustumCulled;
+          console.info(
+            `[ocean kite] warmup exceeded ${OCEAN_KITE_WARMUP_BUDGET_MS} ms; showing the flock and finishing in the background`
+          );
         }
         if (generation !== oceanKiteGeneration) {
           encounter.dispose();
