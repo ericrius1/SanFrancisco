@@ -32,6 +32,7 @@ import { HANG_GLIDING_SITE } from "../../gameplay/hangGliding/meta";
 import { LANDS_END_CENTER } from "../../world/landsEnd/meta";
 import { WAVE_ORGAN_CENTER } from "../../world/waveOrgan/meta";
 import { BEACH_PIANIST_CENTER } from "../../world/beachPianist/meta";
+import { SKATE_PLAZA_CENTER } from "../../world/skatePlaza/meta";
 import { SUTRO_BATHS_ARRIVAL } from "../../world/spawnPoints";
 import type { WorldMap } from "../../world/heightmap";
 import type { Physics } from "../../core/physics";
@@ -61,6 +62,7 @@ import type { PalaceReverieGame } from "../../gameplay/palaceReverie";
 import type { LandsEndRegion } from "../../world/landsEnd";
 import type { WaveOrgan } from "../../world/waveOrgan";
 import type { BeachPianist } from "../../world/beachPianist";
+import type { SkatePlaza } from "../../world/skatePlaza";
 import type { AfterlightExperience } from "../../gameplay/afterlight";
 import type { HangGlidingExperience } from "../../gameplay/hangGliding";
 import type { PickleballController } from "../systems/pickleball";
@@ -80,6 +82,7 @@ export type OptionalSiteId =
   | "lands-end"
   | "wave-organ"
   | "sutro-baths"
+  | "skate-plaza"
   | "pup"
   | "fort-mason-ensemble"
   | "beach-pianist";
@@ -141,6 +144,7 @@ export type OptionalSiteRefs = {
   landsEnd: LandsEndRegion | null;
   waveOrgan: WaveOrgan | null;
   beachPianist: BeachPianist | null;
+  skatePlaza: SkatePlaza | null;
   sutroBaths: SutroBaths | null;
 };
 
@@ -239,6 +243,7 @@ export function createOptionalSites({
   let coronaHeights: CoronaHeightsPark | null = null;
   let landsEnd: LandsEndRegion | null = null;
   let waveOrgan: WaveOrgan | null = null;
+  let skatePlaza: SkatePlaza | null = null;
   let beachPianist: BeachPianist | null = null;
   let sutroBaths: SutroBaths | null = null;
   let pickleballController: PickleballController | null = null;
@@ -353,6 +358,7 @@ export function createOptionalSites({
       landsEnd,
       waveOrgan,
       beachPianist,
+      skatePlaza,
       sutroBaths
     });
   };
@@ -659,6 +665,17 @@ export function createOptionalSites({
     refreshOptionalSiteDebug();
   };
 
+  const loadSkatePlaza = async ({ stage, waitStage, compile }: OptionalSiteLoadContext): Promise<void> => {
+    const { SkatePlaza: LoadedSkatePlaza } = await import("../../world/skatePlaza");
+    await stage();
+    const plaza = new LoadedSkatePlaza(map);
+    await prepareOptionalRoot("skate-plaza", plaza.group, waitStage, compile);
+    skatePlaza = plaza;
+    scene.add(plaza.group);
+    sky.invalidateStaticShadows();
+    refreshOptionalSiteDebug();
+  };
+
   // --- Sutro Baths pocket: quality switch only, no exterior hiding ----------
   // This latch used to ALSO hide every far-world root (cityGen, tile batches,
   // wildlands…) while the visitor was deep in the hall. That hide was measured
@@ -769,6 +786,12 @@ export function createOptionalSites({
     optionalWorldSite({ id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, load: loadLandsEnd }),
     optionalWorldSite({ id: "wave-organ", label: "Wave Organ", ...WAVE_ORGAN_CENTER, load: loadWaveOrgan }),
     optionalWorldSite({ id: "beach-pianist", label: "Beach Pianist", ...BEACH_PIANIST_CENTER, load: loadBeachPianist }),
+    optionalWorldSite({
+      id: "skate-plaza",
+      label: "GG Park Skate Plaza",
+      ...SKATE_PLAZA_CENTER,
+      load: loadSkatePlaza
+    }),
     optionalWorldSite({
       id: "sutro-baths",
       label: "Sutro Baths · 1896",
@@ -972,6 +995,7 @@ export function createOptionalSites({
     "lands-end": true,
     "wave-organ": true,
     "sutro-baths": true,
+    "skate-plaza": true,
     pup: true,
     "fort-mason-ensemble": true,
     "beach-pianist": true
@@ -1023,6 +1047,9 @@ export function createOptionalSites({
         break;
       case "wave-organ":
         if (!on && waveOrgan) waveOrgan.group.visible = false;
+        break;
+      case "skate-plaza":
+        if (!on && skatePlaza) skatePlaza.group.visible = false;
         break;
       case "beach-pianist":
         beachPianist?.setPerfSuppressed(!on);
@@ -1099,6 +1126,12 @@ export function createOptionalSites({
         return {
           runtime: waveOrgan?.group.visible ? "ACTIVE" : "SLEEP",
           sceneState: optionalSiteSceneState(waveOrgan?.group)
+        };
+      case "skate-plaza":
+        return {
+          // Pure static architecture: resident means done, there is no sim.
+          runtime: skatePlaza?.group.visible ? "STATIC" : "SLEEP",
+          sceneState: optionalSiteSceneState(skatePlaza?.group)
         };
       case "beach-pianist":
         return {
@@ -1309,6 +1342,14 @@ export function createOptionalSites({
     "beach-pianist": () => {
       beachPianist?.dispose();
       beachPianist = null;
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    },
+    "skate-plaza": () => {
+      // dispose() also pulls the ground overlay and the grind rails, so the
+      // world's collision surface goes back exactly as it was.
+      skatePlaza?.dispose();
+      skatePlaza = null;
       sky.invalidateStaticShadows();
       refreshOptionalSiteDebug();
     },

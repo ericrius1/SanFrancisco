@@ -6,6 +6,7 @@
   "scripts": {
     "predev": "node tools/copy-litert-webgpu-runtime.mjs",
     "dev": "vite",
+    "play": "node tools/play.mjs",
     "predev:hmr": "node tools/copy-litert-webgpu-runtime.mjs",
     "dev:hmr": "SF_FULL_RELOAD=1 vite",
     "predev:play": "node tools/copy-litert-webgpu-runtime.mjs",

@@ -12,6 +12,7 @@ import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, localBoardConfig } from "../vehicles/board";
 import { activateBirdAssets, buildBirdMesh, type BirdRig } from "../vehicles/bird";
 import { buildSurfboardMesh } from "../vehicles/surf";
+import { buildSkateMesh, SKATE_RIDE_HEIGHT } from "../vehicles/skate";
 import { buildScooterMesh, localScooterConfig, SCOOTER_RIDE_HEIGHT } from "../vehicles/scooter";
 import { CAR_RIDE_HEIGHT } from "../vehicles/car/mesh";
 import { driveHalfExtentsWithClearance } from "../vehicles/shared";
@@ -91,6 +92,7 @@ export const ABANDONED_MOUNT_PROMPT: Record<MountMode, string> = {
   speedboat: "board the speedboat",
   drone: "board the drone",
   board: "hop on the hoverboard",
+  skate: "pick up the skateboard",
   surf: "hop on the surfboard",
   bird: "ride the phoenix"
 };
@@ -181,6 +183,21 @@ const SPECS: Record<MountMode, MountSpec> = {
     linearDrag: 0.55,
     angularDrag: 1.8,
     maxSpeed: 60
+  },
+  skate: {
+    build: () => buildSkateMesh(),
+    // A dropped deck: real gravity, real friction, so it just lies there. The
+    // vertical half-extent equals SKATE_RIDE_HEIGHT on purpose — the skateboard
+    // mesh hangs below its collider origin (mesh.ts), so a box that deep rests
+    // with the wheels exactly on the road instead of burying the deck in it.
+    halfExtents: [0.22, SKATE_RIDE_HEIGHT, 0.46],
+    density: 40,
+    friction: 0.5,
+    restitution: 0.05,
+    gravityScale: 1,
+    linearDrag: 1.2,
+    angularDrag: 3,
+    maxSpeed: 30
   },
   surf: {
     build: buildSurfboardMesh,

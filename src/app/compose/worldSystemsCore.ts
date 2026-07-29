@@ -42,6 +42,7 @@ import { WorldCursor } from "../../fx/worldCursor";
 import { WorldQueries } from "../../core/worldQueries";
 import { BuildingRayRefiner } from "../../core/buildingRayRefine";
 import { Toolbar } from "../../ui/toolbar";
+import { SkateHUD } from "../../ui/skateHud";
 import { AudioControls } from "../../ui/audioControls";
 import { VehicleAudio } from "../../fx/vehicleAudio";
 import { SwimAudio } from "../../fx/swimAudio";
@@ -155,6 +156,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     missionDolores: null as (MissionDoloresMuseum | null),
     graceCathedral: null as (GraceCathedralRuntime | null),
     sutroBaths: null as (import("../../world/sutroBaths").SutroBaths | null),
+    skatePlaza: null as (import("../../world/skatePlaza").SkatePlaza | null),
+    streetSpots: null as (import("../../vehicles/skate/streetSpots").SkateStreetSpots | null),
     museumBookOpen: false as any,
     citygen: null as ({ update?: (dt: number) => void; [k: string]: unknown } | null),
     golf: null as (import("../../gameplay/golf").GolfGame | null),
@@ -274,6 +277,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     (i) => setColor(i, true),
     (mode) => state.switchModeFromToolbar!(mode)
   );
+  // Trick/combo readout. Pure DOM, hidden until the player is on a skateboard.
+  const skateHud = new SkateHUD();
   setTool("ball");
   setColor(0);
   await constructionSlice();
@@ -612,6 +617,28 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
       tiles.forceScan();
     }
   };
+  // Procedural street rails: nothing exists until the player is actually on a
+  // skateboard, and the module itself is a dynamic import so boot never pays
+  // for it. See vehicles/skate/streetSpots.ts.
+  let streetSpotsLoading: Promise<void> | null = null;
+  const ensureStreetSpots = (): void => {
+    if (state.streetSpots || streetSpotsLoading) return;
+    streetSpotsLoading = import("../../vehicles/skate/streetSpots")
+      .then(({ SkateStreetSpots }) => {
+        if (state.streetSpots) return;
+        const spots = new SkateStreetSpots(map);
+        scene.add(spots.group);
+        state.streetSpots = spots;
+        if (player.mode === "skate") spots.setActive(true);
+        const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+        if (hooks) hooks.streetSpots = spots;
+      })
+      .catch((error) => console.warn("[skate] street spots unavailable:", error))
+      .finally(() => {
+        streetSpotsLoading = null;
+      });
+  };
+
   let previousAudioMode = player.mode;
   player.onModeChange = (mode) => {
     modeTransitionAudio.event(previousAudioMode, mode);
@@ -637,6 +664,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     state.setRemoteScooterAssetsActive!(mode === "scooter");
     state.setRemoteCarAssetsActive!(mode === "drive");
     state.setRemoteBirdAssetsActive!(mode === "bird");
+    if (mode === "skate") ensureStreetSpots();
+    state.streetSpots?.setActive(mode === "skate");
     state.syncCustomizerForMode!(mode);
     if (fresh) {
       const msg = modeDiscovery.revealMessage(mode);
@@ -1101,6 +1130,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     setTool,
     setColor,
     toolbar,
+    skateHud,
     vehicleAudio,
     swimAudio,
     playerFoleyAudio,

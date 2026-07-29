@@ -27,6 +27,9 @@ const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> =
     speedboat: { back: 11, up: 3.6, look: 0.7 },
     drone: { back: 7, up: 1.9, look: 0.4 },
     board: { back: 7.5, up: 2.6, look: 1.3 },
+    // Tighter and lower than the hoverboard: a skateboard is a small object
+    // and the tricks happen right at the deck.
+    skate: { back: 6.2, up: 2.1, look: 1.15 },
     surf: { back: 9.2, up: 1.65, look: 2.6 },
     bird: { back: 15, up: 3.1, look: 0.55 }
   }
@@ -87,6 +90,7 @@ const OCCLUSION: Record<
   speedboat: { radius: 0.68, comfort: 5.5, cutRadius: 3.6 },
   drone: { radius: 0.42, comfort: 3.4, cutRadius: 2.0 },
   board: { radius: 0.46, comfort: 3.5, cutRadius: 2.2 },
+  skate: { radius: 0.4, comfort: 3.0, cutRadius: 1.9 },
   surf: { radius: 0.58, comfort: 5.0, cutRadius: 3.0 },
   bird: { radius: 0.85, comfort: 8.0, cutRadius: 4.8 }
 }
