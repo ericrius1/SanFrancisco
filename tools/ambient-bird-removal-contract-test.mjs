@@ -32,11 +32,39 @@ for (const forbidden of [
   );
 }
 
-assert.equal(
-  /\b(gulls?|flocks?)\b/i.test(main),
-  false,
-  "ambient-bird runtime wiring returned to the composition root"
-);
+// What was removed (7ee567b) was a MAP-WIDE ambient gull renderer that lived
+// inside `Creatures` and wheeled flocks over every landmark — which is why that
+// class needed the terrain in the first place. The checks above and below are
+// what actually hold that line.
+//
+// This one used to ban the words "gull" and "flock" from the composition root
+// outright, which also bans the opposite kind of thing: a site-scoped flock in
+// its own lazily-imported module, bounded to one beach, gated on approach and
+// disposed on the way out. Ocean Beach's gulls are exactly that — the same
+// shape as the shorebreak and spray gates sitting beside them — so the rule is
+// now the one that was meant: the root may GATE a flock, never own one.
+const rootFlockState = [
+  // Per-bird or per-flock arrays and counters living in the root.
+  /\b(?:gull|bird|flock)s?\s*(?::\s*\w+\[\]|=\s*\[)/i,
+  /\b(?:GULLS?|BIRDS?)_PER_\w+/,
+  // A root-side per-frame walk over individual birds.
+  /for\s*\([^)]*\b(?:gull|bird)\b[^)]*\)/i
+];
+for (const forbidden of rootFlockState) {
+  assert.equal(
+    forbidden.test(main),
+    false,
+    `ambient-bird runtime state returned to the composition root (${forbidden})`
+  );
+}
+// If the root mentions a flock at all, it may only be to load a site module.
+if (/\bgulls?\b/i.test(main)) {
+  assert.match(
+    main,
+    /import\("\.\.\/\.\.\/world\/oceanBeachGulls"\)/,
+    "a flock referenced from the composition root must be a lazily-imported site module"
+  );
+}
 assert.match(
   main,
   /new creaturesMod\.Creatures\(scene\)/,

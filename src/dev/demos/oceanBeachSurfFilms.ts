@@ -303,6 +303,7 @@ type KiteWindow = Window &
       oceanBeachKite?: OceanBeachKiteEncounter;
       ensureOceanBeachKite?: () => Promise<void>;
       oceanKiteSite?: { x: number; z: number };
+      materialize?: { reveal?: () => void };
     };
   };
 
@@ -334,6 +335,16 @@ function buildFilm(film: Film): Demo {
 
       const win = window as KiteWindow;
       const site = win.__sf?.oceanKiteSite ?? { x: -6148, z: 1650 };
+      // Collapse the materialize front before anything else.
+      //
+      // The void-arrival reveal sweeps outward on a CLOCK, and the capture
+      // harness settles the world with forty-eight zero-dt frames — which lets
+      // streaming and shader compilation finish but advances no clock at all.
+      // So a shot opened on a world that was still unrevealed past a small
+      // radius: the first second of every film had a flat grey sea and no
+      // beach under it, then the terrain arrived as the front caught up. A
+      // cinematic wants the world already there on frame one.
+      win.__sf?.materialize?.reveal?.();
       freezeAndBuryPlayer(ctx, site.x, site.z);
       // Burying drops renderPosition 300 m under the sand, and that vector is
       // what the hero shadow cascade centres its box on — left alone, nothing
@@ -409,12 +420,14 @@ function buildFilm(film: Film): Demo {
          * with forty-eight ZERO-dt frames, which lets asynchronous streaming
          * and shader compilation finish but advances nothing that ramps on time
          * — and the ocean's spectral cascades are the second kind. The first
-         * half-second of a shot therefore renders a flat grey sea that has not
-         * spun up yet, most visible in a wide opening frame with the whole bay
-         * in it. Six-tenths of a second of fade is longer than that takes.
+         * first seconds of a shot therefore render a flat grey sea that has
+         * not spun up yet, most visible in a wide opening frame with the whole
+         * bay in it. Measured: still hazy at 0.9 s, fully resolved by 2.0 s, so
+         * the fade runs to 1.7 s — long for a twenty-second film, and the
+         * reason it has to be.
          */
         frame: (time) => {
-          const up = Math.min(1, Math.max(0, time / 0.6));
+          const up = Math.min(1, Math.max(0, time / 1.7));
           const down = Math.min(1, Math.max(0, (SURF_FILM_SECONDS - time) / 0.5));
           const ramp = up * up * (3 - 2 * up) * (down * down * (3 - 2 * down));
           ctx.setExposure(film.exposure * ramp);
