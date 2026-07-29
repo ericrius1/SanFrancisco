@@ -562,6 +562,34 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     spray?.dispose();
     spray = null;
   };
+  // Background gulls over the same water. Same gate again: they are part of
+  // what the beach looks like, not an activity, and nothing outside it should
+  // fetch a byte of them.
+  let gulls: import("../../world/oceanBeachGulls").OceanBeachGulls | null = null;
+  let gullsLoading: Promise<void> | null = null;
+  const ensureGulls = () => {
+    if (gulls || gullsLoading) return gullsLoading ?? Promise.resolve();
+    gullsLoading = import("../../world/oceanBeachGulls")
+      .then(async ({ OceanBeachGulls }) => {
+        const flock = new OceanBeachGulls(sky);
+        try {
+          await renderer.compileAsync(flock.group, camera, scene);
+        } catch (error) {
+          console.warn("[ocean-gulls] warmup compile failed", error);
+        }
+        scene.add(flock.group);
+        gulls = flock;
+      })
+      .catch((error) => console.warn("[ocean-gulls] failed to load", error))
+      .finally(() => {
+        gullsLoading = null;
+      });
+    return gullsLoading;
+  };
+  const releaseGulls = () => {
+    gulls?.dispose();
+    gulls = null;
+  };
   /**
    * Per-frame: load on approach, drop once the player has genuinely left. The
    * proximity test is the boot-resident one from oceanBeachWaves — asking the
@@ -574,12 +602,15 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     if (nearOceanBeachShore(x, z, { shorePad: 620, inlandPad: 400, zPad: 300 })) {
       void ensureShorebreak();
       void ensureSpray();
+      void ensureGulls();
     } else if (!nearOceanBeachShore(x, z, { shorePad: 1250, inlandPad: 900, zPad: 800 })) {
       if (shorebreak) releaseShorebreak();
       if (spray) releaseSpray();
+      if (gulls) releaseGulls();
     }
     shorebreak?.update(time, dt, player.renderPosition);
     spray?.update(time, dt, player.renderPosition);
+    gulls?.update(time, dt, player.renderPosition);
   };
 
   let surfFlowFx = 0;

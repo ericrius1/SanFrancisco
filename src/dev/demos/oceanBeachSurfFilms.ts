@@ -40,6 +40,9 @@ import { cleanPlate, freezeAndBuryPlayer } from "./shared";
 
 export const SURF_FILM_SECONDS = 20;
 
+/** Encounter frames run before the shot arms — see `preroll` below. */
+const PREROLL_FRAMES = 600;
+
 type Live = {
   kite: THREE.Vector3;
   runner: THREE.Vector3;
@@ -162,6 +165,39 @@ const FILMS: readonly Film[] = [
       // standing height. It also lifts the kites off the top edge.
       target.y = base + mix(12, 13.5, track);
       return mix(28, 25, track);
+    }
+  },
+  {
+    id: "03",
+    title: "Ocean Beach Surf · The Gulls",
+    // The waterline again, four minutes earlier — the disc is still on the
+    // water, so this one has a sun in it where the later cut has only a glow.
+    hour: 20.31,
+    exposure: 0.97,
+    // A touch thicker than 02. This is the shaft-heavy one of the pair, and
+    // the birds read better against a slightly softer sky than against a hard
+    // gradient.
+    mist: 0.68,
+    shafts: 1.9,
+    subject: 1,
+    // Same grammar as 02 and deliberately so, but not the same shot: it tracks
+    // the other way down the beach, pulls BACK rather than closing in, and
+    // sits a little lower and wider. Where 02 walks toward the water as the
+    // light goes, this one lets the beach open out around the flyers with the
+    // gulls working the air over the break.
+    frame: ({ u }, live, eye, target) => {
+      const track = smoothstep(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      const z = live.flock.z;
+      const hold = new THREE.Vector3(mix(live.breakX(z), live.shoreX(z), 0.46), 0, z);
+      eye.copy(hold)
+        .addScaledVector(live.sun, -mix(132, 176, track))
+        .addScaledVector(along, mix(42, -40, track));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(2.4, 1.5, track);
+      target.copy(hold).addScaledVector(along, mix(14, -12, track));
+      target.y = base + mix(13, 11.5, track);
+      return mix(26, 29, track);
     }
   }
 ];
@@ -311,9 +347,37 @@ function buildFilm(film: Film): Demo {
       // all. The harness polls `__sfReelArmed`, so deferring the arm until the
       // flock exists turns that race into a wait, and frame zero of the film
       // becomes the first frame that has anything to film.
+      /**
+       * Run the flock forward before frame one, so nothing is still taking off
+       * when the film starts.
+       *
+       * Lane 0 — the diamond soloist — is the encounter's arrival beat: it is
+       * the one flyer that starts on the sand and launches, which is exactly
+       * right for a player walking up and completely wrong for a camera that
+       * is already there. Measured on the first cut: it needed six seconds to
+       * climb out, and for the first three of them it hung at 4-6 m, 140 m
+       * down the beach, at a tenth of a degree above the lens horizon — which
+       * puts it in the strip of sea between the surf and the sky and makes it
+       * read as a kite floating in the water. Thirteen per cent of the film.
+       *
+       * Ten seconds of pre-roll at the capture step clears the launch and the
+       * first figure change with room to spare. It costs 600 encounter updates
+       * once, before the harness has asked for a frame.
+       */
+      const preroll = () => {
+        const encounter = win.__sf?.oceanBeachKite;
+        if (encounter) {
+          const view = new THREE.Vector3(site.x + 60, map.groundTop(site.x, site.z) + 8, site.z);
+          for (let i = 0; i < PREROLL_FRAMES; i++) {
+            encounter.update(1 / 60, i / 60, site, 0.5, view);
+          }
+        }
+        arm();
+      };
+
       const flockReady = win.__sf?.ensureOceanBeachKite?.();
-      if (flockReady) void flockReady.then(arm).catch(arm);
-      else arm();
+      if (flockReady) void flockReady.then(preroll).catch(arm);
+      else preroll();
     }
   };
 }

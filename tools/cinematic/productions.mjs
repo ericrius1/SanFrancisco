@@ -212,7 +212,8 @@ const DEFINITIONS = Object.freeze({
   // set arriving, breaking and washing out while the festival flies over it.
   ...Object.fromEntries([
     [1, "Ocean Beach Surf · The Set", "A crane off the break: wave height to fifteen metres while a set goes off under the whole festival."],
-    [2, "Ocean Beach Surf · The Waterline", "Head height at the water's edge, tracking the beach as flyer after flyer crosses the sun."]
+    [2, "Ocean Beach Surf · The Waterline", "Head height at the water's edge, tracking the beach as flyer after flyer crosses the sun."],
+    [3, "Ocean Beach Surf · The Gulls", "The waterline again with the disc still on the water, tracking back as gulls work the air over the break."]
   ].map(([index, title, description]) => {
     const suffix = String(index).padStart(2, "0");
     const id = `ocean-beach-surf-${suffix}`;

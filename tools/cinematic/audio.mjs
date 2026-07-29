@@ -43,7 +43,7 @@ const PRODUCTION_DURATIONS = Object.freeze({
     `kite-to-sutro-${String(index + 1).padStart(2, "0")}`,
     15
   ])),
-  ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => [
+  ...Object.fromEntries(Array.from({ length: 3 }, (_, index) => [
     `ocean-beach-surf-${String(index + 1).padStart(2, "0")}`,
     20
   ]))
@@ -131,7 +131,7 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
   // visible stretch of beach goes off inside a few seconds, and then there is
   // a lull with nothing in it but the roar of the last one walking in and the
   // wash of the one before that arriving at the sand.
-  ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => {
+  ...Object.fromEntries(Array.from({ length: 3 }, (_, index) => {
     const shot = index + 1;
     return [`ocean-beach-surf-${String(shot).padStart(2, "0")}`, Object.freeze([
       { time: 0, id: "wind", description: `surf film ${shot} opens on the onshore wind` },
@@ -670,7 +670,9 @@ function scoreOceanBeachKite(mix, shot) {
  * lens.
  */
 function scoreOceanBeachSurf(mix, film) {
-  const crane = film !== 2;
+  // Film 1 is the crane; 2 and 3 are the two waterline cuts, which are drier,
+  // hissier and closer to the wash.
+  const crane = film === 1;
   // The crane is four minutes before the disc touches the water; the waterline
   // film is eight minutes after it has gone. Later means lower and quieter.
   const late = crane ? 0 : 1;
