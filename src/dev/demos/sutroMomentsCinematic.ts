@@ -87,79 +87,85 @@ const LOOKS: readonly (Look & { title: string })[] = [
   {
     id: "still-water",
     title: "Still Water",
-    // Crouched at the plunge coping, almost down at the surface, watching
-    // someone float. Low enough that the water fills the bottom of the frame
-    // and the roof glass hangs over the top of it.
+    // Standing on the west coping of the great plunge, looking down the length
+    // of it at sutro-swim-3 backfloating.
+    //
+    // The first cut of this put the eye at water + 0.75, which reads as "just
+    // above the surface" until you notice the deck is only 0.44 m above the
+    // water: that is 0.31 m over the boards the camera is standing on, and the
+    // coping filled the bottom half of frame. Standing height, angled down.
     eye: [
-      [-31.4, WATER + 0.75, -14.5],
-      [-31.4, WATER + 0.62, -12.2]
+      [-31.5, DECK + 1.45, -13.6],
+      [-31.6, DECK + 1.4, -11.4]
     ],
     at: [
-      [-26.2, WATER + 0.12, -8.6],
-      [-25.4, WATER + 0.16, -7.4]
+      [-26.0, WATER + 0.2, -8.8],
+      [-25.6, WATER + 0.24, -7.7]
     ],
-    lens: [52, 58]
+    lens: [50, 50]
   },
   {
     id: "long-view",
     title: "The Long View",
-    // Standing behind the window-south bench, over the shoulders of two people
-    // watching the sun go down through the ocean glass.
+    // Behind the window-south bench, over two pairs of shoulders and out
+    // through the ocean glass at local x -38.7.
     eye: [
-      [-33.1, DECK + EYE, 23.6],
-      [-33.8, DECK + EYE - 0.04, 22.7]
+      [-33.4, DECK + EYE, 22.9],
+      [-34.0, DECK + EYE - 0.03, 21.8]
     ],
     at: [
-      [-44, DECK + 1.5, 17.5],
-      [-46, DECK + 1.9, 15.4]
+      [-46, DECK + 1.15, 18.6],
+      [-48, DECK + 1.45, 16.8]
     ],
-    lens: [34, 34]
+    lens: [35, 35]
   },
   {
     id: "tea-window",
     title: "Tea in the Windows",
-    // Come up on the west-b table from the deck side. Three at tea, the lamp on
-    // the table, the sunset behind them — they read as silhouettes with the
-    // candle catching their near edges.
+    // The west-b table: three chairs on a 0.94 m reach at bearings 0.8, 2.89
+    // and 4.98, so the group sits inside about a 2 m circle. Coming at it from
+    // the deck side puts the sunset behind them and the table lamp on their
+    // near edges.
     eye: [
-      [-30.6, DECK + EYE, 9.4],
-      [-31.4, DECK + EYE, 8.1]
+      [-30.7, DECK + 1.52, 7.9],
+      [-31.6, DECK + 1.48, 6.9]
     ],
     at: [
-      [-34.4, DECK + 0.95, 6.0],
-      [-34.6, DECK + 0.92, 5.8]
+      [-34.3, DECK + 0.98, 6.1],
+      [-34.5, DECK + 0.94, 6.0]
     ],
-    lens: [46, 52]
+    lens: [45, 45]
   },
   {
     id: "hot-bath",
     title: "The Hot Bath",
-    // Standing on the deck spine looking across bath four at two people talking
-    // chest-deep, steam coming off the water between camera and subject.
+    // Across bath four at sutro-hot-1/2 talking chest-deep, steam between lens
+    // and subject. Shot from the deck SPINE (local x -10..-4): the first cut
+    // stood the camera at x -2.4, which is inside the pool's own footprint.
     eye: [
-      [-2.4, DECK + EYE, 6.6],
-      [-1.6, DECK + EYE - 0.02, 5.9]
+      [-6.6, DECK + EYE, 6.4],
+      [-6.2, DECK + EYE - 0.02, 5.5]
     ],
     at: [
-      [4.7, WATER + 0.95, 3.9],
-      [5.1, WATER + 0.98, 4.1]
+      [4.6, WATER + 0.95, 4.0],
+      [4.8, WATER + 0.99, 3.9]
     ],
-    lens: [50, 56]
+    lens: [62, 62]
   },
   {
     id: "plunge-edge",
     title: "The Plunge Edge",
-    // Walking the west coping and glancing down at two people sitting with
-    // their feet in the plunge, the candle line running away behind them.
+    // Down the west coping at sutro-sit-1/2, feet in the plunge, with the
+    // candle line at local x -32.4 running away behind them.
     eye: [
-      [-31.0, DECK + EYE, -31.4],
-      [-31.6, DECK + EYE, -29.0]
+      [-33.6, DECK + EYE, -31.8],
+      [-33.4, DECK + EYE - 0.02, -29.6]
     ],
     at: [
-      [-32.4, DECK + 0.35, -24.6],
-      [-32.3, DECK + 0.42, -23.8]
+      [-32.3, DECK + 0.55, -24.6],
+      [-32.2, DECK + 0.62, -23.9]
     ],
-    lens: [40, 44]
+    lens: [45, 45]
   }
 ] as const;
 
