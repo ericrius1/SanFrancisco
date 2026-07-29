@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import { BodyType } from "../../core/physics";
-import { waterHeight } from "../../world/heightmap";
+import { seaTime, waterHeight } from "../../world/heightmap";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { enterOnWater } from "../shared";
@@ -57,7 +57,7 @@ export class BoatController implements ModeController {
     this.slamSpeed = 0;
     ctx.body = w.createBox({
       type: BodyType.Dynamic,
-      position: [p.x, waterHeight(p.x, p.z, ctx.time) + 0.4, p.z],
+      position: [p.x, waterHeight(p.x, p.z, seaTime()) + 0.4, p.z],
       halfExtents: [1.3, 0.75, 3.2],
       density: 40,
       friction: 0.2,
@@ -66,7 +66,7 @@ export class BoatController implements ModeController {
     // Gravity is ours: buoyancy and weight are integrated together against the
     // sampled sea, so the solver must not add a second g on top.
     w.setBodyGravityScale(ctx.body, 0);
-    return waterHeight(p.x, p.z, ctx.time) + 0.15;
+    return waterHeight(p.x, p.z, seaTime()) + 0.15;
   }
 
   enter(ctx: PlayerCtx): number | void {
@@ -87,7 +87,11 @@ export class BoatController implements ModeController {
     const boost = input.down("ShiftLeft");
     this.steerVis += (steer - this.steerVis) * Math.min(1, dt * 6);
 
-    const t = ctx.time;
+    // Sample the sea at the clock the water RENDERS with, not the sim clock —
+    // the two drift seconds apart (arrival holds, rides), which had the hull
+    // riding an invisible sea: airborne over rendered troughs, buried in
+    // rendered crests. See seaTime() in world/heightmap.
+    const t = seaTime();
     const px = ctx.position.x;
     const pz = ctx.position.z;
     const tb = this.#tuning.values;
