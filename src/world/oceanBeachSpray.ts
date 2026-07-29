@@ -55,7 +55,7 @@ type N = any;
  * droplets whose birth instant caught a crest at the break line ever scale
  * above zero, which on a typical frame is a few hundred of these.
  */
-const COUNT = 12_000;
+const COUNT = 16_000;
 /**
  * Metres of beach the field tiles over. Each droplet lives in ONE tile and is
  * wrapped to whichever copy of that tile is nearest the player, so the field
@@ -144,12 +144,17 @@ export class OceanBeachSpray {
     const q = breakX.sub(b.offshoreCrest).sub(travel).sub(peel).div(b.spacing);
     const gap = fract(q.add(0.5)).sub(0.5).mul(-b.spacing).toVar();
     const crestX = breakX.add(gap).toVar();
-    // The throwing window, in metres of crest travel: begins a little before
-    // the line (the wave is already standing up and feathering) and is spent
-    // by the time the crown is twenty-odd metres past it. Asymmetric because
-    // the real thing is — a lip pitches once and then just tumbles.
+    // The throwing window, in metres of crest travel. It begins a little
+    // before the line (the wave is already standing up and feathering), peaks
+    // through the pitch, and then — instead of cutting off — decays into a
+    // long spindrift tail that rides the broken roller most of the way to the
+    // sand. The first cut ended the window 34 m past the line, which made
+    // every crash a two-second event on an otherwise spray-less sea: real
+    // onshore-wind surf smokes continuously off the whitewater, and that
+    // smoke is half of what "crashing and splashing" means from the beach.
     const throwing = smoothstep(-12, 2, gap)
-      .mul(smoothstep(18, 34, gap).oneMinus())
+      .mul(smoothstep(30, 120, gap).oneMinus())
+      .mul(smoothstep(60, 14, gap).mul(0.65).add(0.35))
       // Along-crest patchiness. A lip does not pitch evenly down its whole
       // length — it goes in bursts a few tens of metres wide, with quiet
       // shoulders between them — and without this the plume is a uniform
@@ -219,9 +224,18 @@ export class OceanBeachSpray {
     // that its edge is ragged and its middle is dense. Both failure modes were
     // instructive — big and opaque reads as a row of cotton balls, small and
     // opaque reads as nothing at all at a hundred metres.
+    //
+    // The far factor is the scan-particle trick: physically sized puffs
+    // simply vanish past ~250 m (a two-metre puff is four pixels), so the sea
+    // only ever smoked in the foreground while every distant roller broke
+    // bone-dry. Growing the sprite up to 2.6× with camera distance keeps a
+    // fine mist riding the far walls — it reads as haze blowing off the
+    // crest, which is exactly what spindrift is at that range.
+    const camDist = vec3(px, py, pz).sub(cameraPosition).length().toVar();
     material.scaleNode = float(0.75)
       .add(s1.mul(1.5))
       .mul(life.mul(1.9).add(1))
+      .mul(camDist.div(140).clamp(1, 2.6))
       .mul(saturate(alive.mul(4)));
 
     // --- light -------------------------------------------------------------
@@ -244,7 +258,7 @@ export class OceanBeachSpray {
         .mul(LIGHT_SCALE)
     ) as N;
     // Thinner as it disperses: a big late puff is mist, not water.
-    const cover = vertexStage(alive.mul(float(0.3).sub(life.mul(0.16)))) as N;
+    const cover = vertexStage(alive.mul(float(0.36).sub(life.mul(0.18)))) as N;
 
     material.colorNode = vec4(shaded, 1);
     // A soft, wide-shouldered puff rather than a disc with an edge — a hard

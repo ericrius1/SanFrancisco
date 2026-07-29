@@ -545,7 +545,23 @@ export class Water {
             .mul(broke)
             .toVar()
         : float(0);
-      const surfCrest = max(lipFoam, apronFoam).toVar();
+      // The WALL itself. Lip and apron alone painted a white crown on a wave
+      // whose face stayed a tall glassy emerald pane — a wave shape wearing a
+      // foam hat, which is exactly what "the waves never actually crash"
+      // looks like. Once a crest has thrown, the whole standing face is
+      // aerated water: white from the crown down to the base, with the
+      // break-up noise only mottling it. The band runs from just offshore of
+      // the crest to well down its shoreward slope, so it meets the apron and
+      // the roller reads as one white mass marching in.
+      const wallFoam = displace > 0
+        ? surfField.mask
+            .mul(smoothstep(-16, -3, surfField.crestD))
+            .mul(smoothstep(22, 46, surfField.crestD).oneMinus())
+            .mul(crestBreakup.mul(0.3).add(0.7))
+            .mul(broke)
+            .toVar()
+        : float(0);
+      const surfCrest = max(max(lipFoam, apronFoam), wallFoam).toVar();
       const foamTotal = clamp(
         foam.mul(surfFaceTint.mul(0.85).oneMinus()).add(surfCrest),
         0,
@@ -687,13 +703,24 @@ export class Water {
         // lip is the thinnest, most aerated water on the wave and the only
         // part the sun genuinely shines through, and giving both the same
         // weight flattened the whole break into one even white plateau with
-        // no edge to read the wave's shape against.
-        foamGlow: displace > 0 ? lipFoam.mul(2.1).add(apronFoam.mul(0.55)) : undefined,
+        // no edge to read the wave's shape against. The broken wall sits
+        // between the two — a metre-thick white mass with a low sun behind
+        // it glows through its whole height, and that glow is most of what
+        // makes a sunset crash read as a crash.
+        foamGlow: displace > 0
+          ? lipFoam.mul(2.1).add(apronFoam.mul(0.55)).add(wallFoam.mul(1.1))
+          : undefined,
         // Crest subsurface (SoT trick): the cascades' 1−Jacobian mask IS the set
         // of folding, thin crests, so the glow rides exactly the pitching tops.
         // It lives inside the BRDF now so it gets the view dependence it needs —
         // light through a wave is only visible when the sun is beyond it.
-        sss: det.crest.mul(det.crest),
+        // Broken water gets NO thin-crest glow: the emerald backlit-pane
+        // effect belongs to glassy folding crests, and it was strong enough
+        // at sunset to repaint the whitewater mint wherever the foam mix was
+        // below 1 — which is why a "crashed" wall still read as a glass one.
+        sss: displace > 0
+          ? det.crest.mul(det.crest).mul(broke.mul(0.9).oneMinus())
+          : det.crest.mul(det.crest),
         skyRadiance: (dir, level) => this.#sky.envRadiance(dir, level)
       });
 
