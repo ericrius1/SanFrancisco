@@ -51,10 +51,18 @@ done
 if [ -z "$READY" ]; then
   echo "[preview] server never came up — see the log above" >&2
 else
-  # Try each launcher until a Chrome tab actually exists. `open -a` reports
-  # success while opening nothing on this machine, and vite's --open follows
-  # the OS default handler rather than Chrome, so neither can be trusted on
-  # its own — verify by asking Chrome what it has.
+  # No single launcher is reliable across environments, and each fails
+  # SILENTLY in its own way:
+  #   osascript      — needs macOS Automation permission for whatever is
+  #                    running this script; denied, it errors (-1743) and,
+  #                    with stderr hidden, looks like success.
+  #   open -a / open — exit 0 while opening nothing under some sandboxes.
+  #   vite --open    — follows the OS default handler, which isn't Chrome.
+  # So: find out whether Apple Events actually work before trusting them,
+  # try everything, and say plainly what happened.
+  apple_events_ok() {
+    osascript -e 'tell application "Google Chrome" to count windows' >/dev/null 2>&1
+  }
   chrome_has_url() {
     osascript -e "tell application \"Google Chrome\"
       repeat with w in windows
@@ -66,23 +74,35 @@ else
     end tell" 2>/dev/null | grep -q yes
   }
 
-  osascript -e "tell application \"Google Chrome\" to open location \"$URL\"" \
-            -e 'tell application "Google Chrome" to activate' >/dev/null 2>&1
-  sleep 2
-  if ! chrome_has_url; then
-    open -a "Google Chrome" "$URL" >/dev/null 2>&1
+  OPENED=""
+  if apple_events_ok; then
+    osascript -e "tell application \"Google Chrome\" to open location \"$URL\"" \
+              -e 'tell application "Google Chrome" to activate' >/dev/null 2>&1
+    sleep 2
+    chrome_has_url && OPENED="applescript"
+  else
+    echo "[preview] (no Automation permission for Chrome — using open(1))"
+  fi
+
+  if [ -z "$OPENED" ]; then
+    open -a "Google Chrome" "$URL" >/dev/null 2>&1 && OPENED="open -a"
     sleep 2
   fi
-  if ! chrome_has_url; then
-    open "$URL" >/dev/null 2>&1
+  if [ -z "$OPENED" ]; then
+    open "$URL" >/dev/null 2>&1 && OPENED="open"
     sleep 2
   fi
-  if ! chrome_has_url; then
-    echo ""
-    echo "[preview] Chrome would not open automatically. Cmd-click this:"
-    echo "[preview]   $URL"
-    echo ""
+
+  echo ""
+  echo "  ────────────────────────────────────────────────────────────"
+  echo "   $URL"
+  if [ -n "$OPENED" ]; then
+    echo "   opened in Chrome via $OPENED — cmd-click above if you lost it"
+  else
+    echo "   Chrome would not open on its own — cmd-click the URL above"
   fi
+  echo "  ────────────────────────────────────────────────────────────"
+  echo ""
 fi
 
 wait "$DEV_PID"
