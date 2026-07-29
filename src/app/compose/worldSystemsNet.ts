@@ -1529,16 +1529,26 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     // Selected park groundcover starts under the travel cover even when its
     // bundle was not previously resident. The authored Tea Garden owns its own
     // grass and is excluded so Hiro/Tea House remain the sole priority there.
-    const inPrimaryWildlands = WILD_REGIONS.some((region) =>
-      region.id !== "buenavista" &&
+    //
+    // Buena Vista is excluded from the TREE prime only. It owns its own canopy,
+    // so priming the primary Wildlands forest there would grow distant redwoods
+    // nobody asked for — but it does NOT own any grass: blades come from the
+    // shared citywide ring, which lives on this same owner. Gating the two
+    // together left the hill wooded and completely bald underneath unless the
+    // player happened to have visited GG Park, the Presidio, Marin, Twin Peaks
+    // or the golf course earlier in the session.
+    const nearDestination = (region: (typeof WILD_REGIONS)[number]): boolean =>
       destination.x >= region.minX - 320 && destination.x <= region.maxX + 320 &&
-      destination.z >= region.minZ - 320 && destination.z <= region.maxZ + 320
+      destination.z >= region.minZ - 320 && destination.z <= region.maxZ + 320;
+    const inAnyWildlands = WILD_REGIONS.some(nearDestination);
+    const inPrimaryWildlands = WILD_REGIONS.some(
+      (region) => region.id !== "buenavista" && nearDestination(region)
     );
-    if (inPrimaryWildlands && teaDistance >= 820) {
+    if (inAnyWildlands && teaDistance >= 820) {
       // Fire-and-forget FIRST: the groundcover await below can outlive the
       // supplemental 8 s abort on a cold cache, and the tree prime must not
       // die with it (it orders itself after the exhibit internally).
-      requestWildlandsTreePrime(destination);
+      if (inPrimaryWildlands) requestWildlandsTreePrime(destination);
       await prepareWildlandsGroundcoverAt(destination, signal);
     }
   };
@@ -1639,17 +1649,22 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     // Park): the spawn IS the destination, so its lawn and trees take the same
     // arrival lane a teleport would get (the garden owns its own foliage).
     const spawn = { x: player.position.x, z: player.position.z };
-    const bootInWildlands = WILD_REGIONS.some((region) =>
-      region.id !== "buenavista" &&
+    const nearSpawn = (region: (typeof WILD_REGIONS)[number]): boolean =>
       spawn.x >= region.minX - 320 && spawn.x <= region.maxX + 320 &&
-      spawn.z >= region.minZ - 320 && spawn.z <= region.maxZ + 320
+      spawn.z >= region.minZ - 320 && spawn.z <= region.maxZ + 320;
+    // Groundcover for any wild region, tree prime for the primary four only —
+    // same split as the teleport path above: Buena Vista owns its canopy but
+    // gets its grass from this shared owner.
+    const bootInWildlands = WILD_REGIONS.some(nearSpawn);
+    const bootInPrimaryWildlands = WILD_REGIONS.some(
+      (region) => region.id !== "buenavista" && nearSpawn(region)
     );
     if (bootInWildlands && bootTeaDistance >= 820) {
       wildlandsArrivalPriority = true;
       void prepareWildlandsGroundcoverAt(spawn).catch((error) =>
         console.warn("[core.state.wildlands] boot destination groundcover failed:", error)
       );
-      requestWildlandsTreePrime(spawn);
+      if (bootInPrimaryWildlands) requestWildlandsTreePrime(spawn);
     }
   });
 
@@ -1816,23 +1831,40 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       // local, shadows the Marin `forest` state field deliberately
       const forest = mod.createBuenaVistaTrees(map);
       core.state.buenaVistaTrees = forest;
+      // Published before the compiles, not after: probes measuring how long this
+      // hill takes to look wooded need to observe it DURING the build, and the
+      // late assignment made a forest that was already in the scene read as
+      // absent.
+      const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (h) Object.assign(h, { buenaVistaTrees: forest });
       forest.group.visible = true;
       await forest.ready;
       forest.update(camera.position);
+      // Near starts and later approaches use the same detached path; neither may
+      // leak an uncompiled tree material into the live renderer.
+      const compile = async (unit: THREE.Object3D) => {
+        await waitForWorldBackgroundWindow();
+        await renderer.compileAsync(unit, camera, scene);
+      };
+      // Attach on the distant canopy tier, not on the whole forest. Waiting for
+      // every design's canopy/grove/branch pipeline left Buena Vista visibly
+      // BALD for ~30 s after a first approach — the hill is wooded in the layout
+      // the entire time, it just has nothing compiled to draw with. The far tier
+      // is one compile and carries the whole silhouette; each chunk and near
+      // batch stays internally invisible until its own pipeline is warm, so
+      // attaching here cannot expose an uncompiled pipeline.
       try {
-        // Near starts and later approaches use the same detached path; neither
-        // may leak an uncompiled tree material into the live renderer.
-        await forest.prepareVisible(async (unit) => {
-          await waitForWorldBackgroundWindow();
-          await renderer.compileAsync(unit, camera, scene);
-        });
+        await forest.prepareCanopySilhouette(compile);
       } catch (err) {
-        console.warn(`[buena-vista] ${deferred ? "deferred" : "near"} tree compile failed:`, err);
+        console.warn(`[buena-vista] ${deferred ? "deferred" : "near"} canopy compile failed:`, err);
       }
       scene.add(forest.group);
       forest.group.visible = ctx.state.foliageOn;
-      const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-      if (h) Object.assign(h, { buenaVistaTrees: forest });
+      try {
+        await forest.prepareVisible(compile);
+      } catch (err) {
+        console.warn(`[buena-vista] ${deferred ? "deferred" : "near"} tree compile failed:`, err);
+      }
     };
     let buenaVistaTreesReady: Promise<unknown> | null = null;
     if (buenaVistaGates) {
