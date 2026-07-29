@@ -232,6 +232,33 @@ const DEFINITIONS = Object.freeze({
       })
     })];
   })),
+  // The twenty-second surf films. Longer than anything else in the kite
+  // family because the thing they are about has a sixteen-second period: a ten
+  // second clip of Ocean Beach catches one wave, and the point of these is a
+  // set arriving, breaking and washing out while the festival flies over it.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Surf · The Set", "A crane off the break: wave height to fifteen metres while a set goes off under the whole festival."],
+    [2, "Ocean Beach Surf · The Waterline", "Head height at the water's edge, tracking the beach as flyer after flyer crosses the sun."],
+    [3, "Ocean Beach Surf · The Gulls", "The waterline again with the disc still on the water, tracking back as gulls work the air over the break."],
+    [4, "Ocean Beach Surf · The Prism", "A low crane over the dry sand as the prism kite splits the last of the sun and lays a spectrum on the beach."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-surf-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 20,
+      seed: (0x53_52_46_00 + index * 0x101) >>> 0,
+      posterAt: 13.2,
+      stillTimes: Object.freeze([0.3, 2.4, 4.8, 7.2, 9.6, 12, 14.4, 16.8, 19.2]),
+      audio: Object.freeze({
+        profile: "ocean-beach-surf",
+        index,
+        description
+      })
+    })];
+  })),
   // The prism set: the one kite that disperses rather than occludes, all four
   // cut for the half hour either side of the sun touching the water. Stills are
   // spread evenly because the move is continuous throughout — there is no

@@ -53,6 +53,10 @@ const PRODUCTION_DURATIONS = Object.freeze({
   ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
     `ocean-beach-kite-dusk-${String(index + 1).padStart(2, "0")}`,
     7
+  ])),
+  ...Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
+    `ocean-beach-surf-${String(index + 1).padStart(2, "0")}`,
+    20
   ]))
 });
 
@@ -131,6 +135,21 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
       { time: 3.4, id: "flutter", description: `kite fabric takes the gust` },
       { time: 6.4, id: "surf", description: `a set breaks behind the flyers` },
       { time: 8.9, id: "settle", description: `the beach resolves into the evening` }
+    ])];
+  })),
+  // The two twenty-second surf films. The beats are the SETS, because that is
+  // what the picture is doing: crests reach the bar in groups, the whole
+  // visible stretch of beach goes off inside a few seconds, and then there is
+  // a lull with nothing in it but the roar of the last one walking in and the
+  // wash of the one before that arriving at the sand.
+  ...Object.fromEntries(Array.from({ length: 4 }, (_, index) => {
+    const shot = index + 1;
+    return [`ocean-beach-surf-${String(shot).padStart(2, "0")}`, Object.freeze([
+      { time: 0, id: "wind", description: `surf film ${shot} opens on the onshore wind` },
+      { time: 1.6, id: "set-one", description: "the first set reaches the bar and goes" },
+      { time: 7.4, id: "wash-one", description: "that set arrives at the sand" },
+      { time: 12.2, id: "set-two", description: "the second, bigger set breaks" },
+      { time: 17.8, id: "resolve", description: "the beach resolves into the evening" }
     ])];
   })),
   ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
@@ -289,6 +308,8 @@ export async function renderCinematicAudio(production, outputPath) {
     } else {
       scoreOceanBeachKitePrism(mix, shot);
     }
+  } else if (id.startsWith("ocean-beach-surf-")) {
+    scoreOceanBeachSurf(mix, Number(id.slice(-2)));
   } else if (id.startsWith("ocean-beach-kite-ring-")) {
     // Must precede the general kite branch: `ocean-beach-kite-ring-03` also
     // starts with "ocean-beach-kite-", and its last two characters would read
@@ -696,6 +717,261 @@ function scoreOceanBeachKite(mix, shot) {
     pan: -0.3
   });
   addChime(mix, { start: 8.9, midi: 59, duration: 1.6, gain: 0.024 + evening * 0.012, pan: 0.08 });
+}
+
+/**
+ * The two twenty-second surf films.
+ *
+ * The ten-second kite arrangement puts three `addWhoosh` swells where the surf
+ * should be, and a filtered noise swell is a perfectly good WIND — which is
+ * exactly what it sounds like, and why these films needed their own. A wave
+ * breaking is three sounds in sequence, and it is the sequence that reads:
+ * see `addBreaker` below.
+ *
+ * The arrangement is built on sets, not on bars. Ocean Beach runs about a
+ * sixteen-second period, so twenty seconds is two sets and one lull, and the
+ * lull is not empty — it holds the tail of the first set's roar and the wash
+ * of it arriving at the sand ten seconds after it broke. That delay is real
+ * and it is the single most beach-like thing in the mix.
+ *
+ * Film 1 is the crane: it starts at wave height and ends fifteen metres up, so
+ * the sea starts close and opens out, and it carries the low end. Film 2 never
+ * leaves the waterline, so it is drier, hissier, and its swash is right at the
+ * lens.
+ */
+function scoreOceanBeachSurf(mix, film) {
+  // Film 1 is the crane; 2 and 3 are the two waterline cuts, which are drier,
+  // hissier and closer to the wash.
+  const crane = film === 1;
+  // The crane is four minutes before the disc touches the water; the waterline
+  // film is eight minutes after it has gone. Later means lower and quieter.
+  const late = crane ? 0 : 1;
+
+  // ---- the evening ------------------------------------------------------
+  addPad(mix, {
+    start: 0,
+    duration: 20,
+    notes: crane ? [41, 48, 53, 60, 65, 72] : [36, 43, 48, 55, 60],
+    gain: 0.038 + late * 0.01,
+    pan: 0,
+    brightness: 0.6 - late * 0.22
+  });
+  // Onshore wind, unbroken from first frame to last. It is the only thing in
+  // the mix that never stops, which is what makes everything else an event.
+  addAir(mix, { start: 0, duration: 20, gain: 0.031 - late * 0.005, panDrift: 0.85 });
+
+  // ---- the sea itself ---------------------------------------------------
+  // The continuous bed under the whole film: not a wave, just water moving.
+  addSurfBed(mix, {
+    start: 0,
+    duration: 20,
+    gain: crane ? 0.05 : 0.062,
+    swell: crane ? 0.34 : 0.26
+  });
+
+  // ---- set one ----------------------------------------------------------
+  // Five crests inside three seconds, spread across the beach — the shape the
+  // live model produces, because a set reaches a wandering break line at
+  // slightly different moments along its length rather than all at once.
+  const setOne = [
+    { at: 1.55, pan: -0.5, size: 0.72, bright: 0.62 },
+    { at: 2.12, pan: 0.34, size: 0.86, bright: 0.85 },
+    { at: 2.68, pan: -0.14, size: 1.0, bright: 1.0 },
+    { at: 3.35, pan: 0.58, size: 0.64, bright: 0.55 },
+    { at: 4.42, pan: -0.66, size: 0.5, bright: 0.4 }
+  ];
+  for (const wave of setOne) {
+    addBreaker(mix, {
+      start: wave.at,
+      gain: (crane ? 0.085 : 0.075) * (0.55 + wave.size * 0.45),
+      pan: wave.pan,
+      size: wave.size,
+      bright: wave.bright,
+      body: crane ? 1 : 0.62
+    });
+  }
+
+  // ---- the lull ---------------------------------------------------------
+  // Set one arriving at the sand. Ten metres of beach face at a walking pace:
+  // about five seconds behind the break that made it, and it is a completely
+  // different sound — no impact at all, just a wide sheet of bubbles.
+  addSwash(mix, { start: 7.3, gain: crane ? 0.05 : 0.075, pan: -0.2, width: 1.0 });
+  addSwash(mix, { start: 8.9, gain: crane ? 0.038 : 0.058, pan: 0.28, width: 0.8 });
+  // One straggler out the back, a long way off, to keep the lull from reading
+  // as an edit.
+  addBreaker(mix, {
+    start: 9.6,
+    gain: 0.032,
+    pan: 0.62,
+    size: 0.42,
+    bright: 0.3,
+    body: 0.5
+  });
+
+  // ---- set two ----------------------------------------------------------
+  // Bigger, and it takes the middle of the stereo field. This is the one the
+  // films are cut around: the crane is at its full height by now and the
+  // waterline film has walked most of the way into the flyers.
+  const setTwo = [
+    { at: 12.15, pan: 0.44, size: 0.8, bright: 0.72 },
+    { at: 12.78, pan: -0.3, size: 1.0, bright: 0.95 },
+    { at: 13.42, pan: 0.08, size: 1.15, bright: 1.0 },
+    { at: 14.3, pan: -0.58, size: 0.78, bright: 0.66 },
+    { at: 15.4, pan: 0.5, size: 0.58, bright: 0.48 }
+  ];
+  for (const wave of setTwo) {
+    addBreaker(mix, {
+      start: wave.at,
+      gain: (crane ? 0.095 : 0.082) * (0.55 + wave.size * 0.45),
+      pan: wave.pan,
+      size: wave.size,
+      bright: wave.bright,
+      body: crane ? 1.1 : 0.68
+    });
+  }
+  // The weight under the biggest one. The crane can take more of this: it is
+  // the wider picture and there is room under it.
+  addSub(mix, {
+    start: 13.35,
+    duration: 1.9,
+    fromHz: 54,
+    toHz: 30,
+    gain: crane ? 0.06 : 0.04
+  });
+
+  // ---- ripstop and bells ------------------------------------------------
+  // "grass" is the fastest foley character here and the closest to a sail
+  // chattering. Two passes, so the kites are audible without being a texture.
+  addFoley(mix, { start: 0.3, duration: 7.5, gain: 0.014, pan: -0.22, character: "grass" });
+  addFoley(mix, { start: 9.4, duration: 6.2, gain: 0.016, pan: 0.3, character: "grass" });
+  addFoley(mix, { start: 16.4, duration: 3.2, gain: 0.012, pan: -0.1, character: "grass" });
+  addChime(mix, { start: 5.6, midi: 76 - late * 5, duration: 2.4, gain: 0.026, pan: 0.24 });
+  addChime(mix, { start: 10.9, midi: 69 - late * 5, duration: 2.6, gain: 0.023, pan: -0.28 });
+  addChime(mix, { start: 17.6, midi: 57, duration: 2.3, gain: 0.024, pan: 0.06 });
+
+  // ---- the last wash ----------------------------------------------------
+  addSwash(mix, { start: 18.2, gain: crane ? 0.045 : 0.07, pan: 0.1, width: 1.1 });
+}
+
+/**
+ * One wave breaking — the same three layers the live game synthesises in
+ * src/audio/waveAudio.ts, so the world and its films agree about what surf
+ * sounds like:
+ *
+ *   impact  the lip landing. Short, low, and mostly felt.
+ *   throw   the burst of aerated water it drives ahead of itself: bright, up
+ *           in a tenth of a second, gone in two. This is the layer that says
+ *           "that broke" rather than "the wind gusted".
+ *   tumble  the whitewater walking shoreward afterwards. Swells for most of a
+ *           second and takes another four to die, which is what makes a set of
+ *           five overlap into one continuous roar instead of five thumps.
+ *
+ * `size` scales weight and length, `bright` is distance (air eats treble long
+ * before it eats the roar), `body` trims the low layer for mixes that cannot
+ * take it.
+ */
+function addBreaker(mix, options) {
+  const size = options.size ?? 1;
+  const bright = clamp01(options.bright ?? 1);
+  const body = options.body ?? 1;
+  const duration = 4.9 + size * 1.5;
+  const startFrame = frameAt(mix, options.start);
+  const endFrame = frameAt(mix, options.start + duration);
+  const [panL, panR] = panGains(options.pan ?? 0);
+  let fast = 0;
+  let slow = 0;
+  let roar = 0;
+  let roarSlow = 0;
+  let phase = mix.rng.range(0, Math.PI * 2);
+  // Per-wave grain: no two of these should sound like the same sample twice.
+  const grit = 0.05 + bright * 0.2 + mix.rng.range(-0.012, 0.012);
+  const thudHz = 82 + size * 26;
+
+  for (let frame = startFrame; frame < endFrame; frame += 1) {
+    const t = (frame - startFrame) / SAMPLE_RATE;
+    const noise = mix.rng.signed();
+
+    // impact — 20 ms up, exponential away, silent inside a second and a half
+    const hz = lerp(thudHz, 30, clamp01(t / 0.9));
+    phase += (Math.PI * 2 * hz) / SAMPLE_RATE;
+    const thudEnv = Math.min(1, t / 0.02) * Math.exp(-t / 0.3) * (t < 1.5 ? 1 : 0);
+    const impact = Math.sin(phase) * thudEnv * (0.5 + size * 0.55) * body;
+
+    // throw — a bright band-limited burst; the two-pole difference IS the band
+    fast += (noise - fast) * grit;
+    slow += (noise - slow) * 0.012;
+    const throwEnv = Math.min(1, t / 0.11) * Math.exp(-Math.max(0, t - 0.11) / 0.52);
+    const thrown = (fast - slow) * 2.15 * throwEnv * (0.4 + bright * 0.6);
+
+    // tumble — slow attack, long tail, and darker than the throw
+    roar += (noise - roar) * 0.055;
+    roarSlow += (roar - roarSlow) * 0.0032;
+    const rollEnv =
+      Math.min(1, t / 0.75) * Math.exp(-Math.max(0, t - 0.75) / (1.5 + size * 0.7));
+    const tumble = (roar - roarSlow) * 1.35 * rollEnv * (0.55 + bright * 0.45);
+
+    const sample = (impact + thrown + tumble) * options.gain;
+    mix.left[frame] += sample * panL;
+    mix.right[frame] += sample * panR;
+  }
+}
+
+/**
+ * The bore arriving at the sand: no impact and almost no low end, just a wide
+ * sheet of bubbles hissing up the beach and draining back. Deliberately
+ * asymmetric — the rush is over in half a second and the drain takes three,
+ * which is the shape of every wash on every beach.
+ */
+function addSwash(mix, options) {
+  const width = options.width ?? 1;
+  const duration = 3.4 * width;
+  const startFrame = frameAt(mix, options.start);
+  const endFrame = frameAt(mix, options.start + duration);
+  const [panL, panR] = panGains(options.pan ?? 0);
+  let fast = 0;
+  let slow = 0;
+
+  for (let frame = startFrame; frame < endFrame; frame += 1) {
+    const t = (frame - startFrame) / SAMPLE_RATE;
+    const noise = mix.rng.signed();
+    // Opens bright and closes down as the sheet thins and drains.
+    const openness = 0.3 - 0.14 * clamp01(t / duration);
+    fast += (noise - fast) * openness;
+    slow += (noise - slow) * 0.05;
+    const envelope = Math.min(1, t / 0.5) * Math.exp(-Math.max(0, t - 0.5) / (0.95 * width));
+    const sample = (fast - slow) * 2.3 * envelope * options.gain;
+    mix.left[frame] += sample * panL;
+    mix.right[frame] += sample * panR;
+  }
+}
+
+/**
+ * The sea under everything: not a wave, just a large body of water moving.
+ * Two decorrelated noise bands per channel with a slow common swell, so it is
+ * wide, never quite steady, and never resolves into an event.
+ */
+function addSurfBed(mix, options) {
+  const startFrame = frameAt(mix, options.start);
+  const endFrame = frameAt(mix, options.start + options.duration);
+  const swell = options.swell ?? 0.3;
+  let fastL = 0;
+  let slowL = 0;
+  let fastR = 0;
+  let slowR = 0;
+
+  for (let frame = startFrame; frame < endFrame; frame += 1) {
+    const t = (frame - startFrame) / SAMPLE_RATE;
+    const envelope = cosineEnvelope(t, options.duration, 1.2, 1.6);
+    // Two incommensurate slow rhythms; the sea never breathes on a beat.
+    const breathe =
+      1 - swell + swell * (0.5 + 0.5 * Math.sin(t * 0.38)) * (0.7 + 0.3 * Math.sin(t * 0.17 + 2.1));
+    fastL += (mix.rng.signed() - fastL) * 0.13;
+    slowL += (fastL - slowL) * 0.02;
+    fastR += (mix.rng.signed() - fastR) * 0.125;
+    slowR += (fastR - slowR) * 0.021;
+    mix.left[frame] += (fastL - slowL) * 1.9 * envelope * breathe * options.gain;
+    mix.right[frame] += (fastR - slowR) * 1.9 * envelope * breathe * options.gain;
+  }
 }
 
 /**
