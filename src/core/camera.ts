@@ -15,7 +15,7 @@ import type {
   SurfCameraController,
   SurfCameraDiagnostics
 } from "../vehicles/surf/camera"
-import { SURF_CAMERA_TUNING } from "../vehicles/surf/cameraTuning"
+import { SURF_CAMERA_TUNING, surfBoomAngle } from "../vehicles/surf/cameraTuning"
 
 const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> =
   {
@@ -410,12 +410,15 @@ export class ChaseCamera {
         void this.ensureSurfCamera()
         const tuning = SURF_CAMERA_TUNING.values
         const anchor = player.renderPosition
-        const direction = player.surfTelemetry.lineDirection >= 0 ? 1 : -1
-        let forwardX = -tuning.waveLook
-        let forwardZ = (1 - tuning.waveLook) * direction
-        const forwardLen = Math.hypot(forwardX, forwardZ) || 1
-        forwardX /= forwardLen
-        forwardZ /= forwardLen
+        const boom = surfBoomAngle(
+          player.surfTelemetry.boardYaw,
+          player.surfTelemetry.lineDirection,
+          tuning.boomUpSwing,
+          tuning.boomDownSwing,
+          tuning.shoreBias
+        )
+        const forwardX = -Math.sin(boom)
+        const forwardZ = -Math.cos(boom)
         this.#chasePos.set(
           anchor.x - forwardX * tuning.distance,
           anchor.y + tuning.height,

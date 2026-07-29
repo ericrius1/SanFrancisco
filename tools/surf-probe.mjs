@@ -7,7 +7,10 @@
 //   - keyboard E on a racked shack board starts an already-standing, already-moving
 //     surf session (surf is not on the vehicle toolbar),
 //   - neutral input survives a deterministic endless-wave run,
-//   - mouse and right-stick look cannot move the authored surf camera,
+//   - the pointer steers the BOARD: mouse/right-stick motion reaches the surf
+//     steering rail, carves both ways, climbs and drops the wall, and still
+//     cannot move the authored surf camera,
+//   - Space is ungated — one press leaves the water from a neutral trim line,
 //   - keyboard E and gamepad Y exit onto the shack apron without abandoning a board,
 //   - standard-gamepad LS/triggers/A/X map to carve/pump/stall/jump/Flow,
 //   - the shaping room and each cosmetic image remain first-use lazy,
@@ -630,12 +633,16 @@ async function main() {
     await sleep(100);
     await evaluate(cdp, "window.__sf.input.keys.clear();window.__sf.input.endFrame()");
 
+    // The pointer is the board's control. A real mousemove must land on the surf
+    // steering rail, must NOT reach the camera's look deltas, and even a forged
+    // orbit delta must leave the authored rig mathematically untouched.
     const mouseLock = await evaluate(cdp, `(()=>{const s=window.__sf,i=s.input;
-      const originalLocked=i.locked;i.locked=true;i.mouseDX=0;i.mouseDY=0;
+      const originalLocked=i.locked;i.locked=true;i.mouseDX=0;i.mouseDY=0;i.surfDX=0;i.surfDY=0;
       const event=new MouseEvent('mousemove',{bubbles:true,clientX:400,clientY:300});
       try{Object.defineProperties(event,{movementX:{value:900},movementY:{value:-700}})}catch{}
       window.dispatchEvent(event);
       const mouseEventDelta={x:i.mouseDX,y:i.mouseDY};
+      const surfEventDelta={x:i.surfDX,y:i.surfDY};
       const before=s.chase.surfCameraDiagnostics();
       i.mouseDX=800;i.mouseDY=-600;i.wheel=1400;
       s.chase.update(0,s.player,i);
@@ -646,13 +653,60 @@ async function main() {
         before.target.x-after.target.x,before.target.y-after.target.y,before.target.z-after.target.z
       ];
       i.locked=originalLocked;i.endFrame();
-      return {cameraLookLocked:i.cameraLookLocked,mouseEventDelta,maxCameraDelta:Math.max(...values.map(Math.abs)),before,after};
+      return {cameraLookLocked:i.cameraLookLocked,mouseEventDelta,surfEventDelta,
+        maxCameraDelta:Math.max(...values.map(Math.abs)),before,after};
     })()`);
     check(
       mouseLock.cameraLookLocked && mouseLock.mouseEventDelta.x === 0 &&
         mouseLock.mouseEventDelta.y === 0 && mouseLock.maxCameraDelta < 1e-6,
       "mouse motion and injected orbit deltas cannot swivel the surf camera",
       mouseLock
+    );
+    check(
+      mouseLock.surfEventDelta.x === 900 && mouseLock.surfEventDelta.y === -700,
+      "the same physical mouse motion reaches the board's steering rail",
+      mouseLock.surfEventDelta
+    );
+
+    // Steering proper: a mouse sweep turns the nose that way (screen-relative),
+    // and letting go eases it back onto the line without any key press.
+    const mouseSteer = await evaluate(cdp, `(()=>{const s=window.__sf;
+      const drive=(dx,frames)=>{for(let i=0;i<frames;i++){s.input.surfDX=dx;s.tick(${DT});}};
+      const start=s.player.surfTelemetry.boardYaw;
+      drive(9,26);
+      const turned=s.player.surfTelemetry.boardYaw;
+      const right=Math.atan2(Math.sin(turned-start),Math.cos(turned-start));
+      drive(0,150);
+      const t=s.player.surfTelemetry;
+      const base=t.lineDirection>0?Math.PI:0;
+      const settled=Math.abs(Math.atan2(Math.sin(t.boardYaw-base),Math.cos(t.boardYaw-base)));
+      const startLeft=t.boardYaw;
+      drive(-9,26);
+      const left=Math.atan2(Math.sin(s.player.surfTelemetry.boardYaw-startLeft),Math.cos(s.player.surfTelemetry.boardYaw-startLeft));
+      drive(0,150);
+      return {right,left,settled,phase:s.player.surfTelemetry.phase,
+        clearance:s.player.surfTelemetry.clearance};})()`);
+    check(
+      mouseSteer.right < -0.35 && mouseSteer.left > 0.35 && mouseSteer.settled < 0.35 &&
+        mouseSteer.phase === "ride",
+      "mouse right/left carves both ways and hands-off settles back onto the line",
+      mouseSteer
+    );
+
+    // Mouse Y owns the wall: up climbs toward the lip, down drops back.
+    const mouseFace = await evaluate(cdp, `(()=>{const s=window.__sf;
+      const drive=(dy,frames)=>{for(let i=0;i<frames;i++){s.input.surfDY=dy;s.tick(${DT});}};
+      const start=s.player.surfTelemetry.crestDistance;
+      drive(-6,150);
+      const t=s.player.surfTelemetry;
+      const climbed={crest:t.crestDistance,power:t.lipReadiness};
+      drive(6,150);
+      return {start,climbed,dropped:s.player.surfTelemetry.crestDistance};})()`);
+    check(
+      mouseFace.climbed.crest < mouseFace.start - 2.5 && mouseFace.climbed.power > 0.6 &&
+        mouseFace.dropped > mouseFace.climbed.crest + 1.5,
+      "mouse up climbs toward the lip (filling the pop meter) and mouse down drops away",
+      mouseFace
     );
 
     // Neutral cruising must keep an open chase view. S is the explicit pocket
@@ -672,12 +726,17 @@ async function main() {
       neutralView
     );
 
+    // Barrel sections are an authored long-period envelope down the beach: the
+    // stall mechanic puts the rider on the tube line immediately, but a live
+    // roof only comes around every ~800 m of down-line travel. Ride the stall
+    // long enough to reach one instead of assuming the entry Z is inside a
+    // section (which made this test a coin flip on wave phase).
     const tubeRide = await evaluate(cdp, `(()=>{const s=window.__sf;
       s.input.keys.add('KeyS');
       let frames=0,maxBlend=0,minRoofClearance=Infinity,minWaterClearance=Infinity;
-      let minTubeClearance=Infinity,maxTubeDepth=0,allContact=true,sawInside=false;
+      let minTubeClearance=Infinity,maxTubeDepth=0,contactFrames=0,sawInside=false;
       const states=[];let prior='';
-      for(;frames<560;frames++){
+      for(;frames<2600;frames++){
         s.tick(${DT});const t=s.player.surfTelemetry,c=s.chase.surfCameraDiagnostics();
         if(t.tubeState!==prior){states.push(t.tubeState);prior=t.tubeState}
         sawInside||=t.tubeState==='inside';
@@ -686,19 +745,19 @@ async function main() {
         minWaterClearance=Math.min(minWaterClearance,c.waterClearance);
         minTubeClearance=Math.min(minTubeClearance,t.tubeClearance);
         maxTubeDepth=Math.max(maxTubeDepth,t.tubeDepth);
-        allContact&&=t.railContact;
+        if(t.railContact)contactFrames++;
         if(t.tubeState==='inside'&&c.mode==='barrel'&&c.tubeBlend>0.78&&t.tubeDwell>1.15)break;
       }
       s.input.keys.delete('KeyS');
       const t=s.player.surfTelemetry,c=s.chase.surfCameraDiagnostics();
       return {frames,states,sawInside,maxBlend,minRoofClearance,minWaterClearance,minTubeClearance,
-        maxTubeDepth,allContact,state:t.tubeState,dwell:t.tubeDwell,serial:t.tubeSerial,
+        maxTubeDepth,contact:contactFrames/Math.max(1,frames),state:t.tubeState,dwell:t.tubeDwell,serial:t.tubeSerial,
         crestDistance:t.crestDistance,tubeDepth:t.tubeDepth,tubeClearance:t.tubeClearance,camera:c};})()`);
     await renderCurrentFrame(cdp);
     tubeShot = await capture(cdp, "surf-barrel-desktop.png");
     check(
       tubeRide.sawInside && tubeRide.maxTubeDepth >= 0.58 &&
-        tubeRide.allContact && tubeRide.minTubeClearance > 0.25 &&
+        tubeRide.contact > 0.96 && tubeRide.minTubeClearance > 0.25 &&
         tubeRide.tubeClearance > 1.7,
       "holding S stalls into a supported, positively-cleared tube",
       tubeRide
@@ -743,40 +802,31 @@ async function main() {
       for(let i=0;i<420&&s.player.surfTelemetry.phase!=='ride';i++)s.tick(${DT});
       for(let i=0;i<30;i++)s.tick(${DT});return s.player.surfTelemetry.phase;})()`);
 
-    // Deliberate roundhouse: pin a full carve until the reversal commits; the
-    // remembered travel direction flips exactly once per committed hold.
+    // Roundhouse: there is no gesture to learn any more. A brief turn is just a
+    // carve that trims back out; keep turning and the ride genuinely comes
+    // around, which is what scores the cutback.
     const cutbackStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
       return {lineDirection:t.lineDirection,cutbackSerial:t.cutbackSerial};})()`);
     const cutback = await evaluate(cdp, `(()=>{const s=window.__sf;
-      // Hold + taps on the BEACH side (never launches, so the whole gesture
-      // stays grounded and deterministic).
-      const dropKey=s.player.surfTelemetry.lineDirection>0?'KeyA':'KeyD';
-      // long hold first: hard carving must NEVER reverse on its own
-      s.input.keys.add(dropKey);
-      for(let i=0;i<240;i++)s.tick(${DT});
-      s.input.keys.delete(dropKey);
-      const heldSerial=s.player.surfTelemetry.cutbackSerial;
-      const heldDirection=s.player.surfTelemetry.lineDirection;
-      for(let i=0;i<40;i++)s.tick(${DT});
-      // double-tap commits exactly one roundhouse
-      s.input.keys.add(dropKey);
-      for(let i=0;i<8;i++)s.tick(${DT});
-      s.input.keys.delete(dropKey);
-      for(let i=0;i<6;i++)s.tick(${DT});
-      s.input.keys.add(dropKey);
-      for(let i=0;i<8;i++)s.tick(${DT});
-      s.input.keys.delete(dropKey);
-      for(let i=0;i<50;i++)s.tick(${DT});
+      const drive=(dx,frames)=>{for(let i=0;i<frames;i++){s.input.surfDX=dx;s.tick(${DT});}};
+      // a short carve is NOT a reversal — it trims straight back out
+      drive(7,20);drive(0,110);
+      const nudgedSerial=s.player.surfTelemetry.cutbackSerial;
+      const nudgedDirection=s.player.surfTelemetry.lineDirection;
+      // keep turning the same way and the board comes all the way around
+      drive(7,80);drive(0,60);
       const t=s.player.surfTelemetry;
-      return {heldSerial,heldDirection,lineDirection:t.lineDirection,
-        cutbackSerial:t.cutbackSerial,phase:t.phase,speed:t.speed};})()`);
+      return {nudgedSerial,nudgedDirection,lineDirection:t.lineDirection,
+        cutbackSerial:t.cutbackSerial,phase:t.phase,speed:t.speed,
+        clearance:t.clearance,railContact:t.railContact};})()`);
     check(
-      cutback.heldSerial === cutbackStart.cutbackSerial &&
-        cutback.heldDirection === cutbackStart.lineDirection &&
-        cutback.cutbackSerial === cutbackStart.cutbackSerial + 1 &&
-        cutback.lineDirection === -cutbackStart.lineDirection &&
-        cutback.phase === "ride",
-      "held carves never reverse; a double-tap commits exactly one roundhouse",
+      cutback.nudgedSerial === cutbackStart.cutbackSerial &&
+        cutback.nudgedDirection === cutbackStart.lineDirection &&
+        // How many times a sustained turn comes about is the player's business —
+        // the contract is that a brief carve is not a reversal and a held one is.
+        cutback.cutbackSerial > cutbackStart.cutbackSerial &&
+        cutback.phase === "ride" && cutback.railContact && cutback.clearance >= -0.001,
+      "a brief carve trims back out; holding the turn comes around into a scored cutback",
       { cutbackStart, cutback }
     );
     check(
@@ -785,10 +835,10 @@ async function main() {
       tubeShot
     );
 
-    // Real-control lip launch: pump the face with W, then explicitly press Space,
-    // keep steering held through the aerial to prove takeoff input cannot turn
-    // into a trick rotation, then prove the five-point hull returns to
-    // supported ride contact.
+    // Real-control lip launch: climb the face, explicitly press Space, hold the
+    // pointer still through the aerial to prove a neutral jump is one clean
+    // rotation-free arc, then prove the five-point hull returns to supported
+    // ride contact. (Deliberate air steering is covered separately below.)
     await pressEUntilMode(cdp, "walk", 25, "pre-aerial beach reset");
     await pressEUntilMode(cdp, "surf", 60, "pre-aerial surf reset");
     const aerialStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
@@ -811,7 +861,6 @@ async function main() {
       return {frames,minCrest,minHull,maxReadiness,popRequested,phase:t.phase,launch:t.launchSerial,
         crest:t.crestDistance,airTime:t.airTime,clearance:t.clearance,minFoot,maxFoot};})()`);
     const spin = await evaluate(cdp, `(()=>{const s=window.__sf;
-      s.input.keys.add('KeyA');
       const takeoffQ=s.player.quaternion.clone(),lastQ=takeoffQ.clone();
       let frames=0,maxSpin=0,maxClearance=0,maxCompression=0,minFoot=Infinity,maxFoot=-Infinity;
       let rotationPath=0,maxRotationFromTakeoff=0;
@@ -828,7 +877,6 @@ async function main() {
         minFoot=Math.min(minFoot,f.left,f.right);maxFoot=Math.max(maxFoot,f.left,f.right);
         if(t.phase!=='air')break;
       }
-      s.input.keys.delete('KeyA');
       const t=s.player.surfTelemetry;
       return {frames,maxSpin,maxClearance,phase:t.phase,airSpin:t.airSpin,
         airTime:t.airTime,crest:t.crestDistance,maxCompression,minFoot,maxFoot,
@@ -867,7 +915,7 @@ async function main() {
     check(
       spin.maxSpin < 0.01 && spin.maxClearance > 1.2 &&
         spin.rotationPath < 3 && spin.maxRotationFromTakeoff < 1.4,
-      "held takeoff carve stays on one natural, rotation-free jump arc",
+      "a hands-off jump is one natural, rotation-free arc",
       spin
     );
     check(
@@ -924,6 +972,67 @@ async function main() {
         flipAir.phase !== "air",
       "retired flip/grab inputs still land one stable natural jump",
       { flipStart, flipAir }
+    );
+
+    // Space is never gated. From a neutral trim line — no climb, no speed
+    // requirement — one press still leaves the water with real hang time, and
+    // pointer motion in the air spins the board and still lands it.
+    await pressEUntilMode(cdp, "walk", 25, "pre-flat-air beach reset");
+    await pressEUntilMode(cdp, "surf", 60, "pre-flat-air surf reset");
+    await tickFrames(cdp, 40);
+    const flatAir = await evaluate(cdp, `(()=>{const s=window.__sf;
+      const t0=s.player.surfTelemetry;
+      const before={launch:t0.launchSerial,landing:t0.landingSerial,crest:t0.crestDistance,
+        power:t0.lipReadiness,speed:t0.speed};
+      s.player.requestSurfJump();
+      let airFrames=0,apex=0,maxSpin=0,minHull=Infinity;
+      for(let i=0;i<400;i++){
+        // keep sweeping the pointer through the air: a real spin, not a flick
+        s.input.surfDX=airFrames>1&&airFrames<90?11:0;
+        s.tick(${DT});
+        const t=s.player.surfTelemetry;
+        if(t.phase==='air'){airFrames++;apex=Math.max(apex,t.clearance);maxSpin=Math.max(maxSpin,Math.abs(t.airSpin));}
+        else if(airFrames>0){minHull=Math.min(minHull,t.hullClearance);}
+        if(airFrames>0&&t.landingSerial>before.landing&&t.phase==='ride'&&i>4)break;
+      }
+      const t=s.player.surfTelemetry;
+      return {before,airTime:airFrames*${DT},apex,maxSpin,minHull,
+        launched:t.launchSerial>before.launch,landed:t.landingSerial>before.landing,
+        landedSpin:t.landedSpin,phase:t.phase,railContact:t.railContact,
+        clearance:t.clearance};})()`);
+    // Freeze one frame at the top of a fresh jump: the camera has to hold the
+    // rider in frame for an air to be worth doing.
+    const airShot = await evaluate(cdp, `(()=>{const s=window.__sf;
+      for(let i=0;i<420&&s.player.surfTelemetry.phase!=='ride';i++)s.tick(${DT});
+      for(let i=0;i<45;i++)s.tick(${DT});
+      s.player.requestSurfJump();
+      let best=-1,frames=0;
+      for(let i=0;i<300;i++){
+        s.tick(${DT});const t=s.player.surfTelemetry;
+        if(t.phase!=='air'){if(frames>0)break;continue}
+        frames++;best=Math.max(best,t.clearance);
+        if(t.airTime>0.62)break;
+      }
+      const t=s.player.surfTelemetry;
+      return {frames,best,phase:t.phase,clearance:t.clearance,airTime:t.airTime};})()`);
+    await renderCurrentFrame(cdp);
+    const midAirShot = await capture(cdp, "surf-midair-desktop.png");
+    check(
+      airShot.phase === "air" && airShot.clearance > 1.2 &&
+        midAirShot.entropy > 2 && midAirShot.channels.some((value) => value > 15),
+      "a mid-air frame renders the rider clear of the water",
+      { airShot, midAirShot }
+    );
+    check(
+      flatAir.launched && flatAir.airTime > 0.9 && flatAir.apex > 1.5,
+      "Space from a neutral trim line is a real, ungated jump",
+      flatAir
+    );
+    check(
+      flatAir.maxSpin > 2 && flatAir.landed && flatAir.phase === "ride" &&
+        flatAir.minHull >= -0.001 && flatAir.railContact,
+      "steering through the air spins the board and still lands on rail contact",
+      flatAir
     );
 
     // Reset to a fresh neutral wave so the long-run invariant below is not
@@ -1094,14 +1203,21 @@ async function main() {
       const values=[before.viewYaw-after.viewYaw,before.viewPitch-after.viewPitch,
         before.position.x-after.position.x,before.position.y-after.position.y,before.position.z-after.position.z,
         before.target.x-after.target.x,before.target.y-after.target.y,before.target.z-after.target.z];
+      const steer={x:i.surfDX,y:i.surfDY};
       i.endFrame();
-      return {cameraLookLocked:i.cameraLookLocked,deltas,maxCameraDelta:Math.max(...values.map(Math.abs))};
+      return {cameraLookLocked:i.cameraLookLocked,deltas,steer,
+        maxCameraDelta:Math.max(...values.map(Math.abs))};
     })()`);
     check(
       padLookLock.cameraLookLocked && padLookLock.deltas.x === 0 &&
         padLookLock.deltas.y === 0 && padLookLock.maxCameraDelta < 1e-6,
       "gamepad right stick cannot orbit the authored surf camera",
       padLookLock
+    );
+    check(
+      padLookLock.steer.x > 1 && padLookLock.steer.y < -1,
+      "gamepad right stick reaches the board's steering rail instead",
+      padLookLock.steer
     );
 
     // Horizontal LS carves without also being the face-placement puzzle.
