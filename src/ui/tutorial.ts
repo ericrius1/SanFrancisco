@@ -347,7 +347,9 @@ export class Tutorial {
   #actionEl: HTMLElement
   #keysEl: HTMLElement
   #textEl: HTMLElement
-  #fillEl: HTMLElement
+  #barEl: HTMLElement
+  /** Fill of the segment for the step being worked on, or null on the finale. */
+  #segFill: HTMLElement | null = null
   #hintEl: HTMLElement
   #dotsEl: HTMLElement
   #skipBtn: HTMLButtonElement
@@ -364,6 +366,23 @@ export class Tutorial {
 
   get active() {
     return this.#active
+  }
+
+  /**
+   * Draw the bar as one cell per step in the current chapter.
+   *
+   * A chapter's steps used to differ only by "step 2/3" in the far corner,
+   * while the title your eye is on stayed put — so moving between them looked
+   * like nothing had happened, or like the same step had come back. Cells make
+   * the position within the chapter spatial: cleared ones stay full, the one
+   * you are on is brighter and fills as you work, the rest are empty.
+   */
+  #drawSegments(count: number, current: number) {
+    this.#barEl.innerHTML = Array.from({ length: count }, (_, i) => {
+      const state = i < current ? " done" : i === current ? " now" : ""
+      return `<span class="tut-seg${state}"><i></i></span>`
+    }).join("")
+    this.#segFill = this.#barEl.querySelector(".tut-seg.now i")
   }
 
   constructor(ctx: TutorialCtx) {
@@ -401,7 +420,7 @@ export class Tutorial {
     this.#panel.innerHTML =
       `<div class="tut-top"><span class="tut-ch"></span><span class="tut-prog"></span></div>` +
       `<div class="tut-obj"><span class="tut-action"></span><span class="tut-keys"></span><span class="tut-text"></span><span class="tut-check">✓</span></div>` +
-      `<div class="tut-bar"><div class="tut-fill"></div></div>` +
+      `<div class="tut-bar"></div>` +
       `<div class="tut-hint"></div>` +
       `<div class="tut-row"><span class="tut-dots"></span>` +
       `<button class="tut-skip" type="button">skip step ▸</button>` +
@@ -412,7 +431,7 @@ export class Tutorial {
     this.#actionEl = this.#panel.querySelector(".tut-action")!
     this.#keysEl = this.#panel.querySelector(".tut-keys")!
     this.#textEl = this.#panel.querySelector(".tut-text")!
-    this.#fillEl = this.#panel.querySelector(".tut-fill")!
+    this.#barEl = this.#panel.querySelector(".tut-bar")!
     this.#hintEl = this.#panel.querySelector(".tut-hint")!
     this.#dotsEl = this.#panel.querySelector(".tut-dots")!
     this.#skipBtn = this.#panel.querySelector(".tut-skip")!
@@ -485,9 +504,11 @@ export class Tutorial {
     this.#textEl.textContent = FINALE.text
     this.#hintEl.textContent = FINALE.hint
     this.#hintEl.style.display = ""
-    this.#fillEl.style.width = "100%"
+    // Every cell of every chapter, cleared.
+    this.#drawSegments(CHAPTERS.length, CHAPTERS.length)
     this.#objEl.classList.add("done")
     this.#dotsEl.innerHTML = CHAPTERS.map(() => `<span class="tut-dot on"></span>`).join("")
+    this.#segFill = null
     this.#skipBtn.style.display = "none"
     this.#exitBtn.textContent = "close"
     this.#panel.classList.remove("swap")
@@ -511,7 +532,7 @@ export class Tutorial {
     const step = CHAPTERS[this.#ci].steps[this.#si]
     const r = step.check(this.#ctx, dt, this.#scratch, this.#events)
     const p = typeof r === "boolean" ? (r ? 1 : 0) : Math.min(1, r)
-    this.#fillEl.style.width = `${(p * 100).toFixed(1)}%`
+    if (this.#segFill) this.#segFill.style.width = `${(p * 100).toFixed(1)}%`
     if (p >= 1) {
       this.#objEl.classList.add("done")
       this.#advance = 0.85
@@ -562,7 +583,8 @@ export class Tutorial {
     step.onEnter?.(this.#ctx)
 
     this.#chEl.textContent = `${this.#ci + 1} · ${ch.title}`
-    this.#progEl.textContent = `step ${this.#si + 1}/${ch.steps.length}`
+    this.#progEl.textContent = `step ${this.#si + 1} of ${ch.steps.length}`
+    this.#drawSegments(ch.steps.length, this.#si)
     // A travel beat has an action ("Head") and no keys — the verb is the whole
     // instruction there, so show it whenever the step names one, not only when
     // there is a key to press beside it.
@@ -573,8 +595,12 @@ export class Tutorial {
     this.#textEl.textContent = step.text
     this.#hintEl.textContent = step.hint ?? ""
     this.#hintEl.style.display = step.hint ? "" : "none"
-    this.#fillEl.style.width = "0%"
-    this.#dotsEl.innerHTML = CHAPTERS.map((_, i) => `<span class="tut-dot${i <= this.#ci ? " on" : ""}"></span>`).join("")
+    // The dots are chapters, the bar cells are the steps inside this one. Only
+    // chapters BEFORE this one are filled — lighting the current chapter's dot
+    // on arrival was half of why finishing a chapter looked like nothing.
+    this.#dotsEl.innerHTML = CHAPTERS.map(
+      (_, i) => `<span class="tut-dot${i < this.#ci ? " on" : i === this.#ci ? " now" : ""}"></span>`
+    ).join("")
     this.#objEl.classList.remove("done")
     // restart the slide-in so each new objective reads as a fresh card
     this.#panel.classList.remove("swap")

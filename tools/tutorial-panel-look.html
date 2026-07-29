@@ -1,0 +1,113 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>tutorial panel — look</title>
+<!-- The gallery lives INSIDE #hud: every panel rule is scoped `#hud .tutorial-panel`,
+     so a clone parked anywhere else renders unstyled. -->
+<div id="hud"><div id="gallery"></div></div>
+<script type="module">
+  // Pull the app's real stylesheet in, so this is the panel as shipped and not
+  // a lookalike. The styles live inline in index.html.
+  const html = await (await fetch("/index.html")).text()
+  for (const m of html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
+    const s = document.createElement("style")
+    s.textContent = m[1]
+    document.head.appendChild(s)
+  }
+  document.body.classList.add("started") // else the hud is held at opacity 0
+  const frame = document.createElement("style")
+  frame.textContent = `
+    body { margin:0; background:#5b67c0; }
+    #hud { position:static !important; inset:auto !important; padding:18px; }
+    #gallery { display:flex; flex-direction:column; gap:16px; }
+    .shot > label { display:block; font:600 11px var(--font,system-ui); color:#fff; opacity:.9; margin-bottom:6px; }
+    .shot .tutorial-panel { position:relative !important; top:auto !important; left:auto !important;
+      bottom:auto !important; transform:none !important; display:block !important; width:440px; }
+    /* the live instance the clones are taken from */
+    #hud > .tutorial-panel, #hud > .tutorial-ui { display:none !important; }`
+  document.head.appendChild(frame)
+
+  const { Tutorial } = await import("/src/ui/tutorial.ts")
+  const hud = document.getElementById("hud")
+  const gallery = document.getElementById("gallery")
+
+  const zone = () => ({
+    watching: true, gatesPassed: 0, sprintMeters: 0, hurdleCleared: false, insideCottage: false,
+    cottageVisited: false, lapFraction: 0, bowlAir: 0, ringsFlown: 0,
+    toStartLine: 120, toBowl: 140, toFirstRing: 200
+  })
+  const state = { mode: "walk", pos: { x: -1560, y: 3, z: -1560 }, mouseDelta: 0, down: {}, pressed: {}, mapOpen: false, zone: zone() }
+  const ctx = {
+    mode: () => state.mode, pos: () => state.pos, mouseDelta: () => 0,
+    down: () => false, pressed: () => false, mapOpen: () => false,
+    teleport: () => {}, message: () => {}, zone: () => state.zone, goToZone: () => {}
+  }
+
+  const t = new Tutorial(ctx)
+  t.start()
+  const panel = hud.querySelector(".tutorial-panel")
+  const skip = hud.querySelector(".tut-skip")
+
+  const shoot = (label, partial) => {
+    // Show the live cell part-filled, the way it looks mid-objective.
+    if (partial !== undefined) {
+      const now = panel.querySelector(".tut-seg.now i")
+      if (now) now.style.width = `${partial * 100}%`
+    }
+    const wrap = document.createElement("div")
+    wrap.className = "shot"
+    wrap.innerHTML = `<label>${label}</label>`
+    wrap.appendChild(panel.cloneNode(true))
+    gallery.appendChild(wrap)
+  }
+
+  // Scoped to the LIVE panel, never to #hud: the clones land inside #hud too,
+  // so a hud-wide query starts answering with a stale card and any loop
+  // waiting on it never exits.
+  const chapter = () => panel.querySelector(".tut-ch").textContent
+
+  const advanceTo = (want) => {
+    for (let i = 0; i < 60; i++) {
+      if (chapter().includes(want)) return true
+      skip.click()
+      t.update(1 / 60)
+    }
+    throw new Error(`never reached "${want}" — stuck on "${chapter()}"`)
+  }
+
+  // Walk to chapter 3 ("The oval") and shoot each of its steps in turn — the
+  // three cards that used to be indistinguishable.
+  advanceTo("The oval")
+  shoot(`${chapter()} — step 1, just opened`, 0)
+  skip.click(); t.update(1 / 60)
+  shoot(`${chapter()} — step 2, part done`, 0.55)
+  skip.click(); t.update(1 / 60)
+  shoot(`${chapter()} — step 3, part done`, 0.3)
+  advanceTo("Congratulations")
+  shoot(chapter())
+
+  // Assertions that need the real stylesheet, so they live here rather than in
+  // tools/tutorial-gating-probe.html (which loads none).
+  const checks = []
+  const check = (name, pass, detail) => checks.push({ name, pass, detail })
+  const oval = [...document.querySelectorAll(".shot")].slice(0, 3).map((sh) => sh.querySelector(".tutorial-panel"))
+
+  const gaps = oval.map((p) =>
+    Math.round(p.querySelector(".tut-prog").getBoundingClientRect().left - p.querySelector(".tut-ch").getBoundingClientRect().right))
+  check("step counter sits beside the chapter title", gaps.every((g) => g >= 0 && g < 40), `${gaps.join(", ")} px after the title`)
+
+  const cells = oval.map((p) => [...p.querySelectorAll(".tut-seg")].map((s) => {
+    const track = s.getBoundingClientRect().width
+    return { state: s.classList.contains("done") ? "done" : s.classList.contains("now") ? "now" : "empty", pct: Math.round(s.querySelector("i").getBoundingClientRect().width / track * 100) }
+  }))
+  check("one cell per step, cleared ones full", cells.every((row, i) => row.length === 3 && row.filter((c) => c.state === "done").length === i && row.filter((c) => c.state === "done").every((c) => c.pct === 100)),
+    cells.map((r) => r.map((c) => `${c.state} ${c.pct}%`).join(" | ")).join("  //  "))
+
+  check("the live cell advances with the step", cells.every((row, i) => row[i]?.state === "now"),
+    `now-cell index per card: ${cells.map((r) => r.findIndex((c) => c.state === "now")).join(", ")}`)
+
+  const dots = oval.map((p) => [...p.querySelectorAll(".tut-dot")].map((d) => d.classList.contains("on") ? "on" : d.classList.contains("now") ? "now" : "·").join(""))
+  check("current chapter's dot is ringed, not filled", dots.every((d) => d === "onon" + "now" + "···".slice(0, 3)), dots[0])
+
+  window.__LOOK = { pass: checks.every((c) => c.pass), checks }
+  window.__READY = true
+</script>
