@@ -628,49 +628,87 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   // Webcam pose control is a first-use feature: neither LiteRT, its WebGPU
   // runtime, the model, nor camera permission is touched until this button.
   let mocapSession: import("../../mocap/poseMocapSession").PoseMocapSession | null = null;
-  const stopMocap = (announce = true) => {
-    mocapSession?.stop();
+  // Bumped by every start/stop/failure so a slow start that lands after the
+  // player changed their mind can never write to the button or the player.
+  let mocapRun = 0;
+  let mocapPending = false;
+  let mocapErrorTimer = 0;
+  const clearMocapError = () => {
+    if (!mocapErrorTimer) return;
+    window.clearTimeout(mocapErrorTimer);
+    mocapErrorTimer = 0;
+  };
+  /**
+   * A failure is a passing badge, not a mode: the button falls back to plain
+   * "Pose" so it can never park on "Retry pose" with no way out.
+   */
+  const failMocap = (badge: string, detail: string) => {
+    mocapRun++;
     mocapSession = null;
+    mocapPending = false;
     player.setMocapPoseDriver(null);
+    clearMocapError();
+    audioControls.setMocap("error", badge);
+    hud.message(detail, 4.5);
+    mocapErrorTimer = window.setTimeout(() => {
+      mocapErrorTimer = 0;
+      audioControls.setMocap("off");
+    }, 5000);
+  };
+  const stopMocap = (announce = true) => {
+    mocapRun++;
+    const cancelled = mocapPending;
+    const session = mocapSession;
+    mocapSession = null;
+    mocapPending = false;
+    session?.stop();
+    player.setMocapPoseDriver(null);
+    clearMocapError();
     audioControls.setMocap("off");
-    if (announce) hud.message("Webcam pose off", 2.4);
+    if (announce) hud.message(cancelled ? "Webcam pose start cancelled" : "Webcam pose off", 2.4);
   };
   const startMocap = async () => {
+    const run = ++mocapRun;
+    mocapPending = true;
+    clearMocapError();
     audioControls.setMocap("loading", "Loading WebGPU pose");
-    hud.message("Starting WebGPU webcam pose…", 3);
+    hud.message("Starting WebGPU webcam pose — click Pose again to cancel", 3);
     try {
       const { PoseMocapSession } = await import("../../mocap/poseMocapSession");
+      if (run !== mocapRun) return; // cancelled while the chunk was in flight
       const session = new PoseMocapSession({
         video: audioControls.mocapVideo,
         debugCanvas: audioControls.mocapDebugCanvas,
-        onState: (state, message) => audioControls.setMocap(state, message),
+        onState: (state, message) => {
+          if (run === mocapRun) audioControls.setMocap(state, message);
+        },
         onFatal: (error) => {
-          if (mocapSession !== session) return;
-          mocapSession = null;
-          player.setMocapPoseDriver(null);
-          audioControls.setMocap("error", "Pose stopped");
-          hud.message(`Webcam pose stopped — ${error.message}`, 4.5);
+          if (run !== mocapRun) return;
+          failMocap("Pose stopped", `Webcam pose stopped — ${error.message}`);
         }
       });
       mocapSession = session;
       await session.start();
-      if (mocapSession !== session) {
+      // start() resolves quietly when it was cancelled mid-flight; stopMocap
+      // already stopped this session, so just leave the off state alone.
+      if (run !== mocapRun) {
         session.stop();
         return;
       }
+      mocapPending = false;
       player.setMocapPoseDriver(session.poseDriver);
       hud.message("Webcam pose ready — step into view", 3.4);
     } catch (error) {
+      if (run !== mocapRun) return;
       mocapSession?.stop();
-      mocapSession = null;
-      player.setMocapPoseDriver(null);
       const message = error instanceof Error ? error.message : String(error);
-      audioControls.setMocap("error", "Pose unavailable");
-      hud.message(`Webcam pose unavailable — ${message}`, 4.8);
+      failMocap("Pose unavailable", `Webcam pose unavailable — ${message}`);
     }
   };
+  // One honest toggle: engaged (loading, searching, tracking) always turns off,
+  // and anything else starts. Cancelling a pending start counts as turning off.
   audioControls.onMocapToggle = () => {
-    if (mocapSession) stopMocap();
+    if (mocapSession || mocapPending) stopMocap();
     else void startMocap();
   };
   window.addEventListener("pagehide", () => stopMocap(false), { once: true });
