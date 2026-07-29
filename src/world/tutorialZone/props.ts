@@ -392,12 +392,20 @@ export function buildZoneProps(map: Ground, grades: ZoneGrades, mats: PropMateri
   const meshes = mergeBucket(bucket, "tutorial_zone", casting);
 
   // -- flight rings ---------------------------------------------------------
+  // The whole course hangs off ONE datum — the ground under the first ring, on
+  // the bowl. Measuring each hoop against the ground beneath it would work over
+  // the field and then follow the seabed down as the course leaves the shore,
+  // so a climb authored as 8 → 28 m would sag toward the water exactly where it
+  // is meant to be rising. Against a single datum the line is what it says.
+  const ringDatum = top(FLIGHT_RINGS[0].u, FLIGHT_RINGS[0].v);
   const rings = FLIGHT_RINGS.map((ring, index) => {
-    const geometry = new THREE.TorusGeometry(ring.radius, 0.16, 10, 40);
+    // Tube scales with the hoop so a 6 m ring at 100 m still reads as a ring
+    // and not a scratch on the sky — it is the thing you are aiming at.
+    const geometry = new THREE.TorusGeometry(ring.radius, ring.radius * 0.035, 10, 48);
     // Standing upright, facing along the course (north), so you fly through it.
     const mesh = new THREE.Mesh(geometry, mats.ring);
     mesh.name = `tutorial_flight_ring_${index}`;
-    mesh.position.set(zoneWorldX(ring.u), top(ring.u, ring.v) + ring.height, zoneWorldZ(ring.v));
+    mesh.position.set(zoneWorldX(ring.u), ringDatum + ring.height, zoneWorldZ(ring.v));
     return mesh;
   });
 

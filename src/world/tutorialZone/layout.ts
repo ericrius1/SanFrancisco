@@ -150,18 +150,26 @@ export const BOWL_RAIL = {
 /**
  * Flight rings: six hoops climbing north off the bowl deck and out over the
  * shore, drifting west so the last one frames the Golden Gate. Heights are
- * above the terrain under each ring, so the first is a hop and the last is a
- * genuine climb.
+ * metres above one datum — the ground under the first ring — so the course
+ * climbs in a straight line instead of following the seabed down once it
+ * leaves the shore (see the ring datum in props.ts).
+ *
+ * Sized for a newcomer on their first flight, not for a course record. The
+ * hoops are wide (6–8 m radius) and sit ~22 m apart, which is the part that
+ * actually makes them flyable: a phoenix at speed covers the gap in about a
+ * second, and a tighter spacing leaves no room to correct a line before the
+ * next hoop is already past. The climb is shallow for the same reason — 4 m of
+ * altitude per 22 m of travel is a glide, not a scramble.
  */
 export type FlightRing = { u: number; v: number; height: number; radius: number };
 
 export const FLIGHT_RINGS: readonly FlightRing[] = [
-  { u: -62, v: 6, height: 7, radius: 4.4 },
-  { u: -64, v: -6, height: 11, radius: 4.2 },
-  { u: -67, v: -19, height: 16, radius: 4 },
-  { u: -71, v: -32, height: 22, radius: 3.8 },
-  { u: -76, v: -45, height: 28, radius: 3.6 },
-  { u: -82, v: -58, height: 34, radius: 3.4 }
+  { u: -62, v: 8, height: 8, radius: 8 },
+  { u: -66, v: -14, height: 12, radius: 7.6 },
+  { u: -71, v: -36, height: 16, radius: 7.2 },
+  { u: -77, v: -58, height: 20, radius: 6.8 },
+  { u: -84, v: -80, height: 24, radius: 6.4 },
+  { u: -92, v: -102, height: 28, radius: 6 }
 ];
 
 // ---------------------------------------------------------------------------

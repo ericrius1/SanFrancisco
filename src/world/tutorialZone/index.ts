@@ -27,6 +27,7 @@ import {
   SPRINT,
   STATION_ANCHORS,
   TRACK,
+  TRACK_START,
   WALK_GATES,
   WALK_GATE_HALF_WIDTH,
   sampleZoneGrades,
@@ -82,6 +83,17 @@ export type TutorialZoneProgress = {
   bowlAir: number;
   /** Flight rings passed, in order (0…6). */
   ringsFlown: number;
+  /**
+   * Metres to the places a step can send you.
+   *
+   * A step that says "ollie out of the bowl" is unpassable if you are standing
+   * at the oval 100 m away, and the bar sitting at zero cannot tell you that —
+   * it looks identical to a trick you keep muffing. These let the checklist
+   * walk you to the right end of the field first.
+   */
+  toStartLine: number;
+  toBowl: number;
+  toFirstRing: number;
 };
 
 // The leaf's local +x runs hinge → free edge, and a positive yaw carries that
@@ -90,7 +102,7 @@ export type TutorialZoneProgress = {
 const DOOR_OPEN_ANGLE = 1.85;
 const DOOR_SWING_RATE = 4.2; // rad/s
 const SPRINT_SPEED = 5.6; // m/s — a run, not a walk
-const AIR_CLEARANCE = 0.55; // metres off the surface that counts as airborne
+const AIR_CLEARANCE = 0.45; // metres off the surface that counts as airborne
 
 export class TutorialZone {
   readonly root = new THREE.Group();
@@ -118,10 +130,11 @@ export class TutorialZone {
   #hurdle = false;
   #inside = false;
   #visited = false;
-  #lap = 0;
+  #lapSigned = 0;
   #lapAngle: number | null = null;
   #air = 0;
   #airRun = 0;
+  #airHinted = false;
   #ringIndex = 0;
   #prev: { x: number; y: number; z: number } | null = null;
 
@@ -339,9 +352,12 @@ export class TutorialZone {
         let delta = angle - this.#lapAngle;
         if (delta > Math.PI) delta -= Math.PI * 2;
         if (delta < -Math.PI) delta += Math.PI * 2;
-        // Only forward progress counts; reversing over the line does not undo
-        // a lap, and jitter at a standstill does not add one.
-        if (Math.abs(delta) < 0.6) this.#lap += Math.max(0, delta) / (Math.PI * 2);
+        // Either way round counts — a newcomer who leaves the line the other
+        // way is still driving a lap, and an oval has no wrong end. The sum is
+        // signed and reported as its magnitude, so a lap still has to be a real
+        // circuit in one direction: doubling back unwinds progress rather than
+        // banking it, and jitter at a standstill nets out to nothing.
+        if (Math.abs(delta) < 0.6) this.#lapSigned += delta / (Math.PI * 2);
       }
       this.#lapAngle = angle;
     } else {
@@ -353,6 +369,12 @@ export class TutorialZone {
       if (p.y - ground > AIR_CLEARANCE) {
         this.#airRun += dt;
         this.#air = Math.max(this.#air, this.#airRun);
+        // Getting a little air and seeing nothing happen reads as "this is
+        // broken". Say it landed, once, so the bar's job is legible.
+        if (!this.#airHinted && this.#air > 0.12) {
+          this.#airHinted = true;
+          hud?.message("That's air — carry more speed up the wall and hold it", 3);
+        }
       } else {
         this.#airRun = 0;
       }
@@ -405,7 +427,15 @@ export class TutorialZone {
 
   // -- readouts -------------------------------------------------------------
 
+  /** Ground-plane metres from the last known player position to a local point. */
+  #distanceTo(u: number, v: number): number {
+    const p = this.#prev;
+    if (!p) return Infinity;
+    return Math.hypot(p.x - zoneWorldX(u), p.z - zoneWorldZ(v));
+  }
+
   get progress(): TutorialZoneProgress {
+    const firstRing = FLIGHT_RINGS[0];
     return {
       watching: this.#awake && !this.#disposed,
       gatesPassed: this.#gates,
@@ -413,9 +443,12 @@ export class TutorialZone {
       hurdleCleared: this.#hurdle,
       insideCottage: this.#inside,
       cottageVisited: this.#visited,
-      lapFraction: this.#lap,
+      lapFraction: Math.abs(this.#lapSigned),
       bowlAir: this.#air,
-      ringsFlown: this.#ringIndex
+      ringsFlown: this.#ringIndex,
+      toStartLine: this.#distanceTo(TRACK_START.u, TRACK_START.v),
+      toBowl: this.#distanceTo(BOWL.cu, BOWL.cv),
+      toFirstRing: this.#distanceTo(firstRing.u, firstRing.v)
     };
   }
 

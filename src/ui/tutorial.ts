@@ -160,6 +160,45 @@ function zoneOr(
   return st.best
 }
 
+/**
+ * A "make your way over there" beat, put in front of every step that can only
+ * be done at one end of the field.
+ *
+ * Without these the checklist asks for a trick at the bowl while you are stood
+ * at the oval, and a bar frozen at zero is indistinguishable from a trick you
+ * keep muffing — you try harder in the wrong place. Progress here is the gap
+ * you have closed since the step opened, so the bar moves the moment you set
+ * off and tells you that heading over is the thing being asked for.
+ */
+function travelStep(
+  read: (zone: TutorialZoneProgress) => number,
+  arrive: number,
+  text: string,
+  hint?: string
+): Step {
+  return {
+    action: "Head",
+    text,
+    hint,
+    check: (c, dt, st) =>
+      zoneOr(
+        c,
+        dt,
+        st,
+        (z) => {
+          const d = read(z)
+          if (d <= arrive) return 1
+          // Baseline the first reading so the bar is a share of the walk you
+          // actually have in front of you, not of some fixed distance.
+          if (st.base === null) st.base = Math.max(d, arrive + 1)
+          return (st.base - d) / (st.base - arrive)
+        },
+        // With no field there is nowhere to go, so this beat is not a gate.
+        1
+      )
+  }
+}
+
 const CHAPTERS: Chapter[] = [
   {
     title: "The airfield",
@@ -223,10 +262,11 @@ const CHAPTERS: Chapter[] = [
     },
     steps: [
       modeStep("drive", "to summon the car"),
+      travelStep((z) => z.toStartLine, 14, "east to the start line on the oval's north apex", "the black-and-white line across the asphalt"),
       {
         keys: ["W"],
         action: "Hold",
-        text: "to drive a full lap of the oval",
+        text: "to drive a full lap of the oval — either way round",
         hint: "Shift boosts · Space drifts · the banking holds you through the bends",
         check: (c, dt, st) => zoneOr(c, dt, st, (z) => z.lapFraction, traveled(c, st, 240, c.mode() === "drive"))
       }
@@ -234,15 +274,17 @@ const CHAPTERS: Chapter[] = [
   },
   {
     title: "The bowl",
-    onEnter: (c) => c.message("Concrete bowl on the south-west corner — ride in, and come out of it flying.", 4),
+    onEnter: (c) =>
+      c.message("The concrete bowl is on the south-west corner, back past the cottage — ride in, and come out of it flying.", 5),
     steps: [
       modeStep("board", "to hop on the hoverboard"),
+      travelStep((z) => z.toBowl, 20, "west to the concrete bowl", "the round pad with the grind rail across its deck"),
       {
         keys: ["Space"],
-        text: "to ollie out of the bowl and hang in the air",
-        hint: "drop in from the deck, carry your speed up the far wall",
+        text: "to get air off the bowl",
+        hint: "drop in, carry your speed up the far wall, and jump as you hit the lip",
         check: (c, dt, st) =>
-          zoneOr(c, dt, st, (z) => z.bowlAir / 0.6, c.mode() === "board" && c.pressed("Space") ? 1 : 0)
+          zoneOr(c, dt, st, (z) => z.bowlAir / 0.35, c.mode() === "board" && c.pressed("Space") ? 1 : 0)
       }
     ]
   },
@@ -251,6 +293,7 @@ const CHAPTERS: Chapter[] = [
     onEnter: (c) => c.message("Six rings climb off the bowl and out over the water. Fly them in order.", 4.5),
     steps: [
       modeStep("bird", "to become the phoenix"),
+      travelStep((z) => z.toFirstRing, 30, "for the first ring, low over the bowl", "it is the one breathing — they light as you pass them"),
       {
         keys: ["Space"],
         text: "to flap through all six rings",
@@ -261,17 +304,25 @@ const CHAPTERS: Chapter[] = [
   },
   {
     title: "Anywhere, instantly",
-    onEnter: (c) => c.message("Last thing: the map. It goes anywhere in the city, from anywhere in the city.", 4),
+    onEnter: (c) =>
+      c.message("Last one. You have been everywhere on this field — the map takes you everywhere else.", 4.5),
     steps: [
       { keys: ["M"], text: "to open the city map", check: (c) => c.mapOpen() },
       {
-        text: "pick a landmark and press Enter",
+        text: "pick a landmark and press Enter — the last thing to learn",
         hint: "drag pans · click a spot, then Enter to teleport",
         check: (_c, _dt, _st, ev) => (ev.get("teleport") ?? 0) >= 1
       }
     ]
   }
 ]
+
+/** The card the checklist becomes once the last step is done. */
+const FINALE = {
+  title: "Congratulations",
+  text: "That is everything — you can walk, drive, ride, fly and teleport anywhere in the city.",
+  hint: "the 🎓 button starts the tour again any time"
+} as const
 
 const DONE_KEY = "sf-tutorial-done"
 
@@ -288,8 +339,12 @@ export class Tutorial {
   #fillEl: HTMLElement
   #hintEl: HTMLElement
   #dotsEl: HTMLElement
+  #skipBtn: HTMLButtonElement
+  #exitBtn: HTMLButtonElement
 
   #active = false
+  /** Showing the finale card: the run is over but the panel is still up. */
+  #done = false
   #ci = 0
   #si = 0
   #scratch: Scratch = freshScratch()
@@ -342,19 +397,24 @@ export class Tutorial {
     this.#fillEl = this.#panel.querySelector(".tut-fill")!
     this.#hintEl = this.#panel.querySelector(".tut-hint")!
     this.#dotsEl = this.#panel.querySelector(".tut-dots")!
-    this.#panel.querySelector(".tut-skip")!.addEventListener("click", () => {
-      if (this.#advance <= 0) this.#next()
+    this.#skipBtn = this.#panel.querySelector(".tut-skip")!
+    this.#exitBtn = this.#panel.querySelector(".tut-exit")!
+    this.#skipBtn.addEventListener("click", () => {
+      if (this.#advance <= 0 && !this.#done) this.#next()
     })
-    this.#panel.querySelector(".tut-exit")!.addEventListener("click", () => this.stop(false))
+    this.#exitBtn.addEventListener("click", () => this.stop(false))
     hud.appendChild(this.#panel)
   }
 
   start() {
     this.#active = true
+    this.#done = false
     this.#ci = 0
     this.#si = 0
     this.#advance = 0
     this.#panel.style.display = ""
+    this.#skipBtn.style.display = ""
+    this.#exitBtn.textContent = "end"
     this.#btnLabel.textContent = "End tutorial"
     // Take them to the field — unless they are already standing on it, in which
     // case moving them would be the rudest possible way to begin.
@@ -366,6 +426,7 @@ export class Tutorial {
 
   stop(done: boolean) {
     this.#active = false
+    this.#done = false
     this.#panel.style.display = "none"
     this.#btnLabel.textContent = "Tutorial"
     if (done) {
@@ -379,8 +440,37 @@ export class Tutorial {
     if (this.#active) this.#events.set(kind, (this.#events.get(kind) ?? 0) + 1)
   }
 
+  /**
+   * The end of the tour: the checklist stays on screen and turns into a
+   * congratulations, rather than vanishing the instant the last box ticks.
+   * Disappearing was the whole problem — the tutorial ended and nothing said
+   * so, which reads as the tutorial having quietly broken.
+   */
+  #finale() {
+    this.#done = true
+    this.#advance = 0
+    localStorage.setItem(DONE_KEY, "1")
+    this.#btnLabel.textContent = "Tutorial"
+    this.#chEl.textContent = `✓ ${FINALE.title}`
+    this.#progEl.textContent = `${CHAPTERS.length}/${CHAPTERS.length} chapters`
+    this.#actionEl.style.display = "none"
+    this.#keysEl.innerHTML = ""
+    this.#textEl.textContent = FINALE.text
+    this.#hintEl.textContent = FINALE.hint
+    this.#hintEl.style.display = ""
+    this.#fillEl.style.width = "100%"
+    this.#objEl.classList.add("done")
+    this.#dotsEl.innerHTML = CHAPTERS.map(() => `<span class="tut-dot on"></span>`).join("")
+    this.#skipBtn.style.display = "none"
+    this.#exitBtn.textContent = "close"
+    this.#panel.classList.remove("swap")
+    void this.#panel.offsetWidth
+    this.#panel.classList.add("swap")
+    this.#ctx.message("Tutorial complete — the city is yours 🎉", 6)
+  }
+
   update(dt: number) {
-    if (!this.#active) return
+    if (!this.#active || this.#done) return
     if (this.#advance > 0) {
       this.#advance -= dt
       if (this.#advance <= 0) this.#next()
@@ -402,7 +492,7 @@ export class Tutorial {
       this.#ci++
       this.#si = 0
       if (this.#ci >= CHAPTERS.length) {
-        this.stop(true)
+        this.#finale()
         return
       }
       CHAPTERS[this.#ci].onEnter?.(this.#ctx)

@@ -126,6 +126,91 @@
       `still on "${objective()}"`)
   }
 
+  // ── E–H: the field itself ────────────────────────────────────────────────
+  // TutorialZone only builds geometry and reads a height function, so a fake
+  // map/physics/scene is enough to drive it without a GPU device.
+  {
+    const THREE = await import("three/webgpu")
+    const { TutorialZone } = await import("/src/world/tutorialZone/index.ts")
+    const L = await import("/src/world/tutorialZone/layout.ts")
+
+    const GROUND = 3
+    const fakeMap = { groundTop: () => GROUND, setGroundTopOverlay() {}, clearGroundTopOverlay() {} }
+    let body = 1
+    const fakePhysics = {
+      world: { createBox: () => body++, setBodyTransform() {}, destroyBody() {} },
+      addQuerySolid() {}, removeQuerySolid() {}
+    }
+    const hudSink = { message() {} }
+    const makeZone = () => new TutorialZone(fakeMap, fakePhysics, new THREE.Scene())
+    const at = (u, v, y, mode) => ({ position: { x: L.zoneWorldX(u), y, z: L.zoneWorldZ(v) }, mode })
+
+    // Drive the oval; `dir` is +1 or −1 around the ellipse.
+    function lapOnce(dir) {
+      const z = makeZone()
+      const step = 0.05
+      for (let i = 0; i <= Math.ceil((Math.PI * 2) / step); i++) {
+        const th = dir * i * step
+        z.update(1 / 60, i / 60, at(L.TRACK.cu + L.TRACK.a * Math.cos(th), L.TRACK.cv + L.TRACK.b * Math.sin(th), GROUND, "drive"), hudSink)
+      }
+      const lap = z.progress.lapFraction
+      z.dispose()
+      return lap
+    }
+    const cw = lapOnce(1)
+    const ccw = lapOnce(-1)
+    check("a lap counts clockwise", cw >= 0.98, `lapFraction ${cw.toFixed(3)}`)
+    check("a lap counts anticlockwise too", ccw >= 0.98, `lapFraction ${ccw.toFixed(3)}`)
+
+    // Fly the ring course through each hoop's centre, in order.
+    {
+      const z = makeZone()
+      let t = 0
+      let prev = { u: L.FLIGHT_RINGS[0].u, v: L.FLIGHT_RINGS[0].v + 30, h: L.FLIGHT_RINGS[0].height }
+      for (const r of L.FLIGHT_RINGS) {
+        for (let i = 1; i <= 12; i++) {
+          const k = i / 12
+          z.update(1 / 60, (t += 1 / 60), at(prev.u + (r.u - prev.u) * k, prev.v + (r.v - prev.v) * k, GROUND + prev.h + (r.height - prev.h) * k, "bird"), hudSink)
+        }
+        prev = { u: r.u, v: r.v, h: r.height }
+      }
+      const flown = z.progress.ringsFlown
+      z.dispose()
+      check("flying each hoop's centre passes all six rings", flown === 6, `ringsFlown ${flown}/6`)
+    }
+
+    // Distances the checklist steers by must actually point somewhere.
+    {
+      const z = makeZone()
+      z.update(1 / 60, 0, at(L.TRACK.cu, L.TRACK.cv, GROUND, "walk"), hudSink)
+      z.update(1 / 60, 1 / 60, at(L.TRACK.cu + 0.1, L.TRACK.cv, GROUND, "walk"), hudSink)
+      const far = z.progress
+      z.update(1 / 60, 2 / 60, at(L.BOWL.cu, L.BOWL.cv, GROUND, "board"), hudSink)
+      const near = z.progress
+      z.dispose()
+      check("toBowl shrinks as you cross the field",
+        far.toBowl > 90 && near.toBowl < 1,
+        `${far.toBowl.toFixed(0)} m at the oval → ${near.toBowl.toFixed(1)} m at the bowl`)
+    }
+  }
+
+  // ── I: the run ends on a congratulations card, not an empty screen ───────
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    for (let i = 0; i < 40 && hud.querySelector(".tut-ch")?.textContent?.includes("✓") !== true; i++) {
+      skip.click()
+      run(t, s, 1 / 60)
+    }
+    const chapter = hud.querySelector(".tut-ch")?.textContent ?? ""
+    check("the tutorial ends on a visible congratulations",
+      chapter.includes("Congratulations") && hud.querySelector(".tut-text").textContent.includes("teleport") &&
+        getComputedStyle(hud.querySelector(".tutorial-panel")).display !== "none",
+      `panel still up, reading "${chapter}"`)
+  }
+
   window.__RESULT = { pass: results.every((r) => r.pass), results }
   log("")
   log(window.__RESULT.pass ? "ALL PASS" : "FAILURES PRESENT")
