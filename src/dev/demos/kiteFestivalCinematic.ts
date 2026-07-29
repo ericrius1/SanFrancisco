@@ -37,6 +37,8 @@ type Framing = {
    */
   mist?: number;
   shafts?: number;
+  /** Multiplies the prism kite's dispersed spectrum on top of `shafts`. */
+  prism?: number;
   /** Which flyer this shot is about; 0 is the diamond soloist. */
   subject: number;
   /**
@@ -1099,6 +1101,209 @@ const FLYER_FRAMINGS: readonly Framing[] = [
   }
 ];
 
+/**
+ * The four long ones, and the only shots in the production built around a
+ * single kite's own light rather than around the sun's. The first two run
+ * fifteen seconds with a score; the second two run twenty with no score at all,
+ * only the wind and the sets coming in.
+ *
+ * The prism is flyer 7, out on its own at the south end of the line. It casts
+ * nothing — no shadow, so none of the warm shafts the other six throw — and
+ * instead hangs a white beam up the sun axis, a seven-band fan out of the far
+ * side of the sail, and a smear of the same spectrum lying on the sand about
+ * forty metres downsun of it.
+ *
+ * Three things set the geometry of both shots and neither can be traded away.
+ *
+ * The hour: full golden air needs the sun within about twenty minutes of the
+ * water, and the warm shafts coming off the other six kites are what the
+ * rainbow is supposed to be an exception TO, so both of these sit in the window
+ * where those shafts are at their strongest — one with the disc still on the
+ * sea, one just under it.
+ *
+ * The stand-off ALONG the shore: the fan splays in a plane that is turned to
+ * face the lens, but its length still runs down the sun axis, so a camera
+ * parked on that axis sees fifty metres of spectrum end-on and gets a splash.
+ * Both shots stand twenty to fifty metres off to the side, which trades a
+ * little backlight for the whole length of the fan and keeps the sun in shot.
+ *
+ * And both stand off the RUNNER rather than the kite — the same correction
+ * shot 16 needed, for a sharper reason here. The kites fly downwind, which at
+ * this beach is out over the water, so a camera placed relative to a kite is
+ * placed relative to a point at sea: the first cut of these two ended the take
+ * hovering over open ocean with nothing but waves under the spectrum. The
+ * person holding the line is standing on the sand by definition, and the sand
+ * is where the light has to land.
+ *
+ * The aim sits low for the same reason. The smear is between the camera and the
+ * flyer and the kite is thirty metres above them both; aiming at the kite loses
+ * the sand it is lighting and aiming at the sand loses the kite, so both shots
+ * hold about ten metres up and let the two sit either side of it.
+ */
+const PRISM_FRAMINGS: readonly Framing[] = [
+  {
+    id: "prism-01",
+    title: "Ocean Beach Kites · The Prism",
+    // The disc still sitting on the water: the last minute at which the entry
+    // beam has an actual sun to come from rather than an afterglow.
+    hour: 20.28,
+    seconds: 15,
+    exposure: 0.9,
+    mist: 0.95,
+    shafts: 1.6,
+    prism: 1.15,
+    subject: 7,
+    // Fifteen seconds of one continuous move: a long lateral drift up the beach
+    // that closes about a fifth of the distance as it goes, so the fan swings
+    // from three-quarters-on toward side-on and its landing walks across the
+    // foreground rather than sitting still in it.
+    frame: ({ u }, live, eye, target) => {
+      const drift = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.runner)
+        .addScaledVector(live.sun, -mix(64, 50, drift))
+        .addScaledVector(along, mix(-48, -18, drift));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(2, 5, drift);
+      target.copy(live.runner).addScaledVector(along, mix(-6, 4, drift));
+      // Nine metres up: the sail sits about fourteen degrees above this on a
+      // 34 mm lens and the beam's landing about nine below it, which is the
+      // whole event inside one frame with room at both ends. It settles as the
+      // camera rises — the kite gains headroom it does not need and the smear
+      // on the sand loses the bottom edge of frame if the aim does not follow.
+      target.y = base + mix(9, 7.2, drift);
+      return mix(34, 40, drift);
+    }
+  },
+  {
+    id: "prism-02",
+    title: "Ocean Beach Kites · Where It Lands",
+    // Eight minutes under. No disc left, so the entry beam thins right out and
+    // the fan is doing nearly all of it — which is the point of shooting the
+    // same kite twice. Warm shafts off the other six are still at full.
+    hour: 20.46,
+    exposure: 0.94,
+    seconds: 15,
+    mist: 0.72,
+    shafts: 1.75,
+    prism: 1.35,
+    subject: 7,
+    // Standing IN the landing rather than beside it, and crossing the axis on
+    // the way through. The wide shot is shot one's job; this one is close and
+    // low enough that the smear on the sand is foreground and the bands rake
+    // past the lens one after another on their way to it.
+    //
+    // Thirty-odd metres is close enough that the first cut's problem goes with
+    // it: standing back at fifty on a long-ish lens put the shoreline straight
+    // across the middle of frame with a flat brown apron under it and nothing
+    // else in shot. From in close the sand is not empty — the spectrum is
+    // lying on it — and the shore reads as a diagonal instead of a band.
+    frame: ({ u }, live, eye, target) => {
+      const cross = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      eye.copy(live.runner)
+        .addScaledVector(live.sun, -mix(38, 30, cross))
+        .addScaledVector(along, mix(21, -9, cross));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(1.4, 2.4, cross);
+      target.copy(live.runner).addScaledVector(along, mix(3, -2, cross));
+      // Flat, and it has to be. Look-up angle goes as 1/distance, so the aim
+      // that put the kite comfortably in frame from fifty metres threw the
+      // horizon off the bottom edge from thirty and left fifteen seconds of
+      // empty sky. Seven metres of rise over this throw is about eight degrees,
+      // which keeps the sand and its spectrum in the lower third the whole way.
+      target.y = base + mix(6.5, 8.2, cross);
+      // And the lens goes WIDER as the camera closes rather than longer: the
+      // kite climbs the frame as the throw shortens, and the extra coverage is
+      // what stops it leaving the top on the last beat.
+      return mix(26, 24, cross);
+    }
+  },
+  {
+    id: "prism-03",
+    title: "Ocean Beach Kites · What Lands on the Sand",
+    // Ten minutes earlier than the first pair: the disc is clear of the water,
+    // which is the strongest the entry beam and the other six kites' warm
+    // shafts ever get, and this shot wants both behind the reveal.
+    hour: 20.18,
+    seconds: 20,
+    exposure: 0.9,
+    // 0.6, not the 0.9 the other three run. This is the only shot that spends
+    // its opening pointed down at the beach from head height, and a marine
+    // layer is sixteen billboards thirty metres wide: aimed at the sand from
+    // inside them they each cover the frame, on top of the sand spectrum, the
+    // fan's lower bands and a full-screen raymarch. The first cut of this shot
+    // rendered at 0.3 replay fps against 3.1 for its neighbours and never
+    // finished a take. Thinner air is most of that back.
+    mist: 0.6,
+    shafts: 1.65,
+    prism: 1.2,
+    subject: 7,
+    // A reveal, and the only shot in the production that starts on something
+    // other than a kite. Twenty seconds buys the full move: open tight and low
+    // on the spectrum lying in the sand — the sail is off the top of frame and
+    // deliberately absent — then crane up and back seventy metres until the
+    // whole beach, all eight flyers and the sun on the water are in one frame
+    // and the thing in the sand turns out to have been coming from up there.
+    frame: ({ u }, live, eye, target) => {
+      const pull = easeInOutCubic(u);
+      const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
+      // Opens at 46 m rather than 25. Standing that close and looking down at
+      // the beach is the most expensive frame this whole production can draw —
+      // every additive surface in the feature is between the lens and the sand
+      // at once — and the extra distance buys the shot back at a cost of
+      // nothing the longer opening lens does not return.
+      eye.copy(live.runner)
+        .addScaledVector(live.sun, -mix(46, 96, pull))
+        .addScaledVector(along, mix(16, -58, pull));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(2.4, 12, pull);
+      target.copy(live.runner).addScaledVector(along, mix(2, -12, pull));
+      // Starts low on the sand and finishes level with the camera: the reveal
+      // is the throw and the height, not a tilt, so the horizon walks steadily
+      // down the frame instead of swinging through it.
+      target.y = base + mix(4.5, 11, pull);
+      return mix(30, 35, pull);
+    }
+  },
+  {
+    id: "prism-04",
+    title: "Ocean Beach Kites · Opening the Fan",
+    // The far end of full golden air. The sun is a quarter hour under, so there
+    // is no disc left to carry the entry beam and the fan is doing all of it —
+    // which is why this one leans hardest on the prism dial of the four.
+    hour: 20.58,
+    exposure: 0.96,
+    seconds: 20,
+    mist: 0.68,
+    shafts: 1.8,
+    prism: 1.5,
+    subject: 7,
+    // A half orbit, and the only one anchored on the ANGLE rather than on a
+    // slide. It starts six degrees off the sun axis, where the fan is pointed
+    // nearly at the lens and reads as a burst around the sail, and swings out
+    // to fifty, where the same fan is fully side-on and fifty metres long. The
+    // spectrum opens across the frame as the camera moves, and its landing
+    // sweeps the sand underneath, because the shot is going around the axis
+    // that both of them are hung on.
+    frame: ({ u }, live, eye, target) => {
+      const swing = easeInOutCubic(u);
+      const angle = mix(0.1, 0.85, swing);
+      const away = new THREE.Vector3(
+        -live.sun.x * Math.cos(angle) + live.sun.z * Math.sin(angle),
+        0,
+        -live.sun.z * Math.cos(angle) - live.sun.x * Math.sin(angle)
+      ).normalize();
+      eye.copy(live.runner).addScaledVector(away, mix(74, 58, swing));
+      const base = live.ground(eye.x, eye.z);
+      eye.y = base + mix(3.4, 6.2, swing);
+      target.copy(live.runner);
+      target.y = base + mix(8.4, 9.6, swing);
+      return mix(33, 37, swing);
+    }
+  }
+];
+
 type KiteWindow = Window & typeof globalThis & { __sf?: { oceanBeachKite?: OceanBeachKiteEncounter } };
 
 function buildDemo(framing: Framing): Demo {
@@ -1144,6 +1349,7 @@ function buildDemo(framing: Framing): Demo {
       ctx.setPostFx({ sceneSamples: 0, contactShadows: false, ink: false, dream: false, retro: false });
       if (framing.mist !== undefined) OCEAN_KITE_TUNING.values.mistDensity = framing.mist;
       if (framing.shafts !== undefined) OCEAN_KITE_TUNING.values.shaftStrength = framing.shafts;
+      if (framing.prism !== undefined) OCEAN_KITE_TUNING.values.prismStrength = framing.prism;
       ctx.input.suspended = true;
 
       // The encounter wakes on the PLAYER's distance to the site, not the
@@ -1236,7 +1442,8 @@ const ALL_FRAMINGS = [
   ...LATE_FRAMINGS,
   ...FLYER_FRAMINGS,
   ...RING_FRAMINGS,
-  ...DUSK_FRAMINGS
+  ...DUSK_FRAMINGS,
+  ...PRISM_FRAMINGS
 ];
 
 export const kiteFestivalDemos: readonly Demo[] = ALL_FRAMINGS.map(buildDemo);

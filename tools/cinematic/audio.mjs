@@ -31,6 +31,13 @@ const PRODUCTION_DURATIONS = Object.freeze({
     `ocean-beach-kite-ring-${String(index + 1).padStart(2, "0")}`,
     7
   ])),
+  // 01/02 are scored and run fifteen; 03/04 are wind and surf only and run
+  // twenty. Keep this in step with productions.mjs — it is the check that
+  // catches a retimed shot before it becomes a picture/audio drift.
+  ...Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
+    `ocean-beach-kite-prism-${String(index + 1).padStart(2, "0")}`,
+    index < 2 ? 15 : 20
+  ])),
   ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
     `sutro-moment-${String(index + 1).padStart(2, "0")}`,
     5
@@ -143,6 +150,24 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
       { time: 6.1, id: "settle", description: `the beach hands the shot over to the sky` }
     ])];
   })),
+  ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => {
+    const shot = index + 1;
+    return [`ocean-beach-kite-prism-${String(shot).padStart(2, "0")}`, Object.freeze([
+      { time: 0, id: "wind", description: `prism look ${shot} opens on the onshore wind` },
+      { time: 3.6, id: "disperse", description: `the sail takes the sun and the fan opens` },
+      { time: 7.2, id: "surf", description: `a set breaks under the spectrum` },
+      { time: 10.4, id: "sand", description: `the bands settle onto the beach` },
+      { time: 13.6, id: "resolve", description: `the beach resolves into the evening` }
+    ])];
+  })),
+  // 03/04 have no cue plan on purpose. A cue exists to picture-lock a musical
+  // event, and there is no music in these: the sets are timed to sound like
+  // sets rather than to land on anything the camera does. An empty plan is the
+  // honest record of that, not an omission.
+  ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => [
+    `ocean-beach-kite-prism-${String(index + 3).padStart(2, "0")}`,
+    Object.freeze([])
+  ])),
   ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
     const shot = index + 1;
     return [`twitter-summer-${String(shot).padStart(2, "0")}`, Object.freeze([
@@ -246,6 +271,24 @@ export async function renderCinematicAudio(production, outputPath) {
     scorePhoenixPalaceFlyby(mix);
   } else if (id.startsWith("kite-to-sutro-")) {
     scoreKiteToSutro(mix, Number(id.slice(-2)));
+  } else if (id.startsWith("ocean-beach-kite-prism-")) {
+    // Same ordering hazard as the ring set below: this id also starts with
+    // "ocean-beach-kite-", and its last two characters would read as look 1 or 2
+    // of a ten-second arrangement inside a fifteen-second clip.
+    const shot = Number(id.slice(-2));
+    if (shot >= 3) {
+      // No score whatsoever: wind, sets and ripstop. The nature beds carry the
+      // real recorded wind under the synthesized surf, so unlike every scored
+      // production here these two genuinely depend on the bed decoding —
+      // `beds` in the returned report is worth reading after a render.
+      scoreOceanBeachKiteWind(mix, shot);
+      const bedPlan = Array.isArray(production.audio?.beds) ? production.audio.beds : [];
+      for (let i = 0; i < bedPlan.length; i += 1) {
+        beds.push(mixNatureBed(mix, bedPlan[i], i));
+      }
+    } else {
+      scoreOceanBeachKitePrism(mix, shot);
+    }
   } else if (id.startsWith("ocean-beach-kite-ring-")) {
     // Must precede the general kite branch: `ocean-beach-kite-ring-03` also
     // starts with "ocean-beach-kite-", and its last two characters would read
@@ -264,7 +307,18 @@ export async function renderCinematicAudio(production, outputPath) {
     scoreTwitterSummerShot(mix, Number(id.slice(-2)));
   }
 
-  const levels = masterAndLimit(mix, id === "dog-park" ? 2 : id === "roqn-open-road" ? 1.65 : id.startsWith("twitter-summer-") ? 1.55 : id === "afterlight" ? 1.45 : 1.35);
+  // The bus never makes anything louder on its own — the limiter only pulls
+  // down — so a mix with no pad or bells in it has to be handed a bigger makeup
+  // than one that has. The two wind-only prism looks are entirely broadband
+  // noise at a fraction of a musical element's amplitude; at the scored 1.35
+  // they arrive fifteen decibels under everything else in the folder.
+  const makeup = id === "dog-park" ? 2
+    : /^ocean-beach-kite-prism-0[34]$/.test(id) ? 2.6
+    : id === "roqn-open-road" ? 1.65
+    : id.startsWith("twitter-summer-") ? 1.55
+    : id === "afterlight" ? 1.45
+    : 1.35;
+  const levels = masterAndLimit(mix, makeup);
   const absoluteOutput = path.resolve(outputPath);
   const wav = encodePcm16Wav(mix.left, mix.right, SAMPLE_RATE);
   await atomicWrite(absoluteOutput, wav);
@@ -727,6 +781,199 @@ function scoreKiteToSutro(mix, shot) {
  * gentler than the festival's and the mix moves correspondingly less.
  */
 const RING_EVENING = Object.freeze({ 1: 0.0, 2: 0.3, 3: 0.55, 4: 0.15, 5: 0.85 });
+
+/**
+ * The prism pair. Fifteen seconds, both of them within twenty minutes of the
+ * water, so the two clips are nearly the same evening and the arrangement
+ * separates them by what the LIGHT is doing rather than by the hour: look one
+ * still has a disc and gets the entry beam's bell high and clean, look two is
+ * under it and gets the same figure a fourth lower and softer.
+ *
+ * The seven-note rise at the dispersion beat is the only literal thing in this
+ * production's score, and it earns it — one band per note, bottom to top,
+ * arriving as the fan opens. It is deliberately slow enough to still be
+ * unfolding when the spectrum reaches the sand.
+ */
+function scoreOceanBeachKitePrism(mix, shot) {
+  const under = shot >= 2 ? 1 : 0;
+  addPad(mix, {
+    start: 0,
+    duration: 15,
+    notes: under ? [36, 43, 48, 55, 60, 67] : [43, 50, 55, 62, 67, 74],
+    gain: 0.044 + under * 0.012,
+    pan: 0,
+    brightness: 0.64 - under * 0.2
+  });
+  addAir(mix, { start: 0, duration: 15, gain: 0.03 - under * 0.005, panDrift: 0.72 });
+  addFoley(mix, {
+    start: 0.3,
+    duration: 14.4,
+    gain: 0.015 - under * 0.004,
+    pan: -0.2,
+    character: "grass"
+  });
+  addFoley(mix, {
+    start: 6.8,
+    duration: 3.4,
+    gain: 0.017 - under * 0.005,
+    pan: 0.32,
+    character: "grass"
+  });
+  // Seven bands, seven notes, opening from the bottom of the fan to the top.
+  const root = under ? 62 : 69;
+  const band = [0, 3, 5, 7, 10, 12, 15];
+  for (let i = 0; i < band.length; i += 1) {
+    addChime(mix, {
+      start: 3.6 + i * 0.44,
+      midi: root + band[i],
+      duration: 2.6 + i * 0.18,
+      gain: (0.03 - under * 0.007) * (1 - i * 0.07),
+      pan: -0.34 + (i / (band.length - 1)) * 0.68
+    });
+  }
+  // Three sets across the take, the middle one landing under the moment the
+  // spectrum reaches the beach.
+  addWhoosh(mix, {
+    start: 0.7,
+    duration: 4.2,
+    gain: 0.054,
+    panFrom: -0.66,
+    panTo: -0.08,
+    direction: "in"
+  });
+  addWhoosh(mix, {
+    start: 6.9,
+    duration: 4,
+    gain: 0.062 + under * 0.012,
+    panFrom: 0.6,
+    panTo: 0.1,
+    direction: "in"
+  });
+  addWhoosh(mix, {
+    start: 11.4,
+    duration: 3.6,
+    gain: 0.056 + under * 0.014,
+    panFrom: -0.24,
+    panTo: 0.42,
+    direction: "in"
+  });
+  addSub(mix, { start: 7.15, duration: 1.6, fromHz: 52, toHz: 33, gain: 0.056 + under * 0.018 });
+  // The resolve: one low bell as the beach hands the shot back to the evening.
+  addChime(mix, {
+    start: 13.4,
+    midi: under ? 55 : 59,
+    duration: 1.7,
+    gain: 0.026 + under * 0.01,
+    pan: 0.06
+  });
+}
+
+/**
+ * One wave, from the swell standing up to the last of the backwash.
+ *
+ * The production's existing `addWhoosh` has stood in for surf everywhere else
+ * here and it is fine UNDER a score — but it is a transition swoosh, a single
+ * symmetric hump of filtered noise, and with nothing playing over it a beach
+ * made of them sounds like a beach made of swooshes. A real set has four parts
+ * and they are all the same noise source through a moving filter: a dark
+ * rolling body while it stands up, a broadband crash as it breaks, a long
+ * bright hiss as the foam runs up the sand, and a darker drag back out.
+ *
+ * `size` scales how much low body it has, which is the difference between a
+ * knee-high one twenty metres away and a set breaking on the bar.
+ *
+ * `from` enters the wave part-way through its own run rather than at the swell.
+ * The ocean does not start when the camera does, and without this every take
+ * opens on the quietest moment a beach has — the trough before the first set —
+ * which is a second and a half of near silence at the head of the film.
+ */
+function addSurf(mix, options) {
+  const startFrame = frameAt(mix, options.start);
+  const endFrame = frameAt(mix, options.start + options.duration);
+  const size = clamp(options.size ?? 0.6, 0, 1);
+  const from = clamp(options.from ?? 0, 0, 0.95);
+  // Where in the wave the break happens. Everything before is the swell.
+  const breakAt = 0.34;
+  let fast = 0;
+  let slow = 0;
+  let body = 0;
+
+  for (let frame = startFrame; frame < endFrame; frame += 1) {
+    const local = (frame - startFrame) / SAMPLE_RATE;
+    const progress = lerp(from, 1, clamp01(local / options.duration));
+    // Stand up slowly, break, then run out over most of the wave's length.
+    const rise = Math.pow(smoothstep(0, breakAt, progress), 1.5);
+    const fall = Math.pow(1 - smoothstep(breakAt, 1, progress), 1.2);
+    const envelope = rise * fall;
+    // The filter opening at the break is what makes it a break and not a hump.
+    const brightness = 0.1 + 0.9 * smoothstep(breakAt - 0.1, breakAt + 0.09, progress)
+      * (1 - 0.62 * smoothstep(breakAt + 0.16, 1, progress));
+
+    const noise = mix.rng.signed();
+    fast += (noise - fast) * (0.02 + brightness * 0.3);
+    slow += (noise - slow) * (0.002 + brightness * 0.016);
+    body += (noise - body) * 0.0016;
+
+    // Foam is the band between the two poles; the swell's body is the slowest
+    // pole on its own, and it is loudest BEFORE the break rather than after.
+    const foam = (fast - slow) * 2.3 * brightness;
+    const swell = body * 7.5 * size * (0.35 + 0.65 * (1 - smoothstep(breakAt, 0.8, progress)));
+    // Foam spreads across the stereo field as it runs up the sand; the body
+    // stays where the wave is.
+    const spread = 0.3 + 0.7 * smoothstep(breakAt, 0.9, progress);
+    const [panL, panR] = panGains((options.pan ?? 0) * (1 - spread * 0.55));
+    const sample = (foam + swell) * envelope * options.gain;
+    mix.left[frame] += sample * panL;
+    mix.right[frame] += sample * panR;
+  }
+}
+
+/**
+ * The two twenty-second looks, and the only productions in this repository with
+ * no score at all. Everything below is either the wind or the water: a steady
+ * onshore bed, gusts moving across it, four sets breaking at the irregular
+ * spacing sets actually break at, and the sail chattering in between.
+ *
+ * The sets deliberately do NOT line up with anything the camera does. Waves
+ * arrive on their own clock, and cutting them to a camera move is the single
+ * thing that would make this sound scored again.
+ */
+function scoreOceanBeachKiteWind(mix, shot) {
+  // Look 4 is a quarter hour later and a quarter hour further into the evening
+  // wind, which at this beach means more of it and a lower sea state settling.
+  const late = shot >= 4 ? 1 : 0;
+  const duration = 20;
+
+  // Wind, unbroken, in two layers: a close one moving across the lens and a
+  // wider one that never quite settles. It carries the troughs between sets on
+  // its own, so it is mixed well above where a bed under a score would sit —
+  // with nothing playing, the gaps are exposed and a thin bed reads as a drop
+  // out rather than as a lull.
+  addAir(mix, { start: 0, duration, gain: 0.074 + late * 0.01, panDrift: 0.85 });
+  addAir(mix, { start: 0, duration, gain: 0.044, panDrift: -0.55 });
+  // Gusts. Long and low-gain — a gust is the bed getting louder, not an event.
+  addWhoosh(mix, { start: 1.2, duration: 5.6, gain: 0.03, panFrom: -0.5, panTo: 0.2, direction: "in" });
+  addWhoosh(mix, { start: 8.4, duration: 6.2, gain: 0.034 + late * 0.008, panFrom: 0.45, panTo: -0.3, direction: "in" });
+  addWhoosh(mix, { start: 15.1, duration: 4.8, gain: 0.028, panFrom: -0.2, panTo: 0.4, direction: "out" });
+
+  // Five sets, and the first one is already running when the film opens — see
+  // `from` on addSurf. Uneven spacing and overlapping tails, which is what
+  // stops a beach from sounding like a loop: 0, 0.4, 5.6, 10.2, 15.4 against
+  // runs of seven to nine seconds each.
+  addSurf(mix, { start: 0, duration: 3.6, gain: 0.1, pan: 0.3, size: 0.55, from: 0.46 });
+  addSurf(mix, { start: 0.4, duration: 8.2, gain: 0.115, pan: -0.55, size: 0.72 });
+  addSurf(mix, { start: 5.6, duration: 7.4, gain: 0.095, pan: 0.48, size: 0.5 });
+  addSurf(mix, { start: 10.2, duration: 8.8, gain: 0.132 + late * 0.014, pan: -0.18, size: 0.92 });
+  addSurf(mix, { start: 15.4, duration: 7.6, gain: 0.1, pan: 0.36, size: 0.62 });
+  // The one thing under 60 Hz in the whole mix: the big third set landing.
+  addSub(mix, { start: 12.9, duration: 2.1, fromHz: 46, toHz: 28, gain: 0.05 + late * 0.012 });
+
+  // Ripstop. Not a musical element and not a cue — it is the wind again, this
+  // time in a sail, and it runs the whole take because the sail does.
+  addFoley(mix, { start: 0.2, duration: 19.6, gain: 0.019, pan: -0.24, character: "grass" });
+  addFoley(mix, { start: 4.1, duration: 5.2, gain: 0.016, pan: 0.34, character: "grass" });
+  addFoley(mix, { start: 12.6, duration: 6.4, gain: 0.018 + late * 0.004, pan: 0.12, character: "grass" });
+}
 
 function scoreOceanBeachKiteRing(mix, shot) {
   const evening = clamp01(RING_EVENING[shot] ?? 0.4);
@@ -1548,8 +1795,13 @@ function mixNatureBed(mix, bed, index) {
 }
 
 function decodeBedWithFfmpeg(inputPath, duration, offset) {
+  // Every other module in this pipeline resolves the binary this way and this
+  // one did not, which made it the single place a machine without ffmpeg on
+  // PATH degraded SILENTLY: the bed reported "ffmpeg unavailable", the render
+  // carried on, and the film shipped with its nature beds simply missing.
+  const ffmpeg = process.env.FFMPEG_BIN ?? process.env.FFMPEG_PATH ?? "ffmpeg";
   const result = spawnSync(
-    "ffmpeg",
+    ffmpeg,
     [
       "-hide_banner",
       "-loglevel", "error",

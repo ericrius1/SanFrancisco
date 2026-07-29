@@ -19,7 +19,8 @@ customization film, an 11-second sunset dog-park film, and the eight-shot,
 | `tools/cinematic/transition.mjs` | Deterministic picture/audio transition and final assembly. |
 | `tools/cinematic/delivery.mjs` | Platform delivery derivatives, validation, and quality-comparison manifests. |
 | `tools/render-cinematic.mjs` | CLI orchestration and process cleanup. |
-| `src/dev/demos/kiteFestivalCinematic.ts` | One parameterised family that exports every `ocean-beach-kite-*` `Demo`. All of them film the same live seven-flyer encounter; the framing table supplies the hour, exposure, per-shot fog and shafts, subject, and camera. |
+| `src/dev/demos/kiteFestivalCinematic.ts` | One parameterised family that exports every `ocean-beach-kite-*` `Demo`. All of them film the same live eight-flyer encounter; the framing table supplies the hour, exposure, per-shot fog and shafts, subject, and camera. |
+| `ocean-beach-kite-prism-01`…`04` | The prism set on flyer 7, the one sail that disperses instead of occluding. It is the only sail that casts no shadow and therefore throws none of the warm shafts: `src/world/oceanBeachKite/prismLight.ts` hangs a white entry beam, a seven-band dispersed fan and a landed smear of the same spectrum off it instead. All four stand off the RUNNER rather than the kite — kites fly downwind over the water here, so a kite-relative camera ends the take at sea. |
 | `src/dev/demos/kiteToSutroCinematic.ts` | Two fifteen-second flights (`kite-to-sutro-01`/`02`) that leave the same encounter, cross the Point Lobos headland and finish inside the restored Sutro Baths. The only cinematics that travel: each frame drives `player.position`/`renderPosition` along the camera rail so tile streaming, the 32 m hero shadow cascade and the bath hall's near-effects follow the lens, and `ensureDemoSite` force-loads the `sutro-baths` optional site before the shot arms rather than letting it pop in at the 500 m gate mid-flight. |
 | `tools/render-twitter-summer.mjs` | Eight independently renderable shots, exact-duration assembly, seven motivated transitions, review artifacts, and X derivatives. |
 
@@ -68,6 +69,11 @@ npm run render:cinematic -- --combine
 #               160 m telephoto (20.94), and the only shot that looks up (21.16)
 npm run render:cinematic -- ocean-beach-kite-dusk-01 --stills   # composition check
 npm run render:cinematic -- ocean-beach-kite-dusk-01 --full
+
+# The prism pair: fifteen seconds each on the one kite that disperses instead of
+# occluding, cut for the minutes either side of the sun touching the water.
+npm run render:cinematic -- ocean-beach-kite-prism-01 --probe-at 0.4,5,10,14.7
+npm run render:cinematic -- ocean-beach-kite-prism-01 --full
 
 # The two travelling shots: kite festival to Sutro Baths in one unbroken move,
 # fifteen seconds each. Unlike the static kite set these move the PLAYER along

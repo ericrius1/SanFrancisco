@@ -232,6 +232,54 @@ const DEFINITIONS = Object.freeze({
       })
     })];
   })),
+  // The prism set: the one kite that disperses rather than occludes, all four
+  // cut for the half hour either side of the sun touching the water. Stills are
+  // spread evenly because the move is continuous throughout — there is no
+  // single event to weight them toward.
+  //
+  // 01/02 run fifteen seconds and carry a score. 03/04 run twenty and carry no
+  // score at all: wind, the sets coming in, and the sail. Those two are the
+  // only productions here with an empty cue plan, which is deliberate — there
+  // is nothing for a cue to be locked to when nothing is being played.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Kites · The Prism"],
+    [2, "Ocean Beach Kites · Where It Lands"],
+    [3, "Ocean Beach Kites · What Lands on the Sand"],
+    [4, "Ocean Beach Kites · Opening the Fan"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-kite-prism-${suffix}`;
+    const scored = index <= 2;
+    const duration = scored ? 15 : 20;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration,
+      seed: (0x50_52_4d_00 + index * 0x101) >>> 0,
+      posterAt: scored ? 9.8 : 13.6,
+      stillTimes: Object.freeze(
+        scored
+          ? [0.3, 2.1, 4, 5.9, 7.8, 9.7, 11.6, 13.4, 14.7]
+          : [0.3, 2.6, 5.2, 7.8, 10.4, 13, 15.6, 18.2, 19.7]
+      ),
+      audio: Object.freeze({
+        profile: scored ? "ocean-beach-kite-prism" : "ocean-beach-kite-prism-wind",
+        index,
+        // The real wind recording under the synthesized surf. Two takes of the
+        // same file at different offsets and pans, because one is audibly one.
+        beds: scored
+          ? undefined
+          : Object.freeze([
+              Object.freeze({ path: "public/audio/nature/wind-grass.mp3", volume: 0.13, offset: 6.4 + index * 5.5 }),
+              Object.freeze({ path: "public/audio/nature/wind-tree.mp3", volume: 0.075, offset: 19.2 + index * 3.1 })
+            ]),
+        description: scored
+          ? `Sunset wind and surf under a dispersed spectrum — prism look ${index} of four.`
+          : `No score: onshore wind, breaking sets and ripstop only — prism look ${index} of four.`
+      })
+    })];
+  })),
   // The two travelling shots: kite festival to Sutro Baths in one unbroken move.
   // Fifteen seconds each, and the stills are weighted toward the back half
   // because that is where the shot changes — the beach run is one continuous
