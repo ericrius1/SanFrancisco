@@ -35,9 +35,13 @@
       goToZone: () => {}
     }
   }
+  // Mirrors TutorialZoneProgress. The distances matter: leaving them out makes
+  // every travel beat read NaN, which is a different bug from the one under
+  // test and quietly hides the beats from the walkthrough.
   const ZONE = () => ({
     watching: true, gatesPassed: 0, sprintMeters: 0, hurdleCleared: false,
-    insideCottage: false, cottageVisited: false, lapFraction: 0, bowlAir: 0, ringsFlown: 0
+    insideCottage: false, cottageVisited: false, lapFraction: 0, bowlAir: 0, ringsFlown: 0,
+    toStartLine: 120, toBowl: 140, toFirstRing: 200
   })
 
   // Drive N seconds of frames. `move` advances the body; pressed/mouse are
@@ -306,7 +310,89 @@
       `reads "${objective()}"`)
   }
 
+  // ── M: skipping right through must never show the same card twice ────────
+  // Run it in both worlds: field watching, and no field at all (the state the
+  // checklist is in before the site finishes streaming, which is exactly when
+  // a new player is mashing skip).
+  for (const [world, zone] of [["field watching", ZONE()], ["no field", null]]) {
+    const s = makeState(zone)
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    const seen = []
+    for (let i = 0; i < 60; i++) {
+      const card = `${hud.querySelector(".tut-ch").textContent} | ${hud.querySelector(".tut-action").textContent} ${hud.querySelector(".tut-keys").textContent} ${objective()}`
+      seen.push(card)
+      if (card.includes("Congratulations")) break
+      skip.click()
+      // Human pacing, not one frame: between two clicks the world keeps
+      // ticking, so auto-completion and skipping interleave the way they do
+      // for someone actually mashing the button.
+      run(t, s, 0.45)
+    }
+    const dupes = seen.filter((c, i) => i > 0 && c === seen[i - 1])
+    check(`skipping never repeats a card (${world})`,
+      dupes.length === 0,
+      dupes.length ? `repeated: ${JSON.stringify(dupes[0])}` : `${seen.length} distinct cards to the finale`)
+  }
+
+  // ── N: a second Tutorial must not leave the first one's panel on screen ──
+  // This is the shape of the "skip shows the same step again" report: two
+  // panels at the same absolute position, clicks landing on one while the
+  // frame loop drives the other. A module reload is enough to cause it.
+  {
+    hud.innerHTML = ""
+    const s = makeState(ZONE())
+    const first = new Tutorial(makeCtx(s))
+    first.start()
+    const second = new Tutorial(makeCtx(makeState(ZONE())))
+    second.start()
+    check("a second Tutorial evicts the first one's panel",
+      hud.querySelectorAll(".tutorial-panel").length === 1 && hud.querySelectorAll(".tutorial-ui").length === 1,
+      `${hud.querySelectorAll(".tutorial-panel").length} panel(s), ${hud.querySelectorAll(".tutorial-ui").length} button(s) in the hud`)
+  }
+
+  // ── O: every card names an action, and no two are alike ─────────────────
+  {
+    hud.innerHTML = ""
+    const s = makeState(ZONE())
+    const t = new Tutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    const cards = []
+    for (let i = 0; i < 60; i++) {
+      const ch = hud.querySelector(".tut-ch").textContent
+      if (ch.includes("Congratulations")) break
+      cards.push({ ch, action: hud.querySelector(".tut-action").textContent, text: objective(), prog: hud.querySelector(".tut-prog").textContent })
+      skip.click()
+      run(t, s, 0.45)
+    }
+    const mute = cards.filter((c) => !c.action)
+    check("every objective card leads with an action word",
+      mute.length === 0,
+      mute.length ? `${mute.length} card(s) render no verb, e.g. "${mute[0]?.text}"` : `${cards.length} cards, all verbed`)
+    const same = cards.filter((c, i) => i > 0 && c.ch === cards[i - 1].ch && c.text === cards[i - 1].text && c.prog === cards[i - 1].prog)
+    check("no card repeats the one before it",
+      same.length === 0,
+      same.length ? `repeat at "${same[0].text}"` : `${cards.length} consecutive cards all differ`)
+  }
+
   window.__RESULT = { pass: results.every((r) => r.pass), results }
+  window.__CARDS = (() => {
+    hud.innerHTML = ""
+    const s = makeState(ZONE())
+    const t = new Tutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    const out = []
+    for (let i = 0; i < 60; i++) {
+      out.push(`${hud.querySelector(".tut-ch").textContent} :: ${hud.querySelector(".tut-action").textContent} ${objective()}`)
+      if (out[out.length - 1].includes("Congratulations")) break
+      skip.click()
+      run(t, s, 0.45)
+    }
+    return out
+  })()
   log("")
   log(window.__RESULT.pass ? "ALL PASS" : "FAILURES PRESENT")
 </script>

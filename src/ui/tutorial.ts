@@ -190,6 +190,11 @@ function travelStep(
         st,
         (z) => {
           const d = read(z)
+          // Infinity until the field has seen a frame of the player, and the
+          // arithmetic below turns that into NaN. Report no progress rather
+          // than a number: NaN compares false against every threshold, so it
+          // reads as "done" to any `< 1` guard and silently eats the step.
+          if (!Number.isFinite(d)) return 0
           if (d <= arrive) return 1
           // Baseline the first reading so the bar is a share of the walk you
           // actually have in front of you, not of some fixed distance.
@@ -365,6 +370,12 @@ export class Tutorial {
     this.#ctx = ctx
     const hud = document.getElementById("hud")!
     this.#hud = hud
+    // Evict any panel a previous instance left behind. Two Tutorials stack
+    // their panels at the same absolute position, so the older one sits
+    // invisibly under the newer: clicks land on whichever is on top while the
+    // frame loop drives the other, and the checklist appears to re-show a step
+    // it just left. Only one tour can be on screen, so make that structural.
+    for (const stale of hud.querySelectorAll(".tutorial-ui, .tutorial-panel")) stale.remove()
 
     // the launch button — parked under Share; Tab fades it with the rest of the HUD
     const ui = document.createElement("div")
@@ -468,6 +479,7 @@ export class Tutorial {
     this.#btnLabel.textContent = "Tutorial"
     this.#chEl.textContent = `✓ ${FINALE.title}`
     this.#progEl.textContent = `${CHAPTERS.length}/${CHAPTERS.length} chapters`
+    this.#actionEl.textContent = ""
     this.#actionEl.style.display = "none"
     this.#keysEl.innerHTML = ""
     this.#textEl.textContent = FINALE.text
@@ -538,7 +550,10 @@ export class Tutorial {
       if (!pending.skipIfSatisfied) break
       const probe = freshScratch()
       const r = pending.check(this.#ctx, 0, probe, this.#events)
-      if ((typeof r === "boolean" ? (r ? 1 : 0) : r) < 1) break
+      // `>= 1`, never `< 1`: a NaN reading must leave the step standing, not
+      // elide it. Every inequality against NaN is false, so the negated test
+      // would treat "no idea" as "already done".
+      if (!((typeof r === "boolean" ? (r ? 1 : 0) : r) >= 1)) break
       if (!this.#advanceIndex()) return
     }
     this.#scratch = freshScratch()
@@ -548,8 +563,12 @@ export class Tutorial {
 
     this.#chEl.textContent = `${this.#ci + 1} · ${ch.title}`
     this.#progEl.textContent = `step ${this.#si + 1}/${ch.steps.length}`
-    this.#actionEl.textContent = step.keys?.length ? step.action ?? "Press" : ""
-    this.#actionEl.style.display = step.keys?.length ? "" : "none"
+    // A travel beat has an action ("Head") and no keys — the verb is the whole
+    // instruction there, so show it whenever the step names one, not only when
+    // there is a key to press beside it.
+    const action = step.keys?.length ? step.action ?? "Press" : step.action ?? ""
+    this.#actionEl.textContent = action
+    this.#actionEl.style.display = action ? "" : "none"
     this.#keysEl.innerHTML = (step.keys ?? []).map((k) => `<span class="k">${k}</span>`).join("")
     this.#textEl.textContent = step.text
     this.#hintEl.textContent = step.hint ?? ""
