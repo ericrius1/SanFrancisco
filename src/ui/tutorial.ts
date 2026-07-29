@@ -12,10 +12,13 @@ import type { PlayerMode } from "../player/types"
  *
  * The field (world/tutorialZone) is a real place with its own gates, hurdle and
  * rings; it publishes plain totals through `ctx.zone`. This file only reads
- * them. Every zone-backed step also has a body-only fallback — the same check
- * the tutorial used before there was a field — so a player who starts the
- * tutorial while the site is still streaming, or who wanders off it entirely,
- * still makes progress by doing the thing. Nothing here can softlock on a chunk.
+ * them.
+ *
+ * The field is the ONLY authority on a step it can measure. Each such step also
+ * carries a body-only fallback, but that is a safety net for having no field at
+ * all — not a second way to pass. It arms only once the field has been unable
+ * to see the player for `FALLBACK_GRACE` seconds, and arming resets the net's
+ * own accumulators so nothing banked while waiting can cash in. See `zoneOr`.
  */
 
 export interface TutorialCtx {
@@ -34,7 +37,20 @@ export interface TutorialCtx {
 }
 
 /** Per-step scratch state: an accumulator, a baseline, and the last position. */
-type Scratch = { n: number; base: number | null; px: number | null; pz: number | null }
+type Scratch = {
+  n: number
+  base: number | null
+  px: number | null
+  pz: number | null
+  /** Highest progress reported for this step, so the bar never walks backwards. */
+  best: number
+  /** Seconds the field has been unable to see the player during this step. */
+  blind: number
+  /** The body-only fallback has taken over for this step. */
+  armed: boolean
+}
+
+const freshScratch = (): Scratch => ({ n: 0, base: null, px: null, pz: null, best: 0, blind: 0, armed: false })
 
 type Step = {
   keys?: string[]
@@ -90,23 +106,58 @@ const COUNT_WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven"
 const countWord = (n: number) => COUNT_WORDS[n] ?? `${n}`
 
 /**
- * Progress for a step the flight school can measure, never below what the
- * player's own body already earned.
+ * Seconds the field gets to show up before a step will accept a body-only
+ * check. Long enough to cover the site streaming in behind the 🎓 teleport,
+ * which is the whole reason a step ever sees `watching === false`.
+ */
+const FALLBACK_GRACE = 8
+
+/**
+ * Progress for a step the flight school measures.
  *
- * Both readings are taken every frame — the fallback has an accumulator that
- * would otherwise sit at zero — and the larger wins. That is what keeps the
- * two sources from fighting: a step part-finished on the lawn does not reset
- * when the field finishes streaming in, and a step finished out in the city
- * completes without the field at all.
+ * While the field is watching it is the only authority: walking 26 metres
+ * across the lawn is not walking three gates, and tapping Space is not clearing
+ * the hurdle. An earlier version took `max(field, body)` every frame, which
+ * meant the easier of the two always won and every objective on the field could
+ * be passed by generic movement — the field became scenery.
+ *
+ * The body-only check survives as a net for having no field at all (the site
+ * failed, or the player left and it went to sleep). It arms only after
+ * `FALLBACK_GRACE` seconds of nobody watching, and the arming frame zeroes the
+ * net's accumulators and reports nothing new — so distance banked while waiting
+ * for the site cannot cash in the moment it gives up. `traveled`/`climbed` are
+ * still evaluated every frame regardless, to keep their last-position and
+ * baseline state warm; the result is simply ignored until the net is armed.
+ *
+ * `st.best` ratchets the reported value so the bar never drops — notably at the
+ * moment the field finishes loading and takes over from a partly-filled net.
  */
 function zoneOr(
   ctx: TutorialCtx,
+  dt: number,
+  st: Scratch,
   read: (zone: TutorialZoneProgress) => number | boolean,
   fallback: number | boolean
 ): number {
   const asNumber = (v: number | boolean) => (typeof v === "boolean" ? (v ? 1 : 0) : v)
   const zone = ctx.zone?.() ?? null
-  return Math.max(asNumber(fallback), zone ? asNumber(read(zone)) : 0)
+
+  if (zone?.watching) {
+    st.blind = 0
+    st.best = Math.max(st.best, asNumber(read(zone)))
+    return st.best
+  }
+
+  st.blind += dt
+  if (st.blind < FALLBACK_GRACE) return st.best
+  if (!st.armed) {
+    st.armed = true
+    st.n = 0
+    st.base = null
+    return st.best
+  }
+  st.best = Math.max(st.best, asNumber(fallback))
+  return st.best
 }
 
 const CHAPTERS: Chapter[] = [
@@ -127,20 +178,21 @@ const CHAPTERS: Chapter[] = [
         keys: ["W", "A", "S", "D"],
         action: "Use",
         text: "to walk through all three bunting gates",
-        check: (c, _dt, st) =>
-          zoneOr(c, (z) => z.gatesPassed / 3, traveled(c, st, 26, c.mode() === "walk"))
+        check: (c, dt, st) =>
+          zoneOr(c, dt, st, (z) => z.gatesPassed / 3, traveled(c, st, 26, c.mode() === "walk"))
       },
       {
         keys: ["Shift"],
         action: "Hold",
         text: "to sprint the chalk lane between the bollards",
-        check: (c, _dt, st) =>
-          zoneOr(c, (z) => z.sprintMeters / 26, traveled(c, st, 22, c.mode() === "walk" && shiftDown(c)))
+        check: (c, dt, st) =>
+          zoneOr(c, dt, st, (z) => z.sprintMeters / 26, traveled(c, st, 22, c.mode() === "walk" && shiftDown(c)))
       },
       {
         keys: ["Space"],
         text: "to jump the hay bales at the end of the lane",
-        check: (c) => zoneOr(c, (z) => z.hurdleCleared, c.mode() === "walk" && c.pressed("Space"))
+        check: (c, dt, st) =>
+          zoneOr(c, dt, st, (z) => z.hurdleCleared, c.mode() === "walk" && c.pressed("Space"))
       }
     ]
   },
@@ -154,7 +206,9 @@ const CHAPTERS: Chapter[] = [
         action: "Press",
         text: "at the cottage door to open it, then step inside",
         hint: "stand close — the prompt appears when you are in reach",
-        check: (c, _dt, st) => zoneOr(c, (z) => z.cottageVisited, traveled(c, st, 15, c.mode() === "walk"))
+        // Off-field there is no cottage to stand in, so the net checks the one
+        // thing the step is really teaching: the key that opens a door.
+        check: (c, dt, st) => zoneOr(c, dt, st, (z) => z.cottageVisited, c.mode() === "walk" && c.pressed("KeyE"))
       }
     ]
   },
@@ -174,7 +228,7 @@ const CHAPTERS: Chapter[] = [
         action: "Hold",
         text: "to drive a full lap of the oval",
         hint: "Shift boosts · Space drifts · the banking holds you through the bends",
-        check: (c, _dt, st) => zoneOr(c, (z) => z.lapFraction, traveled(c, st, 240, c.mode() === "drive"))
+        check: (c, dt, st) => zoneOr(c, dt, st, (z) => z.lapFraction, traveled(c, st, 240, c.mode() === "drive"))
       }
     ]
   },
@@ -187,7 +241,8 @@ const CHAPTERS: Chapter[] = [
         keys: ["Space"],
         text: "to ollie out of the bowl and hang in the air",
         hint: "drop in from the deck, carry your speed up the far wall",
-        check: (c) => zoneOr(c, (z) => z.bowlAir / 0.6, c.mode() === "board" && c.pressed("Space") ? 1 : 0)
+        check: (c, dt, st) =>
+          zoneOr(c, dt, st, (z) => z.bowlAir / 0.6, c.mode() === "board" && c.pressed("Space") ? 1 : 0)
       }
     ]
   },
@@ -200,7 +255,7 @@ const CHAPTERS: Chapter[] = [
         keys: ["Space"],
         text: "to flap through all six rings",
         hint: "look down + Shift to dive · the lit ring is your next one",
-        check: (c, _dt, st) => zoneOr(c, (z) => z.ringsFlown / 6, climbed(c, st, 30, c.mode() === "bird"))
+        check: (c, dt, st) => zoneOr(c, dt, st, (z) => z.ringsFlown / 6, climbed(c, st, 30, c.mode() === "bird"))
       }
     ]
   },
@@ -237,7 +292,7 @@ export class Tutorial {
   #active = false
   #ci = 0
   #si = 0
-  #scratch: Scratch = { n: 0, base: null, px: null, pz: null }
+  #scratch: Scratch = freshScratch()
   #events = new Map<string, number>()
   #advance = 0 // ✓ shown; seconds until the next step slides in
 
@@ -356,7 +411,7 @@ export class Tutorial {
   }
 
   #enterStep() {
-    this.#scratch = { n: 0, base: null, px: null, pz: null }
+    this.#scratch = freshScratch()
     this.#events.clear()
     this.#advance = 0
     const ch = CHAPTERS[this.#ci]

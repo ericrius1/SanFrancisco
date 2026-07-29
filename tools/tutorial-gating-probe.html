@@ -1,0 +1,132 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>tutorial gating probe</title>
+<style>body{font:13px ui-monospace,monospace;background:#111;color:#ddd;padding:16px}</style>
+<div id="hud"></div>
+<pre id="out">running…</pre>
+<script type="module">
+  const out = document.getElementById("out")
+  const lines = []
+  const log = (s) => { lines.push(s); out.textContent = lines.join("\n") }
+
+  const { Tutorial } = await import("/src/ui/tutorial.ts")
+
+  // Each Tutorial appends its own panel to #hud, so the hud is cleared per test
+  // and every read is scoped to the one panel that is currently live.
+  const hud = document.getElementById("hud")
+  const newTutorial = (ctx) => { hud.innerHTML = ""; return new Tutorial(ctx) }
+  const objective = () => hud.querySelector(".tut-text")?.textContent ?? "(none)"
+  const fill = () => parseFloat(hud.querySelector(".tut-fill")?.style.width ?? "0")
+
+  function makeState(zone) {
+    return { mode: "walk", pos: { x: -1560, y: 3, z: -1560 }, mouseDelta: 0, down: {}, pressed: {}, mapOpen: false, zone }
+  }
+  function makeCtx(s) {
+    return {
+      mode: () => s.mode,
+      pos: () => s.pos,
+      mouseDelta: () => s.mouseDelta,
+      down: (c) => !!s.down[c],
+      pressed: (c) => !!s.pressed[c],
+      mapOpen: () => s.mapOpen,
+      teleport: () => {},
+      message: () => {},
+      zone: () => s.zone,
+      goToZone: () => {}
+    }
+  }
+  const ZONE = () => ({
+    watching: true, gatesPassed: 0, sprintMeters: 0, hurdleCleared: false,
+    insideCottage: false, cottageVisited: false, lapFraction: 0, bowlAir: 0, ringsFlown: 0
+  })
+
+  // Drive N seconds of frames. `move` advances the body; pressed/mouse are
+  // edge-ish and cleared each frame, like the real input layer.
+  function run(t, s, seconds, move) {
+    const dt = 1 / 60
+    for (let i = 0; i < Math.round(seconds / dt); i++) {
+      if (move) move(s, dt)
+      t.update(dt)
+      s.pressed = {}
+      s.mouseDelta = 0
+    }
+  }
+  // Walk east at 9 m/s — well under traveled()'s 20 m teleport guard.
+  const walk = (s) => { s.pos = { ...s.pos, x: s.pos.x + 0.15 } }
+
+  // Advance past "get on your feet" (instant) and the mouse-look beat.
+  function toGatesStep(t, s) {
+    run(t, s, 1.2)
+    for (let i = 0; i < 200 && !objective().includes("bunting"); i++) { s.mouseDelta = 40; run(t, s, 1 / 60) }
+    run(t, s, 1.0)
+  }
+
+  const results = []
+  const check = (name, pass, detail) => { results.push({ name, pass, detail }); log(`${pass ? "PASS" : "FAIL"}  ${name} — ${detail}`) }
+
+  // ── A: field watching, player walks 60 m but passes no gates ──────────────
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    const at = objective()
+    run(t, s, 7, walk) // ~63 m of walking, gatesPassed stays 0
+    check("walking does NOT pass the gates step",
+      objective() === at && objective().includes("bunting") && fill() < 100,
+      `still on "${objective()}" at ${fill()}%`)
+  }
+
+  // ── B: field watching, gates actually walked ─────────────────────────────
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    s.zone.gatesPassed = 3
+    run(t, s, 2)
+    check("passing three real gates DOES complete the step",
+      !objective().includes("bunting"),
+      `advanced to "${objective()}"`)
+  }
+
+  // ── C: no field at all — the net must still arm, but only after grace ────
+  {
+    const s = makeState(null)
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    const at = objective()
+    run(t, s, 5, walk) // 45 m walked, still inside the 8 s grace
+    const duringGrace = objective()
+    run(t, s, 12, walk) // grace elapses, net arms, 26 m re-walked
+    check("no field: nothing awarded during grace",
+      duringGrace === at && duringGrace.includes("bunting"),
+      `held "${duringGrace}" through 45 m`)
+    check("no field: net arms and lets the player through",
+      !objective().includes("bunting"),
+      `advanced to "${objective()}"`)
+  }
+
+  // ── D: the instant-pass steps — one Space tap must not clear the hurdle ──
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    s.zone.gatesPassed = 3
+    run(t, s, 2)
+    s.zone.sprintMeters = 99
+    run(t, s, 2)
+    const at = objective()
+    for (let i = 0; i < 10; i++) { s.pressed = { Space: true }; run(t, s, 1 / 60) }
+    run(t, s, 1)
+    check("tapping Space does NOT clear the hurdle",
+      objective() === at && at.includes("hay bales"),
+      `still on "${objective()}"`)
+  }
+
+  window.__RESULT = { pass: results.every((r) => r.pass), results }
+  log("")
+  log(window.__RESULT.pass ? "ALL PASS" : "FAILURES PRESENT")
+</script>

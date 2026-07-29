@@ -57,6 +57,15 @@ type Hud = { message(text: string, seconds?: number): void };
 
 /** Everything the tutorial checklist is allowed to know about the field. */
 export type TutorialZoneProgress = {
+  /**
+   * The field is loaded, awake and measuring this player right now.
+   *
+   * The checklist needs to tell "you have not done it yet" apart from "nobody
+   * is watching" — they look identical in every counter below. This is the only
+   * honest source for that: it follows the site gate's own awake flag, so it
+   * cannot drift from the pads the way a radius guess in the UI would.
+   */
+  watching: boolean;
   /** Bunting gates walked through, in order (0…3). */
   gatesPassed: number;
   /** Metres covered inside the sprint lane at a genuine run. */
@@ -398,6 +407,7 @@ export class TutorialZone {
 
   get progress(): TutorialZoneProgress {
     return {
+      watching: this.#awake && !this.#disposed,
       gatesPassed: this.#gates,
       sprintMeters: this.#sprint,
       hurdleCleared: this.#hurdle,
