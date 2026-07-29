@@ -107,6 +107,51 @@
       }
     },
     {
+      "id": "st-marys",
+      "label": "St Mary's Cathedral · Cathedral Hill",
+      "source": "assets-src/world/sites/st-marys/st-marys.blend",
+      "collection": "SITE_st_marys",
+      "rootName": "st_marys_authored_landmark",
+      "composition": "link",
+      "optimize": "static-batch",
+      "asset": "/regions/st-marys.glb",
+      "tile": "11_11",
+      "colliderBase": 140000,
+      "bounds": {
+        "centerX": 1642.02,
+        "centerZ": 661.16,
+        "halfX": 50,
+        "halfZ": 60,
+        "yaw": 0.152
+      },
+      "arrival": {
+        "spawnKey": "stMarys",
+        "x": 1634.9,
+        "y": 66.0,
+        "z": 614.7,
+        "heading": -2.9894
+      },
+      "arrivalDistance": 240,
+      "loadDistance": 1400,
+      "unloadDistance": 1900,
+      "replaces": [],
+      "terrain": {
+        "mode": "flat-ownership",
+        "groundY": 64.6,
+        "footprints": [
+          {
+            "id": "cathedral-plaza",
+            "centerX": 1642.4,
+            "centerZ": 657.06,
+            "halfX": 48.5,
+            "halfZ": 53.8,
+            "yaw": 0.152,
+            "feather": 0.3
+          }
+        ]
+      }
+    },
+    {
       "id": "grace-cathedral",
       "label": "Grace Cathedral · Nob Hill",
       "source": "assets-src/world/sites/grace-cathedral/grace-cathedral.blend",
