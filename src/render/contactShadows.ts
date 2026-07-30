@@ -1,6 +1,5 @@
 import * as THREE from "three/webgpu"
 import {
-  Continue,
   Fn,
   If,
   Loop,
@@ -486,39 +485,41 @@ export class ContactShadowPassNode extends THREE.TempNode {
           this.#cameraProjectionMatrix
         ).toVar()
 
-        If(
-          sampleUv.x
-            .lessThanEqual(0)
-            .or(sampleUv.x.greaterThanEqual(1))
-            .or(sampleUv.y.lessThanEqual(0))
-            .or(sampleUv.y.greaterThanEqual(1)),
-          () => Continue()
-        )
-
-        const sceneDepth = sampleDepth(sampleUv).toVar()
-        If(isGeometryDepth(sceneDepth).not(), () => Continue())
-
-        const scenePosition = getViewPosition(
-          sampleUv,
-          sceneDepth,
-          this.#cameraProjectionMatrixInverse
-        ).toVar()
-        // View Z is negative. A positive delta means visible geometry lies in
-        // front of the ray; the thickness limit rejects unrelated foreground.
-        const depthDelta = scenePosition.z.sub(rayPosition.z).toVar()
-        const depthConfidence = smoothstep(
-          lowerStart,
-          lowerFull,
-          depthDelta
-        ).mul(
-          smoothstep(upperFull, this.thickness, depthDelta).oneMinus()
-        )
-        const tapWeight = float(
-          CONTACT_SHADOW_STABILITY.evidenceWeightBase
-        ).sub(t.mul(CONTACT_SHADOW_STABILITY.evidenceWeightFalloff))
-        visibility.mulAssign(
-          float(1).sub(depthConfidence.mul(tapWeight))
-        )
+        // Guarded rather than early-continued: TSL's Continue() emits a `continue`
+        // that Tint flags as unreachable, so every contact-shadow compile printed
+        // the whole shader plus two warnings into the console. Nesting is exactly
+        // equivalent here — nothing follows the skipped work in the loop body.
+        const onScreen = sampleUv.x
+          .greaterThan(0)
+          .and(sampleUv.x.lessThan(1))
+          .and(sampleUv.y.greaterThan(0))
+          .and(sampleUv.y.lessThan(1))
+        If(onScreen, () => {
+          const sceneDepth = sampleDepth(sampleUv).toVar()
+          If(isGeometryDepth(sceneDepth), () => {
+            const scenePosition = getViewPosition(
+              sampleUv,
+              sceneDepth,
+              this.#cameraProjectionMatrixInverse
+            ).toVar()
+            // View Z is negative. A positive delta means visible geometry lies in
+            // front of the ray; the thickness limit rejects unrelated foreground.
+            const depthDelta = scenePosition.z.sub(rayPosition.z).toVar()
+            const depthConfidence = smoothstep(
+              lowerStart,
+              lowerFull,
+              depthDelta
+            ).mul(
+              smoothstep(upperFull, this.thickness, depthDelta).oneMinus()
+            )
+            const tapWeight = float(
+              CONTACT_SHADOW_STABILITY.evidenceWeightBase
+            ).sub(t.mul(CONTACT_SHADOW_STABILITY.evidenceWeightFalloff))
+            visibility.mulAssign(
+              float(1).sub(depthConfidence.mul(tapWeight))
+            )
+          })
+        })
       })
 
       const occlusion = visibility.oneMinus()

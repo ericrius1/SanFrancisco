@@ -53,7 +53,6 @@ type DebugRenderPipeline = {
   applyPianoGodRaysFx: () => void;
   setWireframe: (on: boolean) => void;
   setWireframeLodGradient: (on: boolean) => void;
-  warmupPostFx?: () => Promise<void>;
   contactShadows: Pick<ContactShadowComplement, "configure" | "setEnabled">;
   grade: Pick<GradeRuntime, "setLook">;
 };
@@ -281,13 +280,6 @@ export class DebugPanel {
     this.#root.style.opacity = visible ? "1" : "0";
     this.#root.style.pointerEvents = visible ? "auto" : "none";
     this.#root.setAttribute("aria-hidden", visible ? "false" : "true");
-  }
-
-  /** Finish inactive post-FX graphs only when someone opens that folder. */
-  #warmPostFxGraphs() {
-    void this.#postfx?.warmupPostFx?.().catch((err) => {
-      console.warn("[debug] post-fx warmup failed:", err);
-    });
   }
 
   /** Movement tuning is context-dependent — only the active mode's folder shows. */
@@ -940,12 +932,11 @@ export class DebugPanel {
     await checkpoint();
 
     // Stylized post effects: toggles select retained shader variants; sliders
-    // are live uniforms — see render/postfx.ts. Boot only warms the active look;
-    // expanding this folder finishes the other graphs so comparisons stay smooth.
+    // are live uniforms — see render/postfx.ts. Boot warms the active look and
+    // each other look compiles when it is first selected. Expanding this folder
+    // must stay free: pre-warming all eight graphs here froze the world for the
+    // best part of a minute, because every one of those compiles holds frames.
     const postfx = pane.addFolder({ title: "post fx", expanded: false });
-    postfx.on("fold", ({ expanded }) => {
-      if (expanded) this.#warmPostFxGraphs();
-    });
     POSTFX_TUNING.bind(postfx, {
       onChange: (key, _value, last) => {
         if (this.#syncingPane) return;

@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { SHADOW_LAYERS } from "../../world/shadows/shadowLayers";
 import {
   attribute,
   color,
@@ -436,7 +437,7 @@ export class GolfCourseView {
     curtain.fog = true;
     const curtains = new THREE.InstancedMesh(curtainGeo, curtain, n);
     curtains.name = "golf-tee-curtains";
-    curtains.layers.set(31);
+    curtains.layers.set(SHADOW_LAYERS.BEAUTY_ONLY);
 
     // — ground halo ring
     const haloGeo = new THREE.RingGeometry(3.4, 5.1, 36);
@@ -477,7 +478,7 @@ export class GolfCourseView {
     beam.fog = true;
     const beams = new THREE.InstancedMesh(beamGeo, beam, n);
     beams.name = "golf-tee-active-beams";
-    beams.layers.set(31);
+    beams.layers.set(SHADOW_LAYERS.BEAUTY_ONLY);
 
     for (let i = 0; i < n; i++) {
       course.teeSpot(i, tee);

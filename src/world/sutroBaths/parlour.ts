@@ -110,9 +110,14 @@ const BENCHES: readonly {
   // A bench is the one seat these blocky avatars read perfectly on, so the
   // gallery uses it rather than a steamer chair whose backrest and occupant
   // could never be made to agree.
-  { id: "window-bench", lx: -36.2, lz: -3, face: -1.5, length: 2.4, seats: [-0.6, 0.6] },
-  { id: "window-north", lx: -36.2, lz: -41, face: -1.5, length: 2.4, seats: [-0.6, 0.6] },
-  { id: "window-south", lx: -36.2, lz: 21, face: -1.5, length: 2.4, seats: [-0.6, 0.6] },
+  // Facing the horizon means facing local -x, and a seat with yaw f looks along
+  // (-sin f, -cos f) — so that is f = +pi/2. These three carried -1.5, which
+  // aims (+1, 0): the whole ocean gallery sat with its back to the Pacific,
+  // staring at the inland wall. Caught by filming the bench from behind and
+  // getting two faces looking down the lens.
+  { id: "window-bench", lx: -36.2, lz: -3, face: Math.PI / 2, length: 2.4, seats: [-0.6, 0.6] },
+  { id: "window-north", lx: -36.2, lz: -41, face: Math.PI / 2, length: 2.4, seats: [-0.6, 0.6] },
+  { id: "window-south", lx: -36.2, lz: 21, face: Math.PI / 2, length: 2.4, seats: [-0.6, 0.6] },
   // north end of the great plunge, facing back down the hall
   { id: "north-bench", lx: -20, lz: -60.5, face: 0.05, length: 2.4, seats: [-0.62, 0.62] }
 ] as const;
@@ -173,10 +178,13 @@ const LAMP_POSTS: readonly { lx: number; lz: number }[] = [
  * holder carrying `count` tapers.
  */
 const CANDLE_CLUSTERS: readonly { lx: number; lz: number; count: number }[] = [
-  // west coping of the great plunge, over the water
-  ...[-52, -44, -36, -28, -20, -12, -4, 4, 12, 20].map((lz) => ({ lx: -32.4, lz, count: 2 })),
-  // the central deck spine between the plunge and the graduated baths
-  ...[-56, -48, -40, -32, -24, -16, -8, 0, 8, 16, 24, 32, 40].map((lz) => ({ lx: -7.2, lz, count: 3 })),
+  // west coping, the whole length of the great plunge and its south court
+  ...[-52, -44, -36, -28, -20, -12, -4, 4, 12, 20, 28, 36].map((lz) => ({ lx: -32.4, lz, count: 2 })),
+  // The central deck spine between the plunge and the graduated baths. It
+  // STOPS at z 16: past that the spine is under the great plunge's south court.
+  ...[-56, -48, -40, -32, -24, -16, -8, 0, 8, 16].map((lz) => ({ lx: -7.2, lz, count: 3 })),
+  // the cross promenade, where the spine meets the head of the bath column
+  ...[0, 8, 16].map((lx) => ({ lx, lz: 18.3, count: 3 })),
   // east coping of the graduated baths
   ...[-50, -42, -34, -26, -18, -10, -2, 6, 14, 22, 30, 38].map((lz) => ({ lx: 20.6, lz, count: 2 })),
   // the ocean-window gallery rail
@@ -195,7 +203,7 @@ const TOWELS: readonly { lx: number; lz: number; face: number; tone: number }[] 
   { lx: -32.4, lz: -32, face: 0.3, tone: 0 },
   { lx: -32.4, lz: 12, face: -0.2, tone: 1 },
   { lx: -8.6, lz: -14, face: 1.4, tone: 2 },
-  { lx: -8.6, lz: 22, face: 1.6, tone: 0 },
+  { lx: -8.6, lz: 17.4, face: 1.6, tone: 0 },
   { lx: 20.6, lz: -40, face: -1.5, tone: 1 },
   { lx: 20.6, lz: 3, face: -1.4, tone: 2 },
   { lx: -35.4, lz: -30, face: -1.5, tone: 1 }
@@ -487,7 +495,11 @@ export function createSutroParlour(): SutroParlour {
     dummy.scale.set(bench.length, 1, 1);
     dummy.updateMatrix();
     benchSeat.mesh.setMatrixAt(index, dummy.matrix);
-    place(dummy, bench.lx - 0.3 * s, bench.lz + 0.3 * c, BENCH_PAD_Y + 0.2, bench.face);
+    // The backrest goes BEHIND the sitter, which is the reverse of the look
+    // direction (-sin f, -cos f) — so +0.3 * (sin f, cos f). The x term used to
+    // be negated, which is invisible on a bench facing along z (sin f ~ 0) and
+    // puts the backrest across the sitter's chest on one facing along x.
+    place(dummy, bench.lx + 0.3 * s, bench.lz + 0.3 * c, BENCH_PAD_Y + 0.2, bench.face);
     dummy.scale.set(bench.length, 1, 1);
     dummy.updateMatrix();
     benchBack.mesh.setMatrixAt(index, dummy.matrix);

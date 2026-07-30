@@ -1,4 +1,4 @@
-import { DepthTexture, FloatType } from "three/webgpu";
+import { Color, DepthTexture, FloatType, Vector3 } from "three/webgpu";
 import {
   abs,
   clamp,
@@ -23,6 +23,7 @@ import {
   vec3,
   viewportDepthTexture
 } from "three/tsl";
+import { spectrum } from "./spectrumRamp";
 
 /**
  * Shared stylized-water shading helpers for the clear "sunlit turquoise" look:
@@ -160,6 +161,66 @@ export function safeRefractionUV(distortedUV: N): N {
   return sampledIsBehind.select(distortedUV, screenUV);
 }
 
+// --- twilight foam light ----------------------------------------------------
+// The aerated-foam glow below (foamScatter) is driven by sunRadiance, which the
+// sky retires at sunset and hands to the moon at −2° — so foam went dark in the
+// exact minutes a west-facing beach is worth filming. This is the horizon-band
+// afterglow as a light source for AERATED WATER ONLY: resolved on the CPU once
+// per frame into a uniform (mirroring how water.ts mirrors sun.color×intensity),
+// zero outside the elevation window so night surf never glows.
+
+/** Twilight window + gain — the art pass dials these. Elevations are TRUE sun
+ *  elevation (SUN_STATE.elevationDeg), which keeps pointing down after dusk. */
+export const TWILIGHT_FOAM = {
+  /** Fades in as the sun crosses this elevation on the way down (deg). The sun
+   *  key's own transmittance dies at 0°, so the two hand over across 2°…0°. */
+  onDeg: 2,
+  /** Full strength holds until here (deg, below horizon)… */
+  fullUntilDeg: -6,
+  /** …then fades to exactly zero by here — the end of the bright afterglow. */
+  offDeg: -9.5,
+  /** Peak radiance scale, in the same linear space as sunRadiance. Modest by
+   *  design: readable crashes through deep sunset, not glowing night foam. */
+  gain: 0.5
+};
+
+// Afterglow ramp: warm amber just after the disc drops, through rose, into a
+// cool slate before the band closes. Linear render space, unit peak.
+const TWI_AMBER = new Color(1.0, 0.6, 0.3);
+const TWI_ROSE = new Color(0.85, 0.42, 0.46);
+const TWI_COOL = new Color(0.3, 0.36, 0.52);
+const twiSmooth = (a: number, b: number, x: number) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/** Resolve the twilight foam radiance for the current TRUE sun elevation into
+ *  `out` (a uniform's Color). Zero outside the window. CPU-per-frame — the
+ *  shader only ever reads the resulting vec3. */
+export function twilightFoamRadiance(elevationDeg: number, out: Color): Color {
+  const w =
+    twiSmooth(TWILIGHT_FOAM.onDeg, 0, elevationDeg) *
+    twiSmooth(TWILIGHT_FOAM.offDeg, TWILIGHT_FOAM.fullUntilDeg, elevationDeg) *
+    TWILIGHT_FOAM.gain;
+  // Hue slides with depth below the horizon: amber → rose → cool.
+  const u = Math.min(1, Math.max(0, (1 - elevationDeg) / 8));
+  if (u < 0.55) out.copy(TWI_AMBER).lerp(TWI_ROSE, u / 0.55);
+  else out.copy(TWI_ROSE).lerp(TWI_COOL, (u - 0.55) / 0.45);
+  return out.multiplyScalar(w);
+}
+
+/** The horizon point the afterglow radiates from: the TRUE sun bearing
+ *  (SUN_STATE.toSun — SUN_DIR has flipped to the moon by now), flattened to
+ *  just above the horizon so beach-level cameras catch the forward lobe. */
+export function twilightDirection(toSun: Vector3, out: Vector3): Vector3 {
+  out.set(toSun.x, 0, toSun.z);
+  const len = out.length();
+  if (len < 1e-5) out.set(-1, 0, 0);
+  else out.divideScalar(len);
+  out.y = 0.06;
+  return out.normalize();
+}
+
 // --- open-water BRDF -------------------------------------------------------
 // Water is not a diffuse solid. What the eye reads is a Fresnel-weighted blend
 // of REFLECTED radiance (sky + sun) against TRANSMITTED/in-scattered radiance
@@ -210,6 +271,22 @@ export interface OceanSurfaceInputs {
   sunDiffuseGain?: number;
   /** Foam is a brighter raft than the water it floats on. */
   foamGain?: number;
+  /**
+   * 0..1 how much of this foam is freshly AERATED whitewater rather than a
+   * flat raft of spent bubbles. Drives a forward-scatter lobe: a breaking wave
+   * is a metre-thick cloud of air in water, and with a low sun behind it that
+   * cloud lights up from within — which is most of why surf reads at golden
+   * hour and why, without this, whitewater rendered exactly as dim as the sea
+   * around it and a crash was invisible in every sunset frame. Bay foam leaves
+   * this unset and is shaded as before.
+   */
+  foamGlow?: N;
+  /** Horizon-band afterglow radiance for aerated foam (vec3 uniform, already
+   *  windowed/gained by twilightFoamRadiance — zero outside twilight). Only
+   *  read where foamGlow is set, so bay water pays nothing. */
+  twilightRadiance?: N;
+  /** Unit direction to the sunset horizon point (twilightDirection). */
+  twilightDir?: N;
   /** Master trim on reflected sky radiance (1 = physical). */
   reflectionGain?: number;
   /** 0..1 mask of thin, light-transmitting water — folding crests. Drives the
@@ -234,6 +311,17 @@ export interface OceanSurfaceInputs {
   /** Radiance substituted where the reflection is blocked — the reflected
    *  landmass. */
   blockedRadiance?: N;
+  /** Prism-beam reflection (the rainbow kite's fan mirrored in the sea). The
+   *  five below must be provided together; values come from the shared
+   *  PRISM_GLINT uniforms (src/world/prismGlint.ts). Build-time gated like
+   *  every other optional lane — only the displaced near sheet pays. */
+  prismOrigin?: N;
+  prismDir?: N;
+  prismAcross?: N;
+  /** x: beam length · y: far half-width · z: strength (0 kills the term). */
+  prismParams?: N;
+  /** Fragment world position — required by the prism lobe's ray test. */
+  worldPos?: N;
 }
 
 /**
@@ -359,11 +447,86 @@ export function oceanSurfaceRadiance(o: OceanSurfaceInputs): N {
 
   // Foam sits ON the surface: a rough dielectric raft, so it is lit by the same
   // illuminant, just with a brighter albedo — not a separate emissive white.
-  const foamLit = o.foamAlbedo.mul(down.mul(o.foamGain ?? 0.95));
+  //
+  // Aerated foam gets one term more. Unlike `sss` above it is NOT gated on the
+  // sun being above the horizon: a plume of whitewater keeps glowing through
+  // the minutes either side of sunset, which is exactly the window these
+  // beaches are worth filming in. `sunRadiance` fading is what retires it —
+  // which is where the twilight term below takes over: once the disc is gone
+  // the foam is lit by the horizon band itself (twilightFoamRadiance), with a
+  // BROAD forward lobe (the afterglow spans a wide arc, so foam stays readable
+  // from every framing, brightest looking into the glow) that the elevation
+  // window retires by ~−9.5°. Both build-time gated, so bay water pays nothing.
+  const twilightScatter =
+    o.foamGlow && o.twilightRadiance && o.twilightDir
+      ? o.twilightRadiance
+          .mul(o.foamGlow)
+          .mul(pow(saturate(dot(v, o.twilightDir)), 1.5).mul(0.65).add(0.35))
+      : vec3(0);
+  const foamScatter = o.foamGlow
+    ? o.sunRadiance
+        .mul(o.foamGlow)
+        .mul(pow(saturate(dot(v, o.sunDir)), 2.2))
+        .mul(0.85)
+        .add(twilightScatter)
+    : vec3(0);
+  const foamLit = o.foamAlbedo.mul(down.mul(o.foamGain ?? 0.95)).add(foamScatter);
+
+  // The prism kite's fan, mirrored in the sea. A fragment shows the beam's
+  // reflection exactly when its reflected eye ray passes near the beam
+  // segment hanging in the air — so this is a ray/segment closest-approach
+  // test against the SAME per-pixel reflected ray the sky uses, which is what
+  // breaks the streak into ripple sparkle for free. Color comes from the
+  // across-beam offset at the closest point, sampled from the prism's own
+  // spectrum ramp so sail, fan, sand and sea read as one piece of light.
+  // ~30 ALU, near sheet only, and multiplied out entirely while the strength
+  // uniform sits at 0 (all day, everywhere but golden hour at the festival).
+  const prismLobe =
+    o.prismOrigin && o.prismDir && o.prismAcross && o.prismParams && o.worldPos
+      ? (() => {
+          const beamLen = o.prismParams.x;
+          const halfW = o.prismParams.y;
+          const strength = o.prismParams.z;
+          const w0 = o.worldPos.sub(o.prismOrigin).toVar();
+          const b = dot(skyDir, o.prismDir).toVar();
+          const dRay = dot(skyDir, w0);
+          const eBeam = dot(o.prismDir, w0);
+          const denom = max(float(1).sub(b.mul(b)), 1e-3);
+          // Closest approach between ray(P, R) and the beam's segment. The ray
+          // parameter is floored just off the surface so a fragment cannot
+          // "reflect" a beam sitting behind its own eye ray; the beam
+          // parameter is clamped to the lit span (the first metres are inside
+          // the sail's comb and never read on water).
+          const tRay = b.mul(eBeam).sub(dRay).div(denom).max(0.6);
+          const tBeam = clamp(eBeam.sub(b.mul(dRay)).div(denom), 3, beamLen);
+          const delta = w0.add(skyDir.mul(tRay)).sub(o.prismDir.mul(tBeam)).toVar();
+          const along01 = tBeam.div(beamLen).toVar();
+          // The beam widens toward its landing, like the fan it mirrors.
+          const width = mix(float(1.2), halfW, along01).toVar();
+          const dist = delta.length();
+          const envelope = exp(dist.div(width).pow(2).negate());
+          const u = clamp(dot(delta, o.prismAcross).div(width), -1, 1).mul(0.5).add(0.5);
+          const alongFade = smoothstep(0.04, 0.14, along01).mul(float(1).sub(along01.mul(0.3)));
+          // Fresnel-led like any reflection, but with a floor: ripple facets
+          // catch grazing micro-angles a per-pixel Schlick undersells, and a
+          // rainbow on the water that only exists at the horizon is not worth
+          // its ALU.
+          // ×6 measured against the ×10 placement probe: the fresnel lead
+          // keeps even ×10 tasteful, and below ~×4 the streaks vanish into
+          // the sun glitter. This is an artistic radiance, not an energy
+          // balance — the beams themselves are.
+          return spectrum(u)
+            .mul(envelope)
+            .mul(alongFade)
+            .mul(strength)
+            .mul(fresnel.mul(2.4).add(0.16))
+            .mul(6.0);
+        })()
+      : vec3(0);
 
   // Fresnel mixes the two TRANSPORT lanes; the sun lobe is a specular addition
   // on top (it already carries its own F), and foam covers whatever it covers.
-  return mix(mix(inScatter, reflected, fresnel).add(sunLobe), foamLit, o.foam);
+  return mix(mix(inScatter, reflected, fresnel).add(sunLobe).add(prismLobe), foamLit, o.foam);
 }
 
 /**

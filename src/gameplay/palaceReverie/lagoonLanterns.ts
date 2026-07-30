@@ -56,7 +56,7 @@ export class LagoonLanterns {
   constructor(map: WorldMap) {
     this.group.name = "palace-reverie-lanterns";
     this.#sharedRim = new THREE.MeshStandardNodeMaterial({
-      color: new THREE.Color(0x5a4030).convertSRGBToLinear(),
+      color: new THREE.Color(0x5a4030),
       roughness: 0.85,
       metalness: 0
     });
@@ -73,7 +73,11 @@ export class LagoonLanterns {
 
       const hue = new THREE.Color().setHSL(0.08 + (i % 7) * 0.09, 0.55, 0.62);
       const bodyMat = new THREE.MeshStandardNodeMaterial({
-        color: new THREE.Color(0xffe2b8).convertSRGBToLinear(),
+        color: new THREE.Color(0xffe2b8),
+        // Deliberate single decode, NOT the hex double-decode: `setHSL` defaults
+        // to the linear working space (unlike `setHex`, which decodes from sRGB),
+        // so this converts once and deepens the authored HSL into a saturated
+        // lantern glow. Dropping it would wash these out.
         emissive: hue.clone().convertSRGBToLinear(),
         emissiveIntensity: 0.55 * LIGHT_SCALE,
         roughness: 0.55,

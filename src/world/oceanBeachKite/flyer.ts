@@ -5,6 +5,7 @@ import { avatarFromSeed } from "../../player/avatar";
 import { setHandTarget, type HandTarget } from "../../player/handIK";
 import { attachToHand, wristTargetForGrip, type GripSpec } from "../../player/held";
 import { buildRig, poseWalk, type Rig } from "../../player/rig";
+import { FootfallTracker, type SandPrintSink } from "../../fx/sandPrints";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { createKiteCloth, type KiteCloth, type KiteClothState } from "./kiteCloth";
 import type { KiteDesign, KitePalette } from "./kiteDesigns";
@@ -98,6 +99,12 @@ export type KiteFlyerOptions = {
   lineDial?: number;
   /** Multiplies the deployed tail length. */
   tailScale?: number;
+  /**
+   * Where this flyer's footfalls go. Shared with the player's — the runtime
+   * owns the rules (sand only, near the player only), so a runner just reports
+   * that a foot landed. Anchored flyers have no feet and ignore it.
+   */
+  prints?: SandPrintSink;
 };
 
 export type KiteFlyerFrame = {
@@ -189,6 +196,8 @@ export class KiteFlyer {
   #tug = 0;
   #haul = 0;
   #stride = 0;
+  #prints: SandPrintSink | null;
+  #footfalls = new FootfallTracker();
   #lineLength: number;
   #lineTarget: number;
   #lineChange = 0;
@@ -234,6 +243,18 @@ export class KiteFlyer {
   #basisY = new THREE.Vector3();
   #basisZ = new THREE.Vector3();
 
+  /**
+   * Retarget this flyer's lane center. The runner reads `#lane` per frame as
+   * its patrol attractor, so moving it makes the runner WALK to the new
+   * center through the existing boundary steering — no teleport. This is how
+   * the encounter's setLaneGather pulls the flock into a loose court around
+   * the prism for the cinematics.
+   */
+  retargetLane(x: number, z: number): void {
+    this.#lane.x = x;
+    this.#lane.z = z;
+  }
+
   constructor(options: KiteFlyerOptions) {
     this.#map = options.map;
     this.design = options.design;
@@ -247,6 +268,7 @@ export class KiteFlyer {
     this.#palette = options.palette ?? this.design.palette;
     this.#lineDial = THREE.MathUtils.clamp(options.lineDial ?? 0.5, 0, 1);
     this.#tailScale = Math.max(0, options.tailScale ?? 1);
+    this.#prints = options.prints ?? null;
     // An anchored kite is handed to a player who is already standing there, so
     // it launches from cold; the beach flyers have their own authored launch.
     this.#launchRamp = this.#anchor ? 0 : 1;
@@ -396,8 +418,15 @@ export class KiteFlyer {
     // The sail and its frame are the occluders the whole sunset depends on —
     // they have to be in the shadow map for the god-ray raymarch to have
     // anything to carve, and for the kite to lay its own shape on the sand.
-    this.#cloth.mesh.castShadow = true;
-    enableShadowLayer(this.#cloth.mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+    //
+    // Except the prism, which is the one sail that is not an occluder at all.
+    // A spectral design casts nothing anywhere, so the warm shafts stop at its
+    // silhouette and `prismLight` is the only light it throws; the shadow it
+    // would otherwise lay on the beach lands the better part of a kilometre
+    // downsun at these hours and is no loss.
+    const casts = !this.design.spectral;
+    this.#cloth.mesh.castShadow = casts;
+    if (casts) enableShadowLayer(this.#cloth.mesh, SHADOW_LAYERS.HERO_DYNAMIC);
 
     const spar = this.#ownMaterial(
       new THREE.MeshStandardMaterial({ color: this.#palette.spar, roughness: 0.78 })
@@ -413,12 +442,13 @@ export class KiteFlyer {
     this.#hemMaterial = hem;
     const frame = this.design.buildFrame({
       own: (geometry) => this.#ownGeometry(geometry),
+      ownMaterial: (material) => this.#ownMaterial(material),
       spar,
       accent,
       hem
     });
     for (const part of frame) {
-      if (part instanceof THREE.Mesh) {
+      if (part instanceof THREE.Mesh && casts) {
         part.castShadow = true;
         enableShadowLayer(part, SHADOW_LAYERS.HERO_DYNAMIC);
       }
@@ -559,6 +589,27 @@ export class KiteFlyer {
     );
     poseWalk(rig, this.#stride, runBlend);
 
+    // …and the same stride leaves prints where those feet land. Off the same
+    // phase the pose reads, so a print appears under the foot that planted it.
+    if (this.#prints?.active) {
+      const steps = this.#footfalls.advance(this.#stride, true);
+      if (steps > 0) {
+        // Facing, not velocity: a flyer pivoting on the spot still plants feet.
+        const forwardX = -Math.sin(runner.yaw);
+        const forwardZ = -Math.cos(runner.yaw);
+        for (let i = 0; i < steps; i++) {
+          this.#prints.stamp(
+            runner.x + forwardX * 0.14,
+            runner.z + forwardZ * 0.14,
+            forwardX,
+            forwardZ,
+            this.#footfalls.nextFoot(),
+            0.72 + THREE.MathUtils.clamp(runner.speed / 9, 0, 1) * 0.4
+          );
+        }
+      }
+    }
+
     // Body layer: eyes on the kite, chest following them round. `watch` is what
     // separates a jogger from someone flying something.
     rig.group.updateWorldMatrix(true, false);
@@ -646,7 +697,13 @@ export class KiteFlyer {
       tug: this.#tug,
       lift: tuning.lift,
       drag: tuning.drag,
-      launchGate
+      launchGate,
+      // Authored flyers keep their kites HIGH — the whole festival is seen
+      // from a beach-length away, and a low kite reads as a kite in the sea
+      // (see the note on elevationFloor). Ramped by the launch gate so the
+      // arrival's ground start is untouched. The player's own kite keeps the
+      // full window: they fly it from arm's length, where low is just low.
+      elevationFloor: this.#anchor ? 0 : 0.54 * launchGate
     });
     const flight = this.#window.state;
 
@@ -686,9 +743,20 @@ export class KiteFlyer {
 
     // A kite never touches the sand. The floor also guarantees the tail always
     // has room to hang: it keeps `availableDrop` in #updateTail positive, which
-    // is what holds the measured tail-to-sand clearance at its intended 0.2 m
+    // is what holds the measured tail-to-sand clearance at its intended value
     // instead of letting a low pass eat into it.
-    const floor = this.surfaceBelowKite() + this.design.height * 0.5 + 0.62;
+    //
+    // Authored flyers carry a much higher floor than the physical one, ramped
+    // in with the launch gate: this is the hard backstop under the elevation
+    // floor above, so no combination of figure, gust and spring overshoot can
+    // ever put a festival kite low enough to project into the sea from a
+    // distant lens. Twelve metres, not two — the number is set by camera
+    // geometry, not by collision.
+    const floor =
+      this.surfaceBelowKite() +
+      this.design.height * 0.5 +
+      0.62 +
+      (this.#anchor ? 0 : 12 * launchGate);
     if (this.kitePosition.y < floor) {
       this.kitePosition.y = floor;
       if (this.#kiteVelocity.y < 0) this.#kiteVelocity.y = 0;
@@ -746,10 +814,23 @@ export class KiteFlyer {
   #updateTail(dt: number, elapsed: number, view: THREE.Vector3, backlight: number): void {
     // The tail may never touch the sand: the probe measures exactly this
     // clearance, and a tail dragging through the beach reads as a bug.
+    //
+    // For AUTHORED flyers the clearance is seven metres, not twenty
+    // centimetres, and the reason is a lens, not a collision. The kite fix
+    // (elevation floor + altitude backstop in #updateFlight) put every SAIL
+    // safely above the wave line — and the films still showed "a kite in the
+    // ocean", because the diamond's ribbon hung from the sail all the way
+    // down to its 0.2 m clearance, and from a head-height camera a hundred
+    // metres back everything below about eight metres projects onto the strip
+    // of sea between the surf and the sky. The tail END is the lowest point
+    // of the whole silhouette; it has to clear the same band the sail does.
+    // The player's own kite keeps the sand-tickling 0.2 m — from arm's
+    // length that is charm, not a bug.
     const ground = this.surfaceBelowKite();
+    const clearance = this.#anchor ? 0.2 : 7.5;
     const availableDrop = Math.max(
       0,
-      this.kitePosition.y - ground - this.design.height * 0.5 - 0.2
+      this.kitePosition.y - ground - this.design.height * 0.5 - clearance
     );
     const deployed = smooth01((this.#window.state.energy - 0.04) / 0.55);
     this.#tailLength = Math.min(
@@ -895,6 +976,14 @@ export class KiteFlyer {
   }
   get kiteTarget(): THREE.Vector3 {
     return this.#kiteTarget;
+  }
+  /**
+   * The sail's live orientation. Handed out live rather than copied, on the
+   * same contract as `kitePosition`: the prism rig holds onto it and reads the
+   * roll every frame to swing its fan with the bank.
+   */
+  get kiteOrientation(): THREE.Quaternion {
+    return this.#kite.quaternion;
   }
   get swing(): number {
     return this.#window.state.swing;

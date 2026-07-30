@@ -1,0 +1,218 @@
+/* Trick/combo readout. Deliberately loud and slanted — this is the one HUD in
+   the app allowed to shout, because a combo meter that whispers isn't a combo
+   meter. Sits above the toolbar on the left, clear of the audio panel. */
+#hud .skate-ui {
+  position: absolute;
+  left: 18px;
+  bottom: 148px;
+  display: none;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  text-shadow: 0 2px 10px rgba(0, 6, 12, 0.75);
+  z-index: var(--z-panel, 8);
+}
+#hud .skate-ui.on {
+  display: flex;
+}
+
+#hud .skate-ui .score {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+#hud .skate-ui .score .n {
+  font-size: 26px;
+  line-height: 1;
+  color: var(--text);
+}
+#hud .skate-ui .score .best {
+  font-size: 11px;
+  color: var(--text-mut);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Open chain: names, then the running total × multiplier. */
+#hud .skate-ui .combo {
+  display: none;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  background: linear-gradient(100deg, rgba(255, 138, 46, 0.24), rgba(255, 60, 120, 0.16));
+  border: 1px solid rgba(255, 176, 96, 0.5);
+  transform: skewX(-8deg);
+  max-width: min(52vw, 560px);
+}
+#hud .skate-ui .combo.on {
+  display: flex;
+}
+#hud .skate-ui .combo .chain {
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffe6c8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.02em;
+}
+#hud .skate-ui .combo .pts {
+  font-size: 17px;
+  font-weight: 800;
+  color: #ffd08a;
+  white-space: nowrap;
+}
+#hud .skate-ui .combo .mult {
+  font-size: 15px;
+  font-weight: 800;
+  color: #ff9d5c;
+  white-space: nowrap;
+}
+/* The chain's own urgency: it starts pulsing when nothing has scored recently. */
+#hud .skate-ui .combo.cooling {
+  animation: skate-cool 0.55s ease-in-out infinite alternate;
+}
+@keyframes skate-cool {
+  from {
+    border-color: rgba(255, 176, 96, 0.5);
+  }
+  to {
+    border-color: rgba(255, 90, 90, 0.9);
+  }
+}
+
+/* Landed / bailed banner. */
+#hud .skate-ui .banner {
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 11px;
+  border-radius: var(--r-sm);
+  background: rgba(10, 24, 36, 0.72);
+  border-left: 3px solid var(--accent);
+  transform: skewX(-8deg);
+  max-width: min(52vw, 560px);
+}
+#hud .skate-ui .banner.on {
+  display: flex;
+}
+#hud .skate-ui .banner.bailed {
+  border-left-color: var(--danger);
+}
+#hud .skate-ui .banner .verdict {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+}
+#hud .skate-ui .banner.bailed .verdict {
+  color: var(--danger-strong);
+}
+#hud .skate-ui .banner .detail {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Grind / manual balance meter — only up while you're actually balancing. */
+#hud .skate-ui .balance {
+  display: none;
+  align-items: center;
+  gap: 8px;
+}
+#hud .skate-ui .balance.on {
+  display: flex;
+}
+#hud .skate-ui .balance .label {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-mut);
+}
+#hud .skate-ui .balance .bar {
+  position: relative;
+  width: 170px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: rgba(10, 24, 36, 0.8);
+  border: 1px solid var(--hairline-2);
+  overflow: hidden;
+}
+#hud .skate-ui .balance .bar::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--hairline-strong);
+}
+#hud .skate-ui .balance .pip {
+  position: absolute;
+  top: -2px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  box-shadow: 0 0 10px var(--accent-glow);
+  transition: background 120ms linear;
+}
+#hud .skate-ui .balance.hot .pip {
+  background: var(--danger-strong);
+  box-shadow: 0 0 12px rgba(240, 127, 114, 0.8);
+}
+
+@media (max-width: 720px) {
+  #hud .skate-ui {
+    bottom: 132px;
+    left: 12px;
+  }
+  #hud .skate-ui .balance .bar {
+    width: 120px;
+  }
+}
+
+/* Tutorial coach: one instruction at a time, with a pip per step cleared. */
+#hud .skate-ui .coach {
+  display: none;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  background: rgba(10, 24, 36, 0.82);
+  border: 1px solid var(--accent-line);
+  max-width: min(56vw, 620px);
+}
+#hud .skate-ui .coach.on {
+  display: flex;
+}
+#hud .skate-ui .coach .pips {
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+#hud .skate-ui .coach .say {
+  font-size: 12.5px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#hud .skate-ui .coach.cheer {
+  border-color: var(--accent-strong);
+  background: rgba(20, 64, 70, 0.85);
+}
+#hud .skate-ui .coach.cheer .say {
+  color: var(--accent-strong);
+  font-weight: 700;
+}

@@ -11,6 +11,7 @@ import {
 } from "../../world/ghostShip/route";
 import type {  } from "../../world/ghostShip";
 import { Water } from "../../world/water";
+import { nearOceanBeachShore } from "../../world/oceanBeachWaves";
 import { frontGate } from "../../render/frontGate";
 import { UnderwaterOverlay } from "../../fx/underwater";
 import { RoadGraph } from "../../world/traffic/roadGraph";
@@ -24,10 +25,12 @@ import type { CoronaHeightsPark } from "../../world/coronaHeights";
 import type { MissionDoloresMuseum } from "../../world/missionDolores";
 import { MD_CENTER as MISSION_DOLORES_CENTER } from "../../world/missionDolores/layout";
 import type { GraceCathedralRuntime } from "../../world/graceCathedral";
+import type { StMarysRuntime } from "../../world/stMarys";
 import type { PlayerMode } from "../../player/types";
 import { FX } from "../../fx/fx";
 import { BoardWake, WakeRipples } from "../../fx/wake";
 import { SkidMarks } from "../../fx/skidMarks";
+import { SandPrints } from "../../fx/sandPrints";
 import { BirdTrails } from "../../fx/birdTrail";
 import { WaterSplashes } from "../../fx/splash";
 import { Fireworks } from "../../fx/fireworks";
@@ -41,6 +44,7 @@ import { WorldCursor } from "../../fx/worldCursor";
 import { WorldQueries } from "../../core/worldQueries";
 import { BuildingRayRefiner } from "../../core/buildingRayRefine";
 import { Toolbar } from "../../ui/toolbar";
+import { SkateHUD } from "../../ui/skateHud";
 import { AudioControls } from "../../ui/audioControls";
 import { VehicleAudio } from "../../fx/vehicleAudio";
 import { SwimAudio } from "../../fx/swimAudio";
@@ -153,7 +157,10 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     coronaHeights: null as (CoronaHeightsPark | null),
     missionDolores: null as (MissionDoloresMuseum | null),
     graceCathedral: null as (GraceCathedralRuntime | null),
+    stMarys: null as (StMarysRuntime | null),
     sutroBaths: null as (import("../../world/sutroBaths").SutroBaths | null),
+    skatePlaza: null as (import("../../world/skatePlaza").SkatePlaza | null),
+    streetSpots: null as (import("../../vehicles/skate/streetSpots").SkateStreetSpots | null),
     museumBookOpen: false as any,
     citygen: null as ({ update?: (dt: number) => void; [k: string]: unknown } | null),
     golf: null as (import("../../gameplay/golf").GolfGame | null),
@@ -162,6 +169,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     palaceReverie: null as (PalaceReverieGame | null),
     landsEnd: null as (LandsEndRegion | null),
     waveOrgan: null as (WaveOrgan | null),
+    tutorialZone: null as (import("../../world/tutorialZone").TutorialZone | null),
     unregisterBeachPianistTuning: null as ((() => void) | null),
     afterlight: null as (AfterlightExperience | null),
     hangGliding: null as (HangGlidingExperience | null),
@@ -198,6 +206,11 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   const wake = new WakeRipples(scene);
   const boardWake = new BoardWake(scene, map, wake);
   const skidMarks = new SkidMarks(scene, map);
+  // Footprints in sand. Builds nothing until a walker approaches a beach, and
+  // hands its one small pipeline to the detached compile lane when it does.
+  const sandPrints = new SandPrints(scene, map, (root) =>
+    warmHiddenRoot(renderer, camera, scene, root)
+  );
   const splashes = new WaterSplashes(scene, wake, map);
   const fireworks = new Fireworks(renderer, scene, map);
   // Compile the optional firework renderer under the loading cover. Its audio
@@ -273,6 +286,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     (i) => setColor(i, true),
     (mode) => state.switchModeFromToolbar!(mode)
   );
+  // Trick/combo readout. Pure DOM, hidden until the player is on a skateboard.
+  const skateHud = new SkateHUD();
   setTool("ball");
   setColor(0);
   await constructionSlice();
@@ -495,6 +510,130 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
       state.surfEntryPreparations--;
     }
   };
+  // Waves running up the sand at Ocean Beach. Landscape, not an activity: it
+  // has nothing to do with the surf runtime and loads on approach to the beach
+  // itself, on foot or on wheels. Visiting the rest of the city must not fetch
+  // a byte of it, so the mesh + material live behind a dynamic import.
+  //
+  // The warmup compile is TIME-BOXED, not awaited to completion: under the
+  // capture harness's manual replay a compileAsync can outlive the whole take
+  // (the kite flock measured 348 s before it got the same budget), and an
+  // await with no ceiling meant the shorebreak sheet, the spray plume and the
+  // gulls silently never joined a single cinematic frame. Past the budget the
+  // effect is added anyway and the compile finishes in the background — one
+  // possible hitch on its first live frame, versus never existing at all.
+  const SHORE_WARMUP_BUDGET_MS = 4000;
+  const timeBoxedCompile = async (group: THREE.Object3D, label: string) => {
+    let done = false;
+    const compile = renderer
+      .compileAsync(group, camera, scene)
+      .then(() => {
+        done = true;
+      })
+      .catch((error: unknown) => console.warn(`[${label}] warmup compile failed`, error));
+    await Promise.race([
+      compile,
+      new Promise((resolve) => setTimeout(resolve, SHORE_WARMUP_BUDGET_MS))
+    ]);
+    if (!done) {
+      console.warn(
+        `[${label}] warmup exceeded ${SHORE_WARMUP_BUDGET_MS} ms; adding and finishing in the background`
+      );
+    }
+  };
+  let shorebreak: import("../../world/oceanBeachShorebreak").OceanBeachShorebreak | null = null;
+  let shorebreakLoading: Promise<void> | null = null;
+  const ensureShorebreak = () => {
+    if (shorebreak || shorebreakLoading) return shorebreakLoading ?? Promise.resolve();
+    shorebreakLoading = import("../../world/oceanBeachShorebreak")
+      .then(async ({ OceanBeachShorebreak }) => {
+        const sheet = new OceanBeachShorebreak(map);
+        await timeBoxedCompile(sheet.group, "shorebreak");
+        scene.add(sheet.group);
+        shorebreak = sheet;
+      })
+      .catch((error) => console.warn("[shorebreak] failed to load", error))
+      .finally(() => {
+        shorebreakLoading = null;
+      });
+    return shorebreakLoading;
+  };
+  const releaseShorebreak = () => {
+    shorebreak?.dispose();
+    shorebreak = null;
+  };
+  // The plume a breaking crest throws. Same landscape, same approach gate as
+  // the shorebreak sheet, so it rides that function's proximity test rather
+  // than adding a second one — but its own module, because it lives offshore
+  // at the break line and shares nothing with the wash on the sand.
+  let spray: import("../../world/oceanBeachSpray").OceanBeachSpray | null = null;
+  let sprayLoading: Promise<void> | null = null;
+  const ensureSpray = () => {
+    if (spray || sprayLoading) return sprayLoading ?? Promise.resolve();
+    sprayLoading = import("../../world/oceanBeachSpray")
+      .then(async ({ OceanBeachSpray }) => {
+        const field = new OceanBeachSpray(sky);
+        await timeBoxedCompile(field.group, "ocean-spray");
+        scene.add(field.group);
+        spray = field;
+      })
+      .catch((error) => console.warn("[ocean-spray] failed to load", error))
+      .finally(() => {
+        sprayLoading = null;
+      });
+    return sprayLoading;
+  };
+  const releaseSpray = () => {
+    spray?.dispose();
+    spray = null;
+  };
+  // Background gulls over the same water. Same gate again: they are part of
+  // what the beach looks like, not an activity, and nothing outside it should
+  // fetch a byte of them.
+  let gulls: import("../../world/oceanBeachGulls").OceanBeachGulls | null = null;
+  let gullsLoading: Promise<void> | null = null;
+  const ensureGulls = () => {
+    if (gulls || gullsLoading) return gullsLoading ?? Promise.resolve();
+    gullsLoading = import("../../world/oceanBeachGulls")
+      .then(async ({ OceanBeachGulls }) => {
+        const flock = new OceanBeachGulls(sky);
+        await timeBoxedCompile(flock.group, "ocean-gulls");
+        scene.add(flock.group);
+        gulls = flock;
+      })
+      .catch((error) => console.warn("[ocean-gulls] failed to load", error))
+      .finally(() => {
+        gullsLoading = null;
+      });
+    return gullsLoading;
+  };
+  const releaseGulls = () => {
+    gulls?.dispose();
+    gulls = null;
+  };
+  /**
+   * Per-frame: load on approach, drop once the player has genuinely left. The
+   * proximity test is the boot-resident one from oceanBeachWaves — asking the
+   * shorebreak module itself would fetch the chunk from anywhere in the city.
+   * The release window is far wider than the load window so pacing the
+   * boundary cannot churn build/dispose cycles.
+   */
+  const updateShorebreak = (dt: number, time: number) => {
+    const { x, z } = player.position;
+    if (nearOceanBeachShore(x, z, { shorePad: 620, inlandPad: 400, zPad: 300 })) {
+      void ensureShorebreak();
+      void ensureSpray();
+      void ensureGulls();
+    } else if (!nearOceanBeachShore(x, z, { shorePad: 1250, inlandPad: 900, zPad: 800 })) {
+      if (shorebreak) releaseShorebreak();
+      if (spray) releaseSpray();
+      if (gulls) releaseGulls();
+    }
+    shorebreak?.update(time, dt, player.renderPosition);
+    spray?.update(time, dt, player.renderPosition);
+    gulls?.update(time, dt, player.renderPosition);
+  };
+
   let surfFlowFx = 0;
   let surfFlowPhase = 0;
   let surfFlowSerial = 0;
@@ -560,6 +699,28 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
       tiles.forceScan();
     }
   };
+  // Procedural street rails: nothing exists until the player is actually on a
+  // skateboard, and the module itself is a dynamic import so boot never pays
+  // for it. See vehicles/skate/streetSpots.ts.
+  let streetSpotsLoading: Promise<void> | null = null;
+  const ensureStreetSpots = (): void => {
+    if (state.streetSpots || streetSpotsLoading) return;
+    streetSpotsLoading = import("../../vehicles/skate/streetSpots")
+      .then(({ SkateStreetSpots }) => {
+        if (state.streetSpots) return;
+        const spots = new SkateStreetSpots(map);
+        scene.add(spots.group);
+        state.streetSpots = spots;
+        if (player.mode === "skate") spots.setActive(true);
+        const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+        if (hooks) hooks.streetSpots = spots;
+      })
+      .catch((error) => console.warn("[skate] street spots unavailable:", error))
+      .finally(() => {
+        streetSpotsLoading = null;
+      });
+  };
+
   let previousAudioMode = player.mode;
   player.onModeChange = (mode) => {
     modeTransitionAudio.event(previousAudioMode, mode);
@@ -585,6 +746,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     state.setRemoteScooterAssetsActive!(mode === "scooter");
     state.setRemoteCarAssetsActive!(mode === "drive");
     state.setRemoteBirdAssetsActive!(mode === "bird");
+    if (mode === "skate") ensureStreetSpots();
+    state.streetSpots?.setActive(mode === "skate");
     state.syncCustomizerForMode!(mode);
     if (fresh) {
       const msg = modeDiscovery.revealMessage(mode);
@@ -754,6 +917,37 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     unwatchGraceCathedral();
     state.graceCathedral?.dispose();
     state.graceCathedral = null;
+  });
+  // St Mary's rides the same rails: the baked GLB streams via the generic
+  // authored-region gate; the dalle-de-verre god-ray layer is a nested lazy
+  // boundary that lives and dies with region residency.
+  let stMarysEpoch = 0;
+  const unwatchStMarys = authoredRegions.watch(
+    "st-marys",
+    (root: THREE.Object3D) => {
+      const epoch = ++stMarysEpoch;
+      void import("../../world/stMarys")
+        .then(({ createStMarysRuntime }) => {
+          if (epoch !== stMarysEpoch || !root.parent) return;
+          state.stMarys?.dispose();
+          const runtime = createStMarysRuntime(scene);
+          state.stMarys = runtime;
+          void warmHiddenRoot(renderer, camera, scene, runtime.group).catch((error) => {
+            console.warn("[st-marys] atmosphere warmup failed", error);
+          });
+        })
+        .catch((error) => console.warn("[st-marys] atmosphere unavailable", error));
+    },
+    () => {
+      stMarysEpoch++;
+      state.stMarys?.dispose();
+      state.stMarys = null;
+    }
+  );
+  import.meta.hot?.dispose(() => {
+    unwatchStMarys();
+    state.stMarys?.dispose();
+    state.stMarys = null;
   });
   const gardenDisplacer: GroundDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
@@ -1035,6 +1229,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     wake,
     boardWake,
     skidMarks,
+    sandPrints,
     splashes,
     fireworks,
     gameplaySfxBus,
@@ -1049,6 +1244,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     setTool,
     setColor,
     toolbar,
+    skateHud,
     vehicleAudio,
     swimAudio,
     playerFoleyAudio,
@@ -1064,6 +1260,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     ensureSurfShack,
     ensureSurfRuntime,
     releaseSurfVisual,
+    updateShorebreak,
+    currentShorebreak: () => shorebreak,
     surfBreakStillLocal,
     prepareSurfEntry,
     updateSurfPresentation,

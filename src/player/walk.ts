@@ -2,7 +2,7 @@ import * as THREE from "three/webgpu";
 import { BodyType } from "../core/physics";
 import { tunables } from "../core/persist";
 import { INPUT_TUNING } from "../config";
-import { waterHeight } from "../world/heightmap";
+import { seaTime, waterHeight } from "../world/heightmap";
 import { swimVolumeAt } from "../world/swimVolumes";
 import { walkerPlatformCarry } from "../world/movingPlatforms";
 import type { Input } from "../core/input";
@@ -121,7 +121,7 @@ export class WalkController implements ModeController {
       ctx.swimEnter = false;
       // drop in already at the swim waterline (centre a touch under the surface)
       // so buoyancy holds instead of dropping you in from a hop above the water
-      const y = waterHeight(ctx.position.x, ctx.position.z, ctx.time);
+      const y = waterHeight(ctx.position.x, ctx.position.z, seaTime());
       ctx.position.y = y - 0.2;
       return;
     }
@@ -185,8 +185,12 @@ export class WalkController implements ModeController {
     // An authored pool (the Sutro baths) wins over the bay: its surface is
     // fixed, and the bed you must not burrow into is its built basin rather
     // than the terrain, which down there sits well below the hall floor.
-    const pool = swimVolumeAt(ctx.position.x, ctx.position.z);
-    const waterY = pool ? pool.surfaceY : waterHeight(ctx.position.x, ctx.position.z, ctx.time);
+    // …and it is a VOLUME, not a column: the sunken gallery under the Sutro
+    // plunge is dry air inside that pool's own footprint, so the depth goes in.
+    const pool = swimVolumeAt(ctx.position.x, ctx.position.z, ctx.position.y);
+    // seaTime(), not ctx.time: the swim waterline must be the rendered surface
+    // (the sim clock drifts seconds away from the render clock — see heightmap).
+    const waterY = pool ? pool.surfaceY : waterHeight(ctx.position.x, ctx.position.z, seaTime());
     const bed = pool ? pool.floorY : ground;
     const swimming = bed < waterY - 1.0 && bottom < waterY;
     this.swimming = swimming;

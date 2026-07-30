@@ -11,11 +11,13 @@ import {
   positionWorld,
   saturate,
   sin,
+  smoothstep,
   time,
   uniform,
   uv
 } from "three/tsl";
 import { bumpNormal } from "../tslUtil";
+import { spectrum } from "../spectrumRamp";
 import type { KiteDesign, KitePalette } from "./kiteDesigns";
 
 export { KITE_DESIGNS, KITE_DESIGN_ORDER } from "./kiteDesigns";
@@ -119,11 +121,24 @@ export function createKiteCloth(design: KiteDesign, initialPalette?: KitePalette
   const towardSun = saturate(normalize(positionWorld.sub(cameraPosition)).dot(sunDir));
   const transmission = towardSun.pow(4.5).mul(backlight);
   const thinness = slack.mul(float(0.72).add(bulge.mul(0.28)));
-  material.emissiveNode = mix(
+  const warmth = mix(
     mix(glowLow, glowHigh, towardSun.pow(3)),
     color(0xffb877),
     towardSun.pow(22)
-  )
+  );
+  // A spectral sail does not transmit one colour, it separates the one it is
+  // given. The band runs across the cloth rather than up it, so the comb of
+  // slots at the bottom reads as the place the spectrum comes out — and it is
+  // seeded from the same backlight term as everything else, so the sail is
+  // black cloth until the sun is actually behind it.
+  const emissive = design.spectral
+    ? mix(
+        warmth,
+        spectrum(uv().x.mul(0.92).add(0.04)),
+        smoothstep(0.62, 0.16, uv().y).mul(0.86).add(0.08)
+      ).mul(1.25)
+    : warmth;
+  material.emissiveNode = emissive
     .mul(transmission)
     .mul(thinness)
     .mul(1.5 * design.glowScale);

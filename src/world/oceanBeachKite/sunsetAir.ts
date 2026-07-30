@@ -70,7 +70,13 @@ export function goldenHourAmount(): number {
   const elevation = SUN_STATE.elevationDeg;
   // THREE.MathUtils.smoothstep short-circuits on an inverted range, so both
   // edges run low→high and the falling side is taken as a complement.
-  const stillHigh = THREE.MathUtils.smoothstep(elevation, 4, 16);
+  //
+  // Full from 7° down (was 4°): the extra three degrees are the difference
+  // between a festival that only lights up when the whole sky has gone
+  // salmon and one that starts while the zenith still holds blue and the
+  // sea still reads emerald — the sunset-film reference frame lives in that
+  // window, and a prism disperses whenever the sun shines.
+  const stillHigh = THREE.MathUtils.smoothstep(elevation, 7, 18);
   const alreadyGone = THREE.MathUtils.smoothstep(elevation, -8.5, -2.5);
   return THREE.MathUtils.clamp((1 - stillHigh) * alreadyGone, 0, 1);
 }
@@ -84,8 +90,14 @@ export type SunsetAirState = {
   haze: number;
 };
 
-/** One kite's live position and how wide a fan its silhouette throws. */
-export type RayAnchor = { position: THREE.Vector3; spread: number };
+/**
+ * One kite's live position and how wide a fan its silhouette throws.
+ *
+ * A spectral anchor is handed over to `prismLight` instead and never gets a
+ * warm fan here — it is not an occluder, it is a disperser, and giving it both
+ * would put orange shafts and a rainbow out of the same silhouette.
+ */
+export type RayAnchor = { position: THREE.Vector3; spread: number; spectral?: boolean };
 
 export type SunsetAir = {
   group: THREE.Group;
@@ -334,7 +346,7 @@ export function createSunsetAir(opts: {
      */
     litAmount: number;
   };
-  const fans: Fan[] = opts.anchors.map((anchor, fanIndex) => {
+  const fans: Fan[] = opts.anchors.filter((anchor) => !anchor.spectral).map((anchor, fanIndex) => {
     const meshes: THREE.Mesh[] = [];
     const splay: { angle: number; roll: number; rollRate: number }[] = [];
     for (let i = 0; i < SHAFT_COUNT; i++) {

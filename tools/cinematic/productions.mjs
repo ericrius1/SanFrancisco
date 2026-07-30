@@ -205,6 +205,221 @@ const DEFINITIONS = Object.freeze({
         description: `The sun held inside the sunwheel — eclipse look ${index} of five.`
       })
     })];
+  })),
+  // The dusk set: seven seconds each, mostly past sunset, and the five that
+  // move the camera rather than the clock.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Kites · Down the Line"],
+    [2, "Ocean Beach Kites · Level with the Flock"],
+    [3, "Ocean Beach Kites · Over the Shoulder"],
+    [4, "Ocean Beach Kites · The Long Band"],
+    [5, "Ocean Beach Kites · Under the Wing"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-kite-dusk-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 7,
+      seed: (0x44_53_4b_00 + index * 0x101) >>> 0,
+      posterAt: 4.4,
+      stillTimes: Object.freeze([0.3, 1.4, 2.6, 3.8, 5, 6.2, 6.8]),
+      audio: Object.freeze({
+        profile: "ocean-beach-kite-dusk",
+        index,
+        description: `Late sunset into twilight — dusk look ${index} of five.`
+      })
+    })];
+  })),
+  // The twenty-second surf films. Longer than anything else in the kite
+  // family because the thing they are about has a sixteen-second period: a ten
+  // second clip of Ocean Beach catches one wave, and the point of these is a
+  // set arriving, breaking and washing out while the festival flies over it.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Surf · The Set", "A crane off the break: wave height to fifteen metres while a set goes off under the whole festival."],
+    [2, "Ocean Beach Surf · The Waterline", "Head height at the water's edge, tracking the beach as flyer after flyer crosses the sun."],
+    [3, "Ocean Beach Surf · The Gulls", "The waterline again with the disc still on the water, tracking back as gulls work the air over the break."],
+    [4, "Ocean Beach Surf · The Prism", "A low crane over the dry sand as the prism kite splits the last of the sun and lays a spectrum on the beach."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-surf-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 20,
+      seed: (0x53_52_46_00 + index * 0x101) >>> 0,
+      posterAt: 13.2,
+      stillTimes: Object.freeze([0.3, 2.4, 4.8, 7.2, 9.6, 12, 14.4, 16.8, 19.2]),
+      audio: Object.freeze({
+        profile: "ocean-beach-surf",
+        index,
+        description
+      })
+    })];
+  })),
+  // The prism set: the one kite that disperses rather than occludes, all four
+  // cut for the half hour either side of the sun touching the water. Stills are
+  // spread evenly because the move is continuous throughout — there is no
+  // single event to weight them toward.
+  //
+  // 01/02 run fifteen seconds and carry a score. 03/04 run twenty and carry no
+  // score at all: wind, the sets coming in, and the sail. Those two are the
+  // only productions here with an empty cue plan, which is deliberate — there
+  // is nothing for a cue to be locked to when nothing is being played.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Kites · The Prism"],
+    [2, "Ocean Beach Kites · Where It Lands"],
+    [3, "Ocean Beach Kites · What Lands on the Sand"],
+    [4, "Ocean Beach Kites · Opening the Fan"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-kite-prism-${suffix}`;
+    const scored = index <= 2;
+    const duration = scored ? 15 : 20;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration,
+      seed: (0x50_52_4d_00 + index * 0x101) >>> 0,
+      posterAt: scored ? 9.8 : 13.6,
+      stillTimes: Object.freeze(
+        scored
+          ? [0.3, 2.1, 4, 5.9, 7.8, 9.7, 11.6, 13.4, 14.7]
+          : [0.3, 2.6, 5.2, 7.8, 10.4, 13, 15.6, 18.2, 19.7]
+      ),
+      audio: Object.freeze({
+        profile: scored ? "ocean-beach-kite-prism" : "ocean-beach-kite-prism-wind",
+        index,
+        // The real wind recording under the synthesized surf. Two takes of the
+        // same file at different offsets and pans, because one is audibly one.
+        beds: scored
+          ? undefined
+          : Object.freeze([
+              Object.freeze({ path: "public/audio/nature/wind-grass.mp3", volume: 0.13, offset: 6.4 + index * 5.5 }),
+              Object.freeze({ path: "public/audio/nature/wind-tree.mp3", volume: 0.075, offset: 19.2 + index * 3.1 })
+            ]),
+        description: scored
+          ? `Sunset wind and surf under a dispersed spectrum — prism look ${index} of four.`
+          : `No score: onshore wind, breaking sets and ripstop only — prism look ${index} of four.`
+      })
+    })];
+  })),
+  // The deep-sunset set: five twenty-second films built around three things at
+  // once — the prism kite as the hero of the flock, its spectrum lying soft on
+  // the sand, and the surf actually breaking on camera. These are the first
+  // productions with a PINNED sea clock (see setSeaTimePin): each film bakes a
+  // T0 chosen by tools/cinematic/surfSchedule.mjs so a set goes off early in
+  // the take and a bigger one goes off late, and the soundtrack's crash stems
+  // are placed at those exact seconds rather than at plausible ones.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Sunset · The Court", "The flock gathered loosely around the prism, its spectrum breathing on the sand between them."],
+    [2, "Ocean Beach Sunset · Where It Dances", "Head height on the wet sand, the rainbow lying across the beach and moving like water."],
+    [3, "Ocean Beach Sunset · The Set Goes Off", "At wave height as a set stands up, throws and walks in under the whole festival."],
+    [4, "Ocean Beach Sunset · The Long Band", "Telephoto compression: kites, stacked breakers and the last band of light in one plane."],
+    [5, "Ocean Beach Sunset · Afterglow", "Under the flock as the light goes, the last set heard more than seen."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-sunset-${suffix}`;
+    // The Court runs thirty-five seconds — the hero film earned the longer
+    // cut, and then five more so its closing crash finishes on camera. Its
+    // stills hit the solved beats: set one at ~6.8, the swash sheet wetting
+    // the sand through the rainbow lull, the climax at 26–27.2, and the
+    // whitewater rolling in through the aftermath.
+    const hero = index === 1;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: hero ? 35 : 20,
+      seed: (0x53_4e_53_00 + index * 0x101) >>> 0,
+      posterAt: hero ? 28.4 : 16.6,
+      stillTimes: Object.freeze(
+        hero
+          ? [0.3, 6.8, 12, 18.8, 24, 27, 28.6, 31, 33.6]
+          : [0.3, 2.4, 4.8, 7.2, 9.6, 12, 14.4, 16.9, 19.2]
+      ),
+      audio: Object.freeze({
+        profile: "ocean-beach-sunset",
+        index,
+        description
+      })
+    })];
+  })),
+  // The two travelling shots: kite festival to Sutro Baths in one unbroken move.
+  // Fifteen seconds each, and the stills are weighted toward the back half
+  // because that is where the shot changes — the beach run is one continuous
+  // idea, the crossing and the hall interior are four.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Kites · Over the Headland"],
+    [2, "Ocean Beach Kites · In From the Sea"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `kite-to-sutro-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 15,
+      seed: (0x46_4c_59_00 + index * 0x101) >>> 0,
+      posterAt: 12.6,
+      stillTimes: Object.freeze([0.3, 2.2, 4.6, 7.4, 9.6, 11.2, 12.4, 13.4, 14.6]),
+      audio: Object.freeze({
+        profile: "kite-to-sutro",
+        index,
+        description: `Onshore wind and surf carried into the bath hall — flight ${index} of two.`
+      })
+    })];
+  })),
+  // Five seconds each, inside the restored hall, at a standing person's eye
+  // height. No avatar, no camera move to speak of — one held look per moment.
+  ...Object.fromEntries([
+    [1, "Sutro Baths · Still Water", "Someone floating in the great plunge, watched from the coping."],
+    [2, "Sutro Baths · The Long View", "Two on the window bench, the Pacific going down in front of them."],
+    [3, "Sutro Baths · Tea in the Windows", "Three at tea in the ocean gallery, lamp lit, sunset behind."],
+    [4, "Sutro Baths · The Hot Bath", "Two talking chest-deep in the hot bath, steam off the water."],
+    [5, "Sutro Baths · The Plunge Edge", "Two sitting with their feet in the plunge, candles down the coping."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `sutro-moment-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 5,
+      seed: (0x53_55_54_00 + index * 0x101) >>> 0,
+      posterAt: 3.2,
+      stillTimes: Object.freeze([0.2, 1.2, 2.5, 3.8, 4.8]),
+      audio: Object.freeze({
+        profile: "sutro-moment",
+        index,
+        description
+      })
+    })];
+  })),
+  // The two wide ones: ten seconds apiece, the room itself as the subject.
+  ...Object.fromEntries([
+    [1, "Sutro Baths · The Hall", "The length of the room from the north end, pools running away under the glass."],
+    [2, "Sutro Baths · The Ocean Window", "Down the west gallery, colonnade one side and the whole Pacific the other."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `sutro-vista-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 10,
+      seed: (0x56_49_53_00 + index * 0x101) >>> 0,
+      posterAt: 6.4,
+      stillTimes: Object.freeze([0.3, 2.2, 4.4, 6.6, 8.8, 9.7]),
+      audio: Object.freeze({
+        profile: "sutro-vista",
+        index,
+        description
+      })
+    })];
   }))
 });
 

@@ -4,8 +4,10 @@ import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import { KITE_DESIGNS, KITE_DESIGN_ORDER, type KiteDesignId } from "./kiteDesigns";
 import { kiteBuildKey, kiteColorway, type KiteConfig } from "./kiteConfig";
 import { KiteFlyer, type KiteAnchor, type KiteFlyerFrame } from "./flyer";
+import type { SandPrintSink } from "../../fx/sandPrints";
 import type { KiteFigureName } from "./choreography";
 import { createSunsetAir, type SunsetAir } from "./sunsetAir";
+import { createPrismLight, type PrismLight } from "./prismLight";
 import { bindOceanKiteTuning, OCEAN_KITE_TUNING } from "./tuning";
 
 export type OceanBeachKiteSite = { x: number; z: number };
@@ -27,6 +29,11 @@ export type OceanBeachKiteOptions = {
    * would land its pipeline compile on the frame the player pressed the button.
    */
   warmup?: (object: THREE.Object3D) => Promise<void>;
+  /**
+   * The world's footprint runtime. Runners on the sand report their footfalls
+   * to it; the runtime decides whether any of them are worth drawing.
+   */
+  sandPrints?: SandPrintSink;
 };
 
 export type OceanBeachKiteFlyerState = {
@@ -62,6 +69,10 @@ export type OceanBeachKiteDebugState = {
   /** 0..1 sunset window and how squarely the kite is between camera and sun. */
   golden: number;
   backlight: number;
+  /** Eased 0..1 lane-gather amount (see setLaneGather). */
+  laneGather: number;
+  /** Whether lane centres actually move — requires KiteFlyer.retargetLane. */
+  laneGatherLive: boolean;
   /** Every flyer on the beach; index 0 is the one the scalars above describe. */
   flyers: OceanBeachKiteFlyerState[];
 };
@@ -89,6 +100,18 @@ export type OceanBeachKiteEncounter = {
   tuningDescriptor(): DebugFeatureTuningRegistration;
   debugState(): OceanBeachKiteDebugState;
   /**
+   * Pull the flock's lane centres toward one flyer's lane — by default the
+   * prism (the last lane) — so a shot can frame the spectrum with the rest of
+   * the festival loosely around it. `gather` is 0..1: 0 restores the authored
+   * LANES layout, 1 stacks the lanes against the centre lane's offset with a
+   * floor of ~20 m between neighbours (authored troupe pairs that already fly
+   * tighter keep their own gap). Lane ORDER is always preserved, which is what
+   * keeps 34 m lines from crossing without any collision logic. The value is
+   * eased over a couple of seconds and the runners then physically WALK to
+   * their new centres through the existing boundary steering.
+   */
+  setLaneGather(gather: number, centerIndex?: number): void;
+  /**
    * Whether the raymarched god-ray pipeline should run for this encounter, and
    * where to centre it. Null whenever the feature has nothing to ask for.
    */
@@ -102,8 +125,19 @@ const SLEEP_DISTANCE = 520;
 const GOD_RAY_DISTANCE = 190;
 const GOD_RAY_EXIT_DISTANCE = 240;
 const ROUTE_STEP = 5;
-// Dry-sand offset east of the live waterline so the runner stays off the wet edge.
-const BEACH_RUNNER_PAD = 12;
+/**
+ * Dry-sand offset east of the live waterline.
+ *
+ * Sized for the KITE, not for the flyer's feet. This site's wind is offshore
+ * by design (292° WNW — see OCEAN_KITE_TUNING.windBearing, which explains why),
+ * so the cloth hangs downwind of the hand, out toward the water: at full line
+ * and a low elevation that is about thirty metres of westward reach. A pad
+ * that only kept the runner off the wet edge therefore put kites out over the
+ * surf, and the lower ones read as floating in it. Thirty metres of pad keeps
+ * the whole flock over sand at every point in every figure, and thirty metres
+ * up the beach is where people stand to fly a kite anyway.
+ */
+const BEACH_RUNNER_PAD = 30;
 
 /**
  * Walk east (shoreward) from just offshore of the anchor until `isWater` flips
@@ -166,10 +200,63 @@ const LANES: readonly KiteLane[] = [
   { design: "sled", seed: "ocean-beach-sled-partner", offset: 1.85, spanScale: 0.55, startFigure: 8, startPhase: 1.2, troupe: "deltas", mirror: true },
 
   // Far south: the centipede, alone, on the longest line of anyone.
-  { design: "centipede", seed: "ocean-beach-centipede-flyer", offset: 2.85, spanScale: 0.8, startFigure: 5, startPhase: 3.3 }
+  { design: "centipede", seed: "ocean-beach-centipede-flyer", offset: 2.85, spanScale: 0.8, startFigure: 5, startPhase: 3.3 },
+
+  // The far end of the line, and deliberately out on its own: the prism throws
+  // a forty-metre spectrum that lands on the sand beside it, and standing it in
+  // among the troupes would put that fan straight through somebody else's kite.
+  // Appended rather than inserted — the cinematics address flyers by index.
+  { design: "prism", seed: "ocean-beach-prism-flyer", offset: 3.85, spanScale: 0.72, startFigure: 4, startPhase: 1.8 }
 ];
 
 type RouteSample = { x: number; z: number };
+
+/**
+ * Metres kept between gathered neighbours' lane centres. Kites hang 20-38 m
+ * downwind on ~34 m lines; preserving lane order plus this floor is what
+ * substitutes for line-crossing logic (mirrored troupe pairs already fly
+ * closer than this by design, and keep their authored gap instead).
+ */
+const GATHER_MIN_SPACING = 20;
+
+/**
+ * Runtime lane retarget the gather hook feeds. KiteFlyer does NOT expose it
+ * yet: the runner's lane centre is a private baked reference (flyer.ts #lane,
+ * read per frame as `site.z` inside createGroundRunner), so index.ts cannot
+ * reach it. The call is therefore optional — the moment flyer.ts adds
+ *
+ *   retargetLane(x: number, z: number): void { this.#lane.x = x; this.#lane.z = z; }
+ *
+ * the gather walks every runner to its new centre through the existing
+ * boundary steering, with zero further changes here. Until then setLaneGather
+ * only tightens patrol spans and warns once.
+ */
+type LaneRetargetable = KiteFlyer & { retargetLane?: (x: number, z: number) => void };
+
+/**
+ * Where each lane sits at gather=1: the centre lane keeps its offset and the
+ * rest stack against it in authored order, each pair of neighbours keeping
+ * min(authored gap, GATHER_MIN_SPACING). Offsets are in lane-spacing units.
+ */
+function computeGatherOffsets(center: number): number[] {
+  const spacing = Math.max(18, OCEAN_KITE_TUNING.values.runSpan * 0.78);
+  const minGap = GATHER_MIN_SPACING / spacing;
+  const order = LANES.map((_, i) => i).sort((a, b) => LANES[a].offset - LANES[b].offset);
+  const at = order.indexOf(center);
+  const out = new Array<number>(LANES.length).fill(0);
+  out[center] = LANES[center].offset;
+  for (let k = at - 1; k >= 0; k--) {
+    const below = order[k];
+    const above = order[k + 1];
+    out[below] = out[above] - Math.min(LANES[above].offset - LANES[below].offset, minGap);
+  }
+  for (let k = at + 1; k < order.length; k++) {
+    const above = order[k];
+    const below = order[k - 1];
+    out[above] = out[below] + Math.min(LANES[above].offset - LANES[below].offset, minGap);
+  }
+  return out;
+}
 
 /** Compass bearing (0 = north, 90 = east) → a world downwind direction. */
 function bearingToDirection(degrees: number, out: THREE.Vector3): THREE.Vector3 {
@@ -198,6 +285,10 @@ class KiteEncounter implements OceanBeachKiteEncounter {
   /** Followers that take a leader's figure clock every frame. */
   #troupe: { follower: KiteFlyer; leader: KiteFlyer }[] = [];
   #air: SunsetAir;
+  /** One per spectral sail on the beach; empty unless a prism is flying. */
+  #prisms: PrismLight[] = [];
+  /** The player's own, if they picked the prism. Rebuilt with the sail. */
+  #playerPrism: PrismLight | null = null;
   #debug = new THREE.Group();
   #runnerMarker: THREE.Mesh;
   #targetMarker: THREE.Mesh;
@@ -213,13 +304,19 @@ class KiteEncounter implements OceanBeachKiteEncounter {
   #godRaysHeld = false;
   #nextMonitorRefresh = 0;
 
+  /** Lane gather (see setLaneGather): eased value, request, and gather=1 map. */
+  #gather = 0;
+  #gatherTarget = 0;
+  #gatherOffsets: number[] = LANES.map((lane) => lane.offset);
+  #gatherWarned = false;
+
   #viewPoint = new THREE.Vector3();
   // Site wind, not the global vegetation wind — see OCEAN_KITE_TUNING.windBearing.
   #siteWind = new THREE.Vector3(0, 0, 1);
   #crosswind = new THREE.Vector3(1, 0, 0);
   #windBearing = Number.NaN;
   #frame: KiteFlyerFrame;
-  #rayAnchors: { position: THREE.Vector3; spread: number }[] = [];
+  #rayAnchors: { position: THREE.Vector3; spread: number; spectral?: boolean }[] = [];
   #godRayCenter = new THREE.Vector3();
 
   #monitor = {
@@ -262,7 +359,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
         startAirborne: lane.startFigure !== 0,
         spanScale: lane.spanScale,
         mirror: lane.mirror,
-        ledByTroupe: Boolean(leader)
+        ledByTroupe: Boolean(leader),
+        prints: options?.sandPrints
       });
       if (lane.troupe && !leader) leaders.set(lane.troupe, flyer);
       else if (leader) this.#troupe.push({ follower: flyer, leader });
@@ -270,8 +368,26 @@ class KiteEncounter implements OceanBeachKiteEncounter {
       this.group.add(flyer.group);
       this.#rayAnchors.push({
         position: flyer.kitePosition,
-        spread: flyer.design.raySpread
+        spread: flyer.design.raySpread,
+        spectral: flyer.design.spectral
       });
+      // A spectral sail casts nothing, so the warm fan has no work to do on it.
+      // It gets a dispersed spectrum of its own instead — one rig per prism,
+      // reading the same live position and orientation the kite already owns.
+      if (flyer.design.spectral) {
+        const prism = createPrismLight({
+          anchor: {
+            position: flyer.kitePosition,
+            quaternion: flyer.kiteOrientation,
+            spread: flyer.design.raySpread
+          },
+          ground: (x, z) => map.groundTop(x, z),
+          water: (x, z) => map.isWater(x, z),
+          seaLevel: map.meta.seaLevel
+        });
+        this.#prisms.push(prism);
+        this.group.add(prism.group);
+      }
     }
 
     this.#air = createSunsetAir({
@@ -436,6 +552,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     this.#playerGeneration++;
     this.#playerKite?.dispose();
     this.#playerKite = null;
+    this.#playerPrism?.dispose();
+    this.#playerPrism = null;
     this.#playerBuildKey = "";
   }
 
@@ -477,6 +595,24 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     this.#playerKite = kite;
     this.#playerBuildKey = buildKey;
     this.group.add(kite.group);
+    // Your prism disperses too. It is the one sail whose whole point is light it
+    // makes rather than light it blocks, so handing the player a black triangle
+    // and no spectrum would be handing them the half of it that does nothing.
+    this.#playerPrism?.dispose();
+    this.#playerPrism = null;
+    if (design.spectral) {
+      this.#playerPrism = createPrismLight({
+        anchor: {
+          position: kite.kitePosition,
+          quaternion: kite.kiteOrientation,
+          spread: design.raySpread
+        },
+        ground: (x, z) => this.#map.groundTop(x, z),
+        water: (x, z) => this.#map.isWater(x, z),
+        seaLevel: this.#map.meta.seaLevel
+      });
+      this.group.add(this.#playerPrism.group);
+    }
     // Deliberately NOT added to #rayAnchors: the sunset shaft fan and the god-ray
     // shadow map are both sized around the FLOCK's mean kite, and the player can
     // stand a hundred metres up the beach from it. Their sail is still a shadow
@@ -559,6 +695,22 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     frame.backlight = this.#air.state.backlight * tuning.clothBacklight;
     frame.halfSpan = Math.max(8, tuning.runSpan * 0.34);
     frame.beachDepth = Math.max(8, tuning.beachDepth);
+    // Lane gather: ease toward the requested clustering, retarget the runners'
+    // lane centres (where the flyer exposes the hook — see LaneRetargetable)
+    // before anyone steers, and tighten patrol spans so gathered neighbours
+    // 20 m apart do not wander through each other's stretch of sand.
+    if (this.#gather > 1e-4 || this.#gatherTarget > 1e-4) {
+      this.#gather += (this.#gatherTarget - this.#gather) * (1 - Math.exp(-dt * 0.8));
+      if (this.#gather < 1e-4 && this.#gatherTarget <= 1e-4) this.#gather = 0;
+      const spacing = Math.max(18, tuning.runSpan * 0.78);
+      const count = Math.min(this.#flyers.length, LANES.length);
+      for (let i = 0; i < count; i++) {
+        const offset = THREE.MathUtils.lerp(LANES[i].offset, this.#gatherOffsets[i], this.#gather);
+        const laneZ = this.#site.z + offset * spacing;
+        (this.#flyers[i] as LaneRetargetable).retargetLane?.(this.#routeX(laneZ), laneZ);
+      }
+      frame.halfSpan *= 1 - this.#gather * 0.38;
+    }
     // Troupes adopt their leader's figure before anyone moves, so a pair is
     // always mid-way through the same shape on the same frame.
     for (const { follower, leader } of this.#troupe) follower.adoptFigure(leader);
@@ -574,6 +726,19 @@ class KiteEncounter implements OceanBeachKiteEncounter {
       shafts: tuning.shaftStrength,
       enabled: tuning.sunsetAir
     });
+    // After the flyers have moved and after the air, on the same frame's
+    // positions: the prism's landing solve marches from a kite that has already
+    // been placed, so its smear can never trail the sail by a frame.
+    const prismFrame = {
+      dt,
+      camera: this.#viewPoint,
+      strength: tuning.shaftStrength * tuning.prismStrength,
+      enabled: tuning.sunsetAir && tuning.prismLight,
+      softness: tuning.prismSoftness,
+      dance: tuning.prismDance
+    };
+    for (const prism of this.#prisms) prism.update(prismFrame);
+    this.#playerPrism?.update(prismFrame);
     this.syncTuning();
 
     // Tweakpane refreshes monitors at 4 Hz; match that cadence so the hot path
@@ -641,11 +806,40 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     this.#godRaysHeld =
       this.#air.state.golden > 0.2 && this.#playerDistance <= radius && this.group.visible;
     // One shadow map has to cover every kite on the beach, so centre it on the
-    // flock rather than on whichever one happens to be nearest.
+    // flock rather than on whichever one happens to be nearest — and on the
+    // CASTING flock, since a spectral sail contributes nothing to the map and
+    // would only drag it away from the six kites that do.
     this.#godRayCenter.set(0, 0, 0);
-    for (const flyer of this.#flyers) this.#godRayCenter.add(flyer.kitePosition);
-    this.#godRayCenter.multiplyScalar(1 / Math.max(1, this.#flyers.length));
+    let casters = 0;
+    for (const flyer of this.#flyers) {
+      if (flyer.design.spectral) continue;
+      this.#godRayCenter.add(flyer.kitePosition);
+      casters++;
+    }
+    this.#godRayCenter.multiplyScalar(1 / Math.max(1, casters));
     return { active: this.#godRaysHeld, center: this.#godRayCenter };
+  }
+
+  setLaneGather(gather: number, centerIndex = LANES.length - 1): void {
+    if (this.#disposed) return;
+    this.#gatherTarget = THREE.MathUtils.clamp(gather, 0, 1);
+    const center = THREE.MathUtils.clamp(Math.round(centerIndex), 0, LANES.length - 1);
+    // Cheap (eight lanes, per shot setup, never per frame) — always rebake so
+    // the gathered map tracks the tuned lane spacing at the moment of the ask.
+    this.#gatherOffsets = computeGatherOffsets(center);
+    if (this.#gatherTarget > 0 && !this.#laneRetargetLive() && !this.#gatherWarned) {
+      this.#gatherWarned = true;
+      console.warn(
+        "[ocean kite] setLaneGather: KiteFlyer.retargetLane is not implemented — " +
+          "lane centres stay authored and only patrol spans tighten. " +
+          "See LaneRetargetable in oceanBeachKite/index.ts for the 3-line flyer.ts hook."
+      );
+    }
+  }
+
+  #laneRetargetLive(): boolean {
+    const flyer = this.#flyers[0] as LaneRetargetable | undefined;
+    return typeof flyer?.retargetLane === "function";
   }
 
   debugState(): OceanBeachKiteDebugState {
@@ -669,6 +863,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
       elevation: primary.elevation,
       golden: this.#air.state.golden,
       backlight: this.#air.state.backlight,
+      laneGather: this.#gather,
+      laneGatherLive: this.#laneRetargetLive(),
       flyers: this.#flyers.map((flyer) => ({
         design: flyer.design.id,
         action: flyer.figure,
@@ -694,6 +890,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     for (const flyer of this.#flyers) flyer.dispose();
     this.#flyers.length = 0;
     this.#troupe.length = 0;
+    for (const prism of this.#prisms) prism.dispose();
+    this.#prisms.length = 0;
     this.#air.dispose();
     for (const geometry of new Set(this.#ownedGeometries)) geometry.dispose();
     for (const material of new Set(this.#ownedMaterials)) material.dispose();

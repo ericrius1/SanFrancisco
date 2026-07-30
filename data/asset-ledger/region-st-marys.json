@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "id": "region-st-marys",
+  "label": "St Mary's Cathedral · Cathedral Hill (Blender site bake)",
+  "bake": "npm run bake:region -- --site st-marys",
+  "tracked": true,
+  "inputs": {
+    "assets-src/world/sites/st-marys/st-marys.blend": "839798025065c6c536417f0d29329330137636f2a48cc066469fffda18dac716",
+    "data/authored-regions.json": "9b76c9839b9200b72a32235ebe6a588123e29d16189cf143a1abe1194a675153",
+    "tools/export-authored-site.py": "bc1fed401a1fd10e18b7804f39c379665ba470a5d46f795d2c0e64b8632f6692",
+    "tools/inject-authored-site.mjs": "2d50e6ae61e2b575bfb0403586a1a1e0d2c947f093fb69773affef41bb8a0101",
+    "tools/sync-authored-region.py": "44b9eba826becee2ddec3312666a50902256d2ddad53d389b915801b07145172"
+  },
+  "outputs": {
+    "data/authored-sites/st-marys.json": "5596c627fcfe3ee92c80d57ac7b7443e2748e9e47b1340e58f782d607f43efcb",
+    "public/data/authored-regions.json": "5d8510357e61f83a3461e6a323636ce4e25ed076a0feaf73965a016c0842553f",
+    "public/data/colliders/tile_11_11.json": "2352fed3b94fa4ecf250ec550d4affe4a6090604a07b10091f54a361d7efc576",
+    "public/regions/st-marys.glb": "878ae0b64916c8d6c6e491db3e047916faec1114ff717223e8c8b5c87792abf8",
+    "public/tiles/tile_11_11.glb": "ae8c4949f23a0010490f17ff3d5fe381e86412baf97a05fd769db78d01e7255e"
+  }
+}

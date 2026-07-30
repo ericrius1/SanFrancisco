@@ -4,7 +4,7 @@ import type { WorldMap } from "../world/heightmap";
 import type { Input } from "../core/input";
 import { CAR_RIDE_HEIGHT } from "../vehicles/car/mesh";
 
-export type PlayerMode = "walk" | "drive" | "scooter" | "plane" | "boat" | "speedboat" | "drone" | "board" | "surf" | "bird";
+export type PlayerMode = "walk" | "drive" | "scooter" | "plane" | "boat" | "speedboat" | "drone" | "board" | "skate" | "surf" | "bird";
 
 /** Where the driver rig + steering wheel sit inside a drive mesh (mesh-local). */
 export type Cockpit = {

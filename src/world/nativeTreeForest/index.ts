@@ -109,6 +109,19 @@ export type NativeTreeForest = {
    * same prepare-before-reveal path. Work is serialized and yielded per unit.
    */
   prepareVisible(prepare: NativeTreePrepareUnit): Promise<void>;
+  /**
+   * Compiles ONLY the always-resident landscape/horizon indirect meshes — the
+   * tier that carries the whole distant canopy — and nothing else. A first
+   * approach can attach the forest to the scene the moment this resolves: every
+   * chunk and near batch stays internally invisible until its own pipeline is
+   * warm, so the silhouette appears in a couple of hundred milliseconds instead
+   * of after the tens of seconds it takes to walk every design's canopy, grove
+   * and branch pipeline through the background compile window.
+   *
+   * Idempotent, and shares the `farPrepared` latch with `prepareVisible`, so a
+   * later full prepare skips the work rather than recompiling it.
+   */
+  prepareFarTiers(prepare: NativeTreePrepareUnit): Promise<void>;
   dispose(): void;
   stats: {
     designs: number;
@@ -2086,6 +2099,16 @@ export function createNativeTreeForest(
       prepareUnit = prepare;
       await prepareWantedUnits();
       requestHorizonPrefetchPreparation();
+    },
+    async prepareFarTiers(prepare) {
+      await ready;
+      if (disposed) return;
+      prepareUnit = prepare;
+      if (!GPU_FAR_TIERS || !farTiers || farPrepared) return;
+      // Latch before awaiting, exactly as prepareWantedUnits does: a concurrent
+      // prepare must not detach and compile the shared far group twice.
+      farPrepared = true;
+      await farTiers.prepare(prepareObject);
     },
     dispose() {
       if (disposed) return;

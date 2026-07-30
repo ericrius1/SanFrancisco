@@ -6,6 +6,7 @@ import type { PlayerMode } from "../player/types";
 import { oceanBeachSurfShackApproxPose } from "../gameplay/surfing/shack";
 import { mdToWorldXZ, Z_ENTRANCE } from "./missionDolores/layout";
 import { BEACH_PIANIST_BRIDGE_AIM, BEACH_PIANIST_SITE } from "./beachPianist/meta";
+import { SKATE_PLAZA_CENTER } from "./skatePlaza/meta";
 
 /** Lightweight gate metadata stays in the boot spawn registry; the restored
  * hall, pools, vegetation and effects remain wholly behind their dynamic import. */
@@ -19,23 +20,26 @@ export const SUTRO_BATHS_GATE = {
 } as const;
 
 /**
- * On the bath deck, at the south end of the pool cascade, facing north up the
- * full length of the hall.
+ * Dead centre of the bath hall, on the deck spine, facing north up the full
+ * length of the room.
  *
- * Deliberately INSIDE. The arrival used to land on the Point Lobos road portal
- * above the descent, which meant every visit to the baths opened on a car park
- * and a staircase, and the actual place — seven pools under a glass barrel vault
- * with the Pacific behind them — only appeared after a walk down. Landing on the
- * deck puts the room itself in the first frame. The road portal and its stair
- * remain the walk-in route for anyone arriving overland.
+ * Deliberately INSIDE, and deliberately in the MIDDLE. The arrival used to land
+ * on the Point Lobos road portal above the descent, which meant every visit to
+ * the baths opened on a car park and a staircase, and the actual place — seven
+ * pools under a glass barrel vault with the Pacific behind them — only appeared
+ * after a walk down. It then moved onto the deck but stayed at the south end,
+ * behind the last pool and under the grand spiral, which opens on the back of
+ * the room. The road portal and its stair remain the walk-in route for anyone
+ * arriving overland.
  *
- * Local (-7, 50) on the deck spine between the great plunge and the graduated
- * baths, so no pool rectangle is under the capsule; heading is the hall's own
- * yaw, which looks straight down the axis.
+ * Local (-7, 0) is the exact centre of the 6 m walkway between the great plunge
+ * and the graduated baths — the one built slab (`hx` 3, `hz` 76.1) that runs the
+ * whole length of the hall — so no pool rectangle is under the capsule and no
+ * stair tread is over it. Heading is the hall's own yaw, straight down the axis.
  */
 export const SUTRO_BATHS_ARRIVAL = {
-  x: -6135.825455,
-  z: 1166.313381,
+  x: -6131.979259,
+  z: 1116.461532,
   heading: -0.077
 } as const;
 
@@ -209,6 +213,16 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     z: -380,
     heading: 1.8,
     mode: "walk"
+  },
+  // Middle of the granite, already on a board. The plaza's own proximity gate
+  // builds it; the arrival just lands you in the deep end of it.
+  skatePlaza: {
+    key: "skatePlaza",
+    label: "Golden Gate Park · Skate Plaza",
+    x: SKATE_PLAZA_CENTER.x,
+    z: SKATE_PLAZA_CENTER.z - 10,
+    heading: 0,
+    mode: "skate"
   },
   downtown: {
     key: "downtown",

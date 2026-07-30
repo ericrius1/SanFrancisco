@@ -10,7 +10,7 @@
     {
       "name": "sf-verify",
       "runtimeExecutable": "sh",
-      "runtimeArgs": ["-c", "SF_RELAY_PORT=$((PORT + 3000)) exec npm run dev -- --port \"$PORT\" --strictPort"],
+      "runtimeArgs": ["-c", "SF_RELAY_PORT=$(( PORT + 3000 > 65535 ? PORT - 3000 : PORT + 3000 )) exec npm run dev -- --port \"$PORT\" --strictPort"],
       "port": 5240,
       "autoPort": true
     }

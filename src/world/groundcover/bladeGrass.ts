@@ -34,6 +34,7 @@ import {
   vec4,
   vertexStage
 } from "three/tsl";
+import { cameraPosition } from "three/tsl";
 import { groundSwayFlow, groundSwayLite, WIND_DIR } from "./sway";
 import { terrainFieldNormal } from "./terrainFieldNormal";
 import { DISPLACERS, MAX_DISPLACERS } from "./displacers";
@@ -52,6 +53,20 @@ export type GrassEntry = {
 };
 
 const GRASS_FADE_BAND = 0.16;
+
+/**
+ * World metres per screen pixel, per metre of camera distance — a nominal 60°
+ * horizontal FOV across ~1500 px, scaled to hold a blade at a bit over one
+ * pixel. Blades are authored at their true near-field width (fine, hair-like,
+ * the way real grass reads at arm's length) and then widened about their own
+ * centre line with distance so the far field never goes sub-pixel. Sub-pixel
+ * blades are worse than merely aliasing: they let the ground show between them
+ * exactly where the field is supposed to read as a solid mat, which is what
+ * made distant meadow read as green slab plus dark speckles.
+ */
+const BLADE_SCREEN_METRES = 0.0011;
+/** Ceiling on that widening, so a far blade stays a blade and not a ribbon. */
+const BLADE_MAX_WIDEN = 4;
 
 export type GrassMaterialState = {
   material: THREE.Material;
@@ -103,6 +118,12 @@ export type GrassMaterialOptions = {
    *  through vertexStage(): storage reads keyed by instanceIndex are only valid
    *  in the vertex stage. */
   indirectSource?: GrassIndirectSource;
+  /** Authored base width of this layer's blade, in metres — the same `width`
+   *  passed to the cluster-geometry builder. Supplying it turns on the
+   *  constant-screen-width widening: the blade keeps its authored width until
+   *  it would fall under about a pixel, then grows about its own centre line.
+   *  Omit for a layer that wants its authored width at every distance. */
+  bladeWidth?: number;
 };
 
 /**
@@ -140,6 +161,7 @@ export function createBladeClusterGeometry({
   const colors: number[] = [];
   const uvs: number[] = [];
   const ranks: number[] = [];
+  const sides: number[] = [];
   const indices: number[] = [];
   let base = 0;
 
@@ -165,6 +187,10 @@ export function createBladeClusterGeometry({
       const cx = rootX + dirX * curve;
       const cz = rootZ + dirZ * curve;
       positions.push(cx - sideX * halfW, t, cz - sideZ * halfW, cx + sideX * halfW, t, cz + sideZ * halfW);
+      // Only the half-width part of the lateral offset — the root scatter inside
+      // the cluster disc must NOT widen, or the cluster inflates instead of the
+      // blade thickening.
+      sides.push(-sideX * halfW, -sideZ * halfW, sideX * halfW, sideZ * halfW);
       // A ribbon is lit from its actual blade plane, not from camera-facing up.
       // Keep a small upward component so the curved two-sided strip catches the
       // sky while retaining directional highlights across the clump.
@@ -190,6 +216,7 @@ export function createBladeClusterGeometry({
     colors.push(1, 1, 0.88);
     uvs.push(0.5, 1);
     ranks.push(rank);
+    sides.push(0, 0);
     const last = base + segments * 2;
     indices.push(last, last + 1, tip);
     base = tip + 1;
@@ -201,6 +228,7 @@ export function createBladeClusterGeometry({
   geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setAttribute("aGrassBladeRank", new THREE.Float32BufferAttribute(ranks, 1));
+  geometry.setAttribute("aGrassBladeSide", new THREE.Float32BufferAttribute(sides, 2));
   geometry.setIndex(indices);
   geometry.computeBoundingSphere();
   return geometry;
@@ -229,6 +257,7 @@ export function createMicroBladeClusterGeometry({
   const colors: number[] = [];
   const uvs: number[] = [];
   const ranks: number[] = [];
+  const sides: number[] = [];
   const indices: number[] = [];
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
 
@@ -261,6 +290,9 @@ export function createMicroBladeClusterGeometry({
     colors.push(0.56, 0.56, 0.72, 0.56, 0.56, 0.72, 1, 1, 0.88);
     uvs.push(0, 0, 1, 0, 0.5, 1);
     ranks.push(rank, rank, rank);
+    // Half-width offset only (see the curved builder): the root scatter inside
+    // the cluster disc must not participate in the distance widening.
+    sides.push(-sideX * halfWidth, -sideZ * halfWidth, sideX * halfWidth, sideZ * halfWidth, 0, 0);
     indices.push(base, base + 1, base + 2);
   }
 
@@ -270,6 +302,7 @@ export function createMicroBladeClusterGeometry({
   geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setAttribute("aGrassBladeRank", new THREE.Float32BufferAttribute(ranks, 1));
+  geometry.setAttribute("aGrassBladeSide", new THREE.Float32BufferAttribute(sides, 2));
   geometry.setIndex(indices);
   geometry.computeBoundingSphere();
   return geometry;
@@ -353,7 +386,26 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
   const yawCos = cos(transform.w);
   const yawSin = sin(transform.w);
   const source = positionGeometry as TslNode;
-  const shaped = vec3(source.x.mul(shape.x), source.y.mul(shape.y), source.z.mul(shape.x));
+  // Constant-screen-width blades. A blade authored at its true near-field width
+  // goes sub-pixel a few tens of metres out, which shimmers AND opens the field
+  // up so the ground reads through it. Growing the blade about its own centre
+  // line once it would drop below ~a pixel keeps the far field solid without
+  // making the blade at your feet a rubbery ribbon. `aGrassBladeSide` carries
+  // ONLY the half-width part of each vertex's lateral offset, so the cluster's
+  // root scatter is untouched and only the blade itself thickens.
+  const bladeWidth = Math.max(1e-4, Number(options.bladeWidth ?? 0));
+  const widenOffset = options.bladeWidth
+    ? (attribute("aGrassBladeSide", "vec2") as TslNode).mul(
+      anchorWorld.distance(cameraPosition)
+        .mul(BLADE_SCREEN_METRES / bladeWidth)
+        .clamp(1, BLADE_MAX_WIDEN)
+        .sub(1)
+    )
+    : null;
+  const lateral: TslNode = widenOffset
+    ? vec2(source.x.add(widenOffset.x), source.z.add(widenOffset.y))
+    : vec2(source.x, source.z);
+  const shaped = vec3(lateral.x.mul(shape.x), source.y.mul(shape.y), lateral.y.mul(shape.x));
   const placed = vec3(
     shaped.x.mul(yawCos).sub(shaped.z.mul(yawSin)).add(anchorLocal.x),
     shaped.y.add(anchorLocal.y),

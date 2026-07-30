@@ -33,8 +33,15 @@ const runBlender = (script, extra = []) => {
 
 // Seed the generic authoring collections once. Existing Blender transforms are
 // deliberately preserved thereafter: the .blend file is the authority.
+//
+// The ARRIVAL empty is the one pose that gets retuned from the repo side too
+// (it is a spawn point, not geometry), and because the seed above never touches
+// an empty that already exists, a .blend older than the manifest still holds
+// the previous pose. The export refuses to publish that silently — pass
+// --allow-arrival-move when the Blender move is the intentional one, then copy
+// the printed pose into data/authored-regions.json in the same commit.
 runBlender("sync-authored-region.py");
-runBlender("export-authored-site.py");
+runBlender("export-authored-site.py", args.includes("--allow-arrival-move") ? ["--allow-arrival-move"] : []);
 
 const publish = spawnSync(process.execPath, [
   path.join(ROOT, "tools", "inject-authored-site.mjs"), "--site", site

@@ -38,7 +38,9 @@ import {
   SUTRO_WATER_RENDER_ORDER,
   distanceToSutroWater,
   isInsideSutroPool,
-  sutroLocalToWorld
+  sutroLocalToWorld,
+  sutroPoolEdgeDistance,
+  sutroPoolSideIsSeamed
 } from "./layout";
 import { SUTRO_BATHS_TUNING } from "./tuning";
 
@@ -139,19 +141,28 @@ export function createSutroBathsStaticWater(options: {
   const metadata: number[] = [];
   const indices: number[] = [];
 
-  for (const [poolIndex, pool] of SUTRO_POOLS.entries()) {
-    const width = pool.maxX - pool.minX - POOL_EDGE_INSET * 2;
-    const depth = pool.maxZ - pool.minZ - POOL_EDGE_INSET * 2;
+  for (const pool of SUTRO_POOLS) {
+    // A sheet stops just short of a real coping so its edge hides under the
+    // tile — but runs dead onto a seam, because the far side of a seam is more
+    // of the same pool and two inset edges there leave a crack in the water.
+    const inset = (side: "minX" | "maxX" | "minZ" | "maxZ") =>
+      sutroPoolSideIsSeamed(pool, side) ? 0 : POOL_EDGE_INSET;
+    const minX = pool.minX + inset("minX");
+    const maxX = pool.maxX - inset("maxX");
+    const minZ = pool.minZ + inset("minZ");
+    const maxZ = pool.maxZ - inset("maxZ");
+    const width = maxX - minX;
+    const depth = maxZ - minZ;
     const columns = Math.max(2, Math.ceil(width / TARGET_CELL_SIZE) + 1);
     const rows = Math.max(2, Math.ceil(depth / TARGET_CELL_SIZE) + 1);
     const firstVertex = positions.length / 3;
 
     for (let row = 0; row < rows; row++) {
       const z01 = row / (rows - 1);
-      const localZ = pool.minZ + POOL_EDGE_INSET + z01 * depth;
+      const localZ = minZ + z01 * depth;
       for (let column = 0; column < columns; column++) {
         const x01 = column / (columns - 1);
-        const localX = pool.minX + POOL_EDGE_INSET + x01 * width;
+        const localX = minX + x01 * width;
         const world = sutroLocalToWorld(localX, localZ);
         positions.push(
           world.x - SUTRO_BATHS.centerX,
@@ -159,16 +170,10 @@ export function createSutroBathsStaticWater(options: {
           world.z - SUTRO_BATHS.centerZ
         );
 
-        const edgeDistance = Math.min(
-          localX - pool.minX,
-          pool.maxX - localX,
-          localZ - pool.minZ,
-          pool.maxZ - localZ
-        );
         metadata.push(
           pool.heat,
-          1 - smoothstep01(edgeDistance / 2.4),
-          poolIndex / Math.max(SUTRO_POOLS.length - 1, 1),
+          1 - smoothstep01(sutroPoolEdgeDistance(pool, localX, localZ) / 2.4),
+          pool.tone,
           1
         );
       }

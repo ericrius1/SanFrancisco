@@ -19,7 +19,7 @@ import {
   dot,
   normalize
 } from "three/tsl";
-import { LIGHT_SCALE } from "../config";
+import { WINDOW_LIT_DENSITY, WINDOW_LIT_DIM, WINDOW_LIT_EMISSIVE } from "../config";
 import { loadTexture } from "../render/textures";
 import { bumpNormal } from "./tslUtil";
 
@@ -132,16 +132,28 @@ export function bakedFacadeSurface(opts: {
     .bitXor(uint(floor(rowCoord).add(1 << 16)).mul(uint(19349663)))
     .bitXor(uint(bid.add(7)).mul(uint(83492791)))
     .toVar();
-  let lit: N = litWindows ? step(0.8, cellHash(cellKey, 3)) : float(0);
+  // 20% authored occupancy, scaled by the citywide density knob.
+  let lit: N = litWindows
+    ? step(1 - 0.2 * WINDOW_LIT_DENSITY, cellHash(cellKey, 3))
+    : float(0);
   if (litWindows && opts.litScale) lit = lit.mul(opts.litScale);
 
   const warmLight = mix(color(0xffb845), color(0xffe49c), cellHash(cellKey, 4));
   const coolLight = mix(color(0xdfe8ff), color(0x9fb6ff), cellHash(cellKey, 5));
   const lightColor = mix(warmLight, coolLight, step(0.88, cellHash(cellKey, 6)));
+  // per-room brightness — same curve as config.windowLitBrightness
+  const hb = cellHash(cellKey, 7);
+  const brightness = mix(float(WINDOW_LIT_DIM), float(1), hb.mul(hb));
   const facing = dot(normalize(p.sub(cameraPosition)), n).negate();
   const glowGraze = smoothstep(0.01, 0.06, facing);
   const emissive = litWindows
-    ? lightColor.mul(lit).mul(pane).mul(2.0 * LIGHT_SCALE).mul(glowGraze).mul(opts.windowGlowW)
+    ? lightColor
+        .mul(lit)
+        .mul(brightness)
+        .mul(pane)
+        .mul(WINDOW_LIT_EMISSIVE)
+        .mul(glowGraze)
+        .mul(opts.windowGlowW)
     : color(0x000000);
 
   // Far per-tile materials stop after the color/alpha sample. The batched and

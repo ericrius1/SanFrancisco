@@ -697,9 +697,16 @@ export class TerrainClipmap {
       .max(0.001);
     const surface = surfaceSample.div(surfaceWeight);
     const urban = color(0xa19d96);
-    // Warmed toward the retired lawn-drape palette (PARK_COLOR mixed with its
-    // grass noise) so parks keep their pre-consolidation richness.
-    const grass = color(0x7aa163);
+    // Matched to what the wildlands blade field actually renders as. This is the
+    // colour BENEATH the grass, and past the blade ring it IS the grass — so any
+    // gap between the two reads as bald ground: the meadow used to end in a hard
+    // band edge with pale sage beyond it, and every downward view showed dark
+    // speckles scattered on a slab instead of one continuous field. Measured by
+    // sampling the rendered blade band against the bare terrain beyond it
+    // (tools/foliage-look-shot.mjs) and scaling this albedo by the ratio; a
+    // straight sRGB scale is right because the tone curve is ~a power law.
+    // Re-measure with that probe if the blade palette or the grade moves.
+    const grass = color(0x659447);
     const sand = color(0xd1c49f);
     const bayFloor = color(0x466c68);
     const rock = color(0x878178);
@@ -710,6 +717,31 @@ export class TerrainClipmap {
       .add(grass.mul(surface.g))
       .add(sand.mul(surface.b))
       .add(bayFloor.mul(surface.a));
+
+    // Marin Headlands biome. The DEM already carries the real rounded
+    // shoulders and gullies, but much of the federal land arrives from OSM as
+    // generic developed ground, which painted the whole bridge backdrop the
+    // same flat beige as an urban parcel. A soft geographic gate restores the
+    // dry coastal-grass / sage mosaic visible around the north anchorage. Road
+    // ribbons remain separate meshes and therefore retain asphalt above it.
+    const marinMask = smoothstep(-6500, -6100, worldXZ.x)
+      .mul(smoothstep(-2600, -3000, worldXZ.x))
+      .mul(smoothstep(-8200, -7800, worldXZ.y))
+      .mul(smoothstep(-4550, -5000, worldXZ.y))
+      .mul(surface.a.oneMinus());
+    const marinGold = color(0x9c8d56);
+    const marinStraw = color(0xb1a16b);
+    const marinSage = color(0x71825a);
+    const marinMeadow = mix(
+      mix(marinGold, marinStraw, smoothstep(40, 210, (positionWorld as N).y)),
+      marinSage,
+      surface.g.mul(0.58)
+    );
+    const marinBlend = (marinMask as N).mul(0.94);
+    terrainColor = (terrainColor as N)
+      .mul(marinBlend.oneMinus())
+      .add((marinMeadow as N).mul(marinBlend));
+
     const slopeRock = smoothstep(0.42, 0.82, worldNormal.y).oneMinus()
       .mul(surface.a.oneMinus())
       .mul(surface.b.oneMinus());

@@ -32,6 +32,8 @@ export type VehicleSignals = {
   driveVoice?: "engine" | "electric";
   /** Drive/scooter bumper-slide + handbrake intensity (0..1) for skid bed. */
   driveSlide?: number;
+  /** Skate: 0..1 metal-on-metal grind intensity. */
+  skateGrind?: number;
 };
 
 type Voice = {
@@ -406,10 +408,11 @@ export class VehicleAudio {
     }
     const wantsVoice = !!sig && (
       sig.mode === "board" || sig.mode === "surf" || sig.mode === "drive" ||
-      sig.mode === "plane" || sig.mode === "boat" || sig.mode === "drone" || sig.mode === "bird"
+      sig.mode === "plane" || sig.mode === "boat" || sig.mode === "drone" ||
+      sig.mode === "bird" || sig.mode === "skate"
     );
     const wantsSkid = !!sig &&
-      (sig.mode === "drive" || sig.mode === "scooter") &&
+      (sig.mode === "drive" || sig.mode === "scooter" || sig.mode === "skate") &&
       (sig.driveSlide ?? 0) > 0.02;
     // Unlocking audio while walking used to build and start every vehicle voice
     // (dozens of oscillators, noise loops and LFOs). No graph is needed until a
@@ -455,7 +458,7 @@ export class VehicleAudio {
     if (!this.#skidGain || !this.#skidFilter) return;
     const sliding =
       !!sig &&
-      (sig.mode === "drive" || sig.mode === "scooter") &&
+      (sig.mode === "drive" || sig.mode === "scooter" || sig.mode === "skate") &&
       (sig.driveSlide ?? 0) > 0.02;
     const amount = sliding ? clamp01(sig!.driveSlide ?? 0) : 0;
     const tune = CAR_SKID_TUNING.values;
@@ -500,6 +503,7 @@ export class VehicleAudio {
     switch (sig.mode) {
       case "board": key = "board"; build = () => this.#buildBoard(ctx); break;
       case "surf": key = "surf"; build = () => this.#buildSurf(ctx); break;
+      case "skate": key = "skate"; build = () => this.#buildSkate(ctx); break;
       case "drive":
         if (sig.driveVoice === "electric") {
           key = "drive-electric";
@@ -555,6 +559,35 @@ export class VehicleAudio {
     skidSrc.start(0, Math.random() * 1.5);
     this.#skidFilter = skidLp;
     this.#skidGain = skidGain;
+  }
+
+  /**
+   * Skateboard: the whole voice is contact noise, because that is all a
+   * skateboard is. A bright rumble band carries urethane over concrete (it
+   * dies the instant the wheels leave the ground — silence IS the ollie), and
+   * a narrow, much brighter resonance rides on top for trucks on steel.
+   */
+  #buildSkate(ctx: AudioContext): Voice {
+    const out = this.#out(ctx);
+    const roll = this.#noiseInto(ctx, "bandpass", 240, 1.1, 0, out);
+    const rumble = this.#noiseInto(ctx, "lowpass", 180, 0.5, 0, out);
+    const grind = this.#noiseInto(ctx, "bandpass", 2600, 7, 0, out);
+    this.#lfo(ctx, 7.3, 260, grind.filter.frequency); // scrape chatter
+    return {
+      mode: "skate",
+      gain: out,
+      level: 0,
+      drive: (sig) => {
+        const rolling = sig.grounded ? clamp01(sig.speed / 22) : 0;
+        const scrape = clamp01(sig.skateGrind ?? 0);
+        roll.filter.frequency.value = 190 + rolling * 900;
+        roll.gain.gain.value = rolling * 0.5;
+        rumble.filter.frequency.value = 120 + rolling * 260;
+        rumble.gain.gain.value = rolling * 0.34;
+        grind.gain.gain.value = scrape * 0.44;
+        return rolling * 0.5 + scrape * 0.55;
+      }
+    };
   }
 
   /** Surfboard: two filtered-noise bands — rail hiss from speed and a deeper
