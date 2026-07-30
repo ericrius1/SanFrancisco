@@ -1017,7 +1017,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (document.fullscreenElement) void document.exitFullscreen();
       else void document.documentElement.requestFullscreen().catch(() => hud.message("Fullscreen blocked by browser"));
     }
-    // H: high-res in-game still → local in_game_shots folder (dev server writer)
+    // H: high-res in-game still → the player's Downloads folder (dev also archives)
     if (
       document.body.classList.contains("started") &&
       !worldArrival.active &&
@@ -1028,12 +1028,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       void takeInGameScreenshot({
         renderer,
         renderFrame,
-        captureStillRgba: pipeline.captureStillRgba,
-        setCinematicMultisampling: pipeline.setCinematicMultisampling
+        captureStillRgba: pipeline.captureStillRgba
       })
         .then((shot) => {
-          const name = shot.path.split("/").pop() ?? "shot.png";
-          hud.message(`Saved ${name} (${shot.width}×${shot.height})`, 3.5);
+          hud.message(`Downloaded ${shot.filename} (${shot.width}×${shot.height})`, 3.5);
         })
         .catch((err) => {
           console.warn("[screenshot]", err);

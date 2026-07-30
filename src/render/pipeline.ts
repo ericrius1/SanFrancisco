@@ -28,7 +28,6 @@ import {
 import { createContactShadowComplement } from "./contactShadows";
 import { SHADOW_LAYERS } from "../world/shadows/shadowLayers";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
-import { yieldToFrame } from "../core/cooperativeWork";
 import { tracer } from "../core/hitchTracer";
 import { motionGate } from "../core/motionGate";
 import { warmScenePaced } from "./warmStaticRegion";
@@ -504,6 +503,45 @@ export function createRenderPipeline(
     return fxaaRuntime;
   };
 
+  // A style variant is a whole fullscreen graph, and building its GPU pipelines
+  // costs seconds — measured 2-5s each, 20s for the first. Selecting one that
+  // has never been compiled pays that inside the first live draw, synchronously,
+  // with no rAF at all. So a style switch warms the requested variant in an
+  // exclusive compile window first and only then swaps: the page stays
+  // responsive, and the previous look stays selected until the new one is ready.
+  const warmedVariantKeys = new Set<string>();
+  const pendingVariantWarms = new Map<string, Promise<void>>();
+  const variantKey = (mask: number, bloomed: boolean) => `${bloomed ? "b" : "s"}${mask & 7}`;
+
+  const warmVariant = (mask: number, bloomed: boolean): Promise<void> => {
+    const key = variantKey(mask, bloomed);
+    if (warmedVariantKeys.has(key)) return Promise.resolve();
+    const inFlight = pendingVariantWarms.get(key);
+    if (inFlight) return inFlight;
+    const promise = compilePostFxVariants([mask])
+      .catch((err) => console.warn("[render] post-fx variant warm failed:", err))
+      .finally(() => pendingVariantWarms.delete(key));
+    pendingVariantWarms.set(key, promise);
+    return promise;
+  };
+
+  /** Select the requested style, compiling it first on its first ever use. */
+  const selectActivePipelineWhenWarm = () => {
+    const bloomed = bloomEnabled();
+    const mask = activeVariantMask & 7;
+    if (warmedVariantKeys.has(variantKey(mask, bloomed))) {
+      selectActivePipeline();
+      return;
+    }
+    void warmVariant(mask, bloomed).then(() => {
+      // Toggling again during a multi-second compile is normal; only the look
+      // that is still requested when this finishes may claim the pipeline.
+      if ((activeVariantMask & 7) === mask && bloomEnabled() === bloomed && !pianoGodRaysActive) {
+        selectActivePipeline();
+      }
+    });
+  };
+
   const applyPostFx = () => {
     applyPostFxParams();
     fxaaRequested = Boolean(POSTFX_TUNING.values.fxaa);
@@ -521,7 +559,7 @@ export function createRenderPipeline(
     applyPianoGodRaysFx();
     // applyPianoGodRaysFx only reselects when the grove owns the pipeline; a
     // bloom toggle outside the grove still has to land.
-    if (!pianoGodRaysActive) selectActivePipeline();
+    if (!pianoGodRaysActive) selectActivePipelineWhenWarm();
   };
 
   // compileAsync mutates shared renderer state (tone mapping, color space, …)
@@ -848,6 +886,7 @@ export function createRenderPipeline(
       return internal._quadMesh;
     });
     await compileFullscreenQuads(quads);
+    for (const mask of masks) warmedVariantKeys.add(variantKey(mask, bloomed));
   };
   const compileFxaaPipeline = async () => {
     const runtime = await ensureFxaaRuntime();
@@ -1270,26 +1309,6 @@ export function createRenderPipeline(
     fastCaptureSize: fastCaptureTarget ? [fastCaptureTarget.width, fastCaptureTarget.height] as const : null,
     /** Precompile scene/effect variants; safe to repeat after new loads. */
     warmup,
-    /** Compile every retained style graph plus the first-use FXAA pass.
-     * One variant per frame so live atmosphere is never drawn under the
-     * compile-time tone-mapping/color-space override. */
-    warmupPostFx: (() => {
-      let inFlight: Promise<void> | null = null;
-      return async () => {
-        if (inFlight) return inFlight;
-        inFlight = (async () => {
-          for (const mask of POSTFX_VARIANT_MASKS) {
-            await compilePostFxVariants([mask]);
-            await yieldToFrame();
-          }
-          await compileFxaaPipeline();
-        })().catch((err) => {
-          inFlight = null;
-          throw err;
-        });
-        return inFlight;
-      };
-    })(),
     /** Stable half-resolution close-contact complement and live controls. */
     contactShadows,
     /**
