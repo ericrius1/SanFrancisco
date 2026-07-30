@@ -178,6 +178,7 @@ export async function installDebugSurfaces(
       ensureSurfboardCustomizer: () => core.state.ensureSurfboardCustomizer,
       palaceReverie: () => core.state.palaceReverie,
       landsEnd: () => core.state.landsEnd,
+      waveOrgan: () => core.state.waveOrgan,
       beachPianist: () => ctx.state.beachPianist,
       afterlight: () => core.state.afterlight,
       oceanBeachKite: () => oceanKite.current()
