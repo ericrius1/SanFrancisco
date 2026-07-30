@@ -501,6 +501,36 @@ export const GRADE_LOOKS: readonly GradeLook[] = [
     lift: 0
   }),
   look({
+    id: "pacificSunset",
+    label: "pacific sunset",
+    note: "the cinema grade — emerald sea against an amber band, deep silhouettes, a compact bright disc",
+    curve: "sf",
+    // The load-bearing control of this look. The sunset sky model paints the
+    // whole hemisphere warm, and a split tone cannot cool a mid-luminance
+    // zenith — so the COOL comes from white balance across the board, and
+    // the warm band comes back through the highlight tint and path-to-white.
+    // Teal-orange the honest way round.
+    whiteBalance: [0.955, 1.0, 1.075],
+    // Past goldenState's 1.24 on purpose: films can spend contrast the live
+    // game cannot, because a shot chooses what falls into its toe.
+    contrast: 1.32,
+    // Same pivot anchor as the house look — mid-grey is untouched by
+    // contrast/saturation/tints, so the solved offset carries over.
+    offsetStops: 0.519,
+    saturation: 1.42,
+    white: 5.5,
+    // A LATER path-to-white than the house look: the sky around the disc
+    // holds its color further up the brightness range, so the bleached ball
+    // stays compact instead of dilating across a quarter of the sky.
+    pathToWhite: [3.4, 14.0, 0.5],
+    // The reference frame's whole identity is this split: deep teal in the
+    // sea's shadows, amber in the band.
+    shadowTint: [0.82, 1.0, 1.2],
+    highlightTint: [1.13, 1.0, 0.8],
+    tint: 0.52,
+    lift: 0
+  }),
+  look({
     id: "clearEye",
     label: "clear eye",
     note: "hue-preserving, no look transform — the honest render, and the calibration reference",

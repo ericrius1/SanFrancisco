@@ -511,12 +511,16 @@ export function oceanSurfaceRadiance(o: OceanSurfaceInputs): N {
           // catch grazing micro-angles a per-pixel Schlick undersells, and a
           // rainbow on the water that only exists at the horizon is not worth
           // its ALU.
+          // ×6 measured against the ×10 placement probe: the fresnel lead
+          // keeps even ×10 tasteful, and below ~×4 the streaks vanish into
+          // the sun glitter. This is an artistic radiance, not an energy
+          // balance — the beams themselves are.
           return spectrum(u)
             .mul(envelope)
             .mul(alongFade)
             .mul(strength)
             .mul(fresnel.mul(2.4).add(0.16))
-            .mul(2.0);
+            .mul(6.0);
         })()
       : vec3(0);
 

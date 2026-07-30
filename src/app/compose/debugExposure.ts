@@ -221,6 +221,9 @@ export async function installDebugSurfaces(
       setSeaTimePin: (t: number | null) => {
         frameB.state.seaTimePin = t;
       },
+      setGradeLook: (id: string) => {
+        pipeline.grade.setLook(id);
+      },
       setExposure: (v: number) => {
         renderer.toneMappingExposure = v;
       },

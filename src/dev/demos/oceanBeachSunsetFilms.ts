@@ -82,6 +82,8 @@ type Film = {
   /** Shot length; defaults to SUNSET_FILM_SECONDS. Keep in step with the
    * production's duration and the audio tables. */
   seconds?: number;
+  /** Grade look id for the take; defaults to the live game's house look. */
+  grade?: string;
   /**
    * Sea-clock pin. Shot time S renders the analytic wave train at t0 + S,
    * every run, exactly. Chosen by tools/cinematic/surfSchedule.mjs against
@@ -108,18 +110,24 @@ const FILMS: readonly Film[] = [
   {
     id: "01",
     title: "Ocean Beach Sunset · The Court",
-    // 20.02: the disc a few degrees over the water, blue still overhead. The
-    // first cut sat at 20.18 in heavy marine layer and the whole frame read
-    // as one pink veil; the reference frame this film is graded against is
-    // CLEAR — emerald sea, amber horizon band, near-black silhouettes — and
-    // that clarity is an air decision before it is a grade decision.
-    hour: 20.02,
+    // 19.82: the disc ~5.5° over the water — high enough that the zenith
+    // still holds blue and the sea reflects emerald instead of salmon, now
+    // inside the widened golden window so the prism runs at full. The first
+    // cut sat at 20.18 in heavy marine layer and the whole frame read as one
+    // pink veil; the reference frame this film is graded against is CLEAR —
+    // emerald sea, amber horizon band, near-black silhouettes — and that
+    // clarity is an hour-and-air decision before it is a grade decision.
+    hour: 19.62,
     exposure: 0.98,
-    // Just enough marine layer to carry the shafts and the fan; the veil at
-    // 0.68 was most of the "faded" complaint.
-    mist: 0.34,
-    shafts: 1.7,
+    // Nearly clear air — at 0.34 the frame still read salmon; the fan is
+    // self-lit and survives thin mist, and the reference is crisp.
+    mist: 0.2,
+    shafts: 1.85,
     subject: 7,
+    // The cinema grade: emerald sea, amber band, deep silhouettes. The live
+    // game keeps the (gentler) evolved goldenState; a film can spend
+    // contrast the open world cannot.
+    grade: "pacificSunset",
     // Thirty seconds, schedule at t0=858.15: a gentle set sweeps the framed
     // beach at 5.8–7.2 s (texture, not climax), its swash sheet wets the
     // sand through the rainbow lull at 18.6–20 s — the smear glows brighter
@@ -181,6 +189,7 @@ const FILMS: readonly Film[] = [
     // bigger second set throws at 17.5–19.9 s (6.5 m). The near field gets
     // wet sand while the background goes off.
     t0: 183.05,
+    grade: "pacificSunset",
     gather: 0.65,
     /**
      * Head height on the sand, tracking north along the beach past the smear.
@@ -231,6 +240,7 @@ const FILMS: readonly Film[] = [
     // set at 13.4–16.0 s (6.6–6.8 m) breaks across the whole frame while the
     // crane is at height. Swash from the opener crosses at ~13–15 s.
     t0: 187.15,
+    grade: "pacificSunset",
     gather: 0.5,
     /**
      * The crane, rebuilt from surf-01 with the break as the anchor: opens at
@@ -282,6 +292,7 @@ const FILMS: readonly Film[] = [
     // frame for more than half the film, which is what a 70 mm frame full of
     // sea needs.
     t0: 185.9,
+    grade: "pacificSunset",
     gather: 0.35,
     /**
      * dusk-04's validated compression grammar, twenty seconds long: the lens
@@ -322,6 +333,7 @@ const FILMS: readonly Film[] = [
     // the contemplative one — then one huge set at 15.0–17.4 s (6.8 m at
     // z1650–1760).
     t0: 622.35,
+    grade: "pacificSunset",
     gather: 0.8,
     /**
      * The finale, in dusk-05's up-look grammar: a quarter-arc under the
@@ -379,6 +391,7 @@ function buildFilm(film: Film): Demo {
       sky.cycleEnabled = false;
       sky.setTimeOfDay(film.hour);
       ctx.setExposure(film.exposure);
+      if (film.grade) ctx.setGradeLook?.(film.grade);
       // Same capture rules as every kite production: MSAA and contact shadows
       // both bind scene depth in ways WebGPU rejects mid-capture.
       ctx.setPostFx({ sceneSamples: 0, contactShadows: false, ink: false, dream: false, retro: false });

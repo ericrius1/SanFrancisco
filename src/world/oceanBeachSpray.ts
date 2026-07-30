@@ -261,7 +261,10 @@ export class OceanBeachSpray {
     material.scaleNode = float(0.75)
       .add(s1.mul(1.5))
       .mul(life.mul(1.9).add(1))
-      .mul(camDist.div(140).clamp(1, 2.6))
+      // Far cap 1.9, down from 2.6: with the burst swell on top, 2.6× at
+      // 200 m turned a line of distinct plumes into one continuous cream
+      // fog bank that closed off the whole sea behind the festival.
+      .mul(camDist.div(140).clamp(1, 1.9))
       // Up to ~1.9× puff size through the throw of a big set — the burst is
       // built from the SAME sprites, just swollen, so count and draw stay put.
       // (2.5× read as peach cotton masses against a sunward lens; the plume
@@ -301,7 +304,7 @@ export class OceanBeachSpray {
     // throw instant is dense: up to ~1.8× coverage while the crown is in the
     // air, which with the size/brightness terms is what reads as an explosion.
     const cover = vertexStage(
-      alive.mul(float(0.42).sub(life.mul(0.2))).mul(burstK.mul(1.0).add(1))
+      alive.mul(float(0.38).sub(life.mul(0.18))).mul(burstK.mul(0.8).add(1))
     ) as N;
 
     material.colorNode = vec4(shaded, 1);

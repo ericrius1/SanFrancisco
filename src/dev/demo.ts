@@ -77,6 +77,9 @@ export type DemoContext = {
    * each frame and the whole surf stack (water, shorebreak, spray, wave
    * audio) rides the pinned clock together. */
   setSeaTimePin?: (t: number | null) => void;
+  /** Select a grade look by id (gradeLooks.ts) — a texture upload, never a
+   * recompile, so productions are free to grade harder than the live game. */
+  setGradeLook?: (id: string) => void;
   setExposure: (v: number) => void;
   setPostFx: (values: Record<string, number | boolean>) => void;
 };
