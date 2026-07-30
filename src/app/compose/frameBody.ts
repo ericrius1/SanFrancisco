@@ -69,6 +69,8 @@ import {
   type SurfboardConfig,
 } from "../../vehicles/surf";
 import { MENU_MODES } from "../../player/discovery";
+import { SkateCoach } from "../../vehicles/skate/coach";
+import { SKATE_PLAZA_CENTER } from "../../world/skatePlaza/meta";
 import { createSessionPersistence } from "../../app/sessionPersistence";
 import { createGameLoop } from "../../app/gameLoop";
 import type { PassengerExitPose } from "../player/embodimentController";
@@ -85,7 +87,46 @@ import type { MainCtx } from "./ctx";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+
+  // One place decides what the trick HUD sees; the three frame paths (live,
+  // world-frozen, fully paused) all call it right after hud.update so the combo
+  // meter keeps reading true while the world is stopped around it.
+  const skateCoach = new SkateCoach();
+  const updateSkateHud = (dt: number) => {
+    const book = player.skateTricks;
+    if (!book) {
+      skateHud.update({ book: null, balancing: false, balance: 0 });
+      return;
+    }
+    const skate = player.skateState;
+    const distance = Math.hypot(
+      player.position.x - SKATE_PLAZA_CENTER.x,
+      player.position.z - SKATE_PLAZA_CENTER.z
+    );
+    // Rim level, so "in the bowl" is a real measurement rather than a guess.
+    const rim = core.state.skatePlaza?.deckLevel ?? player.position.y;
+    const talking = skateCoach.update(dt, {
+      distance,
+      speed: skate.speed,
+      airborne: !skate.grounded,
+      airTime: player.skateAirTime,
+      grinding: skate.grinding,
+      manualing: skate.manualing,
+      belowDeck: player.position.y - rim,
+      combo: book.combo,
+      multiplier: book.multiplier
+    });
+    skateHud.update({
+      book,
+      balancing: skate.grinding || skate.manualing,
+      balance: skate.balance,
+      coach: talking ? skateCoach.line : "",
+      coachStep: skateCoach.step,
+      coachTotal: skateCoach.total,
+      coachCheer: skateCoach.cheer > 0
+    });
+  };
   const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, emoteWheel, updateEmoteKeepAlive, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
   // Reused every frame by the wave-audio listener below; the basis extraction
   // wants three vectors and only one of them is interesting.
@@ -403,6 +444,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       sky.update(ctx.state.elapsed, camera.position, player.renderPosition);
       applyLightFrontRamps();
       hud.update(frameDt);
+      updateSkateHud(frameDt);
       // The checklist has to keep thinking while the map is up. Its last
       // chapter is ABOUT the map — "press M", then pan/zoom/pick/teleport — and
       // the only branch that can observe either is this one. Left out, the step
@@ -526,6 +568,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (player.mode === "plane") player.steerFly(input, frameDt);
       if (player.mode === "surf") player.steerSurf(input, frameDt);
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "skate" && input.pressed("Space")) player.requestSkatePop();
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
         player.requestSurfJump();
       }
@@ -592,12 +635,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         speed: player.speed,
         vspeed: player.velocity.y,
         boost: input.down("ShiftLeft"),
-        grounded: player.mode !== "board" || player.boardGrounded,
+        grounded: player.mode === "skate" ? player.skateState.grounded : player.mode !== "board" || player.boardGrounded,
         surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
         surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
         surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
         driveVoice: player.driveSpec.voice ?? "engine",
-        driveSlide: player.driveSlideFeedback.intensity
+        driveSlide: player.mode === "skate" ? player.skateState.slide : player.driveSlideFeedback.intensity,
+        skateGrind: player.mode === "skate" ? player.skateState.sparks : 0
       });
       swimAudio.update(frameDt, {
         swimming: player.swimming,
@@ -624,6 +668,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       hud.update(frameDt);
+      updateSkateHud(frameDt);
       // paused-but-roaming still streams tiles/core.state.citygen — keep their deferred
       // assembly draining so the frozen city fills in around the live player
       scheduler.run(frameDt < 1 / 55 ? 3 : 1.5);
@@ -1215,6 +1260,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
     if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+    if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "skate" && input.pressed("Space")) player.requestSkatePop();
     if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
       player.requestSurfJump();
     }
@@ -1256,6 +1302,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
 
     // everyone else's interpolation advances BEFORE my pose settles: a
     // passenger's seat is glued to this frame's view of the driver's car
+    // Street rails materialise around whoever is on a board (skate mode only).
+    if (player.mode === "skate") core.state.streetSpots?.update(player.position.x, player.position.z);
     remotes.selfId = net.selfId;
     remotes.update(frameDt);
     hidePickleballRemoteAvatars();
@@ -1720,12 +1768,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       speed: player.speed,
       vspeed: player.velocity.y,
       boost: input.down("ShiftLeft"),
-      grounded: player.mode !== "board" || player.boardGrounded,
+      grounded: player.mode === "skate" ? player.skateState.grounded : player.mode !== "board" || player.boardGrounded,
       surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
       surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
       surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
       driveVoice: player.driveSpec.voice ?? "engine",
-      driveSlide: player.driveSlideFeedback.intensity
+      driveSlide: player.mode === "skate" ? player.skateState.slide : player.driveSlideFeedback.intensity,
+      skateGrind: player.mode === "skate" ? player.skateState.sparks : 0
     });
     swimAudio.update(frameDt, {
       swimming: player.swimming,
@@ -1831,6 +1880,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     }
 
     hud.update(frameDt);
+    updateSkateHud(frameDt);
     tutorial.update(frameDt);
     debugPanel.refresh();
 

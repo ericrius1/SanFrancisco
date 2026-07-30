@@ -259,6 +259,7 @@ export class EmbodimentController {
     if (mode === "drive" && this.currentAnimal) return this.currentAnimal === "bear" ? 3 : 2.4;
     if (mode === "plane" || mode === "boat" || mode === "bird") return 6.5;
     if (mode === "drone" || mode === "board" || mode === "scooter") return 2.8;
+    if (mode === "skate") return 2.2;
     return 2.4;
   }
 }

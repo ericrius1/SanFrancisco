@@ -20,14 +20,16 @@
 # Runnable feature handoffs
 
 - When a feature is completed in a git worktree, end the final response with a `bash` code block the user can press play on to start the preview himself. Do NOT hand over a bare `http://localhost:<port>` link to a server you started — those servers exit with the session, and another worktree can then grab the port and silently serve a different build.
-- One command, in this shape: `cd <absolute worktree path>` first, an uncontested port with `--strictPort` (a squatted port must error, never silently serve someone else's code), `SF_RELAY_PORT` set to port + 3000, and `--open` carrying the query that lands him where the feature is.
+- Hand over `npm run play`, never a raw `vite --strictPort`. Pressing play a SECOND time while the first server is still up is the normal case, and raw vite answers that with "Port NNNN is already in use". `tools/play.mjs` reuses a server that is already serving THIS worktree, refuses loudly if the port belongs to someone else, and only starts one when the port is free.
 
   ```
-  cd <worktree> && SF_RELAY_PORT=<port+3000> npm run dev -- --port <port> --strictPort --open "/?autostart=1"
+  cd <absolute worktree path> && npm run play -- --port <port> --open "/?autostart=1"
   ```
 
-- Verify the command before handing it over: run it, `curl` a file you changed to confirm the server serves THAT worktree, then stop it so his press-play gets a clean start against `--strictPort`.
+- The relay defaults to port + 3000 and the app already proxies to an existing relay, so a shared relay port is not an error.
+- Verify the command before handing it over: run it, confirm the app answers 200, run it AGAIN to prove the reuse path, then leave it running or stop it — either is fine now that re-running is safe.
 - Pick the port by probing for a free pair (dev + relay) — other live worktree sessions squat 5240-5242. The main-repo server on 5179 serves the MAIN repo, not the worktree.
+- `play.mjs --contains` must match CODE, not a comment: vite transforms TS through esbuild, which strips comments, so a doc-comment phrase never survives to the wire.
 - A filesystem path, worktree path, screenshot, or render link is not a substitute for the runnable command.
 - Do NOT set up OS-level services (launchd, LaunchAgents, cron, etc.) to make a preview outlive the session — he prefers to just press play again.
 
