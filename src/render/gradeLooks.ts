@@ -473,31 +473,52 @@ export const GRADE_LOOKS: readonly GradeLook[] = [
   look({
     id: "goldenState",
     label: "golden state",
-    note: "the house grade — saturated dusk, cool shadows, highlights that keep their hue",
+    note: "the house grade — the cinema look's character, calibrated to hold neutrals through daylight",
     curve: "sf",
-    whiteBalance: [1.015, 1.0, 0.975],
-    // 1.24 after the sunset-film reference pass: 1.18 read faded against the
-    // target frame (deep teal water, near-black silhouettes). Still inside the
-    // ~1.3 ceiling past which the fog banks start clipping to black. The 0.18
-    // pivot means this deepens toe and opens highlights without moving
-    // mid-grey, so the exposure anchor below stays solved.
-    contrast: 1.24,
+    /**
+     * NEUTRAL, and that is the one place this look deliberately parts from
+     * `pacificSunset` (the films' grade).
+     *
+     * The cinema look leans its whole white balance cool (blue 1.075) because
+     * a film shoots one hour and can spend a global cast on it. The live world
+     * runs the whole clock, and that cast puts a +23 code-value blue split on
+     * a NEUTRAL grey card — white stucco reads blue at noon.
+     *
+     * Measured before changing it: the dusk teal-orange separation this look
+     * exists for comes almost entirely from the tints and saturation below,
+     * not from white balance. Neutralising it moves dusk sea from a 110 to a
+     * 100 blue-minus-red spread — still well above the 84 this look shipped
+     * with before the film pass — and leaves the warm band identical (−148).
+     * So the cast bought ~9% more dusk teal at the price of every daylight
+     * neutral in the city, and this is the trade taken the other way.
+     */
+    whiteBalance: [1, 1, 1],
+    // The film pass's contrast, adopted wholesale: 1.18 read faded, 1.24 was
+    // the interim, and 1.32 is where the horizon silhouettes go properly dark
+    // without the fog banks clipping. The 0.18 pivot means this deepens the
+    // toe and opens the highlights without moving mid-grey, so the exposure
+    // anchor below stays solved.
+    contrast: 1.32,
     // Solved, not chosen — see the exposure-anchor note on GradeLook.offsetStops.
     offsetStops: 0.519,
-    // 1.3 keeps the dusk water emerald instead of letting the salmon sky
-    // reflection wash it grey. Ratio saturation feeds the shoulder, so the
-    // extra chroma compresses film-like instead of clipping.
-    saturation: 1.3,
-    white: 6.0,
-    // The sun disc (peak ≳ 8) still bleaches to white. The sky wedge around it
-    // (peak ≈ 1.3–3) does not — that gap is the entire look.
-    pathToWhite: [3.2, 16.0, 0.62],
-    // Cooler, deeper teal in the shadows and warmer highlights than the first
-    // solve — the split the reference frame lives on: emerald sea against an
-    // amber horizon band.
-    shadowTint: [0.9, 0.99, 1.12],
-    highlightTint: [1.08, 1.0, 0.87],
-    tint: 0.38,
+    // Ratio saturation, so the extra chroma feeds the shoulder and compresses
+    // film-like rather than clipping. This is what keeps dusk water emerald
+    // instead of letting the salmon sky reflection wash it grey.
+    saturation: 1.42,
+    white: 5.5,
+    // Later and gentler than the old [3.2, 16, 0.62]: the sky around the disc
+    // holds its colour further up the range, so the bleached ball stays
+    // compact instead of dilating across a quarter of the sky. The disc itself
+    // (peak ≳ 8) still goes white.
+    pathToWhite: [3.4, 14.0, 0.5],
+    // The teal-orange split the look lives on, and — with white balance now
+    // neutral — the only thing producing it. Both are luminance-normalised
+    // (hue rotation only) and applied on a luma split, so they colour the
+    // sea's shadows and the band's highlights while leaving mid neutrals
+    // alone. That property is exactly why they can be this strong.
+    shadowTint: [0.82, 1.0, 1.2],
+    highlightTint: [1.13, 1.0, 0.8],
+    tint: 0.52,
     lift: 0
   }),
   look({
