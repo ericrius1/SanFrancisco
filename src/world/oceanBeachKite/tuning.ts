@@ -56,6 +56,15 @@ export const OCEAN_KITE_TUNING = tunables("oceanBeach.kite", {
    */
   prismLight: { v: true, label: "prism spectrum" },
   prismStrength: { v: 1, min: 0, max: 2.5, step: 0.02, label: "prism strength" },
+  /**
+   * Per-shot leverage over how the spectrum sits on the sand. Softness trades
+   * peak brightness for footprint, feather and band bleed (0 = the older,
+   * crisper smear; 2 = maximally diffuse). Dance scales the slow deterministic
+   * breathing/sway/ripple modulation (0 = perfectly still, 1 = subtle life,
+   * 2 = twice the depth — still well short of flicker).
+   */
+  prismSoftness: { v: 1, min: 0, max: 2, step: 0.02, label: "prism softness" },
+  prismDance: { v: 1, min: 0, max: 2, step: 0.02, label: "prism dance" },
 
   showLandmarks: { v: false, label: "attachment landmarks" }
 });
@@ -101,7 +110,9 @@ const OCEAN_KITE_TUNING_FOLDERS: readonly {
       "clothBacklight",
       "volumetricRays",
       "prismLight",
-      "prismStrength"
+      "prismStrength",
+      "prismSoftness",
+      "prismDance"
     ]
   },
   {

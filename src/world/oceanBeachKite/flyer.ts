@@ -243,6 +243,18 @@ export class KiteFlyer {
   #basisY = new THREE.Vector3();
   #basisZ = new THREE.Vector3();
 
+  /**
+   * Retarget this flyer's lane center. The runner reads `#lane` per frame as
+   * its patrol attractor, so moving it makes the runner WALK to the new
+   * center through the existing boundary steering — no teleport. This is how
+   * the encounter's setLaneGather pulls the flock into a loose court around
+   * the prism for the cinematics.
+   */
+  retargetLane(x: number, z: number): void {
+    this.#lane.x = x;
+    this.#lane.z = z;
+  }
+
   constructor(options: KiteFlyerOptions) {
     this.#map = options.map;
     this.design = options.design;
