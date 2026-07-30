@@ -141,10 +141,12 @@ const FILMS: readonly Film[] = [
       // descending so the rainbow rises through the frame as the set arrives.
       eye.y = base + mix(6.8, 4.6, push);
       target.copy(anchor).addScaledVector(along, mix(2, 6, push));
-      // From the smear (sand + 6) up toward the sail as the crane drops —
-      // the kites walk down into frame while the rainbow grows.
-      target.y = base + mix(6, 10.5, push);
-      return mix(42, 52, push);
+      // Between the smear and the sail, riding a growing fraction of the
+      // kite's LIVE altitude — the first look framed only the prism's rays
+      // pouring in from above; the hero itself has to be in the picture,
+      // and a fixed aim height can't hold a kite that swings ±10 m.
+      target.y = base + mix(5.5, 8, push) + (live.kite.y - base) * mix(0.16, 0.34, push);
+      return mix(40, 48, push);
     },
     focus: (_sample, live, out) => {
       const z = live.runner.z - 10;
@@ -182,14 +184,17 @@ const FILMS: readonly Film[] = [
       const anchor = live.runner;
       eye.copy(anchor)
         .addScaledVector(live.sun, -18)
-        .addScaledVector(along, mix(-34, 26, track));
+        .addScaledVector(along, mix(-30, 8, track));
       const base = live.settleEye(eye);
       eye.y = base + 1.7;
       // Aim at the sand the light lies on — just inland of the runner, where
-      // the beam lands — not at the kite. The sail crosses the top of frame
-      // on its own as the track brings it round.
-      target.copy(anchor).addScaledVector(live.sun, -4).addScaledVector(along, mix(2, 6, track));
-      target.y = base + mix(2.4, 3.2, track);
+      // the beam lands. The first cut tracked sixty metres and kept aiming
+      // ahead, so the back half of the film walked clean past the rainbow;
+      // the track is now thirty-eight metres and the aim CLOSES back onto
+      // the smear, with a whisper of the kite's altitude folded in late so
+      // the sail's tail dips into the top of frame over the light it makes.
+      target.copy(anchor).addScaledVector(live.sun, -4).addScaledVector(along, mix(3, -2, track));
+      target.y = base + mix(2.4, 3.0, track) + (live.kite.y - base) * mix(0.02, 0.09, track);
       return 30;
     },
     focus: ({ u }, live, out) => {
