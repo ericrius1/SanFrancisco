@@ -72,6 +72,35 @@
  *    and `#buildComposite` for the full argument; in short, upstream's
  *    `min( CoC, 0.5 ) * 2` is a stand-in for a coverage term it never computes,
  *    and the artifact it apologises for is the classic foreground halo.
+ *
+ * ---------------------------------------------------------------------------
+ * KNOWN AND DELIBERATELY NOT CHANGED: THE FAR FIELD GETS BRIGHTER.
+ *
+ * Browser measurement, this stage isolated at the Golden Gate deck: the frame
+ * changes by 2.67 over 18.7% of pixels, and the band-limited direction is WRONG
+ * at large scale — sky +14.89 luma, water +5.15/+4.41, near deck +0.02. The
+ * out-of-focus background gains about 10%.
+ *
+ * MECHANISM, and it is not the near-field halo above. `#buildBlur16` is a 16-tap
+ * MAX filter, and `#buildComposite` blends the far field by the pixel's OWN far
+ * CoC — which saturates at 1 across a distant background. So for every fully
+ * defocused pixel the composite does not blend toward the 64-tap weighted
+ * AVERAGE; it replaces the pixel outright with the LOCAL MAXIMUM of that average
+ * over a disc. A max filter is >= the mean on every non-constant field, with
+ * equality only where the field is flat, so a smooth bright sky can only get
+ * brighter, everywhere, by roughly (gradient x disc radius).
+ *
+ * That is upstream's bokeh model, not a slip in this fork: the max pass is what
+ * makes a bright point expand into a disc instead of dissolving, and upstream
+ * maxes both fields for the same reason. Replacing it for the far field (or
+ * gating it on a highlight threshold) is a decision about what defocus should
+ * LOOK like, and this stage ships disabled (`post.dof.enabled: false`), so it
+ * cannot reach a frame. Diagnosed here rather than changed, because a repair pass
+ * silently redesigning the bokeh of a stage nobody has art-directed is worse than
+ * a stage with a known, located, written-down behaviour.
+ *
+ * The near field does not have this problem for a structural reason worth
+ * keeping: it blends by COVERAGE, which `#buildBlur64` actually computes.
  */
 import * as THREE from "three/webgpu"
 import {

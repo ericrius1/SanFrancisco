@@ -7,21 +7,19 @@
 //   lin  = colourSlot.sample(uv).rgb          // beauty, or the god-ray composite
 //   occ  = min(contactFactorAt(uv), ssaoFactorAt(uv))
 //   lin *= occ
-//   lin += ssr.sample(uv).rgb * ssrIntensity * reflectivityAt(uv)
+//   lin += ssrReflectionAt(uv) * ssrIntensity  // mask AND roughness→mip inside
 //   If (uwSubmersion > 0): Beer-Lambert fog + 16-tap god rays   // SURVIVOR
 import * as THREE from "three/webgpu"
 import { Fn, If, float, mix, screenUV, uniform, vec4 } from "three/tsl"
 import { createStageQuad } from "../shared/fullscreen"
-import { createTextureSlot } from "../shared/textureSlot"
 import { ssaoFactorAt } from "../ssao"
+import { ssrReflections } from "../ssr"
 import { STAGE_ORDER } from "../order"
 import type { N, PostFrameContext, PostStage, PostStageSetup, TextureSlot } from "../types"
 import { COMPOSITE_TUNING } from "./tuning"
-import { clearAuxSources, reflectionsTexture } from "./auxSources"
 import { applyUnderwater, setUnderwaterEnabled } from "./underwater"
 
 export { setUnderwaterPostFx } from "./underwater"
-export { provideReflections, type AuxTextureSource } from "./auxSources"
 
 export type CompositeDeps = {
   /**
@@ -31,40 +29,6 @@ export type CompositeDeps = {
    * before anything opens a pass.
    */
   contactFactorAt?: (uv: N) => N
-}
-
-/**
- * A 1×1 stand-in holding the SSR stage's EXACT identity: black, adds nothing.
- * Two reasons it is a texture rather than a null check:
- *
- *  - a `texture()` node must always have something bound, and the bound object's
- *    format and filter mode decide the WGSL sampler binding type
- *    (textureSlot.ts:18-23) — hence rgba16float + LinearFilter, matching the
- *    real SSR target rather than a convenient RGBA8;
- *  - it makes "SSR is off" and "SSR wrote 0 everywhere" the same pixels, which is
- *    what lets an ablation probe attribute a difference to the stage rather than
- *    to the composite's plumbing.
- *
- * The fetch is skipped by a uniform branch anyway (see the fragment), so this is
- * bound for validity, not for cost.
- */
-function ssrIdentityTexture(): THREE.DataTexture {
-  const texture = new THREE.DataTexture(
-    // Half-float bits: 0x0000 = 0.0, 0x3c00 = 1.0. rgb black, alpha opaque.
-    new Uint16Array([0x0000, 0x0000, 0x0000, 0x3c00]),
-    1,
-    1,
-    THREE.RGBAFormat,
-    THREE.HalfFloatType
-  )
-  // Underscores only — see targets.ts:70-72.
-  texture.name = "post_composite_ssr_identity"
-  texture.colorSpace = THREE.NoColorSpace
-  texture.minFilter = THREE.LinearFilter
-  texture.magFilter = THREE.LinearFilter
-  texture.generateMipmaps = false
-  texture.needsUpdate = true
-  return texture
 }
 
 export function createCompositeStage(setup: PostStageSetup, deps: CompositeDeps): PostStage {
@@ -82,11 +46,21 @@ export function createCompositeStage(setup: PostStageSetup, deps: CompositeDeps)
     type: THREE.HalfFloatType
   })
 
-  const ssrIdentity = ssrIdentityTexture()
-  // Its own slot, not `inputSlot()` — the chain hands a stage exactly one
-  // upstream COLOUR, and the reflection buffer is an aux product it does not
-  // thread (auxSources.ts explains why the side channel exists at all).
-  const ssrSlot = createTextureSlot("post_composite_ssr", ssrIdentity)
+  /**
+   * U3's published accessor, resolved ONCE at construction — `chain.ts` builds
+   * `ssr` before `composite` and now checks that it did, because this is the one
+   * line where the order matters.
+   *
+   * `reflectionAt()` and not a texture handoff, and that is not a tidy-up: the
+   * reflection buffer is a FIVE-LEVEL MIP CHAIN and only U3 knows the
+   * roughness→LOD mapping. The composite used to reach it through a texture
+   * registry and sample it with an implicit LOD — a full-res quad over a half-res
+   * texture computes a negative LOD that clamps to 0 — so level 0 was the only
+   * level anything ever read, the copy and the four blur passes were computed and
+   * discarded every frame, and every damp surface reflected like polished glass.
+   * The accessor is what makes the wet end of a swash band read as a sheen.
+   */
+  const reflections = ssrReflections()
 
   const U = {
     /**
@@ -101,13 +75,6 @@ export function createCompositeStage(setup: PostStageSetup, deps: CompositeDeps)
     /** 1 while an SSR texture is bound this frame. Uniform branch condition. */
     ssrActive: uniform(0)
   }
-
-  /**
-   * The reflection term. Reads the registry-bound slot today; when U3 publishes
-   * a node accessor the way U2 did for AO, this function body becomes that
-   * import and ./auxSources.ts goes away. Nothing else in the file changes.
-   */
-  const ssrColourAt = (uv: N): N => ssrSlot.node.sample(uv).rgb
 
   const quad = createStageQuad("post_composite")
   quad.setFragment(
@@ -135,14 +102,29 @@ export function createCompositeStage(setup: PostStageSetup, deps: CompositeDeps)
       const ao = ssaoFactorAt(uv)
       lin.mulAssign(mix(contact.min(ao), contact.mul(ao), U.occlusionCombine))
 
-      // Masked SSR, added in linear light. `reflectivityAt` is the g-buffer
-      // alpha that only surfaces which opted in via `writeSsrMask()` ever write,
-      // so a dry SF afternoon adds exactly zero here — and the uniform branch
-      // means it does not even pay the two fetches to discover that. Same
-      // measured idiom as the underwater skip below (PERF_LEVELUP.md:296).
-      If(U.ssrActive.greaterThan(0), () => {
-        lin.addAssign(ssrColourAt(uv).mul(U.ssrIntensity).mul(gbuffer.reflectivityAt(uv)))
-      })
+      // Masked SSR, added in linear light. The mask is the g-buffer alpha that
+      // only surfaces which opted in via `writeSsrMask()` ever write, so a dry SF
+      // afternoon adds exactly zero here — and the uniform branch means it does
+      // not even pay the fetches to discover that. Same measured idiom as the
+      // underwater skip below (PERF_LEVELUP.md:296).
+      //
+      // NO `.mul( gbuffer.reflectivityAt( uv ) )`. `reflectionAt()` applies the
+      // mask itself (ssr/vendor/ssr.ts:290-301) and multiplying here as well
+      // would SQUARE it — which erases exactly the damp end of the swash band the
+      // mip chain was built to serve. The mask is applied once, at whichever end
+      // owns the accessor, and that end is U3's.
+      //
+      // `null` means THIS CHAIN HAS NO SSR STAGE — the accessor's inert form —
+      // and the whole term is then omitted from the graph rather than added as a
+      // zero, which is what makes such a chain bit-identical to Wave 0's
+      // composite. A JS `if`, deliberately not a TSL `If()`: the answer is fixed
+      // at codegen.
+      const ssrTerm = reflections.reflectionAt(uv)
+      if (ssrTerm !== null) {
+        If(U.ssrActive.greaterThan(0), () => {
+          lin.addAssign(ssrTerm.mul(U.ssrIntensity))
+        })
+      }
 
       // Depth is bound EXPLICITLY from the g-buffer now. See underwater.ts for
       // the private-traversal bug that fixes.
@@ -177,12 +159,15 @@ export function createCompositeStage(setup: PostStageSetup, deps: CompositeDeps)
     enabled: () => COMPOSITE_TUNING.values.enabled === true,
     output: () => target.texture,
     render: (frame: PostFrameContext) => {
-      // Resolved per frame, never cached: a stage toggled off mid-flight returns
-      // null and the composite falls back to the exact identity without anything
-      // having to notify it.
-      const ssr = reflectionsTexture()
-      ssrSlot.bind(ssr ?? ssrIdentity)
-      U.ssrActive.value = ssr ? 1 : 0
+      // Asked per frame, never cached: a stage toggled off mid-flight answers
+      // false and the branch below stops paying for the fetches. `active()` is a
+      // plain read of the tunable — it renders nothing and writes no uniform, so
+      // asking it here cannot perturb the stage it is asking about.
+      //
+      // This is a COST branch, not a correctness one: `reflectionAt()` already
+      // multiplies by the stage's own `active` uniform, so a skipped stage
+      // contributes exactly zero even if this uniform were stale.
+      U.ssrActive.value = reflections.active() ? 1 : 0
 
       quad.render(frame.renderer, target)
     },
@@ -194,8 +179,6 @@ export function createCompositeStage(setup: PostStageSetup, deps: CompositeDeps)
     tuning: { group: COMPOSITE_TUNING, structuralKeys: [], recompileKeys: [] },
     dispose: () => {
       quad.dispose()
-      ssrIdentity.dispose()
-      clearAuxSources()
     }
   }
 }

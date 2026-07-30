@@ -29,6 +29,9 @@ import { createSharpenStage } from "./sharpen"
 import { createGrainStage } from "./grain"
 import { createDisplayStage } from "./display"
 
+/** What `#renderBypass` runs: the display tail, and nothing else. */
+const BYPASS_RAN: readonly string[] = Object.freeze(["display"])
+
 export type PostChainDeps = {
   readonly renderer: THREE.WebGPURenderer
   readonly camera: THREE.PerspectiveCamera
@@ -144,6 +147,29 @@ export function createPostChain(deps: PostChainDeps): PostChain {
   ]
   constructing = null
 
+  /**
+   * CONSTRUCTION order, not render order — the one place the two are both load
+   * bearing, so it is checked rather than assumed.
+   *
+   * `composite` builds its fragment ONCE and reaches SSR through the module
+   * accessor `ssrReflections()`, which returns an INERT set until
+   * `createSsrStage()` has run. Build them the other way round and the composite
+   * silently compiles with no reflection term at all: no error, no warning, a
+   * stage that renders six passes into a buffer nothing samples. That is the
+   * exact failure mode this chain is supposed to make impossible, so it gets an
+   * assertion instead of a comment.
+   *
+   * This is a JS-time ordering question about the array literal above and cannot
+   * be expressed through STAGE_ORDER, which only sorts the per-frame loop.
+   */
+  const constructionOrder = stages.map((stage) => stage.id)
+  if (constructionOrder.indexOf("ssr") > constructionOrder.indexOf("composite")) {
+    throw new Error(
+      "[post] the ssr stage must be CONSTRUCTED before composite — the composite captures " +
+        "ssrReflections() while building its fragment, and an inert capture loses reflections silently"
+    )
+  }
+
   const ordered = [...stages].sort((a, b) => a.order - b.order)
   const byId = new Map(ordered.map((stage) => [stage.id, stage]))
   if (ordered[ordered.length - 1] !== displayStage) {
@@ -167,7 +193,27 @@ export function createPostChain(deps: PostChainDeps): PostChain {
   let lastInputHeight = 0
   let lastOutputWidth = 0
   let lastOutputHeight = 0
-  let lastPassCount = 0
+  /**
+   * THE STAGES THAT ACTUALLY RENDERED on the last presented frame, in the order
+   * they ran. `state()` reports this and derives `passes` from its length, which
+   * is the only way the two can be made to agree.
+   *
+   * They did not. `state().passes` was a record of the last frame while
+   * `state().enabled` re-ran every stage's `enabled()` predicate at call time, so
+   * the pair answered two different questions — "how many stages rendered" versus
+   * "how many would render if the chain ran". Under the master toggle they
+   * disagreed by construction: `#renderBypass` runs exactly one pass and the
+   * predicates still reported the seven stages that would have run. Any check of
+   * `passes === enabled.length` was therefore false the moment anyone bypassed
+   * the chain, which is the shape of contract that gets deleted rather than
+   * fixed.
+   *
+   * Re-running the predicates was also not the read-only observation it looked
+   * like: `enabled()` is the ONLY per-frame hook a skipped stage gets, and SSR
+   * uses it to write `ssr.active.value` (ssr/index.ts:239-247). A probe polling
+   * `state()` was writing a GPU uniform.
+   */
+  let lastRan: readonly string[] = []
   let lastInputScale = 1
 
   const resizeIfNeeded = (frame: PostFrameContext) => {
@@ -198,8 +244,11 @@ export function createPostChain(deps: PostChainDeps): PostChain {
    */
   const renderBypass = (frame: PostFrameContext) => {
     slots.get("display")?.bind(beautyTexture)
-    lastPassCount = 1
     displayStage.render(frame)
+    // Recorded through the same variable the loop below writes, for the same
+    // reason: the display tail is a pass, it ran, and it is the only one that
+    // did. `state()` reads this and reports passes 1 / enabled ["display"].
+    lastRan = BYPASS_RAN
   }
 
   const chain: PostChain = {
@@ -218,7 +267,7 @@ export function createPostChain(deps: PostChainDeps): PostChain {
       }
 
       let colour: THREE.Texture = beautyTexture
-      let passes = 0
+      const ran: string[] = []
 
       for (const stage of ordered) {
         // THE ENTIRE TOGGLE MECHANISM. Not blitted, not cleared, not rendered —
@@ -230,7 +279,7 @@ export function createPostChain(deps: PostChainDeps): PostChain {
         }
         slots.get(stage.id)?.bind(colour)
         stage.render(frame)
-        passes += 1
+        ran.push(stage.id)
         if (stage.kind === "colour") {
           const produced = stage.output()
           if (produced) colour = produced
@@ -242,7 +291,7 @@ export function createPostChain(deps: PostChainDeps): PostChain {
       // `TextureSlot.bind()` re-derives from whatever texture it was just handed.
       // A resolution change is therefore already carried by the binding, and a
       // parallel bookkeeping variable would be a second source of truth.
-      lastPassCount = passes
+      lastRan = ran
     },
 
     applyParams() {
@@ -281,10 +330,14 @@ export function createPostChain(deps: PostChainDeps): PostChain {
 
     stage: (id: string) => byId.get(id),
 
+    // A pure read of the last presented frame — it renders nothing, evaluates no
+    // stage predicate and touches no uniform, so polling it cannot perturb what
+    // it is measuring. `passes` is `enabled.length` by construction; there is no
+    // longer a second number that can drift from the first.
     state: () => ({
-      enabled: ordered.filter((stage) => stage.enabled()).map((stage) => stage.id),
+      enabled: [...lastRan],
       inputScale: lastInputScale,
-      passes: lastPassCount
+      passes: lastRan.length
     }),
 
     grade: grade.runtime,

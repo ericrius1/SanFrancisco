@@ -208,7 +208,27 @@ export interface PostChain {
   readonly displayPipeline: THREE.RenderPipeline
   readonly stages: readonly PostStage[]
   stage(id: string): PostStage | undefined
-  /** For the debug panel and probes. */
+  /**
+   * For the debug panel and probes. A pure read of the LAST PRESENTED FRAME —
+   * `enabled` is what actually rendered, in order, and `passes` is its length.
+   *
+   * Deliberately history and not prediction. Re-deriving `enabled` from the live
+   * `stage.enabled()` predicates made the two fields answer different questions
+   * and disagree by construction under the master toggle (the bypass runs one
+   * pass; the predicates named all seven that would have run). It also was not
+   * read-only: `enabled()` is the only per-frame hook a skipped stage gets and
+   * SSR clears `ssr.active` from it, so polling perturbed the thing it measured.
+   *
+   * Consequence for callers: a tunable written this tick is visible here only
+   * after the next presented frame. Tick, then read.
+   *
+   * Second consequence, which reads as an anomaly if you do not expect it: a tick
+   * that does NOT present — the compile gate holds frames (pipeline.ts:74-88) —
+   * leaves this reporting the previous frame's record while `renderer.info`
+   * records no new draw calls. A probe sampling both per tick will see state
+   * "advance" with a flat draw count around any real await that lets a queued
+   * compile land. That is the contract working, not a chain fault.
+   */
   readonly state: () => { enabled: string[]; inputScale: number; passes: number }
   readonly grade: import("../grade").GradeRuntime
   dispose(): void

@@ -26,8 +26,23 @@ export const TEMPORAL_TUNING = tunables("post.temporal", {
   /** Stock 128 is far too permissive with reprojection-only velocity. This is
    *  the primary defence against moving-object ghosting. */
   maxVelocityLength: { v: 48, min: 16, max: 256, step: 1, label: "· max velocity (px)" },
-  varianceGammaMin: { v: 0.5, min: 0.25, max: 1.5, step: 0.05, label: "· clamp at rest" },
-  varianceGammaMax: { v: 1, min: 0.5, max: 2, step: 0.05, label: "· clamp in motion" },
+  /**
+   * The neighbourhood variance clamp's width. LABELS SWAPPED RELATIVE TO THE
+   * KEY NAMES, ON PURPOSE — the keys are persisted paths (`post.temporal.*`) so
+   * renaming them would discard user overrides, but the panel must not lie.
+   *
+   * `vendor/taau.ts:375` is `mix(min, max, motionFactor.oneMinus().pow2())`,
+   * verbatim from TAAUNode.js:722 (`mix(0.5, 1, …)`). At REST motionFactor is 0,
+   * so `oneMinus().pow2()` is 1 and the mix returns `varianceGammaMAX`; under
+   * full motion it returns `varianceGammaMIN`. That is the correct behaviour —
+   * a wide clamp accepts more history and is safe when nothing is moving, and a
+   * tight clamp rejects history where a moving object would ghost — but it means
+   * `varianceGammaMin` is the IN-MOTION knob and `varianceGammaMax` is the
+   * AT-REST one. Verified: sweeping `varianceGammaMin` 0.5 → 1.25 on a static
+   * frame moves the far-cable thin-feature metric by 0.000.
+   */
+  varianceGammaMin: { v: 0.5, min: 0.25, max: 1.5, step: 0.05, label: "· clamp in motion" },
+  varianceGammaMax: { v: 1, min: 0.5, max: 2, step: 0.05, label: "· clamp at rest" },
   /** Declared fallback: TRAA is the only temporal node in three's display folder
    *  that is already correct under reversed depth. Structural, not a live
    *  toggle — switching builds the other resolve's graph. */

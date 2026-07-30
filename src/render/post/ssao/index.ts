@@ -9,6 +9,14 @@
 // already darkens contacts on the direct-sun term, and a product double-darkens
 // (docs/POSTFX_CINEMATIC_PATHWAY.md:75). U7's accessor is `ssaoFactorAt(uv)`,
 // exported below.
+//
+// IF YOU ARE HERE BECAUSE OF OCCLUSION ON WATER, read vendor/gtao.ts deviation
+// 10 first. `radius` is a view-space length spent by a screen-space march, and
+// past the range where it projects to one depth texel upstream's kernel does not
+// degrade to "no occlusion" — it fabricates a fixed 22-32% at grazing incidence
+// out of the projection alone. Measured at 0.68-0.75 over the open sea, -7.5 luma
+// on the water in the shipping frame; now 0.98 there with the near field
+// unchanged at 0.9925. The tunables below are innocent and none of them moved.
 import * as THREE from "three/webgpu"
 import { clamp, float, texture, uniform } from "three/tsl"
 import { STAGE_ORDER } from "../order"
@@ -161,6 +169,12 @@ export function createSsaoStage(setup: PostStageSetup): PostStage {
       // also the cheap path when the chain's pool resize already got there.
       target.setSize(width, height)
       pass.setResolution(width, height)
+      // NOT `width, height`. The horizon search marches the BEAUTY DEPTH, which
+      // is at the chain's input resolution, and the step test that keeps this
+      // stage from inventing occlusion at long range (vendor/gtao.ts deviation
+      // 10) has to measure a step against the sampling rate of the buffer it
+      // steps through, not against this pass's own.
+      pass.setDepthResolution(frame.inputWidth, frame.inputHeight)
     },
 
     warmupQuads: () => [pass.quadMesh],

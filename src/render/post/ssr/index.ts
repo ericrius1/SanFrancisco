@@ -18,22 +18,66 @@
 // (pools, ~0.85). So the mask is empty downtown, in the Mission and inside every
 // interior pocket, and it is emphatically NOT empty anywhere you can see water.
 //
-// WHICH MAKES THE BRIEF'S WARNING LIVE, NOT THEORETICAL: "an unmasked SSR on the
-// ocean is strictly worse than the analytic sky reflection already in
-// waterShadingTSL.ts". The ocean now carries mask 0.9, so at any coastal stop
-// this stage adds a screen-space reflection ON TOP of an analytic one that is
-// already shading the same pixels. Expect over-bright, doubled horizons at Ocean
-// Beach and the Golden Gate deck. The three ways out, in order of preference:
-//   1. drop the ocean's own mask to 0 and let SSR own the reflection (water.ts,
-//      not this unit's file);
-//   2. drop `post.ssr.intensity` to taste — a knob, not a fix;
-//   3. cut the stage, which is what the brief asks for if the honest answer is
-//      that the analytic reflection was already better.
-// This cannot be settled without pixels. It is the first thing the verification
-// phase should look at.
+// THE PREDICTION THIS HEADER MADE WAS WRONG, AND THE PIXELS SAY SO. It expected
+// "over-bright, doubled horizons at Ocean Beach" from a screen-space reflection
+// landing on top of waterShadingTSL.ts's analytic one. The opposite is true. Two
+// independent browser sessions, three coastal stops: the raw reflection buffer is
+// non-zero on 0.08-0.73% of pixels — a thin band tracing the far shoreline, near
+// and mid bands exactly 0.0 — for a final-image delta of 0.0024-0.0083 against a
+// 0.0397 noise floor, and 0.29-0.45 at MAXIMUM INTENSITY in the swash. Dry stops
+// are correctly free. Forcing `maskThreshold` 0.02 -> 0 changed the image by
+// EXACTLY 0.0, and forcing `intensity` 0.8 -> 2 with `maxDistance` 18 -> 120 made
+// it WORSE (a fixed step budget spread over a longer ray misses more).
+//
+// THE FIRST HALF OF THAT IS STRUCTURAL AND IS NOT A BUG. A near-horizontal water
+// surface reflects SKY; screen space cannot supply sky; this fork ships
+// `environmentNode: null` on purpose (BRIEF §4.3 forbids vendoring
+// ImportanceSampledEnvironment). The only reflections screen space CAN supply
+// over open water are of geometry already above the waterline in frame — which is
+// exactly the shoreline band that shows up, landing exactly where a reflection of
+// that geometry belongs. That is SSR doing its job, and it is the RIGHT job:
+// waterShadingTSL.ts already owns the analytic sky term, so a stage that also
+// tried to would double it. Every stop measured so far — Ocean Beach, Lands End,
+// the Golden Gate deck — is open coast, i.e. the case with the least on-screen
+// geometry above the waterline that this world contains. The mask's other
+// authoring sites are not: sutroBaths/staticWater, japaneseTeaGarden's pond,
+// ghostShip's hot tub and terrainClipmap's `wetSand` are all enclosed by
+// geometry, and none has been under a camera yet. Cutting the stage on coastal
+// evidence would be cutting it on the evidence least able to speak for it.
+//
+// THE SECOND HALF WAS A REAL DEFECT, AND IT IS FIXED HERE. "It pays a pass, a
+// copy and four blur passes for nothing" was literally true of five of those six
+// passes, and for a reason that had nothing to do with the ocean: the composite
+// reached this stage through a TEXTURE registry (the deleted
+// composite/auxSources.ts) and sampled it with an implicit LOD. A full-res quad
+// over a half-res texture computes a negative LOD that clamps to 0, so level 0 —
+// an unblurred COPY of the SSR target — was the only level anything ever read.
+// The four blur levels were computed and discarded every frame, and every damp
+// surface reflected like polished glass. The composite now consumes
+// `reflectionAt()`, which is where the roughness→LOD mapping lives; the mips are
+// sampled, and the mask is applied once instead of twice.
+//
+// The copy is NOT waste and stays: it is what keeps the blur passes from binding
+// and writing one texture in a single pass, which is the failure this whole chain
+// is shaped around.
+//
+// `enabled` still ships `true`, and deliberately. Cutting a stage is a wave
+// owner's call about what ships, not a repair pass's call to quietly zero a
+// default — and the honest reading of the evidence is "not yet measured where it
+// was designed to work", not "measured and worthless". If the call is ever to
+// cut, `post.ssr.enabled: false` in ./tuning.ts also retires this file's
+// RECOMPILE_EXCEPTIONS entry in tools/post-chain-contract-test.mjs, which is the
+// tension §5 flagged.
+//
+// STILL UNRESOLVED, and named so it is not lost: the reflection is scaled by
+// `post.ssr.intensity` (0.8, applied in the kernel at vendor/ssr.ts:698) AND by
+// `post.composite.ssrIntensity` (0.8, applied at the consumer). Both are in the
+// brief — §4.3's table and §4.4's formula — so they are a SPEC collision, not a
+// coding slip: two sliders in two panels multiply to 0.64 and neither says so.
+// Left at 0.64 rather than silently rescaled, because collapsing them changes the
+// shipping strength of a stage by 1.25x and that is the wave owner's decision.
 import * as THREE from "three/webgpu"
 import { unpackRGBToNormal } from "three/tsl"
-import { provideReflections } from "../composite/auxSources"
 import { STAGE_ORDER } from "../order"
 import type {
   N,
@@ -58,21 +102,24 @@ export type SsrReflections = {
   /**
    * Scene-linear reflection radiance at `uv`, blurred by roughness, ready to ADD.
    *
-   * This is the accessor `composite/auxSources.ts` asks U3 to publish so that
-   * `ssrColourAt()` can become an import and the texture registry can be deleted.
-   * It is strictly better than sampling the texture, for one reason: the reflection
-   * buffer holds a MIP CHAIN, and only this function knows the roughness→LOD
-   * mapping. A plain fullscreen sample of the same texture always lands on level 0
-   * and every wet surface reads as a perfect mirror.
+   * ADOPTED BY THE COMPOSITE, which is the point of it. The reflection buffer is
+   * a FIVE-LEVEL MIP CHAIN and only this function knows the roughness→LOD
+   * mapping; the texture registry it replaced could only hand over a Texture, and
+   * a fullscreen quad sampling a half-res texture computes a negative implicit
+   * LOD that clamps to 0. So while the registry was the consumer, level 0 was the
+   * only level anything read — the copy and the four blur passes ran every frame
+   * and were discarded, and every damp surface reflected like polished glass.
    *
-   * Mask-weighted and intensity-scaled HERE, once. Whoever adopts it must DROP the
-   * `.mul(gbuffer.reflectivityAt(uv))` at composite/index.ts:144 in the same edit —
-   * that multiply is correct against the raw texture and squares the mask against
-   * this. Reads zero while the stage is disabled or skipped, so the composite's
-   * `ssrActive` uniform branch stays correct either way.
+   * Mask-weighted and intensity-scaled HERE, once, which is why the composite no
+   * longer multiplies by `gbuffer.reflectivityAt(uv)`: that multiply is correct
+   * against the RAW texture and squares the mask against this. Reads exactly zero
+   * while the stage is disabled or skipped (the `active` uniform), so the
+   * composite's uniform branch is a cost optimisation and never a correctness
+   * dependency.
    */
   reflectionAt(uv: N): N
-  /** Whether the stage is producing this frame's contents. */
+  /** Whether the stage is producing this frame's contents. A plain read of the
+   *  tunable — it writes no uniform, so a consumer may poll it per frame. */
   active(): boolean
 }
 
@@ -95,16 +142,6 @@ let currentStage: SsrStage | null = null
  */
 export function ssrReflections(): SsrReflections {
   return currentStage ?? INERT
-}
-
-/** For the panel and probes, which hold the chain and can ask it by id. */
-export function ssrReflectionsOf(stage: PostStage | undefined): SsrReflections {
-  const candidate = stage as (PostStage & Partial<SsrReflections>) | undefined
-  if (!candidate || typeof candidate.reflectionAt !== "function") return INERT
-  return {
-    reflectionAt: candidate.reflectionAt.bind(candidate),
-    active: candidate.active!.bind(candidate)
-  }
 }
 
 /** `TargetSpec.scale` is readonly for stages that never change it. The resolution
@@ -306,26 +343,16 @@ export function createSsrStage(setup: PostStageSetup): SsrStage {
 
     dispose: () => {
       if (currentStage === stage) currentStage = null
-      // A stale closure in the aux registry would outlive this render target.
-      // The composite clears the registry too; both orders are safe.
-      provideReflections(null)
       ssr.dispose()
     }
   }
 
+  // PUBLISHED BEFORE THE FACTORY RETURNS, because `composite` reads the accessor
+  // during ITS construction and `chain.ts` builds this stage first (and now
+  // checks that it did). The texture registry this replaced could be filled in
+  // afterwards precisely because it only ever carried a Texture — and that is
+  // exactly why it could not carry the roughness→LOD mapping, which is a graph.
   currentStage = stage
-
-  // The registry hand-off composite/auxSources.ts specifies, verbatim. A pull, so
-  // nothing has to be re-pushed after a resize (a RenderTarget keeps texture
-  // identity across setSize) or after a toggle; `null` means "not this frame" and
-  // the composite binds its own black identity instead.
-  //
-  // The BLUR target, not the raw one. Level 0 of the blur chain is an unblurred
-  // copy of the raw reflection, and an implicit-LOD fullscreen sample of a
-  // half-res texture from a full-res quad computes a negative LOD that clamps to
-  // 0 — so today's consumer gets exactly the raw reflection, and the mip chain is
-  // already in place for the day it switches to `reflectionAt()`.
-  provideReflections(() => (stage.enabled() ? ssr.reflectionTexture : null))
 
   return stage
 }

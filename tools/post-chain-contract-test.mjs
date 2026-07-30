@@ -437,11 +437,29 @@ assert.match(
   "the velocity stage must publish its motion node on gbuffer.velocity — pipeline.ts " +
     "constructs the g-buffer before the pixels exist and leaves the field null.",
 );
+// The composite must reach SSR through the NODE accessor, not through a texture.
+// A texture handoff can only ever be sampled at an implicit LOD, which on a
+// full-res quad over a half-res target clamps to level 0 — so the copy and the
+// four blur levels are computed and thrown away every frame, and every damp
+// surface reflects like a mirror. Measured, not theoretical: that is what shipped
+// until the accessor was adopted.
 assert.match(
-  code.get(path.join(POST, "ssr", "index.ts")),
-  /provideReflections\(\s*\(\)\s*=>/,
-  "the SSR stage must register its reflection texture with composite/auxSources — the composite " +
-    "adds an exact black identity otherwise and the stage renders into nothing.",
+  code.get(path.join(POST, "composite", "index.ts")),
+  /ssrReflections\(\)/,
+  "the composite must consume SSR through ssrReflections().reflectionAt() — only that accessor " +
+    "knows the roughness->mip mapping, so a texture handoff silently discards the whole blur chain.",
+);
+assert.doesNotMatch(
+  code.get(path.join(POST, "composite", "index.ts")),
+  /reflectivityAt\(/,
+  "the composite must NOT multiply the SSR term by gbuffer.reflectivityAt() — reflectionAt() " +
+    "already applies the mask, and applying it twice squares it and erases damp surfaces.",
+);
+assert.match(
+  code.get(path.join(POST, "chain.ts")),
+  /indexOf\("ssr"\)\s*>\s*constructionOrder\.indexOf\("composite"\)/,
+  "chain.ts must assert that ssr is CONSTRUCTED before composite — the composite captures the " +
+    "accessor while building its fragment, and an inert capture loses reflections with no error.",
 );
 assert.match(
   code.get(path.join(POST, "composite", "index.ts")),
@@ -449,7 +467,7 @@ assert.match(
   "the composite must consume SSAO through ssaoFactorAt(), which reads exactly 1.0 when the " +
     "stage is off (no branch, no second graph).",
 );
-ok("the four silent-failure wires are present");
+ok("the silent-failure wires are present, and both aux stages arrive by accessor");
 
 // ---------------------------------------------------------------------------
 // 8. NO NOISE INSIDE AN If(). An If() condition must be a uniform-buffer read so
@@ -469,5 +487,133 @@ for (const file of files) {
   }
 }
 ok("no noise node drives an If() condition");
+
+// ---------------------------------------------------------------------------
+// 9. TWO DEFECTS THE FIRST BROWSER VERIFICATION FOUND. Both are the same shape:
+//    a derived fact recomputed from a DIFFERENT set of inputs than the fact it
+//    is supposed to agree with. Neither throws, neither logs, and both look
+//    correct in every code path anyone reads on a diff.
+// ---------------------------------------------------------------------------
+
+/** The brace-matched body of `const <name> = (…) => { … }` in stripped code. */
+const arrowBody = (source, name) => {
+  const decl = source.indexOf(`const ${name} =`);
+  assert.ok(decl >= 0, `expected a \`const ${name} =\` declaration`);
+  const open = source.indexOf("{", source.indexOf("=>", decl));
+  assert.ok(open >= 0, `${name}: expected an arrow-function body`);
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(open + 1, i);
+    }
+  }
+  assert.fail(`${name}: unbalanced braces`);
+};
+
+// 9.1 `state().passes` and `state().enabled` must come from ONE record of the
+// last presented frame. Re-deriving `enabled` from the live predicates made the
+// pair disagree under the master toggle (bypass renders one pass; the predicates
+// still named the seven stages that WOULD run) and, worse, made a read-only
+// probe write a GPU uniform — `enabled()` is the only per-frame hook a skipped
+// stage gets and SSR uses it to clear `ssr.active`.
+const chainSource = code.get(path.join(POST, "chain.ts"));
+const stateBody = chainSource.match(/state:\s*\(\)\s*=>\s*\(\{([\s\S]*?)\}\)/);
+assert.ok(stateBody, "chain.ts must expose state() as an object literal");
+assert.doesNotMatch(
+  stateBody[1],
+  /\.enabled\s*\(\)/,
+  "chain.ts state(): must not re-evaluate stage.enabled(). It is not an observation — " +
+    "enabled() is the only per-frame hook a skipped stage gets (ssr/index.ts writes " +
+    "ssr.active.value from it), and a predicate re-run at call time cannot agree with a " +
+    "pass count recorded during render().",
+);
+const enabledFrom = stateBody[1].match(/enabled:\s*\[\s*\.\.\.\s*(\w+)\s*\]/);
+const passesFrom = stateBody[1].match(/passes:\s*(\w+)\s*\.length/);
+assert.ok(
+  enabledFrom && passesFrom && enabledFrom[1] === passesFrom[1],
+  "chain.ts state(): `enabled` and `passes` must be read from the same recorded list, so " +
+    "`passes === enabled.length` holds by construction rather than by coincidence.",
+);
+const recorder = enabledFrom[1];
+assert.match(
+  arrowBody(chainSource, "renderBypass"),
+  new RegExp(`\\b${recorder}\\s*=`),
+  `chain.ts renderBypass: must record what it ran into \`${recorder}\`. The bypass IS a pass — ` +
+    "the display tail — and a bypass that forgets to record it is exactly how the two fields " +
+    "drifted apart in the first place.",
+);
+ok("chain.state() reports one record of the last presented frame");
+
+// 9.2 GOD RAYS: the runtime's existence must be reconciled by the per-frame
+// promote/demote hook, not edge-triggered off a subset of its preconditions.
+// `wantsGodRays()` is a conjunction of the area gate, the tunable, the scene and
+// the sun; the tunable has mutation lanes (chain.applyParams, setPostFx, the
+// tweaks reset, the generic per-stage panel) that are contractually forbidden
+// from allocating. Measured symptom: enter the grove, then enable god rays from
+// the panel, and the stage stays dead forever.
+const godraysSource = code.get(path.join(POST, "godrays", "index.ts"));
+assert.match(
+  arrowBody(godraysSource, "updatePromotion"),
+  /ensureRuntime\s*\(/,
+  "godrays/index.ts: updatePromotion() is the only hook the frame driver runs every frame with " +
+    "no pass open, so it must be what builds the runtime when wantsGodRays() becomes true. " +
+    "Edge-triggering the build from setArea/attachWorld/applyFx alone leaves the stage dead " +
+    "whenever the tunable is the input that changed.",
+);
+assert.doesNotMatch(
+  arrowBody(godraysSource, "ensureRuntime"),
+  /wantsGodRays\s*\(\)\s*\)?\s*\{[\s\S]{0,80}updatePromotion/,
+  "godrays/index.ts: ensureRuntime() must be build-only. Two functions that gate each other " +
+    "are two places for the precondition to be wrong.",
+);
+const godraysApplyParams = godraysSource.match(/applyParams:\s*\(\)\s*=>\s*\{([\s\S]*?)\n {4}\}/);
+assert.ok(godraysApplyParams, "godrays/index.ts must expose applyParams as a stage member");
+assert.doesNotMatch(
+  godraysApplyParams[1],
+  /ensureRuntime|disposeRuntime|new\s+THREE\.RenderTarget/,
+  "godrays/index.ts applyParams(): the live-slider lane MUST NOT allocate or free (types.ts:180-183). " +
+    "The fix for the panel path is the per-frame reconcile, not a build from here.",
+);
+ok("god-ray runtime lifecycle is reconciled per frame, not edge-triggered");
+
+// 9.3 SSAO: a horizon step must be able to resolve a depth texel, or it is not
+// consumed. `radius` is a VIEW-SPACE length and the search that spends it is a
+// SCREEN-SPACE march, so past ~radius x (0.5 * height * P11) metres every step
+// projects to under one texel and re-samples the centre pixel's own depth.
+// `getViewPosition( uv_j, depth_centre )` then reconstructs at the centre's view
+// z, so viewDelta.z is EXACTLY 0 — upstream's only gate, `abs(viewDelta.z) <
+// thickness`, is maximally satisfied by the one case it must refuse — and the
+// horizon collapses onto the plane perpendicular to the view ray. Measured: the
+// open ocean occluded to 0.68-0.75 at three stops, -7.5 luma on the water in the
+// shipping frame at the Golden Gate deck.
+const gtaoSource = code.get(path.join(POST, "ssao", "vendor", "gtao.ts"));
+assert.match(
+  gtaoSource,
+  /depthResolution/,
+  "ssao/vendor/gtao.ts: the horizon search must know the DEPTH buffer's sampling rate. Without " +
+    "it there is no way to tell a step that measured the scene from one that re-measured the " +
+    "centre pixel, and the second kind fabricates occlusion at grazing incidence.",
+);
+for (const axis of ["X", "Y"]) {
+  assert.match(
+    gtaoSource,
+    new RegExp(
+      `If\\(\\s*abs\\(viewDelta${axis}\\.z\\)\\.lessThan\\(this\\.thickness\\)\\.and\\(\\s*stepResolvesATexel`,
+    ),
+    `ssao/vendor/gtao.ts: the ${axis} horizon step must be gated on stepResolvesATexel() as well ` +
+      "as on thickness. The thickness gate alone cannot reject a sub-texel step — that step's " +
+      "viewDelta.z is exactly 0.",
+  );
+}
+assert.match(
+  code.get(path.join(POST, "ssao", "index.ts")),
+  /setDepthResolution\(\s*frame\.inputWidth\s*,\s*frame\.inputHeight\s*\)/,
+  "ssao/index.ts: setDepthResolution() must be fed the chain's INPUT size, not the AO target's. " +
+    "The march samples the beauty depth; measuring a step against this pass's own half-res grid " +
+    "would let sub-texel steps through at twice the distance.",
+);
+ok("SSAO horizon steps are gated on the depth buffer's sampling rate");
 
 console.log(`post-chain contract: ${checks} checks passed across ${files.length} files`);

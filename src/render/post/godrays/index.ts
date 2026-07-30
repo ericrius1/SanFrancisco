@@ -124,6 +124,17 @@ export function createGodRaysStage(setup: PostStageSetup): GodRaysStage {
   let active = false
   let renderedFrames = 0
   let worldWarned = false
+  /**
+   * A build that threw is LATCHED, not retried.
+   *
+   * `updatePromotion()` reconciles every frame (see below), so without this a
+   * failed dynamic import would be re-attempted 60 times a second forever —
+   * `loadPianoGodRaysModule()` nulls its own memo on rejection precisely so a
+   * later, deliberate retry can succeed. The latch clears on the next genuine
+   * change of intent (entering/leaving the area, or toggling the tunable), which
+   * is one retry per user action rather than one per frame.
+   */
+  let buildFailed = false
 
   // Chain-independent GPU ownership: allocated when the runtime lands, freed
   // when the player leaves. `allocTarget` would have parked an input-resolution
@@ -172,12 +183,53 @@ export function createGodRaysStage(setup: PostStageSetup): GodRaysStage {
     runtime = null
   }
 
-  /** Promote/demote. There is no pipeline to reselect any more — "active" is
-   *  simply what `enabled()` reports to the chain, so a demotion costs one
-   *  boolean and the stage stops being visited. */
+  /** A genuine change of intent. Invalidates any in-flight activation and gives
+   *  the failure latch one more chance. */
+  const bumpEpoch = () => {
+    epoch += 1
+    buildPending = null
+    buildFailed = false
+  }
+
+  /**
+   * PROMOTE, DEMOTE — **and reconcile**. Called from the frame driver every
+   * presented frame (pipeline.ts:319), before anything opens a pass.
+   *
+   * `wantsGodRays()` is a conjunction of FOUR independent inputs: the area gate
+   * (`requested`), the tunable, the scene and the sun. The runtime's existence
+   * used to be edge-triggered off only three of them — `setArea()`,
+   * `attachWorld()` and `applyFx()` were the only callers of `ensureRuntime()` —
+   * while the fourth, `post.godrays.enabled`, has mutation lanes of its own that
+   * are contractually forbidden from allocating anything: `chain.applyParams()`
+   * (types.ts:180-183 — "MUST NOT recompile, reallocate, or reselect"),
+   * `Object.assign(POST_TUNING.values, …)` from debugExposure.ts:245, the
+   * tweaks-to-defaults reset at frameBody.ts:976, and the generic per-stage
+   * panel that replaces the placeholder in debug.ts:989-1002. Flip the tunable
+   * through any of those while the player is ALREADY standing in the grove and
+   * the stage stayed dead forever: requested true, runtime null, nothing left to
+   * build it.
+   *
+   * So the lifecycle is level-triggered here instead. The runtime's existence is
+   * a FUNCTION of `wantsGodRays()`, not a residue of which call site last fired,
+   * and no future control lane has to know to call anything.
+   *
+   * It costs nothing for the ~everyone who never enters the grove:
+   * `wantsGodRays()` short-circuits on `requested`, which only `setArea(true)`
+   * sets, so the lazy import boundary docs/LAZY_LOADING.md requires is untouched.
+   */
   const updatePromotion = () => {
-    if (!wantsGodRays() || !runtime) {
+    if (!wantsGodRays()) {
+      // Whichever input went false — the area gate, the tunable, a detached
+      // world — the GPU ownership goes with it, on the same frame.
+      if (runtime || buildPending || buildFailed) {
+        bumpEpoch()
+        disposeRuntime()
+      }
       active = false
+      return
+    }
+    if (!runtime) {
+      if (!buildFailed) ensureRuntime()
       return
     }
     // The god-ray graph dereferences the dedicated light's shadow map at setup;
@@ -185,17 +237,9 @@ export function createGodRaysStage(setup: PostStageSetup): GodRaysStage {
     active = runtime.shadowMapReady()
   }
 
+  /** BUILD ONLY. `updatePromotion()` is the single gate — it has already
+   *  established `wantsGodRays()` and that no runtime exists. */
   const ensureRuntime = () => {
-    if (!wantsGodRays() || !scene || !sourceLight) {
-      updatePromotion()
-      return
-    }
-    if (runtime) {
-      runtime.configure(getPianoGodRaysParams())
-      updatePromotion()
-      return
-    }
-
     const requestEpoch = epoch
     if (buildPending?.epoch === requestEpoch) return
     buildPending = { epoch: requestEpoch }
@@ -221,7 +265,12 @@ export function createGodRaysStage(setup: PostStageSetup): GodRaysStage {
         quadBuilt = false
         updatePromotion()
       })
-      .catch((err) => console.warn("[render] piano god rays unavailable:", err))
+      .catch((err) => {
+        // Latch, or the per-frame reconcile above turns one failure into an
+        // import storm.
+        if (epoch === requestEpoch) buildFailed = true
+        console.warn("[render] piano god rays unavailable:", err)
+      })
       .finally(() => {
         if (buildPending?.epoch === requestEpoch) buildPending = null
       })
@@ -231,8 +280,7 @@ export function createGodRaysStage(setup: PostStageSetup): GodRaysStage {
     if (areaCenter) center.copy(areaCenter)
     if (areaActive === requested) return
     requested = areaActive
-    epoch += 1
-    buildPending = null
+    bumpEpoch()
     if (!areaActive) {
       disposeRuntime()
       return
@@ -249,19 +297,18 @@ export function createGodRaysStage(setup: PostStageSetup): GodRaysStage {
       }
       return
     }
-    ensureRuntime()
+    updatePromotion()
   }
 
   const applyFx = () => {
-    if (!wantsGodRays()) {
-      epoch += 1 // invalidate an in-flight activation after toggle-off
-      buildPending = null
-      disposeRuntime()
-      return
-    }
+    // A deliberate toggle is a change of intent: a build that failed under the
+    // previous one gets exactly one more chance. Nothing else here — the
+    // reconcile below decides whether that means build, tear down, or neither,
+    // and it is the same decision the frame driver makes anyway. This lane only
+    // still exists so the panel's response is immediate rather than next-frame.
+    buildFailed = false
     runtime?.configure(getPianoGodRaysParams())
     updatePromotion()
-    if (!runtime) ensureRuntime()
   }
 
   return {
@@ -322,9 +369,12 @@ export function createGodRaysStage(setup: PostStageSetup): GodRaysStage {
     // it is wrapped in. The compile happens on entry, exactly as it did when
     // this was a lazily built RenderPipeline variant.
     warmupQuads: (): THREE.QuadMesh[] => (quad ? [quad.mesh] : []),
-    // Live controls only. Disposal on toggle-off belongs to applyFx(), which is
-    // what pipeline.applyPianoGodRaysFx() calls; applyParams must not
-    // reallocate (types.ts:180-183).
+    // Live controls only — applyParams must not reallocate (types.ts:180-183),
+    // so `post.godrays.enabled` is deliberately NOT honoured here. It is honoured
+    // by `updatePromotion()`, which the frame driver runs every frame with no
+    // pass open; a value written through this lane therefore takes effect on the
+    // next presented frame without this lane having to know that the tunable is
+    // a lifecycle key rather than a uniform.
     applyParams: () => {
       runtime?.configure(getPianoGodRaysParams())
     },
@@ -335,16 +385,15 @@ export function createGodRaysStage(setup: PostStageSetup): GodRaysStage {
     },
     tuning: { group: GODRAYS_TUNING, structuralKeys: ["resolution"], recompileKeys: [] },
     dispose: () => {
-      epoch += 1
-      buildPending = null
       requested = false
+      bumpEpoch()
       disposeRuntime()
     },
 
     attachWorld: (worldScene: THREE.Scene, light: THREE.DirectionalLight | null) => {
       scene = worldScene
       sourceLight = light
-      if (requested) ensureRuntime()
+      if (requested) updatePromotion()
     },
     setArea,
     applyFx,
