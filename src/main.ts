@@ -42,7 +42,7 @@ import { HUD } from "./ui/hud";
 // the shared reader before this game module begins.
 import { beganAsReadingVisit } from "./app/startupIntent";
 import { createRenderPipeline } from "./render/pipeline";
-import { POSTFX_TUNING } from "./render/postfx";
+import { GODRAYS_TUNING } from "./render/post/godrays/tuning";
 import {  loadSavedAvatar, randomAvatarTraits } from "./player/avatar";
 import {   loadSavedBoard, randomBoardConfig,  setLocalBoardConfig } from "./vehicles/board";
 import {
@@ -322,7 +322,7 @@ async function boot() {
     // areas are hundreds of metres apart, so the shared pooled shadow light is
     // never contested; the piano wins if that ever stops being true.
     const wantsPianoGodRays =
-      Boolean(POSTFX_TUNING.values.pianistRays) &&
+      Boolean(GODRAYS_TUNING.values.enabled) &&
       foliageOn &&
       siteFoliage?.isReady("beach-pianist-grove") === true &&
       beachPianist?.isPlayerInGodRayArea(player.position, pianoGodRaysActive) === true;

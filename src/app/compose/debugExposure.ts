@@ -4,7 +4,7 @@
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import { CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_TUNING, WORLD_TUNING } from "../../config";
-import { POSTFX_TUNING } from "../../render/postfx";
+import { POST_TUNING } from "../../render/post/tuning";
 import { CAR_LANDING_TUNING } from "../../vehicles/car";
 import { PROCEDURAL_LAMP_TUNING } from "../../world/citygen/interior/lampTuning";
 import { sharedMaterialLeakSnapshot } from "../../render/renderObjectRegistry";
@@ -80,7 +80,7 @@ export async function installDebugSurfaces(
     const registry = new DebugRegistry();
     registry.refs({
       scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, frameDriver: extra.frameDriver,
-      dynRes: extra.dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING,
+      dynRes: extra.dynRes, tracer, scheduler, POST_TUNING, WORLD_TUNING, FLOWER_TUNING,
       RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks,
       graffiti, bubbles, setTool, setColor, sky, farOcclusion: extra.farOcclusion, debugPanel, CONFIG,
       THREE, tick, splashes, sandPrints, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
@@ -238,8 +238,12 @@ export async function installDebugSurfaces(
           pipeline.contactShadows.setEnabled(Boolean(values.contactShadows));
           delete values.contactShadows;
         }
-        Object.assign(POSTFX_TUNING.values, values);
-        pipeline.applyPostFx(); // select the retained toggle variant + push uniforms
+        // Everything left is a chain tunable. Writes land on the live values
+        // object with no validation (Record<string, number | boolean>), so a
+        // stale key from a dev demo is silently inert rather than a throw — U9
+        // still owns cleaning the 23 setPostFx call sites.
+        Object.assign(POST_TUNING.values, values);
+        pipeline.applyPostFx(); // push every stage's sliders into live uniforms
       }
     };
     const ensureDemoSite = async (name: string): Promise<void> => {

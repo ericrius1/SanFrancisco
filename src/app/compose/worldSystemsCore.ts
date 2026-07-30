@@ -78,7 +78,7 @@ import type { HangGlidingExperience } from "../../gameplay/hangGliding";
 import { HUD } from "../../ui/hud";
 // The launcher and reader stay dynamically loaded; a reading entry may create
 // the shared reader before this game module begins.
-import {  setFlowPostFx } from "../../render/postfx";
+import { setFlowPostFx } from "../../render/post/display/surfFlow";
 import { createBuskersSystem } from "../../app/systems/buskers";
 import { createBuskerConversation } from "../../gameplay/buskers/conversation";
 import { EmbodimentController, type PassengerExitPose } from "../../app/player/embodimentController";

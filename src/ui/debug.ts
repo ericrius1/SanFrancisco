@@ -17,13 +17,8 @@ import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
 import { SKY_TUNING, type Sky } from "../world/sky";
-import {
-  POSTFX_TUNING,
-  POSTFX_TOGGLES,
-  POSTFX_BLOOM_KEYS,
-  POSTFX_PIANO_GOD_RAY_KEYS,
-  applyPostFxParams
-} from "../render/postfx";
+import { POST_TUNING } from "../render/post/tuning";
+import { GODRAYS_TUNING } from "../render/post/godrays/tuning";
 import { GRADE_TUNING, type GradeRuntime } from "../render/grade";
 import { governorEffects } from "../render/adaptiveResolution";
 import { VOICE_TUNING } from "../net/voice";
@@ -43,20 +38,70 @@ import {
 } from "../world/terrainScanParticles";
 import { WATER_ECHO_TUNING } from "../world/waterEchoes";
 import type { ContactShadowComplement } from "../render/contactShadows";
+import type { RenderPipelineApi } from "../render/pipeline";
 import { OVERLAY_TUNING } from "./overlays/tuning";
 import type { OverlayContextFlags } from "./overlays/manager";
 import { createFrameBudgetCheckpoint, yieldToFrame } from "../core/cooperativeWork";
 import { PROCEDURAL_LAMP_TUNING } from "../world/citygen/interior/lampTuning";
 
+/**
+ * THE ONLY COMPILE-CHECKED CONTRACT on the render pipeline object.
+ *
+ * `src/app/compose/ctx.ts:43` types the pipeline as `pipeline: any`, so renaming
+ * or removing any of its members produces ZERO TypeScript errors — every
+ * consumer in `src/app`, `src/main.ts`, `src/dev` and ~20 probes breaks silently
+ * at runtime instead. This type is deliberately wider than the debug panel
+ * strictly needs: it is the tripwire, and each member listed here is one that a
+ * rename would otherwise cost a debugging session to find.
+ */
 type DebugRenderPipeline = {
+  /** Push every post-chain stage's sliders into live uniforms. Never recompiles. */
   applyPostFx: () => void;
   applyPianoGodRaysFx: () => void;
+  /** Force temporal stages to seed on the next frame (teleport, resize, look). */
+  invalidateHistory: (reason: string) => void;
   setWireframe: (on: boolean) => void;
   setWireframeLodGradient: (on: boolean) => void;
-  warmupPostFx?: () => Promise<void>;
   contactShadows: Pick<ContactShadowComplement, "configure" | "setEnabled">;
   grade: Pick<GradeRuntime, "setLook">;
+  /** The single presenting RenderPipeline. Object identity is asserted across
+   *  HMR by tools/hmr-browser-probe.mjs:254 — do not hand out a new one. */
+  readonly pipeline: unknown;
+  /** The chain itself, for the panel (U10) and probes. */
+  readonly postChain: {
+    applyParams(): void;
+    applyStructure(): void;
+    invalidateHistory(reason: string): void;
+    stage(id: string): unknown;
+    readonly stages: readonly { readonly id: string; readonly label: string }[];
+    readonly state: () => { enabled: string[]; inputScale: number; passes: number };
+  };
+  /** Compile-gate visibility. tiles.isRenderHeld and every probe preamble poll these. */
+  readonly compileHeld: boolean;
+  readonly compileQueueDepth: number;
+  readonly pianoGodRaysState: {
+    requested: boolean;
+    active: boolean;
+    loaded: boolean;
+    renderedFrames: number;
+  };
+  /** Deprecated no-op stub; kept so debugExposure/frameBody/inGameScreenshot
+   *  and tools/sutro-look-shot.mjs keep working. */
+  setCinematicMultisampling: (enabled: boolean) => void;
+  readonly sceneSampleCount: number;
+  captureStillRgba: () => Promise<{ width: number; height: number; pixels: Uint8ClampedArray }>;
+  warmup: (scope?: "boot" | "full", pace?: () => Promise<void>) => Promise<void>;
 };
+
+/**
+ * The tripwire, armed. `DebugRenderPipeline` above only catches a rename if
+ * something actually checks the CONCRETE pipeline against it — and every real
+ * call site reaches the pipeline through `ctx.pipeline`, which ctx.ts:43 types
+ * as `any`. This assignment is the one place the compiler is forced to compare
+ * them. If `createRenderPipeline` drops or renames a member, this line fails to
+ * compile and names it, instead of ~20 probes failing at runtime.
+ */
+export const assertRenderPipelineContract = (api: RenderPipelineApi): DebugRenderPipeline => api;
 
 export type DebugMonitorBinding = { refresh(): void };
 
@@ -281,13 +326,6 @@ export class DebugPanel {
     this.#root.style.opacity = visible ? "1" : "0";
     this.#root.style.pointerEvents = visible ? "auto" : "none";
     this.#root.setAttribute("aria-hidden", visible ? "false" : "true");
-  }
-
-  /** Finish inactive post-FX graphs only when someone opens that folder. */
-  #warmPostFxGraphs() {
-    void this.#postfx?.warmupPostFx?.().catch((err) => {
-      console.warn("[debug] post-fx warmup failed:", err);
-    });
   }
 
   /** Movement tuning is context-dependent — only the active mode's folder shows. */
@@ -939,24 +977,27 @@ export class DebugPanel {
     this.#refreshFogWeatherMonitor();
     await checkpoint();
 
-    // Stylized post effects: toggles select retained shader variants; sliders
-    // are live uniforms — see render/postfx.ts. Boot only warms the active look;
-    // expanding this folder finishes the other graphs so comparisons stay smooth.
+    // Post chain. PLACEHOLDER FOLDER — U10 replaces this whole block with
+    // `buildPostFolder(pane, chain, checkpoint)` from render/post/panel.ts, which
+    // owns the per-stage tree, the structural-key release gating and the
+    // "rebuild (hitches)" subfolder. Until then this binds only the master
+    // toggle and the god-ray controls, which are the two things gameplay reads.
+    //
+    // There is no warm-on-expand any more: there is exactly ONE RenderPipeline,
+    // every stage's quad is compiled unconditionally at boot, and after that no
+    // toggle can create a new pipeline. `warmupPostFx` is deleted, not ported.
     const postfx = pane.addFolder({ title: "post fx", expanded: false });
-    postfx.on("fold", ({ expanded }) => {
-      if (expanded) this.#warmPostFxGraphs();
+    POST_TUNING.bind(postfx, {
+      onChange: () => {
+        if (this.#syncingPane) return;
+        this.#postfx?.applyPostFx();
+      }
     });
-    POSTFX_TUNING.bind(postfx, {
+    GODRAYS_TUNING.bind(postfx, {
       onChange: (key, _value, last) => {
         if (this.#syncingPane) return;
-        if ((POSTFX_TOGGLES as readonly string[]).includes(key)) this.#postfx?.applyPostFx();
-        else if ((POSTFX_BLOOM_KEYS as readonly string[]).includes(key)) {
-          // Bloom's uniforms live in pipeline.ts, not in the postfx graph, so
-          // the style-slider lane below would silently drop them.
-          this.#postfx?.applyPostFx();
-        } else if ((POSTFX_PIANO_GOD_RAY_KEYS as readonly string[]).includes(key)) {
-          if (key !== "pianistRaysResolution" || last) this.#postfx?.applyPianoGodRaysFx();
-        } else applyPostFxParams();
+        // Resolution reallocates the raymarch target; gate it on release.
+        if (key !== "resolution" || last) this.#postfx?.applyPianoGodRaysFx();
       }
     });
     await checkpoint();

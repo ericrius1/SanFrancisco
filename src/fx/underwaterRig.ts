@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { setUnderwaterPostFx } from "../render/postfx";
+import { setUnderwaterPostFx } from "../render/post/composite/underwater";
 import { warmHiddenRoot } from "../render/warmHiddenRoot";
 import { SUN_DIR } from "../world/sky";
 import type { WorldMap } from "../world/heightmap";

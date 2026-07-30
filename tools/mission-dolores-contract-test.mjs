@@ -48,14 +48,20 @@ assert.equal(mdInsideInterior(apseInterior.x, apseInterior.z), true, "the sanctu
 assert.equal(mdInsideInterior(apseExterior.x, apseExterior.z), false, "museum interior must stop beyond the apse wall");
 
 const pipelineSource = readFileSync(path.join(ROOT, "src", "render", "pipeline.ts"), "utf8");
+// The god-ray adapter moved out of pipeline.ts into the post chain's own
+// stage folder; the lazy boundary it asserts on moved with it.
+const godRaysAdapterSource = readFileSync(
+  path.join(ROOT, "src", "render", "post", "godrays", "index.ts"),
+  "utf8"
+);
 const pianoGodRaysSource = readFileSync(path.join(ROOT, "src", "render", "pianoGodRays.ts"), "utf8");
 const museumIndexSource = readFileSync(path.join(ROOT, "src", "world", "missionDolores", "index.ts"), "utf8");
 const mainSource = readFileSync(path.join(ROOT, "src", "main.ts"), "utf8");
 const minimapLandmarksSource = readFileSync(path.join(ROOT, "src", "app", "compose", "minimapLandmarks.ts"), "utf8");
 const playerSource = readFileSync(path.join(ROOT, "src", "player", "player.ts"), "utf8");
 assert.match(
-  pipelineSource,
-  /import\("\.\/pianoGodRays"\)/,
+  godRaysAdapterSource,
+  /import\("\.\.\/\.\.\/pianoGodRays"\)/,
   "the piano god-ray stack must remain behind a nested dynamic-import boundary"
 );
 assert.doesNotMatch(
