@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { applyAvatarToRig, buildRig, poseAir, poseDrive, poseIdle, poseRide, poseScooter, poseWalk, type Rig } from "../player/rig";
+import { applyAvatarToRig, buildRig, poseAir, poseDrive, poseIdle, poseRide, poseScooter, poseSkate, poseWalk, type Rig } from "../player/rig";
 import { emoteByIndex, EmoteRunner } from "../player/emotes";
 import { avatarFromSeed, avatarKey, type AvatarTraits } from "../player/avatar";
 import {
@@ -20,6 +20,7 @@ import { PhoenixPoser, RemotePhoenixFlight } from "../vehicles/bird/pose";
 import { FootfallTracker, type SandPrintSink } from "../fx/sandPrints";
 import { FEATHER_RANK, publishFeatherDrive } from "../vehicles/bird/wind";
 import { activateSurfboardAssets, animateSurfboard, buildSurfboardMesh } from "../vehicles/surf";
+import { animateSkate, buildSkateMesh, skateHueFor, SKATE_RIG_ROOT_Y } from "../vehicles/skate";
 import {
   normalizeSurfboardConfig,
   surfboardFromSeed,
@@ -117,6 +118,23 @@ function makeTag(name: string, hue: number): THREE.Sprite {
   return sprite;
 }
 
+/** Remote decks roll but never flip: trick rotation is local-only state that
+ *  deliberately does not cross the wire. Reused so the loop allocates nothing. */
+const REMOTE_SKATE = { flipRoll: 0, shove: 0, grindSparks: 0, speed: 0 };
+const REMOTE_SKATE_POSE = {
+  lean: 0,
+  carve: 0,
+  crouch: 0,
+  push: 0,
+  air: false,
+  grab: false,
+  grind: false,
+  manual: false,
+  bail: false,
+  balance: 0,
+  t: 0
+};
+
 /** Tag height above the avatar origin, per embodiment. */
 const TAG_Y: Record<PlayerMode, number> = {
   walk: 2.1,
@@ -127,6 +145,7 @@ const TAG_Y: Record<PlayerMode, number> = {
   speedboat: 2.4,
   drone: 1.6,
   board: 2.3,
+  skate: 2.15,
   surf: 2.2,
   bird: 3.15
 };
@@ -742,6 +761,17 @@ export class RemotePlayers {
       g.userData.remoteRig = rig;
       return g;
     }
+    if (mode === "skate") {
+      // Procedural and cheap; each remote gets their own deck colour so a
+      // session of skaters doesn't read as one cloned board.
+      const g = buildSkateMesh(skateHueFor(a.info.id));
+      const rig = buildRig(a.avatar);
+      rig.group.rotation.order = "ZYX";
+      rig.group.position.set(0, SKATE_RIG_ROOT_Y, 0.02); // matches player.ts
+      g.add(rig.group);
+      g.userData.remoteRig = rig;
+      return g;
+    }
     if (mode === "surf") {
       // Fresh build: surfboard materials may contain player-selected generated
       // textures/decals and the root's dispose callback owns those resources.
@@ -1062,6 +1092,18 @@ export class RemotePlayers {
       poseRide(rig, 0, crouch, Math.abs(a.vy) > 4, a.animT);
       const body = a.bodies.board;
       if (body) animateBoard(body, dt, a.animT, a.speed);
+    } else if (a.mode === "skate") {
+      REMOTE_SKATE_POSE.air = Math.abs(a.vy) > 2.6;
+      REMOTE_SKATE_POSE.crouch = Math.min(1, a.speed / 20);
+      REMOTE_SKATE_POSE.t = a.animT;
+      poseSkate(rig, REMOTE_SKATE_POSE);
+      const body = a.bodies.skate;
+      // Remotes get rolling wheels; their trick rotations are local-only state
+      // that never crosses the wire, so the deck stays level under them.
+      if (body) {
+        REMOTE_SKATE.speed = a.speed;
+        animateSkate(body, dt, REMOTE_SKATE);
+      }
     } else if (a.mode === "surf") {
       const crouch = Math.min(1, a.speed / 28);
       poseRide(rig, 0, crouch, Math.abs(a.vy) > 3.5, a.animT);

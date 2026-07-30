@@ -66,7 +66,9 @@ import {
  */
 
 /** Wire order for modes — index into this array is what goes over the socket. */
-export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird", "surf", "scooter"];
+// APPEND-ONLY: modes travel the wire as indices into this array, so a new
+// embodiment goes on the END or every older client mis-reads the roster.
+export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird", "surf", "scooter", "skate"];
 
 export type RemoteGolfState = { d: number[]; h: number; p: number; s: number; r: number };
 export type PickleballSlot = 0 | 1;

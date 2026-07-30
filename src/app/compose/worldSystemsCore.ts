@@ -44,6 +44,7 @@ import { WorldCursor } from "../../fx/worldCursor";
 import { WorldQueries } from "../../core/worldQueries";
 import { BuildingRayRefiner } from "../../core/buildingRayRefine";
 import { Toolbar } from "../../ui/toolbar";
+import { SkateHUD } from "../../ui/skateHud";
 import { AudioControls } from "../../ui/audioControls";
 import { VehicleAudio } from "../../fx/vehicleAudio";
 import { SwimAudio } from "../../fx/swimAudio";
@@ -158,6 +159,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     graceCathedral: null as (GraceCathedralRuntime | null),
     stMarys: null as (StMarysRuntime | null),
     sutroBaths: null as (import("../../world/sutroBaths").SutroBaths | null),
+    skatePlaza: null as (import("../../world/skatePlaza").SkatePlaza | null),
+    streetSpots: null as (import("../../vehicles/skate/streetSpots").SkateStreetSpots | null),
     museumBookOpen: false as any,
     citygen: null as ({ update?: (dt: number) => void; [k: string]: unknown } | null),
     golf: null as (import("../../gameplay/golf").GolfGame | null),
@@ -283,6 +286,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     (i) => setColor(i, true),
     (mode) => state.switchModeFromToolbar!(mode)
   );
+  // Trick/combo readout. Pure DOM, hidden until the player is on a skateboard.
+  const skateHud = new SkateHUD();
   setTool("ball");
   setColor(0);
   await constructionSlice();
@@ -509,6 +514,33 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // has nothing to do with the surf runtime and loads on approach to the beach
   // itself, on foot or on wheels. Visiting the rest of the city must not fetch
   // a byte of it, so the mesh + material live behind a dynamic import.
+  //
+  // The warmup compile is TIME-BOXED, not awaited to completion: under the
+  // capture harness's manual replay a compileAsync can outlive the whole take
+  // (the kite flock measured 348 s before it got the same budget), and an
+  // await with no ceiling meant the shorebreak sheet, the spray plume and the
+  // gulls silently never joined a single cinematic frame. Past the budget the
+  // effect is added anyway and the compile finishes in the background — one
+  // possible hitch on its first live frame, versus never existing at all.
+  const SHORE_WARMUP_BUDGET_MS = 4000;
+  const timeBoxedCompile = async (group: THREE.Object3D, label: string) => {
+    let done = false;
+    const compile = renderer
+      .compileAsync(group, camera, scene)
+      .then(() => {
+        done = true;
+      })
+      .catch((error: unknown) => console.warn(`[${label}] warmup compile failed`, error));
+    await Promise.race([
+      compile,
+      new Promise((resolve) => setTimeout(resolve, SHORE_WARMUP_BUDGET_MS))
+    ]);
+    if (!done) {
+      console.warn(
+        `[${label}] warmup exceeded ${SHORE_WARMUP_BUDGET_MS} ms; adding and finishing in the background`
+      );
+    }
+  };
   let shorebreak: import("../../world/oceanBeachShorebreak").OceanBeachShorebreak | null = null;
   let shorebreakLoading: Promise<void> | null = null;
   const ensureShorebreak = () => {
@@ -516,13 +548,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     shorebreakLoading = import("../../world/oceanBeachShorebreak")
       .then(async ({ OceanBeachShorebreak }) => {
         const sheet = new OceanBeachShorebreak(map);
-        try {
-          // Compile detached, like the surf sheet: a transparent sheet this
-          // wide added uncompiled costs a visible hitch on arrival.
-          await renderer.compileAsync(sheet.group, camera, scene);
-        } catch (error) {
-          console.warn("[shorebreak] warmup compile failed", error);
-        }
+        await timeBoxedCompile(sheet.group, "shorebreak");
         scene.add(sheet.group);
         shorebreak = sheet;
       })
@@ -547,11 +573,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     sprayLoading = import("../../world/oceanBeachSpray")
       .then(async ({ OceanBeachSpray }) => {
         const field = new OceanBeachSpray(sky);
-        try {
-          await renderer.compileAsync(field.group, camera, scene);
-        } catch (error) {
-          console.warn("[ocean-spray] warmup compile failed", error);
-        }
+        await timeBoxedCompile(field.group, "ocean-spray");
         scene.add(field.group);
         spray = field;
       })
@@ -575,11 +597,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     gullsLoading = import("../../world/oceanBeachGulls")
       .then(async ({ OceanBeachGulls }) => {
         const flock = new OceanBeachGulls(sky);
-        try {
-          await renderer.compileAsync(flock.group, camera, scene);
-        } catch (error) {
-          console.warn("[ocean-gulls] warmup compile failed", error);
-        }
+        await timeBoxedCompile(flock.group, "ocean-gulls");
         scene.add(flock.group);
         gulls = flock;
       })
@@ -681,6 +699,28 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
       tiles.forceScan();
     }
   };
+  // Procedural street rails: nothing exists until the player is actually on a
+  // skateboard, and the module itself is a dynamic import so boot never pays
+  // for it. See vehicles/skate/streetSpots.ts.
+  let streetSpotsLoading: Promise<void> | null = null;
+  const ensureStreetSpots = (): void => {
+    if (state.streetSpots || streetSpotsLoading) return;
+    streetSpotsLoading = import("../../vehicles/skate/streetSpots")
+      .then(({ SkateStreetSpots }) => {
+        if (state.streetSpots) return;
+        const spots = new SkateStreetSpots(map);
+        scene.add(spots.group);
+        state.streetSpots = spots;
+        if (player.mode === "skate") spots.setActive(true);
+        const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+        if (hooks) hooks.streetSpots = spots;
+      })
+      .catch((error) => console.warn("[skate] street spots unavailable:", error))
+      .finally(() => {
+        streetSpotsLoading = null;
+      });
+  };
+
   let previousAudioMode = player.mode;
   player.onModeChange = (mode) => {
     modeTransitionAudio.event(previousAudioMode, mode);
@@ -706,6 +746,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     state.setRemoteScooterAssetsActive!(mode === "scooter");
     state.setRemoteCarAssetsActive!(mode === "drive");
     state.setRemoteBirdAssetsActive!(mode === "bird");
+    if (mode === "skate") ensureStreetSpots();
+    state.streetSpots?.setActive(mode === "skate");
     state.syncCustomizerForMode!(mode);
     if (fresh) {
       const msg = modeDiscovery.revealMessage(mode);
@@ -1202,6 +1244,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     setTool,
     setColor,
     toolbar,
+    skateHud,
     vehicleAudio,
     swimAudio,
     playerFoleyAudio,

@@ -69,6 +69,10 @@ export type OceanBeachKiteDebugState = {
   /** 0..1 sunset window and how squarely the kite is between camera and sun. */
   golden: number;
   backlight: number;
+  /** Eased 0..1 lane-gather amount (see setLaneGather). */
+  laneGather: number;
+  /** Whether lane centres actually move — requires KiteFlyer.retargetLane. */
+  laneGatherLive: boolean;
   /** Every flyer on the beach; index 0 is the one the scalars above describe. */
   flyers: OceanBeachKiteFlyerState[];
 };
@@ -95,6 +99,18 @@ export type OceanBeachKiteEncounter = {
   syncTuning(): void;
   tuningDescriptor(): DebugFeatureTuningRegistration;
   debugState(): OceanBeachKiteDebugState;
+  /**
+   * Pull the flock's lane centres toward one flyer's lane — by default the
+   * prism (the last lane) — so a shot can frame the spectrum with the rest of
+   * the festival loosely around it. `gather` is 0..1: 0 restores the authored
+   * LANES layout, 1 stacks the lanes against the centre lane's offset with a
+   * floor of ~20 m between neighbours (authored troupe pairs that already fly
+   * tighter keep their own gap). Lane ORDER is always preserved, which is what
+   * keeps 34 m lines from crossing without any collision logic. The value is
+   * eased over a couple of seconds and the runners then physically WALK to
+   * their new centres through the existing boundary steering.
+   */
+  setLaneGather(gather: number, centerIndex?: number): void;
   /**
    * Whether the raymarched god-ray pipeline should run for this encounter, and
    * where to centre it. Null whenever the feature has nothing to ask for.
@@ -195,6 +211,53 @@ const LANES: readonly KiteLane[] = [
 
 type RouteSample = { x: number; z: number };
 
+/**
+ * Metres kept between gathered neighbours' lane centres. Kites hang 20-38 m
+ * downwind on ~34 m lines; preserving lane order plus this floor is what
+ * substitutes for line-crossing logic (mirrored troupe pairs already fly
+ * closer than this by design, and keep their authored gap instead).
+ */
+const GATHER_MIN_SPACING = 20;
+
+/**
+ * Runtime lane retarget the gather hook feeds. KiteFlyer does NOT expose it
+ * yet: the runner's lane centre is a private baked reference (flyer.ts #lane,
+ * read per frame as `site.z` inside createGroundRunner), so index.ts cannot
+ * reach it. The call is therefore optional — the moment flyer.ts adds
+ *
+ *   retargetLane(x: number, z: number): void { this.#lane.x = x; this.#lane.z = z; }
+ *
+ * the gather walks every runner to its new centre through the existing
+ * boundary steering, with zero further changes here. Until then setLaneGather
+ * only tightens patrol spans and warns once.
+ */
+type LaneRetargetable = KiteFlyer & { retargetLane?: (x: number, z: number) => void };
+
+/**
+ * Where each lane sits at gather=1: the centre lane keeps its offset and the
+ * rest stack against it in authored order, each pair of neighbours keeping
+ * min(authored gap, GATHER_MIN_SPACING). Offsets are in lane-spacing units.
+ */
+function computeGatherOffsets(center: number): number[] {
+  const spacing = Math.max(18, OCEAN_KITE_TUNING.values.runSpan * 0.78);
+  const minGap = GATHER_MIN_SPACING / spacing;
+  const order = LANES.map((_, i) => i).sort((a, b) => LANES[a].offset - LANES[b].offset);
+  const at = order.indexOf(center);
+  const out = new Array<number>(LANES.length).fill(0);
+  out[center] = LANES[center].offset;
+  for (let k = at - 1; k >= 0; k--) {
+    const below = order[k];
+    const above = order[k + 1];
+    out[below] = out[above] - Math.min(LANES[above].offset - LANES[below].offset, minGap);
+  }
+  for (let k = at + 1; k < order.length; k++) {
+    const above = order[k];
+    const below = order[k - 1];
+    out[above] = out[below] + Math.min(LANES[above].offset - LANES[below].offset, minGap);
+  }
+  return out;
+}
+
 /** Compass bearing (0 = north, 90 = east) → a world downwind direction. */
 function bearingToDirection(degrees: number, out: THREE.Vector3): THREE.Vector3 {
   const radians = THREE.MathUtils.degToRad(degrees);
@@ -240,6 +303,12 @@ class KiteEncounter implements OceanBeachKiteEncounter {
   #playerDistance = Infinity;
   #godRaysHeld = false;
   #nextMonitorRefresh = 0;
+
+  /** Lane gather (see setLaneGather): eased value, request, and gather=1 map. */
+  #gather = 0;
+  #gatherTarget = 0;
+  #gatherOffsets: number[] = LANES.map((lane) => lane.offset);
+  #gatherWarned = false;
 
   #viewPoint = new THREE.Vector3();
   // Site wind, not the global vegetation wind — see OCEAN_KITE_TUNING.windBearing.
@@ -313,7 +382,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
             spread: flyer.design.raySpread
           },
           ground: (x, z) => map.groundTop(x, z),
-          water: (x, z) => map.isWater(x, z)
+          water: (x, z) => map.isWater(x, z),
+          seaLevel: map.meta.seaLevel
         });
         this.#prisms.push(prism);
         this.group.add(prism.group);
@@ -538,7 +608,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
           spread: design.raySpread
         },
         ground: (x, z) => this.#map.groundTop(x, z),
-        water: (x, z) => this.#map.isWater(x, z)
+        water: (x, z) => this.#map.isWater(x, z),
+        seaLevel: this.#map.meta.seaLevel
       });
       this.group.add(this.#playerPrism.group);
     }
@@ -624,6 +695,22 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     frame.backlight = this.#air.state.backlight * tuning.clothBacklight;
     frame.halfSpan = Math.max(8, tuning.runSpan * 0.34);
     frame.beachDepth = Math.max(8, tuning.beachDepth);
+    // Lane gather: ease toward the requested clustering, retarget the runners'
+    // lane centres (where the flyer exposes the hook — see LaneRetargetable)
+    // before anyone steers, and tighten patrol spans so gathered neighbours
+    // 20 m apart do not wander through each other's stretch of sand.
+    if (this.#gather > 1e-4 || this.#gatherTarget > 1e-4) {
+      this.#gather += (this.#gatherTarget - this.#gather) * (1 - Math.exp(-dt * 0.8));
+      if (this.#gather < 1e-4 && this.#gatherTarget <= 1e-4) this.#gather = 0;
+      const spacing = Math.max(18, tuning.runSpan * 0.78);
+      const count = Math.min(this.#flyers.length, LANES.length);
+      for (let i = 0; i < count; i++) {
+        const offset = THREE.MathUtils.lerp(LANES[i].offset, this.#gatherOffsets[i], this.#gather);
+        const laneZ = this.#site.z + offset * spacing;
+        (this.#flyers[i] as LaneRetargetable).retargetLane?.(this.#routeX(laneZ), laneZ);
+      }
+      frame.halfSpan *= 1 - this.#gather * 0.38;
+    }
     // Troupes adopt their leader's figure before anyone moves, so a pair is
     // always mid-way through the same shape on the same frame.
     for (const { follower, leader } of this.#troupe) follower.adoptFigure(leader);
@@ -646,7 +733,9 @@ class KiteEncounter implements OceanBeachKiteEncounter {
       dt,
       camera: this.#viewPoint,
       strength: tuning.shaftStrength * tuning.prismStrength,
-      enabled: tuning.sunsetAir && tuning.prismLight
+      enabled: tuning.sunsetAir && tuning.prismLight,
+      softness: tuning.prismSoftness,
+      dance: tuning.prismDance
     };
     for (const prism of this.#prisms) prism.update(prismFrame);
     this.#playerPrism?.update(prismFrame);
@@ -731,6 +820,28 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     return { active: this.#godRaysHeld, center: this.#godRayCenter };
   }
 
+  setLaneGather(gather: number, centerIndex = LANES.length - 1): void {
+    if (this.#disposed) return;
+    this.#gatherTarget = THREE.MathUtils.clamp(gather, 0, 1);
+    const center = THREE.MathUtils.clamp(Math.round(centerIndex), 0, LANES.length - 1);
+    // Cheap (eight lanes, per shot setup, never per frame) — always rebake so
+    // the gathered map tracks the tuned lane spacing at the moment of the ask.
+    this.#gatherOffsets = computeGatherOffsets(center);
+    if (this.#gatherTarget > 0 && !this.#laneRetargetLive() && !this.#gatherWarned) {
+      this.#gatherWarned = true;
+      console.warn(
+        "[ocean kite] setLaneGather: KiteFlyer.retargetLane is not implemented — " +
+          "lane centres stay authored and only patrol spans tighten. " +
+          "See LaneRetargetable in oceanBeachKite/index.ts for the 3-line flyer.ts hook."
+      );
+    }
+  }
+
+  #laneRetargetLive(): boolean {
+    const flyer = this.#flyers[0] as LaneRetargetable | undefined;
+    return typeof flyer?.retargetLane === "function";
+  }
+
   debugState(): OceanBeachKiteDebugState {
     const primary = this.#flyers[0];
     const ground = primary.surfaceBelowKite();
@@ -752,6 +863,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
       elevation: primary.elevation,
       golden: this.#air.state.golden,
       backlight: this.#air.state.backlight,
+      laneGather: this.#gather,
+      laneGatherLive: this.#laneRetargetLive(),
       flyers: this.#flyers.map((flyer) => ({
         design: flyer.design.id,
         action: flyer.figure,

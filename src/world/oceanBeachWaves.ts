@@ -79,7 +79,42 @@ export const OCEAN_BEACH_SURF = {
    * it is the ratio of these two numbers that decides whether neighbouring
    * stretches of the same wave can be in visibly different states.
    */
-  breakThrow: 18
+  breakThrow: 18,
+
+  // --- the crash SILHOUETTE: how a crest changes shape through the break --
+  // Foam paint alone never read as a crash because the height field kept its
+  // symmetric Gaussian profile from horizon to sand. These shape the profile
+  // through four stages of `over` = metres of crest travel past the break
+  // line: stand up (−standRange…0), throw (0…breakThrow), collapse
+  // (breakThrow…breakThrow+spentRange), spent roller after. Pure profile
+  // shaping — spacing, speed, amplitude and the break line itself are
+  // untouched, so shorebreak/audio timing cannot drift.
+  /** Metres of approach over which the crest stands up and leans forward. */
+  standRange: 40,
+  /** Metres the peak shifts shoreward while standing up (forward lean). */
+  standLean: 2.8,
+  /** Fractional height gain at full stand — the visible "standing up". */
+  standLift: 0.18,
+  /** Fractional narrowing of the front face at full stand (steepening). */
+  faceTighten: 0.38,
+  /** EXTRA forward pitch through the throw window, metres. */
+  throwLean: 2.6,
+  /** Secondary crown lobe thrown ahead of the peak — the curling lip read.
+   *  Fraction of the set amplitude; a heightfield cannot overhang, but a
+   *  narrow lobe ahead of a forward-leaned peak breaks the silhouette
+   *  forward, which is what a beach-level camera actually sees of a curl. */
+  lipAmp: 0.26,
+  /** Metres ahead of the (leaned) peak the lip lobe sits. */
+  lipAhead: 4.6,
+  /** Gaussian sigma of the lip lobe, metres. */
+  lipWidth: 2.3,
+  /** Metres of travel to ease from fully thrown to spent (~2.2 s at 9.2). */
+  spentRange: 20,
+  /** Metres added to the front face width once spent — a mushy round bore. */
+  spentWiden: 6.0,
+  /** Fraction of crest height lost once spent: whitewater reads as SPENT
+   *  water, not a marching white wall at unchanged height. */
+  collapseDrop: 0.45
 } as const;
 
 const TAU = Math.PI * 2;
@@ -218,6 +253,35 @@ export function oceanBeachBreakPhase(crestX: number, z: number, time: number): n
   return smooth01((crestX - oceanBeachBreakX(z, time)) / OCEAN_BEACH_SURF.breakThrow);
 }
 
+/**
+ * Break-shape state for the crest at `crestX`: everything the crash
+ * silhouette needs, derived from ONE scalar — metres of crest travel past
+ * the break line. Like breakPhase it takes the CREST's position, so every
+ * sample on one wave agrees about its stage.
+ *
+ * CPU/GPU twin parity map (change BOTH or the picture desyncs from
+ * audio/shorebreak/physics). GPU = tslUtil.oceanBeachSurfField:
+ *
+ *   term      CPU (here)                                GPU twin
+ *   over      crestX − oceanBeachBreakX                 x.sub(d).sub(oceanBeachBreakXNode)
+ *   breaking  smooth01(over / breakThrow)               smoothstep(0, breakThrow, over)
+ *   spent     smooth01((over − breakThrow)/spentRange)  smoothstep(breakThrow, breakThrow+spentRange, over)
+ *   throwEnv  breaking · (1 − spent)                    breaking.mul(spent.oneMinus())
+ *   peakShape smooth01((over+standRange)/standRange)    smoothstep(−standRange, 0, over)
+ *               · (1 − spent)                             .mul(spent.oneMinus())
+ *   lean      peakShape·standLean + throwEnv·throwLean  same, .mul/.add
+ */
+export function oceanBeachBreakShape(crestX: number, z: number, time: number) {
+  const b = OCEAN_BEACH_SURF;
+  const over = crestX - oceanBeachBreakX(z, time);
+  const breaking = smooth01(over / b.breakThrow);
+  const spent = smooth01((over - b.breakThrow) / b.spentRange);
+  const throwEnv = breaking * (1 - spent);
+  const peakShape = smooth01((over + b.standRange) / b.standRange) * (1 - spent);
+  const lean = peakShape * b.standLean + throwEnv * b.throwLean;
+  return { over, breaking, spent, throwEnv, peakShape, lean };
+}
+
 function waveAmplitude(z: number, time: number, slot: number) {
   const b = OCEAN_BEACH_SURF;
   const setPulse = 0.82 + Math.sin(time * 0.13 + slot * 2.2) * 0.13;
@@ -257,16 +321,51 @@ function tubeLineDepth(crestDistance: number): number {
  * Height contribution from the breaking swell (zero outside Ocean Beach).
  * The offshore shoulder is broad and the shoreward face is narrow: a cheap
  * shoaling profile with the steep face surfers need for speed.
+ *
+ * The profile is SHAPED by the crest's break stage (oceanBeachBreakShape):
+ * it stands up and leans shoreward on approach, throws a narrow lip lobe
+ * ahead of the peak through the ~2 s pitch, then collapses to a lower,
+ * rounder spent roller. Height-field parity map (GPU twin =
+ * tslUtil.oceanBeachSurfField; shape terms in oceanBeachBreakShape's table):
+ *
+ *   term     CPU (here)                              GPU twin
+ *   prox     1 − smooth01((|d|−30)/25)               smoothstep(30, 55, d.abs()).oneMinus()
+ *   peakShape/throwEnv/spent/lean — the crest-level shape terms, ×prox
+ *   ds       d − lean                                d.sub(lean)
+ *   frontW   faceWidth·(1−faceTighten·peakShape)     float(faceWidth).mul(...oneMinus())
+ *              + spent·spentWiden                      .add(spent.mul(spentWiden))
+ *   width    ds<0 ? shoulderWidth : frontW           mix(shoulder, frontW, step(0, ds))
+ *   ridge    exp(−½(ds/width)²)·(1+standLift·peakShape)   same, .mul(...add(1))
+ *   lipLobe  exp(−½((ds−lipAhead)/lipWidth)²)·lipAmp·throwEnv   same
+ *   collapse 1 − collapseDrop·spent                  spent.mul(collapseDrop).oneMinus()
+ *   trough   exp(−½((d−22)/11)²)·0.24 (unshifted)    same
+ *   height   ((ridge+lipLobe)·collapse − trough)·a·mask   same
+ *
+ * `prox` windows the WHOLE deformation to the crest's own neighbourhood:
+ * exactly 1 within 30 m of the crest, exactly 0 past 55 m. Without it the
+ * nearest-crest reassignment at mid-trough (±75 m) joins two crests in
+ * DIFFERENT break stages and their unequal collapse/lean tails meet as a
+ * visible step in open water.
  */
 export function oceanBeachWaveHeight(x: number, z: number, time: number): number {
   const mask = oceanBeachMask(x, z);
   if (mask <= 0.0001) return 0;
-  const { slot, distance: d } = nearestOceanBeachCrest(x, z, time);
+  const b = OCEAN_BEACH_SURF;
+  const { slot, crestX, distance: d } = nearestOceanBeachCrest(x, z, time);
   const a = waveAmplitude(z, time, slot);
-  const width = d < 0 ? OCEAN_BEACH_SURF.shoulderWidth : OCEAN_BEACH_SURF.faceWidth;
-  const ridge = Math.exp(-0.5 * (d / width) ** 2);
+  const shape = oceanBeachBreakShape(crestX, z, time);
+  const prox = 1 - smooth01((Math.abs(d) - 30) / 25);
+  const peakShape = shape.peakShape * prox;
+  const throwEnv = shape.throwEnv * prox;
+  const spent = shape.spent * prox;
+  const ds = d - shape.lean * prox;
+  const frontW = b.faceWidth * (1 - b.faceTighten * peakShape) + spent * b.spentWiden;
+  const width = ds < 0 ? b.shoulderWidth : frontW;
+  const ridge = Math.exp(-0.5 * (ds / width) ** 2) * (1 + b.standLift * peakShape);
+  const lipLobe = Math.exp(-0.5 * ((ds - b.lipAhead) / b.lipWidth) ** 2) * b.lipAmp * throwEnv;
+  const collapse = 1 - b.collapseDrop * spent;
   const trough = Math.exp(-0.5 * ((d - 22) / 11) ** 2) * 0.24;
-  return (ridge - trough) * a * mask;
+  return ((ridge + lipLobe) * collapse - trough) * a * mask;
 }
 
 export type OceanBeachWaveSample = {
@@ -288,6 +387,8 @@ export type OceanBeachWaveSample = {
   tubeRoofY: number;
   /** 0 green wall … 1 thrown whitewater, for THIS sample's own crest. */
   breaking: number;
+  /** Metres the peak has leaned shoreward of crestX (oceanBeachBreakShape). */
+  lean: number;
 };
 
 /**
@@ -318,8 +419,14 @@ export function sampleOceanBeachWave(
   // These gameplay channels deliberately match oceanBeachSurfField()'s visible
   // green wall and white lip. A wider invisible scoring band made the board
   // report "on the lip" while the rendered crest was several metres away.
-  const face = mask * Math.exp(-0.5 * ((crestDistance - 4) / 5.5) ** 2);
-  const lip = mask * Math.exp(-0.5 * ((crestDistance - 1) / 2.6) ** 2);
+  // The bands ride the LEANED peak (crestDistance − lean), because that is
+  // where the rendered wall/crown now sit through the break. Unwindowed lean
+  // is exact here: the GPU twin windows lean by prox, but prox ≡ 1 within
+  // 30 m of the crest and both bands are dead beyond ~15 m.
+  const shape = oceanBeachBreakShape(crestX, z, time);
+  const ds = crestDistance - shape.lean;
+  const face = mask * Math.exp(-0.5 * ((ds - 4) / 5.5) ** 2);
+  const lip = mask * Math.exp(-0.5 * ((ds - 1) / 2.6) ** 2);
   const barrel = mask * oceanBeachBarrelEnvelope(z, time);
   const tubeDepth = barrel * tubeLineDepth(crestDistance);
   const tubeRoofY = amplitude * mask * oceanBeachTubeRoofFraction(crestDistance);
@@ -337,7 +444,8 @@ export function sampleOceanBeachWave(
     barrel,
     tubeDepth,
     tubeRoofY,
-    breaking: oceanBeachBreakPhase(crestX, z, time)
+    breaking: shape.breaking,
+    lean: shape.lean
   };
 }
 

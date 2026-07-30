@@ -34,8 +34,9 @@ import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 import { WaterEchoes } from "./waterEchoes";
 import { OceanCascades, oceanDetail, cascadeUv, CASCADE_FADE_DIST, HERO_STRIP_GATE } from "./ocean/oceanSim";
 import { setHeroFocus } from "./ocean/heroWaves";
-import { SUN_DIR, type Sky } from "./sky";
-import { causticWeb, oceanSurfaceRadiance } from "./waterShadingTSL";
+import { SUN_DIR, SUN_STATE, type Sky } from "./sky";
+import { causticWeb, oceanSurfaceRadiance, twilightDirection, twilightFoamRadiance } from "./waterShadingTSL";
+import { PRISM_GLINT } from "./prismGlint";
 import { governorEffects } from "../render/adaptiveResolution";
 
 const PALACE_LAGOON_SEGMENTS = 112;
@@ -266,6 +267,13 @@ export class Water {
    *  Sky owns the day/night grade; this just mirrors it into the water graph so
    *  the sun path dims through dusk and becomes a moon path at night. */
   #uSunRadiance = uniform(new THREE.Color(1, 1, 1));
+  /** Horizon-band afterglow for aerated foam (twilightFoamRadiance): the light
+   *  that keeps a crash readable after sunRadiance has died with the disc.
+   *  Zero outside roughly +2°…−9.5° true sun elevation. */
+  #uTwilightRadiance = uniform(new THREE.Color(0, 0, 0));
+  /** Unit direction to the sunset horizon point — the TRUE sun bearing
+   *  (SUN_STATE.toSun), NOT SUN_DIR, which is the moon after dusk. */
+  #uTwilightDir = uniform(new THREE.Vector3(-1, 0.06, 0).normalize());
   /** tan(elevation) of the terrain horizon per azimuth, swept from the camera
    *  (see HORIZON_* and #scanHorizon). Negative where nothing blocks. */
   //   +1 entry duplicating index 0, so the shader's azimuth lerp never needs a
@@ -553,11 +561,20 @@ export class Water {
       // break-up noise only mottling it. The band runs from just offshore of
       // the crest to well down its shoreward slope, so it meets the apron and
       // the roller reads as one white mass marching in.
+      // Along-crest streaks running down the face. A fully-foamed wall painted
+      // one flat cream was the last thing standing between "wave" and "wall":
+      // real whitewater is raked into streaks by the water draining through
+      // it, so the band gets a second, finer mottle keyed to position along
+      // the crest AND down the slope, drifting with the wave.
+      const wallStreak = sin(pxz.y.mul(0.9).add(surfField.crestD.mul(0.55)).add(t.mul(0.6)))
+        .mul(0.5)
+        .add(0.5);
       const wallFoam = displace > 0
         ? surfField.mask
             .mul(smoothstep(-16, -3, surfField.crestD))
             .mul(smoothstep(22, 46, surfField.crestD).oneMinus())
             .mul(crestBreakup.mul(0.3).add(0.7))
+            .mul(wallStreak.mul(0.24).add(0.76))
             .mul(broke)
             .toVar()
         : float(0);
@@ -707,9 +724,26 @@ export class Water {
         // between the two — a metre-thick white mass with a low sun behind
         // it glows through its whole height, and that glow is most of what
         // makes a sunset crash read as a crash.
+        // The crown FIRES while the lip is in the air: throwEnv runs 0→1
+        // through the two-second pitch, so the moment of the crash is the
+        // brightest thing on the water — which is what an eye reads as the
+        // detonation, even 200 m off.
         foamGlow: displace > 0
-          ? lipFoam.mul(2.1).add(apronFoam.mul(0.55)).add(wallFoam.mul(1.1))
+          ? lipFoam.mul(surfField.throwEnv.mul(1.8).add(2.1)).add(apronFoam.mul(0.55)).add(wallFoam.mul(1.1))
           : undefined,
+        // Twilight handover: foamGlow above is multiplied by sunRadiance in
+        // the BRDF, which dies with the disc at 20.3 — these light the same
+        // aerated channels from the horizon band through deep sunset. Only
+        // read where foamGlow is set, so the far/horizon sheets pay nothing.
+        twilightRadiance: displace > 0 ? this.#uTwilightRadiance : undefined,
+        twilightDir: displace > 0 ? this.#uTwilightDir : undefined,
+        // The prism kite's fan reflected in the sea — near sheet only, and
+        // multiplied out whenever the strength uniform is 0 (see prismGlint).
+        prismOrigin: displace > 0 ? PRISM_GLINT.origin : undefined,
+        prismDir: displace > 0 ? PRISM_GLINT.dir : undefined,
+        prismAcross: displace > 0 ? PRISM_GLINT.across : undefined,
+        prismParams: displace > 0 ? PRISM_GLINT.params : undefined,
+        worldPos: displace > 0 ? positionWorld : undefined,
         // Crest subsurface (SoT trick): the cascades' 1−Jacobian mask IS the set
         // of folding, thin crests, so the glow rides exactly the pitching tops.
         // It lives inside the BRDF now so it gets the view dependence it needs —
@@ -1264,6 +1298,10 @@ export class Water {
     // the water's sun path follows the sky for free — no second grade to keep
     // in sync. #uSunDir already tracks SUN_DIR, which Sky mutates in place.
     this.#uSunRadiance.value.copy(this.#sky.sun.color).multiplyScalar(this.#sky.sun.intensity);
+    // Twilight foam light: TRUE solar state (SUN_DIR/sun.* are the moon after
+    // −2°), resolved once per frame into the two uniforms the BRDF reads.
+    twilightFoamRadiance(SUN_STATE.elevationDeg, this.#uTwilightRadiance.value);
+    twilightDirection(SUN_STATE.toSun, this.#uTwilightDir.value);
     // Reflected-coastline horizon profile (Tier C). Slow field, camera-centred,
     // re-swept only on real movement.
     if (this.#horizonAt.distanceToSquared({ x: camPos.x, y: camPos.z } as THREE.Vector2) >

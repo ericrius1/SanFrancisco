@@ -70,7 +70,13 @@ export function goldenHourAmount(): number {
   const elevation = SUN_STATE.elevationDeg;
   // THREE.MathUtils.smoothstep short-circuits on an inverted range, so both
   // edges run low→high and the falling side is taken as a complement.
-  const stillHigh = THREE.MathUtils.smoothstep(elevation, 4, 16);
+  //
+  // Full from 7° down (was 4°): the extra three degrees are the difference
+  // between a festival that only lights up when the whole sky has gone
+  // salmon and one that starts while the zenith still holds blue and the
+  // sea still reads emerald — the sunset-film reference frame lives in that
+  // window, and a prism disperses whenever the sun shines.
+  const stillHigh = THREE.MathUtils.smoothstep(elevation, 7, 18);
   const alreadyGone = THREE.MathUtils.smoothstep(elevation, -8.5, -2.5);
   return THREE.MathUtils.clamp((1 - stillHigh) * alreadyGone, 0, 1);
 }

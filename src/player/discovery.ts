@@ -4,6 +4,7 @@ export const MENU_MODES: PlayerMode[] = [
   "walk",
   "drive",
   "scooter",
+  "skate",
   "board",
   "plane",
   "boat",
@@ -22,7 +23,10 @@ export const MODE_META: Record<PlayerMode, { icon: string; label: string }> = {
   boat: { icon: "⛵", label: "Boat" },
   speedboat: { icon: "🚤", label: "Speedboat" },
   drone: { icon: "🛸", label: "Drone" },
-  board: { icon: "🛹", label: "Board" },
+  // 🛹 belongs to the actual skateboard; the hoverboard gets the comet it
+  // always looked like.
+  board: { icon: "💫", label: "Hoverboard" },
+  skate: { icon: "🛹", label: "Skate" },
   surf: { icon: "🏄", label: "Surf" },
   bird: { icon: "🦅", label: "Bird" }
 };
@@ -30,6 +34,7 @@ export const MODE_META: Record<PlayerMode, { icon: string; label: string }> = {
 const REVEAL_MSG: Partial<Record<PlayerMode, string>> = {
   scooter: "Electric scooter ready — bring a friend!",
   board: "Hoverboard found!",
+  skate: "Skateboard found — bomb a hill!",
   surf: "Ocean Beach surfboard!",
   bird: "Phoenix found!",
   speedboat: "Speedboat!"
