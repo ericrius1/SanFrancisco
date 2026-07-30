@@ -661,6 +661,7 @@ export function createOptionalSites({
     const { WaveOrgan: LoadedWaveOrgan } = await import("../../world/waveOrgan");
     await stage();
     const organ = new LoadedWaveOrgan(map, nature);
+    await organ.ready;
     await prepareOptionalRoot("wave-organ", organ.group, waitStage, compile);
     waveOrgan = organ;
     scene.add(organ.group);
