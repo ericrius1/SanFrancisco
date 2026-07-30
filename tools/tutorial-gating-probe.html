@@ -1,0 +1,434 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>tutorial gating probe</title>
+<style>body{font:13px ui-monospace,monospace;background:#111;color:#ddd;padding:16px}</style>
+<div id="hud"></div>
+<pre id="out">running…</pre>
+<script type="module">
+  const out = document.getElementById("out")
+  const lines = []
+  const log = (s) => { lines.push(s); out.textContent = lines.join("\n") }
+
+  const { Tutorial } = await import("/src/ui/tutorial.ts")
+
+  // Each Tutorial appends its own panel to #hud, so the hud is cleared per test
+  // and every read is scoped to the one panel that is currently live.
+  const hud = document.getElementById("hud")
+  const newTutorial = (ctx) => { hud.innerHTML = ""; return new Tutorial(ctx) }
+  const objective = () => hud.querySelector(".tut-text")?.textContent ?? "(none)"
+  // Progress now lives in the current step's cell of the segmented bar.
+  const fill = () => parseFloat(hud.querySelector(".tut-seg.now i")?.style.width ?? "0")
+
+  function makeState(zone) {
+    return { mode: "walk", pos: { x: -1560, y: 3, z: -1560 }, mouseDelta: 0, down: {}, pressed: {}, mapOpen: false, zone }
+  }
+  function makeCtx(s) {
+    return {
+      mode: () => s.mode,
+      pos: () => s.pos,
+      mouseDelta: () => s.mouseDelta,
+      down: (c) => !!s.down[c],
+      pressed: (c) => !!s.pressed[c],
+      mapOpen: () => s.mapOpen,
+      teleport: () => {},
+      message: () => {},
+      zone: () => s.zone,
+      goToZone: () => {}
+    }
+  }
+  // Mirrors TutorialZoneProgress. The distances matter: leaving them out makes
+  // every travel beat read NaN, which is a different bug from the one under
+  // test and quietly hides the beats from the walkthrough.
+  const ZONE = () => ({
+    watching: true, gatesPassed: 0, sprintMeters: 0, hurdleCleared: false,
+    insideCottage: false, cottageVisited: false, lapFraction: 0, bowlAir: 0, ringsFlown: 0,
+    toStartLine: 120, toBowl: 140, toFirstRing: 200
+  })
+
+  // Drive N seconds of frames. `move` advances the body; pressed/mouse are
+  // edge-ish and cleared each frame, like the real input layer.
+  function run(t, s, seconds, move) {
+    const dt = 1 / 60
+    for (let i = 0; i < Math.round(seconds / dt); i++) {
+      if (move) move(s, dt)
+      t.update(dt)
+      s.pressed = {}
+      s.mouseDelta = 0
+    }
+  }
+  // Walk east at 9 m/s — well under traveled()'s 20 m teleport guard.
+  const walk = (s) => { s.pos = { ...s.pos, x: s.pos.x + 0.15 } }
+
+  // Advance past "get on your feet" (instant) and the mouse-look beat.
+  function toGatesStep(t, s) {
+    run(t, s, 1.2)
+    for (let i = 0; i < 200 && !objective().includes("bunting"); i++) { s.mouseDelta = 40; run(t, s, 1 / 60) }
+    run(t, s, 1.0)
+  }
+
+  const results = []
+  const check = (name, pass, detail) => { results.push({ name, pass, detail }); log(`${pass ? "PASS" : "FAIL"}  ${name} — ${detail}`) }
+
+  // ── A: field watching, player walks 60 m but passes no gates ──────────────
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    const at = objective()
+    run(t, s, 7, walk) // ~63 m of walking, gatesPassed stays 0
+    check("walking does NOT pass the gates step",
+      objective() === at && objective().includes("bunting") && fill() < 100,
+      `still on "${objective()}" at ${fill()}%`)
+  }
+
+  // ── B: field watching, gates actually walked ─────────────────────────────
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    s.zone.gatesPassed = 3
+    run(t, s, 2)
+    check("passing three real gates DOES complete the step",
+      !objective().includes("bunting"),
+      `advanced to "${objective()}"`)
+  }
+
+  // ── C: no field at all — the net must still arm, but only after grace ────
+  {
+    const s = makeState(null)
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    const at = objective()
+    run(t, s, 5, walk) // 45 m walked, still inside the 8 s grace
+    const duringGrace = objective()
+    run(t, s, 12, walk) // grace elapses, net arms, 26 m re-walked
+    check("no field: nothing awarded during grace",
+      duringGrace === at && duringGrace.includes("bunting"),
+      `held "${duringGrace}" through 45 m`)
+    check("no field: net arms and lets the player through",
+      !objective().includes("bunting"),
+      `advanced to "${objective()}"`)
+  }
+
+  // ── D: the instant-pass steps — one Space tap must not clear the hurdle ──
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    s.zone.gatesPassed = 3
+    run(t, s, 2)
+    s.zone.sprintMeters = 99
+    run(t, s, 2)
+    const at = objective()
+    for (let i = 0; i < 10; i++) { s.pressed = { Space: true }; run(t, s, 1 / 60) }
+    run(t, s, 1)
+    check("tapping Space does NOT clear the hurdle",
+      objective() === at && at.includes("hay bales"),
+      `still on "${objective()}"`)
+  }
+
+  // ── E–H: the field itself ────────────────────────────────────────────────
+  // TutorialZone only builds geometry and reads a height function, so a fake
+  // map/physics/scene is enough to drive it without a GPU device.
+  {
+    const THREE = await import("three/webgpu")
+    const { TutorialZone } = await import("/src/world/tutorialZone/index.ts")
+    const L = await import("/src/world/tutorialZone/layout.ts")
+
+    // Land out to v = −60, open water beyond — enough of a coastline for the
+    // ring course to find a waterline to start from.
+    const GROUND = 3
+    const SHORE_V = -60
+    const fakeMap = {
+      meta: { seaLevel: 0 },
+      groundTop: (_x, z) => (z - (-1560) <= SHORE_V ? -6 : GROUND),
+      setGroundTopOverlay() {},
+      clearGroundTopOverlay() {}
+    }
+    let body = 1
+    const fakePhysics = {
+      world: { createBox: () => body++, setBodyTransform() {}, destroyBody() {} },
+      addQuerySolid() {}, removeQuerySolid() {}
+    }
+    const hudSink = { message() {} }
+    const makeZone = () => new TutorialZone(fakeMap, fakePhysics, new THREE.Scene())
+    const at = (u, v, y, mode) => ({ position: { x: L.zoneWorldX(u), y, z: L.zoneWorldZ(v) }, mode })
+
+    // Drive the oval; `dir` is +1 or −1 around the ellipse.
+    function lapOnce(dir) {
+      const z = makeZone()
+      const step = 0.05
+      for (let i = 0; i <= Math.ceil((Math.PI * 2) / step); i++) {
+        const th = dir * i * step
+        z.update(1 / 60, i / 60, at(L.TRACK.cu + L.TRACK.a * Math.cos(th), L.TRACK.cv + L.TRACK.b * Math.sin(th), GROUND, "drive"), hudSink)
+      }
+      const lap = z.progress.lapFraction
+      z.dispose()
+      return lap
+    }
+    const cw = lapOnce(1)
+    const ccw = lapOnce(-1)
+    check("a lap counts clockwise", cw >= 0.98, `lapFraction ${cw.toFixed(3)}`)
+    check("a lap counts anticlockwise too", ccw >= 0.98, `lapFraction ${ccw.toFixed(3)}`)
+
+    // The course must begin over water, not on the lawn.
+    const course = L.buildFlightRings(fakeMap)
+    check("the ring course starts past the waterline",
+      course[0].v < SHORE_V,
+      `first hoop at v ${course[0].v.toFixed(0)}, shore at v ${SHORE_V}`)
+    {
+      const gaps = course.slice(1).map((r, i) => Math.hypot(r.u - course[i].u, r.v - course[i].v))
+      const minGap = Math.min(...gaps)
+      check("hoops are spread far enough to fly between",
+        minGap > 100 && Math.min(...course.map((r) => r.radius)) >= 10,
+        `${minGap.toFixed(0)} m apart, radii ${course[0].radius}→${course[5].radius} m`)
+    }
+
+    // Fly the ring course through each hoop's centre, in order.
+    {
+      const z = makeZone()
+      let t = 0
+      let prev = { u: course[0].u, v: course[0].v + 60, y: course[0].y }
+      for (const r of course) {
+        // Small steps: the swept test is exact, but a stride over 25 m reads as
+        // a teleport and is skipped by design.
+        const steps = Math.ceil(Math.hypot(r.u - prev.u, r.v - prev.v) / 12) + 1
+        for (let i = 1; i <= steps; i++) {
+          const k = i / steps
+          z.update(1 / 60, (t += 1 / 60), at(prev.u + (r.u - prev.u) * k, prev.v + (r.v - prev.v) * k, prev.y + (r.y - prev.y) * k, "bird"), hudSink)
+        }
+        prev = { u: r.u, v: r.v, y: r.y }
+      }
+      const flown = z.progress.ringsFlown
+      z.dispose()
+      check("flying each hoop's centre passes all six rings", flown === 6, `ringsFlown ${flown}/6`)
+    }
+
+    // The site gate must stay awake for the whole course, or ring progress
+    // freezes and `watching` drops out halfway through the flight.
+    {
+      const z = makeZone()
+      const hooks = z.siteHooks()
+      const last = course[course.length - 1]
+      const inside = hooks.contains(L.zoneWorldX(last.u), L.zoneWorldZ(last.v), hooks.deactivatePad)
+      z.dispose()
+      check("the field stays awake out at the last hoop",
+        inside,
+        `deactivatePad ${hooks.deactivatePad.toFixed(0)} m covers a hoop ${Math.hypot(last.u, last.v).toFixed(0)} m out`)
+    }
+
+    // Distances the checklist steers by must actually point somewhere.
+    {
+      const z = makeZone()
+      z.update(1 / 60, 0, at(L.TRACK.cu, L.TRACK.cv, GROUND, "walk"), hudSink)
+      z.update(1 / 60, 1 / 60, at(L.TRACK.cu + 0.1, L.TRACK.cv, GROUND, "walk"), hudSink)
+      const far = z.progress
+      z.update(1 / 60, 2 / 60, at(L.BOWL.cu, L.BOWL.cv, GROUND, "board"), hudSink)
+      const near = z.progress
+      z.dispose()
+      check("toBowl shrinks as you cross the field",
+        far.toBowl > 90 && near.toBowl < 1,
+        `${far.toBowl.toFixed(0)} m at the oval → ${near.toBowl.toFixed(1)} m at the bowl`)
+    }
+  }
+
+  // ── I: the run ends on a congratulations card, not an empty screen ───────
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    for (let i = 0; i < 40 && hud.querySelector(".tut-ch")?.textContent?.includes("✓") !== true; i++) {
+      skip.click()
+      run(t, s, 1 / 60)
+    }
+    const chapter = hud.querySelector(".tut-ch")?.textContent ?? ""
+    check("the tutorial ends on a visible congratulations",
+      chapter.includes("Congratulations") && hud.querySelector(".tut-text").textContent.includes("teleport") &&
+        getComputedStyle(hud.querySelector(".tutorial-panel")).display !== "none",
+      `panel still up, reading "${chapter}"`)
+  }
+
+  // ── J: skip always skips, even mid-celebration ───────────────────────────
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    const before = objective()
+    s.zone.gatesPassed = 3
+    run(t, s, 1 / 60) // step now complete: the 0.85 s advance window is open
+    hud.querySelector(".tut-skip").click()
+    run(t, s, 1 / 60)
+    check("skip works during the completion pause",
+      objective() !== before,
+      `"${before}" → "${objective()}"`)
+  }
+
+  // ── K: a travel beat you have already arrived at never opens ─────────────
+  {
+    const s = makeState(ZONE())
+    s.zone.toBowl = 0 // already standing on the bowl
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    toGatesStep(t, s)
+    for (const n of ["gatesPassed", "sprintMeters", "hurdleCleared", "cottageVisited"]) s.zone[n] = 99
+    s.zone.lapFraction = 2
+    s.zone.toStartLine = 0
+    // Follow the checklist honestly: each mode beat wants that mode selected.
+    for (let i = 0; i < 40 && !objective().includes("air off the bowl"); i++) {
+      const o = objective()
+      if (o.includes("car")) s.mode = "drive"
+      else if (o.includes("hoverboard")) s.mode = "board"
+      else if (o.includes("phoenix")) s.mode = "bird"
+      run(t, s, 0.5)
+    }
+    check("the bowl travel beat is elided when you are already there",
+      objective().includes("air off the bowl"),
+      `landed on "${objective()}" without a "head west" card`)
+  }
+
+  // ── L: the map chapter's instructions survive the map opening ────────────
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    for (let i = 0; i < 40 && !objective().includes("open the city map"); i++) { skip.click(); run(t, s, 1 / 60) }
+    s.mapOpen = true
+    run(t, s, 0.5)
+    check("the hud is lifted over the expanded map",
+      hud.classList.contains("tutorial-over-map"),
+      `hud carries .tutorial-over-map while the map is up`)
+    skip.click()
+    run(t, s, 1 / 60)
+    check("the next instruction exists once the map is open",
+      objective().includes("teleport"),
+      `reads "${objective()}"`)
+    check("the map card explains pan, zoom and picking in the same beat",
+      ["pan", "zoom", "pick"].every((w) => objective().toLowerCase().includes(w)),
+      `reads "${objective()}"`)
+  }
+
+  // ── P: opening the map must ADVANCE the step, with no skip involved ──────
+  // The live bug: the game loop returns early while the map is open, so
+  // tutorial.update() stopped being called — the step asking you to open the
+  // map was checked by code that stops running the moment you open it. The
+  // checklist sat on "press M" forever with the map in front of it.
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    for (let i = 0; i < 40 && !objective().includes("open the city map"); i++) { skip.click(); run(t, s, 1 / 60) }
+    const before = objective()
+    s.mapOpen = true
+    run(t, s, 2) // ticking only — nothing clicked
+    check("opening the map advances the checklist on its own",
+      objective() !== before && objective().includes("teleport"),
+      `"${before}" → "${objective()}"`)
+  }
+
+  // ── M: skipping right through must never show the same card twice ────────
+  // Run it in both worlds: field watching, and no field at all (the state the
+  // checklist is in before the site finishes streaming, which is exactly when
+  // a new player is mashing skip).
+  for (const [world, zone] of [["field watching", ZONE()], ["no field", null]]) {
+    const s = makeState(zone)
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    const seen = []
+    for (let i = 0; i < 60; i++) {
+      const card = `${hud.querySelector(".tut-ch").textContent} | ${hud.querySelector(".tut-action").textContent} ${hud.querySelector(".tut-keys").textContent} ${objective()}`
+      seen.push(card)
+      if (card.includes("Congratulations")) break
+      skip.click()
+      // Human pacing, not one frame: between two clicks the world keeps
+      // ticking, so auto-completion and skipping interleave the way they do
+      // for someone actually mashing the button.
+      run(t, s, 0.45)
+    }
+    const dupes = seen.filter((c, i) => i > 0 && c === seen[i - 1])
+    check(`skipping never repeats a card (${world})`,
+      dupes.length === 0,
+      dupes.length ? `repeated: ${JSON.stringify(dupes[0])}` : `${seen.length} distinct cards to the finale`)
+  }
+
+  // ── N: a second Tutorial must not leave the first one's panel on screen ──
+  // This is the shape of the "skip shows the same step again" report: two
+  // panels at the same absolute position, clicks landing on one while the
+  // frame loop drives the other. A module reload is enough to cause it.
+  {
+    hud.innerHTML = ""
+    const s = makeState(ZONE())
+    const first = new Tutorial(makeCtx(s))
+    first.start()
+    const second = new Tutorial(makeCtx(makeState(ZONE())))
+    second.start()
+    check("a second Tutorial evicts the first one's panel",
+      hud.querySelectorAll(".tutorial-panel").length === 1 && hud.querySelectorAll(".tutorial-ui").length === 1,
+      `${hud.querySelectorAll(".tutorial-panel").length} panel(s), ${hud.querySelectorAll(".tutorial-ui").length} button(s) in the hud`)
+  }
+
+  // ── O: every card names an action, and no two are alike ─────────────────
+  {
+    hud.innerHTML = ""
+    const s = makeState(ZONE())
+    const t = new Tutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    const cards = []
+    for (let i = 0; i < 60; i++) {
+      const ch = hud.querySelector(".tut-ch").textContent
+      if (ch.includes("Congratulations")) break
+      const segs = [...hud.querySelectorAll(".tut-seg")]
+      const m = /step (\d+) of (\d+)/.exec(hud.querySelector(".tut-prog").textContent ?? "")
+      cards.push({
+        ch, action: hud.querySelector(".tut-action").textContent, text: objective(),
+        prog: hud.querySelector(".tut-prog").textContent,
+        stepIndex: m ? +m[1] - 1 : -1, totalSteps: m ? +m[2] : -1,
+        segs: { total: segs.length, now: segs.findIndex((s) => s.classList.contains("now")), done: segs.filter((s) => s.classList.contains("done")).length }
+      })
+      skip.click()
+      run(t, s, 0.45)
+    }
+    const mute = cards.filter((c) => !c.action)
+    check("every objective card leads with an action word",
+      mute.length === 0,
+      mute.length ? `${mute.length} card(s) render no verb, e.g. "${mute[0]?.text}"` : `${cards.length} cards, all verbed`)
+    const same = cards.filter((c, i) => i > 0 && c.ch === cards[i - 1].ch && c.text === cards[i - 1].text && c.prog === cards[i - 1].prog)
+    check("no card repeats the one before it",
+      same.length === 0,
+      same.length ? `repeat at "${same[0].text}"` : `${cards.length} consecutive cards all differ`)
+    // Structural only — this page loads no stylesheet, so anything about where
+    // the counter SITS is asserted in tools/tutorial-panel-look.html instead.
+    const cells = cards.map((c) => c.segs)
+    check("each card shows one bar cell per step of its chapter",
+      cells.every((s, i) => s.total === cards[i].totalSteps && s.now === cards[i].stepIndex),
+      `e.g. ${JSON.stringify(cells[0])}`)
+  }
+
+  window.__RESULT = { pass: results.every((r) => r.pass), results }
+  window.__CARDS = (() => {
+    hud.innerHTML = ""
+    const s = makeState(ZONE())
+    const t = new Tutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    const out = []
+    for (let i = 0; i < 60; i++) {
+      out.push(`${hud.querySelector(".tut-ch").textContent} :: ${hud.querySelector(".tut-action").textContent} ${objective()}`)
+      if (out[out.length - 1].includes("Congratulations")) break
+      skip.click()
+      run(t, s, 0.45)
+    }
+    return out
+  })()
+  log("")
+  log(window.__RESULT.pass ? "ALL PASS" : "FAILURES PRESENT")
+</script>

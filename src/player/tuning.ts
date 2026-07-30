@@ -10,6 +10,7 @@ import { BIRD_TUNING } from "../vehicles/bird";
 import { SURF_TUNING } from "../vehicles/surf/tuning";
 import { SURF_CAMERA_TUNING } from "../vehicles/surf/cameraTuning";
 import { SCOOTER_TUNING } from "../vehicles/scooter";
+import { SKATE_TUNING } from "../vehicles/skate";
 import type { PlayerMode } from "./types";
 
 type Folder = ReturnType<Pane["addFolder"]>;
@@ -25,6 +26,7 @@ export const MOVEMENT_TUNING = {
   speedboat: SPEEDBOAT_TUNING.values,
   drone: DRONE_TUNING.values,
   board: BOARD_TUNING.values,
+  skate: SKATE_TUNING.values,
   surf: SURF_TUNING.values,
   bird: BIRD_TUNING.values
 };
@@ -42,6 +44,7 @@ export function addMovementTuning(pane: Pane | FolderApi): Record<PlayerMode, Fo
     speedboat: movement.addFolder({ title: "speedboat", expanded: false }),
     drone: movement.addFolder({ title: "drone", expanded: false }),
     board: movement.addFolder({ title: "hoverboard", expanded: false }),
+    skate: movement.addFolder({ title: "skateboard", expanded: false }),
     surf: movement.addFolder({ title: "surf", expanded: false }),
     bird: movement.addFolder({ title: "bird", expanded: false })
   };
@@ -58,6 +61,7 @@ export function addMovementTuning(pane: Pane | FolderApi): Record<PlayerMode, Fo
   BOARD_TUNING.bind(folders.board);
   BOARD_EFFECT_TUNING.bind(folders.board.addFolder({ title: "effects", expanded: false }));
   HALO_TUNING.bind(folders.board.addFolder({ title: "halo comet", expanded: false }));
+  SKATE_TUNING.bind(folders.skate);
   SURF_TUNING.bind(folders.surf.addFolder({ title: "ride", expanded: false }));
   SURF_CAMERA_TUNING.bind(folders.surf.addFolder({ title: "locked camera", expanded: false }));
   BIRD_TUNING.bind(folders.bird);

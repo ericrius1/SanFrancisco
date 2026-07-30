@@ -105,11 +105,18 @@ export type SutroTwilight = {
    * someone is the camera: a shot that leaves the hall while the player stands
    * inside must see the full far world, not a bare thinned one. Omitted (probe
    * stubs, chase play) it defaults to the player's answer.
+   *
+   * `forceInside` is the sunken gallery: a sealed room thirty-one metres under
+   * the deck is as far inside this building as it is possible to be, but it
+   * sits far below the vertical band the geometry test uses and would otherwise
+   * hand the sky back and un-thin the whole city while nobody — player OR
+   * camera, since down there they are in the same sealed box — could see either.
    */
   update(
     dt: number,
     player: { x: number; y?: number; z: number },
-    observer?: { x: number; y: number; z: number }
+    observer?: { x: number; y: number; z: number },
+    forceInside?: boolean
   ): void;
   /** Hand the world clock back at once (site sleep, dispose, perf suppression). */
   release(): void;
@@ -273,7 +280,7 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
     get lampGlow() {
       return depth;
     },
-    update(dt, player, observer) {
+    update(dt, player, observer, forceInside = false) {
       // The depth ramp runs on the WALL clock, not the world clock: the
       // "freeze the world, keep walking" mode drives this site with dt = 0 to
       // hold its bathers and water still, and a visitor who walks in under that
@@ -289,13 +296,14 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       const y = player.y ?? SUTRO_BATHS.deckY;
       // Metres from the nearest wall: positive on the deck, negative out on the
       // promenade or the beach. The latch below reads this directly.
-      const wallInset = sutroHallWallInset(player.x, player.z);
+      const wallInset = forceInside ? 1e3 : sutroHallWallInset(player.x, player.z);
       // Vertically the pocket covers the basin floor up to a little above the
       // roof, so a swimmer at the bottom of the plunge and a visitor on the
       // upper gallery are both inside it.
-      const height =
-        smooth01((y - (SUTRO_BATHS.basinY - 6)) / 6) *
-        smooth01((SUTRO_BATHS.roofApexY + 12 - y) / 10);
+      const height = forceInside
+        ? 1
+        : smooth01((y - (SUTRO_BATHS.basinY - 6)) / 6) *
+          smooth01((SUTRO_BATHS.roofApexY + 12 - y) / 10);
       // `depth` stays a feathered blend, because the things it drives — lamps,
       // the interior grade, the water's night response — genuinely want to come
       // up gradually as the visitor walks in. That gradient now lives on the
@@ -371,7 +379,9 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       // beat as buildings assembling in mid-air. Released while the camera is
       // still approaching the wall, the transition settles behind the hall's
       // own silhouette before there is any line of sight to film it.
-      if (observer) {
+      if (forceInside) {
+        observerOutside = false;
+      } else if (observer) {
         const observerHeight =
           smooth01((observer.y - (SUTRO_BATHS.basinY - 6)) / 6) *
           smooth01((SUTRO_BATHS.roofApexY + 12 - observer.y) / 10);

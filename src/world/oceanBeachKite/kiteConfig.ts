@@ -21,7 +21,8 @@ export const KITE_SAILS: readonly SailEntry[] = [
   { id: "sunwheel", label: "sunwheel", note: "six blades round an open eye" },
   { id: "lantern", label: "lantern", note: "two box cells · eight windows" },
   { id: "sled", label: "sled", note: "no cross spar · two tall vents" },
-  { id: "centipede", label: "centipede", note: "five discs on one line" }
+  { id: "centipede", label: "centipede", note: "five discs on one line" },
+  { id: "prism", label: "prism", note: "hollow triangle · a spectrum below it" }
 ];
 
 /**

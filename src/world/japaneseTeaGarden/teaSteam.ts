@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { SHADOW_LAYERS } from "../shadows/shadowLayers";
 
 /**
  * A subtle stylized steam plume for the tea bowl — a small pool of soft sprite
@@ -75,7 +76,7 @@ export function createTeaSteam(count = 9): TeaSteam {
     sprite.name = `tea_steam_${i}`;
     sprite.frustumCulled = false;
     sprite.renderOrder = 24;
-    sprite.layers.set(31); // beauty-only: stay out of the ink/outline prepass
+    sprite.layers.set(SHADOW_LAYERS.BEAUTY_ONLY); // beauty-only: stay out of the ink/outline prepass
     group.add(sprite);
     sprites.push(sprite);
     materials.push(material);

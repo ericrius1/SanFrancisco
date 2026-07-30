@@ -7,6 +7,9 @@ import { LandmarkSmoother } from "./smoothing";
 
 export type MocapSessionState = "loading" | "searching" | "tracking" | "error";
 
+/** A camera that opens but never produces a frame must fail, not hang. */
+const VIDEO_START_TIMEOUT_MS = 12000;
+
 type SessionOptions = {
   video: HTMLVideoElement;
   /** Optional joint-debug canvas layered over the preview video. */
@@ -71,29 +74,52 @@ export class PoseMocapSession {
     this.poseDriver = (rig, dt) => this.#retargeter.apply(rig, dt);
   }
 
+  /**
+   * Start the camera and the WebGPU detector. Resolves early and silently when
+   * `stop()` lands mid-start — a cancelled start is not a failure, so callers
+   * must treat "resolved but not running" as "the user backed out".
+   */
   async start(): Promise<void> {
     this.#running = true;
     this.#pageVisible = document.visibilityState === "visible";
     document.addEventListener("visibilitychange", this.#onVisibilityChange);
-    this.#onState("loading", "Requesting camera");
+    this.#emit("loading", "Requesting camera");
     try {
-      this.#stream = await this.#openCamera();
-      this.#video.srcObject = this.#stream;
+      const stream = await this.#openCamera();
+      // The permission prompt can outlive a cancel; never keep a camera the
+      // session no longer owns (the recording light would stay on).
+      if (!this.#running) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
+      this.#stream = stream;
+      this.#video.srcObject = stream;
       if (!this.#pageVisible) {
-        for (const track of this.#stream.getVideoTracks()) track.enabled = false;
+        for (const track of stream.getVideoTracks()) track.enabled = false;
       }
       await this.#waitForVideo();
-      if (this.#pageVisible) await this.#video.play();
-
-      this.#detector = new PoseDetector();
-      await this.#detector.initialize((fraction, label) => {
-        this.#onState("loading", `${label} · ${Math.round(fraction * 100)}%`);
-      });
       if (!this.#running) return;
-      this.#onState("searching", "Step into view");
+      if (this.#pageVisible) await this.#video.play();
+      if (!this.#running) return;
+
+      // Held locally until it is ready: tearing the LiteRT runtime down from
+      // stop() while initialize() is still loading it can poison the next
+      // attempt, so a cancelled load is disposed once it settles instead.
+      const detector = new PoseDetector();
+      await detector.initialize((fraction, label) => {
+        this.#emit("loading", `${label} · ${Math.round(fraction * 100)}%`);
+      });
+      if (!this.#running) {
+        detector.dispose();
+        return;
+      }
+      this.#detector = detector;
+      this.#emit("searching", "Step into view");
       this.#scheduleInference();
     } catch (error) {
+      const cancelled = !this.#running;
       this.stop();
+      if (cancelled) return;
       throw error;
     }
   }
@@ -109,10 +135,16 @@ export class PoseMocapSession {
     this.#frameCallback = 0;
     if (this.#inferenceActive) this.#disposePending = true;
     else this.#disposeDetector();
-    for (const track of this.#stream?.getTracks() ?? []) track.stop();
+    const stream = this.#stream;
     this.#stream = null;
-    this.#video.pause();
-    this.#video.srcObject = null;
+    for (const track of stream?.getTracks() ?? []) track.stop();
+    // The preview <video> is shared by every session. Release it only while
+    // this session's stream is the one attached — otherwise a late stop from an
+    // abandoned start would blank the preview of the session that replaced it.
+    if (stream && this.#video.srcObject === stream) {
+      this.#video.pause();
+      this.#video.srcObject = null;
+    }
     this.#retargeter.reset();
     if (this.#debugCanvas) clearPoseDebug(this.#debugCanvas);
   }
@@ -143,7 +175,15 @@ export class PoseMocapSession {
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
+      // A camera that opens but never delivers a frame (busy in another app,
+      // asleep in a dock) fires neither event. Without this the start hangs in
+      // "loading" forever.
+      const timer = window.setTimeout(() => {
+        cleanup();
+        reject(new Error("The webcam did not deliver a frame — it may be in use by another app."));
+      }, VIDEO_START_TIMEOUT_MS);
       const cleanup = () => {
+        window.clearTimeout(timer);
         this.#video.removeEventListener("loadeddata", loaded);
         this.#video.removeEventListener("error", failed);
       };
@@ -158,6 +198,11 @@ export class PoseMocapSession {
       this.#video.addEventListener("loadeddata", loaded, { once: true });
       this.#video.addEventListener("error", failed, { once: true });
     });
+  }
+
+  /** State updates from a session the caller already stopped are dropped. */
+  #emit(state: MocapSessionState, message: string): void {
+    if (this.#running) this.#onState(state, message);
   }
 
   #scheduleInference(): void {
@@ -205,17 +250,17 @@ export class PoseMocapSession {
           this.#tracking = true;
           this.#lastStatusAt = now;
           this.#trackingMode = detection.trackingMode;
-          this.#onState("tracking", `${modeLabel} · ${Math.max(1, Math.round(this.#inferenceMsEma))} ms`);
+          this.#emit("tracking", `${modeLabel} · ${Math.max(1, Math.round(this.#inferenceMsEma))} ms`);
         } else if (now - this.#lastStatusAt >= 500 || this.#trackingMode !== detection.trackingMode) {
           this.#lastStatusAt = now;
           this.#trackingMode = detection.trackingMode;
-          this.#onState("tracking", `${modeLabel} · ${Math.max(1, Math.round(this.#inferenceMsEma))} ms`);
+          this.#emit("tracking", `${modeLabel} · ${Math.max(1, Math.round(this.#inferenceMsEma))} ms`);
         }
       } else if (now - this.#lastPoseAt > 500) {
         this.#retargeter.setFresh(false);
         if (this.#tracking) {
           this.#tracking = false;
-          this.#onState("searching", "Step into view");
+          this.#emit("searching", "Step into view");
         }
       }
     } catch (error) {

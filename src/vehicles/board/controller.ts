@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import { BodyType } from "../../core/physics";
-import { waterHeight } from "../../world/heightmap";
+import { seaTime, waterHeight } from "../../world/heightmap";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { BOARD_TUNING } from "./tuning";
@@ -94,7 +94,7 @@ export class BoardController implements ModeController {
     // the board rides land or water — settle just above whichever surface
     const surf = Math.max(
       ctx.map.rideGround(ctx.position.x, ctx.position.z, ctx.position.y),
-      waterHeight(ctx.position.x, ctx.position.z, ctx.time)
+      waterHeight(ctx.position.x, ctx.position.z, seaTime())
     );
     ctx.position.y = Math.max(ctx.position.y, surf + BOARD_TUNING.values.hover + 0.4);
   }
@@ -123,7 +123,7 @@ export class BoardController implements ModeController {
 
     const surface = Math.max(
       ctx.map.rideGround(ctx.position.x, ctx.position.z, ctx.position.y),
-      waterHeight(ctx.position.x, ctx.position.z, ctx.time)
+      waterHeight(ctx.position.x, ctx.position.z, seaTime())
     );
     const bob = Math.sin(ctx.time * 3.1) * 0.08;
     const rideY = surface + tb.hover + bob;
@@ -229,7 +229,7 @@ export class BoardController implements ModeController {
       const az = ctx.position.z + fwd.z * nose * travel + nvz * dt;
       const ahead = Math.max(
         ctx.map.rideGround(ax, az, ctx.position.y),
-        waterHeight(ax, az, ctx.time)
+        waterHeight(ax, az, seaTime())
       );
       // climb-rate feedforward = grade · horizontal speed (car-parity), so the
       // spring only trims residual error rather than being slammed at rise/dt.

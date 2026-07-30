@@ -210,6 +210,16 @@ export interface OceanSurfaceInputs {
   sunDiffuseGain?: number;
   /** Foam is a brighter raft than the water it floats on. */
   foamGain?: number;
+  /**
+   * 0..1 how much of this foam is freshly AERATED whitewater rather than a
+   * flat raft of spent bubbles. Drives a forward-scatter lobe: a breaking wave
+   * is a metre-thick cloud of air in water, and with a low sun behind it that
+   * cloud lights up from within — which is most of why surf reads at golden
+   * hour and why, without this, whitewater rendered exactly as dim as the sea
+   * around it and a crash was invisible in every sunset frame. Bay foam leaves
+   * this unset and is shaded as before.
+   */
+  foamGlow?: N;
   /** Master trim on reflected sky radiance (1 = physical). */
   reflectionGain?: number;
   /** 0..1 mask of thin, light-transmitting water — folding crests. Drives the
@@ -359,7 +369,16 @@ export function oceanSurfaceRadiance(o: OceanSurfaceInputs): N {
 
   // Foam sits ON the surface: a rough dielectric raft, so it is lit by the same
   // illuminant, just with a brighter albedo — not a separate emissive white.
-  const foamLit = o.foamAlbedo.mul(down.mul(o.foamGain ?? 0.95));
+  //
+  // Aerated foam gets one term more. Unlike `sss` above it is NOT gated on the
+  // sun being above the horizon: a plume of whitewater keeps glowing through
+  // the minutes either side of sunset, which is exactly the window these
+  // beaches are worth filming in. `sunRadiance` fading is what retires it.
+  // Build-time gated, so bay water emits none of this.
+  const foamScatter = o.foamGlow
+    ? o.sunRadiance.mul(o.foamGlow).mul(pow(saturate(dot(v, o.sunDir)), 2.2)).mul(0.85)
+    : vec3(0);
+  const foamLit = o.foamAlbedo.mul(down.mul(o.foamGain ?? 0.95)).add(foamScatter);
 
   // Fresnel mixes the two TRANSPORT lanes; the sun lobe is a specular addition
   // on top (it already carries its own F), and foam covers whatever it covers.

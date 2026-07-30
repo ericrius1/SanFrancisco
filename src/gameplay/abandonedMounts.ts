@@ -3,7 +3,7 @@ import { BodyType } from "../core/physics";
 import type { Physics } from "../core/physics";
 import type { PlayerMode } from "../player/types";
 import { DEFAULT_DRIVE_SPEC } from "../player/types";
-import { waterHeight, type WorldMap } from "../world/heightmap";
+import { seaTime, waterHeight, type WorldMap } from "../world/heightmap";
 import { buildCarMesh, localCarConfig } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh, SAILBOAT_HULL, SPEEDBOAT_HULL } from "../vehicles/boat";
@@ -12,6 +12,7 @@ import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, localBoardConfig } from "../vehicles/board";
 import { activateBirdAssets, buildBirdMesh, type BirdRig } from "../vehicles/bird";
 import { buildSurfboardMesh } from "../vehicles/surf";
+import { buildSkateMesh, SKATE_RIDE_HEIGHT } from "../vehicles/skate";
 import { buildScooterMesh, localScooterConfig, SCOOTER_RIDE_HEIGHT } from "../vehicles/scooter";
 import { CAR_RIDE_HEIGHT } from "../vehicles/car/mesh";
 import { driveHalfExtentsWithClearance } from "../vehicles/shared";
@@ -91,6 +92,7 @@ export const ABANDONED_MOUNT_PROMPT: Record<MountMode, string> = {
   speedboat: "board the speedboat",
   drone: "board the drone",
   board: "hop on the hoverboard",
+  skate: "pick up the skateboard",
   surf: "hop on the surfboard",
   bird: "ride the phoenix"
 };
@@ -181,6 +183,21 @@ const SPECS: Record<MountMode, MountSpec> = {
     linearDrag: 0.55,
     angularDrag: 1.8,
     maxSpeed: 60
+  },
+  skate: {
+    build: () => buildSkateMesh(),
+    // A dropped deck: real gravity, real friction, so it just lies there. The
+    // vertical half-extent equals SKATE_RIDE_HEIGHT on purpose — the skateboard
+    // mesh hangs below its collider origin (mesh.ts), so a box that deep rests
+    // with the wheels exactly on the road instead of burying the deck in it.
+    halfExtents: [0.22, SKATE_RIDE_HEIGHT, 0.46],
+    density: 40,
+    friction: 0.5,
+    restitution: 0.05,
+    gravityScale: 1,
+    linearDrag: 1.2,
+    angularDrag: 3,
+    maxSpeed: 30
   },
   surf: {
     build: buildSurfboardMesh,
@@ -525,12 +542,12 @@ export class AbandonedMounts {
       } else if (item.mode === "board") {
         const surf = Math.max(
           this.#map.rideGround(t.position[0], t.position[2], t.position[1]),
-          waterHeight(t.position[0], t.position[2], this.#time)
+          waterHeight(t.position[0], t.position[2], seaTime())
         );
         const targetY = surf + 1.0;
         vy = t.position[1] < targetY + 4 ? THREE.MathUtils.clamp((targetY - t.position[1]) * 9 + vy * 0.18, -10, 14) : vy - 16 * dt;
       } else if (item.mode === "surf") {
-        const targetY = waterHeight(t.position[0], t.position[2], this.#time) + 0.2;
+        const targetY = waterHeight(t.position[0], t.position[2], seaTime()) + 0.2;
         vy = THREE.MathUtils.clamp((targetY - t.position[1]) * 8 + vy * 0.15, -9, 12);
       }
 
@@ -552,7 +569,9 @@ export class AbandonedMounts {
     const hull = item.mode === "speedboat" ? SPEEDBOAT_HULL : SAILBOAT_HULL;
     V.pos.set(t.position[0], t.position[1], t.position[2]);
     V.quat.set(t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]);
-    sampleHullFloat(hull, V.pos, V.quat, vy, this.#time, MOUNT_HEAVE_DAMP, MOUNT_HULL_FLOAT);
+    // seaTime(), not #time: an unmanned hull must bob on the same rendered sea
+    // as everything else, and this class's private clock is a third clock.
+    sampleHullFloat(hull, V.pos, V.quat, vy, seaTime(), MOUNT_HEAVE_DAMP, MOUNT_HULL_FLOAT);
     return THREE.MathUtils.clamp(vy + MOUNT_HULL_FLOAT.accelY * dt, -12, 12);
   }
 

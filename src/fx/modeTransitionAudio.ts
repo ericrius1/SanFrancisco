@@ -45,6 +45,8 @@ const signatureFor = (mode: PlayerMode): Exclude<Signature, "none" | "warm-dismo
     case "board":
     case "drone":
       return "electric-mount";
+    case "skate":
+      return "mechanical-mount";
     case "boat":
     case "speedboat":
     case "surf":
@@ -201,6 +203,7 @@ export class ModeTransitionAudio {
 
     switch (mode) {
       case "drive":
+      case "skate":
         this.#mechanicalMount(voice, out.input, t);
         break;
       case "scooter":

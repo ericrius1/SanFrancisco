@@ -31,6 +31,14 @@ const PRODUCTION_DURATIONS = Object.freeze({
     `ocean-beach-kite-ring-${String(index + 1).padStart(2, "0")}`,
     7
   ])),
+  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
+    `sutro-moment-${String(index + 1).padStart(2, "0")}`,
+    5
+  ])),
+  ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => [
+    `sutro-vista-${String(index + 1).padStart(2, "0")}`,
+    10
+  ])),
   ...Object.fromEntries(Array.from({ length: 2 }, (_, index) => [
     `kite-to-sutro-${String(index + 1).padStart(2, "0")}`,
     15
@@ -232,6 +240,10 @@ export async function renderCinematicAudio(production, outputPath) {
     scoreOceanBeachKiteRing(mix, Number(id.slice(-2)));
   } else if (id.startsWith("ocean-beach-kite-")) {
     scoreOceanBeachKite(mix, Number(id.slice(-2)));
+  } else if (id.startsWith("sutro-vista-")) {
+    scoreSutroVista(mix, Number(id.slice(-2)));
+  } else if (id.startsWith("sutro-moment-")) {
+    scoreSutroMoment(mix, Number(id.slice(-2)));
   } else {
     scoreTwitterSummerShot(mix, Number(id.slice(-2)));
   }
@@ -256,6 +268,110 @@ export async function renderCinematicAudio(production, outputPath) {
     cues: CINEMATIC_AUDIO_PLANS[id],
     beds
   };
+}
+
+/**
+ * Room tone for the five interior moments, not a score.
+ *
+ * These are five-second held looks at people doing very little, and a swelling
+ * pad over the top would turn a quiet room into a trailer. What carries them is
+ * the hall itself: a big glass volume over still water, a low pad well under the
+ * noise floor of the reverb, water movement close to the lens, and the soft
+ * bloom of a room where thirty people are talking quietly a long way off.
+ *
+ * `look` selects the variation, in the order the shots are numbered:
+ *   1 still water   2 the long view   3 tea   4 the hot bath   5 the plunge edge
+ * Each differs in how close the water is and how much room is in front of it —
+ * the tea and window looks are drier and further from the surface, the plunge
+ * and hot-bath looks put water right against the microphone.
+ */
+function scoreSutroMoment(mix, look) {
+  const index = Number.isFinite(look) && look >= 1 && look <= 5 ? look : 1;
+
+  // The volume itself. Low, wide, and almost subliminal — this is the sound of
+  // standing inside 100,000 square feet of glass, not a chord.
+  addPad(mix, {
+    start: 0,
+    duration: 5,
+    notes: index === 4 ? [38, 45, 50, 57] : [40, 47, 52, 59, 64],
+    gain: index === 2 ? 0.034 : 0.028,
+    pan: 0,
+    brightness: index === 2 ? 0.5 : 0.36
+  });
+
+  // Air in the room. The ocean-window look gets the most: it is the one place
+  // the Pacific is on the other side of the glass.
+  addAir(mix, {
+    start: 0,
+    duration: 5,
+    gain: index === 2 ? 0.03 : 0.019,
+    panDrift: 0.45
+  });
+
+  // Water. Close and continuous for the surface-level looks, a distant wash for
+  // the ones standing back on the deck.
+  const waterClose = index === 1 || index === 4 || index === 5;
+  addFoley(mix, {
+    start: 0,
+    duration: 5,
+    gain: waterClose ? 0.03 : 0.014,
+    pan: index === 5 ? -0.2 : index === 4 ? 0.16 : 0,
+    character: "cloth"
+  });
+
+  // One small event each, placed off-centre in the take so the five seconds
+  // have somewhere to go without becoming a beat.
+  if (index === 1) {
+    // A float turns over; the surface takes it and settles.
+    addSoftThump(mix, { start: 2.35, duration: 0.9, gain: 0.03, pan: -0.12 });
+  } else if (index === 2) {
+    // A gull outside, muffled by the glass.
+    addChime(mix, { start: 2.9, midi: 88, duration: 1.1, gain: 0.016, pan: 0.4 });
+  } else if (index === 3) {
+    // Cup on saucer at the tea table.
+    addClick(mix, { start: 1.95, gain: 0.03, pan: -0.22 });
+    addClick(mix, { start: 3.42, gain: 0.022, pan: -0.16 });
+  } else if (index === 4) {
+    // Steam and a shift in the hot bath.
+    addAir(mix, { start: 1.2, duration: 3.4, gain: 0.022, panDrift: 0.3 });
+    addSoftThump(mix, { start: 3.1, duration: 0.75, gain: 0.024, pan: 0.2 });
+  } else {
+    // Heels knocking the coping, feet in the water.
+    addSoftThump(mix, { start: 1.62, duration: 0.55, gain: 0.026, pan: -0.24 });
+    addSoftThump(mix, { start: 3.28, duration: 0.6, gain: 0.02, pan: -0.18 });
+  }
+}
+
+/**
+ * Ten seconds of room, for the two wide looks. Same principle as the held
+ * moments — the hall's own sound rather than a score — but a bigger space needs
+ * a longer, slower bed and more of it, because there is more room in frame and
+ * the camera is travelling through it.
+ */
+function scoreSutroVista(mix, look) {
+  const inner = look === 1;
+  addPad(mix, {
+    start: 0,
+    duration: 10,
+    notes: inner ? [38, 45, 50, 57, 62] : [40, 47, 52, 59, 64, 71],
+    gain: 0.032,
+    pan: 0,
+    brightness: inner ? 0.34 : 0.52
+  });
+  // The ocean look has the Pacific on the other side of the glass all the way
+  // down its length; the hall look is enclosed and drier.
+  addAir(mix, { start: 0, duration: 10, gain: inner ? 0.02 : 0.034, panDrift: 0.6 });
+  addFoley(mix, { start: 0, duration: 10, gain: 0.022, pan: 0, character: "cloth" });
+  // Two small events, well apart, so ten seconds has some shape without
+  // becoming a rhythm.
+  addSoftThump(mix, { start: 2.6, duration: 0.9, gain: 0.024, pan: inner ? -0.3 : 0.25 });
+  addChime(mix, {
+    start: 6.3,
+    midi: inner ? 79 : 86,
+    duration: 1.6,
+    gain: 0.015,
+    pan: inner ? 0.3 : -0.28
+  });
 }
 
 function scorePhoenixPalaceFlyby(mix) {
