@@ -41,6 +41,15 @@ export function postInputScale(): number {
   // still present at output resolution. With it off, rendering the beauty pass
   // small would just be a blurrier frame.
   if (!TEMPORAL_TUNING.values.enabled) return 1
+  // ...and only the TAAU fork can. TRAA has no reconstruction filter — it
+  // resolves one input sample per output pixel — so driving the beauty pass
+  // below the drawing buffer in `mode: "traa"` buys nothing and costs the whole
+  // image. The stage says the same thing from its own side
+  // (`TemporalStage.inputScale()`); this is deliberately a second reading of the
+  // same tunable rather than a call into a stage instance, because the frame
+  // driver needs the scale BEFORE the beauty pass renders and the chain has not
+  // been reached yet at that point in pipeline.render().
+  if (String(TEMPORAL_TUNING.values.mode) === "traa") return 1
   const artist = Number(TEMPORAL_TUNING.values.scale)
   const governor = Number(
     (governorEffects() as { temporalScale?: number }).temporalScale ?? 1

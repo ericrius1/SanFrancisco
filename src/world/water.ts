@@ -37,6 +37,7 @@ import { setHeroFocus } from "./ocean/heroWaves";
 import { SUN_DIR, type Sky } from "./sky";
 import { causticWeb, oceanSurfaceRadiance } from "./waterShadingTSL";
 import { governorEffects } from "../render/adaptiveResolution";
+import { writeSsrMask } from "../render/post/shared/gbuffer";
 
 const PALACE_LAGOON_SEGMENTS = 112;
 const PALACE_LAGOON_RINGS = 18;
@@ -713,6 +714,20 @@ export class Water {
       // cut so nothing downstream depends on discard semantics.
       mat.opacityNode = coverage;
 
+      // SSR opt-in. Open water is the most reflective surface in the world, so
+      // this is a near-constant — but NOT constant across the sheet: `foamTotal`
+      // is whitecaps, surf face and crest fizz, which are aerated air/water mix
+      // with no specular surface to mirror in. The hand-written BRDF already
+      // treats foam as a diffuse albedo (`foamAlbedo`, above); the mask carries
+      // the same complementarity so a breaking crest does not smear the city
+      // across itself.
+      //
+      // 0.9 rather than 1.0 because the SSR stage's screen-space trace can only
+      // ever find what is already on screen; leaving headroom keeps the
+      // analytic sky in oceanSurfaceRadiance the dominant term on the (very
+      // common) pixels whose reflected ray leaves the frame.
+      writeSsrMask(mat, float(0.9).mul(foamTotal.oneMinus()));
+
       return mat;
     };
 
@@ -874,6 +889,12 @@ export class Water {
         .mul(foam.oneMinus());
       mat.emissiveNode = vec3(1.0, 0.78, 0.48).mul(sparkle.mul(0.048 * LIGHT_SCALE));
       mat.envMapIntensity = 0.38;
+      // SSR opt-in. The lagoon is authored as "a reflecting pool, not a small
+      // patch of bay swell" (see the swell comment above) and the Palace dome
+      // stands directly over it, so this is the one pond in the world whose
+      // reflection is the entire point of the water. Same 0.9 as the bay, minus
+      // the lap foam at the planted edge, which is spray.
+      writeSsrMask(mat, float(0.9).mul(foam.oneMinus()));
       return mat;
     };
 

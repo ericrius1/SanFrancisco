@@ -137,7 +137,15 @@ export function createRenderPipeline(
       depthNode: sceneDepth,
       projectionInverse
     }),
-    // Null until the velocity stage lands (U1). Every consumer must handle it.
+    // Populated by the velocity stage during chain construction, not here: the
+    // pixels are that stage's, not the beauty pass's. It is safe because
+    // STAGE_ORDER.velocity is the lowest and chain.ts's registry literal builds
+    // velocity first, so every downstream stage sees a real node while it is
+    // still building its own graph. It stays non-null when the stage is
+    // DISABLED (a graph cannot be unbuilt) and the texture then holds the last
+    // frame it rendered — a consumer that must tell "no motion" from "stale
+    // motion" reads `velocityOf(chain.stage("velocity")).enabled`, never
+    // `gbuffer.velocity !== null`.
     velocity: null,
     camera: camera as THREE.PerspectiveCamera,
     projectionInverse,
@@ -202,6 +210,13 @@ export function createRenderPipeline(
   });
   const jitter = cameraJitter(postChain.stage("jitter"));
   const godRays = godRaysControls(postChain.stage("godrays"));
+  // The two things `PostStageSetup` does not carry. `chain.ts` constructs every
+  // stage from `setup` alone, and `createPianoGodRays` needs the scene its
+  // dedicated shadow light attaches to plus the world sun whose direction it
+  // copies. Without this call the grove has no god rays at all — the adapter
+  // logs a one-time console.error naming this exact line when the area gate
+  // fires unattached, so the omission cannot go quiet.
+  godRays.attachWorld(scene, directionalLight);
 
   // ------------------------------------------------------------ frame driver
   const drawingBufferSize = new THREE.Vector2();
@@ -263,8 +278,21 @@ export function createRenderPipeline(
       // A still is not a presented frame: it renders the beauty pass and the
       // chain without advancing frameIndex, so the jitter sequence and the
       // temporal history stay attached to what the player actually saw.
+      //
+      // It still jitters, and must. The temporal resolve derives its
+      // reconstruction weights from `jitterOffsetAt(frame.frameIndex)` — a pure
+      // function of the counter, with no shared state to consult — so a beauty
+      // pass rendered WITHOUT the offset would be resolved as though it had
+      // one, displacing every tap by up to half an input pixel. The still is
+      // seeded rather than accumulated (capture.ts invalidates the history on
+      // both sides of this call), so the error would show as softness, not as
+      // ghosting, which is exactly the kind of bug that gets blamed on the
+      // capture path instead of on the mismatch.
+      const frame = buildFrameContext();
+      jitter.apply(camera as THREE.PerspectiveCamera, frame);
       driveBeautyPass();
-      postChain.render(buildFrameContext());
+      jitter.clear(camera as THREE.PerspectiveCamera);
+      postChain.render(frame);
     },
     beforeStill: () => {
       if (wireframe.active) wireframe.syncCamera();
@@ -442,6 +470,29 @@ export function createRenderPipeline(
   };
   applyPostFx();
 
+  /**
+   * The structural lane: reallocate targets and rebuild any baked graph, then
+   * re-warm the chain's quads.
+   *
+   * `PostStage.applyStructure()` returns void, so a stage that rebuilt its
+   * fragment graph has no way to tell the chain that two of its warmup quads now
+   * carry WGSL nothing has compiled — `post.ssr.blurQuality` and
+   * `post.ssr.binaryRefine` are the two that genuinely do this. Left alone, the
+   * first frame after an Apply pays a synchronous shader build mid-frame, which
+   * is the exact hitch `recompileKeys` exists to schedule away. Routing the
+   * re-warm through `compileFullscreenQuads` puts it inside an exclusive compile
+   * window, so the frame is HELD (render() early-returns) rather than corrupted.
+   *
+   * Deliberately async and deliberately NOT called from applyPostFx: a live
+   * slider must never reach this.
+   */
+  const applyPostStructure = async () => {
+    postChain.applyStructure();
+    await compileGate.compileFullscreenQuads(postChain.warmupQuads());
+    // Reallocated targets hold garbage and a rebuilt resolve has no history.
+    invalidateHistory("post-structure");
+  };
+
   return {
     render,
     /** Late-bind app-level arrival/reveal admission after the phase machine is
@@ -479,6 +530,9 @@ export function createRenderPipeline(
     postChain,
     /** Push every stage's sliders into live uniforms. Never a recompile. */
     applyPostFx,
+    /** Slider-RELEASE / Apply-button lane: reallocate, rebuild, re-warm. May
+     *  hold frames while it compiles. Never call this from a live slider. */
+    applyPostStructure,
     /** Force every temporal stage to seed on the next frame. Teleports, look
      * changes, resizes and reel resets all have to call this. */
     invalidateHistory,

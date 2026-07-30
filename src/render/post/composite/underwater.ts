@@ -49,7 +49,22 @@ const U = {
   uwSunScatter: uniform(new Vector3(0, 0, 0)), // sun-forward in-scatter colour
   uwSunViewDir: uniform(new Vector3(0, 0, 1)), // view-space dir toward refracted sun
   uwSunScreen: uniform(new Vector2(0.5, 0.35)), // refracted sun anchor in screen UV
-  uwRayAmount: uniform(0) // god-ray gain (0 = exact identity)
+  uwRayAmount: uniform(0), // god-ray gain (0 = exact identity)
+  /**
+   * `post.composite.underwater`, a DEBUG kill switch — gameplay drives the
+   * uniforms above and never touches this. It multiplies the branch condition
+   * rather than gating the block at build time, because the composite is enabled
+   * by default and `StageTuning.recompileKeys` must stay empty for such a stage
+   * (types.ts:125-128). At 1 it is the exact identity; at 0 the package is
+   * skipped by the same uniform branch that already skips it on dry land, so
+   * turning it off is free rather than a second pipeline.
+   */
+  uwEnable: uniform(1)
+}
+
+/** Debug only. See `uwEnable`. */
+export function setUnderwaterEnabled(enabled: boolean): void {
+  U.uwEnable.value = enabled ? 1 : 0
 }
 
 /**
@@ -112,7 +127,7 @@ export function applyUnderwater(deps: {
   // drives rayAmount as `ease * …`, so submersion === 0 implies rayAmount
   // === 0, and latchDry() zeroes both. At submersion 0 the fog mixed by
   // exactly 0 and the rays added exactly 0.
-  If(U.uwSubmersion.greaterThan(0), () => {
+  If(U.uwSubmersion.mul(U.uwEnable).greaterThan(0), () => {
     const uwViewPos = getViewPosition(uv, depthTexture.sample(uv).r, projectionInverse)
     // Camera is submerged, so water starts at the near plane: the fog path
     // is simply the per-pixel view distance. Clamp for sky/far pixels —

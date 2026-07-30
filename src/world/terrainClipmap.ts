@@ -42,6 +42,7 @@ import {
   createTerrainSurfaceMipData
 } from "./terrainMaterialData";
 import { materializeField } from "../render/materialize";
+import { writeSsrMask } from "../render/post/shared/gbuffer";
 
 // TSL's composed node types become unwieldy across texture-stage operations;
 // the project uses this local alias for shader graphs while retaining typed
@@ -836,6 +837,15 @@ export class TerrainClipmap {
     material.roughnessNode = wetSand
       ? surface.a.mul(0.03).add(0.94).mul(mix(float(1), float(0.52), wetSand))
       : surface.a.mul(0.03).add(0.94);
+    // SSR opt-in: the swash band is the ONE piece of terrain that is genuinely
+    // wet, and it is already the node that darkens the albedo and drops the
+    // roughness above. Reusing it means the mirror can never disagree with the
+    // gloss — a band that reads wet always reflects, and dry sand a metre up
+    // the beach writes 0 and is skipped by the SSR stage entirely.
+    // Only the inner rings (level <= 3) even compute `wet`; the outer rings
+    // leave the default 0 mask, which is correct — a 1.6 m band is sub-pixel
+    // past ~420 m and the band is already faded out there.
+    if (wetSand) writeSsrMask(material, wetSand);
 
     // While the dawn ramp sits at exactly 0 the terrain is fully absent — not
     // even a dark silhouette occluding the starfield. The clipmap already

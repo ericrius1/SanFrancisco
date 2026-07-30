@@ -94,10 +94,14 @@ export const SHAPER_A = 2.2;
  * expands rather than compresses, so it saturates its path-to-white latest).
  * 28 clears that with margin while keeping the axis short enough to resolve.
  *
- * Caveat, deliberate: the legacy `aces` look is per-channel and never becomes
- * scale-invariant, so the guard is approximate for it above 28 linear. That
- * region is display-white in every channel, the look exists only as an A/B
- * reference, and no measured scene value reaches it.
+ * Caveat, deliberate: the per-channel curves — the legacy `aces` reference and
+ * the two `agx` looks — never become scale-invariant, so the guard is an
+ * approximation for them above 28 linear rather than an identity. Measured for
+ * AgX: 21.9 CV at (200, 10, 10), 30.2 CV at (4000, 40, 40), and 0.0 at
+ * (40, 38, 36). The trigger needs peak > 28 linear AND a wide channel spread at
+ * once; the rig's brightest measured value is ~13, so nothing in the world
+ * reaches it today — but an emissive authored later could, and that is the one
+ * thing to check before blaming AgX for a magenta lamp.
  */
 export const SHAPER_MAX = 28;
 
@@ -173,12 +177,18 @@ export type GradeLook = {
   /** One line for the "/" panel and for anyone reading a diff. */
   readonly note: string;
   /**
-   * `sf` runs the hue-preserving chain below. `aces` runs three's stock
-   * ACESFilmic verbatim and ignores every other field — it exists so the look
-   * that shipped before this module stays one dropdown click away, which is the
-   * only honest way to judge a grade change.
+   * `sf` runs the hue-preserving chain below.
+   *
+   * `aces` runs three's stock ACESFilmic verbatim and ignores every other field
+   * — it exists so the look that shipped before this module stays one dropdown
+   * click away, which is the only honest way to judge a grade change.
+   *
+   * `agx` runs three's AgX verbatim (log window → CDL → sigmoid → outset),
+   * honouring `whiteBalance`, `offsetStops`, `saturation`, `agx`, `lift` and
+   * `tint`, and ignoring `contrast`, `white` and `pathToWhite` — the sigmoid and
+   * the log window already own those. See `agxEvaluate`.
    */
-  readonly curve: "sf" | "aces";
+  readonly curve: "sf" | "aces" | "agx";
   /** Linear per-channel gain, applied first. Luminance-normalised on load. */
   readonly whiteBalance: readonly [number, number, number];
   /** Log-space slope about GRADE_PIVOT. >1 deepens the toe and opens highlights. */
@@ -220,6 +230,8 @@ export type GradeLook = {
   readonly tint: number;
   /** Black lift, for faded looks. 0 = true blacks. */
   readonly lift: number;
+  /** `curve: "agx"` only. Omitted means AGX_NEUTRAL, i.e. plain AgX. */
+  readonly agx?: AgxLook;
 };
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -315,12 +327,263 @@ function acesFilmic(rgb: [number, number, number]): [number, number, number] {
   return [clamp01(br), clamp01(bg), clamp01(bb)];
 }
 
+/* -------------------------------------------------------------------- AgX ---
+ * Transcribed from `agxToneMapping` in
+ * node_modules/three/src/nodes/display/ToneMappingFunctions.js:165-193.
+ *
+ * AgX is a CURVE, not a set of parameter values. Its defining operations — a
+ * log2 encode over a fixed 16.5-stop window, a per-channel sigmoid, two 3×3
+ * rotations and a Rec.2020 round trip — have no counterpart in the
+ * whiteBalance/contrast/saturation/white/pathToWhite vocabulary above, which is
+ * why it is a `curve` branch and not another look entry on `sf`.
+ *
+ * MATRIX ORIENTATION IS THE ONE THING THAT SILENTLY RUINS THIS. `mul3` here is
+ * ROW-major (see the ACES note above). Three writes these as
+ * `mat3(vec3, vec3, vec3)`, and a vector-argument mat3 constructor takes
+ * COLUMNS — unlike the all-scalar form, which routes through Matrix3.set() and
+ * takes rows. So every array below is the TRANSPOSE of what that file shows.
+ *
+ * The invariant that catches a transpose on sight: EVERY ROW OF ALL FOUR
+ * MATRICES SUMS TO 1.0, because all four preserve white. Measured here:
+ * 1.000000 / 0.999900 / 1.000000 for the sRGB→2020 rotation (the published
+ * constants are 4-decimal rounded), 1.0 to float64 precision for both AgX
+ * matrices. `agxWhitePreservationError()` below re-checks it in one call so a
+ * probe can assert on it — a missing or transposed AGX_OUTSET moves mid grey by
+ * 0.0 CV and shows up ONLY as chroma loss (16.5% → 13.2% on the sun surround),
+ * i.e. it looks entirely reasonable and passes every eyeball A/B.
+ */
+const LINEAR_SRGB_TO_LINEAR_REC2020 = [
+  [0.6274, 0.3293, 0.0433],
+  [0.0691, 0.9195, 0.0113],
+  [0.0164, 0.088, 0.8956]
+] as const;
+
+const LINEAR_REC2020_TO_LINEAR_SRGB = [
+  [1.6605, -0.5876, -0.0728],
+  [-0.1246, 1.1329, -0.0083],
+  [-0.0182, -0.1006, 1.1187]
+] as const;
+
+const AGX_INSET = [
+  [0.856627153315983, 0.0951212405381588, 0.0482516061458583],
+  [0.137318972929847, 0.761241990602591, 0.101439036467562],
+  [0.11189821299995, 0.0767994186031903, 0.811302368396859]
+] as const;
+
+const AGX_OUTSET = [
+  [1.1271005818144368, -0.11060664309660323, -0.016493938717834573],
+  [-0.1413297634984383, 1.157823702216272, -0.016493938717834257],
+  [-0.14132976349843826, -0.11060664309660294, 1.2519364065950405]
+] as const;
+
+/**
+ * Largest deviation from 1.0 across the twelve row sums of the four AgX
+ * matrices. Exported so `tools/grade-probe.mjs` can assert the transposes
+ * numerically instead of by inspection; anything above ~1e-4 means a matrix was
+ * pasted in column order.
+ */
+export function agxWhitePreservationError(): number {
+  let worst = 0;
+  for (const m of [
+    LINEAR_SRGB_TO_LINEAR_REC2020,
+    LINEAR_REC2020_TO_LINEAR_SRGB,
+    AGX_INSET,
+    AGX_OUTSET
+  ]) {
+    for (const row of m) {
+      const e = Math.abs(row[0] + row[1] + row[2] - 1);
+      if (e > worst) worst = e;
+    }
+  }
+  return worst;
+}
+
+/**
+ * The 6th-order polynomial fit of AgX's contrast sigmoid, from
+ * `agxDefaultContrastApprox` (ToneMappingFunctions.js:147-156). Input and
+ * output are the normalised log range, 0..1.
+ *
+ * Kept as the fit rather than the true sigmoid on purpose: matching three's node
+ * EXACTLY is the whole reason to ship AgX rather than roll a lookalike, and the
+ * `aces` entry above sets the precedent that a reference look is transcribed,
+ * never improved.
+ */
+function agxContrastSigmoid(x: number): number {
+  const x2 = x * x;
+  const x4 = x2 * x2;
+  return (
+    15.5 * x4 * x2 -
+    40.14 * x4 * x +
+    31.96 * x4 -
+    6.868 * x2 * x +
+    0.4298 * x2 +
+    0.1191 * x -
+    0.00232
+  );
+}
+
+/**
+ * The ASC CDL AgX applies in LOG space, between the normalised encode and the
+ * sigmoid — Blender's "look" stage. `agxPunch` is Blender's Punchy verbatim
+ * (slope 1, offset 0, power 1.35, saturation 1.4).
+ *
+ * Saturation is NOT `GradeLook.saturation`'s ratio form: it is the affine
+ * `luma + sat·(v − luma)` of the reference, and it is safe here where it was not
+ * safe in the `sf` chain, because a log-encoded value is already clamped to
+ * [0,1] and the sigmoid that follows is defined on the whole real line. There is
+ * no max(x, 0) kink for the LUT to interpolate across.
+ *
+ * `luma` is sampled BEFORE the CDL, matching the reference implementation. That
+ * is load-bearing on neutrals: with power ≠ 1 the pivot is the pre-power
+ * luminance, so `saturation` measurably moves mid grey even on a grey card —
+ * which is exactly why the two looks' exposure anchors had to be solved with
+ * their own saturation in place rather than shared.
+ */
+export type AgxLook = {
+  /** Per-channel log-space gain. */
+  readonly slope: readonly [number, number, number];
+  /** Log-space offset, applied after slope. */
+  readonly offset: number;
+  /** Per-channel log-space power. >1 is "punchier". */
+  readonly power: readonly [number, number, number];
+  /** Bottom of the log window, in log2(linear). three's default: −12.47393. */
+  readonly minEv: number;
+  /** Top of the log window, in log2(linear). three's default: 4.026069. */
+  readonly maxEv: number;
+};
+
+/** Plain AgX: the CDL is a bit-exact identity and is skipped entirely. */
+export const AGX_NEUTRAL: AgxLook = {
+  slope: [1, 1, 1],
+  offset: 0,
+  power: [1, 1, 1],
+  minEv: -12.47393,
+  maxEv: 4.026069
+};
+
+const agxIsNeutralCdl = (a: AgxLook, saturation: number) =>
+  saturation === 1 &&
+  a.offset === 0 &&
+  a.slope[0] === 1 &&
+  a.slope[1] === 1 &&
+  a.slope[2] === 1 &&
+  a.power[0] === 1 &&
+  a.power[1] === 1 &&
+  a.power[2] === 1;
+
+/**
+ * scene-linear (exposure already applied) → display-LINEAR 0..1. The caller
+ * still owes lift, split tone and the OETF — `finishDisplay` does all three, so
+ * AgX inherits them for free rather than growing its own copies.
+ *
+ * Deliberately ignores `contrast`, `white` and `pathToWhite`: the sigmoid owns
+ * the toe AND the shoulder here, and the log window owns the path to white.
+ * Duplicating them would give two controls that fight over the same slope.
+ * `whiteBalance` and `offsetStops` DO apply — they are scene-referred and
+ * commute with the transform.
+ */
+function agxEvaluate(
+  look: GradeLook,
+  rIn: number,
+  gIn: number,
+  bIn: number
+): [number, number, number] {
+  const a = look.agx ?? AGX_NEUTRAL;
+  const wb = look.whiteBalance;
+  // No contrast pow: with k = 1 the sf expression collapses to exactly this.
+  const e = Math.pow(2, look.offsetStops);
+  let c = mul3(
+    LINEAR_SRGB_TO_LINEAR_REC2020,
+    Math.max(rIn, 0) * wb[0] * e,
+    Math.max(gIn, 0) * wb[1] * e,
+    Math.max(bIn, 0) * wb[2] * e
+  );
+  c = mul3(AGX_INSET, c[0], c[1], c[2]);
+
+  // 1e-10 rather than 0 so log2 stays finite. Below the window everything
+  // clamps to 0 anyway; this only keeps the arithmetic defined.
+  const span = a.maxEv - a.minEv;
+  c[0] = clamp01((Math.log2(Math.max(c[0], 1e-10)) - a.minEv) / span);
+  c[1] = clamp01((Math.log2(Math.max(c[1], 1e-10)) - a.minEv) / span);
+  c[2] = clamp01((Math.log2(Math.max(c[2], 1e-10)) - a.minEv) / span);
+
+  if (!agxIsNeutralCdl(a, look.saturation)) {
+    const l = luma(c[0], c[1], c[2]);
+    const sat = look.saturation;
+    for (let i = 0; i < 3; i++) {
+      const v = Math.pow(Math.max(c[i] * a.slope[i] + a.offset, 0), a.power[i]);
+      c[i] = l + sat * (v - l);
+    }
+  }
+
+  c[0] = agxContrastSigmoid(c[0]);
+  c[1] = agxContrastSigmoid(c[1]);
+  c[2] = agxContrastSigmoid(c[2]);
+
+  c = mul3(AGX_OUTSET, c[0], c[1], c[2]);
+  // 2.2, not the sRGB EOTF: three's node uses a pure power here and the two
+  // differ by ~1 CV in the deep shadows. Transcription over correction.
+  c[0] = Math.pow(Math.max(c[0], 0), 2.2);
+  c[1] = Math.pow(Math.max(c[1], 0), 2.2);
+  c[2] = Math.pow(Math.max(c[2], 0), 2.2);
+  c = mul3(LINEAR_REC2020_TO_LINEAR_SRGB, c[0], c[1], c[2]);
+  return [clamp01(c[0]), clamp01(c[1]), clamp01(c[2])];
+}
+
 /* --------------------------------------------------------------- transfer ---
  * three's sRGB OETF, constants included (0.41666, not 1/2.4 — matching the
  * shipped shader matters more than matching the spec, since this replaces it).
  */
 export function srgbOETF(x: number): number {
   return x <= 0.0031308 ? x * 12.92 : Math.pow(x, 0.41666) * 1.055 - 0.055;
+}
+
+/**
+ * The shared display tail: black lift, then split tone, then the OETF. Every
+ * curve ends here, which is what lets AgX inherit `lift` and `tint` without
+ * knowing they exist.
+ *
+ * Lift before tint, in that order, is not incidental: lifting first is what
+ * makes a tinted shadow actually colour the milky blacks a faded look asks for.
+ *
+ * Input is display-LINEAR and already clamped to 0..1.
+ */
+function finishDisplay(
+  look: GradeLook,
+  rIn: number,
+  gIn: number,
+  bIn: number,
+  out: [number, number, number]
+): [number, number, number] {
+  let r = rIn;
+  let g = gIn;
+  let b = bIn;
+
+  const lift = look.lift;
+  if (lift > 0) {
+    r = r * (1 - lift) + lift;
+    g = g * (1 - lift) + lift;
+    b = b * (1 - lift) + lift;
+  }
+
+  const tintAmount = look.tint;
+  if (tintAmount > 0) {
+    const l = luma(r, g, b);
+    const t = smoothstep(0, 1, l);
+    const sh = look.shadowTint;
+    const hi = look.highlightTint;
+    const tr = sh[0] + (hi[0] - sh[0]) * t;
+    const tg = sh[1] + (hi[1] - sh[1]) * t;
+    const tb = sh[2] + (hi[2] - sh[2]) * t;
+    r = clamp01(r + (r * tr - r) * tintAmount);
+    g = clamp01(g + (g * tg - g) * tintAmount);
+    b = clamp01(b + (b * tb - b) * tintAmount);
+  }
+
+  out[0] = srgbOETF(r);
+  out[1] = srgbOETF(g);
+  out[2] = srgbOETF(b);
+  return out;
 }
 
 /**
@@ -344,6 +607,11 @@ export function evaluateLook(
     out[1] = srgbOETF(a[1]);
     out[2] = srgbOETF(a[2]);
     return out;
+  }
+
+  if (look.curve === "agx") {
+    const a = agxEvaluate(look, rIn, gIn, bIn);
+    return finishDisplay(look, a[0], a[1], a[2], out);
   }
 
   const wb = look.whiteBalance;
@@ -420,44 +688,23 @@ export function evaluateLook(
     rb += (1 - rb) * bleach;
   }
 
-  r = clamp01(rr * tm);
-  g = clamp01(rg * tm);
-  b = clamp01(rb * tm);
-
-  // ---- black lift, then split tone, in that order: lifting first means a
-  // tinted shadow actually colours the milky blacks a faded look asks for.
-  const lift = look.lift;
-  if (lift > 0) {
-    r = r * (1 - lift) + lift;
-    g = g * (1 - lift) + lift;
-    b = b * (1 - lift) + lift;
-  }
-
-  const tintAmount = look.tint;
-  if (tintAmount > 0) {
-    const l = luma(r, g, b);
-    const t = smoothstep(0, 1, l);
-    const sh = look.shadowTint;
-    const hi = look.highlightTint;
-    const tr = sh[0] + (hi[0] - sh[0]) * t;
-    const tg = sh[1] + (hi[1] - sh[1]) * t;
-    const tb = sh[2] + (hi[2] - sh[2]) * t;
-    r = clamp01(r + (r * tr - r) * tintAmount);
-    g = clamp01(g + (g * tg - g) * tintAmount);
-    b = clamp01(b + (b * tb - b) * tintAmount);
-  }
-
-  out[0] = srgbOETF(r);
-  out[1] = srgbOETF(g);
-  out[2] = srgbOETF(b);
-  return out;
+  return finishDisplay(look, clamp01(rr * tm), clamp01(rg * tm), clamp01(rb * tm), out);
 }
 
 /* ------------------------------------------------------------------ looks ---
- * Six entries. `goldenState` is the default and the reason this module exists;
- * `aces` is the control. The four between are genuine alternates, not presets
- * of the default — each one changes what the world is ABOUT, which is the point
- * of putting them in the panel rather than hard-coding one grade.
+ * Eight entries. `goldenState` is the default and the reason this module exists;
+ * `aces` and the two `agx` entries are controls. The four between are genuine
+ * alternates, not presets of the default — each one changes what the world is
+ * ABOUT, which is the point of putting them in the panel rather than
+ * hard-coding one grade.
+ *
+ * WHY `goldenState` KEEPS THE DEFAULT even though AgX is the better-behaved
+ * curve: measured chroma retention on the sun surround is ~16.5% for AgX against
+ * goldenState's 50.5%, and 4.5% against 16.0% on the sun disc. AgX beats ACES
+ * everywhere warm — it halves the +16° hue twist on the gold horizon to +8° —
+ * but shipping it as the default would partially reinstate the exact failure the
+ * header records as the reason ACES was dropped: a sunset sky bleaching toward
+ * white. It ships as a look, not as the look.
  */
 
 function look(l: GradeLook): GradeLook {
@@ -558,6 +805,60 @@ export const GRADE_LOOKS: readonly GradeLook[] = [
     // The one look with a real lift. Blacks stop at ~7% and the whole world
     // reads like a memory of itself.
     lift: 0.055
+  }),
+  look({
+    id: "agx",
+    label: "AgX",
+    note: "three's AgX verbatim — the gentlest shoulder here, and the least chroma through it",
+    curve: "agx",
+    whiteBalance: [1, 1, 1],
+    // Ignored by the agx curve; the sigmoid owns contrast and the log window
+    // owns the path to white. Left at the neutral values so a diff reads clean.
+    contrast: 1,
+    // SOLVED, not chosen. Bisected so linear 0.18 lands at display-linear
+    // 0.206785 — exactly where goldenState's peak channel lands it. That is the
+    // "switching looks changes character, not brightness" contract; without it
+    // every A/B is confounded by one option simply being brighter.
+    offsetStops: -0.066,
+    // The AgX CDL's affine saturation. 1.0 = plain AgX, and the neutral-CDL fast
+    // path in agxEvaluate then makes this bit-identical to three's node.
+    saturation: 1.0,
+    white: 1,
+    pathToWhite: [0, 1, 0],
+    shadowTint: [1, 1, 1],
+    highlightTint: [1, 1, 1],
+    tint: 0,
+    lift: 0
+  }),
+  look({
+    id: "agxPunch",
+    label: "AgX punch",
+    note: "AgX with Blender's Punchy CDL — same shoulder, steeper mids, more chroma",
+    curve: "agx",
+    whiteBalance: [1, 1, 1],
+    contrast: 1,
+    // SOLVED against the same anchor, and it has to be solved SEPARATELY rather
+    // than shared with `agx`: the CDL takes its saturation pivot from the
+    // pre-power luminance, so `saturation` moves mid grey even on a grey card
+    // once `power` ≠ 1. +1.77 stops is what power 1.35 costs at the pivot.
+    //
+    // The price, stated so nobody rediscovers it as a bug: pushing the scene
+    // 3.4× before a FIXED log window spends 1.77 stops of highlight headroom, so
+    // this look hard-clips at ~4.8 scene-linear where plain `agx` clips at ~17.
+    // Measured on the neutral ramp that is less dramatic than it sounds —
+    // goldenState is already at 0.993 by linear 4 — but above 4.8 AgX punch
+    // carries no information at all, so judge it on the sun disc before
+    // promoting it anywhere.
+    offsetStops: 1.771313,
+    saturation: 1.4,
+    white: 1,
+    pathToWhite: [0, 1, 0],
+    shadowTint: [1, 1, 1],
+    highlightTint: [1, 1, 1],
+    tint: 0,
+    lift: 0,
+    // Blender's "Punchy" look, verbatim.
+    agx: { slope: [1, 1, 1], offset: 0, power: [1.35, 1.35, 1.35], minEv: -12.47393, maxEv: 4.026069 }
   }),
   look({
     id: "aces",

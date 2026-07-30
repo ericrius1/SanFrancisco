@@ -40,6 +40,7 @@ import { materializeAmount } from "../../render/materialize";
 import { oceanBeachApproxShoreX } from "../oceanBeachWaves";
 import type { WorldMap } from "../heightmap";
 import { SHOREBREAK, shorebreakHandoff, swashState, swashWetness } from "./swash";
+import { writeSsrMask } from "../../render/post/shared/gbuffer";
 
 type N = any;
 
@@ -365,6 +366,20 @@ export class OceanBeachShorebreak {
       .mul(shorebreakHandoff(sandY))
       .mul(this.#uAmount)
       .mul(materializeAmount()); // spatial front sweep (collapses to 1 once revealed)
+    // SSR opt-in, from the same two nodes the shading already uses: `wet` says
+    // how wet the sand still is, `foam` says how much of the pixel is aerated
+    // spray. Aerated water has no specular surface to reflect in — the
+    // roughnessNode above already ramps to 0.92 under foam for exactly this
+    // reason — so the mask carries the same complementarity and the mirror can
+    // never contradict the gloss.
+    //
+    // NOTE for integration: this material is transparent, and MRT attachments
+    // other than `output` are `_noBlending` (MRTNode.js:110), so this sheet
+    // OVERWRITES the terrain's gbuffer wherever it draws, at full weight, even
+    // where its own opacity is near zero. That is benign here only because the
+    // terrain writes the same kind of signal underneath (terrainClipmap's
+    // `wetSand`) over the same band; it is not a general licence.
+    writeSsrMask(material, wet.mul(foam.oneMinus()));
     return material;
   }
 

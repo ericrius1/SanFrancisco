@@ -1,10 +1,13 @@
 import type * as THREE from "three/webgpu"
 import {
+  Fn,
   getViewPosition,
   mrt,
   normalView,
   packNormalToRGB,
+  positionPrevious,
   unpackRGBToNormal,
+  vec3,
   vec4,
   float
 } from "three/tsl"
@@ -45,6 +48,51 @@ export function writeSsrMask(material: THREE.NodeMaterial, amount: N): void {
   ;(material as THREE.NodeMaterial & { mrtNode: N }).mrtNode = mrt({
     gbuffer: vec4(packNormalToRGB(normalView), amount)
   })
+}
+
+/**
+ * Adopt true per-object velocity for ONE family of displaced geometry, in one
+ * line at the family's `positionNode`.
+ *
+ * `displace(previous)` returns the family's local position; the flag says which
+ * frame to evaluate it for. A family that is displaced by time reads a
+ * `uPrevTime` uniform when the flag is set and nothing else changes; a family
+ * whose displacement is static (the terrain clipmap, terrainClipmap.ts:658)
+ * ignores the flag entirely and is exact immediately.
+ *
+ * Two things this buys that fifty hand-rolled copies would not:
+ *
+ *  - **It costs nothing when velocity is off.** `builder.needsPreviousData()`
+ *    (NodeBuilder.js:3449) is a JS boolean read at CODEGEN time — it checks
+ *    whether the renderer's MRT has a `velocity` output — so with the default
+ *    reprojection source the second evaluation is not merely branch-predicted
+ *    away, it is never emitted. This is a compile-time `if`, deliberately not a
+ *    TSL `If()`; a family's displacement is usually noise, and noise inside an
+ *    `If()` is non-uniform control flow.
+ *  - **It is the only correct place to write `positionPrevious`.** That varying
+ *    is written by exactly three files in all of three (Skinning.js:166/:233,
+ *    Instance.js:228) and by NOTHING in Batch.js, which is BRIEF §3.4's second
+ *    disqualifying reason for MRT velocity. A family that overrides
+ *    `positionNode` and does not do this reports the velocity of its
+ *    UNDISPLACED local coordinates — a confident, plausible, wrong number.
+ *
+ * Do NOT key a previous placement off `instanceIndex`: gpuIndirect.ts:208,:214
+ * resolves instances through `visibleIndices.element(instanceIndex)` and the
+ * compaction order changes every frame, so `instanceIndex` does not identify the
+ * same blade or tree across frames. Placement is a pure function of `trueIndex`
+ * plus static attributes — evaluate the previous placement from a time uniform
+ * and no cross-frame index mapping is needed.
+ */
+export function withPreviousPosition(displace: (previous: boolean) => N): N {
+  // `any` at the node boundary, as every render module in this repo does:
+  // NodeBuilder's published typings do not surface `needsPreviousData()`.
+  return Fn((_args: N[], builder: N) => {
+    const current = vec3(displace(false)).toVar()
+    if (builder.needsPreviousData() === true) {
+      positionPrevious.assign(vec3(displace(true)))
+    }
+    return current
+  })()
 }
 
 /**

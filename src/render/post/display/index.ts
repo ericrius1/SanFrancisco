@@ -17,7 +17,7 @@
 //   c     = surfFlowGrade(c)                       // SURVIVOR, verbatim
 import * as THREE from "three/webgpu"
 import { Fn, screenCoordinate, screenUV, vec4 } from "three/tsl"
-import { filmGrain } from "../grain"
+import { advanceGrain, filmGrain } from "../grain"
 import { STAGE_ORDER } from "../order"
 import { sharpenRcas } from "../sharpen"
 import type { GradeAdapter } from "../grade"
@@ -65,6 +65,10 @@ export function createDisplayStage(setup: PostStageSetup, deps: DisplayDeps): Di
     const lens = surfFlowLens(screenUV)
     const c = gradedAt(lens.sampleUv).toVar()
 
+    // Grain is applied to `c`; sharpen REPLACES it, reading the graded
+    // neighbourhood through `gradedAt`. Flipping the flag therefore also decides
+    // whether RCAS's four taps see grain — they do not, in the shipped order,
+    // which is the point.
     if (GRAIN_BEFORE_SHARPEN) {
       c.assign(filmGrain(c, screenCoordinate.xy))
       c.assign(sharpenRcas(c, gradedAt, lens.sampleUv, slot.texelSize))
@@ -86,7 +90,14 @@ export function createDisplayStage(setup: PostStageSetup, deps: DisplayDeps): Di
     // Always on. "Off" would mean not presenting.
     enabled: () => true,
     output: () => null,
-    render: (_frame: PostFrameContext) => {
+    render: (frame: PostFrameContext) => {
+      // The grain lattice advances here rather than in the grain stage, because
+      // the grain stage is never called by the driver (it owns no pass) and
+      // because THIS is the call that presents. A frame that is never presented
+      // must not consume a seed: `frameIndex` does not advance on compile-held
+      // frames, warmup covered renders or captureStillRgba, which is exactly
+      // what keeps a captured still's grain reproducible.
+      advanceGrain(frame.frameIndex)
       // Draws into whatever render target the caller bound — that is how
       // ?fastcapture and the H-key still both redirect the final frame without
       // this stage knowing about either.

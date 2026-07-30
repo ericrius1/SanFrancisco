@@ -55,6 +55,7 @@ import {
   type TeaGardenXZ
 } from "./layout";
 import { TEA_GARDEN_STREAM_AUDIO_ANCHORS } from "./streamAudio";
+import { writeSsrMask } from "../../render/post/shared/gbuffer";
 
 /**
  * One WebGPU shallow-water field shared by the Drum Bridge stream and pond.
@@ -1585,6 +1586,11 @@ export function createTeaGardenWaterSimulation(
   material.opacityNode = shorelineMask;
   material.normalNode = normalize(cameraViewMatrix.mul(vec4(worldNormal, 0)).xyz);
   material.envMapIntensity = 0.5;
+  // SSR opt-in. A tea-garden pond exists to hold the drum bridge, the lanterns
+  // and the maples upside down; the env probe alone gives it a flat sky wash
+  // and none of that. Foam is aerated and reflects nothing, so it comes out —
+  // the same complementarity the colour/emissive blend above already uses.
+  writeSsrMask(material, float(0.85).mul(foamMask.oneMinus()));
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "tea_garden_unified_webgpu_shallow_water_surface";

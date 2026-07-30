@@ -41,6 +41,7 @@ import {
   sutroLocalToWorld
 } from "./layout";
 import { SUTRO_BATHS_TUNING } from "./tuning";
+import { writeSsrMask } from "../../render/post/shared/gbuffer";
 
 type N = any;
 
@@ -477,6 +478,24 @@ export function createSutroBathsStaticWater(options: {
     belowU
   );
   material.normalNode = normalize(cameraViewMatrix.mul(vec4(worldNormal, 0)).xyz);
+  // SSR opt-in. These pools ALREADY mirror the sky analytically (`mirror`
+  // above, weighted by Fresnel × mirrorU), which is what makes the hall read
+  // at sunset — but an analytic sky mirror cannot show the arcade columns or
+  // the ruined walls standing in the water, and those are the reflections a
+  // visitor standing at the rim expects. SSR supplies exactly the term the
+  // analytic path structurally cannot.
+  //
+  // Two suppressions, both restating shading decisions this file already made:
+  // foam is spray and "must not mirror anything" (see the mirror weight), and
+  // the mirror "belongs to the ABOVE-water branch only" — a swimmer looking up
+  // gets Snell's window, not a screen-space reflection of the hall.
+  //
+  // 0.85 matches mirrorU's default rather than being a second opinion about how
+  // reflective still water is.
+  writeSsrMask(
+    material,
+    float(0.85).mul(foamMask.oneMinus()).mul(belowU.oneMinus())
+  );
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "sutro_baths_static_water_surface";

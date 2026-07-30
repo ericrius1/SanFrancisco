@@ -150,8 +150,19 @@ export function createPostChain(deps: PostChainDeps): PostChain {
     throw new Error("[post] the display tail must be last in STAGE_ORDER")
   }
 
-  let sizeDirty = true
-  const sized = new Set<string>()
+  /**
+   * A monotonic size generation, NOT a dirty flag plus a "who has been sized"
+   * set. The pair was wrong in a way that only shows up after a specific
+   * sequence: a stage that had already been sized, then got disabled, then sat
+   * out a resize (the flag is cleared at the end of that frame, and a skipped
+   * stage keeps its stale set entry), would be re-enabled at the old size and
+   * never told. It affects every toggleable stage, and the symptom — one stage
+   * rendering at the pre-resize resolution — reads as a stage bug rather than a
+   * chain bug. Comparing a per-stage stamp against a counter makes "has this
+   * stage been sized for the CURRENT geometry" the actual question asked.
+   */
+  let sizeGeneration = 1
+  const sizedAt = new Map<string, number>()
   let lastInputWidth = 0
   let lastInputHeight = 0
   let lastOutputWidth = 0
@@ -176,7 +187,7 @@ export function createPostChain(deps: PostChainDeps): PostChain {
       { width: frame.inputWidth, height: frame.inputHeight },
       { width: frame.outputWidth, height: frame.outputHeight }
     )
-    sizeDirty = true
+    sizeGeneration += 1
   }
 
   /**
@@ -213,9 +224,9 @@ export function createPostChain(deps: PostChainDeps): PostChain {
         // THE ENTIRE TOGGLE MECHANISM. Not blitted, not cleared, not rendered —
         // and the stage's targets stay allocated, so re-enabling is free too.
         if (!stage.enabled()) continue
-        if (sizeDirty || !sized.has(stage.id)) {
+        if (sizedAt.get(stage.id) !== sizeGeneration) {
           stage.setSize(frame)
-          sized.add(stage.id)
+          sizedAt.set(stage.id, sizeGeneration)
         }
         slots.get(stage.id)?.bind(colour)
         stage.render(frame)
@@ -231,7 +242,6 @@ export function createPostChain(deps: PostChainDeps): PostChain {
       // `TextureSlot.bind()` re-derives from whatever texture it was just handed.
       // A resolution change is therefore already carried by the binding, and a
       // parallel bookkeeping variable would be a second source of truth.
-      sizeDirty = false
       lastPassCount = passes
     },
 
@@ -241,8 +251,10 @@ export function createPostChain(deps: PostChainDeps): PostChain {
 
     applyStructure() {
       for (const stage of ordered) stage.applyStructure?.()
-      sized.clear()
-      sizeDirty = true
+      // Every stage re-sizes on its next enabled frame. A structural key is
+      // usually a resolution scale, and a stage's own targets are sized from it
+      // rather than from the pool.
+      sizeGeneration += 1
     },
 
     invalidateHistory(reason: string) {

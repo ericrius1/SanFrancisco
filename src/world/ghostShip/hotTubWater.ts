@@ -24,6 +24,7 @@ import {
 } from "three/tsl";
 import { releaseRendererAttribute } from "../../app/rendererRegistry";
 import { GHOST_SHIP_TUNING } from "./tuning";
+import { writeSsrMask } from "../../render/post/shared/gbuffer";
 
 const GRID_X = 32;
 const GRID_Z = 24;
@@ -158,6 +159,11 @@ export function createGhostShipHotTubWater(renderer: THREE.WebGPURenderer): Ghos
   ));
   material.normalNode = normalize(cameraViewMatrix.mul(vec4(worldNormal, 0)).xyz);
   material.envMapIntensity = 0.8;
+  // SSR opt-in. Roughness 0.18 already says this is a near-mirror; the tub sits
+  // in a lit deck well with rails and hull directly overhead, which is scene
+  // geometry an env probe cannot supply. No foam term here — the simulation
+  // makes ripples, not spray — so the mask is genuinely constant.
+  writeSsrMask(material, float(0.85));
 
   const geometry = new THREE.PlaneGeometry(WIDTH, LENGTH, GRID_X - 1, GRID_Z - 1);
   geometry.rotateX(-Math.PI / 2);

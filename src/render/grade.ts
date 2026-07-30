@@ -41,14 +41,21 @@ import {
  * net win rather than a trade.
  *
  * It also decouples cost from ambition. Every look is the same one fetch, so a
- * look may be as elaborate as it likes — and switching looks rebinds nothing,
- * recompiles nothing, and invalidates none of the eight cached post-FX variants.
- * That is what makes the panel's look selector instant instead of a hitch.
+ * look may be as elaborate as it likes — and switching looks rebinds nothing
+ * and recompiles nothing: same texture object, same bind group, new contents.
  *
- * The LUT is generated on the CPU at first use, never fetched. 864 KB of VRAM
- * and a few milliseconds of arithmetic, with zero bytes over the network, so
- * the massive-app loading policy is satisfied by construction. Only the ACTIVE
- * look is baked; the others are built the first time they are selected.
+ * WHAT A LOOK SWITCH ACTUALLY COSTS. This header used to claim "instant" and "a
+ * few milliseconds", and both were already false before AgX arrived. Measured,
+ * for the 110,592 evaluations a 48³ bake needs: goldenState 53.9 ms, AgX base
+ * 147.9 ms, AgX punchy 133.6 ms — on the main thread, so it is a dropped frame
+ * or several. The bake CACHE below is what makes the claim true on the second
+ * visit: A→B→A used to re-pay in full every time, and now pays once per
+ * (look, size, parameter revision).
+ *
+ * The LUT is generated on the CPU at first use, never fetched. 864 KB of VRAM,
+ * zero bytes over the network, so the massive-app loading policy is satisfied by
+ * construction. Only the ACTIVE look is baked; the others are built the first
+ * time they are selected.
  */
 
 /**
@@ -123,6 +130,27 @@ export type GradeRuntime = {
   setLook: (id: string) => void;
   activeLookId: () => string;
   /**
+   * Overlay live parameters onto the active look WITHOUT touching GRADE_LOOKS.
+   *
+   * The looks table is the shipped artistic record and three Node probes import
+   * it directly; a debug slider must not be able to edit it out from under them.
+   * Passing null clears the overlay. Does not re-bake on its own — call
+   * `refresh()`, so a caller dragging several sliders pays one bake, not five.
+   */
+  setLookPatch: (patch: Partial<GradeLook> | null) => void;
+  /**
+   * Re-bake the active look. THE ENTRY POINT FOR LIVE LOOK PARAMETERS:
+   * `setLook` early-returns on an unchanged id, by design, so without this the
+   * AgX CDL knobs had no way to reach the LUT at all.
+   *
+   * `previewSize` bakes at a smaller edge length for the duration of a drag —
+   * 16³ is 4,096 evaluations against 48³'s 110,592, i.e. ~6 ms instead of
+   * ~148 ms. Call once more with no argument on release to restore full
+   * fidelity. The half-texel correction follows the size, so a preview is
+   * coarse but not SHIFTED, which is what makes it a usable preview.
+   */
+  refresh: (previewSize?: number) => void;
+  /**
    * Re-bake at a different edge length. Debug only: rendering a frame at 48³
    * and again at, say, 128³ and differencing the two bounds the shipped LUT's
    * error on real content, which is the only measurement that actually counts.
@@ -131,12 +159,60 @@ export type GradeRuntime = {
   dispose: () => void;
 };
 
+/**
+ * How many baked LUTs to keep. Each 48³ entry is 864 KB of JS heap, so this is
+ * a deliberate ceiling and not a "big enough" number: eight covers every look in
+ * the file at one size, which is the A→B→A case the cache exists for, and caps
+ * the cache at ~6.9 MB even if someone clicks through the whole dropdown.
+ */
+const BAKE_CACHE_LIMIT = 8;
+
 export function createGrade(): GradeRuntime {
   let lutSize = GRADE_LUT_SIZE;
   let activeId = GRADE_TUNING.values.look;
+  let patch: Partial<GradeLook> | null = null;
+  /**
+   * The parameter revision, as CONTENT rather than as a counter. It is part of
+   * the cache key because a patched look is a different look wearing the same
+   * id, and keying on the id alone would serve a stale bake the moment an AgX
+   * slider moves. Content-derived rather than incremented so that returning to
+   * a set of values you had before is a cache HIT — which is the whole A→B→A
+   * complaint, and a counter would miss it every time.
+   */
+  let patchRevision = "";
+
+  const activeLook = (): GradeLook => {
+    const base = findLook(activeId);
+    return patch ? { ...base, ...patch } : base;
+  };
+
+  /**
+   * `${id}|${size}|${revision}` → baked texel data. Insertion-ordered FIFO.
+   *
+   * The cached array is handed straight to `lut.image.data` rather than copied,
+   * so the LUT and the cache alias. That is safe only because nothing writes to
+   * baked data after `bakeLookData` returns — the upload path reads it and the
+   * next look switch replaces the reference. If anything ever mutates texel data
+   * in place, this has to become a copy.
+   */
+  const bakeCache = new Map<string, Uint16Array>();
+
+  const bakeCached = (look: GradeLook, size: number): Uint16Array => {
+    const key = `${look.id}|${size}|${patchRevision}`;
+    const hit = bakeCache.get(key);
+    if (hit) return hit;
+    const data = bakeLookData(look, size);
+    bakeCache.set(key, data);
+    // Map preserves insertion order, so the first key is the oldest.
+    if (bakeCache.size > BAKE_CACHE_LIMIT) {
+      const oldest = bakeCache.keys().next();
+      if (!oldest.done) bakeCache.delete(oldest.value);
+    }
+    return data;
+  };
 
   const makeTexture = (look: GradeLook, size: number) => {
-    const tex = new Data3DTexture(bakeLookData(look, size), size, size, size);
+    const tex = new Data3DTexture(bakeCached(look, size), size, size, size);
     tex.format = RGBAFormat;
     tex.type = HalfFloatType;
     // Trilinear between samples is the entire premise; point sampling would
@@ -154,7 +230,7 @@ export function createGrade(): GradeRuntime {
     return tex;
   };
 
-  const lut = makeTexture(findLook(activeId), lutSize);
+  const lut = makeTexture(activeLook(), lutSize);
   const lutNode = texture3D(lut) as N;
   const uCorrection = uniform(lutCorrection(lutSize)) as N;
 
@@ -166,16 +242,20 @@ export function createGrade(): GradeRuntime {
    */
   const exposure = rendererReference("toneMappingExposure", "float") as N;
 
-  const rebake = () => {
-    const next = bakeLookData(findLook(activeId), lutSize);
+  /**
+   * `size` is the edge length to bake AT, which is not always `lutSize`: a live
+   * drag re-bakes at 16³ and only restores the shipped size on release.
+   */
+  const rebake = (size: number = lutSize) => {
+    const next = bakeCached(activeLook(), size);
     const image = lut.image as { data: Uint16Array; width: number; height: number; depth: number };
-    if (image.width !== lutSize) {
-      image.width = lutSize;
-      image.height = lutSize;
-      image.depth = lutSize;
+    if (image.width !== size) {
+      image.width = size;
+      image.height = size;
+      image.depth = size;
     }
     image.data = next;
-    (uCorrection.value as Vector2).copy(lutCorrection(lutSize));
+    (uCorrection.value as Vector2).copy(lutCorrection(size));
     // Bumps texture.version, which is what Textures.js compares to decide to
     // re-upload. Same GPU resource, same bind group, new contents.
     lut.needsUpdate = true;
@@ -211,12 +291,22 @@ export function createGrade(): GradeRuntime {
       rebake();
     },
     activeLookId: () => activeId,
+    setLookPatch: (next: Partial<GradeLook> | null) => {
+      patch = next && Object.keys(next).length > 0 ? next : null;
+      patchRevision = patch ? JSON.stringify(patch) : "";
+    },
+    refresh: (previewSize?: number) => {
+      rebake(previewSize === undefined ? lutSize : Math.max(8, Math.min(128, Math.round(previewSize))));
+    },
     setLutSize: (size: number) => {
       const next = Math.max(8, Math.min(128, Math.round(size)));
       if (next === lutSize) return;
       lutSize = next;
       rebake();
     },
-    dispose: () => lut.dispose()
+    dispose: () => {
+      bakeCache.clear();
+      lut.dispose();
+    }
   };
 }

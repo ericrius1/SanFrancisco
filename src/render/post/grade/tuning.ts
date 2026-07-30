@@ -22,6 +22,20 @@ export { GRADE_TUNING } from "../../grade"
  * preview bake (~6 ms) while dragging.
  */
 export const POST_GRADE_TUNING = tunables("post.grade", {
+  /**
+   * DEPARTURE FROM THE BRIEF, and it is load-bearing. The brief's table lists
+   * the eight knobs with "defaults: as the agxPunch entry" and nothing else —
+   * but applied unconditionally those defaults do not leave `agxPunch` alone,
+   * they OVERWRITE `agx`, whose authored CDL is the neutral one (power 1,
+   * saturation 1). Selecting "AgX" would silently render AgX punch, and the
+   * measured 16.5%-chroma reference look would not exist.
+   *
+   * So the knobs are opt-in. Off, both looks render exactly as authored in
+   * gradeLooks.ts and nothing here can re-bake anything. Switching it ON seeds
+   * these values from the ACTIVE look first, so enabling it is an image no-op
+   * and the numbers below are a starting point rather than a jump.
+   */
+  agxLive: { v: false, label: "agx live edit" },
   agxSlopeR: { v: 1, min: 0.5, max: 2, step: 0.01, label: "agx slope R" },
   agxSlopeG: { v: 1, min: 0.5, max: 2, step: 0.01, label: "agx slope G" },
   agxSlopeB: { v: 1, min: 0.5, max: 2, step: 0.01, label: "agx slope B" },

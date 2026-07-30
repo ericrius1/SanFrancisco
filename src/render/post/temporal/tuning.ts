@@ -5,9 +5,15 @@ import { tunables } from "../../../core/persist"
  * it is the single lever the whole performance argument rests on (the beauty
  * pass drops to 44% of the pixels at 0.667) and the one the adaptive-resolution
  * governor degrades through instead of dropping the output resolution.
+ *
+ * INTEGRATION NOTE: `postInputScale()` reads `scale` directly, so it does not
+ * know about `mode`. The TRAA fallback cannot upscale — it resolves one input
+ * sample per output pixel — so when `mode === "traa"` the scale must be clamped
+ * to 1. The stage states that authoritatively as `temporalStage.inputScale()`;
+ * post/tuning.ts is not this unit's file to edit.
  */
 export const TEMPORAL_TUNING = tunables("post.temporal", {
-  enabled: { v: false, label: "temporal resolve" },
+  enabled: { v: true, label: "temporal resolve" },
   scale: {
     v: 0.667,
     options: { native: 1, quality: 0.77, balanced: 0.667, performance: 0.59, ultra: 0.5 },
@@ -22,7 +28,8 @@ export const TEMPORAL_TUNING = tunables("post.temporal", {
   maxVelocityLength: { v: 48, min: 16, max: 256, step: 1, label: "· max velocity (px)" },
   varianceGammaMin: { v: 0.5, min: 0.25, max: 1.5, step: 0.05, label: "· clamp at rest" },
   varianceGammaMax: { v: 1, min: 0.5, max: 2, step: 0.05, label: "· clamp in motion" },
-  /** Declared fallback: stock TRAANode at scale 1 is the only correct-under-
-   *  reversed-depth temporal node in three's display folder. */
+  /** Declared fallback: TRAA is the only temporal node in three's display folder
+   *  that is already correct under reversed depth. Structural, not a live
+   *  toggle — switching builds the other resolve's graph. */
   mode: { v: "taau", options: { TAAU: "taau", TRAA: "traa" }, label: "· mode" }
 })
