@@ -307,6 +307,37 @@ const DEFINITIONS = Object.freeze({
       })
     })];
   })),
+  // The deep-sunset set: five twenty-second films built around three things at
+  // once — the prism kite as the hero of the flock, its spectrum lying soft on
+  // the sand, and the surf actually breaking on camera. These are the first
+  // productions with a PINNED sea clock (see setSeaTimePin): each film bakes a
+  // T0 chosen by tools/cinematic/surfSchedule.mjs so a set goes off early in
+  // the take and a bigger one goes off late, and the soundtrack's crash stems
+  // are placed at those exact seconds rather than at plausible ones.
+  ...Object.fromEntries([
+    [1, "Ocean Beach Sunset · The Court", "The flock gathered loosely around the prism, its spectrum breathing on the sand between them."],
+    [2, "Ocean Beach Sunset · Where It Dances", "Head height on the wet sand, the rainbow lying across the beach and moving like water."],
+    [3, "Ocean Beach Sunset · The Set Goes Off", "At wave height as a set stands up, throws and walks in under the whole festival."],
+    [4, "Ocean Beach Sunset · The Long Band", "Telephoto compression: kites, stacked breakers and the last band of light in one plane."],
+    [5, "Ocean Beach Sunset · Afterglow", "Under the flock as the light goes, the last set heard more than seen."]
+  ].map(([index, title, description]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `ocean-beach-sunset-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 20,
+      seed: (0x53_4e_53_00 + index * 0x101) >>> 0,
+      posterAt: 16.6,
+      stillTimes: Object.freeze([0.3, 2.4, 4.8, 7.2, 9.6, 12, 14.4, 16.9, 19.2]),
+      audio: Object.freeze({
+        profile: "ocean-beach-sunset",
+        index,
+        description
+      })
+    })];
+  })),
   // The two travelling shots: kite festival to Sutro Baths in one unbroken move.
   // Fifteen seconds each, and the stills are weighted toward the back half
   // because that is where the shot changes — the beach run is one continuous
