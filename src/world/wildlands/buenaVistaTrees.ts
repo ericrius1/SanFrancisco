@@ -25,6 +25,9 @@ export type BuenaVistaFoliage = {
   ready: Promise<void>;
   update(focus: { x: number; z: number }): void;
   prepareVisible(prepare: NativeTreePrepareUnit): Promise<void>;
+  /** Compile just the distant canopy tier, so the hill can be attached to the
+   *  scene wooded while its close detail keeps warming behind it. */
+  prepareCanopySilhouette(prepare: NativeTreePrepareUnit): Promise<void>;
   dispose(): void;
   /** Tree diagnostics retain the historical shape used by the foliage probes. */
   stats: NativeTreeForest["stats"];
@@ -109,6 +112,10 @@ export function createBuenaVistaTrees(
       focus = { x: nextFocus.x, z: nextFocus.z };
       trees.update(nextFocus);
       maybeLoadUnderstory();
+    },
+    prepareCanopySilhouette(prepare) {
+      prepareUnit = prepare;
+      return trees.prepareFarTiers(prepare);
     },
     async prepareVisible(prepare) {
       prepareUnit = prepare;

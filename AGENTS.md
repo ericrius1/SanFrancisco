@@ -19,9 +19,19 @@
 
 # Runnable feature handoffs
 
-- When a feature is completed in a git worktree, keep a local preview running from that exact worktree and share a clickable `http://localhost:<port>/?autostart=1` link in the final response (verify it returns 200 first). A filesystem path, worktree path, screenshot, or render link is not a substitute for the running link.
-- Use a plain background/session dev server. Do NOT set up OS-level services (launchd, LaunchAgents, cron, etc.) to make the preview outlive the session — the user prefers to just ask for a fresh link if the server has stopped.
-- The main-repo dev server on the default port (5179) serves the MAIN repo, not the worktree, so start the worktree preview on its own port (the `sf-verify` launch config uses 5240).
+- When a feature is completed in a git worktree, end the final response with a `bash` code block the user can press play on to start the preview himself. Do NOT hand over a bare `http://localhost:<port>` link to a server you started — those servers exit with the session, and another worktree can then grab the port and silently serve a different build.
+- Hand over `npm run play`, never a raw `vite --strictPort`. Pressing play a SECOND time while the first server is still up is the normal case, and raw vite answers that with "Port NNNN is already in use". `tools/play.mjs` reuses a server that is already serving THIS worktree, refuses loudly if the port belongs to someone else, and only starts one when the port is free.
+
+  ```
+  cd <absolute worktree path> && npm run play -- --port <port> --open "/?autostart=1"
+  ```
+
+- The relay defaults to port + 3000 and the app already proxies to an existing relay, so a shared relay port is not an error.
+- Verify the command before handing it over: run it, confirm the app answers 200, run it AGAIN to prove the reuse path, then leave it running or stop it — either is fine now that re-running is safe.
+- Pick the port by probing for a free pair (dev + relay) — other live worktree sessions squat 5240-5242. The main-repo server on 5179 serves the MAIN repo, not the worktree.
+- `play.mjs --contains` must match CODE, not a comment: vite transforms TS through esbuild, which strips comments, so a doc-comment phrase never survives to the wire.
+- A filesystem path, worktree path, screenshot, or render link is not a substitute for the runnable command.
+- Do NOT set up OS-level services (launchd, LaunchAgents, cron, etc.) to make a preview outlive the session — he prefers to just press play again.
 
 # Video rendering
 

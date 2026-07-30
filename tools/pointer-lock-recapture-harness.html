@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>pointer lock re-capture harness</title>
+<!--
+  Drives the REAL src/core/input.ts against a faked Pointer Lock API.
+
+  Pointer lock cannot be exercised in an automation pane at all (the document
+  reports itself unfocused, so every requestPointerLock is refused), and the two
+  failures this harness covers are precisely the ones a human hits and a probe
+  cannot: the browser eating a Meta keyup while the OS holds the keyboard, and
+  Chrome's post-Esc cooldown refusing the first re-request.
+
+  Each scenario gets its own iframe in the runner, because Input subscribes to
+  `document` and two instances in one document would both react to every event.
+-->
+<body style="margin:0;background:#111;color:#eee;font:13px ui-monospace,monospace">
+<canvas id="c" width="320" height="200" style="display:block"></canvas>
+<pre id="out"></pre>
+<script type="module">
+const el = document.getElementById("c");
+const out = document.getElementById("out");
+
+// ---- fake Pointer Lock API ------------------------------------------------
+let locked = null;
+let refuseUntil = 0;           // emulates Chrome's post-Esc cooldown
+let requests = 0;
+Object.defineProperty(document, "pointerLockElement", { get: () => locked, configurable: true });
+document.hasFocus = () => true;
+el.requestPointerLock = () => {
+  requests++;
+  if (performance.now() < refuseUntil) return Promise.reject(new Error("cooldown"));
+  locked = el;
+  queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")));
+  return Promise.resolve();
+};
+document.exitPointerLock = () => {
+  if (!locked) return;
+  locked = null;
+  queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")));
+};
+
+const { Input } = await import("/src/core/input.ts");
+const input = new Input(el);
+
+const tick = () => new Promise((r) => { const c = new MessageChannel(); c.port1.onmessage = () => r(); c.port2.postMessage(0); });
+const settle = async (n = 6) => { for (let i = 0; i < n; i++) await tick(); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const key = (type, code, metaKey) =>
+  document.dispatchEvent(new KeyboardEvent(type, { code, key: code.startsWith("Meta") ? "Meta" : code, metaKey, bubbles: true }));
+const press = (metaKey = false) =>
+  el.dispatchEvent(new MouseEvent("mousedown", { button: 0, metaKey, bubbles: true }));
+
+const results = [];
+const check = (name, pass, detail) => results.push({ name, pass, detail });
+
+// --- 1. baseline: a canvas press captures ---------------------------------
+press(); await settle();
+check("plain click captures", input.locked === true, `locked=${input.locked}`);
+
+// --- 2a. ⌘⇧4 with a window blur: the blur handler already clears the clutch
+key("keydown", "MetaLeft", true); await settle();          // clutch: releases the lock
+window.dispatchEvent(new Event("blur")); await settle();   // OS takes the window
+press(false); await settle();
+check("re-capture after ⌘ keyup lost WITH blur", input.locked === true, `locked=${input.locked}`);
+
+// --- 2b. …and without one. A native overlay (the screenshot crosshair, a
+// context menu) can take the keyboard while the window keeps focus, so the
+// Meta keyup never lands AND no blur fires. Nothing else clears the clutch.
+input.releaseLock(); await settle();
+key("keydown", "MetaLeft", true); await settle();
+press(false); await settle();                              // metaKey is false now
+check("re-capture after ⌘ keyup lost WITHOUT blur", input.locked === true, `locked=${input.locked}`);
+
+// --- 3. a genuinely held ⌘ still keeps the cursor free --------------------
+input.releaseLock(); await settle();
+key("keydown", "MetaLeft", true); await settle();
+press(true); await settle();
+check("held ⌘ still frees the cursor", input.locked === false, `locked=${input.locked}`);
+key("keyup", "MetaLeft", false); await settle();
+check("releasing ⌘ restores the lock", input.locked === true, `locked=${input.locked}`);
+
+// --- 4. Chrome's post-Esc cooldown: one click must still land -------------
+locked = null; document.dispatchEvent(new Event("pointerlockchange")); await settle();  // native Esc
+refuseUntil = performance.now() + 900;   // Chrome refuses for ~1.25s; 900ms here
+requests = 0;
+press(); await settle();
+check("cooldown: first request is refused", input.locked === false && requests >= 1, `requests=${requests} locked=${input.locked}`);
+await wait(1500); await settle();
+check("cooldown: ONE click still ends up locked", input.locked === true, `requests=${requests} locked=${input.locked}`);
+
+// --- 5. a release during the retry chain is respected ---------------------
+locked = null; document.dispatchEvent(new Event("pointerlockchange")); await settle();
+refuseUntil = performance.now() + 900;
+press(); await settle();
+input.releaseLock();                     // UI takes over mid-retry
+await wait(1500); await settle();
+check("release beats a pending retry", input.locked === false, `locked=${input.locked}`);
+
+out.textContent = results.map((r) => `${r.pass ? "PASS" : "FAIL"}  ${r.name}  (${r.detail})`).join("\n");
+parent.postMessage({ harness: "pointer-lock", results }, "*");
+</script>
+</body>

@@ -4,7 +4,7 @@ import type { AnimalKind, Forest } from "../../gameplay/forest";
 import type { Player } from "../../player/player";
 import type { PlayerMode } from "../../player/types";
 import type { HUD } from "../../ui/hud";
-import { waterHeight } from "../../world/heightmap";
+import { seaTime, waterHeight } from "../../world/heightmap";
 import { oceanBeachSurfShackPose } from "../../gameplay/surfing/shack";
 import { findLand, findWater } from "../../vehicles/shared";
 import { MAX_PASSENGER_SEATS } from "../../vehicles/rideable";
@@ -113,7 +113,7 @@ export class EmbodimentController {
       const overWater =
         player.map.isWater(player.position.x, player.position.z) &&
         player.map.bridgeDeck(player.position.x, player.position.z) === -Infinity;
-      const sea = overWater ? waterHeight(player.position.x, player.position.z, player.time) : 0;
+      const sea = overWater ? waterHeight(player.position.x, player.position.z, seaTime()) : 0;
       if (overWater && player.position.y < sea + 3) {
         player.position.y = sea + 0.45;
         player.swimEnter = true;
@@ -158,7 +158,7 @@ export class EmbodimentController {
       const side = 2.2;
       player.position.x += Math.sin(player.heading) * side;
       player.position.z += Math.cos(player.heading) * side;
-      player.position.y = waterHeight(player.position.x, player.position.z, player.time) + 0.45;
+      player.position.y = waterHeight(player.position.x, player.position.z, seaTime()) + 0.45;
       if (motion.speed > 0.5) {
         player.position.x += (motion.linear[0] / motion.speed) * 0.35;
         player.position.z += (motion.linear[2] / motion.speed) * 0.35;
@@ -222,7 +222,7 @@ export class EmbodimentController {
         if (spot) {
           return {
             x: spot.x,
-            y: waterHeight(spot.x, spot.z, player.time) + 0.5,
+            y: waterHeight(spot.x, spot.z, seaTime()) + 0.5,
             z: spot.z,
             label: "Open water"
           };
@@ -259,6 +259,7 @@ export class EmbodimentController {
     if (mode === "drive" && this.currentAnimal) return this.currentAnimal === "bear" ? 3 : 2.4;
     if (mode === "plane" || mode === "boat" || mode === "bird") return 6.5;
     if (mode === "drone" || mode === "board" || mode === "scooter") return 2.8;
+    if (mode === "skate") return 2.2;
     return 2.4;
   }
 }

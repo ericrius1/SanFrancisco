@@ -23,6 +23,52 @@ import { OCEAN_BEACH_SURF } from "../oceanBeachWaves";
 /** TSL node graphs do not compose across ops with generics; any keeps it readable. */
 type N = any;
 
+/**
+ * `hash()` casts its seed to uint, and Ocean Beach lives at x ≈ −6300, so the
+ * lattice index carries a bias big enough that no coordinate in the world
+ * reaches it. (Same trap as PHASE_BIAS below — a negative seed collapses every
+ * cell onto one value, which shows up as a flat grey sheet, not as noise.)
+ */
+const HASH_BIAS = 16_384;
+
+/**
+ * Cheap hashed value noise, 0…1, on a 2D lattice.
+ *
+ * This exists to replace mx_noise_float / mx_fractal_noise_float across the
+ * shorebreak fragment. That shader ran SEVEN gradient-noise evaluations per
+ * pixel — two for the edge jitter, three inside a fractal lace, one fizz, one
+ * grime — on a transparent sheet that covers most of the screen at a grazing
+ * look down three kilometres of beach. At roughly 485 ALU apiece (the figure
+ * measured in world/water.ts, where it retired an mx_noise sun sparkle) that
+ * is about 3.4k ALU per fragment, for what is in the end foam speckle.
+ *
+ * Four integer hashes and a smooth bilerp buy the same character for around a
+ * twelfth of it.
+ */
+export function beachNoise(x: N, y: N): N {
+  const ix = floor(x).add(HASH_BIAS).toVar();
+  const iy = floor(y).add(HASH_BIAS).toVar();
+  const fx = fract(x).toVar();
+  const fy = fract(y).toVar();
+  // Smoothstep the cell coordinate, so the lattice reads as noise rather than
+  // as a grid of triangles.
+  const ux = fx.mul(fx).mul(fx.mul(-2).add(3)).toVar();
+  const uy = fy.mul(fy).mul(fy.mul(-2).add(3)).toVar();
+  const at = (ox: number, oy: number) => hash(ix.add(ox).add(iy.add(oy).mul(4093)));
+  return mix(
+    mix(at(0, 0), at(1, 0), ux),
+    mix(at(0, 1), at(1, 1), ux),
+    uy
+  );
+}
+
+/** Two octaves of the above — what the lace's 3-octave fractal was really for. */
+export function beachFbm(x: N, y: N): N {
+  return beachNoise(x, y)
+    .mul(0.63)
+    .add(beachNoise(x.mul(2.17).add(19.3), y.mul(2.17).sub(7.1)).mul(0.37));
+}
+
 export const SHOREBREAK = {
   /**
    * Sea-level frame, metres. The trough the sheet drains to between waves —

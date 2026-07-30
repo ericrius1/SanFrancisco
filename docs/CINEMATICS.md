@@ -20,6 +20,7 @@ customization film, an 11-second sunset dog-park film, and the eight-shot,
 | `tools/cinematic/delivery.mjs` | Platform delivery derivatives, validation, and quality-comparison manifests. |
 | `tools/render-cinematic.mjs` | CLI orchestration and process cleanup. |
 | `src/dev/demos/kiteFestivalCinematic.ts` | One parameterised family that exports five `Demo`s (`ocean-beach-kite-01`…`05`). All five film the same live seven-flyer encounter from different places at different hours; only the camera and the clock differ. |
+| `src/dev/demos/kiteToSutroCinematic.ts` | Two fifteen-second flights (`kite-to-sutro-01`/`02`) that leave the same encounter, cross the Point Lobos headland and finish inside the restored Sutro Baths. The only cinematics that travel: each frame drives `player.position`/`renderPosition` along the camera rail so tile streaming, the 32 m hero shadow cascade and the bath hall's near-effects follow the lens, and `ensureDemoSite` force-loads the `sutro-baths` optional site before the shot arms rather than letting it pop in at the 500 m gate mid-flight. |
 | `tools/render-twitter-summer.mjs` | Eight independently renderable shots, exact-duration assembly, seven motivated transitions, review artifacts, and X derivatives. |
 
 The pipeline has two output tiers. The archival master captures a lossless PNG
@@ -64,6 +65,13 @@ npm run render:cinematic -- --combine
 #   04 running the sand  20.14   05 blue hour       20.78
 npm run render:cinematic -- ocean-beach-kite-01 --stills   # composition check
 npm run render:cinematic -- ocean-beach-kite-01 --full
+
+# The two travelling shots: kite festival to Sutro Baths in one unbroken move,
+# fifteen seconds each. Unlike the static kite set these move the PLAYER along
+# the camera path, so terrain, the hero shadow cascade and the bath hall's own
+# near-effects all follow the lens across 700 m.
+npm run render:cinematic -- kite-to-sutro-01 --probe-at 0.4,1.6   # opening check
+npm run render:cinematic -- kite-to-sutro-01 --full
 
 # Make the conservative X upload derivative from any finished internal film.
 npm run deliver:x -- .data/cinematics/review/roqn-open-road/roqn-open-road-fast.mp4

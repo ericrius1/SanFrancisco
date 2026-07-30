@@ -86,17 +86,22 @@ export const SUTRO_BATHS = {
  * every run. Retune the field there and copy the printed rectangles here in the
  * same commit, or the water will not sit in the basins that were built for it.
  */
+/**
+ * The plunge's long leg, named on its own because the drain and the sunken
+ * gallery below hang off this exact rectangle (see SUTRO_DRAIN / SUTRO_GROTTO).
+ * One definition, two readers, so the room can never stop being the plunge's
+ * shadow.
+ */
+const GREAT_PLUNGE_LEG = { minX: -31, maxX: -10, minZ: -55, maxZ: 22 } as const;
+
 export const SUTRO_POOLS: readonly SutroPoolSpec[] = [
   {
     id: "great-plunge",
     label: "Great salt-water plunge",
-    minX: -31,
-    maxX: -10,
-    minZ: -55,
-    maxZ: 22,
+    ...GREAT_PLUNGE_LEG,
     heat: 0,
     tone: 0,
-    seams: [{ side: "maxZ", from: -31, to: -10 }]
+    seams: [{ side: "maxZ", from: GREAT_PLUNGE_LEG.minX, to: GREAT_PLUNGE_LEG.maxX }]
   },
   {
     id: "great-plunge-court",
@@ -258,6 +263,150 @@ export const SUTRO_WALL = {
   firstBay: -8,
   lastBay: 5
 } as const;
+
+/**
+ * The drain in the floor of the great plunge, and the room it falls into.
+ *
+ * WHY THE ROOM IS EXACTLY UNDER THE PLUNGE. Three things had to be true at
+ * once, and the plunge's own footprint is the only place all three are:
+ *
+ *  - The room must be UNDER the authored region's `hall` footprint, whose
+ *    terrain overlay pins groundTop to 2.07 m and whose surface map contains no
+ *    water cell at all. That is what keeps a visitor 31 m below it from being
+ *    classified as swimming in the open bay: `effectiveGround` down there reads
+ *    2.07, sea level is 0, and `bed < waterY - 1` is simply false.
+ *  - It must be under the great plunge specifically, because the drain is a
+ *    real shaft and the water that goes down it has to land somewhere the
+ *    player can follow it.
+ *  - The plunge's own swim volume must stop at the tiles, or a dry room inside
+ *    its 2D footprint would float its visitors thirty metres up. That is what
+ *    `SwimVolume.bottomY` (world/swimVolumes.ts) is for.
+ *
+ * The room is the plunge's shadow: same centre, a little wider, and half the
+ * hall's length. Which puts its inland wall under the hall's own timber
+ * gallery, so the boards and the pictures repeat one level down, and its glazed
+ * wall under the hall's glass — except that what is beyond this glass is the
+ * sea floor itself.
+ */
+// DERIVED from the leg's own rectangle, never written out again. These two were
+// the literals `(-31 + -10) * 0.5` and `(-55 + 29) * 0.5`, and when the pool
+// field was rebuilt to the 1896 print the leg's south end moved from z 29 to
+// z 22 — while that second expression merged through without a conflict. A
+// stale centre here does not fail loudly: it slides the drain 3.5 m off the
+// middle of the plunge and hangs the end of the room out past the water it is
+// supposed to be the shadow of.
+const PLUNGE_CENTRE_X = (GREAT_PLUNGE_LEG.minX + GREAT_PLUNGE_LEG.maxX) * 0.5;
+const PLUNGE_CENTRE_Z = (GREAT_PLUNGE_LEG.minZ + GREAT_PLUNGE_LEG.maxZ) * 0.5;
+
+export const SUTRO_DRAIN = {
+  /** Centre of the great plunge's rectangle. */
+  x: PLUNGE_CENTRE_X,
+  z: PLUNGE_CENTRE_Z,
+  /** The tile plane the collar is set into. */
+  y: SUTRO_BATHS.basinY,
+  /** Clear bore of the shaft. */
+  radius: 2.5,
+  /** The bronze collar standing proud of the tiles around it. */
+  collarRadius: 3.35,
+  collarHeight: 0.34,
+  /**
+   * Swim inside this of the bore, and low enough that you had to dive for it,
+   * and the drain has you. The plunge is 2.56 m deep and buoyancy holds a
+   * resting swimmer near the surface, so nobody arrives here by drifting.
+   */
+  grabRadius: 2.3,
+  grabY: SUTRO_BATHS.basinY + 1.45,
+  /** Where the room starts loading: in the water, this near the collar. */
+  primeRadius: 30
+} as const;
+
+export const SUTRO_GROTTO = {
+  /** Inner faces of the room (site-local). */
+  floorY: -28.4,
+  ceilingY: -16.6,
+  /** The hung wall — under the hall's own gallery wall. Faces -x. */
+  artFaceX: -9,
+  /** The glazed wall, facing the open water. Faces +x. */
+  glassFaceX: -32,
+  /** The room runs 75.6 m of z, centred under the plunge. */
+  centreZ: PLUNGE_CENTRE_Z,
+  halfLength: 37.8,
+  /** Twelve bays of 6.3 m; the art hangs on their centres. */
+  bays: 12,
+  bayPitch: 6.3,
+  /** Structural thickness the collision shell and the visible slabs share. */
+  shell: 1.1,
+  /** The catch basin under the fall: an octagon, so its collision is exact. */
+  poolRadius: 6.6,
+  /** Coping 0.42 m above the water, the same step the baths above use. */
+  poolSurfaceY: -28.82,
+  poolFloorY: -31.9,
+  /** The aperture the water comes through, and the column it falls as. */
+  apertureRadius: 2.5
+} as const;
+
+/** Centre of the room in site-local x/z — the plunge's centre, one floor down. */
+export const SUTRO_GROTTO_CENTRE = { x: PLUNGE_CENTRE_X, z: PLUNGE_CENTRE_Z } as const;
+
+/**
+ * Where a swimmer taken by the drain re-enters the world: inside the falling
+ * column, just under the room's ceiling, still going down. They finish the trip
+ * the way they started it — falling with the water — and land in the basin.
+ */
+export const SUTRO_GROTTO_DROP = {
+  x: PLUNGE_CENTRE_X,
+  z: PLUNGE_CENTRE_Z,
+  y: SUTRO_GROTTO.ceilingY - 1.6,
+  /** yaw + π looks along local +z, down the long axis of the room. */
+  heading: SUTRO_BATHS.yaw + Math.PI
+} as const;
+
+/** …and where the upwelling in the middle of the basin puts them back. */
+export const SUTRO_GROTTO_RISE = {
+  x: PLUNGE_CENTRE_X,
+  z: PLUNGE_CENTRE_Z,
+  y: SUTRO_BATHS.basinY + 1.7,
+  heading: SUTRO_BATHS.yaw + Math.PI,
+  /**
+   * Get this far into the middle of the basin — into the ring of falling water
+   * itself — and E rides it back up. A shade wider than the column (2.5 m) so
+   * being "in the fall" is judged by what it looks like rather than by hitting
+   * a radius you cannot see.
+   */
+  radius: 3
+} as const;
+
+/** Distance (m) from the drain's axis, for a WORLD-space point. */
+export function distanceToSutroDrain(x: number, z: number): number {
+  const local = sutroWorldToLocal(x, z);
+  return Math.hypot(local.x - SUTRO_DRAIN.x, local.z - SUTRO_DRAIN.z);
+}
+
+/** True when a WORLD-space point is inside the sunken gallery's clear volume. */
+export function sutroGrottoContains(x: number, y: number, z: number, pad = 0): boolean {
+  if (y < SUTRO_GROTTO.poolFloorY - pad || y > SUTRO_GROTTO.ceilingY + pad) return false;
+  const local = sutroWorldToLocal(x, z);
+  return (
+    local.x >= SUTRO_GROTTO.glassFaceX - pad &&
+    local.x <= SUTRO_GROTTO.artFaceX + pad &&
+    Math.abs(local.z - SUTRO_GROTTO.centreZ) <= SUTRO_GROTTO.halfLength + pad
+  );
+}
+
+/**
+ * The catch basin, as the regular octagon its collision shell is actually built
+ * from — so the water's edge and the stone under it can never disagree.
+ * `poolRadius` is the octagon's INRADIUS: the distance to each flat.
+ */
+export function sutroGrottoPoolContains(x: number, z: number, inset = 0): boolean {
+  const local = sutroWorldToLocal(x, z);
+  const dx = local.x - SUTRO_GROTTO_CENTRE.x;
+  const dz = local.z - SUTRO_GROTTO_CENTRE.z;
+  const limit = SUTRO_GROTTO.poolRadius - inset;
+  if (limit <= 0) return false;
+  const diagonal = (Math.abs(dx) + Math.abs(dz)) * Math.SQRT1_2;
+  return Math.abs(dx) <= limit && Math.abs(dz) <= limit && diagonal <= limit;
+}
 
 export function sutroLocalToWorld(x: number, z: number): { x: number; z: number } {
   const c = Math.cos(SUTRO_BATHS.yaw);

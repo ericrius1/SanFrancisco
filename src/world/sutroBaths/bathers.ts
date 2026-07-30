@@ -37,6 +37,8 @@ import { SEATS } from "./parlour";
  */
 
 const RIG_STAND_Y = 0.92; // rig group origin (hips) above the feet
+/** Coping stone above the deck, measured off the built floor (5.82 vs 5.62). */
+const COPING_RISE = 0.2;
 /** Everything here moves at three-quarters speed. It is that kind of afternoon. */
 const RELAX = 0.75;
 
@@ -104,25 +106,29 @@ const BATHERS: readonly BatherSpec[] = [
   { seed: "sutro-swim-1", pool: "great-plunge", lx: -22, lz: -30, face: Math.PI, pose: "crawl", drift: 0.62 },
   { seed: "sutro-swim-2", pool: "great-plunge", lx: -18, lz: 6, face: 0, pose: "breast", drift: -0.44 },
   { seed: "sutro-swim-3", pool: "great-plunge", lx: -26, lz: -8, face: Math.PI, pose: "backFloat", drift: 0.14 },
-  { seed: "sutro-sit-1", pool: "great-plunge", lx: -32.2, lz: -25.4, face: -1.5, pose: "sitEdge", talk: "plunge-edge" },
-  { seed: "sutro-sit-2", pool: "great-plunge", lx: -32.2, lz: -23.2, face: -1.9, pose: "sitEdge", talk: "plunge-edge" },
-  { seed: "sutro-sit-3", pool: "great-plunge", lx: -8.9, lz: 14, face: 1.55, pose: "sitEdge" },
+  // Coping perches take their lx/lz from MAIN's convention — 0.1..0.3 m outside
+  // the pool edge, so the hips land on the coping stone the surfaceForPose above
+  // raises them onto, and facing the water rather than away from it — applied to
+  // the rebuilt rectangles.
+  { seed: "sutro-sit-1", pool: "great-plunge", lx: -31.1, lz: -25.4, face: -1.5, pose: "sitEdge", talk: "plunge-edge" },
+  { seed: "sutro-sit-2", pool: "great-plunge", lx: -31.1, lz: -23.2, face: -1.9, pose: "sitEdge", talk: "plunge-edge" },
+  { seed: "sutro-sit-3", pool: "great-plunge", lx: -9.7, lz: 14, face: 1.55, pose: "sitEdge" },
   { seed: "sutro-wade-1", pool: "great-plunge", lx: -12.5, lz: 16, face: 2.6, pose: "wade" },
 
   // ---- the plunge's south court (x[-31,19] z[22,44]) ---------------------
   // The water a visitor lands in front of, so it is never empty.
   { seed: "sutro-swim-5", pool: "great-plunge-court", lx: -6, lz: 33, face: Math.PI, pose: "crawl", drift: 0.5 },
   { seed: "sutro-swim-6", pool: "great-plunge-court", lx: 9, lz: 37, face: 0, pose: "backFloat", drift: -0.2 },
-  { seed: "sutro-sit-6", pool: "great-plunge-court", lx: 2, lz: 44.9, face: 0.15, pose: "sitEdge", talk: "court-edge" },
-  { seed: "sutro-sit-7", pool: "great-plunge-court", lx: 4.2, lz: 44.9, face: -0.4, pose: "sitEdge", talk: "court-edge" },
+  { seed: "sutro-sit-6", pool: "great-plunge-court", lx: 2, lz: 44.2, face: 0.15, pose: "sitEdge", talk: "court-edge" },
+  { seed: "sutro-sit-7", pool: "great-plunge-court", lx: 4.2, lz: 44.2, face: -0.4, pose: "sitEdge", talk: "court-edge" },
 
   // ---- warm graduated baths (east stack, x[-4,19]) -----------------------
   { seed: "sutro-swim-4", pool: "bath-three", lx: 8, lz: -26, face: Math.PI, pose: "breast", drift: 0.4 },
   { seed: "sutro-hot-1", pool: "bath-four", lx: 3.5, lz: -14.6, face: 1.1, pose: "wadeChat", talk: "hot-bath" },
   { seed: "sutro-hot-2", pool: "bath-four", lx: 5.9, lz: -13.7, face: -1.9, pose: "wadeChat", talk: "hot-bath" },
   { seed: "sutro-hot-3", pool: "bath-five", lx: 11, lz: -2, face: Math.PI, pose: "backFloat" },
-  { seed: "sutro-sit-4", pool: "bath-two", lx: 7.5, lz: -43.6, face: 0.05, pose: "sitEdge" },
-  { seed: "sutro-sit-5", pool: "bath-five", lx: 14, lz: 3.2, face: Math.PI, pose: "sitEdge" },
+  { seed: "sutro-sit-4", pool: "bath-two", lx: 7.5, lz: -43, face: Math.PI, pose: "sitEdge" },
+  { seed: "sutro-sit-5", pool: "bath-five", lx: 14, lz: 2.6, face: 0, pose: "sitEdge" },
   { seed: "sutro-cross-1", pool: "deck", lx: -6.6, lz: -6, face: 1.4, pose: "sitCross", talk: "deck-mid" },
   { seed: "sutro-cross-2", pool: "deck", lx: -6.6, lz: -3.6, face: 1.9, pose: "sitCross", talk: "deck-mid" },
   { seed: "sutro-sun-1", pool: "deck", lx: -8.4, lz: -36, face: 1.5, pose: "sunbathe" },
@@ -160,7 +166,13 @@ function surfaceForPose(pose: BatherPose): number {
     case "backFloat":
       return SUTRO_BATHS.waterY - 0.05 - RIG_STAND_Y;
     case "sitEdge":
-      return SUTRO_BATHS.deckY - RIG_STAND_Y + 0.14; // hips ~ deck level
+      // On the COPING, which is not the deck. Raycasting the built floor at the
+      // plunge's west rim gives 5.82 for the walkable stone against a deckY of
+      // 5.62, so seating these hips off deckY buried everyone 0.2 m inside the
+      // ledge — which is exactly what it looked like. groundTop cannot tell you
+      // this: the authored region declares flat ownership at 2.07, so every
+      // sample inside the hall returns 2.07 no matter what is built there.
+      return SUTRO_BATHS.deckY + COPING_RISE - RIG_STAND_Y + 0.14;
     case "sitCross":
       return SUTRO_BATHS.deckY - RIG_STAND_Y + 0.3;
     case "sunbathe":
@@ -168,7 +180,13 @@ function surfaceForPose(pose: BatherPose): number {
     case "wade":
       return SUTRO_BATHS.waterY - 0.48; // feet below the surface on a shallow ledge
     case "wadeChat":
-      return SUTRO_BATHS.waterY - 1.37; // standing on the basin step, water at mid-chest
+      // Water at mid-chest, which is what this line has always claimed and has
+      // never done. These rigs are almost exactly 2 m tall (measured: hot-2's
+      // bounds run 3.809..5.804), so sinking them 1.37 m left 69% of the body
+      // under a surface that hides everything below it — on a close lens the
+      // pair read as two heads sitting on trays. 1.05 leaves a little under half
+      // the body proud, which is chest-deep.
+      return SUTRO_BATHS.waterY - 1.05;
     case "sitChair":
     case "sitBench":
       // Seated bathers normally take their height from a parlour seat; this is

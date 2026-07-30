@@ -35,7 +35,7 @@ export class LagoonSkiff {
   constructor() {
     this.group.name = "palace-reverie-skiff";
     const wood = new THREE.MeshStandardNodeMaterial({
-      color: new THREE.Color(0x4a3424).convertSRGBToLinear(),
+      color: new THREE.Color(0x4a3424),
       roughness: 0.9,
       metalness: 0
     });
@@ -51,8 +51,8 @@ export class LagoonSkiff {
     mast.position.set(0.3, 1.0, 0);
 
     this.#lampMat = new THREE.MeshStandardNodeMaterial({
-      color: new THREE.Color(0xffe2b0).convertSRGBToLinear(),
-      emissive: new THREE.Color(0xffb060).convertSRGBToLinear(),
+      color: new THREE.Color(0xffe2b0),
+      emissive: new THREE.Color(0xffb060),
       emissiveIntensity: 0.8 * LIGHT_SCALE,
       roughness: 0.4,
       metalness: 0
@@ -87,7 +87,7 @@ export class LagoonSkiff {
     skiffLightAnchor.name = "palace-reverie-skiff-fill";
 
     this.#wakeMat = new THREE.MeshBasicNodeMaterial({
-      color: new THREE.Color(0xffc878).convertSRGBToLinear(),
+      color: new THREE.Color(0xffc878),
       transparent: true,
       opacity: 0.22,
       depthWrite: false,
@@ -99,7 +99,7 @@ export class LagoonSkiff {
     this.#wake.position.y = -0.02;
 
     this.#trailMat = new THREE.MeshBasicNodeMaterial({
-      color: new THREE.Color(0x9ec8ff).convertSRGBToLinear(),
+      color: new THREE.Color(0x9ec8ff),
       transparent: true,
       opacity: 0.12,
       depthWrite: false,
