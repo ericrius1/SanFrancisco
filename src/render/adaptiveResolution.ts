@@ -9,7 +9,7 @@
 //   L0  scale 1.0   (default)
 //   L1  scale 0.9
 //   L2  scale 0.8
-//   L3  scale 0.8   + hero-shadow half-rate + tighter contact-shadow scale + FFT economy
+//   L3  scale 0.8   + hero-shadow half-rate + tighter contact-shadow scale + FFT economy + foliage 0.85
 //   L4  scale 0.7   + foliage scatter 0.7
 //
 // Behavior contract:
@@ -62,7 +62,7 @@ export interface GovernorEffects {
   heroShadowHalfRate: boolean; // true at level >= 3
   contactShadowScale: number; // 0.5 normally, 0.35 at level >= 3
   fftEconomy: boolean; // true at level >= 3
-  foliageScale: number; // 1.0 normally, 0.7 at level 4
+  foliageScale: number; // 1.0 normally, 0.85 at level >= 3, 0.7 at level 4
 }
 
 type GovernorListener = (effects: GovernorEffects) => void;
@@ -80,6 +80,10 @@ export type AdaptiveResolution = {
   onGovernorChange(cb: GovernorListener): () => void;
 };
 
+function foliageScaleFor(level: number): number {
+  return level >= 4 ? 0.7 : level >= 3 ? 0.85 : 1;
+}
+
 function computeEffects(level: number): GovernorEffects {
   return Object.freeze({
     level,
@@ -87,7 +91,9 @@ function computeEffects(level: number): GovernorEffects {
     heroShadowHalfRate: level >= 3,
     contactShadowScale: level >= 3 ? 0.35 : 0.5,
     fftEconomy: level >= 3,
-    foliageScale: level >= 4 ? 0.7 : 1
+    // Mild foliage trim arrives at L3 (before the floor) so a fragment-bound
+    // meadow on a laptop starts shedding blades as soon as the frame is hot.
+    foliageScale: foliageScaleFor(level)
   });
 }
 
@@ -164,15 +170,17 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
       // keep the governed value in force without waiting out the cooldown.
       apply();
       if (emaMs > hotMs && level < LEVEL_MAX) {
-        // Entering L4 re-scatters foliage; require the longer sustained window.
-        const hold = level + 1 === LEVEL_MAX ? LEVEL4_HOLD_MS : DOWN_COOLDOWN_MS;
+        // Foliage re-scatter has real cost — require the longer sustained window
+        // whenever the next step changes foliageScale (L2↔L3 and L3↔L4).
+        const hold =
+          foliageScaleFor(level + 1) !== foliageScaleFor(level) ? LEVEL4_HOLD_MS : DOWN_COOLDOWN_MS;
         if (now - lastChange >= hold) {
           setLevel(level + 1, now);
           tracer.count("govDown");
         }
       } else if (emaMs < coolMs && level > 0) {
-        // Leaving L4 re-scatters foliage; require the longer sustained window.
-        const hold = level === LEVEL_MAX ? LEVEL4_HOLD_MS : UP_COOLDOWN_MS;
+        const hold =
+          foliageScaleFor(level - 1) !== foliageScaleFor(level) ? LEVEL4_HOLD_MS : UP_COOLDOWN_MS;
         if (now - lastChange >= hold) {
           setLevel(level - 1, now);
           // Directional counters: the probe has to be able to assert the
