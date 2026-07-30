@@ -141,11 +141,17 @@ const FILMS: readonly Film[] = [
       // descending so the rainbow rises through the frame as the set arrives.
       eye.y = base + mix(6.8, 4.6, push);
       target.copy(anchor).addScaledVector(along, mix(2, 6, push));
-      // Between the smear and the sail, riding a growing fraction of the
-      // kite's LIVE altitude — the first look framed only the prism's rays
-      // pouring in from above; the hero itself has to be in the picture,
-      // and a fixed aim height can't hold a kite that swings ±10 m.
-      target.y = base + mix(5.5, 8, push) + (live.kite.y - base) * mix(0.16, 0.34, push);
+      // Between the smear and the sail, riding a fraction of the kite's LIVE
+      // altitude — the first look framed only the prism's rays pouring in
+      // from above; the hero itself has to be in the picture. The fraction
+      // rises to hold the sail through the middle of the film, then falls
+      // away in the last third so the frame RE-GROUNDS for the climax set —
+      // a full 0.34 at u=1 aimed the finale at empty sky and missed the
+      // whole beach going off.
+      const sailBias = smoothstep(Math.min(1, u / 0.5));
+      const reground = smoothstep(Math.max(0, (u - 0.58) / 0.42));
+      const altFrac = 0.16 + 0.16 * sailBias - 0.2 * reground;
+      target.y = base + mix(5.5, 7.5, push) + (live.kite.y - base) * altFrac;
       return mix(40, 48, push);
     },
     focus: (_sample, live, out) => {
@@ -188,13 +194,14 @@ const FILMS: readonly Film[] = [
       const base = live.settleEye(eye);
       eye.y = base + 1.7;
       // Aim at the sand the light lies on — just inland of the runner, where
-      // the beam lands. The first cut tracked sixty metres and kept aiming
-      // ahead, so the back half of the film walked clean past the rainbow;
-      // the track is now thirty-eight metres and the aim CLOSES back onto
-      // the smear, with a whisper of the kite's altitude folded in late so
-      // the sail's tail dips into the top of frame over the light it makes.
-      target.copy(anchor).addScaledVector(live.sun, -4).addScaledVector(along, mix(3, -2, track));
-      target.y = base + mix(2.4, 3.0, track) + (live.kite.y - base) * mix(0.02, 0.09, track);
+      // the beam lands. This film is the LIGHT's film: even a whisper of
+      // kite-altitude in the aim tipped the finale into empty sky (measured
+      // twice), so the aim stays low and deep on the smear the whole way —
+      // the prism's rays entering the top of frame are the sail's presence.
+      // The track is thirty-eight metres and the aim closes back onto the
+      // smear rather than leading ahead of the walk.
+      target.copy(anchor).addScaledVector(live.sun, -8).addScaledVector(along, mix(3, -2, track));
+      target.y = base + mix(2.2, 2.6, track);
       return 30;
     },
     focus: ({ u }, live, out) => {
@@ -285,8 +292,11 @@ const FILMS: readonly Film[] = [
       const base = live.settleEye(eye);
       eye.y = base + 2.8;
       target.copy(live.flock).addScaledVector(along, mix(-4, 3, drift));
-      target.y = base + mix(11.6, 12.2, drift) + (live.flock.y - base) * 0.14;
-      return mix(66, 72, drift);
+      // Lower than dusk-04's aim: that film was about the band of sky, this
+      // one wants the stacked breakers in the same plane as the kites, so
+      // the waterline holds the lower third instead of the bottom edge.
+      target.y = base + mix(9.0, 9.6, drift) + (live.flock.y - base) * 0.1;
+      return mix(60, 68, drift);
     }
   },
   {
@@ -322,9 +332,11 @@ const FILMS: readonly Film[] = [
       const ax = away.x * cos - away.z * sin;
       const az = away.x * sin + away.z * cos;
       away.set(ax, 0, az).normalize();
-      // Centered between the flock mean and the prism, biased to the prism:
-      // the arc keeps the hero nearest the lens the whole way round.
-      const center = new THREE.Vector3().copy(live.flock).lerp(live.kite, 0.55);
+      // Centered between the flock mean and the prism, biased hard to the
+      // prism: the arc keeps the hero nearest the lens the whole way round
+      // (0.55 left it cut off at the frame edge; the court reads as context
+      // either way).
+      const center = new THREE.Vector3().copy(live.flock).lerp(live.kite, 0.75);
       eye.copy(center).addScaledVector(away, mix(50, 43, arc));
       const base = live.settleEye(eye);
       eye.y = base + 1.6;
