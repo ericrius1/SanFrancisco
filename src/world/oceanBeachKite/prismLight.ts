@@ -14,7 +14,7 @@ import {
 } from "three/tsl";
 import { SUN_STATE } from "../sky";
 import { goldenHourAmount } from "./sunsetAir";
-import { spectrumColor } from "./spectrum";
+import { spectrumColor } from "../spectrumRamp";
 import { PRISM_GLINT } from "../prismGlint";
 
 // TSL node generics fight composition; `any` is the idiom here (see facade.ts).

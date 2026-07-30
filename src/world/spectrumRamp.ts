@@ -4,11 +4,20 @@ import { color, mix as mixRaw, saturate, smoothstep as smoothstepRaw } from "thr
 /**
  * One ramp, two evaluators.
  *
- * The prism kite puts the same spectrum in three places — across the cloth, out
- * along the dispersed fan, and lying on the sand under it — and they have to be
- * the same spectrum or the effect stops reading as one piece of light. The sail
- * evaluates it per pixel in TSL; the fan and the sand bake it into vertex
- * colours on the CPU. So the stops live here and neither side owns them.
+ * The prism kite puts the same spectrum in four places — across the cloth, out
+ * along the dispersed fan, lying on the sand under it, and reflected in the sea
+ * (waterShadingTSL's prism lobe) — and they have to be the same spectrum or the
+ * effect stops reading as one piece of light. The sail and the sea evaluate it
+ * per pixel in TSL; the fan and the sand bake it into vertex colours on the
+ * CPU. So the stops live here and no consumer owns them.
+ *
+ * WHY THIS FILE IS NOT IN `oceanBeachKite/`, where the rest of the prism lives:
+ * the water's shader graph is built at BOOT, so importing the ramp from the
+ * kite directory made the boot bundle reach into a lazily-loaded feature — and
+ * `tools/ocean-beach-kite-probe.mjs`'s `boot-no-kite-runtime-request` check
+ * failed on exactly that, which is the massive-app loading policy doing its
+ * job. A shared primitive that boot-time code needs has to sit outside the
+ * feature that happens to have introduced it.
  *
  * The band is deliberately NOT a hue sweep. A linear trip round HSV spends a
  * third of itself in cyans nobody associates with a prism and comes back to red

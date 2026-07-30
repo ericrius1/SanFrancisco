@@ -17,7 +17,7 @@ import {
   uv
 } from "three/tsl";
 import { bumpNormal } from "../tslUtil";
-import { spectrum } from "./spectrum";
+import { spectrum } from "../spectrumRamp";
 import type { KiteDesign, KitePalette } from "./kiteDesigns";
 
 export { KITE_DESIGNS, KITE_DESIGN_ORDER } from "./kiteDesigns";

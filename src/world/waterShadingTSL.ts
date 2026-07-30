@@ -23,7 +23,7 @@ import {
   vec3,
   viewportDepthTexture
 } from "three/tsl";
-import { spectrum } from "./oceanBeachKite/spectrum";
+import { spectrum } from "./spectrumRamp";
 
 /**
  * Shared stylized-water shading helpers for the clear "sunlit turquoise" look:
