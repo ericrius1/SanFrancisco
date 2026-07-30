@@ -822,7 +822,16 @@ function buildRigMerged(avatar: AvatarTraits): Rig {
 }
 
 /** DEV-only tripwire: keeps the (no-op) assignment behaviour, but reports the
- *  first per-part write to a merged rig's base block and names the way out. */
+ *  first per-part write to a merged rig's base block and names the way out.
+ *
+ *  Only a write that would CHANGE the flag counts. Scene-wide helpers force
+ *  `visible = true` on every object in a subtree and then restore it
+ *  (`prepareOptionalRoot` in app/compose/optionalSites.ts, `warmHiddenRoot`),
+ *  so any merged rig inside a warmed site root — the Lands End keeper, say —
+ *  re-asserts `true` on all eleven of its base blocks. That expresses no intent
+ *  and hides nothing, but it used to emit eleven console errors per warm, which
+ *  is enough to fail a probe's no-console-errors gate for reasons unrelated to
+ *  the site under test. A write that flips the value is still a real mistake. */
 function warnOnMergedBlockSurgery(blocks: THREE.Mesh[]): void {
   if (!import.meta.env.DEV) return;
   for (const block of blocks) {
@@ -834,8 +843,9 @@ function warnOnMergedBlockSurgery(blocks: THREE.Mesh[]): void {
         enumerable: true,
         get: () => value,
         set: (next: unknown) => {
+          const changed = next !== value;
           value = next;
-          if (warned) return;
+          if (warned || !changed) return;
           warned = true;
           console.error(
             `[rig] .${key} on a merged rig's base block does nothing — the block is a Bone of one SkinnedMesh. ` +
