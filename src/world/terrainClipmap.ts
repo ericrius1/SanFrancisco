@@ -717,6 +717,31 @@ export class TerrainClipmap {
       .add(grass.mul(surface.g))
       .add(sand.mul(surface.b))
       .add(bayFloor.mul(surface.a));
+
+    // Marin Headlands biome. The DEM already carries the real rounded
+    // shoulders and gullies, but much of the federal land arrives from OSM as
+    // generic developed ground, which painted the whole bridge backdrop the
+    // same flat beige as an urban parcel. A soft geographic gate restores the
+    // dry coastal-grass / sage mosaic visible around the north anchorage. Road
+    // ribbons remain separate meshes and therefore retain asphalt above it.
+    const marinMask = smoothstep(-6500, -6100, worldXZ.x)
+      .mul(smoothstep(-2600, -3000, worldXZ.x))
+      .mul(smoothstep(-8200, -7800, worldXZ.y))
+      .mul(smoothstep(-4550, -5000, worldXZ.y))
+      .mul(surface.a.oneMinus());
+    const marinGold = color(0x9c8d56);
+    const marinStraw = color(0xb1a16b);
+    const marinSage = color(0x71825a);
+    const marinMeadow = mix(
+      mix(marinGold, marinStraw, smoothstep(40, 210, (positionWorld as N).y)),
+      marinSage,
+      surface.g.mul(0.58)
+    );
+    const marinBlend = (marinMask as N).mul(0.94);
+    terrainColor = (terrainColor as N)
+      .mul(marinBlend.oneMinus())
+      .add((marinMeadow as N).mul(marinBlend));
+
     const slopeRock = smoothstep(0.42, 0.82, worldNormal.y).oneMinus()
       .mul(surface.a.oneMinus())
       .mul(surface.b.oneMinus());

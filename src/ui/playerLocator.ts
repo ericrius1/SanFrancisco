@@ -37,6 +37,7 @@ const MARKER_Y: Record<PlayerMode, number> = {
   speedboat: 2.6,
   drone: 2.2,
   board: 2.9,
+  skate: 2.6,
   surf: 2.8,
   bird: 2.8
 };

@@ -76,7 +76,7 @@ export class MemoryLamps {
     this.group.name = "palace-reverie-lamps";
     this.#glowTex = makeGlowTexture();
     this.#stoneMat = new THREE.MeshStandardNodeMaterial({
-      color: new THREE.Color(0xb8a88e).convertSRGBToLinear(),
+      color: new THREE.Color(0xb8a88e),
       roughness: 0.88,
       metalness: 0.02
     });
@@ -113,8 +113,8 @@ export class MemoryLamps {
       const surfacePlane = terrainSurfacePlane(map, spec.x, spec.z);
       const hue = new THREE.Color(spec.hue);
       const flameMat = new THREE.MeshStandardNodeMaterial({
-        color: hue.clone().convertSRGBToLinear(),
-        emissive: hue.clone().convertSRGBToLinear(),
+        color: hue.clone(),
+        emissive: hue.clone(),
         emissiveIntensity: 0.08 * LIGHT_SCALE,
         roughness: 0.35,
         metalness: 0
@@ -144,7 +144,7 @@ export class MemoryLamps {
       const wash = new THREE.Mesh(
         new THREE.PlaneGeometry(1.9, 6.2),
         new THREE.MeshBasicNodeMaterial({
-          color: hue.clone().convertSRGBToLinear(),
+          color: hue.clone(),
           transparent: true,
           opacity: 0,
           depthWrite: false,
@@ -159,7 +159,7 @@ export class MemoryLamps {
       const puddle = new THREE.Mesh(
         new THREE.CircleGeometry(1.1, 20),
         new THREE.MeshBasicNodeMaterial({
-          color: hue.clone().convertSRGBToLinear(),
+          color: hue.clone(),
           transparent: true,
           opacity: 0,
           depthWrite: false,

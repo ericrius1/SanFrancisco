@@ -16,7 +16,8 @@
   const hud = document.getElementById("hud")
   const newTutorial = (ctx) => { hud.innerHTML = ""; return new Tutorial(ctx) }
   const objective = () => hud.querySelector(".tut-text")?.textContent ?? "(none)"
-  const fill = () => parseFloat(hud.querySelector(".tut-fill")?.style.width ?? "0")
+  // Progress now lives in the current step's cell of the segmented bar.
+  const fill = () => parseFloat(hud.querySelector(".tut-seg.now i")?.style.width ?? "0")
 
   function makeState(zone) {
     return { mode: "walk", pos: { x: -1560, y: 3, z: -1560 }, mouseDelta: 0, down: {}, pressed: {}, mapOpen: false, zone }
@@ -308,6 +309,28 @@
     check("the next instruction exists once the map is open",
       objective().includes("teleport"),
       `reads "${objective()}"`)
+    check("the map card explains pan, zoom and picking in the same beat",
+      ["pan", "zoom", "pick"].every((w) => objective().toLowerCase().includes(w)),
+      `reads "${objective()}"`)
+  }
+
+  // ── P: opening the map must ADVANCE the step, with no skip involved ──────
+  // The live bug: the game loop returns early while the map is open, so
+  // tutorial.update() stopped being called — the step asking you to open the
+  // map was checked by code that stops running the moment you open it. The
+  // checklist sat on "press M" forever with the map in front of it.
+  {
+    const s = makeState(ZONE())
+    const t = newTutorial(makeCtx(s))
+    t.start()
+    const skip = hud.querySelector(".tut-skip")
+    for (let i = 0; i < 40 && !objective().includes("open the city map"); i++) { skip.click(); run(t, s, 1 / 60) }
+    const before = objective()
+    s.mapOpen = true
+    run(t, s, 2) // ticking only — nothing clicked
+    check("opening the map advances the checklist on its own",
+      objective() !== before && objective().includes("teleport"),
+      `"${before}" → "${objective()}"`)
   }
 
   // ── M: skipping right through must never show the same card twice ────────
@@ -363,7 +386,14 @@
     for (let i = 0; i < 60; i++) {
       const ch = hud.querySelector(".tut-ch").textContent
       if (ch.includes("Congratulations")) break
-      cards.push({ ch, action: hud.querySelector(".tut-action").textContent, text: objective(), prog: hud.querySelector(".tut-prog").textContent })
+      const segs = [...hud.querySelectorAll(".tut-seg")]
+      const m = /step (\d+) of (\d+)/.exec(hud.querySelector(".tut-prog").textContent ?? "")
+      cards.push({
+        ch, action: hud.querySelector(".tut-action").textContent, text: objective(),
+        prog: hud.querySelector(".tut-prog").textContent,
+        stepIndex: m ? +m[1] - 1 : -1, totalSteps: m ? +m[2] : -1,
+        segs: { total: segs.length, now: segs.findIndex((s) => s.classList.contains("now")), done: segs.filter((s) => s.classList.contains("done")).length }
+      })
       skip.click()
       run(t, s, 0.45)
     }
@@ -375,6 +405,12 @@
     check("no card repeats the one before it",
       same.length === 0,
       same.length ? `repeat at "${same[0].text}"` : `${cards.length} consecutive cards all differ`)
+    // Structural only — this page loads no stylesheet, so anything about where
+    // the counter SITS is asserted in tools/tutorial-panel-look.html instead.
+    const cells = cards.map((c) => c.segs)
+    check("each card shows one bar cell per step of its chapter",
+      cells.every((s, i) => s.total === cards[i].totalSteps && s.now === cards[i].stepIndex),
+      `e.g. ${JSON.stringify(cells[0])}`)
   }
 
   window.__RESULT = { pass: results.every((r) => r.pass), results }

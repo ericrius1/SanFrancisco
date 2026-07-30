@@ -28,7 +28,7 @@ export class CompletionBloom {
     const hues = [0x9ef0ff, 0xffd6a0, 0xf4b4ff, 0xa8ffd2, 0xffc4d8];
     for (let i = 0; i < 5; i++) {
       const mat = new THREE.MeshBasicNodeMaterial({
-        color: new THREE.Color(hues[i]).convertSRGBToLinear(),
+        color: new THREE.Color(hues[i]),
         transparent: true,
         opacity: 0,
         side: THREE.DoubleSide,
@@ -53,7 +53,7 @@ export class CompletionBloom {
 
     for (let i = 0; i < 4; i++) {
       const mat = new THREE.MeshBasicNodeMaterial({
-        color: new THREE.Color(hues[i]).convertSRGBToLinear(),
+        color: new THREE.Color(hues[i]),
         transparent: true,
         opacity: 0,
         side: THREE.DoubleSide,
@@ -70,7 +70,7 @@ export class CompletionBloom {
 
     // Soft vertical light shaft above the rotunda
     const shaftMat = new THREE.MeshBasicNodeMaterial({
-      color: new THREE.Color(0xc8e8ff).convertSRGBToLinear(),
+      color: new THREE.Color(0xc8e8ff),
       transparent: true,
       opacity: 0,
       depthWrite: false,

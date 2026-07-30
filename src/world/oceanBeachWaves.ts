@@ -8,6 +8,18 @@
 
 export const OCEAN_BEACH_SURF = {
   minX: -6325,
+  /**
+   * Minimum WIDTH of the surf strip, measured from the live waterline rather
+   * than from `minX`. The beach curves 460 m across its length, so one
+   * straight offshore line gives the south end 600 m of authored ocean and the
+   * north end 163 m — of which the mask's two 70 m feathers eat all but about
+   * twenty. That is why the sea in front of the kite festival (z≈1650) read as
+   * a flat sheet: there was barely room for one crest to exist, let alone
+   * stand up and break. The bound is min(minX, shore − stripWidth), so this
+   * only ever OPENS the narrow north end; every stretch that was already wider
+   * than this keeps the exact offshore line it had.
+   */
+  stripWidth: 340,
   // Shoreward bound of the activity strip (sand side). The live waterline is
   // further west — see oceanBeachApproxShoreX / oceanBeachShoreline.
   maxX: -5720,
@@ -43,7 +55,31 @@ export const OCEAN_BEACH_SURF = {
   // Long, slowly peeling barrel sections. Entry Z begins inside a clean window;
   // riding down-line eventually reaches its shoulder and exit aperture.
   barrelPeriod: 820,
-  barrelDrift: 0.024
+  barrelDrift: 0.024,
+
+  // --- where a wave stops being a wall and starts being a crash -----------
+  // A swell breaks when it runs out of water under it. There is no analytic
+  // bathymetry here, so the break is authored as a LINE offshore of the
+  // waterline — and, crucially, a line that WANDERS along the beach the way a
+  // sandbar field does: shallow over the bars, where a crest stands up and
+  // throws early, deep over the rip channels, where the same crest carries a
+  // long way further in before it goes. That wander is the whole point. A
+  // constant offset breaks the entire three-kilometre beach on the same
+  // frame — one straight wall of foam switching on and off every sixteen
+  // seconds — where the real thing peels in patches, and the ear hears those
+  // patches as a continuous irregular surf instead of a metronome.
+  /** Mean metres offshore of the waterline where crests begin to throw. */
+  breakOffset: 118,
+  /** Metres the bar/channel field moves that line either way. */
+  breakBarAmp: 52,
+  /**
+   * Metres of crest travel from "standing up" to "fully thrown" — at 9.2 m/s,
+   * about two seconds. Deliberately SHORT relative to the bar wander above:
+   * a long ramp turns the whole visible crest into one uniform gradient, and
+   * it is the ratio of these two numbers that decides whether neighbouring
+   * stretches of the same wave can be in visibly different states.
+   */
+  breakThrow: 18
 } as const;
 
 const TAU = Math.PI * 2;
@@ -91,11 +127,17 @@ export function oceanBeachShoreline(
   return { x: oceanBeachApproxShoreX(zz) + pad, z: zz, waterX };
 }
 
+/** Offshore bound of the authored strip at this Z — see `stripWidth`. */
+export function oceanBeachOffshoreX(z: number): number {
+  const b = OCEAN_BEACH_SURF;
+  return Math.min(b.minX, oceanBeachApproxShoreX(z) - b.stripWidth);
+}
+
 /** 0 outside Ocean Beach, feathered across the authored surf strip. */
 export function oceanBeachMask(x: number, z: number): number {
   const b = OCEAN_BEACH_SURF;
   const shore = Math.min(b.maxX, oceanBeachApproxShoreX(z));
-  const xIn = smooth01((x - b.minX) / 70) * smooth01((shore - x) / 70);
+  const xIn = smooth01((x - oceanBeachOffshoreX(z)) / 70) * smooth01((shore - x) / 70);
   const zIn = smooth01((z - b.minZ) / 180) * smooth01((b.maxZ - z) / 180);
   return xIn * zIn;
 }
@@ -134,6 +176,46 @@ export function nearestOceanBeachCrest(x: number, z: number, time: number) {
     }
   }
   return { slot, crestX, distance };
+}
+
+/**
+ * Along-beach bar/channel field, −1 (deep channel) … +1 (shallow bar). Shared
+ * by the CPU break line and its GPU twin (tslUtil.oceanBeachBreakXNode) — two
+ * incommensurate wavelengths, ~1.8 km and ~640 m, over a 3.6 km beach, so the
+ * pattern never repeats inside one view. The slow time term is bar migration:
+ * a few metres a minute, invisible in a clip, but it stops the same stretch of
+ * sand from being the one that always closes out.
+ */
+function breakBarField(z: number, time: number): number {
+  return (
+    Math.sin(z * 0.0034 - time * 0.006) * 0.46 +
+    Math.sin(z * 0.0098 + 1.7) * 0.28 +
+    // A third, much shorter rhythm — ~240 m, so most of one cycle fits inside a
+    // single shot. This is what breaks a crest in SECTIONS: nine metres of
+    // break-line wander against a thirty-metre throw means one stretch of the
+    // same wave is already whitewater while the stretch beside it is still a
+    // green wall. Without it the crest goes off along its whole visible length
+    // at once, which no beach has ever done.
+    Math.sin(z * 0.026 + 0.9) * 0.26
+  );
+}
+
+/** World X where crests at this point on the beach start to throw. */
+export function oceanBeachBreakX(z: number, time: number): number {
+  const b = OCEAN_BEACH_SURF;
+  return (
+    oceanBeachApproxShoreX(z) - b.breakOffset - breakBarField(z, time) * b.breakBarAmp
+  );
+}
+
+/**
+ * 0 while a crest is still a smooth green wall, 1 once it has thrown and is
+ * whitewater. Takes the CREST's position, not the sample point's: a wave
+ * breaks as a whole, so every pixel on one crest has to agree about whether it
+ * has gone yet — which is also what lets the audio ask the same question.
+ */
+export function oceanBeachBreakPhase(crestX: number, z: number, time: number): number {
+  return smooth01((crestX - oceanBeachBreakX(z, time)) / OCEAN_BEACH_SURF.breakThrow);
 }
 
 function waveAmplitude(z: number, time: number, slot: number) {
@@ -204,6 +286,8 @@ export type OceanBeachWaveSample = {
   tubeDepth: number;
   /** Absolute analytic roof height (sea-level frame; base chop is sub-metre). */
   tubeRoofY: number;
+  /** 0 green wall … 1 thrown whitewater, for THIS sample's own crest. */
+  breaking: number;
 };
 
 /**
@@ -252,7 +336,8 @@ export function sampleOceanBeachWave(
     amplitude,
     barrel,
     tubeDepth,
-    tubeRoofY
+    tubeRoofY,
+    breaking: oceanBeachBreakPhase(crestX, z, time)
   };
 }
 

@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { SHADOW_LAYERS } from "../../world/shadows/shadowLayers";
 import { LIGHT_SCALE } from "../../config";
 import { registerAmbientLightAnchor, type LightAnchorSpec } from "../../player/lightPool";
 import { BUSKER_FIREFLY_TUNING } from "./tuning";
@@ -104,7 +105,7 @@ export class BuskerFireflies {
       sprite.name = `busker-firefly-${i + 1}`;
       sprite.frustumCulled = false;
       sprite.renderOrder = 91;
-      sprite.layers.set(31); // beauty-only: keep glow quads out of the ink prepass
+      sprite.layers.set(SHADOW_LAYERS.BEAUTY_ONLY); // beauty-only: keep glow quads out of the ink prepass
       this.group.add(sprite);
       this.#sprites.push(sprite);
       this.#materials.push(material);

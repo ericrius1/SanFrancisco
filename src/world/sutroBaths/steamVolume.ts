@@ -13,6 +13,7 @@
 // render/contactShadows.ts.
 
 import * as THREE from "three/webgpu";
+import { SHADOW_LAYERS } from "../shadows/shadowLayers";
 import {
   Break,
   Fn,
@@ -309,7 +310,7 @@ export function createSteamShell(
   // Reversed-depth transparent ordering: this must stay BELOW the pool sheet's
   // order so the steam is composited on top of it. See layout.ts.
   mesh.renderOrder = SUTRO_STEAM_RENDER_ORDER;
-  mesh.layers.set(31);
+  mesh.layers.set(SHADOW_LAYERS.BEAUTY_ONLY);
   mesh.frustumCulled = true;
   mesh.matrixAutoUpdate = false;
   mesh.updateMatrix();

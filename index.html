@@ -1503,10 +1503,15 @@
         top: auto;
         bottom: 20px;
       }
+      /* Chapter and step sit together on the left. Parked at opposite ends of
+         the panel, the step counter was the only thing that changed between
+         two steps of one chapter, far from the title the eye was resting on —
+         so moving between them read as nothing happening. */
       #hud .tutorial-panel .tut-top {
         display: flex;
-        justify-content: space-between;
+        justify-content: flex-start;
         align-items: baseline;
+        gap: 8px;
         margin-bottom: 7px;
         font:
           700 10px var(--font);
@@ -1516,10 +1521,16 @@
         opacity: 0.85;
       }
       #hud .tutorial-panel .tut-prog {
+        flex: 0 0 auto;
+        padding: 1px 7px 2px;
+        border-radius: 999px;
+        background: rgba(190, 225, 240, 0.1);
+        border: 1px solid rgba(190, 225, 240, 0.2);
         color: var(--text-dim);
-        opacity: 0.8;
-        text-transform: none;
-        letter-spacing: 0.02em;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        opacity: 0.95;
       }
       #hud .tutorial-panel .tut-obj {
         display: flex;
@@ -1578,18 +1589,36 @@
       #hud .tutorial-panel .tut-obj.done .tut-text {
         color: var(--accent-strong);
       }
+      /* One cell per step in this chapter: cleared cells stay full, the cell
+         you are on is brighter and fills as you work, the rest are empty. The
+         chapter's shape is then visible at a glance and every step advance
+         moves something directly under the objective you just read. */
       #hud .tutorial-panel .tut-bar {
-        height: 3px;
+        display: flex;
+        gap: 3px;
+        height: 4px;
         margin-top: 8px;
+      }
+      #hud .tutorial-panel .tut-seg {
+        flex: 1 1 0;
+        height: 100%;
         border-radius: 2px;
         overflow: hidden;
         background: rgba(190, 225, 240, 0.16);
       }
-      #hud .tutorial-panel .tut-fill {
+      #hud .tutorial-panel .tut-seg.now {
+        background: rgba(190, 225, 240, 0.3);
+        box-shadow: 0 0 0 1px rgba(111, 215, 196, 0.35);
+      }
+      #hud .tutorial-panel .tut-seg i {
+        display: block;
         height: 100%;
         width: 0%;
         background: var(--accent);
         transition: width 0.2s ease;
+      }
+      #hud .tutorial-panel .tut-seg.done i {
+        width: 100%;
       }
       #hud .tutorial-panel .tut-hint {
         margin-top: 7px;
@@ -1617,6 +1646,12 @@
       #hud .tutorial-panel .tut-dot.on {
         background: var(--accent);
         box-shadow: 0 0 7px rgba(111, 215, 196, 0.6);
+      }
+      /* Chapter in progress: ringed, not filled — filling it on arrival made
+         "chapter reached" and "chapter finished" look identical. */
+      #hud .tutorial-panel .tut-dot.now {
+        background: transparent;
+        box-shadow: inset 0 0 0 2px var(--accent);
       }
       #hud .tutorial-panel .tut-skip,
       #hud .tutorial-panel .tut-exit {
