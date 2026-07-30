@@ -30,7 +30,7 @@ export type FrameDriver = {
 };
 
 /** three's node frame token, reached through the renderer's private `_nodes`. */
-type NodeFrameHost = { _nodes?: { nodeFrame?: { update(): void } } };
+type NodeFrameHost = { _nodes?: { nodeFrame?: { update(): void; frameId: number } } };
 
 /**
  * Advance three's node frame token by hand.
@@ -48,7 +48,15 @@ type NodeFrameHost = { _nodes?: { nodeFrame?: { update(): void } } };
  * which also bumps the token) — which is why cheaper frames made it visible.
  */
 const advanceNodeFrame = (renderer: THREE.WebGPURenderer) => {
-  (renderer as unknown as NodeFrameHost)._nodes?.nodeFrame?.update();
+  const host = renderer as unknown as NodeFrameHost;
+  const nodeFrame = host._nodes?.nodeFrame;
+  if (!nodeFrame) return;
+  // Mirror Animation.start()'s per-frame preamble so manual ticks and the live
+  // rAF path leave identical NodeFrame / Info state for PassNode.FRAME gates
+  // and renderer.info consumers (perf probes).
+  if (renderer.info.autoReset === true) renderer.info.reset();
+  nodeFrame.update();
+  (renderer.info as { frame: number }).frame = nodeFrame.frameId;
 };
 
 /**

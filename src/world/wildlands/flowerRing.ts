@@ -79,6 +79,7 @@ import {
 } from "./flowerSpecies";
 import { optionalRenderer } from "../../app/rendererRegistry";
 import { governorEffects, onGovernorChange } from "../../render/adaptiveResolution";
+import { applyGroundcoverAtmosphere } from "../groundcover/foliageAtmosphere";
 import type { GardenTerrain } from "../garden/layout";
 import {
   EXPOSURE_REBASE,
@@ -749,6 +750,7 @@ function flowerMaterial(tier: FlowerRenderTier, placed?: FlowerPlacedSource): Fl
     mat.positionNode = scaled.add(offsetLocal);
   }
   mat.envMapIntensity = tier === "far" ? 0.25 : 0.5;
+  applyGroundcoverAtmosphere(mat);
   return { material: mat, focus };
 }
 

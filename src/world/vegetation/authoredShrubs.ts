@@ -10,6 +10,7 @@ import * as THREE from "three/webgpu";
 import { attribute, color, mix, positionLocal, vec3 } from "three/tsl";
 import { instanceAnchorWorld, worldOffsetToModelLocal } from "../groundcover/instanceDeform";
 import { groundSway, WIND_DIR } from "../groundcover/sway";
+import { applyGroundcoverAtmosphere } from "../groundcover/foliageAtmosphere";
 
 type N = any;
 
@@ -542,6 +543,7 @@ function makeShrubMaterial(): THREE.MeshStandardNodeMaterial {
     .mul(flex.x)
     .mul(data.w);
   material.positionNode = (positionLocal as N).add(worldOffsetToModelLocal(bendWorld));
+  applyGroundcoverAtmosphere(material);
   return material;
 }
 
