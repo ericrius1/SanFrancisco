@@ -135,10 +135,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     }
   };
   let paused = false;
-  // When paused, the world sim freezes but the player stays live by default
-  // (walk/drive/fly on) so you can keep roaming the frozen city. The pause
-  // toggle flips this to freeze the player too, for a still shot.
-  let freezePlayer = false;
+  // Pause freezes EVERYTHING by default — world sim and player alike. The pause
+  // toggle flips this off to let the player keep walking/driving/flying through
+  // the held-still city (the old default, now opt-in).
+  let freezePlayer = true;
   let immersive = false;
   // Z-hold time scrub + N-hold look/speed adjust — extracted per docs/MAIN_DECOMPOSITION.md.
   const timeScrubGestures = createTimeScrubAndTuningGestures({ input, sky, hud });
@@ -166,7 +166,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // it lives under #hud). Clicking it freezes/unfreezes the player.
   const pauseToggle = new PauseToggle((freeze) => {
     freezePlayer = freeze;
-    hud.message(freeze ? "Player frozen — click the toggle to move again" : "Player live while paused", 2.2);
+    hud.message(freeze ? "Everything frozen — click the toggle to move again" : "Player live while the world holds still", 2.2);
   });
   const refreshPauseToggle = () => {
     pauseToggle.setVisible(paused && !immersive);
@@ -273,10 +273,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // We keep rendering the frozen frame so the window stays live.
     if (input.pressed("KeyP")) {
       paused = !paused;
-      if (paused) freezePlayer = false; // each pause starts with the player live
+      if (paused) freezePlayer = true; // each pause starts fully frozen, player included
       refreshPauseToggle();
       hud.message(
-        paused ? "Paused — you can still move. P to resume" : "Resumed",
+        paused ? "Paused — everything is frozen. P to resume" : "Resumed",
         paused ? Infinity : 2.6
       );
     }
@@ -447,8 +447,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         : false;
     applyPickleballPlayerPose();
 
-    // Full freeze: a pause with "freeze player" armed. Everything holds — sim,
-    // player, fx, vehicles — while a clean screenshot floats on top.
+    // Full freeze: the default pause. Everything holds — sim, player, fx,
+    // vehicles — while a clean screenshot floats on top.
     dogParkAudio.setPaused(paused);
     if (paused && freezePlayer && !worldArrival.active) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
@@ -494,7 +494,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       return "handled";
     }
 
-    // World frozen, player live: the default pause. The whole city sim holds
+    // World frozen, player live: opt-in via the pause toggle. The whole city sim holds
     // (sky, water, fx never tick) but the player keeps moving — walk, drive,
     // fly — so you can keep roaming the frozen city. We run ONLY the player's own
     // step + camera + tile streaming. The player's dynamic body still steps

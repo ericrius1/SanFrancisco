@@ -1,15 +1,15 @@
 /**
  * Pause control (bottom-center): appears only while the game is paused and the
  * UI is visible (hidden in immersive mode, since it lives under #hud). Pausing
- * freezes the whole world but leaves the player live — you keep walking/driving/
- * flying so you can walk around while the world holds still. This toggle
- * flips the "also freeze the player" bit, for a dead-still screenshot.
+ * freezes everything, player included — a dead-still world for a screenshot.
+ * This toggle flips the "unfreeze the player" bit, so you can keep walking/
+ * driving/flying around while the world holds still.
  */
 export class PauseToggle {
   #root: HTMLDivElement;
   #btn: HTMLButtonElement;
   #label: HTMLSpanElement;
-  #frozen = false;
+  #frozen = true;
 
   constructor(onToggle: (freezePlayer: boolean) => void) {
     this.#root = document.createElement("div");
@@ -19,7 +19,7 @@ export class PauseToggle {
     this.#btn = document.createElement("button");
     this.#btn.className = "share-btn pause-btn";
     this.#btn.type = "button";
-    this.#btn.title = "Paused. The player stays live by default — click to freeze the player too (for a still screenshot).";
+    this.#btn.title = "Paused. Everything is frozen, player included — click to unfreeze the player and roam the still city.";
     this.#btn.innerHTML = `<span class="ic">⏸</span><span class="pause-label"></span>`;
     this.#label = this.#btn.querySelector(".pause-label")!;
     this.#btn.addEventListener("click", () => {
@@ -33,7 +33,7 @@ export class PauseToggle {
     this.#render();
   }
 
-  /** Show while paused (and not immersive); reset to "player live" each pause. */
+  /** Show while paused (and not immersive); reset to "fully frozen" each pause. */
   setVisible(visible: boolean) {
     this.#root.style.display = visible ? "" : "none";
   }
@@ -47,6 +47,6 @@ export class PauseToggle {
 
   #render() {
     this.#btn.classList.toggle("armed", this.#frozen);
-    this.#label.textContent = this.#frozen ? "Player frozen — click to unfreeze" : "Player live — click to freeze all";
+    this.#label.textContent = this.#frozen ? "Everything frozen — click to move" : "Player live — click to freeze all";
   }
 }
