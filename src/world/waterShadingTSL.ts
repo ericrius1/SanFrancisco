@@ -23,6 +23,7 @@ import {
   vec3,
   viewportDepthTexture
 } from "three/tsl";
+import { spectrum } from "./oceanBeachKite/spectrum";
 
 /**
  * Shared stylized-water shading helpers for the clear "sunlit turquoise" look:
@@ -310,6 +311,17 @@ export interface OceanSurfaceInputs {
   /** Radiance substituted where the reflection is blocked — the reflected
    *  landmass. */
   blockedRadiance?: N;
+  /** Prism-beam reflection (the rainbow kite's fan mirrored in the sea). The
+   *  five below must be provided together; values come from the shared
+   *  PRISM_GLINT uniforms (src/world/prismGlint.ts). Build-time gated like
+   *  every other optional lane — only the displaced near sheet pays. */
+  prismOrigin?: N;
+  prismDir?: N;
+  prismAcross?: N;
+  /** x: beam length · y: far half-width · z: strength (0 kills the term). */
+  prismParams?: N;
+  /** Fragment world position — required by the prism lobe's ray test. */
+  worldPos?: N;
 }
 
 /**
@@ -460,9 +472,57 @@ export function oceanSurfaceRadiance(o: OceanSurfaceInputs): N {
     : vec3(0);
   const foamLit = o.foamAlbedo.mul(down.mul(o.foamGain ?? 0.95)).add(foamScatter);
 
+  // The prism kite's fan, mirrored in the sea. A fragment shows the beam's
+  // reflection exactly when its reflected eye ray passes near the beam
+  // segment hanging in the air — so this is a ray/segment closest-approach
+  // test against the SAME per-pixel reflected ray the sky uses, which is what
+  // breaks the streak into ripple sparkle for free. Color comes from the
+  // across-beam offset at the closest point, sampled from the prism's own
+  // spectrum ramp so sail, fan, sand and sea read as one piece of light.
+  // ~30 ALU, near sheet only, and multiplied out entirely while the strength
+  // uniform sits at 0 (all day, everywhere but golden hour at the festival).
+  const prismLobe =
+    o.prismOrigin && o.prismDir && o.prismAcross && o.prismParams && o.worldPos
+      ? (() => {
+          const beamLen = o.prismParams.x;
+          const halfW = o.prismParams.y;
+          const strength = o.prismParams.z;
+          const w0 = o.worldPos.sub(o.prismOrigin).toVar();
+          const b = dot(skyDir, o.prismDir).toVar();
+          const dRay = dot(skyDir, w0);
+          const eBeam = dot(o.prismDir, w0);
+          const denom = max(float(1).sub(b.mul(b)), 1e-3);
+          // Closest approach between ray(P, R) and the beam's segment. The ray
+          // parameter is floored just off the surface so a fragment cannot
+          // "reflect" a beam sitting behind its own eye ray; the beam
+          // parameter is clamped to the lit span (the first metres are inside
+          // the sail's comb and never read on water).
+          const tRay = b.mul(eBeam).sub(dRay).div(denom).max(0.6);
+          const tBeam = clamp(eBeam.sub(b.mul(dRay)).div(denom), 3, beamLen);
+          const delta = w0.add(skyDir.mul(tRay)).sub(o.prismDir.mul(tBeam)).toVar();
+          const along01 = tBeam.div(beamLen).toVar();
+          // The beam widens toward its landing, like the fan it mirrors.
+          const width = mix(float(1.2), halfW, along01).toVar();
+          const dist = delta.length();
+          const envelope = exp(dist.div(width).pow(2).negate());
+          const u = clamp(dot(delta, o.prismAcross).div(width), -1, 1).mul(0.5).add(0.5);
+          const alongFade = smoothstep(0.04, 0.14, along01).mul(float(1).sub(along01.mul(0.3)));
+          // Fresnel-led like any reflection, but with a floor: ripple facets
+          // catch grazing micro-angles a per-pixel Schlick undersells, and a
+          // rainbow on the water that only exists at the horizon is not worth
+          // its ALU.
+          return spectrum(u)
+            .mul(envelope)
+            .mul(alongFade)
+            .mul(strength)
+            .mul(fresnel.mul(2.4).add(0.16))
+            .mul(2.0);
+        })()
+      : vec3(0);
+
   // Fresnel mixes the two TRANSPORT lanes; the sun lobe is a specular addition
   // on top (it already carries its own F), and foam covers whatever it covers.
-  return mix(mix(inScatter, reflected, fresnel).add(sunLobe), foamLit, o.foam);
+  return mix(mix(inScatter, reflected, fresnel).add(sunLobe).add(prismLobe), foamLit, o.foam);
 }
 
 /**

@@ -79,6 +79,9 @@ type Film = {
   mist: number;
   shafts: number;
   subject: number;
+  /** Shot length; defaults to SUNSET_FILM_SECONDS. Keep in step with the
+   * production's duration and the audio tables. */
+  seconds?: number;
   /**
    * Sea-clock pin. Shot time S renders the analytic wave train at t0 + S,
    * every run, exactly. Chosen by tools/cinematic/surfSchedule.mjs against
@@ -105,21 +108,25 @@ const FILMS: readonly Film[] = [
   {
     id: "01",
     title: "Ocean Beach Sunset · The Court",
-    // 20.18: nine minutes before sunset, golden air at full strength — the
-    // prism needs a disc worth dispersing, and the gathered flock needs its
-    // warm shafts to read as a court rather than a row of silhouettes.
-    hour: 20.18,
-    exposure: 0.93,
-    // Enough marine layer for the shafts and the fan to hang in, not enough
-    // to grey out the set that closes the film.
-    mist: 0.68,
+    // 20.02: the disc a few degrees over the water, blue still overhead. The
+    // first cut sat at 20.18 in heavy marine layer and the whole frame read
+    // as one pink veil; the reference frame this film is graded against is
+    // CLEAR — emerald sea, amber horizon band, near-black silhouettes — and
+    // that clarity is an air decision before it is a grade decision.
+    hour: 20.02,
+    exposure: 0.98,
+    // Just enough marine layer to carry the shafts and the fan; the veil at
+    // 0.68 was most of the "faded" complaint.
+    mist: 0.34,
     shafts: 1.7,
     subject: 7,
-    // Schedule at t0=620.3: one straggler mid-throw as the fade completes
-    // (1.5 s, z1800), a long lull that belongs to the rainbow, then the whole
-    // framed beach goes off at 17.0–19.4 s (6.7–6.8 m at z1680–1800) as the
-    // climax. Swash from the straggler crosses the sand at ~14 s.
-    t0: 620.3,
+    // Thirty seconds, schedule at t0=858.15: a gentle set sweeps the framed
+    // beach at 5.8–7.2 s (texture, not climax), its swash sheet wets the
+    // sand through the rainbow lull at 18.6–20 s — the smear glows brighter
+    // on wet sand — and the whole beach goes off at 26.0–27.2 s (6.7–6.8 m
+    // at z1680–1800) with three seconds to breathe before the fade.
+    t0: 858.15,
+    seconds: 30,
     gather: 1,
     /**
      * The hero shot. A low crane behind the court's open side, pushing in and
@@ -428,9 +435,10 @@ function buildFilm(film: Film): Demo {
         return true;
       };
 
+      const seconds = film.seconds ?? SUNSET_FILM_SECONDS;
       const arm = () => armCinematic(ctx, {
         name,
-        duration: SUNSET_FILM_SECONDS,
+        duration: seconds,
         // 1.7 s fade covers the zero-dt settle (ocean cascades resolve by
         // ~2 s); see the surf films for the measurement.
         frame: (time) => {
@@ -440,7 +448,7 @@ function buildFilm(film: Film): Demo {
           ctx.setSeaTimePin?.(film.t0 + time);
           clock = film.t0 + time;
           const up = Math.min(1, Math.max(0, time / 1.7));
-          const down = Math.min(1, Math.max(0, (SUNSET_FILM_SECONDS - time) / 0.5));
+          const down = Math.min(1, Math.max(0, (seconds - time) / 0.5));
           const ramp = up * up * (3 - 2 * up) * (down * down * (3 - 2 * down));
           ctx.setExposure(film.exposure * ramp);
         },
@@ -448,7 +456,7 @@ function buildFilm(film: Film): Demo {
           {
             id: film.id,
             start: 0,
-            end: SUNSET_FILM_SECONDS,
+            end: seconds,
             safety: { floorClearance: 1.1 },
             camera: (sample, out) => {
               sun.copy(SUN_STATE.toSun);

@@ -15,6 +15,7 @@ import {
 import { SUN_STATE } from "../sky";
 import { goldenHourAmount } from "./sunsetAir";
 import { spectrumColor } from "./spectrum";
+import { PRISM_GLINT } from "../prismGlint";
 
 // TSL node generics fight composition; `any` is the idiom here (see facade.ts).
 type N = any;
@@ -539,6 +540,8 @@ export function createPrismLight(opts: {
         if (group.visible) group.visible = false;
         state.alignment = 0;
         state.strength = 0;
+        // The sea stops reflecting a beam that no longer exists.
+        PRISM_GLINT.params.value.z = 0;
         return;
       }
       group.visible = true;
@@ -643,6 +646,24 @@ export function createPrismLight(opts: {
       fanLength += (targetLength - fanLength) * (1 - Math.exp(-o.dt * 4));
       fan.scale.y = THREE.MathUtils.clamp(fanLength / FAN_FAR, 0.55, 3.4);
 
+      // Hand the beam to the sea. The water's glint term wants the beam
+      // exactly as drawn — same origin, same bank-swung direction, same eased
+      // length — so the reflection and the fan move as one thing. `tiltAxis`
+      // is the horizontal across-beam axis, which is where the spectrum
+      // spreads for a viewer at the beach. Strength deliberately reuses `lit`
+      // (alignment-gated like the fan itself): beams and their reflections
+      // appear and retire together, and the uniform multiplies the whole term
+      // out of the water while it is 0. Last lit prism wins the frame — see
+      // prismGlint.ts.
+      PRISM_GLINT.origin.value.copy(opts.anchor.position);
+      PRISM_GLINT.dir.value.copy(beamDir);
+      PRISM_GLINT.across.value.copy(tiltAxis);
+      PRISM_GLINT.params.value.set(
+        fanLength,
+        Math.tan(FAN_HALF_ANGLE * (opts.anchor.spread / 0.3)) * fanLength,
+        lit
+      );
+
       // A shallow landing rakes the light out along the beam; carry that in
       // the geometry (stretch) and pay for it in brightness (spread), the way
       // a real footprint dims as it lengthens.
@@ -663,6 +684,7 @@ export function createPrismLight(opts: {
       if (show) writeSandPatch();
     },
     dispose() {
+      PRISM_GLINT.params.value.z = 0;
       for (const material of ownedMaterials) material.dispose();
       for (const geometry of ownedGeometries) geometry.dispose();
       group.removeFromParent();

@@ -36,6 +36,7 @@ import { OceanCascades, oceanDetail, cascadeUv, CASCADE_FADE_DIST, HERO_STRIP_GA
 import { setHeroFocus } from "./ocean/heroWaves";
 import { SUN_DIR, SUN_STATE, type Sky } from "./sky";
 import { causticWeb, oceanSurfaceRadiance, twilightDirection, twilightFoamRadiance } from "./waterShadingTSL";
+import { PRISM_GLINT } from "./prismGlint";
 import { governorEffects } from "../render/adaptiveResolution";
 
 const PALACE_LAGOON_SEGMENTS = 112;
@@ -736,6 +737,13 @@ export class Water {
         // read where foamGlow is set, so the far/horizon sheets pay nothing.
         twilightRadiance: displace > 0 ? this.#uTwilightRadiance : undefined,
         twilightDir: displace > 0 ? this.#uTwilightDir : undefined,
+        // The prism kite's fan reflected in the sea — near sheet only, and
+        // multiplied out whenever the strength uniform is 0 (see prismGlint).
+        prismOrigin: displace > 0 ? PRISM_GLINT.origin : undefined,
+        prismDir: displace > 0 ? PRISM_GLINT.dir : undefined,
+        prismAcross: displace > 0 ? PRISM_GLINT.across : undefined,
+        prismParams: displace > 0 ? PRISM_GLINT.params : undefined,
+        worldPos: displace > 0 ? positionWorld : undefined,
         // Crest subsurface (SoT trick): the cascades' 1−Jacobian mask IS the set
         // of folding, thin crests, so the glow rides exactly the pitching tops.
         // It lives inside the BRDF now so it gets the view dependence it needs —

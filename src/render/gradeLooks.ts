@@ -476,19 +476,28 @@ export const GRADE_LOOKS: readonly GradeLook[] = [
     note: "the house grade — saturated dusk, cool shadows, highlights that keep their hue",
     curve: "sf",
     whiteBalance: [1.015, 1.0, 0.975],
-    // 1.18 is where the horizon reads as a silhouette against the water instead
-    // of a grey shape. Past ~1.3 the fog banks start clipping to black.
-    contrast: 1.18,
+    // 1.24 after the sunset-film reference pass: 1.18 read faded against the
+    // target frame (deep teal water, near-black silhouettes). Still inside the
+    // ~1.3 ceiling past which the fog banks start clipping to black. The 0.18
+    // pivot means this deepens toe and opens highlights without moving
+    // mid-grey, so the exposure anchor below stays solved.
+    contrast: 1.24,
     // Solved, not chosen — see the exposure-anchor note on GradeLook.offsetStops.
     offsetStops: 0.519,
-    saturation: 1.2,
+    // 1.3 keeps the dusk water emerald instead of letting the salmon sky
+    // reflection wash it grey. Ratio saturation feeds the shoulder, so the
+    // extra chroma compresses film-like instead of clipping.
+    saturation: 1.3,
     white: 6.0,
     // The sun disc (peak ≳ 8) still bleaches to white. The sky wedge around it
     // (peak ≈ 1.3–3) does not — that gap is the entire look.
     pathToWhite: [3.2, 16.0, 0.62],
-    shadowTint: [0.93, 0.985, 1.1],
-    highlightTint: [1.06, 1.0, 0.9],
-    tint: 0.34,
+    // Cooler, deeper teal in the shadows and warmer highlights than the first
+    // solve — the split the reference frame lives on: emerald sea against an
+    // amber horizon band.
+    shadowTint: [0.9, 0.99, 1.12],
+    highlightTint: [1.08, 1.0, 0.87],
+    tint: 0.38,
     lift: 0
   }),
   look({

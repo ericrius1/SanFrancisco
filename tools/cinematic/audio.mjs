@@ -60,7 +60,8 @@ const PRODUCTION_DURATIONS = Object.freeze({
   ])),
   ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
     `ocean-beach-sunset-${String(index + 1).padStart(2, "0")}`,
-    20
+    // The Court (01) runs thirty; the rest of the set stays at twenty.
+    index === 0 ? 30 : 20
   ]))
 });
 
@@ -163,10 +164,11 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
   // sit at these times plus each camera's speed-of-sound delay.
   "ocean-beach-sunset-01": Object.freeze([
     { time: 0, id: "wind", description: "the court opens on the onshore evening" },
-    { time: 1.5, id: "straggler", description: "one wave goes off far south as the fade completes" },
-    { time: 9.5, id: "spectrum", description: "the lull belongs to the rainbow on the sand" },
-    { time: 14.4, id: "wash", description: "the straggler's wash crosses the sand" },
-    { time: 17.0, id: "set", description: "the whole framed beach goes off behind the court" }
+    { time: 5.8, id: "set-one", description: "a gentle set sweeps through behind the gathering" },
+    { time: 12, id: "spectrum", description: "the lull belongs to the rainbow on the sand" },
+    { time: 18.7, id: "sheet", description: "set one's swash wets the sand under the smear" },
+    { time: 26.0, id: "set-two", description: "the whole framed beach goes off behind the court" },
+    { time: 29, id: "resolve", description: "three seconds of roar carry the fade" }
   ]),
   "ocean-beach-sunset-02": Object.freeze([
     { time: 0, id: "wind", description: "head height on the wet sand" },
@@ -1049,25 +1051,33 @@ function addSurfBed(mix, options) {
 const SUNSET_STEM = (id) => `assets-src/audio/surf/${id}.flac`;
 
 const SUNSET_STEM_PLANS = Object.freeze({
-  // 01 The Court — camera ~200 m from the break (sound delay ~0.6 s baked
-  // into every `at`). One straggler under the fade, a long rainbow lull,
-  // then the whole framed beach goes off at 17.0-18.0.
+  // 01 The Court — thirty seconds, camera ~200 m from the break (sound delay
+  // ~0.6 s baked into every `at`, t0=858.15). A moderate set at 7.0-8.5, its
+  // swash sheet crossing the sand through the rainbow lull at 18.9-20.4, and
+  // the whole framed beach going off at 27.3-28.5.
   1: Object.freeze({
     beds: Object.freeze([
       { path: SUNSET_STEM("bed-mid"), volume: 0.24, offset: 3 },
       { path: SUNSET_STEM("bed-far"), volume: 0.15, offset: 18 }
     ]),
     stems: Object.freeze([
-      { path: SUNSET_STEM("crash-mid-03"), at: 2.8, volume: 0.34, pan: -0.55, lowpassHz: 2600 },
-      { path: SUNSET_STEM("swash-02"), at: 14.65, volume: 0.3, pan: -0.3 },
-      { path: SUNSET_STEM("crash-big-02"), at: 18.3, volume: 0.62, pan: 0.45, lowpassHz: 3400 },
-      { path: SUNSET_STEM("sub-01"), at: 18.3, volume: 0.5, pan: 0.3 },
-      { path: SUNSET_STEM("crash-big-05"), at: 18.6, volume: 0.58, pan: 0.2, lowpassHz: 3400 },
-      { path: SUNSET_STEM("sub-03"), at: 18.6, volume: 0.42, pan: 0.1 },
-      { path: SUNSET_STEM("crash-mid-01"), at: 18.75, volume: 0.4, pan: 0.75, lowpassHz: 2800 },
-      { path: SUNSET_STEM("crash-big-01"), at: 19.25, volume: 0.5, pan: -0.05, lowpassHz: 3200 },
-      { path: SUNSET_STEM("sub-02"), at: 19.25, volume: 0.4, pan: 0 },
-      { path: SUNSET_STEM("crash-small-02"), at: 19.7, volume: 0.22, pan: -0.5, lowpassHz: 2200 }
+      { path: SUNSET_STEM("crash-mid-02"), at: 7.05, volume: 0.4, pan: 0.2, lowpassHz: 3200 },
+      { path: SUNSET_STEM("crash-mid-04"), at: 7.1, volume: 0.34, pan: 0.45, lowpassHz: 3000 },
+      { path: SUNSET_STEM("crash-mid-01"), at: 7.35, volume: 0.36, pan: -0.05, lowpassHz: 3200 },
+      { path: SUNSET_STEM("crash-small-01"), at: 8.2, volume: 0.26, pan: 0.75, lowpassHz: 2600 },
+      { path: SUNSET_STEM("crash-small-03"), at: 8.5, volume: 0.24, pan: -0.6, lowpassHz: 2400 },
+      { path: SUNSET_STEM("swash-01"), at: 18.9, volume: 0.34, pan: 0.2 },
+      { path: SUNSET_STEM("swash-04"), at: 19.2, volume: 0.3, pan: -0.1 },
+      { path: SUNSET_STEM("swash-03"), at: 20.05, volume: 0.26, pan: 0.5 },
+      { path: SUNSET_STEM("swash-05"), at: 20.35, volume: 0.24, pan: -0.45 },
+      { path: SUNSET_STEM("crash-big-02"), at: 27.3, volume: 0.62, pan: 0.45, lowpassHz: 3400 },
+      { path: SUNSET_STEM("sub-01"), at: 27.3, volume: 0.5, pan: 0.3 },
+      { path: SUNSET_STEM("crash-big-05"), at: 27.38, volume: 0.58, pan: 0.2, lowpassHz: 3400 },
+      { path: SUNSET_STEM("sub-03"), at: 27.38, volume: 0.42, pan: 0.1 },
+      { path: SUNSET_STEM("crash-big-01"), at: 27.6, volume: 0.5, pan: -0.05, lowpassHz: 3200 },
+      { path: SUNSET_STEM("sub-02"), at: 27.6, volume: 0.42, pan: 0 },
+      { path: SUNSET_STEM("crash-mid-05"), at: 28.35, volume: 0.38, pan: 0.75, lowpassHz: 2800 },
+      { path: SUNSET_STEM("crash-big-04"), at: 28.5, volume: 0.44, pan: -0.55, lowpassHz: 2800 }
     ])
   }),
   // 02 Where It Dances — head height, ~150 m to the break, swash right at
@@ -1176,6 +1186,7 @@ const SUNSET_STEM_PLANS = Object.freeze({
 
 function scoreOceanBeachSunset(mix, film, stems, beds) {
   const plan = SUNSET_STEM_PLANS[film];
+  const seconds = mix.frames / SAMPLE_RATE;
   for (let i = 0; i < plan.beds.length; i += 1) {
     beds.push(mixNatureBed(mix, plan.beds[i], i));
   }
@@ -1185,18 +1196,21 @@ function scoreOceanBeachSunset(mix, film, stems, beds) {
 
   // The evening on top, well under the water. Wind is the one continuous
   // synth voice; ripstop passes keep the kites audible; the rest is per-film.
-  addAir(mix, { start: 0, duration: 20, gain: 0.028, panDrift: 0.85 });
+  addAir(mix, { start: 0, duration: seconds, gain: 0.028, panDrift: 0.85 });
   addFoley(mix, { start: 0.6, duration: 6.8, gain: 0.013, pan: -0.2, character: "grass" });
   addFoley(mix, { start: 9.2, duration: 5.4, gain: 0.015, pan: 0.28, character: "grass" });
 
   if (film === 1) {
-    // The Court: a warm chord for the gathering, handing lower as the light
-    // drops, a resolve bell under the climax set.
-    addPad(mix, { start: 0, duration: 12.5, notes: [41, 48, 53, 60, 65], gain: 0.034, pan: 0, brightness: 0.55 });
-    addPad(mix, { start: 10.5, duration: 9.5, notes: [36, 43, 48, 55, 60], gain: 0.036, pan: 0, brightness: 0.4 });
-    addChime(mix, { start: 7.2, midi: 76, duration: 2.4, gain: 0.022, pan: 0.24 });
-    addChime(mix, { start: 11.8, midi: 69, duration: 2.6, gain: 0.02, pan: -0.26 });
-    addChime(mix, { start: 18.6, midi: 57, duration: 2.2, gain: 0.024, pan: 0.05 });
+    // The Court at thirty seconds: a warm chord for the gathering, handing
+    // lower as the light drops, a third ripstop pass through the back half,
+    // and a resolve bell under the climax set at 27.3.
+    addPad(mix, { start: 0, duration: 18, notes: [41, 48, 53, 60, 65], gain: 0.034, pan: 0, brightness: 0.55 });
+    addPad(mix, { start: 15.5, duration: 14.5, notes: [36, 43, 48, 55, 60], gain: 0.036, pan: 0, brightness: 0.4 });
+    addFoley(mix, { start: 20.8, duration: 5.6, gain: 0.014, pan: -0.24, character: "grass" });
+    addChime(mix, { start: 9.4, midi: 76, duration: 2.4, gain: 0.022, pan: 0.24 });
+    addChime(mix, { start: 16.8, midi: 69, duration: 2.6, gain: 0.02, pan: -0.26 });
+    addChime(mix, { start: 23.4, midi: 64, duration: 2.4, gain: 0.019, pan: 0.18 });
+    addChime(mix, { start: 27.9, midi: 57, duration: 2.4, gain: 0.024, pan: 0.05 });
   } else if (film === 2) {
     // Where It Dances is nature-forward: one high chime in the lull, one low
     // bell as set two lands. The dancing is the picture's job.
