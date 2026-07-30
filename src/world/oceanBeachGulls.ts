@@ -174,7 +174,7 @@ export class OceanBeachGulls {
     const geometry = createGullGeometry();
     // home: z on the tile, metres offshore of the waterline, base altitude
     const home = new Float32Array(COUNT * 3);
-    // motion: radius along the beach, radius across it, angular rate, phase
+    // motion: radius along the beach, radius across it, cruise airspeed, phase
     const motion = new Float32Array(COUNT * 4);
     // style: body scale, vertical wander, wing rate, glide-burst phase
     const style = new Float32Array(COUNT * 4);
@@ -191,10 +191,14 @@ export class OceanBeachGulls {
       // ranges keep them unobtrusive without making them invisible.
       home[i * 3 + 1] = b < 0.35 ? 22 + b * 78 : 55 + b * 130;
       home[i * 3 + 2] = 8 + c * 30;
-      motion[i * 4] = 22 + a * 42;
-      motion[i * 4 + 1] = 10 + c * 20;
-      // Slow. A gull covers its racetrack in a minute, not in five seconds.
-      motion[i * 4 + 2] = 0.055 + d * 0.055;
+      motion[i * 4] = 34 + a * 46;
+      motion[i * 4 + 1] = 16 + c * 22;
+      // Store metres per second rather than an angular rate. A fixed angular
+      // rate makes an elliptical path crawl through its tight ends, precisely
+      // where an ocean-facing camera sees depth motion but almost no lateral
+      // travel. The shader converts this to a path rate and compensates for
+      // the ellipse below, keeping a held-wing glide visibly airborne.
+      motion[i * 4 + 2] = 9.5 + d * 3.8;
       motion[i * 4 + 3] = (a * 5.31 + c * 2.17) % (Math.PI * 2);
       style[i * 4] = 2.6 + b * 1.4;
       style[i * 4 + 1] = 1.4 + d * 3.6;
@@ -225,7 +229,7 @@ export class OceanBeachGulls {
     // into a screen-spanning triangle.
     const radiusAlong = motionN.x.clamp(4, 160);
     const radiusAcross = motionN.y.clamp(2, 80);
-    const rate = motionN.z.clamp(0.005, 0.4);
+    const cruiseSpeed = motionN.z.clamp(6, 18);
     const phase = motionN.w.clamp(0, Math.PI * 2);
     const bodyScale = styleN.x.clamp(0.3, 4);
     const wander = styleN.y.clamp(0, 8);
@@ -241,16 +245,24 @@ export class OceanBeachGulls {
 
     /**
      * The racetrack, in metres relative to the gull's home. Long along the
-     * beach, narrow across it, with the travel phase warped so the bird eases
-     * through the turns instead of running at constant angular speed. The
-     * warp's derivative stays positive, so it can never fly backwards.
+     * beach and narrower across it. An ordinary angle-parametrised ellipse
+     * races along its straight sides and nearly stalls at each end. `w`
+     * approximates equal-distance arc timing instead: its derivative rises
+     * through the tight ends and falls along the broad sides. This does not
+     * need to be exact aeronautics; it does need to keep the apparent
+     * airspeed from collapsing while the gull is gliding toward the camera.
      */
+    const meanRadius = radiusAlong.add(radiusAcross).mul(0.5).toVar();
+    const rate = cruiseSpeed.div(meanRadius).clamp(0.14, 0.52).toVar();
+    const arcCorrection = radiusAlong
+      .sub(radiusAcross)
+      .div(radiusAlong.add(radiusAcross))
+      .clamp(0, 0.65)
+      .mul(0.48)
+      .toVar();
     const pathAt = (clock: N): { along: N; across: N; lift: N } => {
-      const w = clock
-        .mul(rate)
-        .add(phase)
-        .add(sin(clock.mul(rate).add(phase).mul(0.83)).mul(0.22))
-        .toVar();
+      const travel = clock.mul(rate).add(phase).toVar();
+      const w = travel.sub(sin(travel.mul(2)).mul(arcCorrection)).toVar();
       return {
         along: sin(w).mul(radiusAlong),
         across: cos(w).mul(radiusAcross),
@@ -258,10 +270,11 @@ export class OceanBeachGulls {
       };
     };
 
-    // Sample the same path a moment ahead to get a true flight frame. Two
-    // evaluations of six sines is cheaper than any stored velocity would be.
+    // Sample the same path twice ahead. The first sample gives the tangent;
+    // the second lets the shader measure an actual heading change for bank.
     const here = pathAt(t);
-    const ahead = pathAt(t.add(0.35));
+    const ahead = pathAt(t.add(0.28));
+    const after = pathAt(t.add(0.56));
 
     // Waterline at the gull's own Z — twin of oceanBeachApproxShoreX, so the
     // flock follows the curve of the beach instead of a straight line.
@@ -274,33 +287,75 @@ export class OceanBeachGulls {
       zWorld
     ).toVar();
 
-    // Heading from the look-ahead, in world XZ.
+    // Heading from the look-ahead, including the beach's gentle curve.
     const dAlong = ahead.along.sub(here.along);
     const dAcross = ahead.across.sub(here.across);
     const dLift = ahead.lift.sub(here.lift);
-    const forward = vec3(dAcross.negate(), dLift, dAlong).normalize().toVar();
+    const shoreSlope = float(0.08504).add(zWorld.mul(0.00001486)).toVar();
+    const forward = vec3(
+      dAcross.negate().add(dAlong.mul(shoreSlope)),
+      dLift,
+      dAlong
+    ).normalize().toVar();
     const right = vec3(forward.z, 0, forward.x.negate()).normalize().toVar();
-    const up = right.cross(forward).toVar();
+    // Local +Z is the beak and local +X is the right wing, so Z × X is up.
+    // Reversing this cross product turns the held-wing dihedral into a droop.
+    const up = forward.cross(right).toVar();
 
-    // Bank into the turn. The cross product's Y is the signed turn rate, which
-    // is exactly the roll a bird uses to make that turn.
-    const turn = saturate(dAcross.mul(0.06).add(0.5)).sub(0.5).mul(2);
-    const bank = turn.mul(0.9).clamp(-0.85, 0.85).toVar();
+    // Bank from curvature, not lateral displacement. The old displacement
+    // proxy approached zero at the end of a circuit, leaving a gull flat and
+    // apparently suspended just when a decisive turn pose was most useful.
+    const nextAlong = after.along.sub(ahead.along);
+    const nextAcross = after.across.sub(ahead.across);
+    const heading = vec3(
+      dAcross.negate().add(dAlong.mul(shoreSlope)),
+      0,
+      dAlong
+    ).normalize().toVar();
+    const nextHeading = vec3(
+      nextAcross.negate().add(nextAlong.mul(shoreSlope)),
+      0,
+      nextAlong
+    ).normalize().toVar();
+    const signedTurn = heading.x.mul(nextHeading.z).sub(heading.z.mul(nextHeading.x)).toVar();
+    const airRock = sin(t.mul(0.83).add(burstPhase.mul(1.7))).mul(0.045).toVar();
+    const bank = signedTurn.mul(5.2).add(airRock).clamp(-0.78, 0.78).toVar();
     const bankC = cos(bank);
     const bankS = sin(bank);
 
     /**
      * Wings. A gull glides far more than it flaps: this is a held wing most of
      * the time with occasional bursts of beats, which is most of what makes
-     * one recognisable at distance. `burst` is a slow gate on the beat.
+     * one recognisable at distance. `burst` produces several strokes, then a
+     * clear open glide, rather than one very long on/off animation cycle.
      */
-    const burst = smoothstep(0.45, 0.8, sin(t.mul(0.19).add(burstPhase)).mul(0.5).add(0.5)).toVar();
+    const gaitRate = wingRate.mul(0.035).add(0.36).toVar();
+    const burst = smoothstep(
+      0.44,
+      0.72,
+      sin(t.mul(gaitRate).add(burstPhase)).mul(0.5).add(0.5)
+    ).toVar();
     const beat = sin(t.mul(wingRate).add(phase)).mul(burst).toVar();
     // Held wings still carry a dihedral, and a pronounced one: at four pixels
     // across, a flat wing is an ambiguous dash and a shallow V is
     // unmistakably a bird. The outer half moves more than the root —
     // `wingWeight` runs 0 at the shoulder to 1 at the tip.
-    const flap = beat.mul(0.55).add(0.26).mul(wing.y).toVar();
+    // Open wings are alive even between strokes: a slow symmetric flex reads
+    // as pressure under the span, while a much smaller differential trim
+    // keeps the silhouette correcting its balance in moving air.
+    const glide = float(1).sub(burst).toVar();
+    const glideFlex = sin(t.mul(0.78).add(burstPhase.mul(1.9))).mul(0.055).mul(glide);
+    const glideTrim = sin(t.mul(0.43).add(phase.mul(2.1)))
+      .mul(0.035)
+      .mul(glide)
+      .mul(wing.x);
+    const flap = beat
+      .mul(0.55)
+      .add(0.24)
+      .add(glideFlex)
+      .add(glideTrim)
+      .mul(wing.y)
+      .toVar();
     const local = positionLocal.toVar() as N;
     const wingLift = flap.mul(local.x.abs());
     const shaped = vec3(
