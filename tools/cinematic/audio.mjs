@@ -57,6 +57,10 @@ const PRODUCTION_DURATIONS = Object.freeze({
   ...Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
     `ocean-beach-surf-${String(index + 1).padStart(2, "0")}`,
     20
+  ])),
+  ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
+    `ocean-beach-sunset-${String(index + 1).padStart(2, "0")}`,
+    20
   ]))
 });
 
@@ -152,6 +156,43 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
       { time: 17.8, id: "resolve", description: "the beach resolves into the evening" }
     ])];
   })),
+  // The deep-sunset set. Unlike every plan above, these beats are not
+  // plausible — they are SOLVED: each film pins the sea clock to its t0 and
+  // tools/cinematic/surfSchedule.mjs computed when the crests actually cross
+  // the break line in the framed water. The crash stems in SUNSET_STEM_PLANS
+  // sit at these times plus each camera's speed-of-sound delay.
+  "ocean-beach-sunset-01": Object.freeze([
+    { time: 0, id: "wind", description: "the court opens on the onshore evening" },
+    { time: 1.5, id: "straggler", description: "one wave goes off far south as the fade completes" },
+    { time: 9.5, id: "spectrum", description: "the lull belongs to the rainbow on the sand" },
+    { time: 14.4, id: "wash", description: "the straggler's wash crosses the sand" },
+    { time: 17.0, id: "set", description: "the whole framed beach goes off behind the court" }
+  ]),
+  "ocean-beach-sunset-02": Object.freeze([
+    { time: 0, id: "wind", description: "head height on the wet sand" },
+    { time: 4.1, id: "set-one", description: "a set sweeps the beach south past the smear" },
+    { time: 10.5, id: "dance", description: "the spectrum breathes between the sets" },
+    { time: 16.9, id: "sheet", description: "set one's swash sheet arrives at the lens" },
+    { time: 17.5, id: "set-two", description: "the bigger set throws as the water reaches the sand" }
+  ]),
+  "ocean-beach-sunset-03": Object.freeze([
+    { time: 0.1, id: "wall", description: "the film opens inside a breaking wave" },
+    { time: 2.3, id: "flurry", description: "the first set walks north along the bar" },
+    { time: 13.0, id: "wash", description: "the opener's water arrives at the sand" },
+    { time: 13.4, id: "set", description: "the big set goes off across the whole frame" }
+  ]),
+  "ocean-beach-sunset-04": Object.freeze([
+    { time: 0, id: "band", description: "the long lens holds the last band of light" },
+    { time: 1.2, id: "stack-one", description: "crests break across the compressed field" },
+    { time: 13.4, id: "stack-two", description: "the second set walks through the whole plane" },
+    { time: 18.2, id: "resolve", description: "the band carries the roar out" }
+  ]),
+  "ocean-beach-sunset-05": Object.freeze([
+    { time: 0, id: "hush", description: "the lull — the film is the sky and the court" },
+    { time: 8.6, id: "handover", description: "the chord hands over to a lower one" },
+    { time: 15.0, id: "set", description: "one huge set, heard more than seen" },
+    { time: 17.9, id: "bell", description: "a low bell under the roar" }
+  ]),
   ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
     const shot = index + 1;
     return [`ocean-beach-kite-ring-${String(shot).padStart(2, "0")}`, Object.freeze([
@@ -234,7 +275,8 @@ const DEFAULT_PALACE_BEDS = Object.freeze([
  *   channels: number, frames: number, bytes: number, seed: number,
  *   peak: number, peakDb: number, rmsDb: number,
  *   cues: ReadonlyArray<{time:number,id:string,description:string}>,
- *   beds: Array<{path:string,volume:number,mixed:boolean,reason?:string}>
+ *   beds: Array<{path:string,volume:number,mixed:boolean,reason?:string}>,
+ *   stems: Array<{path:string,at:number,volume:number,mixed:boolean,reason?:string}>
  * }>}
  */
 export async function renderCinematicAudio(production, outputPath) {
@@ -259,6 +301,10 @@ export async function renderCinematicAudio(production, outputPath) {
   const seed = normalizeSeed(production.seed, hash32(`eidoverse:${id}:audio:v1`));
   const mix = createMix(expectedDuration, seed);
   const beds = [];
+  // One-shot sampled stems (crash/swash placements from assets-src/audio/surf).
+  // Score branches push mixStem(...) reports here the way beds are pushed above;
+  // the array in the result manifest is the audit trail that they landed.
+  const stems = [];
 
   if (id === "afterlight") {
     scoreAfterlight(mix);
@@ -310,6 +356,14 @@ export async function renderCinematicAudio(production, outputPath) {
     }
   } else if (id.startsWith("ocean-beach-surf-")) {
     scoreOceanBeachSurf(mix, Number(id.slice(-2)));
+  } else if (id.startsWith("ocean-beach-sunset-")) {
+    // The first productions whose sea is PICTURE-LOCKED: the films pin the
+    // sea clock (setSeaTimePin), tools/cinematic/surfSchedule.mjs solved each
+    // film's t0, and every crash stem below sits at that schedule's throw
+    // time plus the camera's real speed-of-sound delay. The sound and the
+    // picture agree about the sea because they were computed from the same
+    // closed-form model — see SUNSET_STEM_PLANS.
+    scoreOceanBeachSunset(mix, Number(id.slice(-2)), stems, beds);
   } else if (id.startsWith("ocean-beach-kite-ring-")) {
     // Must precede the general kite branch: `ocean-beach-kite-ring-03` also
     // starts with "ocean-beach-kite-", and its last two characters would read
@@ -335,6 +389,10 @@ export async function renderCinematicAudio(production, outputPath) {
   // they arrive fifteen decibels under everything else in the folder.
   const makeup = id === "dog-park" ? 2
     : /^ocean-beach-kite-prism-0[34]$/.test(id) ? 2.6
+    // The sunset films are mostly recorded water at healthy stem levels with
+    // only a thin synth evening on top — between the prism wind-only 2.6 and
+    // the fully scored 1.35.
+    : id.startsWith("ocean-beach-sunset-") ? 1.5
     : id === "roqn-open-road" ? 1.65
     : id.startsWith("twitter-summer-") ? 1.55
     : id === "afterlight" ? 1.45
@@ -357,7 +415,8 @@ export async function renderCinematicAudio(production, outputPath) {
     peakDb: levels.peakDb,
     rmsDb: levels.rmsDb,
     cues: CINEMATIC_AUDIO_PLANS[id],
-    beds
+    beds,
+    stems
   };
 }
 
@@ -971,6 +1030,196 @@ function addSurfBed(mix, options) {
     slowR += (fastR - slowR) * 0.021;
     mix.left[frame] += (fastL - slowL) * 1.9 * envelope * breathe * options.gain;
     mix.right[frame] += (fastR - slowR) * 1.9 * envelope * breathe * options.gain;
+  }
+}
+
+/**
+ * The five deep-sunset films: the first mixes here built on REAL water.
+ *
+ * Every crash below is a spliced field recording (assets-src/audio/surf/,
+ * manifest.json carries provenance) placed at a SOLVED time: the films pin
+ * the sea clock, surfSchedule.mjs computed when each crest crosses the break
+ * line in the framed water, and the stem sits at that throw plus the
+ * camera's real speed-of-sound delay (200 m of beach is ~0.6 s). Pans come
+ * from where along the beach each section breaks relative to the camera;
+ * lowpass is distance haze. The synthesized addBreaker stack the surf films
+ * used is retired here — the synth layer that remains is the EVENING, not
+ * the sea: wind, ripstop, a pad and a few bells, all well under the water.
+ */
+const SUNSET_STEM = (id) => `assets-src/audio/surf/${id}.flac`;
+
+const SUNSET_STEM_PLANS = Object.freeze({
+  // 01 The Court — camera ~200 m from the break (sound delay ~0.6 s baked
+  // into every `at`). One straggler under the fade, a long rainbow lull,
+  // then the whole framed beach goes off at 17.0-18.0.
+  1: Object.freeze({
+    beds: Object.freeze([
+      { path: SUNSET_STEM("bed-mid"), volume: 0.24, offset: 3 },
+      { path: SUNSET_STEM("bed-far"), volume: 0.15, offset: 18 }
+    ]),
+    stems: Object.freeze([
+      { path: SUNSET_STEM("crash-mid-03"), at: 2.8, volume: 0.34, pan: -0.55, lowpassHz: 2600 },
+      { path: SUNSET_STEM("swash-02"), at: 14.65, volume: 0.3, pan: -0.3 },
+      { path: SUNSET_STEM("crash-big-02"), at: 18.3, volume: 0.62, pan: 0.45, lowpassHz: 3400 },
+      { path: SUNSET_STEM("sub-01"), at: 18.3, volume: 0.5, pan: 0.3 },
+      { path: SUNSET_STEM("crash-big-05"), at: 18.6, volume: 0.58, pan: 0.2, lowpassHz: 3400 },
+      { path: SUNSET_STEM("sub-03"), at: 18.6, volume: 0.42, pan: 0.1 },
+      { path: SUNSET_STEM("crash-mid-01"), at: 18.75, volume: 0.4, pan: 0.75, lowpassHz: 2800 },
+      { path: SUNSET_STEM("crash-big-01"), at: 19.25, volume: 0.5, pan: -0.05, lowpassHz: 3200 },
+      { path: SUNSET_STEM("sub-02"), at: 19.25, volume: 0.4, pan: 0 },
+      { path: SUNSET_STEM("crash-small-02"), at: 19.7, volume: 0.22, pan: -0.5, lowpassHz: 2200 }
+    ])
+  }),
+  // 02 Where It Dances — head height, ~150 m to the break, swash right at
+  // the lens. Set one sweeps south 5.2-6.8; its sheet arrives 17.1-18.3
+  // EXACTLY as set two throws 18.7-19.1 — the film's whole design in sound.
+  2: Object.freeze({
+    beds: Object.freeze([
+      { path: SUNSET_STEM("bed-close"), volume: 0.3, offset: 11 },
+      { path: SUNSET_STEM("bed-far"), volume: 0.13, offset: 40 }
+    ]),
+    stems: Object.freeze([
+      { path: SUNSET_STEM("crash-mid-02"), at: 5.2, volume: 0.42, pan: 0.2, lowpassHz: 3600 },
+      { path: SUNSET_STEM("crash-mid-04"), at: 5.3, volume: 0.36, pan: 0.7, lowpassHz: 3000 },
+      { path: SUNSET_STEM("crash-big-03"), at: 5.6, volume: 0.5, pan: -0.05, lowpassHz: 3800 },
+      { path: SUNSET_STEM("sub-01"), at: 5.6, volume: 0.36, pan: 0 },
+      { path: SUNSET_STEM("crash-mid-05"), at: 6.35, volume: 0.34, pan: -0.45, lowpassHz: 3000 },
+      { path: SUNSET_STEM("crash-small-01"), at: 6.8, volume: 0.26, pan: -0.75, lowpassHz: 2400 },
+      { path: SUNSET_STEM("swash-01"), at: 17.1, volume: 0.44, pan: 0.15 },
+      { path: SUNSET_STEM("swash-04"), at: 17.5, volume: 0.4, pan: -0.1 },
+      { path: SUNSET_STEM("crash-big-04"), at: 18.65, volume: 0.62, pan: 0.2, lowpassHz: 3800 },
+      { path: SUNSET_STEM("sub-02"), at: 18.65, volume: 0.52, pan: 0.1 },
+      { path: SUNSET_STEM("crash-mid-01"), at: 18.7, volume: 0.4, pan: 0.7, lowpassHz: 3000 },
+      { path: SUNSET_STEM("swash-03"), at: 18.25, volume: 0.36, pan: -0.4 },
+      { path: SUNSET_STEM("crash-big-01"), at: 19.05, volume: 0.5, pan: -0.05, lowpassHz: 3600 },
+      { path: SUNSET_STEM("sub-03"), at: 19.05, volume: 0.4, pan: 0 },
+      { path: SUNSET_STEM("crash-mid-03"), at: 19.8, volume: 0.3, pan: -0.5, lowpassHz: 2800 }
+    ])
+  }),
+  // 03 The Set Goes Off — opens ~80 m from a wave mid-throw (delay 0.23 s):
+  // the first hit is nearly fullband and LOUD, the film's cold open. The
+  // camera cranes up and back; the big set at 14.5-16.7 sits a little
+  // further off. The set breaks NORTH of the drifting camera, hence the
+  // right-heavy pans.
+  3: Object.freeze({
+    beds: Object.freeze([
+      { path: SUNSET_STEM("bed-close"), volume: 0.32, offset: 26 },
+      { path: SUNSET_STEM("bed-far"), volume: 0.16, offset: 5 }
+    ]),
+    stems: Object.freeze([
+      { path: SUNSET_STEM("crash-big-05"), at: 1.0, volume: 0.66, pan: 0.25 },
+      { path: SUNSET_STEM("sub-02"), at: 1.0, volume: 0.55, pan: 0.15 },
+      { path: SUNSET_STEM("crash-mid-05"), at: 1.8, volume: 0.3, pan: 0.75, lowpassHz: 2400 },
+      { path: SUNSET_STEM("crash-big-03"), at: 2.5, volume: 0.56, pan: 0.65, lowpassHz: 3800 },
+      { path: SUNSET_STEM("sub-01"), at: 2.5, volume: 0.4, pan: 0.4 },
+      { path: SUNSET_STEM("crash-mid-02"), at: 3.2, volume: 0.36, pan: 0.75, lowpassHz: 2800 },
+      { path: SUNSET_STEM("swash-05"), at: 13.1, volume: 0.34, pan: 0.2 },
+      { path: SUNSET_STEM("crash-big-02"), at: 14.55, volume: 0.6, pan: -0.35, lowpassHz: 3400 },
+      { path: SUNSET_STEM("sub-03"), at: 14.55, volume: 0.5, pan: -0.2 },
+      { path: SUNSET_STEM("crash-mid-01"), at: 14.6, volume: 0.4, pan: 0.15, lowpassHz: 3200 },
+      { path: SUNSET_STEM("swash-02"), at: 14.6, volume: 0.3, pan: 0.5 },
+      { path: SUNSET_STEM("crash-mid-04"), at: 15.8, volume: 0.3, pan: 0.75, lowpassHz: 2400 },
+      { path: SUNSET_STEM("crash-big-01"), at: 16.0, volume: 0.52, pan: 0.6, lowpassHz: 3400 },
+      { path: SUNSET_STEM("sub-01"), at: 16.0, volume: 0.4, pan: 0.45, offset: 0.2 },
+      { path: SUNSET_STEM("crash-mid-03"), at: 16.7, volume: 0.32, pan: 0.75, lowpassHz: 2600 }
+    ])
+  }),
+  // 04 The Long Band — telephoto from ~250 m (delay 0.73 s): everything is
+  // hazed by distance (the heaviest lowpasses of the set), the far bed
+  // leads, and the field is WIDE — sections from z1500 to z1800 stack into
+  // one plane, so the pans run rail to rail.
+  4: Object.freeze({
+    beds: Object.freeze([
+      { path: SUNSET_STEM("bed-far"), volume: 0.22, offset: 9 },
+      { path: SUNSET_STEM("bed-mid"), volume: 0.16, offset: 31 }
+    ]),
+    stems: Object.freeze([
+      { path: SUNSET_STEM("crash-mid-04"), at: 2.65, volume: 0.3, pan: -0.5, lowpassHz: 2000 },
+      { path: SUNSET_STEM("crash-mid-01"), at: 3.25, volume: 0.32, pan: 0.25, lowpassHz: 2200 },
+      { path: SUNSET_STEM("crash-small-04"), at: 3.55, volume: 0.22, pan: 0.75, lowpassHz: 1600 },
+      { path: SUNSET_STEM("crash-small-02"), at: 4.0, volume: 0.24, pan: -0.75, lowpassHz: 1700 },
+      { path: SUNSET_STEM("crash-mid-03"), at: 4.95, volume: 0.28, pan: 0.75, lowpassHz: 1900 },
+      { path: SUNSET_STEM("swash-03"), at: 14.8, volume: 0.22, pan: -0.4, lowpassHz: 2600 },
+      { path: SUNSET_STEM("crash-mid-05"), at: 14.85, volume: 0.28, pan: 0.75, lowpassHz: 1600 },
+      { path: SUNSET_STEM("crash-big-01"), at: 16.1, volume: 0.5, pan: -0.5, lowpassHz: 2400 },
+      { path: SUNSET_STEM("sub-01"), at: 16.1, volume: 0.4, pan: -0.3 },
+      { path: SUNSET_STEM("crash-big-04"), at: 16.6, volume: 0.52, pan: 0.25, lowpassHz: 2400 },
+      { path: SUNSET_STEM("sub-02"), at: 16.6, volume: 0.42, pan: 0.15 },
+      { path: SUNSET_STEM("swash-05"), at: 17.1, volume: 0.2, pan: 0.5, lowpassHz: 2600 },
+      { path: SUNSET_STEM("crash-mid-02"), at: 17.35, volume: 0.3, pan: 0.75, lowpassHz: 1800 },
+      { path: SUNSET_STEM("crash-big-03"), at: 17.75, volume: 0.4, pan: -0.75, lowpassHz: 2000 },
+      { path: SUNSET_STEM("sub-03"), at: 17.75, volume: 0.32, pan: -0.5 },
+      { path: SUNSET_STEM("crash-mid-05"), at: 18.15, volume: 0.28, pan: 0.7, lowpassHz: 1800, offset: 0.15 }
+    ])
+  }),
+  // 05 Afterglow — fourteen seconds of lull (two faint far breaks keep the
+  // world alive off-frame), then one huge set at 16.2-17.6 with every sub
+  // layer stacked. No swash before the fade; the roar tails carry out.
+  5: Object.freeze({
+    beds: Object.freeze([
+      { path: SUNSET_STEM("bed-far"), volume: 0.2, offset: 47 },
+      { path: SUNSET_STEM("bed-close"), volume: 0.14, offset: 19 }
+    ]),
+    stems: Object.freeze([
+      { path: SUNSET_STEM("crash-small-01"), at: 4.3, volume: 0.16, pan: 0.6, lowpassHz: 1400 },
+      { path: SUNSET_STEM("crash-small-03"), at: 9.2, volume: 0.14, pan: -0.55, lowpassHz: 1300 },
+      { path: SUNSET_STEM("crash-big-05"), at: 16.15, volume: 0.66, pan: 0.1, lowpassHz: 3000 },
+      { path: SUNSET_STEM("sub-03"), at: 16.15, volume: 0.58, pan: 0 },
+      { path: SUNSET_STEM("crash-big-02"), at: 16.2, volume: 0.5, pan: 0.35, lowpassHz: 2800 },
+      { path: SUNSET_STEM("sub-01"), at: 16.2, volume: 0.4, pan: 0.25 },
+      { path: SUNSET_STEM("crash-big-04"), at: 17.1, volume: 0.55, pan: -0.35, lowpassHz: 3000 },
+      { path: SUNSET_STEM("sub-02"), at: 17.1, volume: 0.48, pan: -0.2 },
+      { path: SUNSET_STEM("crash-mid-01"), at: 17.55, volume: 0.36, pan: 0.75, lowpassHz: 2400 }
+    ])
+  })
+});
+
+function scoreOceanBeachSunset(mix, film, stems, beds) {
+  const plan = SUNSET_STEM_PLANS[film];
+  for (let i = 0; i < plan.beds.length; i += 1) {
+    beds.push(mixNatureBed(mix, plan.beds[i], i));
+  }
+  for (let i = 0; i < plan.stems.length; i += 1) {
+    stems.push(mixStem(mix, plan.stems[i], i));
+  }
+
+  // The evening on top, well under the water. Wind is the one continuous
+  // synth voice; ripstop passes keep the kites audible; the rest is per-film.
+  addAir(mix, { start: 0, duration: 20, gain: 0.028, panDrift: 0.85 });
+  addFoley(mix, { start: 0.6, duration: 6.8, gain: 0.013, pan: -0.2, character: "grass" });
+  addFoley(mix, { start: 9.2, duration: 5.4, gain: 0.015, pan: 0.28, character: "grass" });
+
+  if (film === 1) {
+    // The Court: a warm chord for the gathering, handing lower as the light
+    // drops, a resolve bell under the climax set.
+    addPad(mix, { start: 0, duration: 12.5, notes: [41, 48, 53, 60, 65], gain: 0.034, pan: 0, brightness: 0.55 });
+    addPad(mix, { start: 10.5, duration: 9.5, notes: [36, 43, 48, 55, 60], gain: 0.036, pan: 0, brightness: 0.4 });
+    addChime(mix, { start: 7.2, midi: 76, duration: 2.4, gain: 0.022, pan: 0.24 });
+    addChime(mix, { start: 11.8, midi: 69, duration: 2.6, gain: 0.02, pan: -0.26 });
+    addChime(mix, { start: 18.6, midi: 57, duration: 2.2, gain: 0.024, pan: 0.05 });
+  } else if (film === 2) {
+    // Where It Dances is nature-forward: one high chime in the lull, one low
+    // bell as set two lands. The dancing is the picture's job.
+    addChime(mix, { start: 9.4, midi: 74, duration: 2.6, gain: 0.018, pan: 0.2 });
+    addChime(mix, { start: 19.0, midi: 52, duration: 1.8, gain: 0.022, pan: -0.08 });
+  } else if (film === 3) {
+    // The Set Goes Off: a low pad that swells with the crane, chimes at the
+    // turn of the lull. The water does the talking.
+    addPad(mix, { start: 0, duration: 20, notes: [36, 43, 48, 55], gain: 0.038, pan: 0, brightness: 0.5 });
+    addChime(mix, { start: 6.4, midi: 71, duration: 2.4, gain: 0.02, pan: 0.22 });
+    addChime(mix, { start: 12.1, midi: 64, duration: 2.4, gain: 0.02, pan: -0.24 });
+  } else if (film === 4) {
+    // The Long Band: sparse — the compression is the drama.
+    addPad(mix, { start: 0, duration: 20, notes: [41, 48, 55, 60], gain: 0.03, pan: 0, brightness: 0.45 });
+    addChime(mix, { start: 5.8, midi: 69, duration: 2.6, gain: 0.018, pan: 0.2 });
+    addChime(mix, { start: 16.2, midi: 55, duration: 2.4, gain: 0.022, pan: -0.1 });
+  } else {
+    // Afterglow: the dusk-set arrangement's homage — one chord handing over
+    // to a lower one at 8.6, a low bell under the set's roar, and no ripstop
+    // after 15: the court goes still against the band.
+    addPad(mix, { start: 0, duration: 9.4, notes: [36, 43, 50, 55, 62], gain: 0.04, pan: 0, brightness: 0.42 });
+    addPad(mix, { start: 8.6, duration: 11.4, notes: [31, 38, 45, 50], gain: 0.042, pan: 0, brightness: 0.3 });
+    addChime(mix, { start: 17.9, midi: 45, duration: 2.6, gain: 0.026, pan: 0 });
   }
 }
 
@@ -1774,7 +2023,7 @@ function scorePalaceReverie(mix) {
   addChime(mix, { start: 14.45, midi: 69, duration: 0.7, gain: 0.022, pan: 0.08 });
 }
 
-function createMix(duration, seed) {
+export function createMix(duration, seed) {
   const frames = Math.round(duration * SAMPLE_RATE);
   return {
     duration,
@@ -2039,7 +2288,7 @@ function addAir(mix, options) {
   }
 }
 
-function mixNatureBed(mix, bed, index) {
+export function mixNatureBed(mix, bed, index) {
   const requestedPath = typeof bed?.path === "string" ? bed.path : "";
   const volume = clamp(Number.isFinite(bed?.volume) ? Number(bed.volume) : 0.04, 0, 0.35);
   const resolvedPath = resolveBedPath(requestedPath);
@@ -2068,6 +2317,131 @@ function mixNatureBed(mix, bed, index) {
   }
   report.mixed = true;
   return report;
+}
+
+/**
+ * Mix a one-shot sampled stem (a crash, a swash, a sub thump) into the bus.
+ * The bed path above is wrong for transients — its 0.65 s cosine attack would
+ * swallow the impact — so this one fades in over ~10 ms, lets the recording's
+ * own tail carry the decay, and only applies a hard end fade when the stem is
+ * truncated by `duration` or by the end of the mix.
+ *
+ * @param {object} mix from createMix
+ * @param {{
+ *   path: string,        repo-relative or absolute stem file (see assets-src/audio/surf)
+ *   at?: number,         mix time in seconds the transient lands (default 0)
+ *   volume?: number,     linear gain, 0..1 (stems are −3 dBFS peak masters; default 0.5)
+ *   offset?: number,     seconds into the source file (default 0)
+ *   duration?: number,   cap on seconds taken from the file (default: to mix end)
+ *   pan?: number,        −1..1 stereo position (default 0)
+ *   lowpassHz?: number   optional one-pole lowpass — distance dulling (default off)
+ * }} stem
+ * @param {number} index position in the plan, for default stagger-free reporting
+ * @returns {{path:string,at:number,volume:number,mixed:boolean,reason?:string}}
+ */
+export function mixStem(mix, stem, index = 0) {
+  const requestedPath = typeof stem?.path === "string" ? stem.path : "";
+  const at = Number.isFinite(stem?.at) ? Math.max(0, Number(stem.at)) : 0;
+  const volume = clamp(Number.isFinite(stem?.volume) ? Number(stem.volume) : 0.5, 0, 1);
+  const resolvedPath = resolveBedPath(requestedPath);
+  const report = { path: resolvedPath ?? requestedPath, at, volume, mixed: false };
+
+  if (!resolvedPath) {
+    report.reason = "file not found";
+    return report;
+  }
+  const remaining = mix.duration - at;
+  if (remaining <= 0.05) {
+    report.reason = `stem ${index} starts at ${at}s, past the ${mix.duration}s mix`;
+    return report;
+  }
+
+  const offset = Number.isFinite(stem?.offset) ? Math.max(0, Number(stem.offset)) : 0;
+  const cap = Number.isFinite(stem?.duration) ? Math.min(stem.duration, remaining) : remaining;
+  const decoded = decodeStemWithFfmpeg(resolvedPath, cap, offset);
+  if (!decoded.samples) {
+    report.reason = decoded.reason;
+    return report;
+  }
+
+  const samples = decoded.samples;
+  if (stem?.lowpassHz) onePoleLowpass(samples, stem.lowpassHz);
+
+  const frames = Math.floor(samples.length / 2);
+  const stemSeconds = frames / SAMPLE_RATE;
+  // Truncated only when the decode filled the requested cap — a shorter file
+  // ended on its own (natural tail) and needs no synthetic fade.
+  const truncated = stemSeconds >= cap - 0.005;
+  const fadeOut = truncated ? Math.min(0.06, stemSeconds * 0.25) : 0;
+  // Stems are stereo recordings, so pan is a balance tilt, not a re-image.
+  const pan = clamp(stem?.pan ?? 0, -1, 1);
+  const balanceL = pan > 0 ? 1 - pan : 1;
+  const balanceR = pan < 0 ? 1 + pan : 1;
+  const startFrame = frameAt(mix, at);
+
+  for (let frame = 0; frame < frames; frame += 1) {
+    const target = startFrame + frame;
+    if (target >= mix.frames) break;
+    const time = frame / SAMPLE_RATE;
+    const attack = smoothstep(0, 0.01, time);
+    const release = fadeOut > 0 ? clamp01((stemSeconds - time) / fadeOut) : 1;
+    const gain = attack * release * volume;
+    mix.left[target] += samples[frame * 2] * gain * balanceL;
+    mix.right[target] += samples[frame * 2 + 1] * gain * balanceR;
+  }
+  report.mixed = true;
+  return report;
+}
+
+/** One-pole lowpass over interleaved stereo, in place — cheap distance haze. */
+function onePoleLowpass(samples, cutoffHz) {
+  const alpha = 1 - Math.exp((-2 * Math.PI * clamp(cutoffHz, 40, 20_000)) / SAMPLE_RATE);
+  let left = 0;
+  let right = 0;
+  for (let i = 0; i < samples.length; i += 2) {
+    left += (samples[i] - left) * alpha;
+    right += (samples[i + 1] - right) * alpha;
+    samples[i] = left;
+    samples[i + 1] = right;
+  }
+}
+
+/** Like decodeBedWithFfmpeg but never loops: a one-shot ends when it ends. */
+function decodeStemWithFfmpeg(inputPath, maxDuration, offset) {
+  const ffmpeg = process.env.FFMPEG_BIN ?? process.env.FFMPEG_PATH ?? "ffmpeg";
+  const result = spawnSync(
+    ffmpeg,
+    [
+      "-hide_banner",
+      "-loglevel", "error",
+      "-ss", offset.toFixed(3),
+      "-i", inputPath,
+      "-t", maxDuration.toFixed(6),
+      "-vn",
+      "-ac", String(CHANNELS),
+      "-ar", String(SAMPLE_RATE),
+      "-f", "f32le",
+      "pipe:1"
+    ],
+    {
+      encoding: null,
+      maxBuffer: Math.ceil(maxDuration * SAMPLE_RATE * CHANNELS * 4 + 1_048_576)
+    }
+  );
+
+  if (result.error) {
+    return { samples: null, reason: `ffmpeg unavailable: ${result.error.message}` };
+  }
+  if (result.status !== 0 || !result.stdout?.length) {
+    const detail = result.stderr?.toString("utf8").trim();
+    return { samples: null, reason: detail ? `ffmpeg decode failed: ${detail}` : "ffmpeg decode failed" };
+  }
+  const byteLength = result.stdout.byteLength - (result.stdout.byteLength % 4);
+  const exactBytes = result.stdout.buffer.slice(
+    result.stdout.byteOffset,
+    result.stdout.byteOffset + byteLength
+  );
+  return { samples: new Float32Array(exactBytes) };
 }
 
 function decodeBedWithFfmpeg(inputPath, duration, offset) {
@@ -2120,7 +2494,7 @@ function resolveBedPath(input) {
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
-function masterAndLimit(mix, makeupGain = 1) {
+export function masterAndLimit(mix, makeupGain = 1) {
   // Remove tiny DC offsets introduced by filtered noise before dynamics.
   highPassDc(mix.left);
   highPassDc(mix.right);
@@ -2179,7 +2553,7 @@ function edgeEnvelope(time, duration) {
   return fadeIn * fadeOut;
 }
 
-function encodePcm16Wav(left, right, sampleRate) {
+export function encodePcm16Wav(left, right, sampleRate) {
   const frames = Math.min(left.length, right.length);
   const bytesPerSample = 2;
   const blockAlign = CHANNELS * bytesPerSample;

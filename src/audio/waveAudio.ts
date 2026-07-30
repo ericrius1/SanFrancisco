@@ -37,6 +37,7 @@ import {
 } from "../world/oceanBeachWaves";
 import type { WorldMap } from "../world/heightmap";
 import type { NatureSoundscape } from "./natureSoundscape";
+import type { WaveOneShotKind, WaveStems } from "./waveStems";
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
@@ -123,8 +124,17 @@ export class WaveAudio {
   #washSource: AudioBufferSourceNode | null = null;
   #washGain: GainNode | null = null;
   #washFilter: BiquadFilterNode | null = null;
+  #washNoiseGain: GainNode | null = null;
   #releaseNatureHold: (() => void) | null = null;
   #silentSeconds = 0;
+
+  // sampled stems — real recordings behind the wash, crashes and swash. The
+  // module and its audio load lazily on the first audible beach approach; the
+  // procedural voices below remain the pre-load fallback so that approach is
+  // never silent.
+  #stems: WaveStems | null = null;
+  #stemsRequested = false;
+  #bedsStarted = false;
 
   // break watcher
   #noise: AudioBuffer | null = null;
@@ -149,7 +159,9 @@ export class WaveAudio {
       holdingContext: this.#releaseNatureHold !== null,
       posts: this.#posts.map((p) => Math.round(p.z)),
       crashes: this.#crashes,
-      live: this.#live
+      live: this.#live,
+      bedsActive: this.#bedsStarted,
+      stems: this.#stems?.debugState ?? null
     };
   }
 
@@ -181,6 +193,13 @@ export class WaveAudio {
     this.#washGain = wg;
     this.#washFilter = filter;
 
+    // The procedural noise loop gets its own gain so a late-arriving sampled
+    // bed can fade it out mid-flight instead of clicking it off.
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.value = 1;
+    noiseGain.connect(filter);
+    this.#washNoiseGain = noiseGain;
+
     this.#ready = true;
     return ctx;
   }
@@ -211,18 +230,26 @@ export class WaveAudio {
     }
     const ctx = this.#init();
     if (!ctx || !this.#washGain) return;
-    if (target > 0.02) this.#startWash(ctx);
+    if (target > 0.02) {
+      this.#ensureStems(ctx);
+      this.#startWash(ctx);
+    }
     if (ctx.state === "suspended") return; // waits for the first user gesture
 
     // smooth the energy so walking in/out of range doesn't click
     this.#level += (target - this.#level) * Math.min(1, dt * 2.5);
     this.#breaking += (energy.breaking - this.#breaking) * Math.min(1, dt * 2);
     const now = ctx.currentTime;
+    this.#stems?.update(dt, this.#releaseNatureHold !== null, now);
 
     // No fixed noise floor: as wave energy fades, the wash reaches actual
     // silence instead of leaving a permanent filtered hiss in enclosed sites.
     this.#washGain.gain.setTargetAtTime(this.#level * (0.05 + this.#level * 0.22), now, 0.1);
-    if (this.#washFilter) this.#washFilter.frequency.setTargetAtTime(650 + this.#level * 1500, now, 0.1);
+    // A real bed carries its own spectrum, so the filter stays mostly open and
+    // works as distance movement; the white-noise fallback keeps the old,
+    // darker curve — at 2 kHz noise reads as hiss where a recording reads as surf.
+    const cutoff = this.#bedsStarted ? 1400 + this.#level * 6800 : 650 + this.#level * 1500;
+    if (this.#washFilter) this.#washFilter.frequency.setTargetAtTime(cutoff, now, 0.1);
 
     if (target <= 0.001 && this.#level <= 0.002) {
       this.#level = 0;
@@ -237,11 +264,16 @@ export class WaveAudio {
     this.#releaseNatureHold?.();
     this.#releaseNatureHold = null;
     this.#stopWash();
+    this.#stems?.dispose();
+    this.#stems = null;
+    this.#stemsRequested = false;
     this.#washGain?.disconnect();
     this.#washFilter?.disconnect();
+    this.#washNoiseGain?.disconnect();
     this.#out?.disconnect();
     this.#washGain = null;
     this.#washFilter = null;
+    this.#washNoiseGain = null;
     this.#out = null;
     this.#ctx = null;
     this.#ready = false;
@@ -330,23 +362,70 @@ export class WaveAudio {
     return Math.max(-0.75, Math.min(0.75, pan * 0.85));
   }
 
+  /**
+   * Kick the sampled-stem system exactly once, on the first frame the sea is
+   * audible. Dynamic import keeps the module and manifest out of the boot
+   * bundle, and WaveStems itself fetches nothing until ensureLoaded().
+   */
+  #ensureStems(ctx: AudioContext): void {
+    if (this.#stemsRequested) return;
+    this.#stemsRequested = true;
+    void import("./waveStems")
+      .then(({ WaveStems }) => {
+        if (!this.#stemsRequested || this.#ctx !== ctx) return; // disposed while importing
+        const stems = new WaveStems(ctx);
+        stems.ensureLoaded();
+        this.#stems = stems;
+      })
+      .catch((error) => {
+        console.warn("[wave-audio] stem module failed to load; staying procedural", error);
+      });
+  }
+
   #startWash(ctx: AudioContext): void {
-    if (this.#washSource || !this.#noise || !this.#washFilter) return;
+    const stems = this.#stems;
+    if (stems?.bedsReady && this.#washFilter) {
+      if (!this.#bedsStarted) {
+        this.#bedsStarted = true;
+        stems.startBeds(this.#washFilter);
+        // Hand over from the procedural loop mid-flight if it was running.
+        const src = this.#washSource;
+        if (src && this.#washNoiseGain) {
+          const now = ctx.currentTime;
+          this.#washNoiseGain.gain.setTargetAtTime(0, now, 0.5);
+          try { src.stop(now + 2.2); } catch { /* already stopped */ }
+          src.onended = () => { try { src.disconnect(); } catch { /* already gone */ } };
+          this.#washSource = null;
+        }
+      }
+      return;
+    }
+    if (this.#bedsStarted) return; // beds are running; never restart the noise under them
+    if (this.#washSource || !this.#noise || !this.#washNoiseGain) return;
     const src = ctx.createBufferSource();
     src.buffer = this.#noise;
     src.loop = true;
-    src.connect(this.#washFilter);
+    src.connect(this.#washNoiseGain);
     src.start(0, Math.random() * Math.max(0.01, this.#noise.duration));
     this.#washSource = src;
   }
 
   #stopWash(): void {
+    this.#stems?.stopBeds();
+    this.#bedsStarted = false;
     try { this.#washSource?.stop(); } catch { /* already stopped */ }
     this.#washSource?.disconnect();
     this.#washSource = null;
-    if (this.#washGain && this.#ctx) {
-      this.#washGain.gain.cancelScheduledValues(this.#ctx.currentTime);
-      this.#washGain.gain.value = 0;
+    if (this.#ctx) {
+      const now = this.#ctx.currentTime;
+      if (this.#washGain) {
+        this.#washGain.gain.cancelScheduledValues(now);
+        this.#washGain.gain.value = 0;
+      }
+      if (this.#washNoiseGain) {
+        this.#washNoiseGain.gain.cancelScheduledValues(now);
+        this.#washNoiseGain.gain.value = 1;
+      }
     }
   }
 
@@ -399,20 +478,83 @@ export class WaveAudio {
     this.#live++;
     const nodes: AudioNode[] = [pan];
 
+    // Which recording class this wave belongs to. Null until stems decode —
+    // the procedural three-layer synthesis below is the pre-load fallback.
+    const kind: WaveOneShotKind =
+      weight > 0.6 ? "crash-big" : weight > 0.3 ? "crash-mid" : "crash-small";
+    const drawn = this.#stems?.draw(kind) ?? null;
+
     // --- impact: the mass of the lip hitting the water --------------------
+    // Kept in both paths: under a recording it runs reduced, as sub
+    // reinforcement you feel more than hear.
     const thud = ctx.createOscillator();
     thud.type = "sine";
     thud.frequency.setValueAtTime(78 + weight * 26, at);
     thud.frequency.exponentialRampToValueAtTime(30, at + 0.8);
     const thudGain = ctx.createGain();
     thudGain.gain.setValueAtTime(0.0001, at);
-    thudGain.gain.exponentialRampToValueAtTime(0.05 + weight * 0.12, at + 0.09);
+    thudGain.gain.exponentialRampToValueAtTime((0.05 + weight * 0.12) * (drawn ? 0.55 : 1), at + 0.09);
     thudGain.gain.exponentialRampToValueAtTime(0.0001, at + 1.1);
     thud.connect(thudGain);
     thudGain.connect(pan);
     thud.start(at);
     thud.stop(at + 1.2);
     nodes.push(thud, thudGain);
+
+    if (drawn) {
+      // --- body: one real wave breaking, pitched slightly off per event ----
+      // The recording carries throw and tumble at once; the old bandpass sweep
+      // becomes a static distance lowpass — near is open air, far is roar.
+      const rate = 0.92 + Math.random() * 0.16;
+      const body = ctx.createBufferSource();
+      body.buffer = drawn.buffer;
+      body.playbackRate.value = rate;
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.Q.value = 0.4;
+      lp.frequency.value = 1200 + bright * 8300;
+      const bodyGain = ctx.createGain();
+      const peak = Math.min(1, gain * (0.6 + bright * 0.4) * drawn.def.gainTrim);
+      const seconds = drawn.buffer.duration / rate;
+      bodyGain.gain.setValueAtTime(0.0001, at);
+      bodyGain.gain.exponentialRampToValueAtTime(Math.max(0.001, peak), at + 0.012);
+      // the tail is the recording's own; only seal the very end
+      bodyGain.gain.setValueAtTime(Math.max(0.001, peak), at + Math.max(0.02, seconds - 0.3));
+      bodyGain.gain.linearRampToValueAtTime(0.0001, at + seconds);
+      body.connect(lp);
+      lp.connect(bodyGain);
+      bodyGain.connect(pan);
+      body.start(at);
+      body.stop(at + seconds + 0.05);
+      nodes.push(body, lp, bodyGain);
+
+      // --- sub layer: Boca do Inferno's low half stacked under the big ones
+      if (kind === "crash-big") {
+        const sub = this.#stems?.draw("sub") ?? null;
+        if (sub) {
+          const subRate = 0.95 + Math.random() * 0.1;
+          const subSrc = ctx.createBufferSource();
+          subSrc.buffer = sub.buffer;
+          subSrc.playbackRate.value = subRate;
+          const subGain = ctx.createGain();
+          const subPeak = Math.min(1, gain * 0.55 * sub.def.gainTrim);
+          const subSeconds = sub.buffer.duration / subRate;
+          subGain.gain.setValueAtTime(0.0001, at);
+          subGain.gain.exponentialRampToValueAtTime(Math.max(0.001, subPeak), at + 0.03);
+          subGain.gain.setValueAtTime(Math.max(0.001, subPeak), at + Math.max(0.04, subSeconds - 0.45));
+          subGain.gain.linearRampToValueAtTime(0.0001, at + subSeconds);
+          subSrc.connect(subGain);
+          subGain.connect(pan);
+          subSrc.start(at);
+          subSrc.stop(at + subSeconds + 0.05);
+          nodes.push(subSrc, subGain);
+        }
+      }
+
+      this.#crashes++;
+      body.onended = () => this.#retire(nodes);
+      return;
+    }
 
     // --- throw: the bright burst of water leaving the lip -----------------
     const throwSrc = ctx.createBufferSource();
@@ -481,6 +623,48 @@ export class WaveAudio {
     const gain = clamp01(mask) * (1 / (1 + distance / 90)) * 0.5;
     if (gain < 0.005) return;
     const at = ctx.currentTime + distance / SPEED_OF_SOUND;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = this.#panFor(listener, x, z, distance);
+    pan.connect(this.#out);
+
+    const drawn = this.#stems?.draw("swash") ?? null;
+    if (drawn) {
+      // A recorded sheet of bubbles. The stems are long enough to enter
+      // mid-sheet, which with the variant draw kills any chance of a repeat.
+      const rate = 0.95 + Math.random() * 0.15;
+      const src = ctx.createBufferSource();
+      src.buffer = drawn.buffer;
+      src.playbackRate.value = rate;
+      const span = Math.min(3.8, drawn.buffer.duration);
+      const offset = drawn.buffer.duration > span + 0.3
+        ? Math.random() * (drawn.buffer.duration - span - 0.2)
+        : 0;
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.value = 300;
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.setValueAtTime(6500, at);
+      lp.frequency.exponentialRampToValueAtTime(2400, at + 2.6);
+      const g = ctx.createGain();
+      const peak = Math.min(1, gain * 1.1 * drawn.def.gainTrim);
+      const seconds = span / rate;
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(peak, at + 0.35);
+      g.gain.setValueAtTime(peak, at + Math.max(0.35, seconds - 0.45));
+      g.gain.linearRampToValueAtTime(0.0001, at + seconds);
+      src.connect(hp);
+      hp.connect(lp);
+      lp.connect(g);
+      g.connect(pan);
+      this.#live++;
+      src.start(at, offset, span + 0.05);
+      src.stop(at + seconds + 0.1);
+      const nodes: AudioNode[] = [src, hp, lp, g, pan];
+      src.onended = () => this.#retire(nodes);
+      return;
+    }
+
     const src = ctx.createBufferSource();
     src.buffer = this.#noise;
     src.playbackRate.value = 1.05 + Math.random() * 0.3;
@@ -497,13 +681,10 @@ export class WaveAudio {
     g.gain.setValueAtTime(0.0001, at);
     g.gain.linearRampToValueAtTime(gain, at + 0.55);
     g.gain.exponentialRampToValueAtTime(0.0001, at + 3.4);
-    const pan = ctx.createStereoPanner();
-    pan.pan.value = this.#panFor(listener, x, z, distance);
     src.connect(hp);
     hp.connect(lp);
     lp.connect(g);
     g.connect(pan);
-    pan.connect(this.#out);
     this.#live++;
     src.start(at, Math.random() * 1.5, 3.6);
     src.stop(at + 3.6);
