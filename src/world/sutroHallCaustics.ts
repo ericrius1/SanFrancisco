@@ -68,12 +68,16 @@ const CAUSTIC_GAIN = 0.5;
 /**
  * The pool field, simplified to two rectangles in hall-local XZ.
  *
- * SUTRO_POOLS has seven entries, but six of them are the graduated baths packed
- * into one column, so two boxes cover the real footprint to well within the
- * softness of the mask. Seven tests would cost more and look identical.
+ * SUTRO_POOLS has eight entries — the L-shaped great plunge in two, and the six
+ * graduated baths packed into one column — so two boxes cover the real
+ * footprint to well within the softness of the mask. Eight tests would cost
+ * more and look identical. The west box is the plunge's long leg plus the west
+ * half of its south court; the east box is the bath column plus the court's
+ * east half, and over-covers the 6 m mid walkway between them, which the
+ * feather would have spilled onto anyway.
  */
-const PLUNGE = { minX: -31, maxX: -10, minZ: -55, maxZ: 29 };
-const BATHS = { minX: -4, maxX: 19, minZ: -55, maxZ: 44 };
+const PLUNGE = { minX: -31, maxX: -10, minZ: -55, maxZ: 44 };
+const BATHS = { minX: -10, maxX: 19, minZ: -55, maxZ: 44 };
 /** Metres of feather on the mask edge — caustic light spills past a coping. */
 const MASK_FEATHER = 3.5;
 

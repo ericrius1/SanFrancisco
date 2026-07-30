@@ -173,10 +173,13 @@ const LAMP_POSTS: readonly { lx: number; lz: number }[] = [
  * holder carrying `count` tapers.
  */
 const CANDLE_CLUSTERS: readonly { lx: number; lz: number; count: number }[] = [
-  // west coping of the great plunge, over the water
-  ...[-52, -44, -36, -28, -20, -12, -4, 4, 12, 20].map((lz) => ({ lx: -32.4, lz, count: 2 })),
-  // the central deck spine between the plunge and the graduated baths
-  ...[-56, -48, -40, -32, -24, -16, -8, 0, 8, 16, 24, 32, 40].map((lz) => ({ lx: -7.2, lz, count: 3 })),
+  // west coping, the whole length of the great plunge and its south court
+  ...[-52, -44, -36, -28, -20, -12, -4, 4, 12, 20, 28, 36].map((lz) => ({ lx: -32.4, lz, count: 2 })),
+  // The central deck spine between the plunge and the graduated baths. It
+  // STOPS at z 16: past that the spine is under the great plunge's south court.
+  ...[-56, -48, -40, -32, -24, -16, -8, 0, 8, 16].map((lz) => ({ lx: -7.2, lz, count: 3 })),
+  // the cross promenade, where the spine meets the head of the bath column
+  ...[0, 8, 16].map((lx) => ({ lx, lz: 18.3, count: 3 })),
   // east coping of the graduated baths
   ...[-50, -42, -34, -26, -18, -10, -2, 6, 14, 22, 30, 38].map((lz) => ({ lx: 20.6, lz, count: 2 })),
   // the ocean-window gallery rail
@@ -195,7 +198,7 @@ const TOWELS: readonly { lx: number; lz: number; face: number; tone: number }[] 
   { lx: -32.4, lz: -32, face: 0.3, tone: 0 },
   { lx: -32.4, lz: 12, face: -0.2, tone: 1 },
   { lx: -8.6, lz: -14, face: 1.4, tone: 2 },
-  { lx: -8.6, lz: 22, face: 1.6, tone: 0 },
+  { lx: -8.6, lz: 17.4, face: 1.6, tone: 0 },
   { lx: 20.6, lz: -40, face: -1.5, tone: 1 },
   { lx: 20.6, lz: 3, face: -1.4, tone: 2 },
   { lx: -35.4, lz: -30, face: -1.5, tone: 1 }

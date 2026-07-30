@@ -5,17 +5,17 @@
   "bake": "npm run bake:region -- --site sutro-baths",
   "tracked": true,
   "inputs": {
-    "assets-src/world/sites/sutro-baths.blend": "783a16efd8d602c4b29a2fe81301c0522102ba4065897016c8d6ce73aefbda2b",
-    "data/authored-regions.json": "dcbbb562570611d5a4dc2be26ff92948773d6cc2f181e581e211c5629c1d7ab3",
-    "tools/export-authored-site.py": "1eeadae42a8df528656b2cc815558e17ab53207d44deaa2cadab6780067d000b",
+    "assets-src/world/sites/sutro-baths.blend": "e718a28327b5e23b31d9e991a2a38c1648123ad6d492643e1b1992fa45877432",
+    "data/authored-regions.json": "040a3560782857c0ac0439f5d50bb8970c17b221d24440cfae09675c49306e2f",
+    "tools/export-authored-site.py": "bc1fed401a1fd10e18b7804f39c379665ba470a5d46f795d2c0e64b8632f6692",
     "tools/inject-authored-site.mjs": "2d50e6ae61e2b575bfb0403586a1a1e0d2c947f093fb69773affef41bb8a0101",
     "tools/sync-authored-region.py": "44b9eba826becee2ddec3312666a50902256d2ddad53d389b915801b07145172"
   },
   "outputs": {
-    "data/authored-sites/sutro-baths.json": "3c8eaecd09a0d693706e89150218ac9f32c4014e0ad6aa9b8be6aa341a49f511",
-    "public/data/authored-regions.json": "44baa8439a3958dbbc8cb19534d6d63c1fe5ef1e26af3e447fbfe110077d5acb",
-    "public/data/colliders/tile_1_12.json": "3fb63449732b611c8284c86f66a87d7d0aed0983264d0f0e0d06d88feddf853c",
-    "public/regions/sutro-baths.glb": "d10cdfcaaaa782a4539870c694c29bdbc59eb6de0c1be9f277bb4cb8938f4820",
+    "data/authored-sites/sutro-baths.json": "2f559e8736ae85cf0110afb87a22f664f4f004bea2c26def2e2a7b0a9c4097d2",
+    "public/data/authored-regions.json": "763c3aa4096c73ccc1126dc706bf53723f0e90316a50e3948865b41604c17ac5",
+    "public/data/colliders/tile_1_12.json": "7b872a7bb84c33ecea2f130e163aeed64920a48ef035484f0748ebfd8457485c",
+    "public/regions/sutro-baths.glb": "617a79d45d31470e2c90ce06634a3fc87e0460bd4cdd2f33d19d1bd46e0b36d1",
     "public/tiles/tile_1_12.glb": "6620ea63a3cc5c5092859f2b3349598803f7bd51173a4e421ac0726ffa92db9b"
   }
 }
