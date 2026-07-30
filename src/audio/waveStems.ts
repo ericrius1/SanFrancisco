@@ -1,7 +1,6 @@
 // Sampled surf stems for WaveAudio — the recordings behind the crashes and the
-// wash. Mirrors the music StemPlayer residency contract (src/audio/music/stems.ts):
-// nothing fetches at construction, buffers decode only on demand, and a long
-// quiet spell releases the decoded memory again.
+// wash. Lazy residency: nothing fetches at construction, buffers decode only on
+// demand, and a long quiet spell releases the decoded memory again.
 //
 // Two players in one:
 //   · beds     two long shoreline recordings, overlap-scheduled as crossfading

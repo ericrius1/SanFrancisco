@@ -54,7 +54,6 @@ import { ModeTransitionAudio } from "../../fx/modeTransitionAudio";
 import { JumpLandingAudio } from "../../fx/jumpLandingAudio";
 import { DoorAudio } from "../../fx/doorAudio";
 import { createNatureSoundscape, DogParkAudio, BallImpactAudio } from "../../audio";
-import { createLofiMusic } from "../../audio/music";
 import { WaveAudio } from "../../audio/waveAudio";
 import { AbandonedMounts } from "../../gameplay/abandonedMounts";
 import { spawnScatterBoats } from "../../gameplay/scatterBoats";
@@ -304,10 +303,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // / Marin): sampled beds + gust-locked wind synth + spatial animal calls, all
   // fading in per region. Suspends itself when the player is out in the city.
   const nature = createNatureSoundscape();
-  // Generative lo-fi score for the whole map (region-flavoured, day/night
-  // aware, ducks near live performers). The handle is a thin facade — the
-  // director + its worker buffers dynamic-import on first audible frame.
-  const lofiMusic = createLofiMusic();
   // Reusable ocean-wave layer (breaking surf at Ocean Beach + shoreline wash
   // anywhere near water); rides the nature AudioContext.
   const waveAudio = new WaveAudio(nature);
@@ -1253,7 +1248,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     doorAudio,
     audioControls,
     nature,
-    lofiMusic,
     waveAudio,
     ballImpactAudio,
     updatePlayerFoley,

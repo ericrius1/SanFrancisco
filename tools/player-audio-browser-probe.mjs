@@ -58,7 +58,7 @@ try {
   assert.equal(await mixerPanel.isVisible(), true, "sound mixer did not open");
   assert.deepEqual(
     await page.locator("#hud .audio-lbl").allTextContents(),
-    ["Music", "FX", "World", "Voice"],
+    ["Live", "FX", "World", "Voice"],
     "sound mixer groups changed"
   );
   await page.locator('[data-kind="effects"]').evaluate((slider) => {

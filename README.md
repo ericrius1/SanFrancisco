@@ -285,10 +285,10 @@ pose model reads your webcam and drives your avatar's body directly.
   Catto's 3D rigid-body engine), through `src/core/box3dWorld.ts`.
 - **Multiplayer** — a tiny WebSocket relay (`server/server.mjs`), `ws` its only
   runtime dependency.
-- **Audio** — everything is synthesized at runtime. The score is composed live
-  by a director that schedules chords, bass, melody and percussion 1.6 s ahead
-  of the audio clock, and *where you're standing decides what plays*. See
-  [`docs/MUSIC.md`](docs/MUSIC.md).
+- **Audio** — one shared `AudioEngine` with music / effects / world / voice
+  buses. Foley, vehicles, nature soundscape, surf, and diegetic performers
+  (buskers, beach pianist, Fort Mason) all plug into it; there is no continuous
+  generative soundtrack.
 
 ### How the world loads
 
@@ -322,7 +322,7 @@ pose model reads your webcam and drives your avatar's body directly.
 | `src/world/vegetation/`, `groundcover/`, `wildlands/` | The shared plant runtime |
 | `src/player/`, `src/vehicles/` | Every embodiment, each a `ModeController` |
 | `src/gameplay/` | Activities and quests (golf, pickleball, archery, afterlight…) |
-| `src/audio/` | Engine, generative score, nature soundscape, foley |
+| `src/audio/` | Engine, nature soundscape, surf, foley buses |
 | `src/net/` | Relay client, remote interpolation, WebRTC voice |
 | `src/ui/` | HUD, minimap/map, toolbar, customizers, tutorial, reader |
 | `src/cinematic/` | The deterministic film layer |
@@ -361,10 +361,6 @@ in [`AGENTS.md`](AGENTS.md), which is what automated contributors read.
    grove. Regions own botanical intent only (positions, archetype, yaw, scale);
    the shared runtime owns compilation, instancing, wind, LOD and culling.
    Exhibit-site foliage streams through `SiteFoliageStreamer`.
-4. **Music identity is data, not code.** To make a place sound different, edit
-   `src/audio/music/regions.ts` — don't add a bespoke synth or a per-place
-   special case in the director.
-
 ### Verifying changes
 
 There is no unit-test suite. Verification is **contract tests** (pure Node
@@ -403,7 +399,6 @@ requested asset afterward.
 | [`docs/TERRAIN.md`](docs/TERRAIN.md) | Runtime terrain authority |
 | [`docs/SHADOWS.md`](docs/SHADOWS.md) | Three player-centric projection maps |
 | [`docs/FOG_WEATHER.md`](docs/FOG_WEATHER.md) | Coherent, optionally real-weather fog |
-| [`docs/MUSIC.md`](docs/MUSIC.md) | The generative score |
 | [`docs/CINEMATICS.md`](docs/CINEMATICS.md) | The deterministic film pipeline |
 | [`docs/BAKED-ASSETS.md`](docs/BAKED-ASSETS.md) | Keeping baked artifacts in sync |
 | [`docs/NATIVE_FOLIAGE_TEXTURES.md`](docs/NATIVE_FOLIAGE_TEXTURES.md) | Procedural foliage textures |

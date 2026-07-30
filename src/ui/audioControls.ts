@@ -4,7 +4,7 @@ export type MocapControlState = "off" | "loading" | "searching" | "tracking" | "
 
 /**
  * Compact master audio widget. The always-visible row stays small; a disclosure
- * opens the music/effects/world/voice mixer only when the player asks for it.
+ * opens the live/FX/world/voice mixer only when the player asks for it.
  * Pure DOM inside #hud
  * (pointer-events: none — this widget opts itself back in, like the toolbar).
  * Writes core/audioSettings; the audio systems poll it, so there's nothing to
@@ -45,9 +45,13 @@ export class AudioControls {
     root.className = "audio";
     this.#root = root;
 
-    this.#musicSlider = this.#makeSlider("music", "music volume (songs)", (v) => {
-      AUDIO_PREFS.musicVolume = v;
-    });
+    this.#musicSlider = this.#makeSlider(
+      "music",
+      "live music volume: buskers, beach piano, Fort Mason",
+      (v) => {
+        AUDIO_PREFS.musicVolume = v;
+      }
+    );
     this.#effectsSlider = this.#makeSlider("effects", "sound effects volume", (v) => {
       AUDIO_PREFS.effectsVolume = v;
     });
@@ -65,7 +69,7 @@ export class AudioControls {
     const sliders = document.createElement("div");
     sliders.className = "audio-sliders";
     sliders.append(
-      this.#labeledRow("Music", this.#musicSlider),
+      this.#labeledRow("Live", this.#musicSlider),
       this.#labeledRow("FX", this.#effectsSlider),
       this.#labeledRow("World", this.#soundscapeSlider),
       this.#labeledRow("Voice", this.#voiceSlider)

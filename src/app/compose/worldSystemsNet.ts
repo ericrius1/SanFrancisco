@@ -31,7 +31,6 @@ import { Chat } from "../../ui/chat";
 import { EmoteWheel } from "../../ui/emoteWheel";
 import { emoteById, emoteIndex } from "../../player/emotes";
 import {    BALL_IMPACT_AUDIO_TUNING } from "../../audio";
-import { LOFI_MUSIC_TUNING } from "../../audio/music/tuning";
 import type {  } from "../../gameplay/creatures";
 import type {  } from "../../gameplay/forest";
 import type {  } from "../../world/citygen";
@@ -1010,16 +1009,6 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     title: "Ball impact sound · thud / water / magic echo",
     build(folder) {
       BALL_IMPACT_AUDIO_TUNING.bind(folder);
-    }
-  });
-
-  // The generative score's mix. Bound from ./tuning rather than the director so
-  // the music engine itself stays behind its first-gesture gate.
-  debugPanel.registerFeatureTuning({
-    id: "lofi-music",
-    title: "Score · keys / pads / bass / beats / space",
-    build(folder) {
-      LOFI_MUSIC_TUNING.bind(folder);
     }
   });
 
