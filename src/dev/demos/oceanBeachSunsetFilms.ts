@@ -56,6 +56,19 @@ type Live = {
   breakX: (z: number) => number;
   shoreX: (z: number) => number;
   inlandHandX: number;
+  /**
+   * Clamp the eye against the inland-most hand and return the ground height
+   * at the CLAMPED position. The surf films applied the clamp after the
+   * framing had already measured its ground height, so a clamped camera kept
+   * the pre-clamp height — film 03's first cut opened 0.4 m under the dune
+   * sand and only the runtime floor clamp saved the take. Frame functions
+   * call this after placing eye.xz and before using the ground.
+   *
+   * `margin` may be negative for the stretch of a shot in which no tether
+   * can be in frame (a lens pointed at open surf well away from the flock);
+   * it must be back at HAND_MARGIN before any kite enters the picture.
+   */
+  settleEye: (eye: THREE.Vector3, margin?: number) => number;
 };
 
 type Film = {
@@ -123,7 +136,7 @@ const FILMS: readonly Film[] = [
       eye.copy(anchor)
         .addScaledVector(live.sun, -mix(98, 74, push))
         .addScaledVector(along, mix(-14, 6, push));
-      const base = live.ground(eye.x, eye.z);
+      const base = live.settleEye(eye);
       // 6.8 m down to 4.6: high enough to see the sand the spectrum lies on,
       // descending so the rainbow rises through the frame as the set arrives.
       eye.y = base + mix(6.8, 4.6, push);
@@ -170,7 +183,7 @@ const FILMS: readonly Film[] = [
       eye.copy(anchor)
         .addScaledVector(live.sun, -18)
         .addScaledVector(along, mix(-34, 26, track));
-      const base = live.ground(eye.x, eye.z);
+      const base = live.settleEye(eye);
       eye.y = base + 1.7;
       // Aim at the sand the light lies on — just inland of the runner, where
       // the beam lands — not at the kite. The sail crosses the top of frame
@@ -210,17 +223,27 @@ const FILMS: readonly Film[] = [
     frame: ({ u }, live, eye, target) => {
       const rise = easeInOutCubic(u);
       const along = new THREE.Vector3(-live.sun.z, 0, live.sun.x).normalize();
-      const z = live.runner.z - 30;
+      // Opens EIGHTY-FIVE metres south of the gathered flock, out over the
+      // water at wave height — which the hand clamp would normally forbid.
+      // The exception is deliberate and bounded: with the nearest hand 85 m
+      // north and the lens pointed at the surf, no tether can be in frame,
+      // so the margin runs negative for the cold open and is back to the
+      // full HAND_MARGIN by u=0.42 — before the crane is high enough to
+      // bring the flock into the picture.
+      const z = live.runner.z - mix(85, 25, rise);
       const hold = new THREE.Vector3(mix(live.breakX(z), live.shoreX(z), 0.3), 0, z);
       eye.copy(hold)
-        .addScaledVector(live.sun, -mix(70, 130, rise))
+        .addScaledVector(live.sun, -mix(34, 130, rise))
         .addScaledVector(along, mix(-10, 18, rise));
-      const base = live.ground(eye.x, eye.z);
-      eye.y = base + mix(1.5, 11, rise);
+      const margin = mix(-52, HAND_MARGIN, smoothstep(Math.min(1, u / 0.42)));
+      const base = live.settleEye(eye, margin);
+      // 1.6 m off the water for the open — BELOW the crest of anything that
+      // stands up out there — rising to eleven as the big set arrives.
+      eye.y = base + mix(1.6, 11, rise);
       target.copy(hold).addScaledVector(along, mix(-4, 10, rise));
       // Water first, festival later: the aim walks up from the face of the
       // break to a point under the gathered flock.
-      target.y = base + mix(2.4, 8.5, rise) + (live.flock.y - base) * mix(0.05, 0.3, rise);
+      target.y = base + mix(2.8, 8.5, rise) + (live.flock.y - base) * mix(0.05, 0.3, rise);
       return mix(34, 29, rise);
     }
   },
@@ -254,7 +277,7 @@ const FILMS: readonly Film[] = [
       eye.copy(live.flock)
         .addScaledVector(live.sun, -mix(112, 104, drift))
         .addScaledVector(along, mix(-16, 14, drift));
-      const base = live.ground(eye.x, eye.z);
+      const base = live.settleEye(eye);
       eye.y = base + 2.8;
       target.copy(live.flock).addScaledVector(along, mix(-4, 3, drift));
       target.y = base + mix(11.6, 12.2, drift) + (live.flock.y - base) * 0.14;
@@ -298,7 +321,7 @@ const FILMS: readonly Film[] = [
       // the arc keeps the hero nearest the lens the whole way round.
       const center = new THREE.Vector3().copy(live.flock).lerp(live.kite, 0.55);
       eye.copy(center).addScaledVector(away, mix(50, 43, arc));
-      const base = live.ground(eye.x, eye.z);
+      const base = live.settleEye(eye);
       eye.y = base + 1.6;
       target.copy(center);
       target.y = base + mix(18.5, 16.5, arc);
@@ -423,10 +446,13 @@ function buildFilm(film: Film): Demo {
                 ground,
                 breakX,
                 shoreX,
-                inlandHandX
+                inlandHandX,
+                settleEye: (eyeVec, margin = HAND_MARGIN) => {
+                  eyeVec.x = Math.max(eyeVec.x, inlandHandX + margin);
+                  return ground(eyeVec.x, eyeVec.z);
+                }
               };
               const focal = film.frame(sample, live, eye, target);
-              eye.x = Math.max(eye.x, inlandHandX + HAND_MARGIN);
               setPose(out, eye, target, focal);
 
               // Steer the world's streaming focus onto the water the lens is

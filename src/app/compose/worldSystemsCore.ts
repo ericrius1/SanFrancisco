@@ -509,6 +509,33 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // has nothing to do with the surf runtime and loads on approach to the beach
   // itself, on foot or on wheels. Visiting the rest of the city must not fetch
   // a byte of it, so the mesh + material live behind a dynamic import.
+  //
+  // The warmup compile is TIME-BOXED, not awaited to completion: under the
+  // capture harness's manual replay a compileAsync can outlive the whole take
+  // (the kite flock measured 348 s before it got the same budget), and an
+  // await with no ceiling meant the shorebreak sheet, the spray plume and the
+  // gulls silently never joined a single cinematic frame. Past the budget the
+  // effect is added anyway and the compile finishes in the background — one
+  // possible hitch on its first live frame, versus never existing at all.
+  const SHORE_WARMUP_BUDGET_MS = 4000;
+  const timeBoxedCompile = async (group: THREE.Object3D, label: string) => {
+    let done = false;
+    const compile = renderer
+      .compileAsync(group, camera, scene)
+      .then(() => {
+        done = true;
+      })
+      .catch((error: unknown) => console.warn(`[${label}] warmup compile failed`, error));
+    await Promise.race([
+      compile,
+      new Promise((resolve) => setTimeout(resolve, SHORE_WARMUP_BUDGET_MS))
+    ]);
+    if (!done) {
+      console.warn(
+        `[${label}] warmup exceeded ${SHORE_WARMUP_BUDGET_MS} ms; adding and finishing in the background`
+      );
+    }
+  };
   let shorebreak: import("../../world/oceanBeachShorebreak").OceanBeachShorebreak | null = null;
   let shorebreakLoading: Promise<void> | null = null;
   const ensureShorebreak = () => {
@@ -516,13 +543,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     shorebreakLoading = import("../../world/oceanBeachShorebreak")
       .then(async ({ OceanBeachShorebreak }) => {
         const sheet = new OceanBeachShorebreak(map);
-        try {
-          // Compile detached, like the surf sheet: a transparent sheet this
-          // wide added uncompiled costs a visible hitch on arrival.
-          await renderer.compileAsync(sheet.group, camera, scene);
-        } catch (error) {
-          console.warn("[shorebreak] warmup compile failed", error);
-        }
+        await timeBoxedCompile(sheet.group, "shorebreak");
         scene.add(sheet.group);
         shorebreak = sheet;
       })
@@ -547,11 +568,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     sprayLoading = import("../../world/oceanBeachSpray")
       .then(async ({ OceanBeachSpray }) => {
         const field = new OceanBeachSpray(sky);
-        try {
-          await renderer.compileAsync(field.group, camera, scene);
-        } catch (error) {
-          console.warn("[ocean-spray] warmup compile failed", error);
-        }
+        await timeBoxedCompile(field.group, "ocean-spray");
         scene.add(field.group);
         spray = field;
       })
@@ -575,11 +592,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     gullsLoading = import("../../world/oceanBeachGulls")
       .then(async ({ OceanBeachGulls }) => {
         const flock = new OceanBeachGulls(sky);
-        try {
-          await renderer.compileAsync(flock.group, camera, scene);
-        } catch (error) {
-          console.warn("[ocean-gulls] warmup compile failed", error);
-        }
+        await timeBoxedCompile(flock.group, "ocean-gulls");
         scene.add(flock.group);
         gulls = flock;
       })

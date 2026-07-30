@@ -75,6 +75,18 @@ npm run render:cinematic -- ocean-beach-kite-dusk-01 --full
 npm run render:cinematic -- ocean-beach-kite-prism-01 --probe-at 0.4,5,10,14.7
 npm run render:cinematic -- ocean-beach-kite-prism-01 --full
 
+# The deep-sunset set: five twenty-second films with a PINNED sea clock. Each
+# film writes t0 + shotTime through setSeaTimePin every frame, so wave phase is
+# identical every run and a set breaks at the same shot second in every take —
+# t0 values were solved by tools/cinematic/surfSchedule.mjs against the framed
+# water, and the soundtrack's crash stems (real recordings, see
+# assets-src/audio/surf/manifest.json) sit at those times plus the camera's
+# speed-of-sound delay. The flock gathers into a court around the prism during
+# a thirty-second preroll (setLaneGather); sunset-03 is the surf-forward one,
+# sunset-01/02 are the rainbow-forward pair, 04 compresses, 05 closes.
+npm run render:cinematic -- ocean-beach-sunset-03 --probe-at 2.2,6,14.8,16.3
+npm run render:cinematic -- ocean-beach-sunset-01 --full
+
 # The two travelling shots: kite festival to Sutro Baths in one unbroken move,
 # fifteen seconds each. Unlike the static kite set these move the PLAYER along
 # the camera path, so terrain, the hero shadow cascade and the bath hall's own

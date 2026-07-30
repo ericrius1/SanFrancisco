@@ -560,11 +560,20 @@ export class Water {
       // break-up noise only mottling it. The band runs from just offshore of
       // the crest to well down its shoreward slope, so it meets the apron and
       // the roller reads as one white mass marching in.
+      // Along-crest streaks running down the face. A fully-foamed wall painted
+      // one flat cream was the last thing standing between "wave" and "wall":
+      // real whitewater is raked into streaks by the water draining through
+      // it, so the band gets a second, finer mottle keyed to position along
+      // the crest AND down the slope, drifting with the wave.
+      const wallStreak = sin(pxz.y.mul(0.9).add(surfField.crestD.mul(0.55)).add(t.mul(0.6)))
+        .mul(0.5)
+        .add(0.5);
       const wallFoam = displace > 0
         ? surfField.mask
             .mul(smoothstep(-16, -3, surfField.crestD))
             .mul(smoothstep(22, 46, surfField.crestD).oneMinus())
             .mul(crestBreakup.mul(0.3).add(0.7))
+            .mul(wallStreak.mul(0.24).add(0.76))
             .mul(broke)
             .toVar()
         : float(0);
@@ -714,8 +723,12 @@ export class Water {
         // between the two — a metre-thick white mass with a low sun behind
         // it glows through its whole height, and that glow is most of what
         // makes a sunset crash read as a crash.
+        // The crown FIRES while the lip is in the air: throwEnv runs 0→1
+        // through the two-second pitch, so the moment of the crash is the
+        // brightest thing on the water — which is what an eye reads as the
+        // detonation, even 200 m off.
         foamGlow: displace > 0
-          ? lipFoam.mul(2.1).add(apronFoam.mul(0.55)).add(wallFoam.mul(1.1))
+          ? lipFoam.mul(surfField.throwEnv.mul(1.8).add(2.1)).add(apronFoam.mul(0.55)).add(wallFoam.mul(1.1))
           : undefined,
         // Twilight handover: foamGlow above is multiplied by sunRadiance in
         // the BRDF, which dies with the disc at 20.3 — these light the same

@@ -210,7 +210,7 @@ export class OceanBeachSpray {
     // The burst throws harder: up to +35% launch speed mid-throw on a big set
     // (apex height goes with vy², so the crash plume stands visibly taller),
     // while the spindrift tail keeps its old, subtle ballistics.
-    const burstThrow = burstK.mul(0.35).add(1).toVar();
+    const burstThrow = burstK.mul(0.55).add(1).toVar();
     const vy = speed.mul(float(0.7).add(s1.mul(0.28))).mul(burstThrow).toVar();
     const vx = speed.mul(float(0.14).add(s3.mul(0.34))).mul(burstThrow).toVar();
     const vz = s3.sub(0.5).mul(speed).mul(0.5).toVar();
@@ -262,9 +262,9 @@ export class OceanBeachSpray {
       .add(s1.mul(1.5))
       .mul(life.mul(1.9).add(1))
       .mul(camDist.div(140).clamp(1, 2.6))
-      // Up to ~1.9× puff size through the throw of a big set — the burst is
+      // Up to ~2.5× puff size through the throw of a big set — the burst is
       // built from the SAME sprites, just swollen, so count and draw stay put.
-      .mul(burstK.mul(0.9).add(1))
+      .mul(burstK.mul(1.5).add(1))
       .mul(saturate(alive.mul(4)));
 
     // --- light -------------------------------------------------------------
@@ -292,14 +292,14 @@ export class OceanBeachSpray {
         .add((this.#uSunRadiance as N).mul(glow.mul(1.35).add(0.05)))
         .add((this.#uTwilightFoam as N).mul(twiGlow.mul(1.1).add(0.4)))
         // A mid-throw plume is denser water, so it scatters brighter.
-        .mul(burstK.mul(0.5).add(1))
+        .mul(burstK.mul(0.8).add(1))
         .mul(LIGHT_SCALE)
     ) as N;
     // Thinner as it disperses: a big late puff is mist, not water — but the
     // throw instant is dense: up to ~1.8× coverage while the crown is in the
     // air, which with the size/brightness terms is what reads as an explosion.
     const cover = vertexStage(
-      alive.mul(float(0.36).sub(life.mul(0.18))).mul(burstK.mul(0.8).add(1))
+      alive.mul(float(0.48).sub(life.mul(0.2))).mul(burstK.mul(1.8).add(1))
     ) as N;
 
     material.colorNode = vec4(shaded, 1);
