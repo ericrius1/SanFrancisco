@@ -323,20 +323,22 @@ const DEFINITIONS = Object.freeze({
   ].map(([index, title, description]) => {
     const suffix = String(index).padStart(2, "0");
     const id = `ocean-beach-sunset-${suffix}`;
-    // The Court runs thirty seconds — the hero film earned the longer cut.
-    // Its stills hit the solved beats: set one at ~6.8, the swash sheet
-    // wetting the sand through the rainbow lull, the climax at 26–27.2.
+    // The Court runs thirty-five seconds — the hero film earned the longer
+    // cut, and then five more so its closing crash finishes on camera. Its
+    // stills hit the solved beats: set one at ~6.8, the swash sheet wetting
+    // the sand through the rainbow lull, the climax at 26–27.2, and the
+    // whitewater rolling in through the aftermath.
     const hero = index === 1;
     return [id, Object.freeze({
       id,
       demo: id,
       title,
-      duration: hero ? 30 : 20,
+      duration: hero ? 35 : 20,
       seed: (0x53_4e_53_00 + index * 0x101) >>> 0,
-      posterAt: hero ? 26.8 : 16.6,
+      posterAt: hero ? 28.4 : 16.6,
       stillTimes: Object.freeze(
         hero
-          ? [0.3, 3, 6.8, 10, 14, 18.8, 22.5, 26.4, 29.2]
+          ? [0.3, 6.8, 12, 18.8, 24, 27, 28.6, 31, 33.6]
           : [0.3, 2.4, 4.8, 7.2, 9.6, 12, 14.4, 16.9, 19.2]
       ),
       audio: Object.freeze({

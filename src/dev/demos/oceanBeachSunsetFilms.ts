@@ -82,6 +82,21 @@ type Film = {
   /** Shot length; defaults to SUNSET_FILM_SECONDS. Keep in step with the
    * production's duration and the audio tables. */
   seconds?: number;
+  /**
+   * Seconds over which the camera MOVE plays out, when that is shorter than
+   * the take. The frame function's `u` runs 0→1 across this and then holds at
+   * 1, so the lens finishes its choreography and waits.
+   *
+   * This exists so a film can be lengthened without re-timing the move that
+   * was already approved: The Court's thirty-second cut was cut off mid-crash,
+   * and the fix is five more seconds of the SAME shot watching the whitewater
+   * roll in — not the same shot played ten percent slower. Because the sea
+   * rides an absolute pinned clock (t0 + shot time), every wave still breaks
+   * at exactly the second it did in the shorter cut.
+   */
+  cameraSeconds?: number;
+  /** Outro fade length. Longer suits a take that ends on an aftermath. */
+  fadeOut?: number;
   /** Grade look id for the take; defaults to the live game's house look. */
   grade?: string;
   /**
@@ -128,13 +143,20 @@ const FILMS: readonly Film[] = [
     // game keeps the (gentler) evolved goldenState; a film can spend
     // contrast the open world cannot.
     grade: "pacificSunset",
-    // Thirty seconds, schedule at t0=858.15: a gentle set sweeps the framed
-    // beach at 5.8–7.2 s (texture, not climax), its swash sheet wets the
-    // sand through the rainbow lull at 18.6–20 s — the smear glows brighter
-    // on wet sand — and the whole beach goes off at 26.0–27.2 s (6.7–6.8 m
-    // at z1680–1800) with three seconds to breathe before the fade.
+    // Thirty-five seconds, schedule at t0=858.15: a gentle set sweeps the
+    // framed beach at 5.8–7.2 s (texture, not climax), its swash sheet wets
+    // the sand through the rainbow lull at 18.6–20 s — the smear glows
+    // brighter on wet sand — and the whole beach goes off at 26.0–27.2 s
+    // (6.7–6.8 m at z1680–1800).
+    //
+    // The camera move still plays over thirty seconds and then HOLDS: the
+    // thirty-second cut ended mid-throw, so the last five seconds are the
+    // crash finishing — whitewater walking shoreward off six-metre faces,
+    // the roar decaying under it — rather than the same move stretched.
     t0: 858.15,
-    seconds: 30,
+    seconds: 35,
+    cameraSeconds: 30,
+    fadeOut: 1.4,
     gather: 1,
     /**
      * The hero shot. A low crane behind the court's open side, pushing in and
@@ -449,6 +471,8 @@ function buildFilm(film: Film): Demo {
       };
 
       const seconds = film.seconds ?? SUNSET_FILM_SECONDS;
+      const cameraSeconds = film.cameraSeconds ?? seconds;
+      const fadeOut = film.fadeOut ?? 0.5;
       const arm = () => armCinematic(ctx, {
         name,
         duration: seconds,
@@ -461,7 +485,7 @@ function buildFilm(film: Film): Demo {
           ctx.setSeaTimePin?.(film.t0 + time);
           clock = film.t0 + time;
           const up = Math.min(1, Math.max(0, time / 1.7));
-          const down = Math.min(1, Math.max(0, (seconds - time) / 0.5));
+          const down = Math.min(1, Math.max(0, (seconds - time) / fadeOut));
           const ramp = up * up * (3 - 2 * up) * (down * down * (3 - 2 * down));
           ctx.setExposure(film.exposure * ramp);
         },
@@ -490,7 +514,18 @@ function buildFilm(film: Film): Demo {
                   return ground(eyeVec.x, eyeVec.z);
                 }
               };
-              const focal = film.frame(sample, live, eye, target);
+              // The move's own parameter, which is NOT the take's when a film
+              // holds its final pose (see Film.cameraSeconds). Clamped at 1,
+              // so every eased mix() in the frame function simply stops at
+              // its end value and the lens sits still.
+              const shaped =
+                cameraSeconds === seconds
+                  ? sample
+                  : {
+                      u: Math.min(1, sample.localTime / cameraSeconds),
+                      localTime: sample.localTime
+                    };
+              const focal = film.frame(shaped, live, eye, target);
               setPose(out, eye, target, focal);
 
               // Steer the world's streaming focus onto the water the lens is
