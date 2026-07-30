@@ -534,8 +534,12 @@ export function createSutroBathers(_opts: Record<string, never> = {}): SutroBath
     const lz = seat?.lz ?? spec.lz ?? 0;
     const face = seat?.face ?? spec.face ?? 0;
 
-    const rig = buildRig(avatarFromSeed(spec.seed), { merged: false }); // costume does per-part surgery
-    const costume = applyBathingCostume(rig, spec.seed);
+    const traits = avatarFromSeed(spec.seed);
+    const rig = buildRig(traits, { merged: false }); // costume does per-part surgery
+    // Hand the costume the hairstyle the rig was built with: a bather who rolls
+    // no bathing cap keeps their own hair, and the rig cannot say which of the
+    // five styles that is once they are all hidden.
+    const costume = applyBathingCostume(rig, spec.seed, { hair: traits.hair });
     if (spec.tea) {
       const cup = attachTeacup(rig);
       ownedGeometries.push(cup.geometry);
