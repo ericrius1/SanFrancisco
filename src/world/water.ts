@@ -34,8 +34,8 @@ import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 import { WaterEchoes } from "./waterEchoes";
 import { OceanCascades, oceanDetail, cascadeUv, CASCADE_FADE_DIST, HERO_STRIP_GATE } from "./ocean/oceanSim";
 import { setHeroFocus } from "./ocean/heroWaves";
-import { SUN_DIR, type Sky } from "./sky";
-import { causticWeb, oceanSurfaceRadiance } from "./waterShadingTSL";
+import { SUN_DIR, SUN_STATE, type Sky } from "./sky";
+import { causticWeb, oceanSurfaceRadiance, twilightDirection, twilightFoamRadiance } from "./waterShadingTSL";
 import { governorEffects } from "../render/adaptiveResolution";
 
 const PALACE_LAGOON_SEGMENTS = 112;
@@ -266,6 +266,13 @@ export class Water {
    *  Sky owns the day/night grade; this just mirrors it into the water graph so
    *  the sun path dims through dusk and becomes a moon path at night. */
   #uSunRadiance = uniform(new THREE.Color(1, 1, 1));
+  /** Horizon-band afterglow for aerated foam (twilightFoamRadiance): the light
+   *  that keeps a crash readable after sunRadiance has died with the disc.
+   *  Zero outside roughly +2°…−9.5° true sun elevation. */
+  #uTwilightRadiance = uniform(new THREE.Color(0, 0, 0));
+  /** Unit direction to the sunset horizon point — the TRUE sun bearing
+   *  (SUN_STATE.toSun), NOT SUN_DIR, which is the moon after dusk. */
+  #uTwilightDir = uniform(new THREE.Vector3(-1, 0.06, 0).normalize());
   /** tan(elevation) of the terrain horizon per azimuth, swept from the camera
    *  (see HORIZON_* and #scanHorizon). Negative where nothing blocks. */
   //   +1 entry duplicating index 0, so the shader's azimuth lerp never needs a
@@ -710,6 +717,12 @@ export class Water {
         foamGlow: displace > 0
           ? lipFoam.mul(2.1).add(apronFoam.mul(0.55)).add(wallFoam.mul(1.1))
           : undefined,
+        // Twilight handover: foamGlow above is multiplied by sunRadiance in
+        // the BRDF, which dies with the disc at 20.3 — these light the same
+        // aerated channels from the horizon band through deep sunset. Only
+        // read where foamGlow is set, so the far/horizon sheets pay nothing.
+        twilightRadiance: displace > 0 ? this.#uTwilightRadiance : undefined,
+        twilightDir: displace > 0 ? this.#uTwilightDir : undefined,
         // Crest subsurface (SoT trick): the cascades' 1−Jacobian mask IS the set
         // of folding, thin crests, so the glow rides exactly the pitching tops.
         // It lives inside the BRDF now so it gets the view dependence it needs —
@@ -1264,6 +1277,10 @@ export class Water {
     // the water's sun path follows the sky for free — no second grade to keep
     // in sync. #uSunDir already tracks SUN_DIR, which Sky mutates in place.
     this.#uSunRadiance.value.copy(this.#sky.sun.color).multiplyScalar(this.#sky.sun.intensity);
+    // Twilight foam light: TRUE solar state (SUN_DIR/sun.* are the moon after
+    // −2°), resolved once per frame into the two uniforms the BRDF reads.
+    twilightFoamRadiance(SUN_STATE.elevationDeg, this.#uTwilightRadiance.value);
+    twilightDirection(SUN_STATE.toSun, this.#uTwilightDir.value);
     // Reflected-coastline horizon profile (Tier C). Slow field, camera-centred,
     // re-swept only on real movement.
     if (this.#horizonAt.distanceToSquared({ x: camPos.x, y: camPos.z } as THREE.Vector2) >

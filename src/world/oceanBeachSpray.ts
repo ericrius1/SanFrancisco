@@ -46,7 +46,8 @@ import {
 import { LIGHT_SCALE } from "../config";
 import { OCEAN_BEACH_SURF } from "./oceanBeachWaves";
 import { oceanBeachBreakXNode, oceanBeachSurfField } from "./tslUtil";
-import { SUN_DIR, type Sky } from "./sky";
+import { SUN_DIR, SUN_STATE, type Sky } from "./sky";
+import { twilightDirection, twilightFoamRadiance } from "./waterShadingTSL";
 
 type N = any;
 
@@ -98,6 +99,10 @@ export class OceanBeachSpray {
   // The shared live sun vector, exactly as water.ts reads it.
   #uSunDir = uniform(SUN_DIR);
   #uSunRadiance = uniform(new THREE.Color(1, 1, 1));
+  // Twilight foam light, mirroring water.ts: the horizon-band afterglow that
+  // keeps the plume readable after sunRadiance dies with the disc.
+  #uTwilightFoam = uniform(new THREE.Color(0, 0, 0));
+  #uTwilightDir = uniform(new THREE.Vector3(-1, 0.06, 0).normalize());
   #amount = 0;
   #sky: Sky;
   #debugTime: number | null = null;
@@ -175,6 +180,20 @@ export class OceanBeachSpray {
     const crest = oceanBeachSurfField(crestX, z, born);
     const top = crest.height.add(0.5).toVar();
 
+    // --- the throw INSTANT --------------------------------------------------
+    // `gap` 0…breakThrow(+lipAhead-ish) is the two seconds the crown is
+    // actually being pitched. The window above deliberately keeps its long
+    // spindrift tail; this burst rides on top of it and is what makes the
+    // crash explode on camera — bigger, denser, brighter puffs exactly while
+    // the lip is in the air, scaling with the size of the set that threw it.
+    const burst = smoothstep(-3, 5, gap)
+      .mul(smoothstep(17, 34, gap).oneMinus())
+      .toVar();
+    // 0 for the small stuff, 1 for a proper set wave — the same amplitude the
+    // audio weighs a crash by.
+    const ampK = smoothstep(3.0, 7.0, crest.amp.mul(crest.mask)).toVar();
+    const burstK = burst.mul(ampK.mul(0.5).add(0.5)).toVar();
+
     // --- ballistics --------------------------------------------------------
     // Three decorrelated draws from two stored seeds. The cone is mostly
     // vertical with a shoreward lean: a plunging lip throws its water up and
@@ -188,14 +207,21 @@ export class OceanBeachSpray {
     // makes a slab with a flat ceiling.
     const fast = s2.mul(s2).mul(s2).toVar();
     const speed = float(3).add(fast.mul(13)).toVar();
-    const vy = speed.mul(float(0.7).add(s1.mul(0.28))).toVar();
-    const vx = speed.mul(float(0.14).add(s3.mul(0.34))).toVar();
+    // The burst throws harder: up to +35% launch speed mid-throw on a big set
+    // (apex height goes with vy², so the crash plume stands visibly taller),
+    // while the spindrift tail keeps its old, subtle ballistics.
+    const burstThrow = burstK.mul(0.35).add(1).toVar();
+    const vy = speed.mul(float(0.7).add(s1.mul(0.28))).mul(burstThrow).toVar();
+    const vx = speed.mul(float(0.14).add(s3.mul(0.34))).mul(burstThrow).toVar();
     const vz = s3.sub(0.5).mul(speed).mul(0.5).toVar();
 
     // Onshore wind, applied as an ACCELERATION rather than a launch velocity:
     // it barely touches a droplet at the lip and drags the top of the plume
     // visibly inshore, which is the lean a real curtain has.
-    const px = crestX.add(1.6).add(vx.mul(age)).add(age.mul(age).mul(1.9));
+    // `crest.lean` keeps the launch point ON the pitching crown — the height
+    // field leans its peak shoreward through the break now, and a plume rooted
+    // at the old crest line would trail the lip by several metres.
+    const px = crestX.add(crest.lean).add(1.6).add(vx.mul(age)).add(age.mul(age).mul(1.9));
     const py = top.add(vy.mul(age)).sub(age.mul(age).mul(4.9));
     const pz = z.add(vz.mul(age));
     material.positionNode = vec3(px, py, pz);
@@ -236,6 +262,9 @@ export class OceanBeachSpray {
       .add(s1.mul(1.5))
       .mul(life.mul(1.9).add(1))
       .mul(camDist.div(140).clamp(1, 2.6))
+      // Up to ~1.9× puff size through the throw of a big set — the burst is
+      // built from the SAME sprites, just swollen, so count and draw stay put.
+      .mul(burstK.mul(0.9).add(1))
       .mul(saturate(alive.mul(4)));
 
     // --- light -------------------------------------------------------------
@@ -244,10 +273,16 @@ export class OceanBeachSpray {
     // the whole reason this feature earns its cost at sunset. The forward lobe
     // is resolved per droplet against its own position, so a plume brightens
     // as the shot swings onto the sun rather than at a fixed rate.
-    const forward = saturate(
-      (vec3(px, py, pz).sub(cameraPosition) as N).normalize().dot(this.#uSunDir as N)
-    );
+    const viewDirN = (vec3(px, py, pz).sub(cameraPosition) as N).normalize().toVar();
+    const forward = saturate(viewDirN.dot(this.#uSunDir as N));
     const glow = forward.mul(forward).mul(forward).toVar();
+    // Afterglow lobe, mirroring the water BRDF's twilight foam term: the
+    // horizon band spans a wide arc, so it is a BROAD lobe with a floor —
+    // every framing keeps its plume readable, brightest looking into the glow.
+    // #uTwilightFoam is zero outside the twilight window, so day/night pay
+    // nothing but the multiply.
+    const twiForward = saturate(viewDirN.dot(this.#uTwilightDir as N));
+    const twiGlow = twiForward.mul(twiForward).toVar();
     // instanceIndex-derived values resolve in the vertex stage; anything the
     // fragment needs has to cross explicitly (terrainScanParticles precedent).
     const shaded = vertexStage(
@@ -255,10 +290,17 @@ export class OceanBeachSpray {
         .ambientRadiance()
         .mul(0.45)
         .add((this.#uSunRadiance as N).mul(glow.mul(1.35).add(0.05)))
+        .add((this.#uTwilightFoam as N).mul(twiGlow.mul(1.1).add(0.4)))
+        // A mid-throw plume is denser water, so it scatters brighter.
+        .mul(burstK.mul(0.5).add(1))
         .mul(LIGHT_SCALE)
     ) as N;
-    // Thinner as it disperses: a big late puff is mist, not water.
-    const cover = vertexStage(alive.mul(float(0.36).sub(life.mul(0.18)))) as N;
+    // Thinner as it disperses: a big late puff is mist, not water — but the
+    // throw instant is dense: up to ~1.8× coverage while the crown is in the
+    // air, which with the size/brightness terms is what reads as an explosion.
+    const cover = vertexStage(
+      alive.mul(float(0.36).sub(life.mul(0.18))).mul(burstK.mul(0.8).add(1))
+    ) as N;
 
     material.colorNode = vec4(shaded, 1);
     // A soft, wide-shouldered puff rather than a disc with an edge — a hard
@@ -288,6 +330,9 @@ export class OceanBeachSpray {
     this.#amount = Math.min(1, this.#amount + dt / 0.8);
     this.#uAmount.value = this.#amount;
     this.#uSunRadiance.value.copy(this.#sky.sun.color).multiplyScalar(this.#sky.sun.intensity);
+    // TRUE solar state — SUN_DIR/sun.* have handed over to the moon by −2°.
+    twilightFoamRadiance(SUN_STATE.elevationDeg, this.#uTwilightFoam.value);
+    twilightDirection(SUN_STATE.toSun, this.#uTwilightDir.value);
   }
 
   debugState() {

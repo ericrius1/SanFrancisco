@@ -1,4 +1,4 @@
-import { DepthTexture, FloatType } from "three/webgpu";
+import { Color, DepthTexture, FloatType, Vector3 } from "three/webgpu";
 import {
   abs,
   clamp,
@@ -160,6 +160,66 @@ export function safeRefractionUV(distortedUV: N): N {
   return sampledIsBehind.select(distortedUV, screenUV);
 }
 
+// --- twilight foam light ----------------------------------------------------
+// The aerated-foam glow below (foamScatter) is driven by sunRadiance, which the
+// sky retires at sunset and hands to the moon at −2° — so foam went dark in the
+// exact minutes a west-facing beach is worth filming. This is the horizon-band
+// afterglow as a light source for AERATED WATER ONLY: resolved on the CPU once
+// per frame into a uniform (mirroring how water.ts mirrors sun.color×intensity),
+// zero outside the elevation window so night surf never glows.
+
+/** Twilight window + gain — the art pass dials these. Elevations are TRUE sun
+ *  elevation (SUN_STATE.elevationDeg), which keeps pointing down after dusk. */
+export const TWILIGHT_FOAM = {
+  /** Fades in as the sun crosses this elevation on the way down (deg). The sun
+   *  key's own transmittance dies at 0°, so the two hand over across 2°…0°. */
+  onDeg: 2,
+  /** Full strength holds until here (deg, below horizon)… */
+  fullUntilDeg: -6,
+  /** …then fades to exactly zero by here — the end of the bright afterglow. */
+  offDeg: -9.5,
+  /** Peak radiance scale, in the same linear space as sunRadiance. Modest by
+   *  design: readable crashes through deep sunset, not glowing night foam. */
+  gain: 0.5
+};
+
+// Afterglow ramp: warm amber just after the disc drops, through rose, into a
+// cool slate before the band closes. Linear render space, unit peak.
+const TWI_AMBER = new Color(1.0, 0.6, 0.3);
+const TWI_ROSE = new Color(0.85, 0.42, 0.46);
+const TWI_COOL = new Color(0.3, 0.36, 0.52);
+const twiSmooth = (a: number, b: number, x: number) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/** Resolve the twilight foam radiance for the current TRUE sun elevation into
+ *  `out` (a uniform's Color). Zero outside the window. CPU-per-frame — the
+ *  shader only ever reads the resulting vec3. */
+export function twilightFoamRadiance(elevationDeg: number, out: Color): Color {
+  const w =
+    twiSmooth(TWILIGHT_FOAM.onDeg, 0, elevationDeg) *
+    twiSmooth(TWILIGHT_FOAM.offDeg, TWILIGHT_FOAM.fullUntilDeg, elevationDeg) *
+    TWILIGHT_FOAM.gain;
+  // Hue slides with depth below the horizon: amber → rose → cool.
+  const u = Math.min(1, Math.max(0, (1 - elevationDeg) / 8));
+  if (u < 0.55) out.copy(TWI_AMBER).lerp(TWI_ROSE, u / 0.55);
+  else out.copy(TWI_ROSE).lerp(TWI_COOL, (u - 0.55) / 0.45);
+  return out.multiplyScalar(w);
+}
+
+/** The horizon point the afterglow radiates from: the TRUE sun bearing
+ *  (SUN_STATE.toSun — SUN_DIR has flipped to the moon by now), flattened to
+ *  just above the horizon so beach-level cameras catch the forward lobe. */
+export function twilightDirection(toSun: Vector3, out: Vector3): Vector3 {
+  out.set(toSun.x, 0, toSun.z);
+  const len = out.length();
+  if (len < 1e-5) out.set(-1, 0, 0);
+  else out.divideScalar(len);
+  out.y = 0.06;
+  return out.normalize();
+}
+
 // --- open-water BRDF -------------------------------------------------------
 // Water is not a diffuse solid. What the eye reads is a Fresnel-weighted blend
 // of REFLECTED radiance (sky + sun) against TRANSMITTED/in-scattered radiance
@@ -220,6 +280,12 @@ export interface OceanSurfaceInputs {
    * this unset and is shaded as before.
    */
   foamGlow?: N;
+  /** Horizon-band afterglow radiance for aerated foam (vec3 uniform, already
+   *  windowed/gained by twilightFoamRadiance — zero outside twilight). Only
+   *  read where foamGlow is set, so bay water pays nothing. */
+  twilightRadiance?: N;
+  /** Unit direction to the sunset horizon point (twilightDirection). */
+  twilightDir?: N;
   /** Master trim on reflected sky radiance (1 = physical). */
   reflectionGain?: number;
   /** 0..1 mask of thin, light-transmitting water — folding crests. Drives the
@@ -373,10 +439,24 @@ export function oceanSurfaceRadiance(o: OceanSurfaceInputs): N {
   // Aerated foam gets one term more. Unlike `sss` above it is NOT gated on the
   // sun being above the horizon: a plume of whitewater keeps glowing through
   // the minutes either side of sunset, which is exactly the window these
-  // beaches are worth filming in. `sunRadiance` fading is what retires it.
-  // Build-time gated, so bay water emits none of this.
+  // beaches are worth filming in. `sunRadiance` fading is what retires it —
+  // which is where the twilight term below takes over: once the disc is gone
+  // the foam is lit by the horizon band itself (twilightFoamRadiance), with a
+  // BROAD forward lobe (the afterglow spans a wide arc, so foam stays readable
+  // from every framing, brightest looking into the glow) that the elevation
+  // window retires by ~−9.5°. Both build-time gated, so bay water pays nothing.
+  const twilightScatter =
+    o.foamGlow && o.twilightRadiance && o.twilightDir
+      ? o.twilightRadiance
+          .mul(o.foamGlow)
+          .mul(pow(saturate(dot(v, o.twilightDir)), 1.5).mul(0.65).add(0.35))
+      : vec3(0);
   const foamScatter = o.foamGlow
-    ? o.sunRadiance.mul(o.foamGlow).mul(pow(saturate(dot(v, o.sunDir)), 2.2)).mul(0.85)
+    ? o.sunRadiance
+        .mul(o.foamGlow)
+        .mul(pow(saturate(dot(v, o.sunDir)), 2.2))
+        .mul(0.85)
+        .add(twilightScatter)
     : vec3(0);
   const foamLit = o.foamAlbedo.mul(down.mul(o.foamGain ?? 0.95)).add(foamScatter);
 
