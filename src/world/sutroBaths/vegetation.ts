@@ -154,10 +154,12 @@ const TREE_LAYOUT = [
   { x: 23.5, z: 32, scale: 0.9, archetype: "gallery-magnolia-low" },
   { x: 23.5, z: 40, scale: 0.94, archetype: "gallery-magnolia" },
   // West deck, only where the great plunge is not: low crowns so the sunset
-  // still comes through the ocean windows unblocked.
+  // still comes through the ocean windows unblocked. The plunge's south court
+  // took the old x -25 pair at z 34 and 42, so they moved out onto the west
+  // promenade, which stays dry the whole length of the hall.
   { x: -25, z: -60, scale: 0.86, archetype: "gallery-magnolia-low" },
-  { x: -25, z: 34, scale: 0.84, archetype: "gallery-magnolia-low" },
-  { x: -25, z: 42, scale: 0.82, archetype: "gallery-magnolia-low" },
+  { x: -34.5, z: 44, scale: 0.84, archetype: "gallery-magnolia-low" },
+  { x: -34.5, z: 52, scale: 0.82, archetype: "gallery-magnolia-low" },
   // South promenade, framing the foot of the spiral from the west side.
   { x: -20, z: 62, scale: 0.95, archetype: "conservatory-specimen" },
   { x: -6, z: 63, scale: 1, archetype: "conservatory-specimen" },

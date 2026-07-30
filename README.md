@@ -130,7 +130,7 @@ pressing `E` on a racked board at the Ocean Beach surf shack, and a bay-only
 | `C` | Cycle camera: third person → first person → free orbit |
 | `Z` (hold) | Scrub the time of day |
 | `N` (hold) | Look / speed modifier |
-| `P` | Pause (you can still move) |
+| `P` | Pause (freezes everything, player included) |
 | `I` | Immersive — every scrap of UI goes away |
 | `Tab` | Fade the UI |
 | `F` | Fullscreen |
