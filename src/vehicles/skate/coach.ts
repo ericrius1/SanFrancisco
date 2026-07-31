@@ -129,6 +129,15 @@ export class SkateCoach {
     this.#dismissed = true;
   }
 
+  /** Start the lesson over when the player explicitly chooses the tutorial. */
+  restart() {
+    this.step = 0;
+    this.cheer = 0;
+    this.#cheerText = "";
+    this.#dismissed = false;
+    this.#everInside = false;
+  }
+
   /** True while the coach wants HUD space. */
   update(dt: number, s: SkateCoachSignals): boolean {
     if (this.#dismissed) return false;

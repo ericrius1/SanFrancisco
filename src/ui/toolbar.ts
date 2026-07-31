@@ -49,6 +49,8 @@ export class Toolbar {
   #vehicleBtns = new Map<PlayerMode, HTMLButtonElement>();
   #toolBtns = new Map<ToolName, HTMLButtonElement>();
   #swatchBtns: HTMLButtonElement[] = [];
+  #skateTutorial: HTMLButtonElement;
+  #onSkateTutorial: () => void = () => {};
   #hud = document.getElementById("hud")!;
   #onTool: (t: ToolName) => void;
   #onColor: (i: number) => void;
@@ -85,6 +87,17 @@ export class Toolbar {
       this.#vehicleRow.appendChild(b);
     }
     this.#vehicleRow.appendChild(keyHint(["←", "→"]));
+
+    this.#skateTutorial = document.createElement("button");
+    this.#skateTutorial.type = "button";
+    this.#skateTutorial.className = "skate-tutorial-action";
+    this.#skateTutorial.hidden = true;
+    this.#skateTutorial.title = "Teleport to the Golden Gate Park skatepark and start the tutorial";
+    this.#skateTutorial.setAttribute("aria-label", "Teleport to the skatepark tutorial");
+    this.#skateTutorial.innerHTML =
+      `<span class="ic">🛹</span><span class="copy"><b>Skatepark tutorial</b>` +
+      `<small>Teleport and learn the basics</small></span><span class="go">Go&nbsp;→</span>`;
+    this.#skateTutorial.addEventListener("click", () => this.#onSkateTutorial());
 
     this.#toolRow = document.createElement("div");
     this.#toolRow.className = "tools";
@@ -136,7 +149,7 @@ export class Toolbar {
     // lined up as the bottom row grows or its contents change.
     const stack = document.createElement("div");
     stack.className = "stack";
-    stack.append(this.#vehicleRow, this.#toolRow, this.#swatchRow);
+    stack.append(this.#vehicleRow, this.#skateTutorial, this.#toolRow, this.#swatchRow);
 
     const primary = document.createElement("div");
     primary.className = "primary";
@@ -152,7 +165,12 @@ export class Toolbar {
     const ix = MENU_MODES.indexOf(mode);
     if (ix >= 0) this.#focusVehicleIx = ix;
     for (const [m, b] of this.#vehicleBtns) b.classList.toggle("on", m === mode);
+    this.#skateTutorial.hidden = mode !== "skate";
     this.#renderFocus();
+  }
+
+  setSkateTutorialAction(action: () => void) {
+    this.#onSkateTutorial = action;
   }
 
   setTool(tool: ToolName) {

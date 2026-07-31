@@ -14,6 +14,13 @@
  */
 export const SKATE_PLAZA_CENTER = { x: -5647, z: 2179 } as const;
 
+/** Tutorial arrival: on the open street-course deck, already facing into it. */
+export const SKATE_PLAZA_ARRIVAL = {
+  x: SKATE_PLAZA_CENTER.x,
+  z: SKATE_PLAZA_CENTER.z - 10,
+  heading: 0
+} as const;
+
 /** Plaza yaw (radians). Angled off the world axes so it reads as authored. */
 export const SKATE_PLAZA_YAW = 0.28;
 

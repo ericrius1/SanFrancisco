@@ -6,7 +6,7 @@ import type { PlayerMode } from "../player/types";
 import { oceanBeachSurfShackApproxPose } from "../gameplay/surfing/shack";
 import { mdToWorldXZ, Z_ENTRANCE } from "./missionDolores/layout";
 import { BEACH_PIANIST_BRIDGE_AIM, BEACH_PIANIST_SITE } from "./beachPianist/meta";
-import { SKATE_PLAZA_CENTER } from "./skatePlaza/meta";
+import { SKATE_PLAZA_ARRIVAL } from "./skatePlaza/meta";
 
 /** Lightweight gate metadata stays in the boot spawn registry; the restored
  * hall, pools, vegetation and effects remain wholly behind their dynamic import. */
@@ -219,9 +219,7 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
   skatePlaza: {
     key: "skatePlaza",
     label: "Golden Gate Park · Skate Plaza",
-    x: SKATE_PLAZA_CENTER.x,
-    z: SKATE_PLAZA_CENTER.z - 10,
-    heading: 0,
+    ...SKATE_PLAZA_ARRIVAL,
     mode: "skate"
   },
   downtown: {
