@@ -207,7 +207,7 @@ const FOG_DENSITY_MAX = 1.4
 // the bank keeps ~10% of the surface's own colour at full wash — a silhouette,
 // not a hole. The cull-edge veil is unioned separately and still completes to
 // a full fade, so the streamed edge keeps hiding pop-in.
-const FOG_BANK_MAX = 0.9
+const FOG_BANK_MAX = 0.78
 // Colour grade for fragments deep inside the marine layer: the bank's body
 // takes a slightly deeper tone than the shared horizon fog colour, so a fogged
 // coastline reads as a fog DECK sitting under the sky instead of as sky

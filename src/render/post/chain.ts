@@ -127,8 +127,9 @@ export type PostChainDeps = {
  * emergent property of graph dependencies, ownership of the TAA jitter (we never
  * touch `RenderPipeline.context.onBeforeRenderPipeline`, which is a single
  * assignable slot that two stock temporal nodes both write to), and history
- * control (warmup covered renders and `captureStillRgba` do not go through this
- * driver, so they cannot poison the temporal history).
+ * control (warmup covered renders do not go through this driver; H-key stills
+ * invalidate history on both sides of their own accumulation so they cannot
+ * poison the live temporal history).
  */
 export function createPostChain(deps: PostChainDeps): PostChainInternals {
   const { renderer, camera, gbuffer, beautyTexture } = deps

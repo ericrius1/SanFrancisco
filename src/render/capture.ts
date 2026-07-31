@@ -12,7 +12,8 @@ export type CaptureRuntime = {
   /** Browser-native review capture reads the final post-FX texture here. */
   queueFastFrame(): Promise<Uint8ClampedArray | null>;
   drainFastFrame(): Promise<Uint8ClampedArray | null>;
-  /** One-shot GPU readback of the presented frame for in-game stills (H key). */
+  /** GPU readback of the presented frame for in-game stills (H key). Accumulates
+   *  temporal samples when the live resolve is on, then reads the final frame. */
   captureStillRgba(): Promise<{ width: number; height: number; pixels: Uint8ClampedArray }>;
   dispose(): void;
 };
@@ -34,6 +35,13 @@ export function createCaptureRuntime(deps: {
   renderer: THREE.WebGPURenderer;
   /** Draw one complete presented frame into the currently bound render target. */
   present: () => void;
+  /**
+   * How many times to call `present` before readback. When the live temporal
+   * resolve is on, the still must accumulate several Halton samples at the
+   * capture resolution — a single seeded frame is the soft “pre-TAA” look the
+   * player never sees live. Defaults to 1.
+   */
+  stillAccumulateFrames?: () => number;
   /** Per-frame state the still path would otherwise skip (wireframe camera, …). */
   beforeStill?: () => void;
   /** Called before AND after a still so it neither poisons nor inherits history. */
@@ -172,16 +180,19 @@ export function createCaptureRuntime(deps: {
     }
 
     deps.beforeStill?.();
-    // The still does not go through the chain's frame driver, so its render must
-    // not be allowed to accumulate into (or read from) the live temporal
-    // history — before AND after.
+    // The still does not go through the live frame driver, so it must not read
+    // the live temporal history (wrong resolution after the pixel-ratio bump)
+    // and must not leave high-res history behind for the next live frame —
+    // before AND after. Between those bookends it accumulates its OWN history
+    // at capture resolution by presenting several consecutive frames.
     deps.invalidateHistory?.("still-capture");
 
+    const accumulate = Math.max(1, Math.round(deps.stillAccumulateFrames?.() ?? 1));
     const previousTarget = renderer.getRenderTarget();
     const previousCubeFace = renderer.getActiveCubeFace();
     const previousMipmapLevel = renderer.getActiveMipmapLevel();
     renderer.setRenderTarget(stillCaptureTarget);
-    present();
+    for (let i = 0; i < accumulate; i++) present();
     renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
 
     deps.invalidateHistory?.("still-capture-done");

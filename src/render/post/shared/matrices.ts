@@ -7,8 +7,8 @@ import type { N } from "../types"
  *
  * "Presented" is the load-bearing word. A compile-held frame (pipeline.render()
  * returns early while an exclusive compile window is mutating shared renderer
- * state), a warmup covered render and `captureStillRgba` all render the beauty
- * pass without presenting, and if any of them advanced the history the velocity
+ * state) and a warmup covered render all render the beauty pass without
+ * presenting, and if any of them advanced the history the velocity
  * reprojection would compare this frame against a camera that was never shown.
  * Same reason `frameIndex` does not advance on those paths.
  *

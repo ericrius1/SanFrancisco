@@ -1,6 +1,7 @@
 import { Color, DepthTexture, FloatType, Vector3 } from "three/webgpu";
 import {
   abs,
+  cameraPosition,
   clamp,
   dot,
   exp,
@@ -8,6 +9,7 @@ import {
   floor,
   fract,
   hash,
+  length,
   linearDepth,
   log,
   max,
@@ -82,6 +84,11 @@ export function causticWeb(uv: N, t: N): N {
  * Discrete sun glints: a tight specular lobe gated by a time-flickering hash
  * over world-space cells, so individual points pop on and off rather than one
  * continuous highlight smear.
+ *
+ * Optional `cellJitter` moves each glint off the cell centre so the field does
+ * not read as a lattice once cells project larger than a pixel. Optional
+ * `fadeStart`/`fadeEnd` dissolve the discrete field with view distance — far
+ * water should keep a soft wash, not a checkerboard of sparkle cells.
  */
 export function sunSparkle(options: {
   worldPosition: N;
@@ -90,18 +97,37 @@ export function sunSparkle(options: {
   sunDirection: N;
   time: N;
   cellDensity?: number;
+  /** 0 = glint fills the cell (legacy lattice); 1 = point jittered inside it. */
+  cellJitter?: number;
+  /** Metres: discrete glints begin fading out. */
+  fadeStart?: number;
+  /** Metres: discrete glints are gone. */
+  fadeEnd?: number;
 }): N {
   const density = options.cellDensity ?? 9.0;
   const reflected = reflect(options.viewToFragment, options.worldNormal);
   const alignment = saturate(dot(reflected, options.sunDirection));
   const lobe = pow(alignment, 180.0);
-  const cell = floor(options.worldPosition.xz.mul(density)) as N;
+  const scaled = options.worldPosition.xz.mul(density);
+  const cell = floor(scaled) as N;
   const phase = floor(options.time.mul(5.0));
-  const seed = cell.x.mul(127.1).add(cell.y.mul(311.7)).add(phase.mul(74.7));
-  const gate = smoothstep(0.72, 0.94, hash(seed));
+  const seed = cell.x.mul(127.1).add(cell.y.mul(311.7));
+  const gate = smoothstep(0.72, 0.94, hash(seed.add(phase.mul(74.7))));
+  const jitterAmt = options.cellJitter ?? 0;
+  // Soft disc around a hash-jittered centre. At jitterAmt = 0 the disc covers
+  // the whole cell and the gate alone decides, matching the old square field.
+  const local = fract(scaled).sub(0.5);
+  const jitter = vec2(hash(seed.add(17.3)), hash(seed.add(91.7))).sub(0.5).mul(jitterAmt);
+  const disc = smoothstep(0.52, 0.12, length(local.sub(jitter)));
+  const cellMask = mix(float(1), disc, float(jitterAmt));
   // Day-only: the gate fades with sun height so night water never glitters.
+  // Callers that pass an overhead "lamp" direction keep y ≈ 1 and stay lit.
   const daylight = saturate(options.sunDirection.y.mul(4.0));
-  return smoothstep(0.12, 0.55, lobe.mul(gate)).mul(daylight);
+  const sparkle = smoothstep(0.12, 0.55, lobe.mul(gate).mul(cellMask)).mul(daylight);
+  if (options.fadeEnd == null) return sparkle;
+  const fadeStart = options.fadeStart ?? options.fadeEnd * 0.4;
+  const viewMetres = length(options.worldPosition.sub(cameraPosition));
+  return sparkle.mul(smoothstep(options.fadeEnd, fadeStart, viewMetres));
 }
 
 /**

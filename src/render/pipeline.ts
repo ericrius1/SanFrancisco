@@ -13,7 +13,8 @@ import { createPostChain, warmChainQuads } from "./post";
 import { beautyGBufferAttachment, createGBufferDecoders } from "./post/shared/gbuffer";
 import { cameraJitter } from "./post/jitter";
 import { godRaysControls } from "./post/godrays";
-import { postInputScale } from "./post/tuning";
+import { POST_TUNING, postInputScale } from "./post/tuning";
+import { TEMPORAL_TUNING } from "./post/temporal/tuning";
 import type { N, PostFrameContext, PostGBuffer } from "./post/types";
 import {
   deferredTextureDisposalState,
@@ -225,6 +226,15 @@ export function createRenderPipeline(
   let historyInvalidPending = true;
   let lastOutputWidth = 0;
   let lastOutputHeight = 0;
+  /** True while `capture.present` is driving the chain for an H-key still. */
+  let stillPresenting = false;
+
+  /**
+   * Halton samples to accumulate into a still when the temporal resolve is live.
+   * One seeded frame is the soft pre-TAA look; ~¾ of a 32-long sequence is enough
+   * for the resolve to converge at capture resolution without a multi-second hitch.
+   */
+  const STILL_TEMPORAL_FRAMES = 24;
 
   const invalidateHistory = (reason: string) => {
     historyInvalidPending = true;
@@ -246,7 +256,12 @@ export function createRenderPipeline(
     // Applying it HERE, before scenePass.updateBefore, is what makes it take
     // effect this frame — PassNode.setSize reads `_resolutionScale` inside
     // updateBefore.
-    const inputScale = postInputScale();
+    //
+    // Stills force native beauty (scale 1): the capture already supersamples the
+    // drawing buffer toward 4K, and the live 0.77 ceiling exists to buy frame
+    // rate — not to soften a downloaded PNG. Enables/toggles stay whatever the
+    // player has live; only the resolution ceiling lifts for the still.
+    const inputScale = stillPresenting ? 1 : postInputScale();
     if (scenePass.getResolutionScale() !== inputScale) {
       scenePass.setResolutionScale(inputScale);
       historyInvalidPending = true;
@@ -275,36 +290,39 @@ export function createRenderPipeline(
   const capture = createCaptureRuntime({
     renderer,
     present: () => {
-      // A still is not a presented frame: it renders the beauty pass and the
-      // chain without advancing frameIndex, so the jitter sequence and the
-      // temporal history stay attached to what the player actually saw.
+      // Same path as a live presented frame (contact shadows → beauty → chain),
+      // but the display lands in whatever target capture.ts bound. frameIndex
+      // advances so consecutive still presents accumulate temporal history at
+      // capture resolution; capture.ts invalidates on both sides so the live
+      // history is neither read nor poisoned.
       //
       // It still jitters, and must. The temporal resolve derives its
       // reconstruction weights from `jitterOffsetAt(frame.frameIndex)` — a pure
       // function of the counter, with no shared state to consult — so a beauty
       // pass rendered WITHOUT the offset would be resolved as though it had
-      // one, displacing every tap by up to half an input pixel. The still is
-      // seeded rather than accumulated (capture.ts invalidates the history on
-      // both sides of this call), so the error would show as softness, not as
-      // ghosting, which is exactly the kind of bug that gets blamed on the
-      // capture path instead of on the mismatch.
-      const frame = buildFrameContext();
-      jitter.apply(camera as THREE.PerspectiveCamera, frame);
-      // AFTER apply(), for the same reason the live frame does it here and NOT
-      // in `beforeStill` — which is where this call used to live, and which ran
-      // before `present()` and therefore before the offset existed. In wireframe
-      // mode `scenePass.camera` IS the clone, so a clone carrying the CLEARED
-      // projection renders the beauty pass unjittered while the resolve is
-      // handed `jitterOffsetAt(frame.frameIndex)` and displaces all nine
-      // reconstruction taps by up to half an input pixel. It was worse than an
-      // omission: the clone already held the correct offset (copied after
-      // apply() on the last live frame, and frameIndex does not advance for a
-      // still, so it is the SAME Halton sample) and `beforeStill` actively
-      // overwrote it. The symptom is a soft still nobody can reproduce live.
-      if (wireframe.active) wireframe.syncCamera();
-      driveBeautyPass();
-      jitter.clear(camera as THREE.PerspectiveCamera);
-      postChain.render(frame);
+      // one, displacing every tap by up to half an input pixel.
+      stillPresenting = true;
+      try {
+        contactShadows.renderNow(renderer);
+        frameIndex += 1;
+        const frame = buildFrameContext();
+        jitter.apply(camera as THREE.PerspectiveCamera, frame);
+        // AFTER apply(), for the same reason the live frame does it here —
+        // in wireframe mode `scenePass.camera` IS the clone, so a clone
+        // carrying the CLEARED projection would render the beauty pass
+        // unjittered while the resolve is handed the jittered offset.
+        if (wireframe.active) wireframe.syncCamera();
+        driveBeautyPass();
+        jitter.clear(camera as THREE.PerspectiveCamera);
+        postChain.render(frame);
+      } finally {
+        stillPresenting = false;
+      }
+    },
+    stillAccumulateFrames: () => {
+      if (POST_TUNING.values.enabled !== true) return 1;
+      if (TEMPORAL_TUNING.values.enabled !== true) return 1;
+      return STILL_TEMPORAL_FRAMES;
     },
     invalidateHistory
   });

@@ -1,5 +1,7 @@
 import * as THREE from "three/webgpu";
 import {
+  abs,
+  atan,
   attribute,
   cameraPosition,
   cameraViewMatrix,
@@ -11,6 +13,7 @@ import {
   normalize,
   positionLocal,
   positionWorld,
+  pow,
   reflect,
   saturate,
   screenCoordinate,
@@ -34,6 +37,7 @@ import {
 } from "../waterShadingTSL";
 import {
   SUTRO_BATHS,
+  SUTRO_DRAIN,
   SUTRO_POOLS,
   SUTRO_WATER_RENDER_ORDER,
   distanceToSutroWater,
@@ -57,8 +61,43 @@ type N = any;
  */
 
 const TARGET_CELL_SIZE = 1.15;
+/** Near the plunge drain the sheet densifies so the whirlpool funnel is smooth. */
+const DRAIN_DENSE_CELL = 0.34;
+const DRAIN_DENSE_RADIUS = 5.8;
 const POOL_EDGE_INSET = 0.08;
-const MAX_VISUAL_RELIEF = 0.04;
+/** Ripple relief plus the authored whirlpool depression. */
+const MAX_VISUAL_RELIEF = 0.72;
+/** How deep the surface sinks into the drain (metres). */
+const WHIRL_DEPRESSION = 0.58;
+const WHIRL_OUTER = 5.2;
+const WHIRL_CORE = 1.35;
+
+/**
+ * Non-uniform samples along one pool axis: coarse far from `focus`, dense near
+ * it. Keeps the great plunge cheap while giving the whirlpool enough verts to
+ * look round instead of faceted.
+ */
+function axisSamples(
+  min: number,
+  max: number,
+  focus: number,
+  denseRadius: number,
+  denseStep: number,
+  coarseStep: number
+): number[] {
+  const pts: number[] = [min];
+  let x = min;
+  while (x < max - 1e-5) {
+    const near = Math.abs(x - focus) < denseRadius || Math.abs(x + coarseStep - focus) < denseRadius;
+    const step = near ? denseStep : coarseStep;
+    x = Math.min(max, x + step);
+    if (x - pts[pts.length - 1] > 1e-5) pts.push(x);
+    else if (x >= max) break;
+    else x = pts[pts.length - 1] + denseStep * 0.5;
+  }
+  if (pts[pts.length - 1] < max - 1e-4) pts.push(max);
+  return pts;
+}
 
 /**
  * What the barrel roof does to a reflected ray that hits it instead of the sky:
@@ -152,18 +191,25 @@ export function createSutroBathsStaticWater(options: {
     const maxX = pool.maxX - inset("maxX");
     const minZ = pool.minZ + inset("minZ");
     const maxZ = pool.maxZ - inset("maxZ");
-    const width = maxX - minX;
-    const depth = maxZ - minZ;
-    const columns = Math.max(2, Math.ceil(width / TARGET_CELL_SIZE) + 1);
-    const rows = Math.max(2, Math.ceil(depth / TARGET_CELL_SIZE) + 1);
+    const holdsDrain =
+      SUTRO_DRAIN.x >= minX &&
+      SUTRO_DRAIN.x <= maxX &&
+      SUTRO_DRAIN.z >= minZ &&
+      SUTRO_DRAIN.z <= maxZ;
+    const xs = holdsDrain
+      ? axisSamples(minX, maxX, SUTRO_DRAIN.x, DRAIN_DENSE_RADIUS, DRAIN_DENSE_CELL, TARGET_CELL_SIZE)
+      : axisSamples(minX, maxX, (minX + maxX) * 0.5, 0, TARGET_CELL_SIZE, TARGET_CELL_SIZE);
+    const zs = holdsDrain
+      ? axisSamples(minZ, maxZ, SUTRO_DRAIN.z, DRAIN_DENSE_RADIUS, DRAIN_DENSE_CELL, TARGET_CELL_SIZE)
+      : axisSamples(minZ, maxZ, (minZ + maxZ) * 0.5, 0, TARGET_CELL_SIZE, TARGET_CELL_SIZE);
+    const columns = xs.length;
+    const rows = zs.length;
     const firstVertex = positions.length / 3;
 
     for (let row = 0; row < rows; row++) {
-      const z01 = row / (rows - 1);
-      const localZ = minZ + z01 * depth;
+      const localZ = zs[row]!;
       for (let column = 0; column < columns; column++) {
-        const x01 = column / (columns - 1);
-        const localX = minX + x01 * width;
+        const localX = xs[column]!;
         const world = sutroLocalToWorld(localX, localZ);
         positions.push(
           world.x - SUTRO_BATHS.centerX,
@@ -214,10 +260,38 @@ export function createSutroBathsStaticWater(options: {
   // surface. One uniform, no second material, no pipeline permutation.
   const twilightU = uniform(0);
   const waterMeta: N = attribute("waterMeta", "vec4");
+  // World-space centre of the plunge drain. The surface whirlpool is shaded
+  // here so it is the same teal / mirror / foam as the rest of the sheet —
+  // drain.ts only owns the bronze collar and the dark bore below.
+  const drainWorld = sutroLocalToWorld(SUTRO_DRAIN.x, SUTRO_DRAIN.z);
+  const drainPosU = uniform(new THREE.Vector2(drainWorld.x, drainWorld.z));
+
+  const toDrain = positionWorld.xz.sub(drainPosU);
+  const drainDist = toDrain.length();
+  const drainSafe = drainDist.max(0.08);
+  const whirlAmt = float(1).sub(smoothstep(float(WHIRL_CORE), float(WHIRL_OUTER), drainDist));
+  // Funnel walls (not the open core): where the surface slopes into the bore.
+  const funnelAmt = smoothstep(float(WHIRL_CORE * 0.35), float(WHIRL_CORE + 0.55), drainDist).mul(
+    float(1).sub(smoothstep(float(WHIRL_CORE + 0.9), float(WHIRL_OUTER), drainDist))
+  );
+  const drainAngle = atan(toDrain.y, toDrain.x);
+  const spiralPhase = drainAngle.mul(2.8).sub(drainDist.mul(1.9)).sub(timeU.mul(1.55));
+  const spiral = sin(spiralPhase).mul(0.5).add(0.5);
+  // Soft depression: deepest on the funnel, gently flat in the open core so
+  // the sheet does not pin itself to a single vertex in the middle.
+  const depression = whirlAmt
+    .mul(whirlAmt)
+    .mul(float(WHIRL_DEPRESSION))
+    .mul(mix(float(0.55), float(1), funnelAmt.add(0.35).min(1)));
 
   const waveA = positionWorld.x.mul(0.46).add(positionWorld.z.mul(0.13)).add(timeU.mul(0.72));
   const waveB = positionWorld.z.mul(0.69).sub(positionWorld.x.mul(0.08)).sub(timeU.mul(0.49));
-  const analyticalWave = sin(waveA).mul(0.58).add(sin(waveB).mul(0.42)).mul(rippleU);
+  const analyticalWave = sin(waveA)
+    .mul(0.58)
+    .add(sin(waveB).mul(0.42))
+    .mul(rippleU)
+    .mul(float(1).sub(whirlAmt.mul(0.85)))
+    .sub(depression);
   const crest = sin(positionWorld.x.mul(0.29).sub(positionWorld.z.mul(0.21)).add(timeU.mul(0.36)))
     .mul(0.5)
     .add(0.5);
@@ -245,22 +319,50 @@ export function createSutroBathsStaticWater(options: {
   // tilt. Normals only, for the reason above: this never moves a vertex.
   const waveC = positionWorld.x.mul(1.97).sub(positionWorld.z.mul(1.53)).add(timeU.mul(1.31));
   const waveD = positionWorld.z.mul(2.21).add(positionWorld.x.mul(1.07)).sub(timeU.mul(1.09));
-  const fineRipple = normalRipple.mul(FINE_RIPPLE_GAIN);
+  // A third, incommensurate octave breaks the two-wave lattice that can lock
+  // into a tiled mirror at mid-range on the great plunge.
+  const waveE = positionWorld.x.mul(3.13).add(positionWorld.z.mul(2.71)).sub(timeU.mul(1.67));
+  const viewVectorEarly = positionWorld.sub(cameraPosition);
+  const viewDistance = viewVectorEarly.length();
+  // Fine normals are for close water; past ~30 m they alias into a regular
+  // shimmer grid on the sky mirror. Soften them with distance — cheaper and
+  // more organic than keeping full-frequency tilt on every far fragment.
+  const fineKeep = float(1)
+    .sub(smoothstep(12, 36, viewDistance).mul(0.82))
+    .mul(float(1).sub(whirlAmt.mul(0.55)));
+  const fineRipple = normalRipple.mul(FINE_RIPPLE_GAIN).mul(fineKeep);
+  // Tangential swirl + radial inward slope: the surface is turning into the
+  // bore. Normals only — the vertex depression already owns the silhouette.
+  const radialX = toDrain.x.div(drainSafe);
+  const radialZ = toDrain.y.div(drainSafe);
+  const tangX = radialZ.negate();
+  const tangZ = radialX;
+  const swirlGain = funnelAmt.mul(0.95).add(whirlAmt.mul(0.35));
+  const spiralTilt = spiral.sub(0.5).mul(swirlGain).mul(0.55);
   const analyticalNormalX = cos(waveA)
     .mul(normalRipple)
     .mul(0.27)
-    .add(cos(waveC).mul(fineRipple));
+    .add(cos(waveC).mul(fineRipple))
+    .add(cos(waveE).mul(fineRipple.mul(0.45)))
+    .add(tangX.mul(swirlGain).mul(0.62))
+    .add(radialX.mul(funnelAmt).mul(0.48))
+    .add(spiralTilt.mul(tangX));
   const analyticalNormalZ = cos(waveB)
     .mul(normalRipple)
     .mul(0.29)
-    .add(cos(waveD).mul(fineRipple));
+    .add(cos(waveD).mul(fineRipple))
+    .add(sin(waveE).mul(fineRipple.mul(0.45)))
+    .add(tangZ.mul(swirlGain).mul(0.62))
+    .add(radialZ.mul(funnelAmt).mul(0.48))
+    .add(spiralTilt.mul(tangZ));
   const worldNormal = normalize(vec3(analyticalNormalX, 1, analyticalNormalZ));
 
-  const viewVector = positionWorld.sub(cameraPosition);
-  const viewDistance = viewVector.length();
+  const viewVector = viewVectorEarly;
   const viewToFragment = viewVector.div(viewDistance.max(1e-4));
   const slant = viewToFragment.y.abs().max(0.18);
-  const bedDepth = mix(poolDepthU, float(0.14), smoothstep(0.2, 1.0, waterMeta.y)).max(0.05);
+  const bedDepth = mix(poolDepthU, float(0.14), smoothstep(0.2, 1.0, waterMeta.y))
+    .add(whirlAmt.mul(1.8))
+    .max(0.05);
   const pathLength = bedDepth.div(slant);
   const distortion = worldNormal.xz
     .mul(refractionU)
@@ -278,8 +380,18 @@ export function createSutroBathsStaticWater(options: {
     timeU.mul(0.55)
   );
   const shallowFocus = exp(bedDepth.negate().mul(0.9));
+  // Caustic webs tile hard at mid-range; soften with view distance and keep
+  // them out of the whirlpool where the bore already owns the bed read.
+  const causticKeep = float(1)
+    .sub(smoothstep(18, 52, viewDistance).mul(0.75))
+    .mul(float(1).sub(whirlAmt));
   const litBed = bedScene.add(
-    causticPattern.mul(causticU).mul(shallowFocus).mul(daylight).mul(bedScene.add(0.12))
+    causticPattern
+      .mul(causticU)
+      .mul(shallowFocus)
+      .mul(daylight)
+      .mul(causticKeep)
+      .mul(bedScene.add(0.12))
   );
   const water = beerLambertWater({
     pathLength,
@@ -293,6 +405,14 @@ export function createSutroBathsStaticWater(options: {
   // below have something to sit against.
   const duskColorU = uniform(new THREE.Color(0x123a49));
   const surfaceColor = mix(litSurface, mix(litSurface, duskColorU, float(0.42)), twilightU);
+  // Whirl body: same family of teal, just deeper and a little cooler where the
+  // sheet is being pulled down — never a separate cyan VFX colour.
+  const whirlDeep = mix(deepColorU, duskColorU, twilightU.mul(0.55));
+  const whirlSurface = mix(
+    surfaceColor,
+    mix(whirlDeep, temperatureColor, spiral.mul(0.22).add(0.1)),
+    whirlAmt.mul(0.78)
+  );
 
   const dither = interleavedGradientNoise(screenCoordinate.xy);
   const edgeWobble = sin(positionWorld.x.mul(1.4).add(sin(positionWorld.z.mul(1.1)).mul(1.6)));
@@ -300,25 +420,38 @@ export function createSutroBathsStaticWater(options: {
   const edgeFoam = smoothstep(0.6, 0.94, edgeRings)
     .mul(smoothstep(0.25, 0.85, waterMeta.y))
     .mul(shoreFoamU);
-  const foamMask = ditheredCoverage(saturate(edgeFoam), dither);
+  // Soft white lip where the funnel meets the free surface — the one bright
+  // cue that this is a whirlpool, and still the sheet's own foam path.
+  const lipFoam = smoothstep(float(0.7), float(0), abs(drainDist.sub(float(WHIRL_CORE + 0.55))))
+    .mul(mix(float(0.35), float(0.85), spiral))
+    .mul(0.55);
+  const foamMask = ditheredCoverage(saturate(edgeFoam.add(lipFoam)), dither);
+  // Kill discrete sparkle cells near the drain — they are what read as tiling
+  // on the funnel — and fade them earlier across the hall in general.
   const sparkle = sunSparkle({
     worldPosition: positionWorld,
     worldNormal,
     viewToFragment,
     sunDirection: sunDirU,
-    time: timeU
-  }).mul(sparkleU);
+    time: timeU,
+    cellJitter: 0.85,
+    fadeStart: 14,
+    fadeEnd: 48
+  })
+    .mul(sparkleU)
+    .mul(float(1).sub(whirlAmt));
   // Evening water must still read as water. Clear daylight water is mostly the
   // lit bed showing through; with the sun gone that left the pools looking like
   // dry basins, so twilight closes the transmittance down and the body of the
   // pool carries its own dusk glow instead.
   const transmittance = water.transmittance
     .mul(float(1).sub(foamMask))
-    .mul(twilightU.mul(0.3).oneMinus());
+    .mul(twilightU.mul(0.3).oneMinus())
+    .mul(float(1).sub(whirlAmt.mul(0.55)));
 
-  // Lamplight on the surface. Reusing the sparkle cell field with an overhead
-  // "lamp direction" gives real per-wavelet twinkles instead of the smooth
-  // sine-product blobs a hand-rolled field lays down in a visible grid.
+  // Lamplight on the surface. Discrete glints are jittered off the cell lattice
+  // and fade with distance so the great plunge never locks into a checkerboard;
+  // a soft continuous lobe carries the warm presence once the points dissolve.
   const lampColorU = uniform(new THREE.Color(0xffb673));
   const lampDirU = uniform(new THREE.Vector3(0.18, 0.94, -0.28).normalize());
   const lampGlint = sunSparkle({
@@ -327,8 +460,20 @@ export function createSutroBathsStaticWater(options: {
     viewToFragment,
     sunDirection: lampDirU,
     time: timeU.mul(0.6),
-    cellDensity: 13
-  }).mul(twilightU);
+    cellDensity: 11,
+    cellJitter: 0.95,
+    fadeStart: 8,
+    fadeEnd: 28
+  })
+    .mul(twilightU)
+    .mul(float(1).sub(whirlAmt.mul(0.9)));
+  const lampSoft = pow(
+    saturate(reflect(viewToFragment, worldNormal).dot(lampDirU)),
+    28
+  )
+    .mul(twilightU)
+    .mul(0.1)
+    .mul(float(1).sub(whirlAmt.mul(0.7)));
   // …plus the faintest warm wash so an evening pool still has a body to it.
   const lampWash = twilightU.mul(0.04);
 
@@ -384,8 +529,14 @@ export function createSutroBathsStaticWater(options: {
           const radiance = (
             options.sky.envRadiance(reflectDir, mirrorSoftenU) as N
           ).mul(roofShade);
-          // Foam is spray, not a surface — it must not mirror anything.
-          const weight = fresnel.mul(mirrorU).mul(float(1).sub(foamMask)).clamp(0, 1);
+          // Foam is spray, not a surface — it must not mirror anything. The
+          // whirlpool core opens the sheet so the dark bore below can read
+          // through instead of reflecting sky as a flat disc over the drain.
+          const weight = fresnel
+            .mul(mirrorU)
+            .mul(float(1).sub(foamMask))
+            .mul(float(1).sub(whirlAmt.mul(0.85)))
+            .clamp(0, 1);
           return { radiance, weight };
         })()
       : null;
@@ -446,13 +597,25 @@ export function createSutroBathsStaticWater(options: {
     // in the water. Nothing here uses transmission, so this stays single-pass.
     side: THREE.DoubleSide
   });
+  // The hall lamps are real punctual lights on a regular grid. Feeding them
+  // through MeshStandard's specular path at dusk roughness (~0.07) stamps that
+  // grid onto the great plunge as tiled circular highlights — exactly the
+  // artifact that made distant water look like a checkerboard while the near
+  // right side (steam, smaller tanks, foreshortening) still read organic.
+  //
+  // The pools already author their whole look in emissiveNode (bed, sparkle,
+  // lamp glints, sky mirror). Skipping the lighting block matches the ocean
+  // sheets' `lights = false` contract, removes the lattice, and drops the
+  // per-fragment punctual + IBL work on a hall-sized transparent surface.
+  // MeshStandard (not Basic) stays so `normalNode` still reaches the SSR mask.
+  material.lights = false;
   material.forceSinglePass = true;
   material.positionNode = positionLocal.add(vec3(0, analyticalWave, 0));
   // The sky mirror belongs to the ABOVE-water branch only. Seen from beneath,
   // the surface is Snell's window and total internal reflection — a swimmer
   // looking up must not also get a reflection of the dome painted over it.
   const aboveDiffuse = mix(
-    surfaceColor.mul(vec3(1).sub(transmittance)),
+    whirlSurface.mul(vec3(1).sub(transmittance)),
     highlightColorU,
     foamMask
   );
@@ -465,12 +628,17 @@ export function createSutroBathsStaticWater(options: {
     underLit.mul(0.12),
     belowU
   );
+  // Soft spiral highlight in pool colour — folding water, not additive cyan.
+  const whirlRibbon = temperatureColor
+    .mul(spiral.mul(funnelAmt).mul(0.16))
+    .add(whirlDeep.mul(whirlAmt.mul(0.12)));
   const body = litBed
     .mul(transmittance)
     .add(highlightColorU.mul(foamMask.mul(0.1)))
     .add(vec3(1.0, 0.97, 0.88).mul(sparkle).mul(twilightU.mul(0.7).oneMinus()))
-    .add(lampColorU.mul(lampGlint.mul(0.5).add(lampWash)))
-    .add(duskColorU.mul(twilightU).mul(0.5));
+    .add(lampColorU.mul(lampGlint.mul(0.55).add(lampSoft).add(lampWash)))
+    .add(duskColorU.mul(twilightU).mul(0.5))
+    .add(whirlRibbon);
   // Reflection and transmission are complementary, never additive: light that
   // bounces off the surface is light that did not enter it. Adding the mirror
   // on top of a body chain authored without one made the pools brighter than
@@ -499,7 +667,10 @@ export function createSutroBathsStaticWater(options: {
   // reflective still water is.
   writeSsrMask(
     material,
-    float(0.85).mul(foamMask.oneMinus()).mul(belowU.oneMinus())
+    float(0.85)
+      .mul(foamMask.oneMinus())
+      .mul(belowU.oneMinus())
+      .mul(float(1).sub(whirlAmt.mul(0.9)))
   );
 
   const mesh = new THREE.Mesh(geometry, material);
@@ -595,17 +766,11 @@ export function createSutroBathsStaticWater(options: {
     setTwilight(depth) {
       const t = depth < 0 ? 0 : depth > 1 ? 1 : depth;
       twilightU.value = t;
-      // Daylight water is read through its surface; evening water is read off
-      // it. Tightening roughness as the sun goes turns the pools into mirrors of
-      // the sunset instead of the flat sky-grey slabs a broad rough reflection
-      // leaves behind.
-      material.roughness = 0.34 - t * 0.27;
-      // `envMapIntensity` used to be set here and at construction. It does
-      // nothing: three reads it only when the material carries its own envMap,
-      // and this one reflects the scene-wide `environmentNode`, so the live
-      // value is `scene.environmentIntensity` and always was. The sky mirror in
-      // the node graph above is what actually opens up at dusk; sharpen the
-      // reflection blur with it so a calm evening pool reads harder-edged.
+      // Roughness no longer drives lamp speculars (`lights = false`); keep a
+      // mild dusk tighten only so any future lit path stays calm. The sky
+      // mirror in the node graph is what actually opens up at dusk — sharpen
+      // its blur so a calm evening pool reads harder-edged.
+      material.roughness = 0.34 - t * 0.12;
       mirrorSoftenU.value = 0.16 - t * 0.09;
     },
     syncTuning,

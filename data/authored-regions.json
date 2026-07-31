@@ -28,7 +28,18 @@
       "loadDistance": 1100,
       "unloadDistance": 1600,
       "replaces": [
-        { "tile": "1_12", "index": 0 }
+        {
+          "tile": "1_12",
+          "index": 0
+        },
+        {
+          "tile": "1_12",
+          "index": 1
+        },
+        {
+          "tile": "1_12",
+          "index": 2
+        }
       ],
       "terrain": {
         "mode": "flat-ownership",
@@ -82,12 +93,30 @@
       "loadDistance": 1800,
       "unloadDistance": 2400,
       "replaces": [
-        { "tile": "10_8", "index": 0 },
-        { "tile": "10_8", "index": 19 },
-        { "tile": "10_8", "index": 20 },
-        { "tile": "10_8", "index": 22 },
-        { "tile": "10_8", "index": 23 },
-        { "tile": "10_8", "index": 24 }
+        {
+          "tile": "10_8",
+          "index": 0
+        },
+        {
+          "tile": "10_8",
+          "index": 19
+        },
+        {
+          "tile": "10_8",
+          "index": 20
+        },
+        {
+          "tile": "10_8",
+          "index": 22
+        },
+        {
+          "tile": "10_8",
+          "index": 23
+        },
+        {
+          "tile": "10_8",
+          "index": 24
+        }
       ],
       "terrain": {
         "mode": "flat-ownership",
@@ -97,8 +126,8 @@
             "id": "hostel-terrace",
             "centerX": 1362.428,
             "centerZ": -1893.452,
-            "halfX": 36.0,
-            "halfZ": 15.0,
+            "halfX": 36,
+            "halfZ": 15,
             "yaw": 0.24,
             "feather": 0.28,
             "groundY": 32.55
@@ -180,7 +209,10 @@
       "loadDistance": 1200,
       "unloadDistance": 1700,
       "replaces": [
-        { "tile": "12_10", "index": 1 }
+        {
+          "tile": "12_10",
+          "index": 1
+        }
       ],
       "terrain": {
         "mode": "flat-ownership",

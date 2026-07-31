@@ -96,9 +96,11 @@ export function createTemporalStage(setup: PostStageSetup): TemporalStage {
   // stage did not run on the immediately preceding presented frame. That last
   // one is the self-healing invariant: the node's "previous camera" and previous
   // depth only advance when render() runs, so any gap — the stage toggled off
-  // and on, a still capture rendering the chain at the same frameIndex, a
-  // resize — would otherwise reproject against a frame that is not the previous
-  // one. Cheaper to detect here than to require every caller to remember.
+  // and on, a resize, or a still capture that skipped frameIndex — would
+  // otherwise reproject against a frame that is not the previous one. Cheaper
+  // to detect here than to require every caller to remember. (H-key stills now
+  // advance frameIndex across their accumulation, so they accumulate rather
+  // than trip this seed-every-time path.)
   let pendingSeed = true
   let lastRenderedFrame = -1
 

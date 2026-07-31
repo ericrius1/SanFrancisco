@@ -53,6 +53,12 @@ import { SUTRO_BATHS_TUNING } from "./tuning";
  *    hour ticks forward on the wall clock while the pocket holds the sky, so the
  *    handback lands on the time it actually is outside rather than the time it
  *    was when the visitor walked in.
+ *  - A manual Z-scrub (or any `setTimeOfDay` / `advanceCivilHours`) clears the
+ *    authority. The pocket notices that and YIELDS for the rest of the visit:
+ *    depth, lamps, and thinning keep running, but the sunset↔twilight band is
+ *    no longer re-asserted, so the visitor can park the sun anywhere. The next
+ *    full exit (or site sleep) clears the yield and the pocket takes the sky
+ *    again on re-entry.
  */
 
 /** The subset of Sky this needs — structural so probes can stub a clock. */
@@ -91,6 +97,8 @@ export type SutroTwilightState = {
   exteriorThinned: boolean;
   observerOutside: boolean;
   authorityHeld: boolean;
+  /** True after a manual scrub stole the clock; pocket will not reclaim it. */
+  yieldedToManual: boolean;
 };
 
 export type SutroTwilight = {
@@ -239,6 +247,12 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
    */
   let observerOutside = false;
   let authorityHeld = false;
+  /**
+   * Set when something outside this file cleared `timeAuthority` while we were
+   * holding it (Z-scrub / setTimeOfDay). Stays set until a full exit or
+   * `release()`, so we do not fight the visitor for the sun.
+   */
+  let yieldedToManual = false;
   let pocketHour = sunsetHour;
   /** The latch: what the sky is fading TOWARD. Flipped only by the hysteresis. */
   let inside = false;
@@ -348,28 +362,39 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       if (!inside && skyBlend <= 0) {
         releaseAuthority();
         worldHour = sky.timeOfDay;
+        yieldedToManual = false;
         setThinned(false);
         return;
       }
 
-      solveFor(sky.civilTime);
-      if (!authorityHeld) {
-        // Capture the hour the world was actually at, once, on the way in.
-        worldHour = sky.timeOfDay;
-        authorityHeld = true;
-      } else {
-        // Keep the remembered outdoor hour ticking on the real clock while the
-        // pocket holds the sky, so the handback lands on the time it actually is
-        // out there — not the time it was when the visitor came in.
-        worldHour = (worldHour + rampStep / 3600) % 24;
+      // Scrub / setTimeOfDay / advanceCivilHours null the authority. Once that
+      // happens mid-visit, stop writing the pocket hour — the visitor asked for
+      // a different sun and should be able to keep it past the authored band.
+      if (authorityHeld && sky.timeAuthority === null) {
+        authorityHeld = false;
+        yieldedToManual = true;
       }
 
-      drift += step / Math.max(20, tuning.pocketDriftSeconds);
-      // A cosine swing dwells at both ends, so the room holds a full sunset and
-      // a full twilight rather than sliding through them at constant speed.
-      const swing = 0.5 - 0.5 * Math.cos(drift * Math.PI * 2);
-      pocketHour = mixHours(sunsetHour, twilightHour, swing);
-      sky.setTimeAuthority(mixHours(worldHour, pocketHour, smooth01(skyBlend)));
+      if (!yieldedToManual) {
+        solveFor(sky.civilTime);
+        if (!authorityHeld) {
+          // Capture the hour the world was actually at, once, on the way in.
+          worldHour = sky.timeOfDay;
+          authorityHeld = true;
+        } else {
+          // Keep the remembered outdoor hour ticking on the real clock while the
+          // pocket holds the sky, so the handback lands on the time it actually is
+          // out there — not the time it was when the visitor came in.
+          worldHour = (worldHour + rampStep / 3600) % 24;
+        }
+
+        drift += step / Math.max(20, tuning.pocketDriftSeconds);
+        // A cosine swing dwells at both ends, so the room holds a full sunset and
+        // a full twilight rather than sliding through them at constant speed.
+        const swing = 0.5 - 0.5 * Math.cos(drift * Math.PI * 2);
+        pocketHour = mixHours(sunsetHour, twilightHour, swing);
+        sky.setTimeAuthority(mixHours(worldHour, pocketHour, smooth01(skyBlend)));
+      }
 
       // The camera's own inside/outside answer, matching the player's rule:
       // wall inset gated by vertical containment (over the roof = outside).
@@ -407,6 +432,7 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
       inside = false;
       observerOutside = false;
       skyBlend = 0;
+      yieldedToManual = false;
       // The next visit is a fresh arrival, and must snap rather than sweep.
       needsSnap = true;
     },
@@ -421,7 +447,8 @@ export function createSutroTwilight(options: SutroTwilightOptions = {}): SutroTw
         lampGlow: depth,
         exteriorThinned,
         observerOutside,
-        authorityHeld
+        authorityHeld,
+        yieldedToManual
       };
     }
   };

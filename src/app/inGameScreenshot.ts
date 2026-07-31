@@ -88,11 +88,14 @@ async function archiveToDevServer(blob: Blob, filename: string): Promise<string 
 }
 
 /**
- * Capture a high-resolution PNG of the WebGPU beauty pass (HUD is DOM-only, so
- * it is never in the shot) and download it to the player's Downloads folder.
+ * Capture a high-resolution PNG of the live post-processing chain (HUD is
+ * DOM-only, so it is never in the shot) and download it to the player's
+ * Downloads folder.
  *
- * Resolution comes purely from the temporary pixel-ratio bump — a 4K
- * supersample. Do NOT reach for the pipeline's cinematic MSAA here: raising the
+ * Resolution comes from a temporary pixel-ratio bump toward 4K. The still then
+ * re-renders the same enabled post chain at that size, accumulating temporal
+ * samples so the PNG matches the live look rather than a single seeded TAA
+ * frame. Do NOT reach for the pipeline's cinematic MSAA here: raising the
  * beauty pass's sample count mid-session poisons cached depth bind groups and
  * leaves the live canvas rendering nothing but clear colour (see the MSAA note
  * in render/pipeline.ts). That was a real black-screen-after-screenshot bug.

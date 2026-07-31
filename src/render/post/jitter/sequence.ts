@@ -14,11 +14,11 @@ import { JITTER_TUNING } from "./tuning"
  * anything renders the beauty pass without presenting.
  *
  * Deriving both from `PostFrameContext.frameIndex` instead means there is no
- * shared mutable state at all: a compile-held frame (pipeline.ts:280-287), a
- * warmup covered render and `captureStillRgba` never advance `frameIndex`, so
- * the projection sequence and the accumulated history cannot drift apart even
- * in principle. It also makes the sequence reproducible for a probe: frame N
- * always has offset N.
+ * shared mutable state at all: a compile-held frame and a warmup covered render
+ * never advance `frameIndex`, so they cannot desync the projection sequence
+ * from the accumulated history. H-key still accumulation advances it on
+ * purpose — each still present is a real Halton sample. It also makes the
+ * sequence reproducible for a probe: frame N always has offset N.
  *
  * Stock's index wrap is `% (_haltonOffsets.length - 1)` (TAAUNode.js:370,
  * TRAANode.js:337), which silently never uses the 32nd entry. We use `% length`.

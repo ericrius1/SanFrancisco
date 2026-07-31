@@ -97,9 +97,10 @@ export interface PostFrameContext {
   readonly inputWidth: number
   readonly inputHeight: number
   /** Monotonic PRESENTED-frame counter. Does NOT advance on compile-held frames
-   *  (pipeline.ts:994-998 returns early), on warmup covered renders, or on
-   *  captureStillRgba. The jitter index and the temporal history are both keyed
-   *  to it, so they can never desync from the projection sequence. */
+   *  (pipeline.ts returns early) or warmup covered renders. H-key still
+   *  accumulation DOES advance it — consecutive still presents need consecutive
+   *  indices so the temporal resolve accumulates rather than re-seeds. The
+   *  jitter index and the temporal history are both keyed to it. */
   readonly frameIndex: number
   readonly dt: number
   /** Set for one frame after a resize, teleport, look change, warmup render or

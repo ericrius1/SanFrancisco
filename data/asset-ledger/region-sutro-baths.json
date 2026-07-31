@@ -5,17 +5,17 @@
   "bake": "npm run bake:region -- --site sutro-baths",
   "tracked": true,
   "inputs": {
-    "assets-src/world/sites/sutro-baths.blend": "56f7bd6e4f4bc2a353ec0f69d20b9794e867f4c97c07112751b1dfee6ef8ceec",
-    "data/authored-regions.json": "9b76c9839b9200b72a32235ebe6a588123e29d16189cf143a1abe1194a675153",
+    "assets-src/world/sites/sutro-baths.blend": "2a6d51dc98469807725eb1edfff8c7cdf065a1e9852805ceb1fc32797a5f04d0",
+    "data/authored-regions.json": "6d9b3a8dbf60bfa388266d59f183d1ef2e52042925be77c7942f4957d0aa888d",
     "tools/export-authored-site.py": "bc1fed401a1fd10e18b7804f39c379665ba470a5d46f795d2c0e64b8632f6692",
     "tools/inject-authored-site.mjs": "80fced31ccb6713acb3cdbba609e1e8788301482769644951608b3568205c3ff",
     "tools/sync-authored-region.py": "44b9eba826becee2ddec3312666a50902256d2ddad53d389b915801b07145172"
   },
   "outputs": {
-    "data/authored-sites/sutro-baths.json": "2f559e8736ae85cf0110afb87a22f664f4f004bea2c26def2e2a7b0a9c4097d2",
-    "public/data/authored-regions.json": "b66d828f1774a447c44f8a7b745e69753273d0ccf221019faa7976d873358c16",
-    "public/data/colliders/tile_1_12.json": "7b872a7bb84c33ecea2f130e163aeed64920a48ef035484f0748ebfd8457485c",
-    "public/regions/sutro-baths.glb": "617a79d45d31470e2c90ce06634a3fc87e0460bd4cdd2f33d19d1bd46e0b36d1",
-    "public/tiles/tile_1_12.glb": "96b268d8bbe5933b2bd4b1649e1966f767935a5e4d1591d50092bcb8fcb8cc5c"
+    "data/authored-sites/sutro-baths.json": "6a1e5cd54131306279bc16fb36c9b48eee5b1d2a9672a9f245b6ff66ae9f8759",
+    "public/data/authored-regions.json": "14c2ebe28d49c902baea177da0fdd095aa32d83c2b1e5d17e9659a580f73e42d",
+    "public/data/colliders/tile_1_12.json": "475e727e928f6d6e637863fad7817ac9989e040de15b182fbd5c52a1a5098bae",
+    "public/regions/sutro-baths.glb": "ad373321ea9022622bf009195674ca59cb63d3cf1b819d948ae97d0247cd234b",
+    "public/tiles/tile_1_12.glb": "0cfff6bd8ab4761c5a1d82a45ec3092dc44c2b72ba6cd832e627410ce19a16a0"
   }
 }

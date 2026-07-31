@@ -9,8 +9,8 @@
 //
 // Owning it is what buys the three hazards named in BRIEF §4.1:
 //  - the sequence advances on PRESENTED frames only, so a compile-held frame, a
-//    warmup covered render and captureStillRgba can never desync the projection
-//    sequence from the accumulated history;
+//    warmup covered render can never desync the projection sequence from the
+//    accumulated history (H-key stills advance frameIndex deliberately);
 //  - the wireframe camera clone is synced AFTER apply(), so wireframe mode
 //    carries the jitter while keeping its separate camera identity (BundleGroups
 //    key their WebGPU command caches by camera identity);

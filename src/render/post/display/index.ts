@@ -99,8 +99,8 @@ export function createDisplayStage(setup: PostStageSetup, deps: DisplayDeps): Di
       // the grain stage is never called by the driver (it owns no pass) and
       // because THIS is the call that presents. A frame that is never presented
       // must not consume a seed: `frameIndex` does not advance on compile-held
-      // frames, warmup covered renders or captureStillRgba, which is exactly
-      // what keeps a captured still's grain reproducible.
+      // frames or warmup covered renders. H-key stills advance it across their
+      // temporal accumulation, so the PNG carries the last sample's grain.
       advanceGrain(frame.frameIndex)
       // Draws into whatever render target the caller bound — that is how
       // ?fastcapture and the H-key still both redirect the final frame without
