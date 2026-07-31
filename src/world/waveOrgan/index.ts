@@ -18,6 +18,7 @@ import { formatInteractPrompt } from "../../core/input";
 import type { WorldMap } from "../heightmap";
 import type { NatureSoundscape } from "../../audio/natureSoundscape";
 import { WaveOrganAudio, type PipeAudioState } from "./audio";
+import { HirajoshiWave } from "./hirajoshiWave";
 import { TideMotes } from "./motes";
 import {
   BENCHES,
@@ -122,8 +123,10 @@ export class WaveOrgan {
   readonly group = new THREE.Group();
   /** Live subtree (kept unfrozen): the payoff motes. */
   readonly activity = new THREE.Group();
+  readonly ready: Promise<void>;
 
   #audio: WaveOrganAudio;
+  #hirajoshi: HirajoshiWave;
   #motes: TideMotes;
   #pipes: PipeRuntime[] = [];
   #audioStates: PipeAudioState[] = [];
@@ -139,6 +142,8 @@ export class WaveOrgan {
     this.group.name = "waveOrgan";
     this.activity.name = "waveOrgan.motes";
     this.#audio = new WaveOrganAudio(nature);
+    this.#hirajoshi = new HirajoshiWave(map, nature);
+    this.ready = this.#hirajoshi.ready;
 
     this.#buildStones(map);
     this.#buildBenches(map);
@@ -150,7 +155,7 @@ export class WaveOrgan {
     this.group.add(tideSheet());
 
     this.#motes = new TideMotes(map.groundTop(HEART.x, HEART.z), WO_BLOOM, WO_TIME);
-    this.activity.add(this.#motes.group);
+    this.activity.add(this.#motes.group, this.#hirajoshi.group);
     this.group.add(this.activity);
 
     // Freeze the static subtrees (everything except the live motes).
@@ -410,6 +415,7 @@ export class WaveOrgan {
    * shared nature context awake), then every locally built mesh. */
   dispose() {
     this.#audio.dispose();
+    this.#hirajoshi.dispose();
     this.group.removeFromParent();
     const geometries = new Set<THREE.BufferGeometry>();
     const materials = new Set<THREE.Material>();
@@ -440,6 +446,18 @@ export class WaveOrgan {
     this.#complete(hud ?? null);
   }
 
+  restartHirajoshi(hud?: { message(t: string, s?: number): void }) {
+    this.#hirajoshi.restart(hud);
+  }
+
+  setHirajoshiTime(seconds: number) {
+    this.#hirajoshi.debugSetTime(seconds);
+  }
+
+  hirajoshiDebugState() {
+    return this.#hirajoshi.debugState();
+  }
+
   #complete(hud: { message(t: string, s?: number): void } | null) {
     if (this.#completed) return;
     this.#completed = true;
@@ -455,6 +473,7 @@ export class WaveOrgan {
     hud: { message(t: string, s?: number): void }
   ): boolean {
     if (player.mode !== "walk") return false;
+    if (this.#hirajoshi.tryInteract(player, hud)) return true;
     const dx = player.renderPosition.x - PLAQUE.x;
     const dz = player.renderPosition.z - PLAQUE.z;
     if (dx * dx + dz * dz > PLAQUE.reach * PLAQUE.reach) return false;
@@ -478,6 +497,7 @@ export class WaveOrgan {
     this.group.visible = near;
     // Audio gates itself at 130 m and needs the far branch to wind down.
     this.#audio.update(dt, playerPos, this.#audioStates);
+    this.#hirajoshi.update(dt, elapsed, playerPos, hud);
     if (!near) return;
 
     WO_TIME.value += dt;

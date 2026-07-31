@@ -131,7 +131,10 @@ async function main() {
   if (!ready) throw new Error("app never ready (see [page-*] above)");
   console.log(`[probe] ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 
-  await ev(c, `window.__sfManual&&window.__sfManual(true)`);
+  // Stay on the LIVE animation loop through teleport + residency. Parking the
+  // loop with __sfManual first prevented first-approach garden/wildlands loads
+  // (waitForWorldBackgroundWindow + wakeDeferred*) and silently measured empty
+  // scenes. Manual mode is engaged only when a stop is about to be measured.
 
   // tier switcher installed in-page. Mirrors what the "/" panel preset onChange does.
   await ev(c, `window.__tier = async (dpr, shadows) => {
@@ -182,6 +185,12 @@ async function main() {
     // meadow and 12.9 ms on another run of the same build. Keep ticking until
     // residency actually reports ready (or the budget expires, which is logged
     // loudly rather than folded into the numbers).
+    //
+    // Botanical meadow specifically: the garden is first-approach deferred
+    // (`wakeDeferredGarden`). Treating a null garden as "ready" was the empty-
+    // meadow trap. At this stop we require the garden group to be parented AND
+    // its grass controller to report draws > 0.
+    const needsGarden = /botanical meadow/i.test(stop.name);
     const residencyT0 = Date.now();
     let resident = false;
     while (Date.now() - residencyT0 < 120000) {
@@ -189,14 +198,12 @@ async function main() {
       try {
         resident = await ev(c, `(()=>{
           const sf = window.__sf;
-          // Regional foliage: the garden owns the ground wherever it exists, and
-          // a wildlands site is deliberately absent at some stops — so only
-          // require an owner that is actually present.
           const g = sf.garden;
-          const gardenReady = !g || !!g.group?.parent;
+          const gardenReady = ${needsGarden}
+            ? !!(g && g.group?.parent && g.grass && (g.grass.stats?.draws ?? 0) > 0)
+            : (!g || !!g.group?.parent);
           const w = sf.wildlands;
           const wildReady = !w || (w.groups?.length && w.groups.every((group) => group.parent));
-          // Citygen: no cell may still be waiting on or inside a prepare.
           const cg = sf.citygenRing?.stats?.() ?? sf.citygen?.stats ?? null;
           const cityReady = !cg || (cg.cellsAwaitingPrepare === 0 && !cg.activeChunkPrepare && cg.cellsPreparing === 0);
           return gardenReady && wildReady && cityReady;
@@ -207,25 +214,42 @@ async function main() {
     }
     if (!resident) console.warn(`  [${stop.name}] WARNING: residency gate timed out — numbers below may benchmark a partially streamed scene`);
 
-    // KNOWN REMAINING FLAW — read before trusting a single tier row.
-    // WARM below is not enough to drain the work a tier switch kicks off
-    // (pipeline rebuilds, render-target reallocation, shadow-map refill), so
-    // the FIRST tier measured at a stop absorbs it and reads far too slow.
-    // The tell is a row where a HIGHER dpr is faster: e.g. downtown once
-    // reported 20.8 ms at dpr1 and 1.3 ms at dpr1.5 in the same run. Compare
-    // stops only within the same tier index, treat tier[0] as a throwaway, and
-    // prefer a row that is stable across all four tiers (as the meadow's
-    // 28-36 ms is) over any single number.
+    // Park the live loop only for the timed measurement window.
+    await ev(c, `window.__sfManual&&window.__sfManual(true)`);
+
+    // Drain tier-switch work (pipeline rebuild, RT realloc, shadow refill)
+    // before measuring. A fixed WARM is not enough: the first measured tier
+    // used to absorb that cost and read 10–20× too slow (a higher dpr then
+    // appeared faster). Settle until a short probe window is stable, then
+    // discard that probe and measure for real.
+    const settleTier = async (label) => {
+      await ev(c, `window.__tier(${label.dpr}, "${label.shadows}")`);
+      // Coarse drain: enough frames for the common realloc/refill path.
+      await ev(c, `(async()=>{for(let i=0;i<${WARM * 2};i++){window.__sf.tick(1/60);} return true;})()`);
+      // Stability gate: consecutive short windows whose p50 agree within 12%.
+      let last = Infinity;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const probe = await ev(c, timeExpr(24, 1 / 60));
+        const p50 = probe.tot.p50;
+        if (Number.isFinite(last) && Math.abs(p50 - last) / Math.max(last, 1) < 0.12) return;
+        last = p50;
+        await ev(c, `(async()=>{for(let i=0;i<${WARM};i++){window.__sf.tick(1/60);} return true;})()`);
+      }
+    };
+
     const stopRow = { name: stop.name, tiers: {} };
+    // Throwaway: absorb the first-tier contamination on a throwaway config so
+    // every reported tier below is past the realloc storm.
+    await settleTier(TIERS[0]);
     for (const tier of TIERS) {
-      await ev(c, `window.__tier(${tier.dpr}, "${tier.shadows}")`);
-      // let the pipeline rebuild + shadow maps settle
-      await ev(c, `(async()=>{for(let i=0;i<${WARM};i++){window.__sf.tick(1/60);} return true;})()`);
+      await settleTier(tier);
       const m = await ev(c, timeExpr(MEASURE, 1 / 60));
       stopRow.tiers[tier.key] = m;
       console.log(`  [${stop.name}] ${tier.key}  cpu p50=${m.cpu.p50}ms  frame p50=${m.tot.p50}ms p90=${m.tot.p90}  ` + (m.info ? `calls=${m.info.calls} tris=${(m.info.tris / 1e6).toFixed(1)}M` : ""));
     }
     rows.push(stopRow);
+    // Resume the live loop so the next stop's first-approach loads can admit.
+    await ev(c, `window.__sfManual&&window.__sfManual(false)`);
   }
 
   console.log("\n================= BASELINE SUMMARY =================");

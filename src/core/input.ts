@@ -559,6 +559,14 @@ export class Input {
           held.add(code);
           if (!this.#padPrev[i]) this.#justPressed.add(code);
         }
+      } else if ((i === 1 || i === 5) && this.#mode === "skate") {
+        // Skate: B and LB are both the flip-trick button (LB already maps to
+        // KeyQ), RB is the grab. Ollie stays on A, manual on LT/L3.
+        const skateCode = i === 1 ? "KeyQ" : "KeyX";
+        if (on) {
+          held.add(skateCode);
+          if (!this.#padPrev[i]) this.#justPressed.add(skateCode);
+        }
       } else if (i === 2 && this.#mode === "surf") {
         // X in surf: Flow (mirrors keyboard X — Space/A is always the jump)
         if (on) {

@@ -65,7 +65,7 @@ export class AudioEngine {
   // Background holds are the one exemption: while any is live a hidden page
   // keeps the graph running with ONLY the voice group audible (see
   // #groupTargets). Voice chat is the sole holder — a conversation should
-  // survive tabbing away, the world's music and ambience should not.
+  // survive tabbing away; diegetic performers and world ambience should not.
   #background = 0;
   #pageVisible = typeof document === "undefined" || document.visibilityState === "visible";
 

@@ -822,7 +822,16 @@ function buildRigMerged(avatar: AvatarTraits): Rig {
 }
 
 /** DEV-only tripwire: keeps the (no-op) assignment behaviour, but reports the
- *  first per-part write to a merged rig's base block and names the way out. */
+ *  first per-part write to a merged rig's base block and names the way out.
+ *
+ *  Only a write that would CHANGE the flag counts. Scene-wide helpers force
+ *  `visible = true` on every object in a subtree and then restore it
+ *  (`prepareOptionalRoot` in app/compose/optionalSites.ts, `warmHiddenRoot`),
+ *  so any merged rig inside a warmed site root — the Lands End keeper, say —
+ *  re-asserts `true` on all eleven of its base blocks. That expresses no intent
+ *  and hides nothing, but it used to emit eleven console errors per warm, which
+ *  is enough to fail a probe's no-console-errors gate for reasons unrelated to
+ *  the site under test. A write that flips the value is still a real mistake. */
 function warnOnMergedBlockSurgery(blocks: THREE.Mesh[]): void {
   if (!import.meta.env.DEV) return;
   for (const block of blocks) {
@@ -834,8 +843,9 @@ function warnOnMergedBlockSurgery(blocks: THREE.Mesh[]): void {
         enumerable: true,
         get: () => value,
         set: (next: unknown) => {
+          const changed = next !== value;
           value = next;
-          if (warned) return;
+          if (warned || !changed) return;
           warned = true;
           console.error(
             `[rig] .${key} on a merged rig's base block does nothing — the block is a Bone of one SkinnedMesh. ` +
@@ -1345,4 +1355,176 @@ export function poseScooter(r: Rig, steer: number, t: number, airborne: boolean)
   set(r.foreR, 0.38 + steer * 0.08, 0, -0.08);
   setHandPose(r, "L", 0.8);
   setHandPose(r, "R", 0.8);
+}
+
+/** What a skater's body is doing this frame (see vehicles/skate/controller). */
+export type SkatePose = {
+  /** Deck roll from carving / grind balance (+ = leaning left). */
+  lean: number;
+  /** Steering input −1..1, for shoulder and head lead. */
+  carve: number;
+  /** 0..1 ollie crouch and landing squash. */
+  crouch: number;
+  /** 1 → 0 over one push stroke; 0 means both feet are on the board. */
+  push: number;
+  air: boolean;
+  grab: boolean;
+  grind: boolean;
+  manual: boolean;
+  bail: boolean;
+  /** Signed balance meter while grinding/manualing, ±1 = gone. */
+  balance: number;
+  /** Free-running clock for idle sway. */
+  t: number;
+};
+
+/** Base hip/knee angle: sets how far apart the feet sit along the deck. */
+const SKATE_STANCE = 0.78;
+/** Toe-out for each shoe so it lies ACROSS the griptape, not along it. */
+const SKATE_FOOT_YAW_FRONT = 1.02;
+const SKATE_FOOT_YAW_BACK = 1.42;
+
+/**
+ * Street stance on a 1.3 m deck.
+ *
+ * Three things make this read as skating rather than as a person standing on a
+ * plank:
+ *
+ * 1. **The feet lie ACROSS the deck.** The toe-out lives on the SHIN, not the
+ *    thigh — a yaw applied at the knee turns the shoe without changing the
+ *    sole's height (Ry leaves the shin's own −Y offset alone), so the
+ *    equal-and-opposite thigh/shin pair still plants both soles exactly on the
+ *    griptape at every crouch depth. Yawing the thigh instead would swing the
+ *    feet sideways off the board, which is what made the old pose look like a
+ *    man walking sideways down the street.
+ * 2. **The shoulders are open, the head is not.** Hips and chest turn toward
+ *    the toe side; the head counter-rotates back down the line of travel. That
+ *    twist is the single most recognisable thing about a skateboarder's
+ *    silhouette.
+ * 3. **A push is a real stroke.** The back foot leaves the tail, reaches the
+ *    ROAD (the standing knee folds to let it get there), drives back, and
+ *    returns to the deck. It runs on a phase from the controller, so it only
+ *    happens on the kick — no perpetual jogging in place.
+ */
+export function poseSkate(r: Rig, s: SkatePose) {
+  const lean = THREE.MathUtils.clamp(s.lean, -1.2, 1.2);
+  const carve = THREE.MathUtils.clamp(s.carve, -1, 1);
+  const crouch = THREE.MathUtils.clamp(s.crouch, 0, 1);
+  const push = THREE.MathUtils.clamp(s.push, 0, 1);
+
+  if (s.bail) {
+    // Arms up, legs everywhere. The board is off doing its own thing.
+    const flail = Math.sin(s.t * 17);
+    r.hips.position.y = -0.12;
+    set(r.hips, 0.35, 0, flail * 0.3);
+    set(r.torso, 0.5, flail * 0.35, -flail * 0.4);
+    set(r.head, -0.45, flail * 0.4, 0);
+    set(r.legL, 1.35 + flail * 0.3, 0, 0.35);
+    set(r.legR, 0.7 - flail * 0.4, 0, -0.45);
+    set(r.shinL, -0.7, 0, 0);
+    set(r.shinR, -1.5, 0, 0);
+    set(r.armL, -2.3 + flail * 0.4, 0, 0.9);
+    set(r.armR, -2.2 - flail * 0.4, 0, -1.0);
+    set(r.foreL, 0.5, 0, 0);
+    set(r.foreR, 0.6, 0, 0);
+    setHandPose(r, "L", 0.15);
+    setHandPose(r, "R", 0.15);
+    return;
+  }
+
+  // --- legs --------------------------------------------------------------
+  // `bend` is one angle used by BOTH legs so the shared hip lift plants both
+  // soles. Crouching deepens it (hips drop, stance widens a little), and a
+  // push deepens the standing leg further so the other foot can reach tarmac.
+  const bend =
+    SKATE_STANCE +
+    crouch * 0.34 +
+    push * 0.26 +
+    (s.grind ? 0.06 : 0) +
+    (s.air && !s.grab ? 0.1 : 0);
+  const sway = s.air || push > 0.02 ? 0 : Math.sin(s.t * 2.1) * 0.008;
+  r.hips.position.y = -0.317 + 0.4 * Math.cos(bend) + sway;
+
+  // Front (lead) leg: planted, toe angled toward the nose.
+  let legL = bend;
+  let shinL = -bend;
+  // Back leg: planted on the tail unless it is out pushing.
+  let legR = -bend;
+  let shinR = bend;
+
+  if (s.manual) {
+    // Weight slammed onto the tail: back knee folds under, front leg reaches.
+    legL = bend * 0.72;
+    shinL = -bend * 0.5;
+    legR = -bend * 1.22;
+    shinR = bend * 1.22;
+  }
+  if (s.air && !s.grab) {
+    // Suck the knees up so the deck has room to flip under the feet.
+    legL = bend + 0.3;
+    shinL = -bend - 0.55;
+    legR = -bend * 0.45;
+    shinR = bend * 0.45 - 0.6;
+  }
+  if (push > 0.02 && !s.air && !s.grind) {
+    // One stroke, read backwards from `push` (1 at the kick, 0 back on board):
+    //   1.00→0.72  step off the tail, knee straightens, foot finds the road
+    //   0.72→0.30  drive: the hip sweeps back and the board shoots forward
+    //   0.30→0     fold it back onto the tail
+    const reach = THREE.MathUtils.smoothstep(push, 0.18, 0.78); // 0 on deck, 1 out
+    const drive = 1 - Math.abs(push - 0.5) * 2; // peaks mid-stroke
+    const sweep = THREE.MathUtils.smoothstep(0.78 - push, 0, 0.5); // 0 → 1 as it drives back
+    const hip = THREE.MathUtils.lerp(-0.06, -0.52, sweep);
+    legR = THREE.MathUtils.lerp(-bend, hip, reach);
+    shinR = THREE.MathUtils.lerp(bend, -0.02, reach);
+    // The standing knee dips through the drive so the push has some weight.
+    legL = bend + drive * 0.12;
+    shinL = -bend - drive * 0.12;
+  }
+
+  set(r.legL, legL, 0, 0.03);
+  set(r.legR, legR, 0, -0.03);
+  // Toe-out lives here, at the knee: yaw the shoe across the deck without
+  // moving the sole up or down (see the function comment).
+  const frontYaw = s.air ? SKATE_FOOT_YAW_FRONT * 0.7 : SKATE_FOOT_YAW_FRONT;
+  const backYaw = push > 0.02 ? SKATE_FOOT_YAW_BACK * (1 - push * 0.8) : SKATE_FOOT_YAW_BACK;
+  set(r.shinL, shinL, frontYaw, 0);
+  set(r.shinR, shinR, backYaw, 0);
+
+  // --- body twist --------------------------------------------------------
+  // Hips and chest open toward the toe side; the head turns back down the
+  // line. Carving leads with the shoulders, the way it does on a real board.
+  const openHips = 0.42 + carve * 0.12;
+  const openTorso = 0.5 - carve * 0.18;
+  const fold = s.air ? 0.34 : 0.1 + crouch * 0.42 + push * 0.2 + (s.manual ? -0.18 : 0);
+  set(r.hips, 0, openHips, lean * 0.12);
+  set(r.torso, fold, openTorso, lean * 0.4 - carve * 0.1);
+  // Head world-yaw ≈ 0 (straight down the board) minus a glance into the turn.
+  set(r.head, s.air ? -0.24 : -0.06 - crouch * 0.12, -(openHips + openTorso) + carve * 0.3, lean * 0.15);
+
+  if (s.grab) {
+    // Back hand on the toe edge, front arm counterweighting overhead.
+    set(r.armL, -1.5, 0.3, 0.6);
+    set(r.foreL, 0.4, 0, 0);
+    set(r.armR, 1.5, -0.35, -0.5);
+    set(r.foreR, 0.95, 0, 0);
+    setHandPose(r, "L", 0.25);
+    setHandPose(r, "R", 0.95);
+    return;
+  }
+
+  // --- arms ---------------------------------------------------------------
+  // The arms are the balance pole: out and low while rolling, wide on a rail,
+  // and thrown out sideways as the balance meter runs away. The lead arm
+  // reaches into the turn.
+  const wide = s.grind || s.manual ? 1.3 : s.air ? 1.1 : 0.72 + crouch * 0.22 + push * 0.3;
+  const correct = (s.grind || s.manual ? -s.balance : 0) * 0.6;
+  const swingL = -carve * 0.35 - (s.air ? 0.5 : 0) + Math.sin(s.t * 1.5) * 0.04;
+  const swingR = carve * 0.3 - (s.air ? 0.2 : 0) - Math.sin(s.t * 1.5) * 0.04;
+  set(r.armL, swingL - correct * 0.4, 0, wide + lean * 0.45 + correct);
+  set(r.armR, swingR + correct * 0.4, 0, -wide + lean * 0.45 + correct);
+  set(r.foreL, 0.3 + crouch * 0.35 + (s.air ? 0.45 : 0), 0, 0);
+  set(r.foreR, 0.3 + crouch * 0.25 + (s.air ? 0.3 : 0), 0, 0);
+  setHandPose(r, "L", 0.25);
+  setHandPose(r, "R", 0.25);
 }

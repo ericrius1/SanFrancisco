@@ -40,6 +40,9 @@ import { terrainFieldNormal } from "./terrainFieldNormal";
 import { DISPLACERS, MAX_DISPLACERS } from "./displacers";
 import { fadeAroundInstanceAnchor, instanceAnchorWorld, worldOffsetToModelLocal } from "./instanceDeform";
 import { rankAnnulusGrowth } from "./rankDissolve";
+import { applyGroundcoverAtmosphere } from "./foliageAtmosphere";
+
+export { applyGroundcoverAtmosphere } from "./foliageAtmosphere";
 
 export type GrassEntry = {
   x: number;
@@ -499,6 +502,7 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
     sss.thicknessPowerNode = uniform(5.0);
     sss.thicknessScaleNode = uniform(2.35);
   }
+  applyGroundcoverAtmosphere(mat);
   return { material: mat, focus };
 }
 

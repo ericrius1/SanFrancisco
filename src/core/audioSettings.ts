@@ -3,9 +3,9 @@
  * Stored under its own localStorage key, outside the "/" tweak store. The
  * period-key factory reset explicitly restores this mix to the source defaults.
  * Consumers poll the matching group level; environmental beds use
- * soundscapeAudioLevel(), while player/action feedback uses effectsAudioLevel().
- * vehicle hum reads every frame, fireworks read per triggered sound, voice
- * applies per peer, corona songs poll music.
+ * soundscapeAudioLevel(), player/action feedback uses effectsAudioLevel(),
+ * diegetic performers (buskers / pianist / Fort Mason) use musicAudioLevel(),
+ * and voice applies per peer.
  *
  * The microphone lives here too, but under its own key and outside the mixer:
  * it is a capture intent rather than a level, so the factory reset leaves it

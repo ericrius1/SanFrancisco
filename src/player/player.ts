@@ -14,6 +14,7 @@ import {
   poseGolf,
   poseHangGlider,
   poseRide,
+  poseSkate,
   poseSurfRide,
   poseScooter,
   poseSwim,
@@ -80,6 +81,13 @@ import {
   type ScooterConfig
 } from "../vehicles/scooter";
 import { activateBirdAssets, buildBirdMesh, BirdController } from "../vehicles/bird";
+import {
+  animateSkate,
+  buildSkateMesh,
+  SkateController,
+  SKATE_RIG_ROOT_Y,
+  type TrickBook
+} from "../vehicles/skate";
 import { setEmbodimentVisible } from "./embodimentVisibility";
 
 export type { GardenRakeMotion, GardenRakeTool } from "./gardenRake";
@@ -224,6 +232,19 @@ function prepareLocalSurfHero(root: THREE.Object3D): void {
  */
 export type MocapPoseDriver = (rig: Rig, dt: number) => void;
 
+/** What the skate HUD, vehicle audio and skid marks read off the board. */
+export type SkateHudState = {
+  grounded: boolean;
+  grinding: boolean;
+  grindName: string;
+  manualing: boolean;
+  bailing: boolean;
+  balance: number;
+  slide: number;
+  sparks: number;
+  speed: number;
+};
+
 export class Player {
   mode: PlayerMode = "walk";
   body = 0;
@@ -268,6 +289,7 @@ export class Player {
     speedboat: BoatController;
     drone: DroneController;
     board: BoardController;
+    skate: SkateController;
     surf: SurfController;
     bird: BirdController;
   };
@@ -296,6 +318,18 @@ export class Player {
   #throwT = 0; // 0 = idle; >0 drives an additive windup→release arm swing
   #riderRig: Rig;
   #surfRig: Rig;
+  #skateRig: Rig;
+  #skateStateOut: SkateHudState = {
+    grounded: true,
+    grinding: false,
+    grindName: "",
+    manualing: false,
+    bailing: false,
+    balance: 0,
+    slide: 0,
+    sparks: 0,
+    speed: 0
+  };
   #scooterRig: Rig;
   #driverRig: Rig;
   #wheel: { group: THREE.Group; spin: THREE.Group };
@@ -406,6 +440,7 @@ export class Player {
       // The board is invisible in the ordinary walking boot. Its selected
       // procedural deck art hydrates in a worker only if board mode is used.
       board: buildBoardMesh(board, { deferSurface: true }),
+      skate: buildSkateMesh(),
       surf: buildSurfboardMesh(surfboard),
       bird: buildBirdMesh()
     };
@@ -418,6 +453,7 @@ export class Player {
       speedboat: new BoatController(SPEEDBOAT_TUNING, SPEEDBOAT_HULL),
       drone: new DroneController(this.meshes.drone),
       board: new BoardController(),
+      skate: new SkateController(),
       surf: new SurfController(),
       bird: new BirdController(this.meshes.bird)
     };
@@ -435,6 +471,15 @@ export class Player {
     this.#surfRig.group.position.y = 0.93;
     this.meshes.surf.add(this.#surfRig.group);
     prepareLocalSurfHero(this.meshes.surf);
+    // Skate stance. The rig is NOT yawed across the board: leg pitch has to
+    // separate the feet along the deck's LENGTH, and poseSkate turns the shoes
+    // across the griptape at the knee instead. Rooted so both soles land on
+    // the grip; hung off the mesh ROOT, not the trick pivot, so a kickflip
+    // spins the deck under the rider's feet.
+    this.#skateRig = buildRig(this.#avatar);
+    this.#skateRig.group.rotation.order = "ZYX";
+    this.#skateRig.group.position.set(0, SKATE_RIG_ROOT_Y, 0.02);
+    this.meshes.skate.add(this.#skateRig.group);
     // A surfboard tucked upright under the arm, shown on foot at the beach so
     // you arrive holding your board, ready to start the surf activity. Built here but not
     // parented yet — setCarryingBoard grips it into the walk rig's hand (the
@@ -495,6 +540,7 @@ export class Player {
     applyAvatarToRig(this.#walkRig, this.#avatar);
     applyAvatarToRig(this.#riderRig, this.#avatar);
     applyAvatarToRig(this.#surfRig, this.#avatar);
+    applyAvatarToRig(this.#skateRig, this.#avatar);
     applyAvatarToRig(this.#scooterRig, this.#avatar);
     applyAvatarToRig(this.#driverRig, this.#avatar);
     applyAvatarToRig(this.#helmRig, this.#avatar);
@@ -603,6 +649,9 @@ export class Player {
       case "board":
         if (this.#riderRig.group.parent === this.meshes.board) rig = this.#riderRig;
         break;
+      case "skate":
+        rig = this.#skateRig;
+        break;
       case "surf":
         rig = this.#surfRig;
         break;
@@ -639,6 +688,7 @@ export class Player {
     this.#riderRig.group.visible =
       !(active && (this.mode === "board" || (this.mode === "drone" && this.#broomRigAttached)));
     this.#surfRig.group.visible = !(active && this.mode === "surf");
+    this.#skateRig.group.visible = !(active && this.mode === "skate");
     this.#scooterRig.group.visible = !(active && this.mode === "scooter");
     const driveCockpit = this.meshes.drive.userData.cockpit as Cockpit | undefined;
     this.#driverRig.group.visible =
@@ -1007,6 +1057,41 @@ export class Player {
 
   requestSurfJump() {
     if (this.mode === "surf") this.#modes.surf.requestJump();
+  }
+
+  /** Latch a Space edge for the skateboard at render rate — the ollie pops on
+   *  RELEASE, so a 120 Hz tap must not fall between two physics steps. */
+  requestSkatePop() {
+    if (this.mode === "skate") this.#modes.skate.requestJump();
+  }
+
+  /** Seconds the board has been off the ground — the tutorial proves an ollie
+   *  with it, since "left the ground" is the only honest test. */
+  get skateAirTime(): number {
+    return this.#modes.skate.airTime;
+  }
+
+  /** Live trick/combo state for the skate HUD (null in every other mode). */
+  get skateTricks(): TrickBook | null {
+    return this.mode === "skate" ? this.#modes.skate.book : null;
+  }
+
+  /** Everything the skate HUD, audio and skid marks read, without exposing the
+   *  controller itself. One reused record — the frame loop reads this several
+   *  times per frame and must not allocate to do it. */
+  get skateState(): Readonly<SkateHudState> {
+    const s = this.#modes.skate;
+    const out = this.#skateStateOut;
+    out.grounded = s.grounded;
+    out.grinding = s.grinding;
+    out.grindName = s.grindName;
+    out.manualing = s.manualing;
+    out.bailing = s.bailing;
+    out.balance = s.balance;
+    out.slide = s.slide;
+    out.sparks = s.visual.grindSparks;
+    out.speed = s.horizontalSpeed;
+    return out;
   }
 
   /** Surf steers with the pointer at render-frame rate, like the plane's fly
@@ -2083,6 +2168,25 @@ export class Player {
       poseRide(this.#riderRig, board.lean, crouch, !board.grounded, this.#animT);
       this.#riderRig.group.rotation.z = board.lean * 0.4; // whole-body dip on top of the deck roll
       animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board);
+    } else if (this.mode === "skate") {
+      const skate = this.#modes.skate;
+      poseSkate(this.#skateRig, {
+        lean: skate.lean,
+        carve: skate.carve,
+        crouch: skate.crouch,
+        push: skate.pushKick,
+        air: !skate.grounded && !skate.grinding,
+        grab: skate.grabbing,
+        grind: skate.grinding,
+        manual: skate.manualing,
+        bail: skate.bailing,
+        balance: skate.balance,
+        t: this.#animT
+      });
+      // The deck already carries the carve roll; tip the whole rider a little
+      // further so a hard carve reads from behind without breaking foot contact.
+      this.#skateRig.group.rotation.z = skate.lean * 0.22;
+      animateSkate(this.meshes.skate, dt, skate.visual);
     } else if (this.mode === "surf") {
       const surf = this.#modes.surf;
       const crouch = Math.min(1, this.speed / SURF_TUNING.values.maxTrim + Math.abs(surf.lean) * 0.5);

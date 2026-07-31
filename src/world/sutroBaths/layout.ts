@@ -12,6 +12,28 @@ import {
  * Local +x points inland/east and local +z runs south toward the historic entry.
  */
 
+/**
+ * A stretch of one pool's edge that is NOT an edge at all, because the water
+ * carries on into a sibling rectangle of the same body.
+ *
+ * The great plunge is an L, and an L is two rectangles. Everything downstream
+ * of this table works in rectangles — the swim volume, the walk surface, the
+ * visual sheet — so the L is stored as two entries that share a heat and a
+ * tone, and the join between them is named here rather than left to be
+ * rediscovered. Without it the water sheet insets itself away from the join
+ * (a 16 cm crack straight across the plunge) and the shoreline feather paints
+ * a 5 m foam band through the middle of open water.
+ *
+ * `from`/`to` run along the named side: the z-range for an x side, the x-range
+ * for a z side. Mirrored from `tools/rebuild-sutro-pools.py`, which suppresses
+ * coping, tiled wall and waterline band over exactly the same spans.
+ */
+export type SutroPoolSeam = {
+  side: "minX" | "maxX" | "minZ" | "maxZ";
+  from: number;
+  to: number;
+};
+
 export type SutroPoolSpec = {
   id: string;
   label: string;
@@ -21,6 +43,13 @@ export type SutroPoolSpec = {
   maxZ: number;
   /** 0 cold ocean pool .. 1 hottest thermal pool. */
   heat: number;
+  /** Edges shared with a sibling rectangle of the same body of water. */
+  seams?: readonly SutroPoolSeam[];
+  /**
+   * Per-pool tint/phase key, 0..1. Explicit rather than derived from the array
+   * index so the two halves of the great plunge cannot drift apart in colour.
+   */
+  tone: number;
 };
 
 export const SUTRO_BATHS = {
@@ -35,18 +64,55 @@ export const SUTRO_BATHS = {
   roofApexY: 43.5
 } as const;
 
-/** Seven pools: the 275-foot salt-water plunge, five 28-by-75-foot graduated
- * salt baths, and the smaller fresh-water pool described in period accounts.
- * The great plunge's historical L is simplified to its long primary rectangle. */
+/**
+ * Seven bodies of water in eight rectangles, laid out to the 1896 interior
+ * print rather than to a tidy plan.
+ *
+ * The great salt-water plunge is an L and always was: it runs the whole west
+ * side of the hall, then opens out into a full-width court across the south
+ * end, so the water wraps the room and a visitor arriving on the deck is
+ * looking at it before they see anything else. Its two rectangles share a heat
+ * and a tone and declare their join in `seams`, so everything downstream reads
+ * them as one sheet.
+ *
+ * The five graduated salt baths and the fresh-water plunge bank over to the
+ * EAST as a stack of wide, shallow tanks on a 12.2 m pitch — 8.6 m of water,
+ * 3.6 m of catwalk. The narrow catwalks are the point: they are what puts
+ * springboards, handrails and ladders close enough together to read as one
+ * dense bathing machine instead of six pools in a field of tile.
+ *
+ * MIRRORED from `tools/rebuild-sutro-pools.py`, which builds the basins, decks
+ * and coping these rectangles sit in and prints them as SUTRO_POOL_CONTRACT on
+ * every run. Retune the field there and copy the printed rectangles here in the
+ * same commit, or the water will not sit in the basins that were built for it.
+ */
+/**
+ * The plunge's long leg, named on its own because the drain and the sunken
+ * gallery below hang off this exact rectangle (see SUTRO_DRAIN / SUTRO_GROTTO).
+ * One definition, two readers, so the room can never stop being the plunge's
+ * shadow.
+ */
+const GREAT_PLUNGE_LEG = { minX: -31, maxX: -10, minZ: -55, maxZ: 22 } as const;
+
 export const SUTRO_POOLS: readonly SutroPoolSpec[] = [
   {
     id: "great-plunge",
     label: "Great salt-water plunge",
+    ...GREAT_PLUNGE_LEG,
+    heat: 0,
+    tone: 0,
+    seams: [{ side: "maxZ", from: GREAT_PLUNGE_LEG.minX, to: GREAT_PLUNGE_LEG.maxX }]
+  },
+  {
+    id: "great-plunge-court",
+    label: "Great salt-water plunge · south court",
     minX: -31,
-    maxX: -10,
-    minZ: -55,
-    maxZ: 29,
-    heat: 0
+    maxX: 19,
+    minZ: 22,
+    maxZ: 44,
+    heat: 0,
+    tone: 0,
+    seams: [{ side: "minZ", from: -31, to: -10 }]
   },
   {
     id: "bath-one",
@@ -54,55 +120,100 @@ export const SUTRO_POOLS: readonly SutroPoolSpec[] = [
     minX: -4,
     maxX: 19,
     minZ: -55,
-    maxZ: -46,
-    heat: 0.2
+    maxZ: -46.4,
+    heat: 0.2,
+    tone: 0.18
   },
   {
     id: "bath-two",
     label: "Temperate bath II",
     minX: -4,
     maxX: 19,
-    minZ: -37,
-    maxZ: -28,
-    heat: 0.38
+    minZ: -42.8,
+    maxZ: -34.2,
+    heat: 0.38,
+    tone: 0.35
   },
   {
     id: "bath-three",
     label: "Warm bath III",
     minX: -4,
     maxX: 19,
-    minZ: -19,
-    maxZ: -10,
-    heat: 0.58
+    minZ: -30.6,
+    maxZ: -22,
+    heat: 0.58,
+    tone: 0.52
   },
   {
     id: "bath-four",
     label: "Hot bath IV",
     minX: -4,
     maxX: 19,
-    minZ: -1,
-    maxZ: 8,
-    heat: 0.78
+    minZ: -18.4,
+    maxZ: -9.8,
+    heat: 0.78,
+    tone: 0.69
   },
   {
     id: "bath-five",
     label: "Hot bath V",
     minX: -4,
     maxX: 19,
-    minZ: 17,
-    maxZ: 26,
-    heat: 1
+    minZ: -6.2,
+    maxZ: 2.4,
+    heat: 1,
+    tone: 0.86
   },
   {
     id: "fresh-plunge",
     label: "Fresh-water plunge",
     minX: -4,
     maxX: 19,
-    minZ: 35,
-    maxZ: 44,
-    heat: 0.12
+    minZ: 6,
+    maxZ: 14.6,
+    heat: 0.12,
+    tone: 1
   }
 ] as const;
+
+/** True when `along` falls on a stretch of `side` that is a join, not an edge. */
+export function sutroPoolSeamCovers(
+  pool: SutroPoolSpec,
+  side: SutroPoolSeam["side"],
+  along: number
+): boolean {
+  const seams = pool.seams;
+  if (!seams) return false;
+  for (const seam of seams) {
+    if (seam.side === side && along >= seam.from && along <= seam.to) return true;
+  }
+  return false;
+}
+
+/**
+ * Metres from a point inside `pool` to the nearest REAL edge of its body of
+ * water — the join with a sibling rectangle does not count as one.
+ *
+ * This is the shoreline term: the water darkens and foams within a couple of
+ * metres of a coping. Measuring it per rectangle instead would draw that band
+ * across the middle of the great plunge, where there is nothing but water.
+ */
+export function sutroPoolEdgeDistance(pool: SutroPoolSpec, x: number, z: number): number {
+  let best = Number.POSITIVE_INFINITY;
+  if (!sutroPoolSeamCovers(pool, "minX", z)) best = Math.min(best, x - pool.minX);
+  if (!sutroPoolSeamCovers(pool, "maxX", z)) best = Math.min(best, pool.maxX - x);
+  if (!sutroPoolSeamCovers(pool, "minZ", x)) best = Math.min(best, z - pool.minZ);
+  if (!sutroPoolSeamCovers(pool, "maxZ", x)) best = Math.min(best, pool.maxZ - z);
+  return best;
+}
+
+/** True when any part of `side` is a join rather than an edge. */
+export function sutroPoolSideIsSeamed(
+  pool: SutroPoolSpec,
+  side: SutroPoolSeam["side"]
+): boolean {
+  return (pool.seams ?? []).some((seam) => seam.side === side);
+}
 
 /**
  * Transparent draw order for the pools and their steam. Keep these two together.
@@ -177,8 +288,15 @@ export const SUTRO_WALL = {
  * wall under the hall's glass — except that what is beyond this glass is the
  * sea floor itself.
  */
-const PLUNGE_CENTRE_X = (-31 + -10) * 0.5;
-const PLUNGE_CENTRE_Z = (-55 + 29) * 0.5;
+// DERIVED from the leg's own rectangle, never written out again. These two were
+// the literals `(-31 + -10) * 0.5` and `(-55 + 29) * 0.5`, and when the pool
+// field was rebuilt to the 1896 print the leg's south end moved from z 29 to
+// z 22 — while that second expression merged through without a conflict. A
+// stale centre here does not fail loudly: it slides the drain 3.5 m off the
+// middle of the plunge and hangs the end of the room out past the water it is
+// supposed to be the shadow of.
+const PLUNGE_CENTRE_X = (GREAT_PLUNGE_LEG.minX + GREAT_PLUNGE_LEG.maxX) * 0.5;
+const PLUNGE_CENTRE_Z = (GREAT_PLUNGE_LEG.minZ + GREAT_PLUNGE_LEG.maxZ) * 0.5;
 
 export const SUTRO_DRAIN = {
   /** Centre of the great plunge's rectangle. */

@@ -48,6 +48,18 @@ export type WindWindowCommand = {
   drag: number;
   /** 0..1 ramp that holds the kite down through the arrival launch. */
   launchGate: number;
+  /**
+   * Radians the elevation TARGET may never dip under (default 0 = off).
+   *
+   * The authored beach flock sets this. Left free, a figure at the window's
+   * edge lets elevation sag toward MIN_ELEVATION, and from the shots this
+   * beach is filmed in — a lens at head height a hundred-plus metres back —
+   * a kite that low projects into the strip of sea between the surf and the
+   * sky and reads as floating in the water, however far inland it really is.
+   * A floor on the TARGET (not the state) keeps the spring, the overshoot
+   * and the swoop; the kite just performs its window a storey higher.
+   */
+  elevationFloor?: number;
 };
 
 const MAX_ELEVATION = 1.31; // ~75°, just shy of overhead
@@ -92,7 +104,10 @@ export function createWindWindow(): {
       // Elevation is a spring, not a lerp: the kite overshoots a climb and
       // settles back down through it, which is the swoop.
       const elevationTarget = THREE.MathUtils.clamp(
-        MAX_ELEVATION * state.energy * c.lift * (0.62 + 0.38 * edge),
+        Math.max(
+          MAX_ELEVATION * state.energy * c.lift * (0.62 + 0.38 * edge),
+          c.elevationFloor ?? 0
+        ),
         MIN_ELEVATION,
         MAX_ELEVATION
       );

@@ -18,8 +18,14 @@ const OUT = process.env.SF_PROBE_OUT ?? ".data/sutro-swim-probe";
 const SITE = { x: -6125, z: 1117, yaw: -0.077, waterY: 5.18, basinY: 2.62 };
 const CHROME = process.env.CHROME_BIN ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
-// Bath V, the hottest of the graduated baths: local x -4..19, z 17..26.
-const BATH_V = { x: 7.5, z: 21.5 };
+// Bath V, the hottest of the graduated baths: local x -4..19, z -6.2..2.4.
+// MIRRORS src/world/sutroBaths/layout.ts — the tank stack moved when the pool
+// field was rebuilt to the 1896 print, and a stale z here does not fail loudly:
+// it silently stands the probe on dry promenade and reports that swimming is
+// broken.
+const BATH_V = { x: 7.5, z: -1.9 };
+/** The catwalk edge bath V is hauled out over, and the tank's own north rim. */
+const BATH_V_NORTH_RIM = -6.2;
 
 function localPoint(x, y, z) {
   const c = Math.cos(SITE.yaw);
@@ -117,7 +123,7 @@ const main = async () => {
     // Face along local +x, straight across bath V from the deck beside it.
     window.__sf.chase.yaw = -1.65;
     window.__sf.player.teleportTo({ x, y, z, facing: -1.65, mode: "walk" });
-  }, localPoint(-7.5, SITE.waterY + 1.2, 21.5));
+  }, localPoint(-7.5, SITE.waterY + 1.2, BATH_V.z));
   await page.waitForTimeout(1500);
   const onCoping = await state();
   expect("standing on the deck beside the bath", onCoping.swimming === false, onCoping);
@@ -220,16 +226,17 @@ const main = async () => {
   await page.waitForTimeout(2200);
   const beforeHaul = await state();
   expect("swimming in open water before the haul", beforeHaul.swimming === true, beforeHaul);
-  // Bath V runs local z 17..26; from the middle that is 4.5 m of water, then
+  // Bath V runs local z -6.2..2.4; from the middle that is 4.3 m of water, then
   // the wall. One unbroken press: reaching the side and climbing it are the
-  // same gesture. Release as soon as the climb lands, since the deck beyond it
-  // runs straight into the next bath and W would swim this one right back in.
+  // same gesture. Release as soon as the climb lands, since the 3.6 m catwalk
+  // beyond it runs straight into the next bath and W would swim this one right
+  // back in.
   await page.keyboard.down("KeyW");
   const climbTrace = [];
   for (let i = 0; i < 60; i++) {
     const s = await state();
     climbTrace.push(`y=${s.y} swim=${s.swimming ? 1 : 0} z=${toLocal(s.x, s.z).z.toFixed(1)}`);
-    if (!s.swimming && toLocal(s.x, s.z).z < 16) break;
+    if (!s.swimming && toLocal(s.x, s.z).z < BATH_V_NORTH_RIM - 0.8) break;
     await page.waitForTimeout(100);
   }
   await page.keyboard.up("KeyW");
@@ -239,9 +246,9 @@ const main = async () => {
   console.log("climb:", climbTrace.slice(-14).join(" | "));
   console.log("onDeck:", JSON.stringify({ ...onDeck, deckLocal }));
   expect("swimming at the side climbs you out of the bath", onDeck.swimming === false, onDeck);
-  expect("the climb ends on the deck, clear of the pool rect", deckLocal.z < 17, {
+  expect("the climb ends on the deck, clear of the pool rect", deckLocal.z < BATH_V_NORTH_RIM, {
     localZ: +deckLocal.z.toFixed(2),
-    poolEdge: 17
+    poolEdge: BATH_V_NORTH_RIM
   });
   expect("standing on the deck, not floating at the waterline", onDeck.y - 0.9 > SITE.waterY, {
     bottom: +(onDeck.y - 0.9).toFixed(3),

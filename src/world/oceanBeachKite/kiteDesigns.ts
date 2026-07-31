@@ -77,6 +77,12 @@ export type FrameContext = {
   spar: THREE.Material;
   accent: THREE.Material;
   hem: THREE.Material;
+  /**
+   * Register a material for disposal with the encounter. Designs that need a
+   * look their palette does not describe — the prism's glass wedge — build it
+   * here rather than adding another slot to every design's palette.
+   */
+  ownMaterial<T extends THREE.Material>(material: T): T;
 };
 
 // ---------------------------------------------------------------- builders
@@ -870,6 +876,90 @@ function prismCloth(): THREE.BufferGeometry {
   return finishCloth(buffers, 1.45);
 }
 
+/**
+ * The glass in the middle of it.
+ *
+ * A triangle with a triangular HOLE is a silhouette pun, and light does not
+ * disperse through a hole — it just goes past. `prismLight` was already
+ * running a white beam in and a rainbow fan out of this kite's centre, but the
+ * centre was empty air, so the optics read as a trick rather than as a cause.
+ * This fills the eye with the thing the beam is supposed to be hitting: a
+ * solid triangular wedge with real thickness, its three flanks catching the
+ * light at different angles the way the faces of a prism do.
+ *
+ * Extruded rather than a pane, and that is the whole point — a flat window
+ * reads as glazing, and it is depth that says "this bends light". The wedge is
+ * built as an explicit little solid (two triangular faces, three rectangular
+ * flanks) so the flanks can carry their own shading and the silhouette keeps a
+ * bevelled edge from every angle.
+ */
+const PRISM_GLASS_DEPTH = 0.34;
+
+function prismGlass(ctx: FrameContext, material: THREE.Material): THREE.Mesh {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const half = PRISM_GLASS_DEPTH * 0.5;
+  const corner = [prismInner(0), prismInner(1), prismInner(2)] as const;
+
+  const push = (
+    x: number,
+    y: number,
+    z: number,
+    nx: number,
+    ny: number,
+    nz: number,
+    u: number,
+    v: number
+  ) => {
+    positions.push(x, y, z);
+    normals.push(nx, ny, nz);
+    uvs.push(u, v);
+  };
+
+  // Front and back faces. `v` runs bottom-to-top of the wedge so the body can
+  // carry a vertical spectrum — glass with a rainbow already inside it.
+  const span = corner[0][1] - corner[1][1];
+  const vOf = (y: number) => (y - corner[1][1]) / Math.max(0.001, span);
+  for (const [z, nz, order] of [
+    [half, 1, [0, 1, 2]],
+    [-half, -1, [0, 2, 1]]
+  ] as const) {
+    for (const i of order) {
+      const [x, y] = corner[i];
+      push(x, y, z, 0, 0, nz, 0.5, vOf(y));
+    }
+  }
+
+  // The three flanks. These are the faces a beam would actually enter and
+  // leave by, so they get `u` across the thickness — the shading gradient that
+  // makes an edge look like an edge of glass.
+  for (let i = 0; i < 3; i++) {
+    const a = corner[i];
+    const b = corner[(i + 1) % 3];
+    const ex = b[0] - a[0];
+    const ey = b[1] - a[1];
+    const len = Math.hypot(ex, ey) || 1;
+    // Outward normal of the flank, in the sail's plane.
+    const nx = ey / len;
+    const ny = -ex / len;
+    push(a[0], a[1], -half, nx, ny, 0, 0, vOf(a[1]));
+    push(b[0], b[1], -half, nx, ny, 0, 0, vOf(b[1]));
+    push(a[0], a[1], half, nx, ny, 0, 1, vOf(a[1]));
+    push(a[0], a[1], half, nx, ny, 0, 1, vOf(a[1]));
+    push(b[0], b[1], -half, nx, ny, 0, 0, vOf(b[1]));
+    push(b[0], b[1], half, nx, ny, 0, 1, vOf(b[1]));
+  }
+
+  const geometry = ctx.own(new THREE.BufferGeometry());
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = "kite_prism_glass";
+  return mesh;
+}
+
 function prismFrame(ctx: FrameContext): THREE.Object3D[] {
   const parts: THREE.Object3D[] = [];
 
@@ -903,6 +993,32 @@ function prismFrame(ctx: FrameContext): THREE.Object3D[] {
     strut(prismInner(i), outerA, 0.026, ctx.spar, `kite_prism_bisector_${i}`);
     strut(prismInner(i), prismInner(i + 1), 0.022, ctx.accent, `kite_prism_eye_${i}`);
   }
+
+  // The disperser itself, before anything else so the sail's own struts read
+  // as holding it. Standard-lit rather than emissive: it has to take the same
+  // sunset the cloth does, or it reads as a decal of glass.
+  parts.push(
+    prismGlass(
+      ctx,
+      ctx.ownMaterial(
+        new THREE.MeshStandardMaterial({
+          color: 0xdff2ff,
+          roughness: 0.06,
+          metalness: 0,
+          transparent: true,
+          opacity: 0.34,
+          // Never write depth: the sail's own cloth and the spectrum both have
+          // to show through the body of it.
+          depthWrite: false,
+          side: THREE.DoubleSide,
+          // A cold body with a warm core, so the wedge looks lit from inside
+          // when the beam is on it rather than like tinted plastic.
+          emissive: 0xffe6c8,
+          emissiveIntensity: 0.5
+        })
+      )
+    )
+  );
 
   const hemWidth = PRISM_SIDE * PRISM_SKIRT_FLARE * 0.5;
   strut(

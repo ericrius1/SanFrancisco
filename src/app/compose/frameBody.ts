@@ -39,7 +39,7 @@ import type {  } from "../../player/types";
 import {
   PAINTBALL_SPEED
 } from "../../fx/paintball";
-import {  oceanWaveEnergyAt } from "../../audio/waveAudio";
+import {  oceanWaveEnergyAt, type WaveListener } from "../../audio/waveAudio";
 import {  ABANDONED_MOUNT_PROMPT } from "../../gameplay/abandonedMounts";
 import type {  } from "../../gameplay/creatures";
 import type {  } from "../../gameplay/forest";
@@ -69,6 +69,8 @@ import {
   type SurfboardConfig,
 } from "../../vehicles/surf";
 import { MENU_MODES } from "../../player/discovery";
+import { SkateCoach } from "../../vehicles/skate/coach";
+import { SKATE_PLAZA_CENTER } from "../../world/skatePlaza/meta";
 import { createSessionPersistence } from "../../app/sessionPersistence";
 import { createGameLoop } from "../../app/gameLoop";
 import type { PassengerExitPose } from "../player/embodimentController";
@@ -85,10 +87,64 @@ import type { MainCtx } from "./ctx";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, lofiMusic, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+
+  // One place decides what the trick HUD sees; the three frame paths (live,
+  // world-frozen, fully paused) all call it right after hud.update so the combo
+  // meter keeps reading true while the world is stopped around it.
+  const skateCoach = new SkateCoach();
+  const updateSkateHud = (dt: number) => {
+    const book = player.skateTricks;
+    if (!book) {
+      skateHud.update({ book: null, balancing: false, balance: 0 });
+      return;
+    }
+    const skate = player.skateState;
+    const distance = Math.hypot(
+      player.position.x - SKATE_PLAZA_CENTER.x,
+      player.position.z - SKATE_PLAZA_CENTER.z
+    );
+    // Rim level, so "in the bowl" is a real measurement rather than a guess.
+    const rim = core.state.skatePlaza?.deckLevel ?? player.position.y;
+    const talking = skateCoach.update(dt, {
+      distance,
+      speed: skate.speed,
+      airborne: !skate.grounded,
+      airTime: player.skateAirTime,
+      grinding: skate.grinding,
+      manualing: skate.manualing,
+      belowDeck: player.position.y - rim,
+      combo: book.combo,
+      multiplier: book.multiplier
+    });
+    skateHud.update({
+      book,
+      balancing: skate.grinding || skate.manualing,
+      balance: skate.balance,
+      coach: talking ? skateCoach.line : "",
+      coachStep: skateCoach.step,
+      coachTotal: skateCoach.total,
+      coachCheer: skateCoach.cheer > 0
+    });
+  };
   const { net, remotes, ghostShipBeacon, captureMinigameOrigin, minigameSession, chat, emoteWheel, updateEmoteKeepAlive, ridePos, rideQuat, voice, toggleMic, minimap, playerLocator, navigation, applyPlaceHistory, switchMode, teleportToTarget, tutorial, diagnostics, debugPanel, oceanKite, calibrationChart, syncDebugOverlays, aimRay, cursorPos, entityProxies, paintDir, paintVel, paintMuzzle, paintTmp, PAINT_HIT, teaGarden, sites, nearPrimaryWildRegion, nearBuenaVista } = netW;
+  // Reused every frame by the wave-audio listener below; the basis extraction
+  // wants three vectors and only one of them is interesting.
+  const waveListener: WaveListener = { x: 0, z: 0, rightX: 1, rightZ: 0 };
+  const waveRight = new THREE.Vector3();
+  const waveUp = new THREE.Vector3();
+  const waveForward = new THREE.Vector3();
   const state = {
     cineHook: null as (((dt: number) => void) | null),
+    // Cinematic sea-clock pin. The world's sea clock is `ctx.state.elapsed`,
+    // which carries boot wall-clock — so a capture replay lands on an
+    // arbitrary wave phase every run, and no film can schedule a wave to
+    // break at a chosen shot second. A demo that needs the sea to be
+    // phase-deterministic writes `pin + localTime` here every frame (from the
+    // cine hook, which runs earlier in this same tick); everything downstream
+    // of `surfaceTime` — water displacement, shorebreak, spray, wave audio —
+    // then rides the pinned clock coherently.
+    seaTimePin: null as number | null,
   };
   await constructionSlice();
 
@@ -135,10 +191,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     }
   };
   let paused = false;
-  // When paused, the world sim freezes but the player stays live by default
-  // (walk/drive/fly on) so you can keep roaming the frozen city. The pause
-  // toggle flips this to freeze the player too, for a still shot.
-  let freezePlayer = false;
+  // Pause freezes EVERYTHING by default — world sim and player alike. The pause
+  // toggle flips this off to let the player keep walking/driving/flying through
+  // the held-still city (the old default, now opt-in).
+  let freezePlayer = true;
   let immersive = false;
   // Z-hold time scrub + N-hold look/speed adjust — extracted per docs/MAIN_DECOMPOSITION.md.
   const timeScrubGestures = createTimeScrubAndTuningGestures({ input, sky, hud });
@@ -166,7 +222,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // it lives under #hud). Clicking it freezes/unfreezes the player.
   const pauseToggle = new PauseToggle((freeze) => {
     freezePlayer = freeze;
-    hud.message(freeze ? "Player frozen — click the toggle to move again" : "Player live while paused", 2.2);
+    hud.message(freeze ? "Everything frozen — click the toggle to move again" : "Player live while the world holds still", 2.2);
   });
   const refreshPauseToggle = () => {
     pauseToggle.setVisible(paused && !immersive);
@@ -273,10 +329,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // We keep rendering the frozen frame so the window stays live.
     if (input.pressed("KeyP")) {
       paused = !paused;
-      if (paused) freezePlayer = false; // each pause starts with the player live
+      if (paused) freezePlayer = true; // each pause starts fully frozen, player included
       refreshPauseToggle();
       hud.message(
-        paused ? "Paused — you can still move. P to resume" : "Resumed",
+        paused ? "Paused — everything is frozen. P to resume" : "Resumed",
         paused ? Infinity : 2.6
       );
     }
@@ -364,11 +420,6 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         timeOfDay: sky.timeOfDay,
         allowNewLoads: !worldArrival.active
       });
-      lofiMusic.update(frameDt, {
-        playerPos: player.renderPosition,
-        timeOfDay: sky.timeOfDay,
-        allowStart: !worldArrival.active
-      });
       sendLocalPresence(0);
       sendPickleballNetwork();
       remotes.selfId = net.selfId;
@@ -388,6 +439,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       sky.update(ctx.state.elapsed, camera.position, player.renderPosition);
       applyLightFrontRamps();
       hud.update(frameDt);
+      updateSkateHud(frameDt);
       // The checklist has to keep thinking while the map is up. Its last
       // chapter is ABOUT the map — "press M", then pan/zoom/pick/teleport — and
       // the only branch that can observe either is this one. Left out, the step
@@ -454,8 +506,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         : false;
     applyPickleballPlayerPose();
 
-    // Full freeze: a pause with "freeze player" armed. Everything holds — sim,
-    // player, fx, vehicles — while a clean screenshot floats on top.
+    // Full freeze: the default pause. Everything holds — sim, player, fx,
+    // vehicles — while a clean screenshot floats on top.
     dogParkAudio.setPaused(paused);
     if (paused && freezePlayer && !worldArrival.active) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
@@ -468,11 +520,6 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         gust: windGustValue(),
         timeOfDay: sky.timeOfDay,
         allowNewLoads: !worldArrival.active
-      });
-      lofiMusic.update(frameDt, {
-        playerPos: player.renderPosition,
-        timeOfDay: sky.timeOfDay,
-        allowStart: !worldArrival.active
       });
       // stay social while frozen: peers keep moving, our keepalive keeps flowing
       sendLocalPresence(0);
@@ -501,7 +548,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       return "handled";
     }
 
-    // World frozen, player live: the default pause. The whole city sim holds
+    // World frozen, player live: opt-in via the pause toggle. The whole city sim holds
     // (sky, water, fx never tick) but the player keeps moving — walk, drive,
     // fly — so you can keep roaming the frozen city. We run ONLY the player's own
     // step + camera + tile streaming. The player's dynamic body still steps
@@ -511,6 +558,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (player.mode === "plane") player.steerFly(input, frameDt);
       if (player.mode === "surf") player.steerSurf(input, frameDt);
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "skate" && input.pressed("Space")) player.requestSkatePop();
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
         player.requestSurfJump();
       }
@@ -577,12 +625,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         speed: player.speed,
         vspeed: player.velocity.y,
         boost: input.down("ShiftLeft"),
-        grounded: player.mode !== "board" || player.boardGrounded,
+        grounded: player.mode === "skate" ? player.skateState.grounded : player.mode !== "board" || player.boardGrounded,
         surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
         surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
         surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
         driveVoice: player.driveSpec.voice ?? "engine",
-        driveSlide: player.driveSlideFeedback.intensity
+        driveSlide: player.mode === "skate" ? player.skateState.slide : player.driveSlideFeedback.intensity,
+        skateGrind: player.mode === "skate" ? player.skateState.sparks : 0
       });
       swimAudio.update(frameDt, {
         swimming: player.swimming,
@@ -598,17 +647,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         timeOfDay: sky.timeOfDay,
         allowNewLoads: !worldArrival.active
       });
-      lofiMusic.update(frameDt, {
-        playerPos: player.renderPosition,
-        timeOfDay: sky.timeOfDay,
-        allowStart: !worldArrival.active
-      });
       sendLocalPresence();
       sendPickleballNetwork();
       voice.update();
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       hud.update(frameDt);
+      updateSkateHud(frameDt);
       // paused-but-roaming still streams tiles/core.state.citygen — keep their deferred
       // assembly draining so the frozen city fills in around the live player
       scheduler.run(frameDt < 1 / 55 ? 3 : 1.5);
@@ -1033,7 +1078,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (document.fullscreenElement) void document.exitFullscreen();
       else void document.documentElement.requestFullscreen().catch(() => hud.message("Fullscreen blocked by browser"));
     }
-    // H: high-res in-game still → local in_game_shots folder (dev server writer)
+    // H: high-res in-game still → the player's Downloads folder (dev also archives)
     if (
       document.body.classList.contains("started") &&
       !worldArrival.active &&
@@ -1044,12 +1089,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       void takeInGameScreenshot({
         renderer,
         renderFrame,
-        captureStillRgba: pipeline.captureStillRgba,
-        setCinematicMultisampling: pipeline.setCinematicMultisampling
+        captureStillRgba: pipeline.captureStillRgba
       })
         .then((shot) => {
-          const name = shot.path.split("/").pop() ?? "shot.png";
-          hud.message(`Saved ${name} (${shot.width}×${shot.height})`, 3.5);
+          hud.message(`Downloaded ${shot.filename} (${shot.width}×${shot.height})`, 3.5);
         })
         .catch((err) => {
           console.warn("[screenshot]", err);
@@ -1200,6 +1243,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
     if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+    if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "skate" && input.pressed("Space")) player.requestSkatePop();
     if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
       player.requestSurfJump();
     }
@@ -1241,6 +1285,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
 
     // everyone else's interpolation advances BEFORE my pose settles: a
     // passenger's seat is glued to this frame's view of the driver's car
+    // Street rails materialise around whoever is on a board (skate mode only).
+    if (player.mode === "skate") core.state.streetSpots?.update(player.position.x, player.position.z);
     remotes.selfId = net.selfId;
     remotes.update(frameDt);
     hidePickleballRemoteAvatars();
@@ -1442,12 +1488,6 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       timeOfDay: sky.timeOfDay,
       allowNewLoads: !worldArrival.active
     });
-    // the lo-fi score breathes alongside the nature ambience everywhere
-    lofiMusic.update(frameDt, {
-      playerPos: player.renderPosition,
-      timeOfDay: sky.timeOfDay,
-      allowStart: !worldArrival.active
-    });
     // live loop only: the dogs freeze during pause, so barking there would lie
     dogParkAudio.update(frameDt, player.renderPosition);
     // keeps the shared context awake for the magic-echo tail + applies live echo
@@ -1587,7 +1627,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // exact clock to the displaced ocean and lazy face/roof too; using render
     // ctx.state.elapsed here let the visible crest and barrel envelope drift away after
     // loading, pause, or deterministic headless stepping.
-    const surfaceTime = player.mode === "surf" ? player.time : ctx.state.elapsed;
+    const surfaceTime = state.seaTimePin ?? (player.mode === "surf" ? player.time : ctx.state.elapsed);
     // Publish the sea clock: everything that physically rides the surface
     // (hull buoyancy, swim waterline, camera wave clearance) samples
     // waterHeight at exactly this t — the one the water is displaced with.
@@ -1671,7 +1711,22 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     );
     waveEnergy.level *= sutroWaveMix;
     waveEnergy.breaking *= sutroWaveMix;
-    waveAudio.update(frameDt, waveEnergy);
+    // The ears go with the LENS, not the body. Ordinarily they are the same
+    // place, but in a scripted shot the body is parked at the site while the
+    // camera is a hundred metres down the beach, and a crash has to be panned
+    // and delayed from where it is being watched.
+    waveListener.x = camera.position.x;
+    waveListener.z = camera.position.z;
+    // Camera right in world XZ: the x/z row of the view matrix basis.
+    camera.matrixWorld.extractBasis(waveRight, waveUp, waveForward);
+    const rightLen = Math.hypot(waveRight.x, waveRight.z) || 1;
+    waveListener.rightX = waveRight.x / rightLen;
+    waveListener.rightZ = waveRight.z / rightLen;
+    // `surfaceTime`, NOT elapsed: it is the clock the water is actually
+    // displaced with this frame (they diverge in surf mode, where the swell
+    // runs on player.time), and a crash has to be scheduled off the same clock
+    // that decides where the crest is or the sound drifts off the picture.
+    waveAudio.update(frameDt, waveEnergy, waveListener, surfaceTime);
     // Explicit E/B is the normal exit. This far-away guard only repairs external
     // teleports that bypass NavigationController; the ride itself never beaches.
     if (player.mode === "surf") {
@@ -1690,12 +1745,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       speed: player.speed,
       vspeed: player.velocity.y,
       boost: input.down("ShiftLeft"),
-      grounded: player.mode !== "board" || player.boardGrounded,
+      grounded: player.mode === "skate" ? player.skateState.grounded : player.mode !== "board" || player.boardGrounded,
       surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
       surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
       surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
       driveVoice: player.driveSpec.voice ?? "engine",
-      driveSlide: player.driveSlideFeedback.intensity
+      driveSlide: player.mode === "skate" ? player.skateState.slide : player.driveSlideFeedback.intensity,
+      skateGrind: player.mode === "skate" ? player.skateState.sparks : 0
     });
     swimAudio.update(frameDt, {
       swimming: player.swimming,
@@ -1801,6 +1857,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     }
 
     hud.update(frameDt);
+    updateSkateHud(frameDt);
     tutorial.update(frameDt);
     debugPanel.refresh();
 

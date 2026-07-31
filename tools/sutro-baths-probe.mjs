@@ -577,7 +577,31 @@ async function main() {
     // under-floor poses model the bad handoff/tunnelling case directly: deck
     // corridors must recover to the deck, while pool footprints must recover
     // only to the basin so entering the water remains possible.
-    const forceBelowFloor = async (point) => {
+    // Recovery lifts the capsule a little per step, so its budget is FRAMES, not
+    // seconds. Reading the height once after a fixed 450 ms of wall clock sampled
+    // whatever partial lift the timer happened to catch, so any expensive frames
+    // landing in that window — the bathers' staged reveal, a compile burst —
+    // failed a collision check with nothing wrong with collision. Wait for the
+    // height to stop moving instead, and require real frames behind that
+    // stillness so a stalled sim can never masquerade as a settled capsule.
+    const SETTLE_POLL_MS = 60;
+    const SETTLE_STABLE_SAMPLES = 4; // consecutive quiet polls, ~240 ms
+    const SETTLE_EPSILON = 0.004; // m
+    const SETTLE_MIN_FRAMES = 24; // frames that must have run before "settled"
+    const SETTLE_DEADLINE_MS = 15_000;
+    // One rAF counter for the whole phase: "settled" has to mean the sim ran and
+    // stopped moving the capsule, not that the page was too busy to move it.
+    await page.evaluate(() => {
+      if (window.__sfProbeFrames !== undefined) return;
+      window.__sfProbeFrames = 0;
+      const bump = () => {
+        window.__sfProbeFrames++;
+        requestAnimationFrame(bump);
+      };
+      requestAnimationFrame(bump);
+    });
+    const settleTiming = {};
+    const forceBelowFloor = async (label, point) => {
       await page.evaluate(([x, y, z]) => {
         const sf = window.__sf;
         // Recreate the walk body through Player so its interpolation history
@@ -588,30 +612,54 @@ async function main() {
         sf.physics.world.setBodyVelocity(sf.player.body, [0, -8, 0], [0, 0, 0]);
         sf.physics.world.setBodyAwake(sf.player.body, true);
       }, point);
-      await page.waitForTimeout(450);
-      return page.evaluate(() => ({
-        x: window.__sf.player.position.x,
-        y: window.__sf.player.position.y,
-        z: window.__sf.player.position.z
-      }));
+      const readPose = () =>
+        page.evaluate(() => ({
+          x: window.__sf.player.position.x,
+          y: window.__sf.player.position.y,
+          z: window.__sf.player.position.z,
+          frames: window.__sfProbeFrames
+        }));
+      const startedPolling = Date.now();
+      let sample = await readPose();
+      const startFrames = sample.frames;
+      let stable = 0;
+      let polls = 0;
+      let settled = false;
+      while (Date.now() - startedPolling < SETTLE_DEADLINE_MS) {
+        await page.waitForTimeout(SETTLE_POLL_MS);
+        const next = await readPose();
+        polls++;
+        stable = Math.abs(next.y - sample.y) < SETTLE_EPSILON ? stable + 1 : 0;
+        sample = next;
+        settled = stable >= SETTLE_STABLE_SAMPLES && next.frames - startFrames >= SETTLE_MIN_FRAMES;
+        if (settled) break;
+      }
+      settleTiming[label] = {
+        settledMs: Date.now() - startedPolling,
+        frames: sample.frames - startFrames,
+        polls,
+        settled
+      };
+      return sample;
     };
-    const roadRecovery = await forceBelowFloor(localPoint(44.25, 29.58, 63.1));
+    const roadRecovery = await forceBelowFloor("road", localPoint(44.25, 29.58, 63.1));
     // Interior threshold slab, just inside the glazed road doors.
-    const foyerRecovery = await forceBelowFloor(localPoint(37.6, 29.58, 63.1));
+    const foyerRecovery = await forceBelowFloor("foyer", localPoint(37.6, 29.58, 63.1));
     // Mid-descent on the grand spiral (theta 145 deg of its 20.66..270 sweep).
     // This replaces a sample that sat on the v5 switchback's second flight; that
     // lane is now the spiral's open well, so a capsule there SHOULD fall through.
-    const spiralRecovery = await forceBelowFloor(localPoint(15.098, 16.58, 64.853));
-    const beachRecovery = await forceBelowFloor(localPoint(-48, 2.58, 33.29));
-    const deckRecovery = await forceBelowFloor(localPoint(-7, 4.12, 0));
-    const basinRecovery = await forceBelowFloor(localPoint(-20, 1.12, 8));
+    const spiralRecovery = await forceBelowFloor("spiralMidFlight", localPoint(15.098, 16.58, 64.853));
+    const beachRecovery = await forceBelowFloor("beach", localPoint(-48, 2.58, 33.29));
+    const deckRecovery = await forceBelowFloor("deck", localPoint(-7, 4.12, 0));
+    const basinRecovery = await forceBelowFloor("basin", localPoint(-20, 1.12, 8));
     const collisionRecovery = {
       road: roadRecovery,
       foyer: foyerRecovery,
       spiralMidFlight: spiralRecovery,
       beach: beachRecovery,
       deck: deckRecovery,
-      basin: basinRecovery
+      basin: basinRecovery,
+      settle: settleTiming
     };
     expect(
       "activation-road-entrance-fallthrough-recovers",
@@ -638,18 +686,34 @@ async function main() {
       Math.abs(deckRecovery.y - (5.62 + 0.92)) < 0.12,
       collisionRecovery
     );
+    // The pool footprint is the one sample that must NOT settle on the surface it
+    // was recovered onto. Recovery puts the capsule's feet on the basin (2.62) —
+    // and a body standing on the basin is 2.56 m under the bath, so the swim
+    // controller then floats it up to its rest depth, exactly as it should. Both
+    // failures this guards stay outside the water column: left buried, the feet
+    // sit under the basin; lifted to the deck instead of the basin, they sit
+    // above the sheet and entering the water stops working.
+    const basinFeet = basinRecovery.y - 0.92;
     expect(
       "activation-pool-fallthrough-recovers-to-basin",
-      Math.abs(basinRecovery.y - (2.62 + 0.92)) < 0.12,
+      basinFeet >= 2.62 - 0.12 && basinFeet <= SITE.waterY,
       collisionRecovery
     );
 
     // Canvas-only captures deliberately exclude DOM HUD/debug overlays.
+    //
+    // Playwright's 30 s default is a harness limit, not a rendering budget: a
+    // canvas capture cannot return until the page presents a frame, and the
+    // close pool shots jump the camera through the near-steam boundary, so that
+    // frame is behind a real compile (measured ~40 s on a loaded machine). The
+    // default aborted the whole run there and threw away every check after the
+    // screenshots, including runtime-no-console-errors.
+    const SHOT_TIMEOUT_MS = 180_000;
     const canvas = page.locator("#app > canvas").first();
     await page.evaluate(() => window.__sf.hud?.setHidden?.(true));
     const screenshotEvidence = {};
     const arrivalFile = path.join(OUT, "arrival-exterior.png");
-    await canvas.screenshot({ path: arrivalFile });
+    await canvas.screenshot({ path: arrivalFile, timeout: SHOT_TIMEOUT_MS });
     screenshotEvidence["arrival-exterior.png"] = {
       file: arrivalFile,
       ...(await imageAudit(arrivalFile))
@@ -698,7 +762,7 @@ async function main() {
       await page.evaluate(({ eye, target }) => window.__sfFreeCam(eye, target), shot);
       await page.waitForTimeout(900);
       const file = path.join(OUT, shot.name);
-      await canvas.screenshot({ path: file });
+      await canvas.screenshot({ path: file, timeout: SHOT_TIMEOUT_MS });
       screenshotEvidence[shot.name] = { file, ...(await imageAudit(file)) };
       expect(
         `visual-${shot.name}-nonblank`,
@@ -763,9 +827,9 @@ async function main() {
     if (!closeShot) throw new Error("Thermal-pool visual shot is missing");
     await page.evaluate(({ eye, target }) => window.__sfFreeCam(eye, target), closeShot);
     await page.waitForTimeout(250);
-    await canvas.screenshot({ path: closeFirst });
+    await canvas.screenshot({ path: closeFirst, timeout: SHOT_TIMEOUT_MS });
     await page.waitForTimeout(550);
-    await canvas.screenshot({ path: closeLater });
+    await canvas.screenshot({ path: closeLater, timeout: SHOT_TIMEOUT_MS });
     screenshotEvidence["thermal-pools-close-later.png"] = {
       file: closeLater,
       ...(await imageAudit(closeLater))

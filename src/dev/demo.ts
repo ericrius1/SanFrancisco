@@ -71,6 +71,12 @@ export type DemoContext = {
   /** Install (or clear, with null) a per-frame cinematic hook that owns the
    * camera + player pose. main runs it in place of the chase camera. */
   setCine: (fn: ((dt: number) => void) | null) => void;
+  /** Pin the sea clock (null to release). The live sea clock carries boot
+   * wall-clock, so wave phase differs every capture run; a film that must
+   * schedule a break at a known shot second writes `pin + localTime` here
+   * each frame and the whole surf stack (water, shorebreak, spray, wave
+   * audio) rides the pinned clock together. */
+  setSeaTimePin?: (t: number | null) => void;
   setExposure: (v: number) => void;
   /**
    * Select a display-grade look by id (render/gradeLooks.ts). The scripted-shot
@@ -134,6 +140,8 @@ import { twitterSummerShot08 } from "./demos/twitterSummerShot08";
 import { afterlightCinematic } from "./demos/afterlightCinematic";
 import { surfAerialCinematic } from "./demos/surfAerialCinematic";
 import { kiteFestivalDemos } from "./demos/kiteFestivalCinematic";
+import { oceanBeachSurfFilms } from "./demos/oceanBeachSurfFilms";
+import { oceanBeachSunsetFilms } from "./demos/oceanBeachSunsetFilms";
 import { sutroMomentDemos } from "./demos/sutroMomentsCinematic";
 import { kiteToSutroDemos } from "./demos/kiteToSutroCinematic";
 import { phoenixPalaceFlyby } from "./demos/phoenixPalaceFlyby";
@@ -158,6 +166,8 @@ const DEMOS: Record<string, Demo> = {
   [surfAerialCinematic.name]: surfAerialCinematic,
   [phoenixPalaceFlyby.name]: phoenixPalaceFlyby,
   ...Object.fromEntries(kiteFestivalDemos.map((demo) => [demo.name, demo])),
+  ...Object.fromEntries(oceanBeachSurfFilms.map((demo) => [demo.name, demo])),
+  ...Object.fromEntries(oceanBeachSunsetFilms.map((demo) => [demo.name, demo])),
   ...Object.fromEntries(sutroMomentDemos.map((demo) => [demo.name, demo])),
   ...Object.fromEntries(kiteToSutroDemos.map((demo) => [demo.name, demo]))
 };

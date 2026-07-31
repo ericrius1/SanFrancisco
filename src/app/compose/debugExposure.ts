@@ -85,7 +85,7 @@ export async function installDebugSurfaces(
       graffiti, bubbles, setTool, setColor, sky, farOcclusion: extra.farOcclusion, debugPanel, CONFIG,
       THREE, tick, splashes, sandPrints, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
       audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
-      doorAudio, nature, lofiMusic: core.lofiMusic, dogParkAudio, ballImpactAudio, net, remotes, voice,
+      doorAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice,
       minimap, playerLocator, boardWake, abandonedMounts, ghostShipBeacon,
       embodiments, switchMode, paintballs, paintSkins, buildShareUrl, wakeCity: netW.wakeCity,
       tutorial, teleportToTarget, citygenRing, worldCursor, worldQueries,
@@ -178,6 +178,7 @@ export async function installDebugSurfaces(
       ensureSurfboardCustomizer: () => core.state.ensureSurfboardCustomizer,
       palaceReverie: () => core.state.palaceReverie,
       landsEnd: () => core.state.landsEnd,
+      waveOrgan: () => core.state.waveOrgan,
       beachPianist: () => ctx.state.beachPianist,
       afterlight: () => core.state.afterlight,
       oceanBeachKite: () => oceanKite.current()
@@ -217,6 +218,9 @@ export async function installDebugSurfaces(
       },
       setCine: (fn: ((dt: number) => void) | null) => {
         frameB.state.cineHook = fn;
+      },
+      setSeaTimePin: (t: number | null) => {
+        frameB.state.seaTimePin = t;
       },
       setExposure: (v: number) => {
         renderer.toneMappingExposure = v;

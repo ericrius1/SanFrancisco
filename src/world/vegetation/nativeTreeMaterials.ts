@@ -21,6 +21,7 @@ import {
 } from "three/tsl";
 import { instanceAnchorWorld, worldOffsetToModelLocal } from "../groundcover/instanceDeform";
 import { groundSway, groundSwayLite, WIND_DIR } from "../groundcover/sway";
+import { applyGroundcoverAtmosphere } from "../groundcover/foliageAtmosphere";
 import { foliageBrightness } from "./appearance";
 import type { NativeTreeStyle } from "./nativeTreeRecipes";
 import type { NativeTreeMaterialAssets } from "./nativeTreeAssets";
@@ -404,6 +405,7 @@ function texturedFoliageMaterial(
   material.thicknessPowerNode = uniform(gradeIndex === 0 ? 4.2 : 5.2);
   material.thicknessScaleNode = uniform(gradeIndex === 0 ? 2.7 : 1.65);
   material.envMapIntensity = gradeIndex === 0 ? 0.46 : 0.3;
+  applyGroundcoverAtmosphere(material);
   return material;
 }
 
@@ -452,6 +454,7 @@ function landscapeFoliageMaterial(
   material.positionNode = silhouetteFoliageNodes[gradeIndex].position;
   // Dome normal so the far crown shades as a rounded volume, not a flat card.
   material.normalNode = silhouetteFoliageNodes[gradeIndex].normal;
+  applyGroundcoverAtmosphere(material);
   return material;
 }
 
@@ -474,6 +477,7 @@ function horizonFoliageMaterial(
   (material as N).emissiveNode = silhouetteFoliageNodes[gradeIndex].emissive;
   material.positionNode = silhouetteFoliageNodes[gradeIndex].position;
   material.normalNode = silhouetteFoliageNodes[gradeIndex].normal;
+  applyGroundcoverAtmosphere(material);
   return material;
 }
 

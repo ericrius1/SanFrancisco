@@ -1,0 +1,167 @@
+{
+  "crash-big-01": {
+    "id": "crash-big-01",
+    "kind": "crash-big",
+    "file": "crash-big-01.mp3",
+    "source": "Crashing Ocean Waves, Marine St Beach, La Jolla CA — Freesound #263995 (hansende), archive.org mirror",
+    "sourcePage": "https://archive.org/details/Freesound-263995",
+    "license": "CC0",
+    "offsetInSource": 3462.225,
+    "seconds": 6.24,
+    "notes": "heaviest single detonation of the first hour; long wash tail (160k runtime encode)"
+  },
+  "crash-big-03": {
+    "id": "crash-big-03",
+    "kind": "crash-big",
+    "file": "crash-big-03.mp3",
+    "source": "Crashing Ocean Waves, Marine St Beach, La Jolla CA — Freesound #263995 (hansende), archive.org mirror",
+    "sourcePage": "https://archive.org/details/Freesound-263995",
+    "license": "CC0",
+    "offsetInSource": 606.265,
+    "seconds": 6.024,
+    "notes": "wide slam, ~3 s roar tail (160k runtime encode)"
+  },
+  "crash-mid-01": {
+    "id": "crash-mid-01",
+    "kind": "crash-mid",
+    "file": "crash-mid-01.mp3",
+    "source": "Alki Beach wave crash 1 — Freesound #18363 (jasinski) via OpenGameArt",
+    "sourcePage": "https://opengameart.org/content/beach-ocean-waves",
+    "license": "CC0",
+    "offsetInSource": 0.46,
+    "seconds": 3.528,
+    "notes": "isolated single break, whole take (160k runtime encode)"
+  },
+  "crash-mid-02": {
+    "id": "crash-mid-02",
+    "kind": "crash-mid",
+    "file": "crash-mid-02.mp3",
+    "source": "Glassy Winter Surf, Silver Strand, Coronado CA — radio aporee #15707",
+    "sourcePage": "https://archive.org/details/aporee_15707_18266",
+    "license": "Public Domain Mark 1.0",
+    "offsetInSource": 30.14,
+    "seconds": 4.536,
+    "notes": "glassy punchy shorebreak hit (160k runtime encode)"
+  },
+  "crash-mid-03": {
+    "id": "crash-mid-03",
+    "kind": "crash-mid",
+    "file": "crash-mid-03.mp3",
+    "source": "Crashing Ocean Waves, Marine St Beach, La Jolla CA — Freesound #263995 (hansende), archive.org mirror",
+    "sourcePage": "https://archive.org/details/Freesound-263995",
+    "license": "CC0",
+    "offsetInSource": 758.265,
+    "seconds": 4.824,
+    "notes": "medium sandy break inside a set (160k runtime encode)"
+  },
+  "crash-small-01": {
+    "id": "crash-small-01",
+    "kind": "crash-small",
+    "file": "crash-small-01.mp3",
+    "source": "Alki Beach wave crash 2 — Freesound #18363 (jasinski) via OpenGameArt",
+    "sourcePage": "https://opengameart.org/content/beach-ocean-waves",
+    "license": "CC0",
+    "offsetInSource": 0.455,
+    "seconds": 2.04,
+    "notes": "small close break (160k runtime encode)"
+  },
+  "crash-small-03": {
+    "id": "crash-small-03",
+    "kind": "crash-small",
+    "file": "crash-small-03.mp3",
+    "source": "Isla Vista cliff crash, Goleta CA — radio aporee #46560",
+    "sourcePage": "https://archive.org/details/aporee_46560_52875",
+    "license": "Public Domain Mark 1.0",
+    "offsetInSource": 28.915,
+    "seconds": 4.032,
+    "notes": "cliff-base hit held over the edge, minimal background (160k runtime encode)"
+  },
+  "sub-01": {
+    "id": "sub-01",
+    "kind": "sub",
+    "file": "sub-01.mp3",
+    "source": "Boca do Inferno, Cascais, Portugal — radio aporee #38915",
+    "sourcePage": "https://archive.org/details/aporee_38915_44443",
+    "license": "Public Domain Mark 1.0",
+    "offsetInSource": 12.655,
+    "seconds": 3.24,
+    "notes": "plunging rock-inlet thump, lowpassed 170 Hz (160k runtime encode)"
+  },
+  "sub-02": {
+    "id": "sub-02",
+    "kind": "sub",
+    "file": "sub-02.mp3",
+    "source": "Boca do Inferno, Cascais, Portugal — radio aporee #38915",
+    "sourcePage": "https://archive.org/details/aporee_38915_44443",
+    "license": "Public Domain Mark 1.0",
+    "offsetInSource": 210.51,
+    "seconds": 3.432,
+    "notes": "biggest rise over background in the take, lowpassed 170 Hz (160k runtime encode)"
+  },
+  "swash-01": {
+    "id": "swash-01",
+    "kind": "swash",
+    "file": "swash-01.mp3",
+    "source": "Santa Monica beach, just waves — radio aporee #71004",
+    "sourcePage": "https://archive.org/details/aporee_71004_82809",
+    "license": "Public Domain Mark 1.0",
+    "offsetInSource": 196.5,
+    "seconds": 4.536,
+    "notes": "sheet of bubbles raking up clean sand (160k runtime encode)"
+  },
+  "swash-02": {
+    "id": "swash-02",
+    "kind": "swash",
+    "file": "swash-02.mp3",
+    "source": "Santa Monica beach, just waves — radio aporee #71004",
+    "sourcePage": "https://archive.org/details/aporee_71004_82809",
+    "license": "Public Domain Mark 1.0",
+    "offsetInSource": 61,
+    "seconds": 4.224,
+    "notes": "wide hissy run-up and drain (160k runtime encode)"
+  },
+  "swash-03": {
+    "id": "swash-03",
+    "kind": "swash",
+    "file": "swash-03.mp3",
+    "source": "Crashing Ocean Waves, Marine St Beach, La Jolla CA — Freesound #263995 (hansende), archive.org mirror",
+    "sourcePage": "https://archive.org/details/Freesound-263995",
+    "license": "CC0",
+    "offsetInSource": 3749,
+    "seconds": 4.632,
+    "notes": "coarser shorebreak washback (160k runtime encode)"
+  },
+  "swash-04": {
+    "id": "swash-04",
+    "kind": "swash",
+    "file": "swash-04.mp3",
+    "source": "Santa Monica beach, just waves — radio aporee #71004",
+    "sourcePage": "https://archive.org/details/aporee_71004_82809",
+    "license": "Public Domain Mark 1.0",
+    "offsetInSource": 109.5,
+    "seconds": 4.44,
+    "notes": "gentle spent-wave arrival (160k runtime encode)"
+  },
+  "bed-close": {
+    "id": "bed-close",
+    "kind": "bed",
+    "file": "bed-close.mp3",
+    "source": "Crashing Ocean Waves, Marine St Beach, La Jolla CA — Freesound #263995 (hansende), archive.org mirror",
+    "sourcePage": "https://archive.org/details/Freesound-263995",
+    "license": "CC0",
+    "offsetInSource": 1485,
+    "seconds": 45.024,
+    "notes": "close hissy shorebreak bed with real distant breaks inside it (160k runtime encode, trimmed to 45s)"
+  },
+  "bed-mid": {
+    "id": "bed-mid",
+    "kind": "bed",
+    "file": "bed-mid.mp3",
+    "source": "Santa Monica beach, just waves — radio aporee #71004",
+    "sourcePage": "https://archive.org/details/aporee_71004_82809",
+    "license": "Public Domain Mark 1.0",
+    "offsetInSource": 253,
+    "seconds": 45.024,
+    "notes": "clean mid-distance sandy surf, steadiest stretch of the take (160k runtime encode, trimmed to 45s)"
+  }
+}

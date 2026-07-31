@@ -17,14 +17,17 @@ import {
   positionLocal,
   positionWorld,
   pow,
+  output,
   saturate,
   sin,
   smoothstep,
   step,
   time,
   uniform,
-  vec3
+  vec3,
+  vec4
 } from "three/tsl"
+import { registerSkyAtmosphere } from "./skyRegistry"
 import { CROWN_INTENSITY } from "./salesforceCrown"
 import { WINDOW_GLOW_W } from "./facade"
 import { BAY_LIGHTS_INTENSITY } from "./bayLights"
@@ -538,6 +541,13 @@ export class Sky {
     this.#fogNode = this.#buildFogNode()
     scene.fog = null
     scene.fogNode = this.#fogNode
+
+    // High-fragment groundcover (grass/flowers) reads these instead of the full
+    // analytic IBL + marine fog graph — see grassEnvNode / installGrassFog.
+    registerSkyAtmosphere({
+      grassEnvNode: () => this.grassEnvNode(),
+      installGrassFog: (material) => this.installGrassFog(material)
+    })
 
     // Prefer a persisted local override over the wall clock; otherwise mirror SF time.
     if (this.realTime) this.followRealTime()
@@ -1338,6 +1348,82 @@ export class Sky {
       .mul(mix(float(1), float(0.018), this.#uVoid as N))
   }
 
+  /**
+   * Cheap environment for high-overdraw groundcover. MeshStandard wraps this in
+   * EnvironmentNode and evaluates it twice per fragment (radiance + irradiance);
+   * the analytic SkyEnvNode pays a full sky gradient on each of those. Grass is
+   * roughness ~0.94 so the soften path already collapses toward #uSkyMean — this
+   * node is that mean with a one-MAD hemisphere ground bounce, no gradient.
+   */
+  grassEnvNode(): N {
+    return new GrassEnvNode(this) as N
+  }
+
+  #grassFogNode: N | null = null
+
+  /**
+   * Distance-haze + smooth height-bank fog for groundcover. Drops the two
+   * tri-noise marine fields, Buena Vista mist, and coastal-front macros that
+   * the shared scene fog carries — those are invisible at blade scale and were
+   * ~60% of meadow fragment ALU on M5 Air (docs/PERF_LEVELUP.md Wave 7).
+   */
+  #buildGrassFogNode(): N {
+    const dist = cameraPosition.sub(positionWorld).length()
+    const horizontalDist = (cameraPosition as N).xz.sub((positionWorld as N).xz).length()
+    const y = (positionWorld as N).y
+    const base = float(FOG_BASE) as N
+    const distHaze = densityFogFactor(this.#uFogDensity as N)
+    const top = this.#uFogTop as N
+    const layerDepth = top.sub(base).max(1)
+    const surfaceDensity = top.sub(y).div(layerDepth).saturate().mul(0.98)
+    const cameraDensity = top
+      .sub((cameraPosition as N).y)
+      .div(layerDepth)
+      .saturate()
+      .mul(0.98)
+    const bankFog = dist
+      .mul(surfaceDensity.add(cameraDensity).mul(0.5))
+      .mul(this.#uFogBank as N)
+      .div(FOG_EXTINCTION_LENGTH_M)
+      .negate()
+      .exp()
+      .oneMinus()
+    const edgeFade = smoothstep(
+      this.#uFogEdgeStart as N,
+      this.#uFogEdgeEnd as N,
+      horizontalDist
+    ).mul(this.#uFogEdgeStrength as N)
+    const weatherFactor = Fn(() => {
+      const factor = float(0).toVar()
+      If((this.#uFogEnabled as N).greaterThan(0), () => {
+        factor.assign(
+          bankFog
+            .min(FOG_BANK_MAX)
+            .oneMinus()
+            .mul(distHaze.oneMinus())
+            .mul(edgeFade.oneMinus())
+            .oneMinus()
+        )
+      })
+      return factor
+    })()
+    return tslFog(
+      color(FOG_COLOR).mul(this.#uFogLight as N),
+      weatherFactor.mul((this.#uVoid as N).oneMinus())
+    )
+  }
+
+  /** Bind the cheap groundcover fog onto a MeshStandard/SSS material instance. */
+  installGrassFog(material: { fog: boolean; setupFog: (...args: any[]) => any }): void {
+    if (!this.#grassFogNode) this.#grassFogNode = this.#buildGrassFogNode()
+    const fogNode = this.#grassFogNode
+    material.fog = true
+    material.setupFog = (_builder: unknown, outputNode: N) => {
+      output.assign(outputNode)
+      return vec4(fogNode.toVar())
+    }
+  }
+
   /** Re-run the sun/IBL pass after a day-grade tunable (sunDay/hemiDay)
    *  changes — the "/" panel calls this so the sliders re-grade live even
    *  while the time of day is pinned. */
@@ -1698,5 +1784,35 @@ class SkyEnvNode extends THREE.TempNode {
     const dir = ctx.getUV ? ctx.getUV() : vec3(0, 1, 0)
     const level = ctx.getTextureLevel ? ctx.getTextureLevel() : float(0)
     return this.#sky.envRadiance(dir as N, level as N)
+  }
+}
+
+/**
+ * Groundcover environment: sky mean + a one-MAD ground bounce. EnvironmentNode
+ * still samples this twice per fragment, but each sample is a uniform read and
+ * a mix — not the full analytic sky gradient SkyEnvNode pays.
+ */
+class GrassEnvNode extends THREE.TempNode {
+  static get type() {
+    return "GrassEnvNode"
+  }
+
+  #sky: Sky
+
+  constructor(sky: Sky) {
+    super("vec3")
+    this.#sky = sky
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TSL builder (see N above)
+  setup(builder: any) {
+    const ctx = builder.context
+    const dir = ctx.getUV ? ctx.getUV() : vec3(0, 1, 0)
+    const skyCol = this.#sky.ambientRadiance()
+    // Cool, darkened ground bounce so blades facing down don't pick up a second
+    // sky wash. Tuned to read as turf shade, not a second sun.
+    const ground = skyCol.mul(vec3(0.2, 0.26, 0.16))
+    const w = saturate((dir as N).y.mul(0.5).add(0.5))
+    return mix(ground, skyCol, w)
   }
 }

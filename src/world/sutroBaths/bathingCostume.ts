@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { SKIN_TONES } from "../../player/avatar";
+import { SKIN_TONES, type AvatarHair } from "../../player/avatar";
 import type { Rig } from "../../player/rig";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 
@@ -112,6 +112,11 @@ export type CostumeOptions = {
   style?: BathingStyle;
   /** Force a skin-tone index into SKIN_TONES. */
   skin?: number;
+  /** The hairstyle this rig was BUILT with. A bather who rolls no bathing cap
+   *  wears their own hair, and `rig.avatar.allHair` cannot answer which style
+   *  that is (it holds all five). Defaults to whatever the rig currently shows,
+   *  which is nothing at all when a fitted stock hat covered the scalp. */
+  hair?: AvatarHair;
 };
 
 // ---------------------------------------------------------------- helpers
@@ -180,9 +185,16 @@ export function applyBathingCostume(rig: Rig, seed: string | number, opts: Costu
   // ---- hide all stock outfit / hat / hair detail -----------------------
   for (const o of s.allOutfits) o.visible = false;
   for (const o of s.allHats) o.visible = false;
+  // `allHair` is EVERY hairstyle's boxes, not this bather's — the rig builds all
+  // five and applyAvatarToRig reveals one. Showing the whole bucket put a mohawk
+  // fin, a bob's side panels and long hair's back slab on the same head, and the
+  // bake froze that blob in (it honours `.visible`, so it kept exactly what was
+  // shown here). Reveal one style, and only when no bathing cap covers it.
   const showHair = cap === "none";
-  for (const o of s.allHair) o.visible = showHair;
-  // (crowns are part of allHair; nothing extra needed — they follow showHair)
+  const ownHair = opts.hair ? s.hair[opts.hair] : s.allHair.filter((o) => o.visible);
+  for (const o of s.allHair) o.visible = false;
+  if (showHair) for (const o of ownHair) o.visible = true;
+  // (each style's crown slab lives in its own bucket, so it follows the style)
   // Every rig carries a fixed dark "shades" bar across the face (materials.visor,
   // rig.ts) that reads as modern sunglasses — wrong for 1900s bathers. The slot
   // is per-rig, so hide it by zeroing its opacity (no rig.ts edit needed).

@@ -19,6 +19,7 @@ import {
 import type {  } from "../../world/coronaHeights";
 import type {  } from "../../world/missionDolores";
 import { WILD_REGIONS } from "../../world/wildlands/regions";
+import { inSkatePlazaFootprint } from "../../world/skatePlaza/meta";
 import { BUENA_VISTA_REGION } from "../../world/buenaVista";
 import { BACKGROUND_STREAM_LIMIT } from "../../world/tiles";
 import { sutroTowerArrivalForDestination } from "../../world/sutroTower";
@@ -30,7 +31,6 @@ import { Chat } from "../../ui/chat";
 import { EmoteWheel } from "../../ui/emoteWheel";
 import { emoteById, emoteIndex } from "../../player/emotes";
 import {    BALL_IMPACT_AUDIO_TUNING } from "../../audio";
-import { LOFI_MUSIC_TUNING } from "../../audio/music/tuning";
 import type {  } from "../../gameplay/creatures";
 import type {  } from "../../gameplay/forest";
 import type {  } from "../../world/citygen";
@@ -1012,16 +1012,6 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     }
   });
 
-  // The generative score's mix. Bound from ./tuning rather than the director so
-  // the music engine itself stays behind its first-gesture gate.
-  debugPanel.registerFeatureTuning({
-    id: "lofi-music",
-    title: "Score · keys / pads / bass / beats / space",
-    build(folder) {
-      LOFI_MUSIC_TUNING.bind(folder);
-    }
-  });
-
   // Kid-with-a-kite ambient encounter (lazy first-approach gate) — extracted
   // per docs/MAIN_DECOMPOSITION.md.
   const oceanKite = createOceanKiteGate({
@@ -1247,6 +1237,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     walk: { r: 1.05, y: 0.95 },
     scooter: { r: 1.45, y: 1.05 },
     board: { r: 1.15, y: 1.0 },
+    skate: { r: 1.05, y: 0.95 },
     surf: { r: 1.35, y: 1.0 },
     drive: { r: 2.3, y: 0.8 },
     plane: { r: 3.2, y: 1.0 },
@@ -1394,10 +1385,14 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
         scheduleGroundcoverBuild: (job) => scheduler.schedule("build", job),
         groundcover: (x: number, z: number) =>
           afterlightLayout.inAfterlightGroundcoverClear(x, z, 1.2) ||
+          inSkatePlazaFootprint(x, z, 1.5) ||
           (loadedGolfCourse?.contains(x, z, 1.2) ?? false),
-        trees: loadedGolfCourse
-          ? (x: number, z: number) => loadedGolfCourse!.clearsProceduralTrees(x, z)
-          : undefined
+        // The skate plaza's granite is graded ground: blades and park trees
+        // must stay off it from boot, because the plaza streams in later and
+        // cannot retroactively uproot a cypress standing on its funbox.
+        trees: (x: number, z: number) =>
+          inSkatePlazaFootprint(x, z, 4) ||
+          (loadedGolfCourse?.clearsProceduralTrees(x, z) ?? false)
       });
       const site = candidate;
       core.state.wildlands = site;
@@ -1666,6 +1661,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
         }
       }
       ctx.state.beachPianist = r.beachPianist;
+      core.state.skatePlaza = r.skatePlaza;
       core.state.sutroBaths = r.sutroBaths;
       const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (hooks) Object.assign(hooks, {
@@ -1685,6 +1681,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
         landsEnd: core.state.landsEnd,
         waveOrgan: core.state.waveOrgan,
         beachPianist: ctx.state.beachPianist,
+        skatePlaza: core.state.skatePlaza,
         sutroBaths: core.state.sutroBaths
       });
     }

@@ -65,6 +65,16 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Shift"], label: "boost" },
     { c: ["Click"], label: "shoot" }
   ],
+  skate: [
+    { c: ["W"], label: "push · air: frontflip" },
+    { c: ["S"], label: "brake · air: backflip · +A/D powerslide" },
+    { c: ["A", "D"], label: "carve · air: spin · rail: balance" },
+    { c: ["Space"], label: "hold to crouch, release to ollie" },
+    { c: ["Q"], label: "flip trick (hold A/D/W/S to vary)" },
+    { c: ["X"], label: "grab" },
+    { c: ["Shift"], label: "manual" },
+    { c: ["E"], label: "step off" }
+  ],
   board: [
     { c: ["Mouse"], label: "look" },
     { c: ["W"], label: "push" },
@@ -157,6 +167,16 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["Y"], label: "land" },
     { c: ["X"], label: "shoot" }
   ],
+  skate: [
+    { c: ["RS"], label: "look" },
+    { c: ["RT"], label: "push" },
+    { c: ["LS"], label: "carve · air: spin" },
+    { c: ["A"], label: "hold + release to ollie" },
+    { c: ["LB", "B"], label: "flip trick" },
+    { c: ["RB"], label: "grab" },
+    { c: ["L3", "LT"], label: "manual" },
+    { c: ["Y"], label: "step off" }
+  ],
   board: [
     { c: ["RS ↔"], label: "look" },
     { c: ["RS ↕"], label: "pitch · hold to flip" },
@@ -190,6 +210,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   drive: "LB boost · RB power-slide with steer · release for a snap boost · Space handbrake",
   scooter: "LB power-slide with steer · ramps launch cleanly · rear seat fits a friend",
   board: "White glow = nose · pull right stick back in the air to flip",
+  skate: "Hills are the throttle — bomb one, then link flips, grinds and manuals into one combo before you land",
   surf: "Steer with the mouse · push up to climb toward the lip · Space launches — the higher you are, the bigger",
   bird: "Three-seat saddle — two friends can press E nearby and fly with you"
 }

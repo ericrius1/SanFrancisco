@@ -102,26 +102,42 @@ const BATHERS: readonly BatherSpec[] = [
   { seed: "sutro-south-2", pool: "seat:south-2", pose: "sitChair", talk: "south-table", tea: true },
   { seed: "sutro-south-3", pool: "seat:south-3", pose: "sitChair", talk: "south-table" },
 
-  // ---- great salt-water plunge (x[-31,-10] z[-55,29]) --------------------
+  // ---- great salt-water plunge, long leg (x[-31,-10] z[-55,22]) ----------
   { seed: "sutro-swim-1", pool: "great-plunge", lx: -22, lz: -30, face: Math.PI, pose: "crawl", drift: 0.62 },
   { seed: "sutro-swim-2", pool: "great-plunge", lx: -18, lz: 6, face: 0, pose: "breast", drift: -0.44 },
   { seed: "sutro-swim-3", pool: "great-plunge", lx: -26, lz: -8, face: Math.PI, pose: "backFloat", drift: 0.14 },
+  // Coping perches take their lx/lz from MAIN's convention — 0.1..0.3 m outside
+  // the pool edge, so the hips land on the coping stone the surfaceForPose above
+  // raises them onto, and facing the water rather than away from it — applied to
+  // the rebuilt rectangles.
   { seed: "sutro-sit-1", pool: "great-plunge", lx: -31.1, lz: -25.4, face: -1.5, pose: "sitEdge", talk: "plunge-edge" },
   { seed: "sutro-sit-2", pool: "great-plunge", lx: -31.1, lz: -23.2, face: -1.9, pose: "sitEdge", talk: "plunge-edge" },
   { seed: "sutro-sit-3", pool: "great-plunge", lx: -9.7, lz: 14, face: 1.55, pose: "sitEdge" },
-  { seed: "sutro-wade-1", pool: "great-plunge", lx: -12.5, lz: 22, face: 2.6, pose: "wade" },
+  { seed: "sutro-wade-1", pool: "great-plunge", lx: -12.5, lz: 16, face: 2.6, pose: "wade" },
 
-  // ---- warm graduated baths (east row, x[-4,19]) -------------------------
-  { seed: "sutro-swim-4", pool: "bath-three", lx: 8, lz: -14.5, face: Math.PI, pose: "breast", drift: 0.4 },
-  { seed: "sutro-hot-1", pool: "bath-four", lx: 3.5, lz: 3.5, face: 1.1, pose: "wadeChat", talk: "hot-bath" },
-  { seed: "sutro-hot-2", pool: "bath-four", lx: 5.9, lz: 4.4, face: -1.9, pose: "wadeChat", talk: "hot-bath" },
-  { seed: "sutro-hot-3", pool: "bath-five", lx: 11, lz: 21.5, face: Math.PI, pose: "backFloat" },
-  { seed: "sutro-sit-4", pool: "bath-two", lx: 7.5, lz: -37.3, face: Math.PI, pose: "sitEdge" },
-  { seed: "sutro-sit-5", pool: "bath-five", lx: 14, lz: 26.3, face: 0, pose: "sitEdge" },
+  // ---- the plunge's south court (x[-31,19] z[22,44]) ---------------------
+  // The water a visitor lands in front of, so it is never empty.
+  { seed: "sutro-swim-5", pool: "great-plunge-court", lx: -6, lz: 33, face: Math.PI, pose: "crawl", drift: 0.5 },
+  { seed: "sutro-swim-6", pool: "great-plunge-court", lx: 9, lz: 37, face: 0, pose: "backFloat", drift: -0.2 },
+  { seed: "sutro-sit-6", pool: "great-plunge-court", lx: 2, lz: 44.2, face: 0.15, pose: "sitEdge", talk: "court-edge" },
+  { seed: "sutro-sit-7", pool: "great-plunge-court", lx: 4.2, lz: 44.2, face: -0.4, pose: "sitEdge", talk: "court-edge" },
+
+  // ---- warm graduated baths (east stack, x[-4,19]) -----------------------
+  { seed: "sutro-swim-4", pool: "bath-three", lx: 8, lz: -26, face: Math.PI, pose: "breast", drift: 0.4 },
+  { seed: "sutro-hot-1", pool: "bath-four", lx: 3.5, lz: -14.6, face: 1.1, pose: "wadeChat", talk: "hot-bath" },
+  { seed: "sutro-hot-2", pool: "bath-four", lx: 5.9, lz: -13.7, face: -1.9, pose: "wadeChat", talk: "hot-bath" },
+  { seed: "sutro-hot-3", pool: "bath-five", lx: 11, lz: -2, face: Math.PI, pose: "backFloat" },
+  { seed: "sutro-sit-4", pool: "bath-two", lx: 7.5, lz: -43, face: Math.PI, pose: "sitEdge" },
+  { seed: "sutro-sit-5", pool: "bath-five", lx: 14, lz: 2.6, face: 0, pose: "sitEdge" },
   { seed: "sutro-cross-1", pool: "deck", lx: -6.6, lz: -6, face: 1.4, pose: "sitCross", talk: "deck-mid" },
   { seed: "sutro-cross-2", pool: "deck", lx: -6.6, lz: -3.6, face: 1.9, pose: "sitCross", talk: "deck-mid" },
   { seed: "sutro-sun-1", pool: "deck", lx: -8.4, lz: -36, face: 1.5, pose: "sunbathe" },
   { seed: "sutro-sun-2", pool: "deck", lx: 20.8, lz: -12, face: -1.5, pose: "sunbathe" },
+  // The cross promenade between the tank stack and the court — the crowded red
+  // deck of the period print.
+  { seed: "sutro-prom-1", pool: "deck", lx: 3.4, lz: 18.6, face: -1.5, pose: "standChat", talk: "promenade" },
+  { seed: "sutro-prom-2", pool: "deck", lx: 5.2, lz: 19.4, face: -2.1, pose: "standChat", talk: "promenade" },
+  { seed: "sutro-prom-3", pool: "deck", lx: 12.6, lz: 17.6, face: 0.2, pose: "leanRail" },
 
   // ---- deck talkers ------------------------------------------------------
   { seed: "sutro-chat-1", pool: "deck", lx: -6.9, lz: -47, face: 1.35, pose: "standChat", talk: "north-deck" },
@@ -518,8 +534,12 @@ export function createSutroBathers(_opts: Record<string, never> = {}): SutroBath
     const lz = seat?.lz ?? spec.lz ?? 0;
     const face = seat?.face ?? spec.face ?? 0;
 
-    const rig = buildRig(avatarFromSeed(spec.seed), { merged: false }); // costume does per-part surgery
-    const costume = applyBathingCostume(rig, spec.seed);
+    const traits = avatarFromSeed(spec.seed);
+    const rig = buildRig(traits, { merged: false }); // costume does per-part surgery
+    // Hand the costume the hairstyle the rig was built with: a bather who rolls
+    // no bathing cap keeps their own hair, and the rig cannot say which of the
+    // five styles that is once they are all hidden.
+    const costume = applyBathingCostume(rig, spec.seed, { hair: traits.hair });
     if (spec.tea) {
       const cup = attachTeacup(rig);
       ownedGeometries.push(cup.geometry);

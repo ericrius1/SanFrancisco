@@ -39,8 +39,9 @@ import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 import { WaterEchoes } from "./waterEchoes";
 import { OceanCascades, oceanDetail, cascadeUv, CASCADE_FADE_DIST, HERO_STRIP_GATE } from "./ocean/oceanSim";
 import { setHeroFocus } from "./ocean/heroWaves";
-import { SUN_DIR, type Sky } from "./sky";
-import { causticWeb, oceanSurfaceRadiance } from "./waterShadingTSL";
+import { SUN_DIR, SUN_STATE, type Sky } from "./sky";
+import { causticWeb, oceanSurfaceRadiance, twilightDirection, twilightFoamRadiance } from "./waterShadingTSL";
+import { PRISM_GLINT } from "./prismGlint";
 import { governorEffects } from "../render/adaptiveResolution";
 import { writeSsrMask } from "../render/post/shared/gbuffer";
 
@@ -370,6 +371,13 @@ export class Water {
    *  Sky owns the day/night grade; this just mirrors it into the water graph so
    *  the sun path dims through dusk and becomes a moon path at night. */
   #uSunRadiance = uniform(new THREE.Color(1, 1, 1));
+  /** Horizon-band afterglow for aerated foam (twilightFoamRadiance): the light
+   *  that keeps a crash readable after sunRadiance has died with the disc.
+   *  Zero outside roughly +2°…−9.5° true sun elevation. */
+  #uTwilightRadiance = uniform(new THREE.Color(0, 0, 0));
+  /** Unit direction to the sunset horizon point — the TRUE sun bearing
+   *  (SUN_STATE.toSun), NOT SUN_DIR, which is the moon after dusk. */
+  #uTwilightDir = uniform(new THREE.Vector3(-1, 0.06, 0).normalize());
   /** tan(elevation) of the terrain horizon per azimuth, swept from the camera
    *  (see HORIZON_* and #scanHorizon). Negative where nothing blocks. */
   //   +1 entry duplicating index 0, so the shader's azimuth lerp never needs a
@@ -612,8 +620,15 @@ export class Water {
       // Only the displaced near sheet participates in the Ocean Beach face;
       // its coarse row is cut out below where the high-resolution surf sheet
       // replaces it, preventing two transparent versions of the same wave.
+      // Has this crest thrown yet? Everything below hangs off this one number.
+      // A swell that has not reached the bar is GLASS — emerald, dark, no foam
+      // anywhere on it — and the same swell twenty metres further in is
+      // aerated white water from crown to apron. Before this channel existed
+      // both states were shaded identically and the entire beach was a single
+      // pale wash: waves visibly rolled through, and none of them ever broke.
+      const broke = displace > 0 ? surfField.breaking.toVar() : float(0);
       const surfFaceTint = displace > 0
-        ? smoothstep(0.12, 0.82, surfField.face).toVar()
+        ? smoothstep(0.12, 0.82, surfField.face).mul(broke.mul(0.8).oneMinus()).toVar()
         : float(0);
       // Height alone used to bleach the entire upper half of every swell. The
       // analytic lip/whitewater channels keep pale water confined to the thin
@@ -621,16 +636,53 @@ export class Water {
       // emerald wall beneath it for the rider to carve against.
       const crestRipple = sin(pxz.y.mul(0.47).sub(t.mul(2.1))).mul(0.5).add(0.5);
       const crestBreakup = smoothstep(
-        0.5,
-        0.9,
+        0.35,
+        0.85,
         oceanFoam.mul(0.5).add(crestRipple.mul(0.5))
       );
-      const surfCrest = displace > 0
-        ? smoothstep(0.66, 0.96, surfField.lip)
-            .mul(crestBreakup)
-            .mul(0.06)
-            .add(surfField.white.mul(0.035))
+      // The crown goes near-solid white and the apron behind it stays white
+      // for the fifty-odd metres the analytic `white` channel spans. max(),
+      // not add(): the two overlap, and summing them clipped the overlap into
+      // one flat plateau with no edge where the lip actually is.
+      const lipFoam = displace > 0
+        ? smoothstep(0.22, 0.8, surfField.lip)
+            .mul(crestBreakup.mul(0.24).add(0.76))
+            .mul(broke)
+            .toVar()
         : float(0);
+      const apronFoam = displace > 0
+        ? surfField.white
+            .mul(1.7)
+            .mul(crestBreakup.mul(0.38).add(0.62))
+            .mul(broke)
+            .toVar()
+        : float(0);
+      // The WALL itself. Lip and apron alone painted a white crown on a wave
+      // whose face stayed a tall glassy emerald pane — a wave shape wearing a
+      // foam hat, which is exactly what "the waves never actually crash"
+      // looks like. Once a crest has thrown, the whole standing face is
+      // aerated water: white from the crown down to the base, with the
+      // break-up noise only mottling it. The band runs from just offshore of
+      // the crest to well down its shoreward slope, so it meets the apron and
+      // the roller reads as one white mass marching in.
+      // Along-crest streaks running down the face. A fully-foamed wall painted
+      // one flat cream was the last thing standing between "wave" and "wall":
+      // real whitewater is raked into streaks by the water draining through
+      // it, so the band gets a second, finer mottle keyed to position along
+      // the crest AND down the slope, drifting with the wave.
+      const wallStreak = sin(pxz.y.mul(0.9).add(surfField.crestD.mul(0.55)).add(t.mul(0.6)))
+        .mul(0.5)
+        .add(0.5);
+      const wallFoam = displace > 0
+        ? surfField.mask
+            .mul(smoothstep(-16, -3, surfField.crestD))
+            .mul(smoothstep(22, 46, surfField.crestD).oneMinus())
+            .mul(crestBreakup.mul(0.3).add(0.7))
+            .mul(wallStreak.mul(0.24).add(0.76))
+            .mul(broke)
+            .toVar()
+        : float(0);
+      const surfCrest = max(max(lipFoam, apronFoam), wallFoam).toVar();
       const foamTotal = clamp(
         foam.mul(surfFaceTint.mul(0.85).oneMinus()).add(surfCrest),
         0,
@@ -765,22 +817,86 @@ export class Water {
         bedGain: BED_GAIN,
         foam: foamTotal,
         foamAlbedo: color(0xdfe8e6),
+        // Only the analytic breaking channel is aerated whitewater; the bay's
+        // spectral foam is spent bubbles and stays a flat raft. Build-time
+        // gated to the displaced sheet, so the far annulus emits none of it.
+        // The CROWN is weighted far above the apron behind it: the pitching
+        // lip is the thinnest, most aerated water on the wave and the only
+        // part the sun genuinely shines through, and giving both the same
+        // weight flattened the whole break into one even white plateau with
+        // no edge to read the wave's shape against. The broken wall sits
+        // between the two — a metre-thick white mass with a low sun behind
+        // it glows through its whole height, and that glow is most of what
+        // makes a sunset crash read as a crash.
+        // The crown FIRES while the lip is in the air: throwEnv runs 0→1
+        // through the two-second pitch, so the moment of the crash is the
+        // brightest thing on the water — which is what an eye reads as the
+        // detonation, even 200 m off.
+        foamGlow: displace > 0
+          ? lipFoam.mul(surfField.throwEnv.mul(1.8).add(2.1)).add(apronFoam.mul(0.55)).add(wallFoam.mul(1.1))
+          : undefined,
+        // Twilight handover: foamGlow above is multiplied by sunRadiance in
+        // the BRDF, which dies with the disc at 20.3 — these light the same
+        // aerated channels from the horizon band through deep sunset. Only
+        // read where foamGlow is set, so the far/horizon sheets pay nothing.
+        twilightRadiance: displace > 0 ? this.#uTwilightRadiance : undefined,
+        twilightDir: displace > 0 ? this.#uTwilightDir : undefined,
+        // The prism kite's fan reflected in the sea — near sheet only, and
+        // multiplied out whenever the strength uniform is 0 (see prismGlint).
+        prismOrigin: displace > 0 ? PRISM_GLINT.origin : undefined,
+        prismDir: displace > 0 ? PRISM_GLINT.dir : undefined,
+        prismAcross: displace > 0 ? PRISM_GLINT.across : undefined,
+        prismParams: displace > 0 ? PRISM_GLINT.params : undefined,
+        worldPos: displace > 0 ? positionWorld : undefined,
         // Crest subsurface (SoT trick): the cascades' 1−Jacobian mask IS the set
         // of folding, thin crests, so the glow rides exactly the pitching tops.
         // It lives inside the BRDF now so it gets the view dependence it needs —
         // light through a wave is only visible when the sun is beyond it.
-        sss: det.crest.mul(det.crest),
+        // Broken water gets NO thin-crest glow: the emerald backlit-pane
+        // effect belongs to glassy folding crests, and it was strong enough
+        // at sunset to repaint the whitewater mint wherever the foam mix was
+        // below 1 — which is why a "crashed" wall still read as a glass one.
+        sss: displace > 0
+          ? det.crest.mul(det.crest).mul(broke.mul(0.9).oneMinus())
+          : det.crest.mul(det.crest),
         skyRadiance: (dir, level) => this.#sky.envRadiance(dir, level)
       });
 
-      // While the surf overlay is live, standing swell must stay luminous water
-      // on its sun-shadowed side too — an unlit backside rendered near-black
-      // against the bright bay ("dark hole behind the wave"). Build-time gated
-      // to the displaced sheet; scaled by uSurfing.
+      // A standing swell lit THROUGH. Two jobs from one term:
+      //
+      // While the surf overlay is live it keeps the wave's sun-shadowed side
+      // luminous water rather than the near-black hole it rendered as against
+      // the bright bay. And whenever the sun is low and BEYOND the wave — the
+      // whole of golden hour on a west-facing beach — an unbroken face is a
+      // pane of backlit water and the brightest green thing on the sea, which
+      // is most of what a sunset set actually looks like.
+      //
+      // The gates are geometric, so it costs nothing when the geometry is
+      // wrong: it needs the camera looking sunward (viewDir·sun), a sun near
+      // the horizon, and a face that has not yet gone to foam — light does not
+      // pass through aerated white water. Build-time gated to the displaced
+      // sheet; the surfing term keeps that overlay at least as strong as it was.
+      // Foam, not `broke`, is what closes this term off. `broke` is a per-CREST
+      // number — it says the wave has gone, and dimming the glow by it also
+      // dims the trough and the shoulder either side, while still letting a
+      // green wash sit on top of the white water itself. Aerated foam is
+      // opaque: subtracting the actual foam coverage puts the glow exactly
+      // where light still passes and nowhere else, which is what stops the
+      // whitewater reading as pale mint instead of white.
+      const sunward = saturate(viewDir.dot(this.#uSunDir)).toVar();
+      const foamClear = foamTotal.oneMinus().toVar();
       const surfWallGlow = displace > 0
-        ? vec3(0.02, 0.3, 0.18)
+        ? vec3(0.045, 0.34, 0.2)
             .mul(smoothstep(1.2, 6.0, surfField.height))
-            .mul(this.#uSurfing)
+            // Squared: half-foam is already mostly aerated, and a linear
+            // falloff left a green wash lying over the whitewater.
+            .mul(foamClear.mul(foamClear))
+            .mul(
+              sunward
+                .mul(sunward)
+                .mul(saturate(float(1).sub(this.#uSunDir.y.mul(3.4))))
+                .add(this.#uSurfing)
+            )
             .mul(0.5 * LIGHT_SCALE)
         : vec3(0);
       // The mx_noise sun sparkle is GONE — one 3D gradient-noise evaluation
@@ -800,7 +916,9 @@ export class Water {
       const emeraldVein = surfFaceTint
         .mul(surfFaceTint)
         .mul(surfFaceTint)
-        .mul(smoothstep(0.35, 0.8, veinBreak));
+        .mul(smoothstep(0.35, 0.8, veinBreak))
+        // Same rule as the wall glow: no green marbling on top of white water.
+        .mul(foamClear.mul(foamClear));
       // Added into colorNode rather than emissiveNode: with `lights = false`
       // the outgoing light IS diffuseColor.rgb, so the two are identical here —
       // one fewer node, and the whole surface stays one expression.
@@ -1343,6 +1461,10 @@ export class Water {
     // the water's sun path follows the sky for free — no second grade to keep
     // in sync. #uSunDir already tracks SUN_DIR, which Sky mutates in place.
     this.#uSunRadiance.value.copy(this.#sky.sun.color).multiplyScalar(this.#sky.sun.intensity);
+    // Twilight foam light: TRUE solar state (SUN_DIR/sun.* are the moon after
+    // −2°), resolved once per frame into the two uniforms the BRDF reads.
+    twilightFoamRadiance(SUN_STATE.elevationDeg, this.#uTwilightRadiance.value);
+    twilightDirection(SUN_STATE.toSun, this.#uTwilightDir.value);
     // Reflected-coastline horizon profile (Tier C). Slow field, camera-centred,
     // re-swept only on real movement.
     if (this.#horizonAt.distanceToSquared({ x: camPos.x, y: camPos.z } as THREE.Vector2) >
