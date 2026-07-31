@@ -437,11 +437,12 @@ def main():
         )
 
     # Shallow ceremonial steps meet the surveyed road grade at the outer edge.
+    # Visuals stay discrete; walk collision is the tilted ramp from
+    # tools/patch-sutro-stair-ramps.mjs (capsule has no step-assist).
     approach_tops = (31.44, 31.70, 31.96, 32.22, 32.48)
     for index, top in enumerate(approach_tops):
         x = 55.05 + index
         add_box(visual, road, f"road_approach_step_{index}", x, 63.1, top, 1.04, 9.4, max(0.32, top - 30.0), terracotta)
-        add_collider(colliders, f"sutro_collider_120_road_approach_{index}", x, 63.1, top, 1.04, 9.4, 30.0)
 
     # Ground the promenade with plain fascia and piers. The former segmented
     # black-and-white arches floated below this slab and visually overwhelmed
@@ -663,7 +664,7 @@ def main():
                 x, beach_z + side * (beach_width * 0.5), wall_top,
                 tread, 0.42, max(0.7, wall_top - 0.35), plaster_shade,
             )
-        add_collider(colliders, f"sutro_collider_200_beach_step_{index:02d}", x, beach_z, top, tread + 0.04, beach_width, 0.35)
+        # No per-tread collider — walk collision is tools/patch-sutro-stair-ramps.mjs.
     add_landing(visual, colliders, beach, "beach_forecourt", -63.25, beach_z, beach_low_y, 2.5, 9.0, terracotta, 0.35)
     add_landing(visual, colliders, beach, "beach_deck_landing", -36.25, beach_z, 5.66, 4.7, 9.0, terracotta, 0.35)
     for side_index, side in enumerate((-1, 1)):

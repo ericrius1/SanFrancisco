@@ -132,6 +132,7 @@ colliders.push(...metadata.colliders.map((collider) => ({
   hy: collider.hy,
   hz: collider.hz,
   yaw: collider.yaw,
+  ...(collider.quat ? { quat: collider.quat } : {}),
   vol: 1_000_000_000,
   sfSite: site
 })));

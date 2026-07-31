@@ -65,6 +65,8 @@ export type BuildingCollider = {
   // longer names a unique physics body — "key:i:s" does
   s: number;
   vol: number;
+  /** Optional full orientation [x,y,z,w]; overrides yaw when set (stair ramps). */
+  quat?: readonly [number, number, number, number];
 };
 
 type Manifest = {

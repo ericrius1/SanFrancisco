@@ -22,8 +22,11 @@ GEOMETRY CONTRACT
     submission exactly as it already does for the hall's 2149 objects. At 1.95
     degrees per tread the chord error against a true arc is 2 mm, which is why
     a curved stair does not need bespoke wedge meshes here.
-  * Every tread's collider is a THIN slab whose top IS the walk surface
-    (the project's walkable-collider rule), yawed to the tread's own tangent.
+  * Walk collision is NOT discrete tread boxes. A box3d capsule jams on step
+    faces (no step-assist); citygen / ghost-ship stairs use tilted ramps for
+    the same reason. After this Blender rebuild, run
+    `node tools/patch-sutro-stair-ramps.mjs` so the published tile carries a
+    helical ramp (quat) instead of spiral_tread_* slabs. Visual treads stay.
   * `sutroSpiralWalkSurfaceY` in src/world/sutroBaths/layout.ts mirrors the same
     analytic helix. Keep the two in step: SPIRAL below is the shared source of
     truth and is printed on every run so the TS side can be checked against it.
@@ -289,11 +292,8 @@ def build_spiral(visual, colliders, parent, materials):
             cx, cz, top, tread_radial, going_outer, TREAD_THICK, terracotta,
             angle=math.radians(theta),
         )
-        add_collider(
-            colliders, f"sutro_collider_110_spiral_tread_{index:03d}",
-            cx, cz, top, tread_radial + 0.06, going_outer + 0.04, top - 0.62,
-            angle=math.radians(theta),
-        )
+        # No per-tread collider: discrete slabs jam the walk capsule. Walkable
+        # collision is the helical ramp from tools/patch-sutro-stair-ramps.mjs.
 
     # Continuous curved balustrades on both edges, as short chord segments that
     # share the box datablock. The flight hangs 25 m over the deck, so both

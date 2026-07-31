@@ -4,8 +4,8 @@
 // sub-box ordinal, see BuildingCollider), and ships a flat Float64Array back —
 // the main thread only unpacks numbers, never touches the JSON text.
 
-// 13 doubles per box: i,p,x,y,z,hx,hy,hz,yaw,cosYaw,sinYaw,s,vol
-export const COLLIDER_FIELDS = 13;
+import { COLLIDER_FIELDS } from "./colliderFields";
+export { COLLIDER_FIELDS };
 
 type ColliderRequest = {
   type?: "fetch";
@@ -42,6 +42,7 @@ type RawCollider = {
   hz: number;
   yaw: number;
   vol: number;
+  quat?: readonly [number, number, number, number];
 };
 
 const DEFAULT_TIMEOUT_MS = 7_500;
@@ -144,6 +145,18 @@ self.onmessage = async (e: MessageEvent<ColliderRequest | ColliderCancel>) => {
           buf[o + 10] = Math.sin(c.yaw);
           buf[o + 11] = s;
           buf[o + 12] = c.vol;
+          const quat = c.quat;
+          if (quat && Number.isFinite(quat[3]) && quat[3] !== 0) {
+            buf[o + 13] = quat[0];
+            buf[o + 14] = quat[1];
+            buf[o + 15] = quat[2];
+            buf[o + 16] = quat[3];
+          } else {
+            buf[o + 13] = 0;
+            buf[o + 14] = 0;
+            buf[o + 15] = 0;
+            buf[o + 16] = 0;
+          }
         }
         const reply: ColliderWorkerReply = { id, buf, ok: true, attempts: attempt };
         (self as unknown as Worker).postMessage(reply, [buf.buffer]);

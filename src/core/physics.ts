@@ -1048,13 +1048,18 @@ export class Physics {
       }
       const c = job.c;
       const yaw = c.yaw;
+      // Stair ramps (full quat) need grip closer to ghost-ship stairs; flat OBBs
+      // keep the historic 0.7 so wall/roof contacts don't change feel.
       const handle = this.world.createBox({
         type: BodyType.Static,
         position: [c.x, c.y, c.z],
         halfExtents: [c.hx, c.hy, c.hz],
-        friction: 0.7
+        friction: c.quat ? 1.25 : 0.7
       });
-      this.world.setBodyTransform(handle, [c.x, c.y, c.z], [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]);
+      const rot: [number, number, number, number] = c.quat
+        ? [c.quat[0], c.quat[1], c.quat[2], c.quat[3]]
+        : [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)];
+      this.world.setBodyTransform(handle, [c.x, c.y, c.z], rot);
       this.#buildingBodies.set(handle, { key: job.key, i: c.i, s: c.s });
       this.#bodyByBuilding.set(job.id, handle);
       attached++;
@@ -1537,7 +1542,7 @@ export class Physics {
       if (this.#solidByCollider.has(job.id) || !this.#bodyIsAlive(job.key, job.c.i)) continue;
       if (obbPlanarDistance(job.c, this.#queryFocusX, this.#queryFocusZ) > QUERY_SOLID_LOAD_RADIUS) continue;
       const c = job.c;
-      const h = this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw);
+      const h = this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw, c.quat);
       this.#solidByCollider.set(job.id, h);
       this.#solidOwner.set(h, { id: job.id, key: job.key, i: c.i, s: c.s, c });
       const bk = `${job.key}:${c.i}`;
