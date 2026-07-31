@@ -50,7 +50,8 @@ GLASS_TOP = 9.0              # curtain wall head
 BAND_TOP = 10.9              # travertine mezzanine band under the roof slab
 ROOF_TOP = 12.4              # top of the wide fascia roof deck
 CUPOLA_HALF = 20.6           # cupola base square half-width (pylon square)
-SHELL_Z0 = 15.0              # shell base — floats on the clerestory band
+SHELL_Z0 = 13.0              # shell corner springing, just above the roof ring
+SHELL_SEAM_Z0 = 24.0         # face-midpoint springing: the great pointed arches
 SHELL_TOP = 59.4             # 190 ft summit over the nave floor (floor at 1.5)
 ARM_TIP_Z = 58.7             # ridge arm tips sit just below the summit crest
 ARM_HALF = 8.2               # Greek-cross arm reach at the top
@@ -140,12 +141,43 @@ def coffer_pixels():
     rng = np.random.default_rng(19)
     size = 512
     img = np.ones((size, size, 4), dtype=np.float32)
-    img[..., :3] = np.array([0.545, 0.520, 0.372])
+    img[..., :3] = np.array([0.505, 0.486, 0.410])
     x = np.arange(size)[None, :]
     y = np.arange(size)[:, None]
     panel = ((x // 48) * 733 + (y // 48) * 419) % 11
     img[..., :3] *= (0.94 + panel[..., None] * 0.011)
     img[..., :3] += rng.normal(0.0, 0.010, (size, size, 1))
+    img[..., :3] = np.clip(img[..., :3], 0.0, 1.0)
+    img[..., 3] = 1.0
+    return img
+
+
+def brick_pixels():
+    """Warm mission-brick nave floor with narrow pale mortar and running-bond
+    offsets. The real interior is visually anchored by this dark red field."""
+    rng = np.random.default_rng(41)
+    width, height = 512, 512
+    img = np.ones((height, width, 4), dtype=np.float32)
+    mortar = np.array([0.34, 0.27, 0.22])
+    palette = np.array([
+        [0.34, 0.135, 0.075],
+        [0.41, 0.175, 0.105],
+        [0.47, 0.205, 0.125],
+        [0.30, 0.105, 0.060],
+    ])
+    img[..., :3] = mortar
+    brick_h, brick_w, joint = 24, 78, 3
+    for row, y0 in enumerate(range(0, height, brick_h)):
+        offset = -(brick_w // 2) if row % 2 else 0
+        for x0 in range(offset, width, brick_w):
+            xa, xb = max(0, x0 + joint), min(width, x0 + brick_w - joint)
+            ya, yb = y0 + joint, min(height, y0 + brick_h - joint)
+            if xa >= xb or ya >= yb:
+                continue
+            color = palette[(row * 7 + x0 // brick_w) % len(palette)].copy()
+            color *= 0.91 + 0.16 * rng.random()
+            img[ya:yb, xa:xb, :3] = color
+            img[ya:yb, xa:xb, :3] += rng.normal(0.0, 0.012, (yb - ya, xb - xa, 1))
     img[..., :3] = np.clip(img[..., :3], 0.0, 1.0)
     img[..., 3] = 1.0
     return img
@@ -267,7 +299,8 @@ def mesh_object(target, root, name, verts, faces, mat, uvs=None, smooth=False):
     return tag(obj)
 
 
-def add_box(target, root, name, center, half, mat, taper=1.0, yaw=0.0, uv_scale=None):
+def add_box(target, root, name, center, half, mat, taper=1.0, yaw=0.0,
+            uv_scale=None, uv_axis="vertical"):
     cx, cy, cz = center
     hx, hy, hz = half
     verts = []
@@ -281,10 +314,96 @@ def add_box(target, root, name, center, half, mat, taper=1.0, yaw=0.0, uv_scale=
     faces = [(3, 2, 1, 0), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]
     uvs = None
     if uv_scale:
-        def uvs(vertex_index, vs, scale=uv_scale):
+        def uvs(vertex_index, vs, scale=uv_scale, axis=uv_axis):
             x, y, z = vs[vertex_index]
+            if axis == "floor":
+                return (x / scale, y / scale)
             return ((x + y) / scale, z / scale)
     return mesh_object(target, root, name, verts, faces, mat, uvs=uvs)
+
+
+def add_prism(target, root, name, center, radius, half_height, sides, mat, rotation=0.0):
+    """Explicit capped prism used for the octagonal font and faceted sanctuary."""
+    cx, cy, cz = center
+    rx, ry = radius if isinstance(radius, tuple) else (radius, radius)
+    verts = []
+    for z in (cz - half_height, cz + half_height):
+        for i in range(sides):
+            angle = rotation + i * math.tau / sides
+            verts.append((cx + math.cos(angle) * rx, cy + math.sin(angle) * ry, z))
+    faces = [tuple(range(sides - 1, -1, -1)), tuple(range(sides, sides * 2))]
+    for i in range(sides):
+        n = (i + 1) % sides
+        faces.append((i, n, sides + n, sides + i))
+    return mesh_object(target, root, name, verts, faces, mat)
+
+
+def add_cylinder(target, root, name, center, radius, half_height, mat, sides=12):
+    return add_prism(target, root, name, center, radius, half_height, sides, mat)
+
+
+def add_vertical_disc(target, root, name, center, radius, half_depth, mat, sides=24):
+    """Thin round relief in the XZ plane, facing along local +Y."""
+    cx, cy, cz = center
+    verts = []
+    for y in (cy - half_depth, cy + half_depth):
+        for i in range(sides):
+            angle = i * math.tau / sides
+            verts.append((cx + math.cos(angle) * radius, y, cz + math.sin(angle) * radius))
+    faces = [tuple(range(sides - 1, -1, -1)), tuple(range(sides, sides * 2))]
+    for i in range(sides):
+        n = (i + 1) % sides
+        faces.append((i, n, sides + n, sides + i))
+    return mesh_object(target, root, name, verts, faces, mat)
+
+
+def add_textured_panel(target, root, name, center, half_width, half_height, mat, yaw=0.0):
+    """Two-sided vertical plane with stable 0..1 UVs for shrine/window artwork."""
+    cx, cy, cz = center
+    c, s = math.cos(yaw), math.sin(yaw)
+    right = Vector((c * half_width, s * half_width, 0.0))
+    depth = Vector((-s * 0.025, c * 0.025, 0.0))
+    middle = Vector((cx, cy, cz))
+    points = [
+        middle - right - Vector((0, 0, half_height)) + depth,
+        middle + right - Vector((0, 0, half_height)) + depth,
+        middle + right + Vector((0, 0, half_height)) + depth,
+        middle - right + Vector((0, 0, half_height)) + depth,
+    ]
+    verts = [tuple(point) for point in points]
+    uv_data = {0: (0.0, 0.0), 1: (1.0, 0.0), 2: (1.0, 1.0), 3: (0.0, 1.0)}
+    return mesh_object(target, root, name, verts, [(0, 1, 2, 3), (3, 2, 1, 0)], mat,
+                       uvs=lambda vi, _vs: uv_data[vi])
+
+
+def add_pew_seed(target, root, name, mat):
+    """One efficient dark-walnut pew mesh: seat, raked back, kneeler and ends."""
+    verts = []
+    faces = []
+
+    def part(center, half):
+        base = len(verts)
+        cx, cy, cz = center
+        hx, hy, hz = half
+        verts.extend([
+            (cx - hx, cy - hy, cz - hz), (cx + hx, cy - hy, cz - hz),
+            (cx + hx, cy + hy, cz - hz), (cx - hx, cy + hy, cz - hz),
+            (cx - hx, cy - hy, cz + hz), (cx + hx, cy - hy, cz + hz),
+            (cx + hx, cy + hy, cz + hz), (cx - hx, cy + hy, cz + hz),
+        ])
+        faces.extend([
+            (base + 3, base + 2, base + 1, base), (base + 4, base + 5, base + 6, base + 7),
+            (base, base + 1, base + 5, base + 4), (base + 1, base + 2, base + 6, base + 5),
+            (base + 2, base + 3, base + 7, base + 6), (base + 3, base, base + 4, base + 7),
+        ])
+
+    z = FLOOR_Z
+    part((0.0, 0.0, z + 0.48), (2.75, 0.30, 0.075))
+    part((0.0, 0.34, z + 0.88), (2.75, 0.075, 0.42))
+    part((0.0, -0.52, z + 0.23), (2.65, 0.10, 0.10))
+    for side in (-1, 1):
+        part((side * 2.82, 0.04, z + 0.55), (0.11, 0.44, 0.55))
+    return mesh_object(target, root, name, verts, faces, mat)
 
 
 def duplicate_linked(source, target, root, name, location, rotation_z=0.0):
@@ -325,7 +444,7 @@ def collider(target, name, local_location, half_extents, yaw=0.0):
 # The linear ruling between the two edges IS the hyperbolic-paraboloid saddle.
 # ----------------------------------------------------------------------------
 
-def seam_profile(t, half=CUPOLA_HALF, arm=ARM_HALF, z0=SHELL_Z0, z1=ARM_TIP_Z):
+def seam_profile(t, half=CUPOLA_HALF, arm=ARM_HALF, z0=SHELL_SEAM_Z0, z1=ARM_TIP_Z):
     x = half + (arm - half) * (t ** 1.55)
     z = z0 + (z1 - z0) * t
     return x, z
@@ -346,11 +465,12 @@ def rotate_quarter(x, y, quarter):
     return x, y
 
 
-def shell_point(quarter, mirror, u, t, half, arm, z0, z1_seam, z1_corner):
+def shell_point(quarter, mirror, u, t, half, arm, seam_z0, corner_z0,
+                z1_seam, z1_corner):
     """The saddle surface at continuous (u, t) — the coffer builder needs to
     evaluate between grid lines, so the ruling lives in one function."""
-    sx, sz = seam_profile(t, half, arm, z0, z1_seam)
-    cr, cz = corner_profile(t, half, z0, z1_corner)
+    sx, sz = seam_profile(t, half, arm, seam_z0, z1_seam)
+    cr, cz = corner_profile(t, half, corner_z0, z1_corner)
     x = sx + (cr - sx) * u
     y = GLASS_HW + (cr - GLASS_HW) * u
     z = sz + (cz - sz) * u
@@ -358,7 +478,7 @@ def shell_point(quarter, mirror, u, t, half, arm, z0, z1_seam, z1_corner):
     return (rx, ry, z)
 
 
-def shell_surface_verts(half, arm, z0, z1_seam, z1_corner):
+def shell_surface_verts(half, arm, seam_z0, corner_z0, z1_seam, z1_corner):
     """All 8 patch grids. Verts are shared within a patch only: the corner
     arrises between faces keep split normals so they read as crisp edges
     instead of smoothing into an onion dome."""
@@ -378,8 +498,8 @@ def shell_surface_verts(half, arm, z0, z1_seam, z1_corner):
             grid = []
             for it in range(SEG_T + 1):
                 t = it / SEG_T
-                sx, sz = seam_profile(t, half, arm, z0, z1_seam)
-                cr, cz = corner_profile(t, half, z0, z1_corner)
+                sx, sz = seam_profile(t, half, arm, seam_z0, z1_seam)
+                cr, cz = corner_profile(t, half, corner_z0, z1_corner)
                 row = []
                 for iu in range(SEG_U + 1):
                     u = iu / SEG_U
@@ -395,7 +515,9 @@ def shell_surface_verts(half, arm, z0, z1_seam, z1_corner):
 
 def build_shell(target, root, mat_out, mat_in):
     # outer surface
-    verts, grids = shell_surface_verts(CUPOLA_HALF, ARM_HALF, SHELL_Z0, ARM_TIP_Z, SHELL_TOP)
+    verts, grids = shell_surface_verts(
+        CUPOLA_HALF, ARM_HALF, SHELL_SEAM_Z0, SHELL_Z0, ARM_TIP_Z, SHELL_TOP
+    )
     faces = []
     for grid, mirror in grids:
         for it in range(SEG_T):
@@ -415,15 +537,19 @@ def build_shell(target, root, mat_out, mat_in):
     # while its inset copy sits on a deeper plane, so one quad per edge is both
     # the rib face and the sloped coffer wall — a truncated-pyramid recess in
     # 7 triangles, with no winding ambiguity. ~2700 coffers, against the real
-    # ceiling's 1,680 in 128 sizes.
-    COF_T, COF_U = 24, 7
+    # ceiling's 1,680 in 128 sizes. A 20x5 grid split diagonally across all
+    # eight shell sectors yields 1,600 recessed triangles: photographically
+    # much closer than the former overly fine 2,688-cell lattice.
+    COF_T, COF_U = 20, 5
     RIB = 0.19          # inset fraction toward the triangle centroid
     DEPTH = 0.34        # recess depth (toward the outer shell)
     rim_half = CUPOLA_HALF - SHELL_T
     pan_half = CUPOLA_HALF - SHELL_T + DEPTH
-    rim = dict(half=rim_half, arm=ARM_HALF - 0.45, z0=SHELL_Z0,
+    rim = dict(half=rim_half, arm=ARM_HALF - 0.45,
+               seam_z0=SHELL_SEAM_Z0, corner_z0=SHELL_Z0,
                z1_seam=ARM_TIP_Z - 0.5, z1_corner=SHELL_TOP - 0.5)
-    pan = dict(half=pan_half, arm=ARM_HALF - 0.45 + DEPTH, z0=SHELL_Z0,
+    pan = dict(half=pan_half, arm=ARM_HALF - 0.45 + DEPTH,
+               seam_z0=SHELL_SEAM_Z0, corner_z0=SHELL_Z0,
                z1_seam=ARM_TIP_Z - 0.5, z1_corner=SHELL_TOP - 0.5)
 
     cverts = []
@@ -473,8 +599,9 @@ def build_shell(target, root, mat_out, mat_in):
                 yi = GLASS_HW + (CUPOLA_HALF - SHELL_T - GLASS_HW) * u
                 xo, yo2 = rotate_quarter(CUPOLA_HALF, mirror * yo, quarter)
                 xi, yi2 = rotate_quarter(CUPOLA_HALF - SHELL_T, mirror * yi, quarter)
-                row_out.append(len(rim_verts)); rim_verts.append((xo, yo2, SHELL_Z0))
-                row_in.append(len(rim_verts)); rim_verts.append((xi, yi2, SHELL_Z0))
+                base_z = SHELL_SEAM_Z0 + (SHELL_Z0 - SHELL_SEAM_Z0) * u
+                row_out.append(len(rim_verts)); rim_verts.append((xo, yo2, base_z))
+                row_in.append(len(rim_verts)); rim_verts.append((xi, yi2, base_z))
             for iu in range(SEG_U):
                 quad = (row_out[iu], row_out[iu + 1], row_in[iu + 1], row_in[iu])
                 rim_faces.append(quad if mirror < 0 else quad[::-1])
@@ -532,22 +659,20 @@ def build_glass_cross(target, root, quarter_mats, apex_mat):
 
 
 def build_baldacchino(target, root, gold):
-    """Richard Lippold's baldacchino, stylized: tiers of slender gold rods in
-    alternating triangular rings — a shimmering veil over the altar — with the
-    gold crucifix suspended at its heart."""
-    # The reference photographs read as a shower of gold wires falling fifteen
-    # storeys: wide and dense at the top, tapering to a point above the altar.
-    # Triangular tiers, counter-rotated so the veil never looks like a fence.
-    rod = add_box(target, root, "baldacchino_rod_seed", (0, 0, 0), (0.05, 0.05, 0.85), gold)
-    TIERS = 19
-    Z_TOP, Z_BOT = 35.5, 13.4
-    R_TOP, R_BOT = 7.6, 1.9
+    """Richard Lippold's 14-tier aluminum-rod veil and suspended gold cross."""
+    rod_short = add_box(target, root, "baldacchino_rod_short_seed", (0, 0, 0),
+                        (0.025, 0.025, 0.95), gold)
+    rod_long = add_box(target, root, "baldacchino_rod_long_seed", (0, 0, 0),
+                       (0.025, 0.025, 1.55), gold)
+    TIERS = 14
+    Z_TOP, Z_BOT = 37.0, 10.8
+    R_TOP, R_BOT = 7.9, 1.7
     for tier in range(TIERS):
         f = tier / (TIERS - 1)
         z = Z_TOP + (Z_BOT - Z_TOP) * f
         radius = R_TOP + (R_BOT - R_TOP) * (f ** 0.78)
-        spin = tier * 0.41
-        rods_per_side = max(3, int(round(9 * (1.0 - f * 0.55))))
+        spin = tier * 0.37
+        rods_per_side = max(7, int(round(18 * (1.0 - f * 0.46))))
         corners = [
             (math.cos(spin + k * 2 * math.pi / 3) * radius,
              math.sin(spin + k * 2 * math.pi / 3) * radius)
@@ -556,23 +681,79 @@ def build_baldacchino(target, root, gold):
         for side in range(3):
             ax, ay = corners[side]
             bx, by = corners[(side + 1) % 3]
+            length = math.hypot(bx - ax, by - ay)
+            yaw = math.atan2(by - ay, bx - ax)
+            add_box(target, root, f"baldacchino_tier_edge_{tier}_{side}",
+                    ((ax + bx) / 2, (ay + by) / 2, z + 1.1),
+                    (length / 2, 0.025, 0.025), gold, yaw=yaw)
             for k in range(rods_per_side):
                 g = (k + 0.5) / rods_per_side
                 x = ax + (bx - ax) * g
                 y = ay + (by - ay) * g
-                jitter = 0.34 * math.sin(tier * 2.4 + side * 1.7 + k * 3.1)
-                duplicate_linked(rod, target, root, f"baldacchino_rod_{tier}_{side}_{k}",
+                jitter = 0.42 * math.sin(tier * 2.4 + side * 1.7 + k * 3.1)
+                source = rod_long if (tier + side + k) % 3 == 0 else rod_short
+                duplicate_linked(source, target, root, f"baldacchino_rod_{tier}_{side}_{k}",
                                  (x, y, z + jitter))
-    rod.hide_render = True
-    rod.hide_viewport = True
+    for rod in (rod_short, rod_long):
+        rod.hide_render = True
+        rod.hide_viewport = True
     # suspension wires up into the cupola, and the crucifix at the heart
     for k in range(3):
         angle = k * 2 * math.pi / 3
         add_box(target, root, f"baldacchino_wire_{k}",
-                (math.cos(angle) * R_TOP * 0.72, math.sin(angle) * R_TOP * 0.72, 43.0),
-                (0.035, 0.035, 8.0), gold)
-    add_box(target, root, "baldacchino_crucifix", (0, 0, 11.2), (0.08, 0.08, 1.55), gold)
-    add_box(target, root, "baldacchino_crucifix_arm", (0, 0, 11.85), (0.82, 0.08, 0.08), gold)
+                (math.cos(angle) * R_TOP * 0.72, math.sin(angle) * R_TOP * 0.72, 46.8),
+                (0.022, 0.022, 9.8), gold)
+    add_box(target, root, "baldacchino_crucifix", (0, 0, 7.35), (0.055, 0.055, 2.35), gold)
+    add_box(target, root, "baldacchino_crucifix_arm", (0, 0, 8.25), (1.25, 0.055, 0.055), gold)
+
+
+def build_arch_infill(target, root, glass_mat, mullion_mat):
+    """Four V-headed clerestory walls below the saddle springing. Their high
+    face midpoints produce the giant pointed openings seen in interior photos."""
+    radius = CUPOLA_HALF - 0.72
+    segments = 8
+    # Only the entrance and sanctuary faces need the V-headed infill. Leaving
+    # the east/west faces open exposes the coffered saddle and the cathedral's
+    # vast corner glazing instead of boxing the nave into a white pyramid.
+    for quarter in (1, 3):
+        verts = []
+        faces = []
+        for i in range(segments + 1):
+            along = -radius + 2 * radius * i / segments
+            u = abs(along) / radius
+            top_z = SHELL_SEAM_Z0 + (SHELL_Z0 - SHELL_SEAM_Z0) * u - 0.12
+            if quarter == 0:
+                x, y = radius, along
+            elif quarter == 1:
+                x, y = -along, radius
+            elif quarter == 2:
+                x, y = -radius, -along
+            else:
+                x, y = along, -radius
+            verts.extend([(x, y, ROOF_TOP), (x, y, top_z)])
+        for i in range(segments):
+            a = i * 2
+            faces.append((a, a + 2, a + 3, a + 1))
+        mesh_object(target, root, f"pointed_clerestory_glass_{quarter}", verts, faces, glass_mat)
+
+        for i in range(segments + 1):
+            along = -radius + 2 * radius * i / segments
+            u = abs(along) / radius
+            top_z = SHELL_SEAM_Z0 + (SHELL_Z0 - SHELL_SEAM_Z0) * u
+            if quarter == 0:
+                center = (radius - 0.03, along, (ROOF_TOP + top_z) / 2)
+                half = (0.09, 0.09, max(0.08, (top_z - ROOF_TOP) / 2))
+            elif quarter == 1:
+                center = (-along, radius - 0.03, (ROOF_TOP + top_z) / 2)
+                half = (0.09, 0.09, max(0.08, (top_z - ROOF_TOP) / 2))
+            elif quarter == 2:
+                center = (-radius + 0.03, -along, (ROOF_TOP + top_z) / 2)
+                half = (0.09, 0.09, max(0.08, (top_z - ROOF_TOP) / 2))
+            else:
+                center = (along, -radius + 0.03, (ROOF_TOP + top_z) / 2)
+                half = (0.09, 0.09, max(0.08, (top_z - ROOF_TOP) / 2))
+            add_box(target, root, f"pointed_clerestory_mullion_{quarter}_{i}",
+                    center, half, mullion_mat)
 
 
 def build(args):
@@ -605,6 +786,11 @@ def build(args):
     scene.render.resolution_x = 1600
     scene.render.resolution_y = 1000
     scene.render.resolution_percentage = 60
+    scene.view_settings.exposure = -0.35
+    try:
+        scene.view_settings.look = "AgX - Medium High Contrast"
+    except TypeError:
+        pass
 
     site = bpy.data.collections.new("SITE_st_marys")
     scene.collection.children.link(site)
@@ -628,6 +814,7 @@ def build(args):
     stage("baking textures")
     travertine_img = write_image(textures / "travertine.png", "st-marys travertine", travertine_pixels())
     coffer_img = write_image(textures / "coffer.png", "st-marys coffers", coffer_pixels())
+    brick_img = write_image(textures / "mission-brick.png", "st-marys mission brick", brick_pixels())
     stained_mats = {}
     for quarter, (element, stops) in GLASS_ELEMENTS.items():
         img = write_image(textures / f"stained-glass-{element}.png",
@@ -640,17 +827,28 @@ def build(args):
     coffer = textured_material("Nervi triangular coffers", coffer_img, 0.94)
     chapel_img = write_image(textures / "chapel-window.png", "st-marys chapel glass", chapel_window_pixels())
     chapel_glass = textured_material("Chapel faceted glass wall", chapel_img, 0.3, emission_strength=0.9)
+    guadalupe_img = bpy.data.images.load(str(textures / "guadalupe-mosaic.png"), check_existing=True)
+    guadalupe_img.name = "st-marys original Guadalupe mosaic"
+    guadalupe = textured_material("Our Lady of Guadalupe mosaic", guadalupe_img, 0.64)
     apex_glass = material("Prismatic apex glass", (*GLASS_APEX,), 0.2,
                           emission=(*GLASS_APEX,), emission_strength=0.8)
     white_slab = material("Precast fascia white", (0.84, 0.825, 0.79), 0.82)
+    interior_concrete = material("Board-formed interior concrete", (0.355, 0.345, 0.325), 0.88)
     step_stone = material("Plaza step stone", (0.74, 0.72, 0.68), 0.9)
-    brick = material("Mission red brick", (0.472, 0.253, 0.185), 0.93)
+    brick = textured_material("Mission red brick", brick_img, 0.88)
     dark_glass = material("Podium glazing", (0.045, 0.055, 0.075), 0.09, 0.55,
                           emission=(0.82, 0.62, 0.36), emission_strength=0.26)
     bronze = material("Bronze mullion", (0.16, 0.125, 0.09), 0.5, 0.42)
     gold = material("Golden cross", (0.85, 0.65, 0.22), 0.3, 1.0, (0.9, 0.62, 0.15), 0.12)
     marble = material("Sanctuary marble", (0.86, 0.85, 0.83), 0.55)
-    wood = material("Walnut pews", (0.21, 0.11, 0.06), 0.6)
+    dark_marble = material("Sanctuary dark marble", (0.055, 0.060, 0.055), 0.24)
+    rosa_marble = material("Rosa Antica marble", (0.48, 0.20, 0.19), 0.48)
+    wood = material("Walnut pews", (0.075, 0.026, 0.012), 0.42)
+    wood_panel = material("Vertical walnut acoustic slats", (0.145, 0.067, 0.028), 0.55)
+    organ_silver = material("Ruffatti tin pipes", (0.46, 0.49, 0.51), 0.24, 0.78)
+    font_water = material("Baptismal water", (0.18, 0.34, 0.34), 0.10, 0.05,
+                          emission=(0.15, 0.30, 0.32), emission_strength=0.16)
+    tapestry_red = material("Blessed Sacrament tapestry", (0.42, 0.035, 0.018), 0.72)
     stage("materials ready")
 
     # ------------------------------------------------------------------ plaza
@@ -755,10 +953,11 @@ def build(args):
     add_box(exterior, root, "clerestory_s", (0, -ROOF_HOLE, cl_z), (ROOF_HOLE, 0.3, cl_h), dark_glass)
     add_box(exterior, root, "clerestory_e", (ROOF_HOLE, 0, cl_z), (0.3, ROOF_HOLE - 0.3, cl_h), dark_glass)
     add_box(exterior, root, "clerestory_w", (-ROOF_HOLE, 0, cl_z), (0.3, ROOF_HOLE - 0.3, cl_h), dark_glass)
+    build_arch_infill(interior, root, interior_concrete, interior_concrete)
     for sx in (-1, 1):
         for sy in (-1, 1):
             add_box(exterior, root, f"pylon_{sx}_{sy}", (sx * 18.5, sy * 18.5, (15.6 + FLOOR_Z) / 2),
-                    (2.5, 2.5, (15.6 - FLOOR_Z) / 2), travertine, taper=0.8, uv_scale=12.4)
+                    (2.5, 2.5, (15.6 - FLOOR_Z) / 2), interior_concrete, taper=0.8)
     stage("clerestory ready")
 
     # ----------------------------------------------------------- cupola shell
@@ -771,17 +970,108 @@ def build(args):
     stage("cupola ready")
 
     # ---------------------------------------------------------------- interior
-    add_box(interior, root, "nave_floor", (0, 0, FLOOR_Z - 0.05), (GLASS_HALF, GLASS_HALF, 0.05), brick)
-    add_box(interior, root, "center_aisle", (0, 21.0, FLOOR_Z + 0.018), (1.7, 13.4, 0.018), marble)
-    add_box(furniture, root, "sanctuary_predella", (0, 0, FLOOR_Z + 0.25), (7.6, 7.6, 0.25), marble)
-    add_box(furniture, root, "sanctuary_step", (0, 0, FLOOR_Z + 0.125), (8.6, 8.6, 0.125), marble)
-    add_box(furniture, root, "high_altar", (0, 0, FLOOR_Z + 0.5 + 0.48), (1.55, 0.85, 0.48), marble)
-    add_box(furniture, root, "ambo", (-4.2, 3.4, FLOOR_Z + 0.5 + 0.62), (0.55, 0.5, 0.62), marble)
-    add_box(furniture, root, "cathedra_seat", (0, -6.0, FLOOR_Z + 0.5 + 0.3), (0.9, 0.75, 0.3), marble)
-    add_box(furniture, root, "cathedra_back", (0, -6.6, FLOOR_Z + 0.5 + 1.5), (0.9, 0.14, 1.5), marble)
-    lippold_gold = material("Lippold gold rods", (0.95, 0.78, 0.35), 0.32, 0.9,
-                            emission=(1.0, 0.82, 0.4), emission_strength=0.85)
+    add_box(interior, root, "nave_floor", (0, 0, FLOOR_Z - 0.05),
+            (GLASS_HALF, GLASS_HALF, 0.05), brick, uv_scale=5.2, uv_axis="floor")
+
+    # The real sanctuary is a dark polished-marble island with pale faceted
+    # steps and a monolithic Botticino altar, not a stack of square platforms.
+    add_prism(furniture, root, "sanctuary_dark_marble", (0, 0, FLOOR_Z + 0.09),
+              (9.2, 8.5), 0.09, 16, dark_marble, rotation=math.pi / 16)
+    add_prism(furniture, root, "sanctuary_step_lower", (0, 0, FLOOR_Z + 0.22),
+              (6.9, 6.35), 0.13, 12, marble, rotation=math.pi / 12)
+    add_prism(furniture, root, "sanctuary_predella", (0, 0, FLOOR_Z + 0.39),
+              (5.8, 5.2), 0.17, 12, marble, rotation=math.pi / 12)
+    add_box(furniture, root, "high_altar", (0, 0, FLOOR_Z + 1.05),
+            (1.70, 0.92, 0.53), marble, taper=0.78)
+    add_box(furniture, root, "altar_mensa", (0, 0, FLOOR_Z + 1.60),
+            (1.88, 1.04, 0.07), marble)
+    add_box(furniture, root, "ambo", (-4.4, 2.8, FLOOR_Z + 1.06),
+            (0.62, 0.52, 0.68), marble, taper=0.78, yaw=-0.18)
+    add_box(furniture, root, "cathedra_seat", (0, -5.8, FLOOR_Z + 0.78),
+            (0.95, 0.78, 0.30), marble)
+    add_box(furniture, root, "cathedra_back", (0, -6.45, FLOOR_Z + 1.85),
+            (0.95, 0.14, 1.35), marble)
+    lippold_gold = material("Lippold gold rods", (0.54, 0.38, 0.12), 0.28, 0.88,
+                            emission=(0.62, 0.40, 0.12), emission_strength=0.025)
     build_baldacchino(furniture, root, lippold_gold)
+
+    # Warm acoustic-slatted sanctuary wall, central jeweled window and cross.
+    backdrop_y = -35.15
+    add_box(interior, root, "sanctuary_walnut_backdrop",
+            (0, backdrop_y, FLOOR_Z + 4.15), (30.2, 0.18, 4.15), wood_panel)
+    for slat in range(-48, 49):
+        x = slat * 0.61
+        add_box(interior, root, f"sanctuary_acoustic_slat_{slat}",
+                (x, backdrop_y + 0.205, FLOOR_Z + 4.2), (0.045, 0.035, 4.05), bronze)
+    add_textured_panel(interior, root, "sanctuary_jewel_window",
+                       (0, backdrop_y + 0.26, FLOOR_Z + 5.0), 2.45, 3.65, stained_mats[3])
+    add_box(furniture, root, "sanctuary_cross_upright",
+            (0, backdrop_y + 0.31, FLOOR_Z + 5.15), (0.10, 0.07, 2.75), gold)
+    add_box(furniture, root, "sanctuary_cross_arm",
+            (0, backdrop_y + 0.31, FLOOR_Z + 6.25), (1.25, 0.07, 0.10), gold)
+
+    # Our Lady of Guadalupe mosaic and burning-bush bronze surround.
+    shrine_x = -14.1
+    add_textured_panel(furniture, root, "guadalupe_mosaic",
+                       (shrine_x, backdrop_y + 0.30, FLOOR_Z + 4.25), 1.40, 2.55, guadalupe)
+    for ray in range(18):
+        angle = math.tau * ray / 18
+        x = shrine_x + math.cos(angle) * 1.65
+        z = FLOOR_Z + 4.25 + math.sin(angle) * 2.85
+        add_box(furniture, root, f"guadalupe_burning_bush_{ray}",
+                (x, backdrop_y + 0.27, z), (0.06, 0.06, 0.28), bronze, yaw=-angle)
+    add_box(furniture, root, "guadalupe_shrine_plinth",
+            (shrine_x, backdrop_y + 0.20, FLOOR_Z + 1.28), (1.85, 0.62, 0.25), marble)
+
+    # Blessed Sacrament shrine: flame tapestry, golden host and stone tabernacle.
+    sacrament_x = 14.2
+    add_box(furniture, root, "sacrament_tapestry",
+            (sacrament_x, backdrop_y + 0.28, FLOOR_Z + 4.6), (1.55, 0.05, 2.65), tapestry_red)
+    add_vertical_disc(furniture, root, "sacrament_host",
+                      (sacrament_x, backdrop_y + 0.20, FLOOR_Z + 5.0), 0.72, 0.055, gold, sides=32)
+    add_box(furniture, root, "sacrament_tabernacle",
+            (sacrament_x, backdrop_y + 0.10, FLOOR_Z + 1.65), (0.92, 0.66, 0.82), marble, taper=0.88)
+    add_box(furniture, root, "sacrament_plinth",
+            (sacrament_x, backdrop_y + 0.02, FLOOR_Z + 0.62), (1.45, 0.82, 0.18), rosa_marble)
+
+    # Baptismal font immediately inside the north entrance: three-step,
+    # faceted Botticino basin with Rosa Antica rails and the Paschal candle.
+    font_y = 29.2
+    add_prism(furniture, root, "baptism_font_step_1",
+              (0, font_y, FLOOR_Z + 0.08), 2.75, 0.08, 8, brick, rotation=math.pi / 8)
+    add_prism(furniture, root, "baptism_font_step_2",
+              (0, font_y, FLOOR_Z + 0.19), 2.42, 0.11, 8, marble, rotation=math.pi / 8)
+    add_prism(furniture, root, "baptism_font_bowl",
+              (0, font_y, FLOOR_Z + 0.69), 2.02, 0.50, 8, marble, rotation=math.pi / 8)
+    add_prism(furniture, root, "baptism_font_water",
+              (0, font_y, FLOOR_Z + 1.205), 1.42, 0.025, 8, font_water, rotation=math.pi / 8)
+    add_prism(furniture, root, "baptism_font_center",
+              (0, font_y, FLOOR_Z + 1.29), 0.43, 0.08, 8, marble, rotation=math.pi / 8)
+    for side in (-1, 1):
+        add_box(furniture, root, f"baptism_rosa_rail_{side}",
+                (side * 4.4, font_y + 0.25, FLOOR_Z + 1.02),
+                (2.15, 0.28, 0.20), rosa_marble, yaw=side * 0.10)
+        for leg in (-1, 1):
+            add_box(furniture, root, f"baptism_rail_leg_{side}_{leg}",
+                    (side * 4.4 + leg * 1.55, font_y + 0.25, FLOOR_Z + 0.52),
+                    (0.08, 0.08, 0.52), bronze)
+    add_cylinder(furniture, root, "paschal_candle",
+                 (-4.7, font_y - 2.2, FLOOR_Z + 2.95), 0.13, 1.65, marble, sides=20)
+    add_prism(furniture, root, "paschal_candle_holder",
+              (-4.7, font_y - 2.2, FLOOR_Z + 0.72), 0.56, 0.72, 8, bronze, rotation=math.pi / 8)
+
+    # Fourteen small bronze Stations of the Cross around the side walls.
+    for side in (-1, 1):
+        wall_x = side * (GLASS_HALF - 0.32)
+        for station in range(7):
+            y = -24.0 + station * 8.0
+            add_box(furniture, root, f"station_plaque_{side}_{station}",
+                    (wall_x, y, FLOOR_Z + 3.6), (0.62, 0.10, 0.76), bronze, yaw=math.pi / 2)
+            relief_x = wall_x - side * 0.12
+            add_box(furniture, root, f"station_cross_upright_{side}_{station}",
+                    (relief_x, y, FLOOR_Z + 3.66), (0.07, 0.07, 0.42), gold)
+            add_box(furniture, root, f"station_cross_arm_{side}_{station}",
+                    (relief_x, y, FLOOR_Z + 3.80), (0.07, 0.30, 0.07), gold)
 
     # --- north-west chapel: the faceted glass wall and the bronze crucifix ---
     chapel_x, chapel_y = -26.5, 26.5
@@ -810,48 +1100,60 @@ def build(args):
                 (0.7, 0.28, 0.24), wood, yaw=math.pi / 4)
     collider(collider_collection, "sm_chapel_wall", (chapel_x, chapel_y, FLOOR_Z + 4.6),
              (7.0, 0.6, 4.6), yaw=math.pi / 4)
-    pew_seat = add_box(furniture, root, "pew_seed", (0, 0, FLOOR_Z + 0.42), (2.6, 0.24, 0.06), wood)
-    pew_back = add_box(furniture, root, "pew_seed_back", (0, 0.28, FLOOR_Z + 0.7), (2.6, 0.06, 0.34), wood)
+    pew_seed = add_pew_seed(furniture, root, "pew_seed", wood)
     # Pews fan around the central sanctuary in three wedges, every bench turned
     # to face the altar with processional aisles between the lanes.
-    # West, south and east wedges — the north quadrant stays clear for the
-    # processional aisle in from the Geary doors.
-    PEW_BANKS = (math.pi, -math.pi / 2, 0.0)
+    # West, north-entry and east wedges. The north bank splits around the
+    # processional aisle, as in the entrance photographs; the south side stays
+    # open for the organ, shrines and sanctuary backdrop.
+    PEW_BANKS = (math.pi, math.pi / 2, 0.0)
     for bank, base_angle in enumerate(PEW_BANKS):
         for row in range(9):
+            if base_angle == math.pi / 2 and row >= 7:
+                continue  # keep the baptismal font and entrance rail clear
             r = 12.8 + row * 2.05
+            if base_angle == math.pi / 2:
+                for segment, x in enumerate((-12.0, -6.3, 6.3, 12.0)):
+                    duplicate_linked(
+                        pew_seed, furniture, root,
+                        f"pew_{bank}_{row}_entry_{segment}", (x, r, 0), 0.0
+                    )
+                continue
             for lane in (-1, 1):
                 spread = math.atan2(lane * 4.6, r)
                 for wedge in range(3):
                     angle = base_angle + spread + (wedge - 1) * math.atan2(lane * 2.55, r)
                     px, py = math.cos(angle) * r, math.sin(angle) * r
                     yaw_bench = angle + math.pi / 2
-                    duplicate_linked(pew_seat, furniture, root,
+                    duplicate_linked(pew_seed, furniture, root,
                                      f"pew_{bank}_{row}_{lane}_{wedge}", (px, py, 0), yaw_bench)
-                    bx, by = math.cos(angle) * (r + 0.55), math.sin(angle) * (r + 0.55)
-                    duplicate_linked(pew_back, furniture, root,
-                                     f"pewback_{bank}_{row}_{lane}_{wedge}", (bx, by, 0), yaw_bench)
-    for seed in (pew_seat, pew_back):
-        seed.hide_render = True
-        seed.hide_viewport = True
+    pew_seed.hide_render = True
+    pew_seed.hide_viewport = True
 
     # Ruffatti organ: the flaring concrete pedestal that seems to rise out of
-    # the floor, crowned by a fan of pipes facing the sanctuary.
+    # the floor, crowned by three interleaved fans of silver pipes.
     organ_x, organ_y = 13.5, -20.5
     add_box(furniture, root, "organ_pedestal", (organ_x, organ_y, FLOOR_Z + 1.9), (1.7, 1.5, 1.9),
             white_slab, taper=1.55)
     add_box(furniture, root, "organ_deck", (organ_x, organ_y, FLOOR_Z + 3.9), (2.75, 2.45, 0.14), marble)
+    add_box(furniture, root, "organ_wind_chest", (organ_x, organ_y, FLOOR_Z + 4.25),
+            (2.15, 1.65, 0.28), wood_panel)
     aim = math.atan2(0 - organ_y, 0 - organ_x)
-    for rank in range(21):
-        f = rank / 20
-        spread = (f - 0.5) * math.radians(110)
-        angle = aim + math.pi + spread
-        r = 2.1 + 0.25 * abs(math.sin(spread * 3))
-        px = organ_x + math.cos(angle) * r
-        py = organ_y + math.sin(angle) * r
-        height = 2.1 + 5.6 * (1 - abs(f - 0.5) * 2) ** 1.25
-        add_box(furniture, root, f"organ_pipe_{rank}", (px, py, FLOOR_Z + 4.05 + height / 2),
-                (0.14, 0.14, height / 2), gold)
+    for fan in range(3):
+        pipe_count = 17
+        for rank in range(pipe_count):
+            f = rank / (pipe_count - 1)
+            spread = (f - 0.5) * math.radians(104 - fan * 10)
+            angle = aim + math.pi + spread
+            r = 1.65 + fan * 0.42 + 0.18 * abs(math.sin(spread * 3))
+            px = organ_x + math.cos(angle) * r
+            py = organ_y + math.sin(angle) * r
+            height = 1.7 + fan * 0.35 + 5.2 * (1 - abs(f - 0.5) * 2) ** 1.25
+            add_cylinder(
+                furniture, root, f"organ_pipe_{fan}_{rank}",
+                (px, py, FLOOR_Z + 4.46 + height / 2),
+                0.095 + fan * 0.012, height / 2, organ_silver, sides=10
+            )
     stage("interior ready")
 
     # ---------------------------------------------------------------- colliders
@@ -909,9 +1211,15 @@ def build(args):
     collider(collider_collection, "sm_sanctuary_step", (0, 0, FLOOR_Z + 0.14), (8.6, 8.6, 0.14))
     collider(collider_collection, "sm_predella", (0, 0, FLOOR_Z + 0.25), (7.6, 7.6, 0.27))
     collider(collider_collection, "sm_altar", (0, 0, FLOOR_Z + 0.95), (1.6, 0.9, 0.5))
-    # One radial box per pew column, matching the fan — the wedges between them
-    # and the whole north quadrant stay walkable.
+    collider(collider_collection, "sm_baptism_font", (0, font_y, FLOOR_Z + 0.62), (2.45, 2.45, 0.72))
+    # Broad group colliders preserve the center and cross aisles between banks.
     for bank, base_angle in enumerate(PEW_BANKS):
+        if base_angle == math.pi / 2:
+            for side in (-1, 1):
+                collider(collider_collection, f"sm_pews_{bank}_entry_{side}",
+                         (side * 9.15, 19.0, FLOOR_Z + 0.55),
+                         (5.75, 7.35, 0.55))
+            continue
         for lane in (-1, 1):
             for wedge in range(3):
                 r_mid = 21.0
@@ -929,18 +1237,31 @@ def build(args):
     bpy.ops.object.light_add(type="SUN", location=(CENTER_X + 150, -CENTER_Z - 190, FLOOR + 210))
     sun = bpy.context.object
     sun.name = "Blender preview sun"
-    sun.data.energy = 2.4
+    sun.data.energy = 1.35
     sun.rotation_euler = (math.radians(35), math.radians(-12), math.radians(140))
     move_to(sun, preview)
 
     bpy.ops.object.light_add(type="AREA", location=root.matrix_world @ Vector((0.0, 0.0, 30.0)))
     nave_glow = bpy.context.object
     nave_glow.name = "Blender preview nave glow"
-    nave_glow.data.energy = 11000
+    nave_glow.data.energy = 2800
     nave_glow.data.shape = "DISK"
     nave_glow.data.size = 24
     nave_glow.data.color = (1.0, 0.74, 0.5)
+    nave_glow.data.use_shadow = False
     move_to(nave_glow, preview)
+
+    bpy.ops.object.light_add(type="AREA", location=root.matrix_world @ Vector((0.0, 25.0, 8.0)))
+    sanctuary_fill = bpy.context.object
+    sanctuary_fill.name = "Blender preview sanctuary fill"
+    sanctuary_fill.data.energy = 2450
+    sanctuary_fill.data.shape = "DISK"
+    sanctuary_fill.data.size = 11
+    sanctuary_fill.data.color = (1.0, 0.82, 0.62)
+    sanctuary_fill.data.use_shadow = False
+    sanctuary_target = root.matrix_world @ Vector((0.0, -26.0, 5.2))
+    sanctuary_fill.rotation_euler = (sanctuary_target - sanctuary_fill.location).to_track_quat("-Z", "Y").to_euler()
+    move_to(sanctuary_fill, preview)
 
     # Interior preview rig: the apex shaft plus one tinted fill per element
     # band, so opening the .blend shows the nave the way the game's god-ray
@@ -948,10 +1269,11 @@ def build(args):
     bpy.ops.object.light_add(type="AREA", location=root.matrix_world @ Vector((0.0, 0.0, 50.0)))
     apex_shaft = bpy.context.object
     apex_shaft.name = "Blender preview apex shaft"
-    apex_shaft.data.energy = 22000
+    apex_shaft.data.energy = 4200
     apex_shaft.data.shape = "DISK"
     apex_shaft.data.size = 7
     apex_shaft.data.color = (1.0, 0.88, 0.62)
+    apex_shaft.data.use_shadow = False
     move_to(apex_shaft, preview)
 
     element_tints = {0: (1.0, 0.82, 0.35), 1: (0.42, 0.95, 0.5), 2: (1.0, 0.42, 0.3), 3: (0.4, 0.62, 1.0)}
@@ -960,10 +1282,11 @@ def build(args):
         bpy.ops.object.light_add(type="AREA", location=root.matrix_world @ Vector((lx, ly, 32.0)))
         fill = bpy.context.object
         fill.name = f"Blender preview {GLASS_ELEMENTS[quarter][0]} fill"
-        fill.data.energy = 6000
+        fill.data.energy = 1100
         fill.data.shape = "DISK"
         fill.data.size = 9
         fill.data.color = tint
+        fill.data.use_shadow = False
         target_point = root.matrix_world @ Vector((0.0, 0.0, 4.0))
         fill.rotation_euler = (target_point - fill.location).to_track_quat("-Z", "Y").to_euler()
         move_to(fill, preview)
@@ -972,10 +1295,11 @@ def build(args):
         bpy.ops.object.light_add(type="AREA", location=root.matrix_world @ Vector((wx, wy, 10.0)))
         wash = bpy.context.object
         wash.name = f"Blender preview {GLASS_ELEMENTS[quarter][0]} vault wash"
-        wash.data.energy = 9000
+        wash.data.energy = 2650
         wash.data.shape = "DISK"
         wash.data.size = 12
         wash.data.color = (1.0, 0.9, 0.74)
+        wash.data.use_shadow = False
         wash_target = root.matrix_world @ Vector((-wx * 2.2, -wy * 2.2, 42.0))
         wash.rotation_euler = (wash_target - wash.location).to_track_quat("-Z", "Y").to_euler()
         move_to(wash, preview)
@@ -989,13 +1313,14 @@ def build(args):
     camera.data.lens = 38
     scene.camera = camera
 
-    bpy.ops.object.camera_add(location=root.matrix_world @ Vector((0.0, 26.0, 3.4)))
+    bpy.ops.object.camera_add(location=root.matrix_world @ Vector((0.0, 31.0, 3.4)))
     nave_camera = bpy.context.object
     nave_camera.name = "St Marys nave camera"
-    interior_target = root.matrix_world @ Vector((0.0, 0.0, 24.0))
+    interior_target = root.matrix_world @ Vector((0.0, -1.5, 8.2))
     nave_camera.rotation_euler = (interior_target - nave_camera.location).to_track_quat("-Z", "Y").to_euler()
-    nave_camera.data.lens = 21
+    nave_camera.data.lens = 23
     move_to(nave_camera, preview)
+    scene.camera = nave_camera
     if scene.world is None:
         scene.world = bpy.data.worlds.new("St Marys preview world")
     scene.world.color = (0.24, 0.25, 0.30)
