@@ -51,7 +51,7 @@ export function createBuenaVistaTrees(
     visibleDistance: 1050,
     nearRadius: 96,
     nearExitRadius: 110,
-    nearMax: 36
+    nearMax: 56
   });
   const group = new THREE.Group();
   group.name = "buena_vista_foliage";

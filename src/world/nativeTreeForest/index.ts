@@ -142,7 +142,12 @@ const REBIN_MS = 250;
 // opaque landscape cards for the whole session.
 const NEAR_DETAIL_RETRY_MS = 15_000;
 const REBIN_MOVE_SQ = 4;
-const RESIDENCY_MOVE = 24;
+// Drone / bird flyovers cross chunk rings quickly; paging every 24 m stacked
+// materialize + near-detail work into hitch spikes. A wider step still keeps
+// the prefetch ring ahead of the camera while cutting refresh frequency.
+const RESIDENCY_MOVE = 40;
+/** At most one new close-detail KTX2 pack starts per rebin (per forest). */
+const MAX_NEAR_LOAD_STARTS_PER_REBIN = 1;
 const HORIZON_HYSTERESIS = 14;
 const VISIBILITY_HYSTERESIS = 18;
 const PREFETCH_CHUNK_RINGS = 0.75;
@@ -253,8 +258,15 @@ type NearPool = {
 type NearPreparation = {
   batch: TreeBatch;
   entries: ActiveNear[];
-  /** True only after the near meshes are visible and their far fallbacks are hidden. */
+  /** True once this batch's far arena slots have been zeroed for the current entries. */
   farHidden: boolean;
+  /**
+   * Near meshes wait for one GPU far-cull dispatch after far slots are zeroed.
+   * Publishing near in the same turn as the scale write races the storage upload
+   * and draws opaque landscape cards on top of the close LOD for a frame — or
+   * longer when a sticky farHidden skip left the new arena slot at full scale.
+   */
+  pendingReveal: boolean;
   wantedVisible: boolean;
   prepared: boolean;
   prepareEpoch: number;
@@ -587,7 +599,7 @@ export function createNativeTreeForest(
   );
   const nearRadius = options.nearRadius ?? 72;
   const nearExit = Math.max(nearRadius, options.nearExitRadius ?? 82);
-  const nearMax = Math.max(0, Math.floor(options.nearMax ?? 34));
+  const nearMax = Math.max(0, Math.floor(options.nearMax ?? 48));
   const conventionalShadowCasting = options.conventionalShadowCasting === true;
   const canopyRadius = nearRadius * 0.62;
   const prefetchDistance = visibleDistance + chunkSize * PREFETCH_CHUNK_RINGS;
@@ -750,7 +762,8 @@ export function createNativeTreeForest(
     if (GPU_FAR_TIERS) {
       // Near-pool takeover / restore: dark or re-show the far arena instance the
       // same frame (a one-float scale write + tiny uploadRange). No double-draw —
-      // the cull rejects any slot whose scale is zero.
+      // the cull rejects any slot whose scale is zero. Released handles are
+      // cleared on chunk dispose so a stale unhide cannot revive a freed slot.
       if (!farTiers || !entry?.farHandle || slot.index < 0) return;
       farTiers.setInstanceHidden(entry.farHandle, slot.index, slot.scale, hidden);
       return;
@@ -767,6 +780,33 @@ export function createNativeTreeForest(
     batch.root.needsUpdate = true;
   }
 
+  function applyNearMeshVisibility(state: NearPreparation): void {
+    const show =
+      state.wantedVisible &&
+      (!prepareUnit || state.prepared) &&
+      !state.pendingReveal;
+    state.batch.branch.visible = show;
+    state.batch.foliage.visible = show;
+  }
+
+  function flushPendingNearReveals(): void {
+    for (const state of nearPreparations.values()) {
+      if (!state.pendingReveal) continue;
+      state.pendingReveal = false;
+      applyNearMeshVisibility(state);
+    }
+  }
+
+  function claimNearOwnership(state: NearPreparation): void {
+    // Hide far first, then wait for a cull pass before the close meshes draw.
+    // Always re-assert hides: chunk rematerialize admits fresh arena scales while
+    // a sticky farHidden flag would otherwise skip the write forever.
+    for (const entry of state.entries) setFarHidden(entry.chunk, entry.slot, true);
+    state.farHidden = true;
+    if (!state.batch.branch.visible) state.pendingReveal = true;
+    applyNearMeshVisibility(state);
+  }
+
   function invalidateNearPreparation(batch: TreeBatch): void {
     const state = nearPreparations.get(batch);
     if (!state) return;
@@ -777,6 +817,7 @@ export function createNativeTreeForest(
       for (const entry of state.entries) setFarHidden(entry.chunk, entry.slot, false);
       state.farHidden = false;
     }
+    state.pendingReveal = false;
     state.prepared = false;
     state.prepareEpoch++;
     state.batch.branch.visible = false;
@@ -849,32 +890,38 @@ export function createNativeTreeForest(
     const nextKeys = scratchNextKeys;
     nextKeys.clear();
     for (const entry of entries) nextKeys.add(entry.slot.key);
+    let membershipChanged = previousKeys.size !== nextKeys.size;
+    if (!membershipChanged) {
+      for (const key of nextKeys) {
+        if (!previousKeys.has(key)) {
+          membershipChanged = true;
+          break;
+        }
+      }
+    }
     if (state.farHidden) {
       for (const entry of state.entries) {
         if (!nextKeys.has(entry.slot.key)) setFarHidden(entry.chunk, entry.slot, false);
       }
     }
     state.entries = entries.slice();
-    if (state.wantedVisible !== wantedVisible) {
+    if (state.wantedVisible !== wantedVisible || (membershipChanged && !!state.preparing)) {
       state.wantedVisible = wantedVisible;
       state.prepareEpoch++;
+    } else {
+      state.wantedVisible = wantedVisible;
     }
     const reveal = wantedVisible && (!prepareUnit || state.prepared);
-    batch.branch.visible = reveal;
-    batch.foliage.visible = reveal;
     if (reveal) {
-      // Reveal near first, then retire only the corresponding landscape slots.
-      // Existing entries are already hidden; only newly selected entries need a
-      // storage-buffer write during a normal rebin.
-      for (const entry of state.entries) {
-        if (!state.farHidden || !previousKeys.has(entry.slot.key)) {
-          setFarHidden(entry.chunk, entry.slot, true);
-        }
-      }
-      state.farHidden = true;
+      claimNearOwnership(state);
     } else if (state.farHidden) {
       for (const entry of state.entries) setFarHidden(entry.chunk, entry.slot, false);
       state.farHidden = false;
+      state.pendingReveal = false;
+      applyNearMeshVisibility(state);
+    } else {
+      state.pendingReveal = false;
+      applyNearMeshVisibility(state);
     }
     if (prepareUnit && wantedVisible && !state.prepared) {
       void queueNearPreparation(state).catch((error) => {
@@ -919,9 +966,19 @@ export function createNativeTreeForest(
     wantedNearDesigns.clear();
     for (const candidate of candidates) wantedNearDesigns.add(candidate.slot.design);
 
+    // Closest missing packs first; cap starts so a flyover does not decode every
+    // in-range species' KTX2 set on the same hitchy frame.
+    let nearLoadStarts = 0;
+    for (const candidate of candidates) {
+      const design = candidate.slot.design;
+      if (nearMaterials[design] || nearLoads[design] || nearLoadFailures.has(design)) continue;
+      if (nearLoadStarts >= MAX_NEAR_LOAD_STARTS_PER_REBIN) break;
+      nearLoadStarts++;
+      void ensureNearMaterials(design);
+    }
+
     const next = new Map<string, ActiveNear>();
     for (const candidate of candidates) {
-      void ensureNearMaterials(candidate.slot.design);
       // Loading or compiling close detail must never remove the already-good
       // landscape tree. It enters the near pool only once its full material pack
       // exists; setNearBatchEntries keeps that fallback until GPU preparation.
@@ -1074,7 +1131,12 @@ export function createNativeTreeForest(
       if (allNearSlots[index].chunk === chunk) allNearSlots.splice(index, 1);
     }
     for (const entry of chunk.byDesign.values()) {
-      if (entry.farHandle) farTiers?.releaseChunk(entry.farHandle);
+      if (entry.farHandle) {
+        farTiers?.releaseChunk(entry.farHandle);
+        // Drop the token so a later near-pool unhide cannot write into a freed
+        // (and possibly reallocated) arena range.
+        entry.farHandle = undefined;
+      }
       if (entry.batch) disposeBatch(entry.batch);
       if (entry.transitionBatch) disposeBatch(entry.transitionBatch);
     }
@@ -1299,12 +1361,9 @@ export function createNativeTreeForest(
     await prepareObject(state.batch.foliage);
     if (!nearPreparationStillCurrent(state, epoch)) return;
     state.prepared = true;
-    // The fallback remains live throughout both async compiles. Publish the near
-    // pair first, then hide its exact far slots in the same main-thread turn.
-    state.batch.branch.visible = true;
-    state.batch.foliage.visible = true;
-    for (const entry of state.entries) setFarHidden(entry.chunk, entry.slot, true);
-    state.farHidden = true;
+    // The fallback remains live throughout both async compiles. Zero far slots
+    // first, then reveal close meshes only after the next far-cull dispatch.
+    claimNearOwnership(state);
   }
 
   function queueNearPreparation(state: NearPreparation): Promise<void> {
@@ -1897,15 +1956,21 @@ export function createNativeTreeForest(
         farTiers = createNativeTreeGpuFarTiers(farDesigns, {
           name: options.name,
           horizonDistance,
-          visibleDistance
+          visibleDistance,
+          // Near-pool misses inside this radius keep a far draw; prefer the
+          // smaller horizon cards over landscape's oversized opaque triangles.
+          nearCardSuppressDistance: nearRadius * 0.92
         });
         group.add(farTiers.group);
         // Self-register the per-frame cull; frameBody drives it once per frame for
         // every forest (see renderNativeTreeForestFarCulls). The distance band
         // follows the forest's tethered focus, the frustum the render camera.
+        // Pending close-LOD reveals flush after the cull so scale-zero hides are
+        // consumed before canopy/grove meshes become visible.
         unregisterFarCull = registerForestFarCull((renderer, camera) => {
           if (disposed || !farTiers) return;
           farTiers.dispatch(renderer, camera, lastFocus.x, lastFocus.z);
+          flushPendingNearReveals();
         });
       }
     }
@@ -1950,6 +2015,7 @@ export function createNativeTreeForest(
           batch: canopy,
           entries: [],
           farHidden: false,
+          pendingReveal: false,
           wantedVisible: false,
           prepared: false,
           prepareEpoch: 0,
@@ -1959,6 +2025,7 @@ export function createNativeTreeForest(
           batch: grove,
           entries: [],
           farHidden: false,
+          pendingReveal: false,
           wantedVisible: false,
           prepared: false,
           prepareEpoch: 0,
@@ -2045,6 +2112,8 @@ export function createNativeTreeForest(
         requestHorizonPrefetchPreparation();
       }
       rebin(focus.x, focus.z, force);
+      // Legacy CPU far path has no per-frame cull registry; reveal immediately.
+      if (!GPU_FAR_TIERS) flushPendingNearReveals();
     },
     async prepareAt(focus, prepare, signal) {
       if (

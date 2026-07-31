@@ -15,6 +15,7 @@
 // nothing heavy loads until the player crosses a foliage ring.
 
 import * as THREE from "three/webgpu";
+import { yieldToFrame } from "../../core/cooperativeWork";
 
 export type SiteFoliagePatch = {
   group: THREE.Group;
@@ -190,9 +191,26 @@ export class SiteFoliageStreamer {
         // Contract order matters: an update() names the focus whose chunks the
         // patch compiles — ready never resolves for a patch that was never
         // focused (see the reference site implementations).
+        // Yield between stages so a drone flyover that crosses a foliage ring
+        // does not stack plant + ready + pipeline warm into one hitch.
         patch.update(this.#focus);
+        await yieldToFrame();
+        if (this.#stale(entry, generation)) {
+          patch.dispose();
+          return;
+        }
         await patch.ready;
+        await yieldToFrame();
+        if (this.#stale(entry, generation)) {
+          patch.dispose();
+          return;
+        }
         patch.update(this.#focus);
+        await yieldToFrame();
+        if (this.#stale(entry, generation)) {
+          patch.dispose();
+          return;
+        }
         await this.#options.prepare(`site-foliage:${registration.id}`, patch.group, registration);
         // Detached root preparation temporarily exposes every descendant and
         // restores its captured visibility afterward. Close tree materials can
@@ -200,6 +218,11 @@ export class SiteFoliageStreamer {
         // stale by the time it is restored. Force one authoritative LOD publish
         // before attachment; otherwise populated close batches stay hidden and
         // their opaque landscape-card fallbacks remain overhead indefinitely.
+        await yieldToFrame();
+        if (this.#stale(entry, generation)) {
+          patch.dispose();
+          return;
+        }
         patch.update(this.#focus, true);
         const distance = Math.hypot(
           this.#focus.x - registration.x,

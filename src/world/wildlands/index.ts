@@ -201,7 +201,9 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     // whole-tree batches; entry/exit hysteresis prevents boundary flicker.
     nearRadius: 96,
     nearExitRadius: 110,
-    nearMax: 46
+    // Dense wild stands put dozens of trees in a single view; undersized pools
+    // leave opaque landscape cards in personal space next to close LODs.
+    nearMax: 72
   });
   // Player-following field, placed by the same GPU ground-cover runtime as the
   // grass and paging its own baked ecology through the same frame-budget lane.

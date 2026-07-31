@@ -318,7 +318,7 @@ export function createSutroBathsVegetation(): SutroBathsVegetation {
     visibleDistance: 540,
     nearRadius: 82,
     nearExitRadius: 104,
-    nearMax: 16
+    nearMax: 28
   });
   const shrubs = createAuthoredShrubPatch(SHRUB_PLACEMENTS, {
     name: "sutro_baths_gallery_shrubs",

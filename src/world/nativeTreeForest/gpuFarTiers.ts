@@ -115,6 +115,13 @@ export type NativeTreeFarTiersOptions = Readonly<{
   horizonDistance: number;
   /** Beyond this (dithered) every instance extinguishes. */
   visibleDistance: number;
+  /**
+   * Inside this radius, far instances that the near pool did not take over use
+   * the smaller horizon silhouette instead of landscape's oversized opaque
+   * cards — otherwise a saturated nearMax leaves giant triangles in personal
+   * space next to detailed trees.
+   */
+  nearCardSuppressDistance?: number;
 }>;
 
 export type NativeTreeGpuFarTiers = Readonly<{
@@ -251,6 +258,7 @@ export function createNativeTreeGpuFarTiers(
     ];
     const rootRead = tier.arena.read(ROOT);
     const horizonDistance = options.horizonDistance;
+    const nearCardSuppress = options.nearCardSuppressDistance ?? 0;
     const cull = buildCullPass({
       name: `${options.name}_${design.design} far cull`,
       dispatch: tier.capacity,
@@ -279,7 +287,12 @@ export function createNativeTreeGpuFarTiers(
               hashUnit(gx, gz, 0x85eb).sub(0.5).mul(FAR_CUTOFF_DITHER)
             );
             If(dist.lessThan(farAt), () => {
-              If(dist.lessThan(horizonAt), () => {
+              // Near-pool overflow in personal space: horizon cards are smaller
+              // than landscape's opaque triangles (see nearCardSuppressDistance).
+              If(dist.lessThan(float(nearCardSuppress)), () => {
+                hBranch.append(idx);
+                hFoliage.append(idx);
+              }).ElseIf(dist.lessThan(horizonAt), () => {
                 lBranch.append(idx);
                 lFoliage.append(idx);
               }).Else(() => {

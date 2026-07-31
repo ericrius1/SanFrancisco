@@ -63,9 +63,9 @@ const LODS: readonly TreeLodRecipe[] = [
     branchRetention: 1,
     foliageRetention: 1,
     maxBranchLevel: 3,
-    // The close pool is capped at 46 trees. Spend that bounded budget on a
-    // genuinely round trunk/primary-branch silhouette instead of exposing the
-    // former seven-sided prism a few metres from the camera.
+    // The close pool is capped per forest (wildlands ~72). Spend that bounded
+    // budget on a genuinely round trunk/primary-branch silhouette instead of
+    // exposing the former seven-sided prism a few metres from the camera.
     radialSegments: 10,
     axialStride: 1,
     foliageScale: 1
