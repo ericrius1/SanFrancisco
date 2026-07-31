@@ -882,37 +882,9 @@ export function createSutroGrotto(options: { physics?: Physics } = {}): SutroGro
     attach(capGeometry, capMaterial, "sutro_grotto_bore_cap");
   }
 
-  // Spray where it lands: a low flare standing on the water, and the mist that
-  // hangs over it.
-  {
-    // Low and tight. At three metres tall and six across this stood at the eye
-    // height of anyone walking the basin's edge, and an additive wall seen
-    // edge-on from inside reads as a sheet of haze hanging in the room.
-    const geometry = new THREE.CylinderGeometry(
-      SUTRO_GROTTO.apertureRadius * 1.7,
-      SUTRO_GROTTO.apertureRadius * 1.02,
-      1.7,
-      40,
-      1,
-      true
-    );
-    geometry.translate(CX, fallBottom + 0.75, CZ);
-    const material = new THREE.MeshBasicNodeMaterial({ name: "sutro_grotto_spray" });
-    material.transparent = true;
-    material.depthWrite = false;
-    material.side = THREE.DoubleSide;
-    material.blending = THREE.AdditiveBlending;
-    material.colorNode = Fn(() => {
-      const coord = uv() as N;
-      const billow = sin(coord.x.mul(19).add(uTime.mul(1.3)))
-        .mul(sin(coord.y.mul(7).sub(uTime.mul(0.9))))
-        .mul(0.5)
-        .add(0.5);
-      const rise = smoothstep(float(1), float(0.05), coord.y).mul(smoothstep(float(0), float(0.12), coord.y));
-      return vec4(vec3(0.72, 0.94, 1), rise.mul(billow.mul(0.7).add(0.3)).mul(0.13));
-    })() as N;
-    attach(geometry, material, "sutro_grotto_spray");
-  }
+  // No spray / mist shell. Earlier drafts hung an additive cylinder over the
+  // basin that read as a translucent haze sheet from inside the room; the fall
+  // curtains and the basin water already say "water" without it.
 
   // ---- the water in the basin -------------------------------------------
   // Rings running OUT from where the fall lands, which is the same ringed idea
@@ -1036,17 +1008,14 @@ export function createSutroGrotto(options: { physics?: Physics } = {}): SutroGro
   /**
    * Nothing down here is in the weather.
    *
-   * `scene.fogNode` is the world's marine bank, and its density term is a ramp
-   * from the bank's ceiling down — so at y −27 it is pinned at maximum and
-   * every surface more than ~15 m away washes to fog grey. Inside a sealed room
-   * thirty-one metres underground that is a sheet of sea mist hanging in a
-   * timber gallery, and through the windows it fights the reef's own water
-   * haze, which is the term that should be doing that job (reef.ts, seaShade).
-   *
-   * Done by traversal rather than at each material, so a material added to this
-   * room later cannot quietly opt back into the weather.
+   * `scene.fogNode` is the world's marine bank. sky.ts now zeroes that bank
+   * (and the distance haze) for any camera below `FOG_BASE`, which is the real
+   * contract for underground rooms — but this room also opts every material out
+   * so a regression in the height gate cannot quietly wash the art wall again.
+   * Done by traversal rather than at each material, so a material added later
+   * cannot quietly opt back into the weather.
    */
-  group.traverse((object) => {
+  const refuseWeather = (object: THREE.Object3D): void => {
     const material = (object as THREE.Mesh).material;
     if (!material) return;
     // `fog` is a NodeMaterial flag rather than a base-Material one; every
@@ -1054,7 +1023,8 @@ export function createSutroGrotto(options: { physics?: Physics } = {}): SutroGro
     for (const entry of Array.isArray(material) ? material : [material]) {
       (entry as THREE.NodeMaterial).fog = false;
     }
-  });
+  };
+  group.traverse(refuseWeather);
 
   // ---- light -------------------------------------------------------------
   // Emissive geometry does the room; the pooled contextual light does the body
@@ -1248,11 +1218,18 @@ export function createSutroGrotto(options: { physics?: Physics } = {}): SutroGro
         // the room has none. They carry their own small glow, ramped below.
         material.emissiveMap = texture;
         material.needsUpdate = true;
+        // Texture bind rebuilds the material graph; re-assert the weather opt-out
+        // so a rebuilt plate cannot quietly fog again.
+        material.fog = false;
       }
     )
   );
   const ready = Promise.all([grainLoad, ...plateLoads])
-    .then(() => undefined)
+    .then(() => {
+      // Grain bind also sets needsUpdate — walk the room once more after every
+      // texture has landed so timber/brass/glow stay out of the marine bank.
+      group.traverse(refuseWeather);
+    })
     .catch((error) => {
       console.warn("[sutro-baths] sunken gallery textures unavailable:", error);
     });

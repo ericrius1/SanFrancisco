@@ -908,18 +908,37 @@ export class Sky {
     // Unlike the reference's fixed elevated camera, gameplay can walk inside the
     // bank or fly far above it. Approximate the density integral along the ray:
     // sample the height ramp at both ends, then count only the fraction of the ray
-    // below the noisy ceiling. A high bird/plane therefore sees a pooled layer
-    // beneath it instead of treating the whole kilometre of clear air as fog.
+    // that overlaps the slab [base, top]. A high bird/plane therefore sees a
+    // pooled layer beneath it instead of treating the whole kilometre of clear
+    // air as fog.
+    //
+    // CRITICAL: the slab has a FLOOR. The old ramp `saturate((top−y)/depth)`
+    // pinned at maximum for every y below `base`, so a sealed room thirty-one
+    // metres underground (the Sutro sunken gallery) sat in full bank wash — a
+    // sheet of sea mist hanging in a timber gallery, muddy-warm once the room's
+    // own lamp grade mixed through FOG_BANK_MAX. Below the authored bank floor
+    // is rock and authored interiors, not weather.
     const layerDepth = top.sub(base).max(1)
-    const surfaceDensity = top.sub(y).div(layerDepth).saturate().mul(0.98)
-    const cameraDensity = top
-      .sub((cameraPosition as N).y)
-      .div(layerDepth)
-      .saturate()
-      .mul(0.98)
+    const heightRamp = (sampleY: N) =>
+      top
+        .sub(sampleY)
+        .div(layerDepth)
+        .saturate()
+        .mul(smoothstep(base.sub(1.5), base, sampleY))
+        .mul(0.98)
+    const surfaceDensity = heightRamp(y)
+    const cameraDensity = heightRamp((cameraPosition as N).y)
     const verticalSpan = (cameraPosition as N).y.sub(y).abs().max(0.001)
+    const upperEnd = (cameraPosition as N).y.max(y)
     const lowerEnd = (cameraPosition as N).y.min(y)
-    const inLayerFraction = top.sub(lowerEnd).div(verticalSpan).saturate()
+    // Fraction of the camera→fragment segment that actually overlaps the slab.
+    // Both ends below `base` → overlap ≤ 0 → no bank (the underground case).
+    const inLayerFraction = top
+      .min(upperEnd)
+      .sub(base.max(lowerEnd))
+      .max(0)
+      .div(verticalSpan)
+      .saturate()
     const meanRayDensity = surfaceDensity
       .add(cameraDensity)
       .mul(0.5)
@@ -1013,10 +1032,21 @@ export class Sky {
     // The switch/master resolves to a uniform boolean for the whole frame. Keep
     // the costly dual tri-noise/weather path inside a coherent GPU branch so a
     // true zero/off state skips it instead of merely multiplying its result by 0.
+    // Weather is a property of the open air. A camera below the bank floor is
+    // in authored rock, a basement, or the water column — none of which are the
+    // marine layer. Zeroing the whole weather term (bank + distance haze +
+    // coastal mist) here is what keeps underground rooms clear; per-material
+    // `fog = false` is a backup, not the contract. Soft edge so a camera that
+    // grazes `FOG_BASE` does not pop.
+    const openAir = smoothstep(
+      base.sub(0.5),
+      base.add(1.5),
+      (cameraPosition as N).y
+    )
     const weatherFactor = Fn(() => {
       const factor = float(0).toVar()
       If((this.#uFogEnabled as N).greaterThan(0), () => {
-        factor.assign(clear.oneMinus())
+        factor.assign(clear.oneMinus().mul(openAir))
       })
       return factor
     })()
@@ -1375,12 +1405,16 @@ export class Sky {
     const distHaze = densityFogFactor(this.#uFogDensity as N)
     const top = this.#uFogTop as N
     const layerDepth = top.sub(base).max(1)
-    const surfaceDensity = top.sub(y).div(layerDepth).saturate().mul(0.98)
-    const cameraDensity = top
-      .sub((cameraPosition as N).y)
-      .div(layerDepth)
-      .saturate()
-      .mul(0.98)
+    // Same slab floor as `#buildFogNode`: density is zero below `FOG_BASE`.
+    const heightRamp = (sampleY: N) =>
+      top
+        .sub(sampleY)
+        .div(layerDepth)
+        .saturate()
+        .mul(smoothstep(base.sub(1.5), base, sampleY))
+        .mul(0.98)
+    const surfaceDensity = heightRamp(y)
+    const cameraDensity = heightRamp((cameraPosition as N).y)
     const bankFog = dist
       .mul(surfaceDensity.add(cameraDensity).mul(0.5))
       .mul(this.#uFogBank as N)
@@ -1393,6 +1427,11 @@ export class Sky {
       this.#uFogEdgeEnd as N,
       horizontalDist
     ).mul(this.#uFogEdgeStrength as N)
+    const openAir = smoothstep(
+      base.sub(0.5),
+      base.add(1.5),
+      (cameraPosition as N).y
+    )
     const weatherFactor = Fn(() => {
       const factor = float(0).toVar()
       If((this.#uFogEnabled as N).greaterThan(0), () => {
@@ -1403,6 +1442,7 @@ export class Sky {
             .mul(distHaze.oneMinus())
             .mul(edgeFade.oneMinus())
             .oneMinus()
+            .mul(openAir)
         )
       })
       return factor
