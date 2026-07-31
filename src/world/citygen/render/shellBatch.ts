@@ -433,16 +433,28 @@ export function createShellBatchLayer(
       }
       let fade = 0.02;
       let freed = false;
+      // Whole-shell cutaway and door-leaf handoff are independent visibility
+      // concerns. In particular, leaving an interior must restore the facade
+      // without painting the baked CLOSED leaf/back over a still-open dynamic
+      // door. Keep both states here and compose them for door placements.
+      let shellHidden = false;
+      let doorLeavesVisible = true;
+      const placementVisible = (p: Placement) =>
+        !shellHidden && (!p.door || doorLeavesVisible);
       return {
         setFade(nextFade: number) {
           fade = nextFade;
           for (const p of placed) writeFade(p.batch, p.inst, fade);
         },
         setDoorLeavesVisible(vis: boolean) {
-          for (const p of placed) if (p.door) p.batch.mesh.setVisibleAt(p.inst, vis);
+          if (doorLeavesVisible === vis) return;
+          doorLeavesVisible = vis;
+          for (const p of placed) if (p.door) p.batch.mesh.setVisibleAt(p.inst, placementVisible(p));
         },
         setShellHidden(hidden: boolean) {
-          for (const p of placed) p.batch.mesh.setVisibleAt(p.inst, !hidden);
+          if (shellHidden === hidden) return;
+          shellHidden = hidden;
+          for (const p of placed) p.batch.mesh.setVisibleAt(p.inst, placementVisible(p));
         },
         free() {
           if (freed) return;

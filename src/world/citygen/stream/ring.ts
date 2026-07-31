@@ -180,6 +180,10 @@ interface Entry extends BuildingSpec {
   roofBody: number;              // kept across solid↔door-gapped wall swaps
   roofMesh: ColliderMesh | null; // footprint-faithful roof prism (coll + detail)
   interior: { group: THREE.Group; dispose(): void } | null;
+  /** True only while the player is genuinely inside the footprint. Interior
+   *  residency is broader: an open door keeps the furnished reveal loaded while
+   *  the exterior facade must remain visible to someone on the sidewalk. */
+  exteriorHiddenForInterior: boolean;
   intBodies: number[];
   intBoxes: ColliderBox[];       // source OBBs of `intBodies` (debug x-ray only)
   // lod    = far: baked mesh hidden (R=1), the LOOSE baked collider is live.
@@ -277,6 +281,11 @@ export interface CityGenDoorProbe {
   swing: number;
   passable: boolean;
   dynamicLeaf: boolean;
+  /** Batch-aware visual diagnostics. A baked leaf/back can be present without a
+   *  standalone scene Mesh because the default renderer stores it in BatchedMesh. */
+  bakedLeafVisible: boolean;
+  interiorResident: boolean;
+  exteriorHidden: boolean;
   /** DEBUG: the entry's sampled front-terrain height + how many tilted (stoop
    *  ramp) collider boxes are live for this building */
   fg?: number; nRamp: number;
@@ -330,7 +339,11 @@ export interface CityGenRing {
    *  Usually this is one home; open-door reveal hysteresis can briefly retain a
    *  second. Returns the number successfully rebuilt. */
   refreshInteriors(): number;
-  debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[];
+  debugBuildings(): {
+    cx: number; cz: number; base: number; top: number;
+    interior: boolean; exteriorHidden: boolean;
+    bb: { minx: number; maxx: number; minz: number; maxz: number };
+  }[];
   /** DEBUG: live walk-in wall + interior collider OBBs for the "/" x-ray overlay. */
   debugColliders(walls: ColliderBox[], interiors: ColliderBox[], roofs?: ColliderMesh[]): void;
   /** DEBUG/probe: streaming state + terrain conform lines of every entry within
@@ -615,6 +628,7 @@ export async function createCityGenRing(
       roofBody: 0,
       roofMesh: null,
       interior: null,
+      exteriorHiddenForInterior: false,
       intBodies: [],
       intBoxes: [],
       state: "lod",
@@ -852,14 +866,21 @@ export async function createCityGenRing(
     }
     e.roofMesh = null;
   };
+  const setExteriorHiddenForInterior = (e: Entry, hidden: boolean) => {
+    if (e.exteriorHiddenForInterior === hidden) return;
+    e.exteriorHiddenForInterior = hidden;
+    e.detail?.setShellHidden(hidden);
+    e.detail?.setGlassHidden(hidden);
+  };
   const disposeInterior = (e: Entry) => {
     if (e.interior) { ctx.scene.remove(e.interior.group); e.interior.dispose(); e.interior = null; }
     for (const h of e.intBodies) { ctx.physics.removeQuerySolid?.(h); ctx.physics.world.destroyBody(h); }
     e.intBodies.length = 0;
     e.intBoxes = [];
-    // bring the exterior shell + instanced glass back now that nobody's inside
-    e.detail?.setShellHidden(false);
-    e.detail?.setGlassHidden(false);
+    // Bring the exterior shell + instanced glass back now that nobody is inside.
+    // The shell batch composes this with the independent open-door state, so the
+    // baked closed leaf/back stay hidden if a live door is still present.
+    setExteriorHiddenForInterior(e, false);
   };
 
   // ---- collider tier (cheap, eager) ------------------------------------------
@@ -1545,11 +1566,9 @@ export async function createCityGenRing(
     for (const c of it.colliders) e.intBodies.push(addBody(c));
     e.intBoxes = it.colliders;
     e.interior = it;
-    // "look out the window": hide THIS building's exterior shell + instanced
-    // glass so the real city shows through the interior shell's real window
-    // holes instead of the painted parallax pane. Neighbours keep their shells.
-    e.detail?.setShellHidden(true);
-    e.detail?.setGlassHidden(true);
+    // Residency and cutaway are deliberately separate. Opening from the street
+    // eagerly materializes a furnished reveal, but the original facade stays up
+    // until the player actually crosses the footprint boundary.
   };
   const gateInterior = (e: Entry, p: THREE.Vector3, wasCameraInside: boolean) => {
     if (e.state !== "detail") return; // only faded-in detail buildings have interiors
@@ -1577,7 +1596,12 @@ export async function createCityGenRing(
     const cameraInside = inY && d >= -cameraMargin;
     if (cameraInside) insideBuilding = e;
     if (inside) ensureInterior(e);
-    else if (e.interior && d < -GATE_DISPOSE) {
+    // "Look out the window" only after a genuine crossing: hide this building's
+    // exterior shell + parallax panes so the interior lining's real openings show
+    // the city. The doorway/camera dilation is intentionally NOT used here—it
+    // begins outside the wall and was the cause of the pale replacement facade.
+    if (e.interior) setExteriorHiddenForInterior(e, inY && d >= 0);
+    if (!inside && e.interior && d < -GATE_DISPOSE) {
       if (openReveal && d >= -OPEN_INTERIOR_RETAIN) return;
       if (openReveal) closeDoorNow(e);
       disposeInterior(e);
@@ -2340,15 +2364,22 @@ export async function createCityGenRing(
       }
       let rebuilt = 0;
       for (const e of active) {
+        const exteriorHidden = e.exteriorHiddenForInterior;
         disposeInterior(e);
         ensureInterior(e);
+        if (e.interior) setExteriorHiddenForInterior(e, exteriorHidden);
         if (e.interior) rebuilt++;
       }
       return rebuilt;
     },
     debugBuildings() {
-      const out: { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[] = [];
-      for (const cell of loaded.values()) for (const e of cell.entries) if (e.detail) out.push({ cx: e.cx, cz: e.cz, base: e.base, top: e.top, interior: !!e.interior, bb: { ...e.bb } });
+      const out: ReturnType<CityGenRing["debugBuildings"]> = [];
+      for (const cell of loaded.values()) for (const e of cell.entries) if (e.detail) out.push({
+        cx: e.cx, cz: e.cz, base: e.base, top: e.top,
+        interior: !!e.interior,
+        exteriorHidden: e.exteriorHiddenForInterior,
+        bb: { ...e.bb },
+      });
       return out;
     },
     debugEntriesNear(x, z, r) {
@@ -2407,6 +2438,9 @@ export async function createCityGenRing(
           sill, openTop, halfW, base: e.base, grade, top: e.top, length,
           open: !e.doorPending,
           phase, swing: rt?.swing ?? 0, passable: !e.doorPending, dynamicLeaf: !!rt?.leaf,
+          bakedLeafVisible: !e.exteriorHiddenForInterior && !rt?.bakedLeaf,
+          interiorResident: !!e.interior,
+          exteriorHidden: e.exteriorHiddenForInterior,
           fg: e.frontGround, nRamp: e.wallBoxes.reduce((n, b) => n + (b.quat ? 1 : 0), 0),
           bb: { ...e.bb },
         });
