@@ -15,6 +15,7 @@
 //   If (uSharpen > 0): c = rcas(...)               // 4 more grade evals, uniform branch
 //   c    += filmGrain(c, screenCoord)              // unconditional, zeroed identity
 //   c     = surfFlowGrade(c)                       // SURVIVOR, verbatim
+//   c    += worldUi.sample(screenUV)               // in-world UI after TAA/grain
 import * as THREE from "three/webgpu"
 import { Fn, screenCoordinate, screenUV, vec4 } from "three/tsl"
 import { advanceGrain, filmGrain } from "../grain"
@@ -26,6 +27,17 @@ import { DISPLAY_TUNING } from "./tuning"
 import { surfFlowGrade, surfFlowLens } from "./surfFlow"
 
 export { setFlowPostFx } from "./surfFlow"
+
+/**
+ * Optional full-res overlay drawn AFTER grade/sharpen/grain. Used for in-world
+ * UI (aim cursor) that must keep 3D occlusion but never enter TAA history or
+ * pick up film grain. `ensureRendered` runs immediately before the present so
+ * capture redirects (H-key / ?fastcapture) still see it.
+ */
+export type WorldUiOverlay = {
+  readonly textureNode: N
+  ensureRendered(frame: PostFrameContext): void
+}
 
 /**
  * Order inside the fused tail: `grade -> sharpen -> grain`.
@@ -47,6 +59,7 @@ const GRAIN_BEFORE_SHARPEN = false
 export type DisplayDeps = {
   readonly renderer: THREE.WebGPURenderer
   readonly grade: GradeAdapter
+  readonly worldUi?: WorldUiOverlay
 }
 
 export type DisplayStage = PostStage & {
@@ -59,6 +72,7 @@ export function createDisplayStage(setup: PostStageSetup, deps: DisplayDeps): Di
   const slot: TextureSlot = setup.inputSlot()
   const pipeline = new THREE.RenderPipeline(deps.renderer)
   pipeline.outputColorTransform = false
+  const worldUi = deps.worldUi
 
   // Evaluating the grade at an arbitrary UV is what RCAS needs: sharpening has
   // to happen in DISPLAY space, after the transform, or it sharpens the HDR
@@ -82,6 +96,8 @@ export function createDisplayStage(setup: PostStageSetup, deps: DisplayDeps): Di
     }
 
     surfFlowGrade(c, lens)
+    // After every look treatment: world-UI stays sharp and out of TAA history.
+    if (worldUi) c.assign(c.add(worldUi.textureNode.sample(screenUV).rgb))
     return vec4(c, 1.0)
   })()
 
@@ -102,6 +118,9 @@ export function createDisplayStage(setup: PostStageSetup, deps: DisplayDeps): Di
       // frames or warmup covered renders. H-key stills advance it across their
       // temporal accumulation, so the PNG carries the last sample's grain.
       advanceGrain(frame.frameIndex)
+      // World-UI into its own RT before the present samples it. Same call for
+      // live frames and capture redirects — display owns the order.
+      worldUi?.ensureRendered(frame)
       // Draws into whatever render target the caller bound — that is how
       // ?fastcapture and the H-key still both redirect the final frame without
       // this stage knowing about either.

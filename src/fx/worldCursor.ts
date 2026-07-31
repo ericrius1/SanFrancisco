@@ -1,6 +1,22 @@
 import * as THREE from "three/webgpu";
-import { uniform, uv, smoothstep, sin, cos, float, vec2, vec3, mix } from "three/tsl";
-import { LIGHT_SCALE } from "../config";
+import {
+  Fn,
+  uniform,
+  uv,
+  smoothstep,
+  sin,
+  cos,
+  float,
+  vec2,
+  vec3,
+  mix,
+  texture,
+  screenUV,
+  positionView,
+  perspectiveDepthToViewZ,
+  cameraNear,
+  cameraFar
+} from "three/tsl";
 
 type N = any;
 
@@ -11,17 +27,28 @@ type N = any;
  * (doubling as an aim reticle), and follows the free mouse ray while the player
  * holds a modifier to unlock the pointer.
  *
- * Baseline it is small and dim — a cool cyan mote that only breathes. When it
- * hovers something clickable (`hover=1`) it eases bigger and warmer, a halo ring
- * lights up, and a ring of gold particles swirls in. Everything is one
- * camera-facing plane drawn procedurally in a TSL shader: no per-particle CPU
- * work, no extra draw calls, additive so empty pixels cost nothing on screen.
+ * Drawn in the pipeline's world-UI overlay pass — same camera / occlusion as the
+ * beauty world, but composited after the post chain (after TAA + grain) so the
+ * affordance stays crisp and never ghosts. Baseline it is small and dim — a cool
+ * cyan mote that only breathes. When it hovers something clickable (`hover=1`)
+ * it eases bigger and warmer, a halo ring lights up, and a ring of gold particles
+ * swirls in. Everything is one camera-facing plane drawn procedurally in a TSL
+ * shader: no per-particle CPU work, no extra draw calls.
  */
 
 const ORB_PARTICLES = 7;
 
+/** Stand-in until `bindOcclusionDepth` hands the beauty depth attachment. */
+function makePlaceholderDepth(): THREE.DepthTexture {
+  const depth = new THREE.DepthTexture(1, 1);
+  depth.name = "world_cursor_depth_placeholder";
+  depth.type = THREE.FloatType;
+  return depth;
+}
+
 export class WorldCursor {
   #mesh: THREE.Mesh;
+  #depthNode: N;
   #uTime = uniform(0);
   #uHover = uniform(0); // 0..1, eased toward the hover target every frame
   #hover = 0; // CPU mirror of #uHover, drives the size growth too
@@ -29,9 +56,14 @@ export class WorldCursor {
   #toCam = new THREE.Vector3();
   #enabled = true;
 
+  /**
+   * @param scene World-UI overlay scene from the render pipeline — NOT the
+   *   beauty scene. Beauty never sees this mesh, so TAA/grain cannot smear it.
+   */
   constructor(scene: THREE.Scene) {
     const geo = new THREE.PlaneGeometry(1, 1);
     const mat = new THREE.MeshBasicNodeMaterial();
+    this.#depthNode = texture(makePlaceholderDepth());
 
     const t = this.#uTime as N;
     const hv = this.#uHover as N;
@@ -62,17 +94,32 @@ export class WorldCursor {
     const cool = vec3(0.42, 0.78, 1.0); // resting cyan
     const warm = vec3(1.0, 0.82, 0.5); // hover gold
     const coreCol = mix(cool, warm, hv.mul(0.7));
-    const intensity = float(0.42).add(hv.mul(0.85)).add(pulse.mul(0.07));
+    // Display-referred: this pass composites AFTER grade/AgX, so no LIGHT_SCALE.
+    const intensity = float(0.72).add(hv.mul(0.95)).add(pulse.mul(0.08));
 
     const body = coreCol.mul(hot.mul(1.2).add(core.mul(0.3)).add(halo)).mul(intensity);
     const col = body.add(warm.mul(parts).mul(1.5));
-    mat.colorNode = col.mul(LIGHT_SCALE * 0.7);
+
+    // Occlusion against beauty depth (reversed-Z: near=1, sky=0). View-Z compare
+    // is reversed-aware via perspectiveDepthToViewZ; closer geometry has a larger
+    // (less negative) view Z. Bias matches the CPU nudge toward the camera so the
+    // quad does not z-fight the surface it rests on. Discard must live inside the
+    // colorNode Fn or it never joins the material's fragment graph.
+    mat.colorNode = Fn(() => {
+      const sceneRaw = this.#depthNode.sample(screenUV).r as N;
+      const sceneViewZ = perspectiveDepthToViewZ(sceneRaw, cameraNear, cameraFar);
+      const fragViewZ = positionView.z as N;
+      sceneRaw
+        .greaterThan(1e-7)
+        .and(sceneViewZ.greaterThan(fragViewZ.add(0.04)))
+        .discard();
+      return col;
+    })();
 
     mat.transparent = true;
-    mat.blending = THREE.AdditiveBlending;
+    mat.blending = THREE.NormalBlending;
+    mat.depthTest = false; // manual test against beauty depth above
     mat.depthWrite = false;
-    // Depth-testing lets the marker rest on the
-    // surface it points at and remains occluded by foreground geometry.
     mat.side = THREE.DoubleSide;
     mat.fog = false;
     mat.toneMapped = false;
@@ -85,6 +132,14 @@ export class WorldCursor {
     this.#mesh.renderOrder = 999;
     this.#mesh.visible = false;
     scene.add(this.#mesh);
+  }
+
+  /**
+   * Beauty-pass depth attachment. Rebinding updates the sampler binding only —
+   * no material rebuild. Call once after the render pipeline exists.
+   */
+  bindOcclusionDepth(depth: THREE.Texture) {
+    this.#depthNode.value = depth;
   }
 
   setEnabled(on: boolean) {

@@ -89,7 +89,7 @@ import type { MainCtx } from "./ctx";
 
 
 export async function composeWorldSystemsCore(ctx: MainCtx) {
-  const { player, input, camera, scene, chase, map, physics, renderer, sky, tiles, authoredRegions, app, voidRealm, audioEngine, modeDiscovery, constructionSlice, progress, waitForWorldBackgroundWindow } = ctx;
+  const { player, input, camera, scene, chase, map, physics, renderer, sky, tiles, authoredRegions, app, voidRealm, audioEngine, modeDiscovery, constructionSlice, progress, waitForWorldBackgroundWindow, pipeline } = ctx;
   const state = {
     garden: null as {
     group: THREE.Group;
@@ -238,7 +238,11 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     splashes.splash(impact.x, impact.y, impact.z, ctx.state.elapsed, 0.3, 0.3);
   };
   const bubbles = new Bubbles(scene, map, physics);
-  const worldCursor = new WorldCursor(scene);
+  // World-UI overlay scene (not beauty): cursor keeps 3D occlusion via beauty
+  // depth but composites after TAA/grain so it stays crisp and never ghosts.
+  const worldCursor = new WorldCursor(pipeline.worldUiScene);
+  const beautyDepth = pipeline.beautyDepthTexture as THREE.Texture | null;
+  if (beautyDepth) worldCursor.bindOcclusionDepth(beautyDepth);
   type PaintAudioInstance = import("../../fx/paintAudio").PaintAudio;
   type BubbleAudioInstance = import("../../fx/bubbleAudio").BubbleAudio;
   // (state.paintAudio hoisted to the module state record)

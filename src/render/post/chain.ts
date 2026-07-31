@@ -99,6 +99,11 @@ export type PostChainDeps = {
   readonly beautyTexture: THREE.Texture
   /** Half-res close-contact complement, consumed by the composite. */
   readonly contactFactorAt?: (uv: N) => N
+  /**
+   * In-world UI overlay (aim cursor). Composited in the display tail AFTER
+   * grade/sharpen/grain so TAA cannot ghost it. Built by pipeline.ts.
+   */
+  readonly worldUi?: import("./display").WorldUiOverlay
 }
 
 /**
@@ -133,7 +138,7 @@ export type PostChainDeps = {
  * poison the live temporal history).
  */
 export function createPostChain(deps: PostChainDeps): PostChainInternals {
-  const { renderer, camera, gbuffer, beautyTexture } = deps
+  const { renderer, camera, gbuffer, beautyTexture, worldUi } = deps
 
   const targets = createChainTargets()
   const matrices: CameraHistory = createCameraHistory(camera)
@@ -192,7 +197,9 @@ export function createPostChain(deps: PostChainDeps): PostChainInternals {
   // The display tail is built first because it is the only stage the chain holds
   // a concrete reference to (it owns the single RenderPipeline); it still runs
   // last, by STAGE_ORDER.
-  const displayStage = build("display", () => createDisplayStage(setup, { renderer, grade }))
+  const displayStage = build("display", () =>
+    createDisplayStage(setup, { renderer, grade, worldUi })
+  )
 
   /**
    * THE STAGE REGISTRY. One entry per stage id, every stage registered at once,

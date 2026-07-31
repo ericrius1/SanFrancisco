@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { NodeUpdateType, mrt, output, pass, uniform } from "three/tsl";
+import { NodeUpdateType, mrt, output, pass, texture, uniform } from "three/tsl";
 import { createContactShadowComplement } from "./contactShadows";
 import { SHADOW_LAYERS } from "../world/shadows/shadowLayers";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
@@ -15,6 +15,7 @@ import { cameraJitter } from "./post/jitter";
 import { godRaysControls } from "./post/godrays";
 import { POST_TUNING, postInputScale } from "./post/tuning";
 import { TEMPORAL_TUNING } from "./post/temporal/tuning";
+import type { WorldUiOverlay } from "./post/display";
 import type { N, PostFrameContext, PostGBuffer } from "./post/types";
 import {
   deferredTextureDisposalState,
@@ -199,6 +200,40 @@ export function createRenderPipeline(
 
   const compileGate = createCompileGate({ renderer, scene, camera, scenePass });
 
+  // ---------------------------------------------------------- world-UI pass
+  //
+  // In-world affordances (aim cursor) that need real 3D occlusion but must not
+  // enter TAA history or pick up film grain. Own scene + full-res pass, driven
+  // explicitly like the beauty pass, then additively composited in the display
+  // tail AFTER grade/sharpen/grain. Do NOT mix renderer.render() after
+  // RenderPipeline.present — three rejects that path; compositing inside the
+  // display shader is the supported route.
+  const worldUiScene = new THREE.Scene();
+  worldUiScene.name = "world_ui";
+  const worldUiPass = pass(worldUiScene, camera, { samples: 0 });
+  worldUiPass.updateBeforeType = NodeUpdateType.NONE;
+  // Always native drawing-buffer resolution — crisp UI, independent of the
+  // beauty pass's temporal/governor scale.
+  worldUiPass.setResolutionScale(1);
+  const driveWorldUiPass = () => {
+    (
+      worldUiPass as unknown as {
+        updateBefore(frame: { renderer: THREE.WebGPURenderer }): void;
+      }
+    ).updateBefore({ renderer });
+  };
+  const worldUiTextureNode = texture(worldUiPass.getTexture("output")) as N;
+  const worldUi: WorldUiOverlay = {
+    textureNode: worldUiTextureNode,
+    ensureRendered: (_frame: PostFrameContext) => {
+      // Keep the pass sized to the presented buffer (still / live / capture).
+      if (worldUiPass.getResolutionScale() !== 1) worldUiPass.setResolutionScale(1);
+      driveWorldUiPass();
+      const tex = worldUiPass.getTexture("output");
+      if (worldUiTextureNode.value !== tex) worldUiTextureNode.value = tex;
+    }
+  };
+
   // ------------------------------------------------------------- post chain
   const postChain = createPostChain({
     renderer,
@@ -207,7 +242,8 @@ export function createRenderPipeline(
     beautyTexture: scenePass.getTexture("output"),
     contactFactorAt: contactShadows.available
       ? (sampleUv: N) => contactShadows.sample(sampleUv)
-      : undefined
+      : undefined,
+    worldUi
   });
   const jitter = cameraJitter(postChain.stage("jitter"));
   const godRays = godRaysControls(postChain.stage("godrays"));
@@ -452,6 +488,12 @@ export function createRenderPipeline(
       if (wireframe.active) wireframe.syncCamera();
       wireframe.applyOverride(wireframe.active);
 
+      // World-UI overlay (aim cursor). Empty at boot; still warm the pass so the
+      // first live cursor frame does not hitch on pipeline creation.
+      await compileGate.compilePass(worldUiPass);
+      driveWorldUiPass();
+      markStage("world-ui-compile");
+
       // "Compile every stage's quad once, unconditionally." Strictly cheaper
       // than the eight combinatorial style mega-shaders this replaces, and it
       // removes the boot/full scope distinction for post-FX entirely: after
@@ -623,6 +665,16 @@ export function createRenderPipeline(
      * it needs no pipeline reselection and no recompile. That is why it is
      * handed out directly rather than fronted by an applyX() call.
      */
-    grade: postChain.grade
+    grade: postChain.grade,
+    /**
+     * Scene for in-world UI that bypasses the post chain (aim cursor). Add
+     * meshes here — never to the beauty scene — then bind beauty depth on the
+     * material for occlusion (`WorldCursor.bindOcclusionDepth`).
+     */
+    worldUiScene,
+    /** Beauty-pass depth attachment for world-UI occlusion tests. */
+    get beautyDepthTexture() {
+      return scenePass.renderTarget.depthTexture;
+    }
   };
 }
