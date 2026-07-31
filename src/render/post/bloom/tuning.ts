@@ -49,7 +49,9 @@ export const BLOOM_TUNING = tunables("post.bloom", {
    */
   resolution: {
     v: 0.5,
-    options: { "½": 0.5, "¾": 0.75, full: 1 },
+    // "¾" only existed for the deleted cinematic quality preset; half is the
+    // shipped look and full remains for a deliberate A/B against it.
+    options: { "½": 0.5, full: 1 },
     label: "· resolution"
   }
 })

@@ -108,9 +108,9 @@ export type PostPanelResult = {
  * the renderer reads.
  *
  * A dropdown that changes no pixel is worse than no dropdown, so rather than
- * render it inert it becomes the preset selector: low = performance, medium =
- * balanced (the shipped defaults), high = cinematic. Keyed by the option VALUES
- * declared in ./tuning.ts.
+ * render it inert it becomes the preset selector: low = performance, high = the
+ * shipped defaults. Keyed by the option VALUES declared in ./tuning.ts. A third
+ * "cinematic" rung used to live here; it looked worse than high and is gone.
  *
  * DELIBERATELY ONLY ENABLES AND RESOLUTIONS. A preset never touches an artistic
  * parameter — your bloom strength, AO radius and grain response survive a preset
@@ -141,8 +141,8 @@ const PRESETS: Readonly<Record<string, StagePatch>> = {
     dof: { enabled: false },
     bloom: { enabled: true, resolution: 0.5 }
   },
-  // medium — balanced. Exactly the shipped defaults; this is the "put it back"
-  // button as much as it is a preset.
+  // high — the shipped defaults; this is the "put it back" button as much as it
+  // is a preset.
   //
   // That claim is the one thing in this table that can rot silently, because it
   // is a COPY of numbers whose source of truth is each stage's own tuning.ts.
@@ -160,20 +160,6 @@ const PRESETS: Readonly<Record<string, StagePatch>> = {
     temporal: { enabled: true, scale: 0.77 },
     dof: { enabled: false },
     bloom: { enabled: true, resolution: 0.5 }
-  },
-  // high — cinematic. Native beauty resolution, full-res AO and reflections, and
-  // depth of field ON: nine fullscreen passes and ~160 taps/px make DOF by far
-  // the most expensive stage in the chain, which is exactly why it ships off in
-  // live play and belongs here instead.
-  "1": {
-    velocity: { enabled: true },
-    ssao: { enabled: true, resolution: 1 },
-    ssr: { enabled: true, resolution: 1 },
-    godrays: { enabled: true },
-    composite: { enabled: true },
-    temporal: { enabled: true, scale: 1 },
-    dof: { enabled: true },
-    bloom: { enabled: true, resolution: 0.75 }
   }
 }
 

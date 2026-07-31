@@ -67,8 +67,7 @@ export const SSAO_TUNING = tunables("post.ssao", {
    * is the classic setup for halos and for crawl on a MOVING camera, and no
    * measurement here can see either. The meadow — grass, i.e. nothing but depth
    * discontinuities — is the best available evidence that it is small, and it is
-   * still only static evidence. One dropdown click puts it back, and the "high"
-   * preset already takes it to full.
+   * still only static evidence. One dropdown click puts it back to full.
    */
   resolution: {
     v: 0.25,
