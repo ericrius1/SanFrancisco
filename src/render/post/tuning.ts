@@ -16,14 +16,14 @@ import { TEMPORAL_TUNING } from "./temporal/tuning"
  *
  * `quality` IS THE PRESET SELECTOR, and nothing in the renderer reads it. That
  * was a defect for as long as it was only a dropdown; it is now the key
- * `panel.ts:129-170` looks `PRESETS` up by, so choosing an option writes the
- * enables and resolutions of every stage below and changes real pixels. Two
+ * `panel.ts` looks `PRESETS` up by, so choosing an option writes the enables
+ * and resolutions of every stage below and changes real pixels. Two
  * consequences for anyone editing this spec:
  *
- *  - The option VALUES ("0.5" / "0.75" / "1"), not the labels, are the preset
- *    keys. Renaming an option is cosmetic; renumbering one silently un-wires
- *    that preset, because `PRESETS[String(value)]` simply misses and the click
- *    does nothing.
+ *  - The option VALUES ("0.5" / "0.75"), not the labels, are the preset keys.
+ *    Renaming an option is cosmetic; renumbering one silently un-wires that
+ *    preset, because `PRESETS[String(value)]` simply misses and the click does
+ *    nothing.
  *  - The stored value records the last preset CLICKED, not the current state of
  *    the chain — it is deliberately not re-applied on load, so hand-tuning a
  *    stage leaves it stale rather than clobbering your values on the next boot.
@@ -54,23 +54,23 @@ export const POST_TUNING = tunables("post", {
    */
   enabled: { v: true, label: "post chain" },
   /**
-   * 0.75 = "medium", WHICH IS WHAT THE CHAIN ACTUALLY SHIPS. It was 1 ("high"),
-   * and that was two defects at once: the dropdown read a false label on a fresh
-   * boot, and — because tweakpane emits no change event for re-selecting the
-   * value already displayed — the high preset was UNREACHABLE without first
-   * selecting low or medium. `PRESETS["0.75"]` is contract-tested against every
-   * stage default on disk (tools/post-chain-contract-test.mjs), so this label
-   * cannot go stale again silently.
+   * 0.75 = "high", WHICH IS WHAT THE CHAIN ACTUALLY SHIPS. There used to be a
+   * third "cinematic" rung (value 1) that cranked SSAO/SSR to full res, native
+   * temporal scale, and DOF — it looked worse than the shipped defaults and is
+   * gone. `PRESETS["0.75"]` is contract-tested against every stage default on
+   * disk (tools/post-chain-contract-test.mjs), so this label cannot go stale
+   * again silently.
    *
-   * Changing `v` changes this group's persistence fingerprint
+   * Changing `options` changes this group's persistence fingerprint
    * (core/persist.ts:46-61), so the first boot after this lands discards
-   * persisted `post.enabled` and `post.quality` overrides ONE time.
-   * `clearGroupOverrides` only deletes one segment below the prefix, so
-   * `post.ssao.*`, `post.bloom.*` and every sibling group are untouched.
+   * persisted `post.enabled` and `post.quality` overrides ONE time — including
+   * anyone still holding the deleted cinematic value. `clearGroupOverrides`
+   * only deletes one segment below the prefix, so `post.ssao.*`, `post.bloom.*`
+   * and every sibling group are untouched.
    */
   quality: {
     v: 0.75,
-    options: { low: 0.5, medium: 0.75, high: 1 },
+    options: { low: 0.5, high: 0.75 },
     label: "· quality"
   }
 })

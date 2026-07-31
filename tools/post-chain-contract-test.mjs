@@ -716,15 +716,20 @@ assert.match(
 );
 ok("chain warmup matches both halves of the pipeline cache key");
 
-// 10.4 The panel's "medium" preset claims to be the shipped defaults, and it is
+// 10.4 The panel's "high" preset claims to be the shipped defaults, and it is
 // a hand-copied table — the one thing here that rots without any code changing.
 // It already did: the performance pass moved post.temporal.scale to 0.77 and
 // this row still said 0.667, so the "put it back" button put it somewhere else.
 const panelSource = code.get(path.join(POST, "panel.ts"));
-const mediumPreset = panelSource.match(/"0\.75"\s*:\s*\{([\s\S]*?)\n\s{2}\}/);
-assert.ok(mediumPreset, "panel.ts must declare a '0.75' (medium) preset");
+const highPreset = panelSource.match(/"0\.75"\s*:\s*\{([\s\S]*?)\n\s{2}\}/);
+assert.ok(highPreset, "panel.ts must declare a '0.75' (high) preset");
+assert.doesNotMatch(
+  panelSource,
+  /"1"\s*:\s*\{/,
+  "panel.ts must not keep a third cinematic quality preset — low/high only",
+);
 const presetPairs = [
-  ...mediumPreset[1].matchAll(/(\w+)\s*:\s*\{([^}]*)\}/g),
+  ...highPreset[1].matchAll(/(\w+)\s*:\s*\{([^}]*)\}/g),
 ].flatMap(([, stage, body]) =>
   [...body.matchAll(/(\w+)\s*:\s*([^,\n}]+)/g)].map(([, key, value]) => [
     stage,
@@ -734,16 +739,16 @@ const presetPairs = [
 );
 assert.ok(
   presetPairs.length >= 10,
-  `expected the medium preset to name >=10 stage keys, parsed ${presetPairs.length} — if this ` +
+  `expected the high preset to name >=10 stage keys, parsed ${presetPairs.length} — if this ` +
     "collapsed, the comparison below is passing vacuously.",
 );
 for (const [stage, key, value] of presetPairs) {
   const stageTuning = code.get(path.join(POST, stage, "tuning.ts"));
-  assert.ok(stageTuning, `panel.ts medium preset names stage "${stage}", which has no tuning.ts`);
+  assert.ok(stageTuning, `panel.ts high preset names stage "${stage}", which has no tuning.ts`);
   const spec = stageTuning.match(new RegExp(`\\b${key}\\s*:\\s*\\{([^}]*)\\}`, "s"));
   assert.ok(
     spec,
-    `panel.ts medium preset writes post.${stage}.${key}, which is not a tunable in ` +
+    `panel.ts high preset writes post.${stage}.${key}, which is not a tunable in ` +
       `${stage}/tuning.ts. applyPreset() skips unknown keys SILENTLY, so this preset would ` +
       "quietly do less than it says.",
   );
@@ -751,11 +756,11 @@ for (const [stage, key, value] of presetPairs) {
   assert.equal(
     value,
     shipped,
-    `panel.ts medium preset sets post.${stage}.${key} = ${value}, but ${stage}/tuning.ts ships ` +
-      `${shipped}. "medium" is documented as EXACTLY the shipped defaults — the put-it-back ` +
+    `panel.ts high preset sets post.${stage}.${key} = ${value}, but ${stage}/tuning.ts ships ` +
+      `${shipped}. "high" is documented as EXACTLY the shipped defaults — the put-it-back ` +
       "button. Change the preset row in the same commit as the default, or drop the claim.",
   );
 }
-ok(`the medium preset matches all ${presetPairs.length} shipped defaults it names`);
+ok(`the high preset matches all ${presetPairs.length} shipped defaults it names`);
 
 console.log(`post-chain contract: ${checks} checks passed across ${files.length} files`);
