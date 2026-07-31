@@ -865,7 +865,7 @@ function buildDemo(framing: Framing): Demo {
       // zero. These are wide exteriors — kites thirty metres up, camera seventy
       // to a hundred and forty back — and a close-contact darkening term
       // contributes nothing at that range.
-      ctx.setPostFx({ sceneSamples: 0, contactShadows: false, ink: false, dream: false, retro: false });
+      ctx.setPostFx({ sceneSamples: 0, contactShadows: false });
       if (framing.mist !== undefined) OCEAN_KITE_TUNING.values.mistDensity = framing.mist;
       if (framing.shafts !== undefined) OCEAN_KITE_TUNING.values.shaftStrength = framing.shafts;
       ctx.input.suspended = true;

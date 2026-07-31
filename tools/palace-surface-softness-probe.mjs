@@ -263,8 +263,18 @@ async function main() {
     sf.WORLD_TUNING.values.fogMaster=0.22;
     sf.sky.applyFogParams();
     sf.renderer.toneMappingExposure=1.1;
-    sf.pipeline.setCinematicMultisampling(true);
-    Object.assign(sf.POSTFX_TUNING.values,{ink:false,dream:true,retro:false});
+    // Match the palace-reverie cinematic exactly, or this probe measures sprite
+    // softness under a display transform the shot never uses. The old \`dream\`
+    // post-FX look is gone; the same intent is now the \`reverie\` GRADE look
+    // (render/gradeLooks.ts), and selecting it only re-bakes the 3D LUT.
+    //
+    // setCinematicMultisampling(true) is deliberately NOT called any more. It is
+    // a logged no-op today, and it was actively wrong before that: raising the
+    // beauty pass's sample count multisamples its DEPTH attachment, which the
+    // post chain then cannot bind — so the "MSAA" capture it promised was a
+    // rejected command buffer, i.e. it would have measured clear colour rather
+    // than a softer sprite.
+    sf.pipeline.grade.setLook("reverie");
     sf.pipeline.applyPostFx();
     sf.palaceReverie.setCinematicProgress(5,true);
     document.body.classList.add("started");

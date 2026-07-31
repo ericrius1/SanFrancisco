@@ -190,9 +190,11 @@ async function configureScene(page) {
     sf.sky.cycleEnabled = false;
     sf.sky.setTimeOfDay(10.5);
     sf.input.keys.clear();
-    sf.POSTFX_TUNING.values.ink = false;
-    sf.POSTFX_TUNING.values.dream = false;
-    sf.POSTFX_TUNING.values.retro = false;
+    // The old ink/dream/retro style toggles are gone with render/postfx.ts, so
+    // there is nothing left to force off before measuring shadows — the chain
+    // renders one image. applyPostFx stays: it pushes every stage's sliders into
+    // live uniforms, which is what makes this measurement start from the
+    // authored values rather than whatever a previous probe left behind.
     sf.pipeline.applyPostFx();
     sf.WORLD_TUNING.values.fogEnabled = false;
     sf.WORLD_TUNING.values.fog = 0;

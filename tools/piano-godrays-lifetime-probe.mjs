@@ -137,7 +137,11 @@ try {
   );
   assert.deepEqual(featureRequests, [], "clean boot eagerly requested the piano god-ray module");
   await page.evaluate(() => {
-    window.__sf.POSTFX_TUNING.values.pianistRays = true;
+    // `__sf.POSTFX_TUNING.values.pianistRays` is gone with render/postfx.ts. The
+    // god rays are a chain stage now and their group is reached through the
+    // stage that owns it — deliberately the ONLY route, rather than also
+    // re-exporting GODRAYS_TUNING on __sf, so the two cannot drift apart.
+    window.__sf.pipeline.postChain.stage("godrays").tuning.group.values.enabled = true;
     window.__sf.teleportToTarget(-3340, -870, "god-ray lifetime probe");
   });
   await page.waitForFunction(

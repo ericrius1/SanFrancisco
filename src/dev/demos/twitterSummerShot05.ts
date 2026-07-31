@@ -30,7 +30,6 @@ export const twitterSummerShot05: Demo = {
     sky.cycleEnabled = false;
     sky.setTimeOfDay(17.15);
     ctx.setExposure(1.08);
-    ctx.setPostFx({ ink: false, dream: false, retro: false });
     ctx.input.suspended = false;
 
     // Restore the low red roadster even if a prior demo mounted an animal.

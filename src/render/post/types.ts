@@ -21,6 +21,21 @@ export type TargetSpec = {
   readonly colorSpace?: THREE.ColorSpace
   /** Extra colour attachments. Index 0 is the primary. */
   readonly count?: number
+  /**
+   * Smallest edge, in texels, this target may ever be sized to. Default 1.
+   *
+   * It exists for ONE class of target and should not be set without that
+   * reason: a texture whose `mipmaps` array is pre-populated so
+   * `Textures.getMipLevels` allocates a fixed level count (`Textures.js:502-508`
+   * returns `texture.mipmaps.length` verbatim). WebGPU rejects a
+   * `mipLevelCount` larger than `floor(log2(maxEdge)) + 1`, so such a target is
+   * a hard validation failure below its floor rather than a degrade — and the
+   * POOL is the sizing path that runs even while the owning stage is disabled
+   * and never calls its own `setSize`. Declaring the floor on the spec is what
+   * keeps the pool and the stage from disagreeing; SSR's blur chain is the only
+   * target in the chain that needs it.
+   */
+  readonly minEdge?: number
 }
 
 export type StageResolution = "input" | "output"
@@ -151,9 +166,32 @@ export interface PostStage {
    *  changes it from "input" to "output". */
   readonly resolution: StageResolution
 
-  /** Live enable check. The chain calls this once per frame. Returning false
-   *  means the stage is SKIPPED — not blitted, not cleared, not rendered.
-   *  Its targets stay allocated so re-enabling is also free. */
+  /**
+   * Per-frame reconcile for a stage that may be SKIPPED. Called by the chain
+   * once per presented frame for every stage, BEFORE `enabled()`, with no render
+   * pass open.
+   *
+   * This exists so `enabled()` can be a pure predicate. It was not: `enabled()`
+   * used to be the only per-frame hook a skipped stage got, so SSR wrote
+   * `ssr.active` and SSAO wrote `aoStrength` from inside it — which meant any
+   * probe that polled the predicate was writing GPU uniforms (chain.ts records
+   * that measurement on `lastRan`). Neutralising a skipped stage's contribution
+   * belongs here; deciding whether it runs belongs in `enabled()`.
+   *
+   * It is also where a stage may do work in order to EARN a skip — SSR's dry
+   * probe is one 8x8 draw that buys skipping six half-res passes. Anything here
+   * must be cheap enough to pay for itself on the frame the stage is off.
+   */
+  prepare?(frame: PostFrameContext): void
+
+  /** Live enable check. The chain calls this once per frame, AFTER `prepare()`.
+   *  Returning false means the stage is SKIPPED — not blitted, not cleared, not
+   *  rendered. Its targets stay allocated so re-enabling is also free.
+   *
+   *  KEEP IT PURE. No uniform writes, no allocation, no GPU work — probes poll
+   *  it (`.data/postfx/smoke-probe.mjs`), and a predicate with side effects
+   *  makes every such poll perturb the thing it is measuring. `prepare()` above
+   *  is the hook for anything that has to happen anyway. */
   enabled(): boolean
 
   /** The colour texture this stage produced this frame, or null for "aux"/"inline".
@@ -192,6 +230,38 @@ export interface PostStage {
 
 // ---------------------------------------------------------------- the chain
 
+/**
+ * What the last PRESENTED frame did. Three lists, because "how much did this
+ * frame cost" and "which looks were applied" are different questions and
+ * conflating them made the answer wrong in both directions.
+ *
+ * `enabled`/`passes` is the cost. `inline` is the looks that ran with no pass of
+ * their own — the jitter hook, plus grade / sharpen / grain, which are fused
+ * into the display tail's single fragment shader. `inline` is populated even
+ * under the master bypass, because bypassing the CHAIN does not bypass the tail.
+ */
+export type PostChainState = {
+  /** Stages that issued a PASS last frame, in the order they ran. */
+  enabled: string[]
+  /** Stages that were ACTIVE last frame but own no pass. */
+  inline: string[]
+  /** Beauty-pass width ÷ drawing-buffer width on the last presented frame. */
+  inputScale: number
+  /**
+   * `enabled.length` — STAGES that issued GPU work, NOT fullscreen draws.
+   *
+   * The distinction is worth 3x: at the shipped defaults this reads 7 while the
+   * frame issues roughly two dozen fullscreen draws, because three of those
+   * stages are multi-pass internally (bloom's mip chain is ~12, SSR's march +
+   * copy + blur levels are 6, the temporal resolve is 1–2). Anyone reading this
+   * as a draw count is off by about that factor. It is the right granularity for
+   * what it is FOR — "which parts of the chain ran, and did my toggle land" —
+   * and the honest place to get a cost is the ablation instrument in
+   * .data/postfx/perf/, never this number.
+   */
+  passes: number
+}
+
 export interface PostChain {
   /** Drive one presented frame. Called from pipeline.render() AFTER
    *  contactShadows.renderNow() and AFTER the beauty pass has been driven. */
@@ -202,8 +272,6 @@ export interface PostChain {
   applyStructure(): void
   /** Force every temporal stage to seed on the next frame. */
   invalidateHistory(reason: string): void
-  /** For compileFullscreenQuads at boot. */
-  warmupQuads(): THREE.QuadMesh[]
   /** The single THREE.RenderPipeline that presents. */
   readonly displayPipeline: THREE.RenderPipeline
   readonly stages: readonly PostStage[]
@@ -229,7 +297,7 @@ export interface PostChain {
    * "advance" with a flat draw count around any real await that lets a queued
    * compile land. That is the contract working, not a chain fault.
    */
-  readonly state: () => { enabled: string[]; inputScale: number; passes: number }
+  readonly state: () => PostChainState
   readonly grade: import("../grade").GradeRuntime
   dispose(): void
 }

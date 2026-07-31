@@ -294,7 +294,6 @@ function buildMoment(look: Look & { title: string }, index: number): Demo {
       }
       cleanPlate(ctx.hud);
       ctx.input.suspended = true;
-      ctx.setPostFx?.({ ink: false, dream: false, retro: false });
 
       // The pocket owns the clock in here — it holds its own solved sunset hour
       // and would fight an authored setTimeOfDay. Leave the cycle off and let
@@ -358,7 +357,6 @@ function buildVista(look: Look & { title: string }, index: number): Demo {
       }
       cleanPlate(ctx.hud);
       ctx.input.suspended = true;
-      ctx.setPostFx?.({ ink: false, dream: false, retro: false });
       ctx.sky.cycleEnabled = false;
 
       const sf = (window as unknown as SutroWindow).__sf;

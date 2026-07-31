@@ -18,6 +18,7 @@
 // The seed advances by frameIndex, not by `time`: `time` degrades in float
 // precision over long sessions and carries boot wall-clock in.
 import type * as THREE from "three/webgpu"
+import { Vector2 } from "three/webgpu"
 import { float, mix, uniform, vec3 } from "three/tsl"
 import { hash23 } from "../shared/noise"
 import { STAGE_ORDER } from "../order"
@@ -39,8 +40,28 @@ const U = {
   response: uniform(0.85),
   falloff: uniform(1),
   chroma: uniform(0.35),
-  /** Advances one per PRESENTED frame. See advanceGrain. */
-  seed: uniform(0)
+  /**
+   * A whole-lattice OFFSET in cells, re-drawn every presented frame. A vec2, and
+   * that is the fix rather than a refinement — see advanceGrain.
+   */
+  seed: uniform(new Vector2(0, 0))
+}
+
+/**
+ * 32-bit integer avalanche (xorshift-multiply, the murmur3 finalizer's shape).
+ * Two decorrelated draws per frame index, deterministic and allocation-free.
+ *
+ * `Math.random()` would decorrelate just as well and would break the one thing
+ * this seed is required to preserve: a cinematic reel re-rendered from the same
+ * frame indices must produce the same grain (see advanceGrain, and the note on
+ * `elapsed` above).
+ */
+function hashFrame(n: number): number {
+  let x = Math.imul(n ^ 0x2545f491, 0x9e3779b1) >>> 0
+  x = (x ^ (x >>> 15)) >>> 0
+  x = Math.imul(x, 0x85ebca6b) >>> 0
+  x = (x ^ (x >>> 13)) >>> 0
+  return x
 }
 
 /**
@@ -58,17 +79,41 @@ export function applyGrainParams(): void {
 }
 
 /**
- * Advance the lattice seed. Called once per presented frame by the display tail.
+ * Re-draw the lattice offset. Called once per presented frame by the display tail.
  *
- * frameIndex, never elapsed time. Two reasons, both recorded elsewhere in this
- * repo: a float32 uniform carrying seconds loses its low bits after a long
- * session, and `elapsed` carries boot wall-clock in, so a "deterministic"
- * cinematic reel would get different grain on every run. The 1024 wrap keeps the
- * seed small enough that `sin(dot(p, k))` stays well-conditioned — the classic
- * fract-sin hash degenerates into visible banding once its argument gets large.
+ * A HASHED vec2, NOT `frameIndex`, and the difference is the whole point.
+ * `U.seed` is added to a vec2 cell coordinate, so a SCALAR seed broadcasts and
+ * the "advance" is a pure translation of the grain lattice along (1, 1):
+ * `hash23(c + t·(1,1))` on frame t is bit-identical to the value cell `c - 1`
+ * held on frame t-1. That is not decorrelation, it is a conveyor belt — at the
+ * default `size: 1.35` the whole grain field slid diagonally at ~81 px/s on a
+ * locked-off camera, which is precisely the one thing real emulsion never does.
+ *
+ * Two independent 32-bit hashes of the frame index give an offset whose
+ * frame-to-frame DELTA is itself random and hundreds of cells wide. Nothing can
+ * be tracked across frames: the delta is far beyond the one-cell correlation
+ * length and changes direction every frame, so the field reads as scintillation
+ * in place rather than as motion.
+ *
+ * frameIndex, never elapsed time, and hashed rather than `Math.random()`. Two
+ * reasons, both recorded elsewhere in this repo: a float32 uniform carrying
+ * seconds loses its low bits after a long session, and `elapsed` carries boot
+ * wall-clock in — so a "deterministic" cinematic reel would get different grain
+ * on every run. A hash of the counter keeps that determinism exactly.
+ *
+ * The 1024 modulus stays, on both components and for the original reason: it
+ * keeps `sin(dot(p, k))`'s argument small enough to stay well-conditioned. The
+ * offset lands in the same [0, 1024) range the cell does, so the sum before the
+ * `.mod(1024)` in the shader never exceeds 2046 — the same magnitude regime the
+ * hash was measured good in (zero-mean, lag-1 autocorrelation 0.2595–0.2606).
  */
 export function advanceGrain(frameIndex: number): void {
-  U.seed.value = GRAIN_TUNING.values.animate === true ? frameIndex % 1024 : 0
+  if (GRAIN_TUNING.values.animate !== true) {
+    U.seed.value.set(0, 0)
+    return
+  }
+  const h = hashFrame(frameIndex)
+  U.seed.value.set(h % 1024, hashFrame(h ^ 0x5bf03635) % 1024)
 }
 
 /**
@@ -93,6 +138,10 @@ export function filmGrain(colour: N, screenCoord: N): N {
   // float32 ULP is 0.06 rad and the hash starts returning structure instead of
   // noise. 1024 is exact in float32, and a wrap period of 1024·size screen
   // pixels puts the single seam outside the frame on every display this runs on.
+  //
+  // `U.seed` is a vec2 whose two components are independent per-frame hashes,
+  // so this add is a RANDOM re-siting of the lattice each frame, not the
+  // diagonal conveyor a scalar seed broadcasts into. See advanceGrain.
   const cell = screenCoord.div(U.size).floor().add(U.seed).mod(1024.0)
 
   // hash23 gives three decorrelated channels; `chroma` mixes between one shared
@@ -140,6 +189,14 @@ export function createGrainStage(setup: PostStageSetup): PostStage {
     // has no pass to render — it is arithmetic fused into the display tail.
     // Reporting true would inflate `chain.state().passes`, which probes read as
     // a GPU cost. The real toggle is `strength: 0`, which is an exact identity.
+    //
+    // What this stage IS reported as: `chain.state().inline` names it whenever
+    // the display tail drew, which is what makes the two lists add up to the
+    // truth — grain at strength 0.2 moves the frame by 23.55 meanAbsDelta
+    // (.data/postfx/wave2-correctness.md §6) and used to appear in neither.
+    // chain.ts's FUSED_INTO_DISPLAY is that list, and it CHECKS this stage at
+    // construction: give grain a pass of its own and the chain throws at boot
+    // rather than under-reporting for the rest of the project's life.
     enabled: () => false,
     output: () => null,
     render: () => {},

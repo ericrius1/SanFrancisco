@@ -29,7 +29,7 @@ import {
 /**
  * The GPU half of the display rendering transform. gradeLooks.ts owns the
  * arithmetic; this file bakes it into a 3D LUT and samples it at the one seam
- * where scene-linear becomes display-referred (render/postfx.ts).
+ * where scene-linear becomes display-referred (render/post/display/index.ts).
  *
  * WHY A LUT AND NOT THE ARITHMETIC
  *

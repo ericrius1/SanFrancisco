@@ -113,7 +113,7 @@ export class UnderwaterOverlay {
     const deepK = THREE.MathUtils.clamp(d / 16, 0, 1); // 0 at surface → 1 deep
     const e = this.#ease;
 
-    // The GPU Beer-Lambert fog (render/postfx.ts underwater package) now owns
+    // The GPU Beer-Lambert fog (render/post/composite/underwater.ts) now owns
     // the volumetric tint role; this flat veil stays only as a faint unifier,
     // while the waterline band and vignette remain full-strength cues.
     this.#tint.style.background = lerpHex(UW_TINT_SHALLOW, UW_TINT_DEEP, deepK);

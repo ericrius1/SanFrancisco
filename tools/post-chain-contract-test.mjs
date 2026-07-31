@@ -328,13 +328,36 @@ ok("dof ships disabled");
 const pipelineSource = readFileSync(path.join(ROOT, "src", "render", "pipeline.ts"), "utf8");
 assert.match(
   codeOf(pipelineSource),
-  /applyStructure\(\)[\s\S]{0,400}?compileFullscreenQuads\([\s\S]{0,80}?warmupQuads\(\)\)/,
+  /applyStructure\(\)[\s\S]{0,400}?warmChainQuads\(/,
   "pipeline.ts must follow postChain.applyStructure() with " +
-    "compileGate.compileFullscreenQuads(postChain.warmupQuads()) — otherwise the first frame " +
-    "after an Apply pays a synchronous WGSL build mid-frame, which is the exact hitch " +
-    "recompileKeys exists to schedule away.",
+    "warmChainQuads(renderer, postChain, compileGate.compileFullscreenQuads) — otherwise the " +
+    "first frame after an Apply pays a synchronous WGSL build mid-frame, which is the exact " +
+    "hitch recompileKeys exists to schedule away.",
 );
 ok("the structural Apply lane re-warms the chain's quads");
+
+// ...and it must go through the ADAPTER, at BOTH warm sites, never the bare
+// compiler. `compileFullscreenQuads(chain.warmupQuads())` compiles with no
+// target bound, which warms the canvas's bgra8unorm + depth32float instead of
+// each stage's rgba16float/rg16float/r16float with no depth buffer — a full
+// cache-key miss (WebGPUBackend.js:2125-2140), so every stage still built its
+// GPURenderPipeline synchronously on the first frame it drew. Cheap to
+// reintroduce by accident, invisible when you do; hence a test rather than a
+// comment.
+assert.doesNotMatch(
+  codeOf(pipelineSource),
+  /compileFullscreenQuads\(\s*postChain\.warmupQuads\(\)\s*\)/,
+  "pipeline.ts must warm the chain through warmChainQuads(), which binds each stage's real " +
+    "target. compileFullscreenQuads(postChain.warmupQuads()) compiles against the canvas " +
+    "format and warms a pipeline the chain never uses.",
+);
+assert.equal(
+  [...codeOf(pipelineSource).matchAll(/warmChainQuads\(/g)].length,
+  2,
+  "both chain warm sites — boot warmup and the structural Apply lane — must route through " +
+    "warmChainQuads().",
+);
+ok("both chain warm sites bind the stage's own target format");
 
 // ---------------------------------------------------------------------------
 // 5. CHAIN SHAPE. Order is a chain-level decision no stage argues with, and the
@@ -615,5 +638,124 @@ assert.match(
     "would let sub-texel steps through at twice the distance.",
 );
 ok("SSAO horizon steps are gated on the depth buffer's sampling rate");
+
+// ---------------------------------------------------------------------------
+// 10. THE INTEGRATION SEAMS. Everything below was written by a different unit
+//     from the one that consumes it, and every one of them SHIPPED INERT at
+//     least once during this build: the exporter finished, the consumer was
+//     "someone else's file", and the result type-checked, built, and rendered a
+//     plausible frame with the feature missing. That is the whole failure class
+//     this section exists for — a cross-file wire has no compiler.
+// ---------------------------------------------------------------------------
+
+// 10.1 The beauty-pass scale has THREE authorities and the composition order is
+// load bearing: ceiling = max(artist, pocket), scale = min(ceiling, governor).
+// The pocket's request is a FLOOR (a thinned interior asks for a native beauty
+// pass in place of the 1.5x pixel-ratio supersample it replaced) and cannot
+// survive a Math.min, so folding it into the same clamp silently drops it and
+// the hall renders at 0.667 with no supersample and no native pass either.
+assert.match(
+  postTuning,
+  /pocketTemporalScale\(\)/,
+  "post/tuning.ts: postInputScale() must raise its ceiling with pocketTemporalScale(). Without " +
+    "it the Sutro pocket loses BOTH its coverage buys at once — pocketRenderScale() already " +
+    "dropped the 1.5x supersample on the promise that a native TAA pass replaces it.",
+);
+assert.match(
+  postTuning,
+  /Math\.max\([\s\S]{0,200}?pocketTemporalScale\(\)/,
+  "post/tuning.ts: the pocket's request composes with Math.MAX (it is a floor under the artist " +
+    "ceiling). Inside the governor's Math.min it would be silently discarded.",
+);
+assert.match(
+  postTuning,
+  /governorEffects\(\)\.temporalScale/,
+  "post/tuning.ts: read GovernorEffects.temporalScale as a plain property. A structural cast " +
+    "like `(governorEffects() as {temporalScale?: number}).temporalScale ?? 1` keeps compiling " +
+    "if the field is renamed and falls back to 1 — disarming the governor's per-pixel lever " +
+    "with no error anywhere.",
+);
+ok("postInputScale composes artist, pocket floor and governor cap in that order");
+
+// 10.2 The pocket and the governor must be told when a resolve is ACTUALLY
+// running. `post.temporal.enabled` alone is not the answer: `post.enabled` is a
+// master bypass, and with it off no stage renders however the stage toggle
+// reads. Unset, the reporter's default answers the stage toggle — so the
+// failure is a hall with no AA at all and a governor whose ladder publishes
+// caps nothing consumes.
+assert.match(
+  code.get(path.join(POST, "chain.ts")),
+  /setTemporalResolveReporter\([\s\S]{0,200}?POST_TUNING\.values\.enabled[\s\S]{0,120}?enabled\(\)/,
+  "chain.ts must install setTemporalResolveReporter() reporting BOTH the master bypass and the " +
+    "temporal stage's own predicate. pocketRenderScale() and the governor's upscaleAvailable() " +
+    "both hang off it and both fail quietly in the wrong direction.",
+);
+ok("the chain reports whether a temporal resolve is really running");
+
+// 10.3 The warm must name the format it is warming. See the assertions beside
+// the Apply lane in §4 for the two pipeline.ts call sites; this is the other
+// half — the flat aggregate that made the wrong call expressible is gone, so
+// there is no longer an API that warms the canvas format by accident.
+for (const file of files) {
+  assert.doesNotMatch(
+    code.get(file),
+    /^\s*warmupQuads\(\)\s*\{[\s\S]{0,400}?for\s*\(const stage of ordered\)/m,
+    `${rel(file)}: the chain must not re-grow a flat warmupQuads() aggregate. Quads have to be ` +
+      "batched by the target they draw into (warmupGroups), or the boot compile warms " +
+      "bgra8unorm and every stage still builds its real pipeline mid-frame.",
+  );
+}
+assert.match(
+  code.get(path.join(POST, "warmup.ts")),
+  /renderer\.depth\s*=\s*group\.target\s*\?\s*group\.target\.depthBuffer/,
+  "warmup.ts: binding the target fixes only the COLOUR half of the pipeline cache key. " +
+    "Renderer.compile() sets renderContext.depth from `this.depth` (Renderer.js:931) and never " +
+    "re-derives it from the target the way render() does (Renderer.js:1698), so a depthBuffer:" +
+    "false chain target compiles against depth32float and renders against none. The key is a " +
+    "joined string — one differing component is a full miss, and fixing colour alone buys nothing.",
+);
+ok("chain warmup matches both halves of the pipeline cache key");
+
+// 10.4 The panel's "medium" preset claims to be the shipped defaults, and it is
+// a hand-copied table — the one thing here that rots without any code changing.
+// It already did: the performance pass moved post.temporal.scale to 0.77 and
+// this row still said 0.667, so the "put it back" button put it somewhere else.
+const panelSource = code.get(path.join(POST, "panel.ts"));
+const mediumPreset = panelSource.match(/"0\.75"\s*:\s*\{([\s\S]*?)\n\s{2}\}/);
+assert.ok(mediumPreset, "panel.ts must declare a '0.75' (medium) preset");
+const presetPairs = [
+  ...mediumPreset[1].matchAll(/(\w+)\s*:\s*\{([^}]*)\}/g),
+].flatMap(([, stage, body]) =>
+  [...body.matchAll(/(\w+)\s*:\s*([^,\n}]+)/g)].map(([, key, value]) => [
+    stage,
+    key,
+    value.trim(),
+  ]),
+);
+assert.ok(
+  presetPairs.length >= 10,
+  `expected the medium preset to name >=10 stage keys, parsed ${presetPairs.length} — if this ` +
+    "collapsed, the comparison below is passing vacuously.",
+);
+for (const [stage, key, value] of presetPairs) {
+  const stageTuning = code.get(path.join(POST, stage, "tuning.ts"));
+  assert.ok(stageTuning, `panel.ts medium preset names stage "${stage}", which has no tuning.ts`);
+  const spec = stageTuning.match(new RegExp(`\\b${key}\\s*:\\s*\\{([^}]*)\\}`, "s"));
+  assert.ok(
+    spec,
+    `panel.ts medium preset writes post.${stage}.${key}, which is not a tunable in ` +
+      `${stage}/tuning.ts. applyPreset() skips unknown keys SILENTLY, so this preset would ` +
+      "quietly do less than it says.",
+  );
+  const shipped = spec[1].match(/\bv\s*:\s*([^,\n}]+)/)?.[1].trim();
+  assert.equal(
+    value,
+    shipped,
+    `panel.ts medium preset sets post.${stage}.${key} = ${value}, but ${stage}/tuning.ts ships ` +
+      `${shipped}. "medium" is documented as EXACTLY the shipped defaults — the put-it-back ` +
+      "button. Change the preset row in the same commit as the default, or drop the claim.",
+  );
+}
+ok(`the medium preset matches all ${presetPairs.length} shipped defaults it names`);
 
 console.log(`post-chain contract: ${checks} checks passed across ${files.length} files`);

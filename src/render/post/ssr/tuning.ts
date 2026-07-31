@@ -12,7 +12,21 @@ import { tunables } from "../../../core/persist"
  * whether this stage should default to enabled at all.
  */
 export const SSR_TUNING = tunables("post.ssr", {
+  // `enabled` stays FIRST: the panel emits controls in spec order and
+  // `bindStage` relies on every stage group leading with its toggle.
   enabled: { v: true, label: "reflections" },
+  /**
+   * THE DRY GATE. See `index.ts` — this is a pure cost optimisation and it is
+   * exposed only so the mechanism is discoverable and defeatable, never because
+   * turning it off changes the picture. With an empty mask the ray march's first
+   * statement discards every pixel and the composite multiplies the result by a
+   * zero `active`, so skipping the stage is a bit-exact identity.
+   *
+   * It can only ever RESTRICT `enabled` above, never grant it: a stage that
+   * turns itself off must not be able to argue with the user's own toggle, and
+   * nothing here ever writes `enabled`.
+   */
+  autoSkipWhenDry: { v: true, label: "· skip when dry" },
   intensity: { v: 0.8, min: 0, max: 2, step: 0.01, label: "· intensity" },
   /** Stock default is 1 m, which is useless at city scale. */
   maxDistance: { v: 18, min: 1, max: 80, step: 0.5, label: "· max distance (m)" },

@@ -167,7 +167,18 @@ const TAB_LIFE = `
     (nested depth slices, fine underfoot and coarser outward), while shadows far across the city come from
     a <strong>world-locked occlusion field</strong> baked off to the side rather than re-rendered every
     frame — so a crisp shadow at your feet and the massing of a distant hillside share one sun without the
-    far shadows swimming as you move. There are optional ink, dream and retro post-processing looks.</p>
+    far shadows swimming as you move.</p>
+    <p>Nothing you see is the raw render. Once the scene is drawn it goes through a <strong>cinematic post
+    chain</strong>, entirely in linear light, before any of it becomes a colour: motion vectors are written
+    alongside the image; <strong>ambient occlusion</strong> darkens the creases where surfaces actually meet;
+    masked <strong>screen-space reflections</strong> put the city back into wet asphalt and still water;
+    a <strong>temporal resolve</strong> reuses the previous frame along those motion vectors, which is what
+    stops edges and foliage from crawling — and lets the world be rendered a little smaller than your screen
+    and reconstructed back up to it, so the sharpening buys detail rather than just crunch. Bloom spills from
+    genuinely bright things while the numbers are still physical, and only at the very end does a filmic
+    <strong>display transform</strong> — baked into a 3D lookup table — decide what each of those linear
+    values actually looks like, with a contrast-adaptive sharpen and a whisper of grain behind it. Several
+    graded looks ship, and switching between them re-bakes nothing but that one small table.</p>
     <p>The renderer is aggressively budgeted because whole tiles stream in behind you: device pixel
     ratio is capped, the scene runs a small <strong>fixed pool of lights</strong> (adding or removing a
     real light rebuilds every GPU pipeline in this renderer, so glowing things use emissive materials

@@ -57,9 +57,9 @@ export function createJitterStage(setup: PostStageSetup): PostStage & CameraJitt
     order: STAGE_ORDER.jitter,
     kind: "inline",
     resolution: "input",
-    // Honest: this is what `chain.state().enabled` should report, and the
-    // stage's render() is a no-op either way — the frame driver, not the chain,
-    // is what actually applies the offset.
+    // Honest, and read into `chain.state().INLINE` rather than `enabled` —
+    // `render()` is a no-op, so counting it as a pass inflated the cost number
+    // by one. The frame driver, not the chain, is what applies the offset.
     enabled: () => jitterActive(),
     output: () => null,
     render: () => {},

@@ -5,7 +5,7 @@ export const COMPOSITE_TUNING = tunables("post.composite", {
   /**
    * SSAO x contact-shadow reconciliation. contactShadows.ts already darkens
    * contacts, keyed to the sun direction and discarding back/grazing faces;
-   * GTAO on top double-darkens (flagged at docs/POSTFX_CINEMATIC_PATHWAY.md:75).
+   * GTAO on top double-darkens (flagged at docs/POSTFX_CINEMATIC_PATHWAY.md §6.6).
    * `min` means whichever term is more confident wins and stacking is
    * impossible. Mission Dolores nave is the referee stop.
    */

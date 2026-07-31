@@ -34,7 +34,14 @@ export const palaceReverieCinematic: Demo = {
     ctx.sky.cycleEnabled = false;
     ctx.sky.setTimeOfDay(19.92);
     ctx.setExposure(1.1);
-    ctx.setPostFx({ ink: false, dream: true, retro: false });
+    // This shot's whole identity was the old `dream` post-FX look. That look is
+    // gone, but its intent survives verbatim in the display grade as `reverie`
+    // (render/gradeLooks.ts — faded pastel, milky lifted blacks at ~7%, soft
+    // contrast, warm air), which is the only look in the set authored with a
+    // real lift. Same picture, expressed in the surviving vocabulary — and now
+    // a LUT re-bake rather than a shader variant.
+    //
+    ctx.setGradeLook("reverie");
     ctx.input.suspended = true;
     ctx.minimap?.setExpanded(false);
 

@@ -221,6 +221,14 @@ export async function installDebugSurfaces(
       setExposure: (v: number) => {
         renderer.toneMappingExposure = v;
       },
+      // The scripted-shot lever for the DISPLAY TRANSFORM, and the replacement
+      // for the one look a production actually used (`dream`). Selecting a look
+      // re-bakes and re-uploads the same 3D LUT texture — no bind group, no
+      // pipeline, no compile — so a demo can call it inside run() with no hitch,
+      // exactly like setExposure. Unknown ids are ignored by grade.setLook.
+      setGradeLook: (id: string) => {
+        pipeline.grade.setLook(id);
+      },
       setPostFx: (values: Record<string, number | boolean>) => {
         // sceneSamples is a render-target knob, not a POSTFX uniform: route it to
         // the pipeline's multisampling toggle. 0 = single-sampled (a resolvable
@@ -240,8 +248,13 @@ export async function installDebugSurfaces(
         }
         // Everything left is a chain tunable. Writes land on the live values
         // object with no validation (Record<string, number | boolean>), so a
-        // stale key from a dev demo is silently inert rather than a throw — U9
-        // still owns cleaning the 23 setPostFx call sites.
+        // stale key is silently inert rather than a throw — which is exactly why
+        // the 21 dev-demo call sites had to be cleaned BY HAND when the old
+        // ink/dream/retro looks were deleted: TypeScript can never find a dead
+        // key behind this signature. THREE call sites remain (surfAerial,
+        // kiteFestival, kiteToSutro) and every one of them passes only keys that
+        // are intercepted above — so nothing currently reaches the Object.assign
+        // at all. A grade look goes through setGradeLook, which is typed.
         Object.assign(POST_TUNING.values, values);
         pipeline.applyPostFx(); // push every stage's sliders into live uniforms
       }

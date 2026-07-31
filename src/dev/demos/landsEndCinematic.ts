@@ -36,7 +36,6 @@ export const landsEndCinematic: Demo = {
     ctx.sky.cycleEnabled = false;
     ctx.sky.setTimeOfDay(20.25); // deep golden dusk, sun on the horizon
     ctx.setExposure(1.06);
-    ctx.setPostFx({ ink: false, dream: false, retro: false });
     ctx.input.suspended = true;
 
     const cx = LABYRINTH.x;

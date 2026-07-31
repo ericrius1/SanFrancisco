@@ -42,11 +42,13 @@ Boot (dev, headless): reveal 2.7 s — warmup ≈1.5 s (scene pipeline compile
 2. Traffic light rig draw-merge (world/traffic/trafficLights.ts) — 18/rig → ≤4.
 3. Warmup diet round 2 — CLOSED, no-change (evidence-backed): boot warmup is
    already near-optimal. Shadows compile in the covered renderFrame (all three
-   domains, before warmup); only ONE postfx variant compiles; skipping the
-   scene compilePass makes reveal WORSE (work moves to serial
-   createRenderPipeline paths). Real levers live elsewhere: fewer materials in
-   the spawn frustum, and three.js-level parallel BundleGroup pipeline
-   compilation (~500ms serial covered-render cost, cannot be compileAsync'd).
+   domains, before warmup); only ONE postfx variant compiles [SUPERSEDED — see
+   Wave 8; the claim was true of that boot but false of the system, and it is
+   now true by construction]; skipping the scene compilePass makes reveal WORSE
+   (work moves to serial createRenderPipeline paths). Real levers live
+   elsewhere: fewer materials in the spawn frustum, and three.js-level parallel
+   BundleGroup pipeline compilation (~500ms serial covered-render cost, cannot
+   be compileAsync'd).
 4. main.ts compose extractions (app/compose/*) — decomposition step 1.
 5. KTX2 rollout assessment (read-only plan).
 
@@ -294,7 +296,9 @@ support.
   (bit-identical — heroEdgeWeight was already exactly 0 outside it); one
   triNoise3D fog octave dropped; sky dome moved to draw last among opaques.
 - postfx: the underwater-fog + 16-tap god-ray block is gated out of dry-land
-  frames — composite drops from 19 full-res texture fetches to 2.
+  frames — composite drops from 19 full-res texture fetches to 2. [The file
+  named here is gone; the measurement and the mechanism are not. Both moved
+  intact to src/render/post/composite/underwater.ts. See Wave 8.]
 - Water: near/hero displaced sheets hide beyond 460 m of any water; FFT cascade
   dispatches gated by proximity (24 -> 12 at the Ferry Building, -> 6 inland).
 - Adaptive governor: **it could only ratchet down.** `COOL_MS = 15` sat below the
@@ -317,9 +321,112 @@ support.
 
 ### Standing rule added
 
-- `reversedDepthBuffer: true` (src/app/renderCore.ts:49) makes three's
+- `reversedDepthBuffer: true` (src/app/renderCore.ts:50) makes three's
   `RenderList.sort()` reverse the whole sorted list, which inverts `groupOrder`
   and `renderOrder` — not just depth. **In this app a HIGHER renderOrder draws
   EARLIER.** The ~98-entry renderOrder ladder (water 9 -> 12.7, HUD 90 -> 9999)
   was authored under this inversion. Anyone touching draw order must account for
   it, and turning reversed-z off would silently re-invert the whole ladder.
+
+## Wave 8 (2026-07-30) — the post chain landed; two premises above are retired
+
+Commits 3a754dd / 4deff8d / 5774a22 replaced `src/render/postfx.ts` and the
+half-res outline prepass with an explicitly-driven stage chain under
+`src/render/post/`. Full account: `docs/POSTFX_CINEMATIC_PATHWAY.md` (rewritten
+from candidate plan to as-built). **No frame-time measurement was taken** — every
+claim below is structural (pass counts, attachment counts, pipeline counts) or
+pixel-level, in keeping with Wave 7's standing warning that the harness's second
+flaw is still open.
+
+### Amendment 1 — "only ONE postfx variant compiles" (Wave 1, item 3)
+
+That sentence was a true observation of one boot and a false statement about the
+system. `postfx.ts` cached **8 style masks × 2 bloom families**, plus up to 16
+god-ray variants keyed `mask | 8`, plus FXAA — **up to 33 retained
+`RenderPipeline`s**, each its own TSL codegen window. Only one compiled *at boot*
+because only one style was active; `warmupPostFx` existed specifically to
+pre-build the rest one per frame, and the debug panel warmed them on folder
+expand (which also force-imported `FXAANode.js` and allocated its target even
+with FXAA off — a lazy-loading policy violation triggered by expanding a folder).
+
+There is now **exactly one `RenderPipeline` in the renderer**, the display tail.
+Stage toggles are `if (!stage.enabled()) continue` in the chain driver — a
+skipped stage is not blitted, not cleared, not rendered, and its targets stay
+allocated so re-enabling is free too. Nothing in the chain recompiles on a
+toggle. Warmup is "compile every stage's quad once, unconditionally, at boot
+scope", which removes the boot/full scope split for post-FX entirely; after boot
+no toggle can create a pipeline at runtime.
+
+Two knobs can still force a shader rebuild — `post.ssr.blurQuality` and
+`post.ssr.binaryRefine` — and both are declared as `recompileKeys`, rendered
+behind an explicit Apply button, and routed through `compileFullscreenQuads` so
+the frame is **held** rather than corrupted. The standing invariant is that a
+default-enabled stage declares no recompile keys; SSR currently violates it and
+`tools/post-chain-contract-test.mjs` pins that as a known exception.
+
+Two warts named in the old numbers died with the code: warmup called
+`getVariantPipeline(INK_VARIANT_MASK)` without the `bloomed` argument, so with
+bloom on it constructed and immediately rendered a pipeline nothing had compiled
+— a synchronous WGSL build inside a warmup render.
+
+### Amendment 2 — the half-res outline prepass is deleted; draw calls went DOWN
+
+Nothing above cites the prepass by name, but any accounting of per-stop draw
+calls taken before 2026-07-30 includes a **whole second geometry pass** over the
+scene at half resolution, whose only consumer was the ink style block. It is
+gone, along with `OUTLINE_PREPASS_SCALE`, `INK_VARIANT_MASK` and its four warmup
+lines.
+
+What replaced it is one extra **attachment** on the beauty pass, not a pass:
+`rgba8unorm`, rgb = `directionToColor(normalView)`, a = the SSR reflectivity
+mask. At the beauty pass's own resolution (output × `post.temporal.scale`, 0.667
+default → 0.66 Mpx at 1512×982) that is **2.6 MB and ~160 MB/s**; at scale 1 it
+is 5.9 MB / 356 MB/s. It also carries *material* normals rather than the
+prepass's geometry normals at no extra evaluation cost, because the beauty pass
+is already running every material's `normalNode` for shading.
+
+The velocity buffer adds a second rg16float target at the same resolution
+(another 2.6 MB / 160 MB/s) and one fullscreen depth-reprojection pass, ~0.2 ms
+at 0.66 Mpx. It touches **no world material** — that was the deciding constraint:
+adding `velocity` to the renderer MRT makes `NodeMaterialObserver.needsRefresh`
+return true unconditionally, which bypasses the `isStatic || isBundle` early-out
+and re-runs `updateBefore` + geometry/node/binding updates for **every object in
+every static BundleGroup, every frame**. This project's bundles are `tiles.ts`,
+`citygen/render.ts` and `trafficLights.ts` — downtown, the marina, the deck.
+
+### Amendment 3 — the adaptive governor now has a quality axis
+
+`adaptiveResolution.ts` remains "the single owner of the drawing buffer" and
+still owns `setPixelRatio`; nothing in the chain touches it. What changed is that
+`GovernorEffects` gained `temporalScale`, and `post/tuning.ts`'s
+`postInputScale()` composes the artist's `post.temporal.scale` as a **ceiling**
+with the governor's value via `Math.min` — the same shape as
+`contactShadows.ts`'s governor axis. The L1–L4 ladder therefore degrades the
+*internal* render resolution and lets the temporal resolve reconstruct at output
+resolution, instead of degrading the output resolution directly.
+
+That is the change Wave 3's note ("dpr≥1.25 GPU cliffs at grass/water stops
+remain physical GPU load; the adaptive-resolution governor is the intended
+mitigation") was waiting for. The governor's degradation ladder is now a
+reconstruction ladder. The unmeasured question is whether it is a net win: at
+scale 0.667 the beauty pass renders 44% of the pixels and the chain adds four
+half-res auxiliaries plus a resolve, and **nobody has put a stopwatch on either
+side of that trade.** `postInputScale()` clamps to 1 when the temporal stage is
+off or in `mode: "traa"`, because neither can consume a smaller beauty pass.
+
+### What this wave measured, and what it did not
+
+Measured, at seven stops, with zero WebGPU validation errors: reversed-depth
+polarity on all three depth-consuming stages; g-buffer normal content
+(994 distinct normals in a 140×90 facade patch vs 7 on the flat street beside
+it); SSR mask coverage from 0.0% dry to 87.4% on open water; grain zero-mean to
+±0.16 luma and cell size invariant across a 2× render-scale span; AgX matrix
+orientation to 1.0×10⁻⁴; TAA history rejection on a swept object. Numbers and
+plate paths in `docs/POSTFX_CINEMATIC_PATHWAY.md` §6.
+
+**Not measured: milliseconds, anywhere.** Fix Wave 7's flaw 2 (first-tier
+contamination in `tools/perf-baseline-probe.mjs`) and re-baseline before treating
+the temporal upsample as a performance win or the chain as a performance cost.
+The single most valuable measurement anyone could take next is the meadow and the
+pier at `post.enabled` on/off and at `post.temporal.scale` 1.0 vs 0.667, since
+that stop pair is the one Wave 7 established as fragment-bound at 28-36 ms.

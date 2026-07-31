@@ -17,8 +17,7 @@ import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
 import { SKY_TUNING, type Sky } from "../world/sky";
-import { POST_TUNING } from "../render/post/tuning";
-import { GODRAYS_TUNING } from "../render/post/godrays/tuning";
+import type { PostChainState, PostStage } from "../render/post/types";
 import { GRADE_TUNING, type GradeRuntime } from "../render/grade";
 import { governorEffects } from "../render/adaptiveResolution";
 import { VOICE_TUNING } from "../net/voice";
@@ -67,15 +66,24 @@ type DebugRenderPipeline = {
   /** The single presenting RenderPipeline. Object identity is asserted across
    *  HMR by tools/hmr-browser-probe.mjs:254 — do not hand out a new one. */
   readonly pipeline: unknown;
-  /** The chain itself, for the panel (U10) and probes. */
+  /**
+   * The chain itself, for the panel and probes. `stage()` and `stages` are typed
+   * with the real `PostStage` rather than `unknown` because the panel builds its
+   * whole folder tree out of `stage.tuning` — the group, `structuralKeys` and
+   * `recompileKeys` are what decide which of the three control lanes each knob
+   * gets, so loosening them here would silently un-gate a recompile.
+   */
   readonly postChain: {
     applyParams(): void;
     applyStructure(): void;
     invalidateHistory(reason: string): void;
-    stage(id: string): unknown;
-    readonly stages: readonly { readonly id: string; readonly label: string }[];
-    readonly state: () => { enabled: string[]; inputScale: number; passes: number };
+    stage(id: string): PostStage | undefined;
+    readonly stages: readonly PostStage[];
+    readonly state: () => PostChainState;
   };
+  /** Slider-RELEASE / Apply-button lane: reallocate, rebuild, re-warm the chain's
+   *  quads inside an exclusive compile window. May hold presented frames. */
+  applyPostStructure: () => Promise<void>;
   /** Compile-gate visibility. tiles.isRenderHeld and every probe preamble poll these. */
   readonly compileHeld: boolean;
   readonly compileQueueDepth: number;
@@ -476,7 +484,13 @@ export class DebugPanel {
   #refreshGovernorMonitor() {
     if (!this.#governorMonitorView) return;
     const e = governorEffects();
-    this.#governorMonitorView.governor = `L${e.level} · scale ${e.renderScale.toFixed(2)}`;
+    // BOTH axes, because the governor now degrades whichever one the frame can
+    // actually spend. With a temporal upsample live it pins `renderScale` to 1
+    // and walks `temporalScale` down instead, so printing only the first would
+    // read "L3 · scale 1.00" at every rung and look like a dead governor.
+    // Exactly one of the two ever moves — see computeEffects().
+    this.#governorMonitorView.governor =
+      `L${e.level} · out ${e.renderScale.toFixed(2)} · beauty ${e.temporalScale.toFixed(2)}`;
   }
 
   /** Push one coherent shadow state across projection maps and contact pass. */
@@ -502,6 +516,13 @@ export class DebugPanel {
     this.#tiles?.terrainClipmap?.applyTuning();
     applyTerrainScanParticleTuning();
     this.#applyShadowTuning();
+    // The "." reset also puts every post-chain STRUCTURAL key back to its default
+    // — AO/SSR/bloom resolution and the temporal render scale. The reset handler
+    // already re-pushes uniforms via applyPostFx(); without this, the targets
+    // keep whatever size the pre-reset values allocated, forever. It is the one
+    // frame-holding call in this method, and a factory reset is explicit enough
+    // to earn it.
+    void this.#postfx?.applyPostStructure();
     for (const record of this.#featureTunings.values()) {
       try {
         record.registration.sync?.();
@@ -854,9 +875,18 @@ export class DebugPanel {
     // that shipped before the grade landed, kept so the change stays judgeable
     // side by side. Switching only re-bakes and re-uploads the 3D LUT — no
     // pipeline reselect, no shader compile, no hitch.
-    GRADE_TUNING.bind(lighting, {
-      onChange: (_key, value) => this.#postfx?.grade.setLook(String(value))
-    });
+    // The same selector is mirrored at the end of the post-chain signal path
+    // (`post fx ▸ display grade`), so this copy joins the 4 Hz refresh list —
+    // otherwise changing the look in one folder leaves the other showing the
+    // previous one until something else refreshes the pane.
+    this.#lightingBindings.push(
+      ...GRADE_TUNING.bind(lighting, {
+        onChange: (_key, value) => {
+          if (this.#syncingPane) return;
+          this.#postfx?.grade.setLook(String(value));
+        }
+      })
+    );
     RENDER_TUNING.bind(lighting, {
       // greyCards is a persisted toggle only — main's tick polls the live value
       // and poses the calibration chart (src/ui/calibrationChart.ts).
@@ -977,29 +1007,32 @@ export class DebugPanel {
     this.#refreshFogWeatherMonitor();
     await checkpoint();
 
-    // Post chain. PLACEHOLDER FOLDER — U10 replaces this whole block with
-    // `buildPostFolder(pane, chain, checkpoint)` from render/post/panel.ts, which
-    // owns the per-stage tree, the structural-key release gating and the
-    // "rebuild (hitches)" subfolder. Until then this binds only the master
-    // toggle and the god-ray controls, which are the two things gameplay reads.
+    // The post chain: master toggle, live chain.state() read-out, and one
+    // subfolder per stage in the order the frame is assembled. render/post/panel.ts
+    // owns the whole tree — including which of the three control lanes each knob
+    // gets, which it reads from each stage's own `tuning.structuralKeys` /
+    // `tuning.recompileKeys` rather than from a list kept here.
     //
-    // There is no warm-on-expand any more: there is exactly ONE RenderPipeline,
-    // every stage's quad is compiled unconditionally at boot, and after that no
-    // toggle can create a new pipeline. `warmupPostFx` is deleted, not ported.
+    // Imported dynamically, next to tweakpane's own chunk, so nothing about the
+    // panel is in the boot graph. There is no warm-on-expand any more either:
+    // there is exactly ONE RenderPipeline, every stage's quad is compiled
+    // unconditionally at boot, and after that no toggle can create a new one.
+    // The old code pre-warmed pipelines when a folder was merely expanded, which
+    // pulled an FXAA import in as a side effect of opening a debug folder.
     const postfx = pane.addFolder({ title: "post fx", expanded: false });
-    POST_TUNING.bind(postfx, {
-      onChange: () => {
-        if (this.#syncingPane) return;
-        this.#postfx?.applyPostFx();
-      }
+    const { buildPostFolder } = await import("../render/post/panel");
+    const post = buildPostFolder(postfx, {
+      chain: this.#postfx?.postChain ?? null,
+      applyParams: () => this.#postfx?.applyPostFx(),
+      applyStructure: () => this.#postfx?.applyPostStructure(),
+      setLook: (id) => this.#postfx?.grade.setLook(id),
+      applyGodRays: () => this.#postfx?.applyPianoGodRaysFx(),
+      suppressed: () => this.#syncingPane
     });
-    GODRAYS_TUNING.bind(postfx, {
-      onChange: (key, _value, last) => {
-        if (this.#syncingPane) return;
-        // Resolution reallocates the raymarch target; gate it on release.
-        if (key !== "resolution" || last) this.#postfx?.applyPianoGodRaysFx();
-      }
-    });
+    this.#monitorBindings.push(...post.monitors);
+    // The mirrored look selector rides the lighting folder's refresh list so the
+    // two copies of the same control can never drift apart.
+    this.#lightingBindings.push(...post.lookBindings);
     await checkpoint();
 
     const rendering = pane.addFolder({ title: "rendering", expanded: false });

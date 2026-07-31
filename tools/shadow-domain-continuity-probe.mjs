@@ -569,10 +569,12 @@ try {
     // keeps that key from moving the player or triggering gameplay.
     sf.input.setSuspensionHold("shadow-domain-continuity-probe", true)
     sf.input.keys.add("KeyW")
-    sf.POSTFX_TUNING.values.ink = false
-    sf.POSTFX_TUNING.values.dream = false
-    sf.POSTFX_TUNING.values.retro = false
-    sf.POSTFX_TUNING.values.sceneSamples = 0
+    // The style toggles died with render/postfx.ts, and `sceneSamples` was never
+    // a post-FX uniform in the first place — it only ever meant anything when
+    // routed through ctx.setPostFx, which intercepts it. Live play is now
+    // permanently single-sampled (pipeline.sceneSampleCount === 1), so there is
+    // nothing to force here either. applyPostFx stays to re-push every stage's
+    // authored sliders into live uniforms before the walk is measured.
     sf.pipeline.applyPostFx()
     sf.WORLD_TUNING.values.fogEnabled = false
     sf.sky.applyFogParams()

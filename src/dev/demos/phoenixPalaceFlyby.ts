@@ -29,7 +29,6 @@ export const phoenixPalaceFlyby: Demo = {
     sky.cycleEnabled = false;
     sky.setTimeOfDay(SUNSET_HOUR);
     ctx.setExposure(0.92);
-    ctx.setPostFx({ ink: false, dream: false, retro: false });
     ctx.input.suspended = false;
     for (const key of DRIVEN_KEYS) ctx.input.keys.delete(key);
 

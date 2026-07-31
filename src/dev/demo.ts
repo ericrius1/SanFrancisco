@@ -72,6 +72,22 @@ export type DemoContext = {
    * camera + player pose. main runs it in place of the chase camera. */
   setCine: (fn: ((dt: number) => void) | null) => void;
   setExposure: (v: number) => void;
+  /**
+   * Select a display-grade look by id (render/gradeLooks.ts). The scripted-shot
+   * lever for the DISPLAY TRANSFORM, and the replacement for the one stylized
+   * look a production actually used — `palaceReverieCinematic` was built on the
+   * deleted `dream` post-FX style and now asks for the `reverie` grade instead.
+   *
+   * Safe to call inside `run()`: it re-bakes and re-uploads the same 3D LUT's
+   * contents — no bind group, no pipeline, no compile — exactly like
+   * setExposure. Unknown ids are ignored. It writes the look in memory only, so
+   * running a demo does not poison the player's persisted choice.
+   *
+   * Typed here rather than reached through a cast at the call site, which is
+   * what it was while `debugExposure.ts` had it and this file did not: a lever
+   * a demo may use belongs in the contract a demo is written against.
+   */
+  setGradeLook: (id: string) => void;
   setPostFx: (values: Record<string, number | boolean>) => void;
 };
 
@@ -82,8 +98,9 @@ export type Demo = {
    * Opt IN to 4x cinematic multisampling. Off by default, and that default is
    * load-bearing: MSAA multisamples the beauty pass's DEPTH attachment too, and
    * a multisampled depth texture cannot be bound as an ordinary one. Several
-   * consumers bind exactly that (the contact-shadow complement, the underwater
-   * package in postfx), so the bind group is rejected, every command buffer
+   * consumers bind exactly that (the contact-shadow complement, and the
+   * underwater package now at render/post/composite/underwater.ts), so the bind
+   * group is rejected, every command buffer
    * that frame goes with it, and the clip records cleared canvas.
    *
    * This used to be an opt-OUT, which held only while no depth consumer was

@@ -6,11 +6,12 @@
 // costs no extra RGBA8 round trip. Do NOT use FSR1Node: it is the same RCAS plus
 // a redundant EASU spatial upscale that TAAU already does better.
 //
-// Order is sharpen -> grain, not grain -> sharpen, and that is deliberate
-// against docs/POSTFX_CINEMATIC_PATHWAY.md. Sharpening on top of grain amplifies
-// it into crunchy speckle and makes RCAS's local-contrast estimate respond to
-// noise instead of edges. Because both live in the same fused pass, flipping the
-// order is one const in display/index.ts and costs nothing.
+// Order is sharpen -> grain, not grain -> sharpen. Sharpening on top of grain
+// amplifies it into crunchy speckle and makes RCAS's local-contrast estimate
+// respond to noise instead of edges. Because both live in the same fused pass,
+// flipping the order is one const in display/index.ts and costs nothing.
+// docs/POSTFX_CINEMATIC_PATHWAY.md records the same order and the same reason —
+// it was updated in wave 3, so this is no longer a deviation from the doc.
 //
 // The math is ported from three/examples/jsm/tsl/display/SharpenNode.js:170-240,
 // which is itself AMD's ffx_fsr1.h. THREE DELIBERATE DEPARTURES:
@@ -71,12 +72,28 @@ export function applySharpenParams(): void {
 export function sharpenRcas(colour: N, sampleGraded: (uv: N) => N, uv: N, texelSize: N): N {
   const out = vec3(colour).toVar()
 
-  // THE 4 EXTRA TAPS ARE BEHIND A UNIFORM READ. `U.amount` is a uniform-buffer
-  // value, so the condition is uniform across the whole draw: the GPU skips the
-  // block outright rather than masking it, and the texture samples inside stay
-  // legal WGSL (no implicit derivatives are required — every tap is an explicit
-  // level-0 sample through the caller's closure). Same pattern as the underwater
-  // package, and like it this block contains no noise node.
+  // THE 4 EXTRA TAPS ARE BEHIND A UNIFORM READ, AND THAT IS THE ONLY THING
+  // KEEPING THEM LEGAL. `U.amount` is a uniform-buffer value, so the condition
+  // is uniform across the whole draw: the GPU skips the block outright rather
+  // than masking it, and WGSL's uniformity analysis permits the implicit-LOD
+  // `textureSample` calls inside.
+  //
+  // They ARE implicit-LOD, and an earlier version of this comment claimed the
+  // opposite ("no implicit derivatives are required — every tap is an explicit
+  // level-0 sample"). It is false: the closure is display/index.ts's
+  // `gradedAt`, a plain `slot.node.sample(uv)`, and `grade.toDisplay` adds
+  // `lutNode.sample(...)` (render/grade.ts:281) — four of each, all implicit.
+  //
+  // SO: MOVING THIS GATE TO A NON-UNIFORM CONDITION IS A COMPILE ERROR, not a
+  // performance question. A per-pixel sharpen mask, an `If(luma > x)`, anything
+  // derived from a texture read — every one of those turns these taps into
+  // WGSL uniformity-rule violations, and the rejection message will point at
+  // generated code with no hint where it came from. If you need a non-uniform
+  // gate, give the closure explicit `.level(0)` taps first; ssr/vendor/ssr.ts
+  // deviation (m) is the worked example of exactly that.
+  //
+  // Same pattern as the underwater package, and like it this block contains no
+  // noise node.
   //
   // This If is also what makes `amount: 0` a BIT-EXACT identity, which the
   // wrapper alone would not give: exp2(-2) is 0.25, not 0, so stock RCAS at its

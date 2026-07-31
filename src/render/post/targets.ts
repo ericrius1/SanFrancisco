@@ -44,9 +44,14 @@ export function createChainTargets(): ChainTargets {
     const scale = spec.scale ?? 1
     const width = spec.resolution === "input" ? inputWidth : outputWidth
     const height = spec.resolution === "input" ? inputHeight : outputHeight
+    // `minEdge`, not a bare 1. A target carrying a pre-declared mip chain is a
+    // WebGPU validation FAILURE below its floor rather than a degrade, and this
+    // pool is the only sizing path taken while the owning stage is disabled —
+    // see TargetSpec.minEdge. Defaults to 1, so every other target is unchanged.
+    const floor = Math.max(1, Math.round(spec.minEdge ?? 1))
     return {
-      width: Math.max(1, Math.round(width * scale)),
-      height: Math.max(1, Math.round(height * scale))
+      width: Math.max(floor, Math.round(width * scale)),
+      height: Math.max(floor, Math.round(height * scale))
     }
   }
 

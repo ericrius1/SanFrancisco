@@ -301,9 +301,10 @@ async function profileTarget(executablePath, target) {
       // prevents the synthetic key from moving the player or activating UI.
       sf.input.setSuspensionHold("shadow-performance-probe", true)
       sf.input.keys.add("KeyW")
-      sf.POSTFX_TUNING.values.ink = false
-      sf.POSTFX_TUNING.values.dream = false
-      sf.POSTFX_TUNING.values.retro = false
+      // No style toggles left to force off (render/postfx.ts is deleted); the
+      // chain renders one image. applyPostFx still matters — it re-pushes the
+      // authored slider values into live uniforms so the timing baseline is the
+      // shipped configuration and not a leftover from an earlier evaluate().
       sf.pipeline.applyPostFx()
       if (sf.dynRes) sf.dynRes.sample = () => {}
       sf.renderer.setPixelRatio(dpr)

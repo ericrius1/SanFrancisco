@@ -169,9 +169,17 @@ export function createTemporalStage(setup: PostStageSetup): TemporalStage {
         return
       }
       // Switching the fallback on is a debug/verification action, not a live
-      // toggle: the incoming resolve's quads were never handed to
-      // compileFullscreenQuads, so the first frame after the switch compiles
-      // them inline. That is why `mode` is a structural key gated on Apply.
+      // toggle: it disposes one resolve's history pair and allocates another's,
+      // which is a reallocation on a presented frame. That is why `mode` is a
+      // structural key gated on Apply.
+      //
+      // It USED to be justified by "the incoming resolve's quads were never
+      // handed to compileFullscreenQuads, so the first frame after the switch
+      // compiles them inline". That reason is gone: `applyPostStructure()`
+      // (pipeline.ts) calls `warmChainQuads` AFTER `applyStructure()`, and
+      // `chain.warmupGroups()` re-reads `resolve.quads()` — so by the time the
+      // Apply resolves, the new mode's quads are warm. The gate stays for the
+      // realloc alone.
       resolve.dispose()
       activeMode = wanted
       resolve = buildResolve(activeMode)

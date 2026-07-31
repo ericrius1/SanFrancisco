@@ -13,7 +13,8 @@ import type { UnderwaterVolume } from "./underwaterVolume";
  *   - smooths a 0..1 camera-submersion state (same test the DOM
  *     UnderwaterOverlay uses: over real water and > 0.35 m under the surface),
  *   - feeds the permanently-installed post-FX fog/god-ray uniforms
- *     (render/postfx.ts — identity when dry, so no pipeline reselection ever),
+ *     (render/post/composite/underwater.ts — identity when dry, and the whole
+ *     package sits behind a uniform If(), so no pipeline is ever rebuilt),
  *   - computes the REFRACTED sun direction (air→water through a flat surface)
  *     and projects its screen anchor for the god rays,
  *   - lazily dynamic-imports fx/underwaterVolume.ts (marine snow + caustics)

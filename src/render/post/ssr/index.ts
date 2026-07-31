@@ -61,13 +61,27 @@
 // and writing one texture in a single pass, which is the failure this whole chain
 // is shaped around.
 //
-// `enabled` still ships `true`, and deliberately. Cutting a stage is a wave
-// owner's call about what ships, not a repair pass's call to quietly zero a
-// default — and the honest reading of the evidence is "not yet measured where it
-// was designed to work", not "measured and worthless". If the call is ever to
-// cut, `post.ssr.enabled: false` in ./tuning.ts also retires this file's
-// RECOMPILE_EXCEPTIONS entry in tools/post-chain-contract-test.mjs, which is the
-// tension §5 flagged.
+// `enabled` SHIPS TRUE, and the argument for cutting it is now falsified rather
+// than merely unproven. The case for cutting was written against a mirror-flat
+// water g-buffer: "a near-fullscreen ray march traced against a wave-free
+// surface, for one code value at the surf line". That surface no longer exists
+// (water.ts writes the real ripple normal), and re-measured at the same Ocean
+// Beach stop, for the same 1.36-1.44 ms:
+//
+//   reflection buffer nonZeroRatio  0.0163 -> 0.10905   (6.7x)
+//   reflection buffer mean          0.0037 -> 0.01305   (3.5x)
+//   non-zero sampled rows           1 of 34 -> 29 of 35
+//   band-mean luma, SSR on vs off   +1.39 to +3.69, against an A/A floor of 0.02
+//
+// wave-locked and on the crests, in the direction the geometry predicts (two
+// independent instruments, `.data/postfx/f2b-reflection-direction.json`). It
+// reads as sheen on water. Bloom costs more at that stop.
+//
+// WHAT IT DOES NOT EARN IS THE FRAME WHERE THE MASK IS EMPTY, and most of this
+// city is that frame. See "the dry probe" below: the stage now measures the mask
+// and skips itself when nobody has opted in, which is a bit-exact identity and
+// which is why 0.27 ms of provably-wasted work downtown is no longer the price
+// of having reflections at the coast.
 //
 // STILL UNRESOLVED, and named so it is not lost: the reflection is scaled by
 // `post.ssr.intensity` (0.8, applied in the kernel at vendor/ssr.ts:698) AND by
@@ -77,7 +91,8 @@
 // Left at 0.64 rather than silently rescaled, because collapsing them changes the
 // shipping strength of a stage by 1.25x and that is the wave owner's decision.
 import * as THREE from "three/webgpu"
-import { unpackRGBToNormal } from "three/tsl"
+import { max, unpackRGBToNormal, uniform, uv, vec2, vec4 } from "three/tsl"
+import { createStageQuad } from "../shared/fullscreen"
 import { STAGE_ORDER } from "../order"
 import type {
   N,
@@ -150,6 +165,61 @@ export function ssrReflections(): SsrReflections {
  *  what keeps the pool and the stage from disagreeing after an Apply. */
 type MutableSpec = TargetSpec & { scale: number }
 
+// ------------------------------------------------------------- the dry probe
+//
+// THE PROBLEM IT SOLVES, measured: at downtown FiDi the SSR mask is provably
+// ALL ZERO (`nonZeroRatio 0.00000`, `max 0.000` — wave 2) and the stage still
+// costs 0.274 ms, because "the kernel discards on the first statement" prices
+// the FRAGMENTS and not the six render passes, the mask fetch per pixel and the
+// blur chain that run regardless. Most of this city is inland.
+//
+// WHY NOT A CPU-SIDE GATE, which was the cheaper-sounding option. Because it
+// would not catch the case that motivated this. A CPU gate can only ask "is a
+// mask-authoring surface in the frustum", and at FiDi the bay IS in the frustum
+// — the mask is empty because BUILDINGS OCCLUDE IT. The bay sheets also span a
+// 2 km annulus, so frustum membership is true almost everywhere in this world.
+// The only signal that answers the real question is the g-buffer alpha itself.
+//
+// SHAPE. One draw into a 64x1 r32float target, each texel owning one tile of an
+// 8x8 screen grid and taking a 4x4 jittered sub-sample of it: 1024 taps on a
+// 32x32 lattice, 16 sequential fetches across 64 parallel lanes, single-digit
+// microseconds. 64x1 rather than 8x8 on purpose — `copyTextureToBuffer` aligns
+// bytesPerRow to 256 (WebGPUTextureUtils.js:757-760), and 64 floats is exactly
+// 256 B, so the readback has no padding to stride over and no trap in it.
+//
+// The per-frame jitter is what makes small features findable: a puddle smaller
+// than a lattice cell is caught within a few frames rather than never.
+const PROBE_TILES = 8
+const PROBE_SUBS = 4
+const PROBE_TEXELS = PROBE_TILES * PROBE_TILES
+
+/** Minimal structural typing for the r185 readback — DOF's autofocus probe uses
+ *  the identical route (dof/index.ts), narrowed the same way. */
+type PixelReader = {
+  readRenderTargetPixelsAsync(
+    target: THREE.RenderTarget,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+  ): Promise<ArrayLike<number>>
+}
+
+/**
+ * How many CONSECUTIVE dry readings before the stage skips itself, and how long
+ * a wet reading keeps it alive.
+ *
+ * Asymmetric on purpose. Going wet is instant — one positive reading turns the
+ * march back on, so rounding a corner onto the bay costs at most the readback's
+ * own latency (1-2 frames). Going dry is slow, because the cost of being wrong
+ * in that direction is a visible loss of sheen and the cost of being late is
+ * ~0.27 ms for a few more frames.
+ */
+const DRY_STREAK_TO_SKIP = 4
+/** Probe cadence while the stage is already running. Dry frames probe EVERY
+ *  frame — that is the case being optimised, and the probe is what pays for it. */
+const WET_PROBE_INTERVAL = 8
+
 export function createSsrStage(setup: PostStageSetup): SsrStage {
   const { gbuffer, allocTarget, inputSlot, renderer } = setup
   const slot: TextureSlot = inputSlot()
@@ -157,17 +227,37 @@ export function createSsrStage(setup: PostStageSetup): SsrStage {
 
   const clampResolution = (v: unknown) => Math.min(1, Math.max(0.25, Number(v) || 0.5))
 
+  // `minEdge` on BOTH, and on the reflection target too even though only the
+  // blur target carries the pre-declared five-level mip chain. Two reasons, and
+  // the second is why this is a fix rather than belt-and-braces:
+  //
+  //  1. THE POOL IS THE PATH THAT RUNS WHILE THIS STAGE IS OFF. `setSize()`
+  //     below has always floored at MIN_SSR_TARGET_EDGE, but a disabled stage is
+  //     never sized (chain.ts skips it entirely) while `targets.resize()` still
+  //     sizes its pooled targets from the spec — and the composite samples the
+  //     blur target every frame regardless, multiplied by `active = 0`. So the
+  //     texture gets created at whatever the pool decided, with five mip levels
+  //     requested on it, and WebGPU rejects that outright below 16 px.
+  //  2. Targets are ALLOCATED at the pool's seed size (1×1 before the first
+  //     resize). Boot survived that only because `warmupGroups()` collapses both
+  //     of these into one destination by colour-format signature and happens to
+  //     bind the reflection target. Flooring the spec removes the coincidence.
+  //
+  // The two must also stay the same size — `ssr.setSize()` drives one blit
+  // between them — so they carry the same floor rather than one each.
   const ssrSpec: MutableSpec = {
     name: "post_ssr_reflection",
     resolution: "input",
     scale: clampResolution(values.resolution),
-    type: THREE.HalfFloatType
+    type: THREE.HalfFloatType,
+    minEdge: MIN_SSR_TARGET_EDGE
   }
   const blurSpec: MutableSpec = {
     name: "post_ssr_blur",
     resolution: "input",
     scale: ssrSpec.scale,
-    type: THREE.HalfFloatType
+    type: THREE.HalfFloatType,
+    minEdge: MIN_SSR_TARGET_EDGE
   }
   const ssrTarget = allocTarget(ssrSpec)
   const blurTarget = allocTarget(blurSpec)
@@ -224,6 +314,89 @@ export function createSsrStage(setup: PostStageSetup): SsrStage {
     blurQuality: Math.round(Number(values.blurQuality) || 2)
   })
 
+  // ------------------------------------------------------------- the dry probe
+  //
+  // Built eagerly and warmed with the rest of the stage: it is one NodeMaterial
+  // and a 64x1 texture, and it has to be compiled before the first frame that
+  // wants to consult it.
+  const probeTarget = new THREE.RenderTarget(PROBE_TEXELS, 1, {
+    format: THREE.RedFormat,
+    type: THREE.FloatType,
+    depthBuffer: false,
+    stencilBuffer: false,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    generateMipmaps: false
+  })
+  probeTarget.texture.name = "post_ssr_dry_probe"
+
+  const probeJitter = uniform(new THREE.Vector2(0, 0)) as N
+  const probeQuad = createStageQuad("post_ssr_dry_probe")
+  {
+    // Unrolled in JS rather than a TSL `Loop`: 16 taps, no loop overhead, no
+    // uniformity question to answer, and the graph reads as what it is.
+    const index = (uv() as N).x.mul(PROBE_TEXELS).floor()
+    const tileX = index.mod(PROBE_TILES)
+    const tileY = index.div(PROBE_TILES).floor()
+    const taps: N[] = []
+    for (let sy = 0; sy < PROBE_SUBS; sy++) {
+      for (let sx = 0; sx < PROBE_SUBS; sx++) {
+        const offX = probeJitter.x.add(sx + 0.5).div(PROBE_SUBS)
+        const offY = probeJitter.y.add(sy + 0.5).div(PROBE_SUBS)
+        taps.push(
+          maskAt(
+            vec2(tileX.add(offX).div(PROBE_TILES), tileY.add(offY).div(PROBE_TILES)) as N
+          )
+        )
+      }
+    }
+    const peak = taps.reduce((a, b) => max(a, b) as N)
+    probeQuad.setFragment(vec4(peak, 0, 0, 1) as N)
+  }
+
+  /** Fail OPEN. Until the first readback lands — and after any teardown of the
+   *  reading — the stage behaves exactly as it did before this gate existed. */
+  let wet = true
+  let dryStreak = 0
+  let probeInFlight = false
+  let framesSinceProbe = 1e9
+
+  const requestDryProbe = (frame: PostFrameContext) => {
+    // A cheap decorrelated jitter in [-0.5, 0.5)², deterministic in frameIndex
+    // so a cinematic reel probes the same way twice.
+    const h = Math.imul(frame.frameIndex ^ 0x9e3779b1, 0x85ebca6b) >>> 0
+    probeJitter.value.set(((h & 0xffff) / 65536 - 0.5), ((h >>> 16) / 65536 - 0.5))
+    probeQuad.render(frame.renderer, probeTarget)
+    framesSinceProbe = 0
+    if (probeInFlight) return
+    probeInFlight = true
+    void (frame.renderer as unknown as PixelReader)
+      .readRenderTargetPixelsAsync(probeTarget, 0, 0, PROBE_TEXELS, 1)
+      .then((pixels) => {
+        const threshold = Number(values.maskThreshold)
+        let peak = 0
+        for (let i = 0; i < PROBE_TEXELS; i++) {
+          const v = pixels[i]
+          if (Number.isFinite(v) && v > peak) peak = v
+        }
+        if (peak > threshold) {
+          dryStreak = 0
+          wet = true
+        } else if (++dryStreak >= DRY_STREAK_TO_SKIP) {
+          wet = false
+        }
+      })
+      .catch(() => {
+        // Device loss, a disposed target, a readback that never maps. FAIL OPEN:
+        // a gate that cannot see must not be allowed to delete reflections.
+        wet = true
+        dryStreak = 0
+      })
+      .finally(() => {
+        probeInFlight = false
+      })
+  }
+
   const applyParams = () => {
     ssr.intensity.value = Number(values.intensity)
     ssr.maxDistance.value = Number(values.maxDistance)
@@ -273,15 +446,49 @@ export function createSsrStage(setup: PostStageSetup): SsrStage {
     kind: "aux",
     resolution: "input",
 
-    enabled: () => {
-      const on = values.enabled === true
-      // The only per-frame hook a SKIPPED stage gets — `render()` is not called
-      // when this returns false. A skipped stage keeps its last-rendered target
-      // contents, so without this the composite would go on adding a frozen
-      // reflection after the toggle went off.
-      ssr.active.value = on ? 1 : 0
-      return on
+    /**
+     * The per-frame reconcile for a stage that may be skipped, and the place the
+     * dry probe is paid for.
+     *
+     * Two jobs:
+     *
+     *  1. `ssr.active` — a skipped stage keeps its last-rendered target
+     *     contents, so without this the composite would go on adding a frozen
+     *     reflection after the stage stopped running. Zeroing it here makes a
+     *     skip an exact identity, whether the skip came from the user's toggle
+     *     or from the dry gate.
+     *  2. The probe. It runs EVERY frame while the stage is skipped (that is the
+     *     frame being optimised, and 1024 taps is what buys the skip) and once
+     *     every WET_PROBE_INTERVAL frames while it is running (where the march
+     *     dwarfs it and only "have we gone dry" is still in question).
+     *
+     * Note the probe runs on frames the stage does not: it samples the BEAUTY
+     * pass's g-buffer, which pipeline.ts has already produced by the time the
+     * chain is driven, so it needs nothing from this stage's own passes.
+     */
+    prepare: (frame: PostFrameContext) => {
+      const userOn = values.enabled === true
+      const gateOn = values.autoSkipWhenDry !== true || wet
+      ssr.active.value = userOn && gateOn ? 1 : 0
+      if (!userOn || values.autoSkipWhenDry !== true) {
+        // Nothing to decide. Leave the reading where it is but do not let it go
+        // stale in the "dry" direction while nobody is looking — re-arming to
+        // wet means switching the gate back on never costs a dark first frame.
+        if (values.autoSkipWhenDry !== true) {
+          wet = true
+          dryStreak = 0
+        }
+        return
+      }
+      framesSinceProbe += 1
+      if (wet && framesSinceProbe < WET_PROBE_INTERVAL) return
+      requestDryProbe(frame)
     },
+
+    // PURE. `values.enabled` is the user's and is never written from this file;
+    // the gate can only subtract. See ./tuning.ts on `autoSkipWhenDry`.
+    enabled: () =>
+      values.enabled === true && (values.autoSkipWhenDry !== true || wet),
 
     output: () => null,
 
@@ -291,7 +498,19 @@ export function createSsrStage(setup: PostStageSetup): SsrStage {
 
     setSize,
 
-    warmupQuads: () => ssr.quads,
+    /**
+     * A teleport, a resize, a master-toggle flip — anything the chain calls
+     * `invalidateHistory` for is also a reason the last dry reading describes a
+     * frame that no longer exists. FAIL OPEN and let the probe re-establish it,
+     * so arriving at Ocean Beach never starts with the reflections switched off.
+     */
+    invalidateHistory: () => {
+      wet = true
+      dryStreak = 0
+      framesSinceProbe = 1e9
+    },
+
+    warmupQuads: () => [...ssr.quads, probeQuad.mesh],
 
     applyParams,
 
@@ -318,8 +537,10 @@ export function createSsrStage(setup: PostStageSetup): SsrStage {
       applyParams()
     },
 
-    reflectionAt: (uv: N) => ssr.reflectionAt(uv),
-    active: () => values.enabled === true,
+    reflectionAt: (uvNode: N) => ssr.reflectionAt(uvNode),
+    // Both halves, so a consumer polling this agrees with what the chain will
+    // actually run. It stays a plain read — no uniform is written here.
+    active: () => values.enabled === true && (values.autoSkipWhenDry !== true || wet),
 
     tuning: {
       group: SSR_TUNING,
@@ -343,6 +564,8 @@ export function createSsrStage(setup: PostStageSetup): SsrStage {
 
     dispose: () => {
       if (currentStage === stage) currentStage = null
+      probeQuad.dispose()
+      probeTarget.dispose()
       ssr.dispose()
     }
   }

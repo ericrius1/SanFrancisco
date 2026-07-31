@@ -7,7 +7,7 @@
 // The AO factor is CONSUMED by post/composite/, which min()-combines it with the
 // contact-shadow factor rather than multiplying — contactShadows.ts:441-454
 // already darkens contacts on the direct-sun term, and a product double-darkens
-// (docs/POSTFX_CINEMATIC_PATHWAY.md:75). U7's accessor is `ssaoFactorAt(uv)`,
+// (docs/POSTFX_CINEMATIC_PATHWAY.md §6.6). U7's accessor is `ssaoFactorAt(uv)`,
 // exported below.
 //
 // IF YOU ARE HERE BECAUSE OF OCCLUSION ON WATER, read vendor/gtao.ts deviation
@@ -80,8 +80,23 @@ export function ssaoFactorAt(uv: N): N {
   return clamp(float(1).sub(ao.oneMinus().mul(aoStrength)), 0, 1)
 }
 
+/**
+ * Which stage instance currently OWNS the two module singletons above.
+ *
+ * Same hazard `ssr/index.ts:345` guards and for the same reason, stated here
+ * because SSAO's version was silent where SSR's was not. `aoTextureNode` and
+ * `aoStrength` are module-scoped, so under HMR — chain B built, THEN chain A
+ * torn down, which is the normal order — an unguarded `dispose()` repoints
+ * chain B's live accessor at `AO_NEUTRAL` and zeroes its strength. The composite
+ * then samples neutral white forever: ambient occlusion permanently off, no
+ * error, no warning, and nothing in `chain.state()` that would show it.
+ */
+let currentOwner: object | null = null
+
 export function createSsaoStage(setup: PostStageSetup): PostStage {
   const { renderer, gbuffer, allocTarget } = setup
+  const owner = {}
+  currentOwner = owner
 
   const resolutionScale = () => {
     const value = Number(SSAO_TUNING.values.resolution)
@@ -139,16 +154,17 @@ export function createSsaoStage(setup: PostStageSetup): PostStage {
     kind: "aux",
     resolution: "input",
 
-    enabled: () => {
-      const on = SSAO_TUNING.values.enabled === true
-      // The one hook the chain calls every frame whatever the answer is
-      // (chain.ts:215). Once this returns false the stage gets no render(), no
-      // setSize() and no applyParams(), so the strength that neutralises
-      // ssaoFactorAt() has to be pushed from here or the composite goes on
-      // multiplying by a frozen AO buffer.
-      aoStrength.value = on ? SSAO_TUNING.values.intensity : 0
-      return on
+    // Neutralise from `prepare()`, not from `enabled()`. Once the stage is off
+    // it gets no render(), no setSize() and no applyParams(), so the strength
+    // that flattens ssaoFactorAt() has to be pushed from the one hook a skipped
+    // stage still gets — but that hook is now `prepare`, and `enabled` is a pure
+    // read. It used to be both, which made polling the predicate a GPU write.
+    prepare: () => {
+      const v = SSAO_TUNING.values
+      aoStrength.value = v.enabled === true ? Number(v.intensity) : 0
     },
+
+    enabled: () => SSAO_TUNING.values.enabled === true,
 
     // "aux": this never becomes the chain colour. The composite reads it by
     // name, through ssaoFactorAt().
@@ -206,6 +222,12 @@ export function createSsaoStage(setup: PostStageSetup): PostStage {
       // does not — leave it pointing at something valid so a rebuilt chain (or a
       // graph that outlives this stage) samples neutral white rather than a
       // disposed texture.
+      //
+      // ONLY IF WE STILL OWN IT. See `currentOwner`: a newer stage that already
+      // took the singletons must not have them yanked out from under it by an
+      // older stage's teardown.
+      if (currentOwner !== owner) return
+      currentOwner = null
       aoTextureNode.value = AO_NEUTRAL
       aoStrength.value = 0
     }

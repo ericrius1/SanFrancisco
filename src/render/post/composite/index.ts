@@ -90,7 +90,7 @@ export function createCompositeStage(setup: PostStageSetup, deps: CompositeDeps)
       // product. `contactShadows.ts:441-454` already darkens contacts on the
       // DIRECT-SUN term, keyed to the sun direction and discarding back/grazing
       // faces; GTAO on top of that double-darkens
-      // (docs/POSTFX_CINEMATIC_PATHWAY.md:75). min() means whichever term is
+      // (docs/POSTFX_CINEMATIC_PATHWAY.md §6.6). min() means whichever term is
       // more confident wins and stacking is impossible — which is what lets
       // SSAO's default intensity stay as low as 0.55 without the two systems
       // fighting. `multiply` survives only as the A/B.

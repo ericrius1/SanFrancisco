@@ -80,7 +80,7 @@ export const surfAerialCinematic: Demo = {
     // depth texture, while a multisampled depth attachment is not sampleable as
     // a regular texture in WebGPU. Native output resolution supplies the edge
     // detail without emitting GPU validation errors during deterministic capture.
-    ctx.setPostFx({ sceneSamples: 0, ink: false, dream: false, retro: false });
+    ctx.setPostFx({ sceneSamples: 0 });
     ctx.input.suspended = false;
 
     // A fresh isolated capture profile otherwise receives a random first-run

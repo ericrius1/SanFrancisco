@@ -28,11 +28,15 @@ import { surfFlowGrade, surfFlowLens } from "./surfFlow"
 export { setFlowPostFx } from "./surfFlow"
 
 /**
- * Order inside the fused tail. docs/POSTFX_CINEMATIC_PATHWAY.md lists
- * `grade -> grain -> sharpen`; implementing that literally makes RCAS amplify
- * the grain into crunchy speckle and keys its local-contrast estimate off noise
- * instead of edges. AMD's own RCAS guidance and every film pipeline put grain
- * last, immediately before display encode.
+ * Order inside the fused tail: `grade -> sharpen -> grain`.
+ *
+ * docs/POSTFX_CINEMATIC_PATHWAY.md used to specify `grade -> grain -> sharpen`
+ * and now records the shipped order plus this reasoning (§ "the display tail"),
+ * so the doc and this file agree — do not re-add an "against the doc" note.
+ * Implementing the old order literally makes RCAS amplify the grain into crunchy
+ * speckle and keys its local-contrast estimate off noise instead of edges. AMD's
+ * own RCAS guidance and every film pipeline put grain last, immediately before
+ * display encode.
  *
  * Because both live in the SAME fused pass, flipping this is one line and costs
  * nothing — grain is a pure function of screen position, so evaluating it at all

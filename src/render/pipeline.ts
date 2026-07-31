@@ -9,7 +9,7 @@ import { warmScenePaced } from "./warmStaticRegion";
 import { createCompileGate } from "./compileGate";
 import { createCaptureRuntime } from "./capture";
 import { createWireframeOverride } from "./wireframe";
-import { createPostChain } from "./post";
+import { createPostChain, warmChainQuads } from "./post";
 import { beautyGBufferAttachment, createGBufferDecoders } from "./post/shared/gbuffer";
 import { cameraJitter } from "./post/jitter";
 import { godRaysControls } from "./post/godrays";
@@ -290,12 +290,21 @@ export function createRenderPipeline(
       // capture path instead of on the mismatch.
       const frame = buildFrameContext();
       jitter.apply(camera as THREE.PerspectiveCamera, frame);
+      // AFTER apply(), for the same reason the live frame does it here and NOT
+      // in `beforeStill` — which is where this call used to live, and which ran
+      // before `present()` and therefore before the offset existed. In wireframe
+      // mode `scenePass.camera` IS the clone, so a clone carrying the CLEARED
+      // projection renders the beauty pass unjittered while the resolve is
+      // handed `jitterOffsetAt(frame.frameIndex)` and displaces all nine
+      // reconstruction taps by up to half an input pixel. It was worse than an
+      // omission: the clone already held the correct offset (copied after
+      // apply() on the last live frame, and frameIndex does not advance for a
+      // still, so it is the SAME Halton sample) and `beforeStill` actively
+      // overwrote it. The symptom is a soft still nobody can reproduce live.
+      if (wireframe.active) wireframe.syncCamera();
       driveBeautyPass();
       jitter.clear(camera as THREE.PerspectiveCamera);
       postChain.render(frame);
-    },
-    beforeStill: () => {
-      if (wireframe.active) wireframe.syncCamera();
     },
     invalidateHistory
   });
@@ -429,7 +438,16 @@ export function createRenderPipeline(
       // than the eight combinatorial style mega-shaders this replaces, and it
       // removes the boot/full scope distinction for post-FX entirely: after
       // this, no toggle can create a new pipeline at runtime.
-      await compileGate.compileFullscreenQuads(postChain.warmupQuads());
+      //
+      // Through `warmChainQuads`, not `compileFullscreenQuads(warmupQuads())`,
+      // and the difference is load bearing rather than stylistic: the WebGPU
+      // pipeline cache key includes the bound render context's colour and
+      // depth/stencil formats, so compiling with NO target bound warms
+      // bgra8unorm + depth32float — the canvas — while every stage but the
+      // display tail draws into rgba16float / rg16float / r16float with no
+      // depth buffer. `chain.warmupGroups()` carries the source derivation; the
+      // adapter binds each group's real target and restores what was bound.
+      await warmChainQuads(renderer, postChain, compileGate.compileFullscreenQuads);
       markStage("chain-compile");
     } finally {
       if (wireframe.active) wireframe.syncCamera();
@@ -488,7 +506,11 @@ export function createRenderPipeline(
    */
   const applyPostStructure = async () => {
     postChain.applyStructure();
-    await compileGate.compileFullscreenQuads(postChain.warmupQuads());
+    // Same adapter as the boot warm, and for the same reason — but note the
+    // extra beat here: applyStructure() REALLOCATES targets, so the groups have
+    // to be re-read after it rather than cached. `warmChainQuads` calls
+    // `chain.warmupGroups()` itself, which is what makes that automatic.
+    await warmChainQuads(renderer, postChain, compileGate.compileFullscreenQuads);
     // Reallocated targets hold garbage and a rebuilt resolve has no history.
     invalidateHistory("post-structure");
   };

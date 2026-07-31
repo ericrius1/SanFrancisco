@@ -3,10 +3,16 @@
  * and the g-buffer and hands them here; everything downstream of the beauty pass
  * lives under `post/`.
  */
-export { createPostChain, type PostChainDeps } from "./chain"
+export {
+  createPostChain,
+  postChainState,
+  type PostChainDeps,
+  type PostChainInternals,
+  type WarmupGroup
+} from "./chain"
 export { STAGE_ORDER } from "./order"
 export { POST_TUNING, postInputScale } from "./tuning"
-export { collectChainQuads } from "./warmup"
+export { warmChainQuads, type FullscreenQuadCompiler } from "./warmup"
 export { createGBufferDecoders, beautyGBufferAttachment, writeSsrMask } from "./shared/gbuffer"
 export { cameraJitter, type CameraJitter } from "./jitter"
 export { godRaysControls, type GodRaysControls, type GodRaysState } from "./godrays"
@@ -15,6 +21,7 @@ export { setFlowPostFx } from "./display"
 export type {
   N,
   PostChain,
+  PostChainState,
   PostFrameContext,
   PostGBuffer,
   PostStage,

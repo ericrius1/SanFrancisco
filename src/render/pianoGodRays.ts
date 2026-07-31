@@ -99,6 +99,29 @@ export function createPianoGodRays(opts: {
   const blendColor = uniform(new THREE.Color(0xffe1b8));
   const edgeRadius = uniform(int(opts.params.edgeRadius));
   const edgeStrength = uniform(opts.params.edgeStrength);
+  // STOCK, ON PURPOSE — and BRIEF risk #14 ("depthAwareBlend's reversed-depth
+  // degradation is a live bug today") DOES NOT REPRODUCE. A vendored fork was
+  // written to fix it during the post-chain rebuild, was never wired up, and has
+  // been deleted rather than left to rot; the two things worth keeping from it:
+  //
+  //  1. THE CLAIMED BUG IS NOT THERE. `perspectiveDepthToViewZ` IS reversed-aware
+  //     (ViewportDepthNode.js:229) and returns a negative viewZ, and
+  //     `viewZToOrthographicDepth` (:152) is `(viewZ + near) / (near - far)` —
+  //     numerator and denominator BOTH negative for any viewZ in [-near, -far],
+  //     so `correctDepth` lands in [0,1] under reversed and standard depth alike.
+  //     It is a linear remap with no handedness to get wrong. At this camera
+  //     (near 0.3, far 24000) a surface 20 m out gives correctDepth 8.2e-4
+  //     against a tolerance of 4.1e-5 — ±0.98 m of view distance. The edge test
+  //     fires. The far-normalisation cancels out of both sides of the inequality.
+  //  2. ONE REAL UPSTREAM DEFECT, unrelated to reversed depth and left alone
+  //     because it is upstream's to fix: `pushDir.divAssign(count).normalize()`
+  //     DISCARDS the normalize (divAssign returns the assignment and nothing
+  //     consumes the normalized node), so the edge push scales with how many
+  //     neighbours agreed as well as with `edgeStrength` — up to ~2x the intended
+  //     offset at edgeRadius 2. Cosmetic here; do not "fix" it by forking unless
+  //     someone is looking at the grove and does not like the edges.
+  //
+  // tools/mission-dolores-contract-test.mjs asserts this import path literally.
   const composite = depthAwareBlend(
     sceneColor,
     blurPass.getTextureNode(),

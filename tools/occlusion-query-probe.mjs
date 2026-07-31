@@ -192,7 +192,9 @@ async function main() {
     for (const rays of [true, false]) {
       if (!rays) {
         await page.evaluate(() => {
-          window.__sf.POSTFX_TUNING.values.pianistRays = false;
+          // See the note at the re-enable below: the god rays are a chain stage
+          // now, and their tunable group is reached through it.
+          window.__sf.pipeline.postChain.stage("godrays").tuning.group.values.enabled = false;
           window.__sf.pipeline.applyPianoGodRaysFx();
         });
         await sleep(1500);
@@ -212,7 +214,12 @@ async function main() {
 
     // --- queries must still resolve: visible in front of a wall, occluded behind it
     await page.evaluate(() => {
-      window.__sf.POSTFX_TUNING.values.pianistRays = true;
+      // `__sf.POSTFX_TUNING.values.pianistRays` is gone with render/postfx.ts;
+      // the god rays own a chain stage and their group lives on it.
+      // `applyPianoGodRaysFx()` stays — the runtime is level-triggered from the
+      // frame driver, so this only removes a frame of latency (and clears the
+      // one-shot build-failure latch).
+      window.__sf.pipeline.postChain.stage("godrays").tuning.group.values.enabled = true;
       window.__sf.pipeline.applyPianoGodRaysFx();
     });
     await page.waitForFunction(

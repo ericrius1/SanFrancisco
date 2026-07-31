@@ -43,6 +43,42 @@ export function beautyGBufferAttachment(): N {
  * `NodeMaterial.js:558-580` merges `material.mrtNode` over the pass MRT, so this
  * replaces the whole gbuffer attachment for that material — the normal term has
  * to be restated here, not just the alpha.
+ *
+ * ---------------------------------------------------------------------------
+ * IT CANNOT UN-WRITE THE ATTACHMENT, WHICH IS THE ONE THING BRIEF RISK #11 ASKS
+ * IT FOR. The brief's mitigation for a transparent or additive overlay stamping
+ * the g-buffer is "`writeSsrMask(mat, float(0))` on the offenders". For a
+ * material that has NOT already opted in, that call is a **no-op**: it writes
+ * `vec4(packNormalToRGB(normalView), 0)`, which is byte-for-byte what
+ * `beautyGBufferAttachment()` above already writes for it. It changes nothing.
+ * Measured: the swimmer's wake-ripple quads (`src/fx/wake.ts` — additive,
+ * `depthWrite: false`, no mrtNode) punch a hard trapezoid of mask 0 and flat
+ * quad normal through the water g-buffer at Ocean Beach
+ * (`.data/postfx/plates/f2/11-ssr-mask.png`), and applying the brief's line to
+ * them would leave that plate identical.
+ *
+ * THE THREE ROUTES THAT WOULD ACTUALLY WORK, and why none is a one-liner here:
+ *
+ *  1. PER-ATTACHMENT BLENDING. r185 has the API — `MRTNode.setBlendMode(name,
+ *     blend)`, honoured per colour target by `WebGPUPipelineUtils.js:147-165`
+ *     outside compatibility mode — so a `CustomBlending` of src=Zero/dst=One on
+ *     `gbuffer` would preserve what is behind. **It does not survive the merge**:
+ *     `MRTNode.merge()` (MRTNode.js:150-160) assigns the combined map to
+ *     `mrtTarget.blendings` while `getBlendMode` reads `this.blendModes` — an
+ *     upstream typo, so every merged material MRT falls back to the constructor
+ *     default and non-`output` attachments are always `_noBlending`. Our pass
+ *     MRT always exists, so every `writeSsrMask` material takes the merge path.
+ *     Fixing this needs an upstream patch or a monkey-patch, not a call.
+ *  2. DISCARD WHERE THE OVERLAY CONTRIBUTES NOTHING. A wake ring is a thin band
+ *     inside a large quad; discarding the ~90% that adds no colour restores the
+ *     g-buffer there AND saves the fragments. That is an edit to a gameplay VFX
+ *     file with a visual consequence, and it wants a before/after plate.
+ *  3. WRITE THE TRUTH INSTEAD OF ZERO — an overlay lying flat ON water can
+ *     legitimately declare water's reflectivity. Also a look decision.
+ *
+ * Left open deliberately. It is cosmetically minor today (the rectangle sits on
+ * water, which is the surface most likely to have SSR to lose) and the fix that
+ * was written down for it does not work.
  */
 export function writeSsrMask(material: THREE.NodeMaterial, amount: N): void {
   ;(material as THREE.NodeMaterial & { mrtNode: N }).mrtNode = mrt({

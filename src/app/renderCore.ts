@@ -53,9 +53,11 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
   renderer.setSize(window.innerWidth, window.innerHeight);
   // Tone mapping is project-owned — see render/gradeLooks.ts for the transform
   // and render/grade.ts for the LUT that carries it. NoToneMapping here is
-  // load-bearing rather than cosmetic: postfx's seam used to call renderOutput(),
-  // which resolves the curve from the RenderPipeline's node context, so leaving
-  // ACES set would apply a second, unwanted curve on top of the grade.
+  // load-bearing rather than cosmetic: the display seam resolves its curve from
+  // the RenderPipeline's node context, so leaving ACES set would apply a second,
+  // unwanted curve on top of the grade. (The seam lives in
+  // render/post/display/index.ts now; the deleted render/postfx.ts was where
+  // this hazard was first hit, via renderOutput().)
   //
   // toneMappingExposure stays the exposure control. The grade reads it as a TSL
   // rendererReference, so the "/" slider, the factory reset and __sf.setExposure

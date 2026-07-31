@@ -292,7 +292,7 @@ function buildFlight(flight: Flight): Demo {
       // buffer that frame is rejected. contactShadows is off for the sibling
       // reason (its complement quad samples the beauty pass's own depth), and it
       // contributes nothing to a lens that is never within a metre of anything.
-      ctx.setPostFx({ sceneSamples: 0, contactShadows: false, ink: false, dream: false, retro: false });
+      ctx.setPostFx({ sceneSamples: 0, contactShadows: false });
       OCEAN_KITE_TUNING.values.mistDensity = flight.mist;
       OCEAN_KITE_TUNING.values.shaftStrength = flight.shafts;
       ctx.input.suspended = true;

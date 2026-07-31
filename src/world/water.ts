@@ -9,6 +9,11 @@ import {
   float,
   vec2,
   vec3,
+  vec4,
+  mrt,
+  packNormalToRGB,
+  transformNormalByViewMatrix,
+  cameraViewMatrix,
   color,
   mix,
   step,
@@ -208,6 +213,104 @@ function wavelets(p: any, t: any): any {
     .add(sin(p.x.mul(0.052).negate().add(p.y.mul(0.164)).sub(t.mul(0.93))).mul(0.42))
     .add(sin(p.x.mul(0.093).sub(p.y.mul(0.121)).add(t.mul(1.45))).mul(0.32))
     .add(sin(p.x.mul(0.205).add(p.y.mul(0.178)).add(t.mul(1.95))).mul(0.2));
+}
+
+/**
+ * Write a water sheet's G-buffer attachment: the surface's REAL shading normal,
+ * plus the SSR reflectivity mask. Packing is byte-identical to
+ * `writeSsrMask()` (render/post/shared/gbuffer.ts) — `rgb = normal*0.5+0.5` in
+ * VIEW space, `a = reflectivity` — so keep the two in step if that file ever
+ * changes the attachment's format.
+ *
+ * WHY THIS EXISTS INSTEAD OF JUST CALLING `writeSsrMask()`, which is what every
+ * other opted-in surface in the world uses. That helper packs `normalView`, and
+ * `normalView` resolves through `builder.context.setupNormal()` →
+ * `material.setupNormal()` (Normal.js:108 → NodeMaterial.js:470). The bay sheets
+ * are `MeshBasicNodeMaterial`, and **MeshBasicNodeMaterial.js:67 OVERRIDES
+ * `setupNormal()` to hard-return `negateOnBackSide(normalViewGeometry)` and
+ * never reads `this.normalNode`** — "basic materials are not affected by normal
+ * and bump maps", in its own words. So on these materials `mat.normalNode = …`
+ * is silently discarded: it type-checks, it compiles, it runs, and the
+ * attachment still receives the interpolated plane normal. An assignment that is
+ * ignored looks exactly like a fix, so the normal term is stated explicitly here
+ * rather than routed through a hook this material class deliberately does not
+ * implement. (`NodeMaterial.js:935` is the version that honours `normalNode` —
+ * which is why the Palace lagoon, a MeshPhysicalNodeMaterial, has been the only
+ * water in the world whose G-buffer normal was ever right, and why it keeps
+ * using `writeSsrMask` below.)
+ *
+ * WHAT WAS MEASURED before this existed, off the real GPU attachment: at an
+ * ocean-facing stop **88.8% of the frame carried ONE quantised normal**,
+ * [128,243,182] = view-space (0.004, 0.906, 0.427) — world up under the
+ * camera's 25.5° down-pitch — with `normalStd` EXACTLY [0,0,0] across the
+ * horizon, mid-centre, near-bottom, lower-left and lower-right bands, over a
+ * beauty plate full of wave structure. Vertex displacement in `positionNode`
+ * does not update the normal attribute either, so even the FFT-displaced
+ * near/hero sheets wrote flat up. Downstream, SSR traced the bay as a
+ * mirror-flat plane and returned almost nothing: 1.6% of pixels carried any
+ * reflection and 33 of 34 sampled rows were exactly zero.
+ *
+ * COST: `worldNormal` is the sheet's own `rippleNormal` — already a `.toVar()`
+ * built from the `oceanDetail()` cascade fetch the BRDF needs anyway — so this
+ * re-evaluates NOTHING: no second `oceanDetail()`, no extra cascade texture
+ * fetch on the highest-coverage material in the world. That reuse is not a
+ * hope: the alpha channel of this very attachment already reads `foamTotal`
+ * (another colorNode-flow `.toVar()`) the same way, and it was measured correct
+ * at the swash — a 0.06→0.85 graded wetness ramp reaching the G-buffer.
+ *
+ * What it adds is a mat4×vec4 with w = 0 plus a normalize, ~24 fragment ALU.
+ * What it REMOVES, and this is reasoned from the source rather than measured:
+ * `normalView` is now referenced by nothing in these materials, so
+ * `setupNormal()` is never called and `normalViewGeometry` is never built —
+ * taking with it the vertex-stage `modelNormalMatrix` multiply and the
+ * `v_normalViewGeometry` vec3 varying it interpolates across 42.6k displaced
+ * near/hero vertices. Net cost is expected to be around zero. Worth a profile
+ * if anyone is measuring this material anyway; not worth one on its own.
+ *
+ * Nothing here touches the SHADED path. With `lights = false` the outgoing light
+ * is `diffuseColor.rgb` and no lighting model, fog term or output hook reads
+ * `normalView`; the material's only consumer of it was this attachment. The
+ * beauty pass is unchanged to the code value.
+ */
+/**
+ * WHAT THE TRANSPARENCY OF THESE SHEETS DOES AND DOES NOT DO TO THE ATTACHMENT,
+ * because it gets raised as a defect and the answer is mostly reassuring.
+ *
+ * `MRTNode.getBlendMode` returns `_noBlending` for every output but `output`
+ * (MRTNode.js:110), so a partially transparent fragment blends its COLOUR and
+ * OVERWRITES its g-buffer at full weight. `oceanBeachShorebreak/index.ts` writes
+ * that down explicitly and calls it "not a general licence"; these sheets take
+ * the same licence, and here is the accounting for it:
+ *
+ *  - BELOW THE COVERAGE CUT, NOTHING IS WRITTEN AT ALL. Every bay sheet sets
+ *    `mat.maskNode = coverage.greaterThan(0.5)`, and a maskNode is a DISCARD —
+ *    it kills the whole fragment, every attachment with it, as the first
+ *    statement of `setupDiffuseColor`. So the shoreline, the dry-land cut and
+ *    the 1.9-2.1 km annulus handoff do not overwrite anything: they are an
+ *    alpha TEST, not a fade. The claim that "wherever coverage fades the sheet
+ *    still stamps 0.9 reflectivity" is false for these three materials.
+ *  - THE RESIDUAL IS THE FEATHER, coverage in (0.5, 1] — pixels the sheet has
+ *    already won, where it is at least half opaque and is the dominant surface.
+ *    Writing water's normal and reflectivity there is the desirable half of
+ *    BRIEF risk #11, not the harmful half.
+ *  - THE ONE MATERIAL WITH A GENUINELY SOFT EDGE is the Palace lagoon below: it
+ *    is `MeshPhysicalNodeMaterial`, has NO maskNode, and its `opacityNode` ramps
+ *    to 0 at the planted edge — so its outermost, fully transparent pixels do
+ *    stamp mask 0.9 and a ripple normal over the ground behind. It is a
+ *    centimetres-wide band at a pond edge that is water anyway. Named so it is
+ *    not rediscovered as a mystery; it has not been plated.
+ */
+function writeWaterGBuffer(mat: THREE.NodeMaterial, worldNormal: any, ssrAmount: any): void {
+  // View space, because that is what the attachment's decoders
+  // (gbuffer.ts `normalViewAt`) and every consumer of it expect. The sheets'
+  // `rippleNormal` is WORLD space (the BRDF reflects in world space and the sky
+  // is a world-direction function), so the transform is required, not cosmetic.
+  (mat as THREE.NodeMaterial & { mrtNode: any }).mrtNode = mrt({
+    gbuffer: vec4(
+      packNormalToRGB(transformNormalByViewMatrix(worldNormal, cameraViewMatrix)),
+      ssrAmount
+    )
+  });
 }
 
 /**
@@ -714,6 +817,19 @@ export class Water {
       // cut so nothing downstream depends on discard semantics.
       mat.opacityNode = coverage;
 
+      // G-buffer: the wave normal the BRDF just shaded with, plus the SSR mask.
+      //
+      // `rippleNormal` — the SAME node the BRDF above consumed, so SSR, SSAO and
+      // the temporal resolve now see exactly the surface the beauty pass drew
+      // instead of a flat plane. It is the cascades' analytic slope normal, so
+      // the per-cascade distance fades in oceanDetail() carry into the G-buffer
+      // too: far water quiets down rather than shimmering a normal field the
+      // shading itself has already faded out.
+      //
+      // NB the analytic swell in `positionNode` (swellBase / oceanBeachSwell) is
+      // deliberately absent from it, exactly as it is absent from the shading —
+      // matching the beauty pass is the contract here, not out-modelling it.
+      //
       // SSR opt-in. Open water is the most reflective surface in the world, so
       // this is a near-constant — but NOT constant across the sheet: `foamTotal`
       // is whitecaps, surf face and crest fizz, which are aerated air/water mix
@@ -726,7 +842,7 @@ export class Water {
       // ever find what is already on screen; leaving headroom keeps the
       // analytic sky in oceanSurfaceRadiance the dominant term on the (very
       // common) pixels whose reflected ray leaves the frame.
-      writeSsrMask(mat, float(0.9).mul(foamTotal.oneMinus()));
+      writeWaterGBuffer(mat, rippleNormal, float(0.9).mul(foamTotal.oneMinus()));
 
       return mat;
     };
@@ -821,6 +937,24 @@ export class Water {
 
       mat.opacityNode = coverage;
 
+      // G-buffer normal, with the SSR mask left at 0. Two separate reasons:
+      //
+      //  • The mask stays 0 because this sheet has never opted into SSR and this
+      //    change is not the place to decide that it should — 0 is what the pass
+      //    MRT's own default writes, so SSR behaviour here is untouched.
+      //  • The normal must still be written, or fixing the annulus would CREATE
+      //    an artifact: the two sheets meet at an alpha-tested ring (1.9→2.1 km)
+      //    and one writing wave normals while the other wrote flat up would put
+      //    a hard normal discontinuity there for SSAO to shade as a ring. Same
+      //    single cascade-0 slope the annulus uses at that distance, so the
+      //    handoff stays continuous in the G-buffer exactly as it already is in
+      //    the beauty pass. Cascade 0 fades at 3400 m (CASCADE_FADE_DIST[0]), so
+      //    there is real slope out here — ~0.38 weight at the ring — and it
+      //    reaches flat mirror on its own past 3.4 km.
+      //
+      // One mat4×vec4 on a sheet whose `det` is already fetched. No new fetch.
+      writeWaterGBuffer(mat, rippleNormal, float(0));
+
       return mat;
     };
 
@@ -894,6 +1028,14 @@ export class Water {
       // stands directly over it, so this is the one pond in the world whose
       // reflection is the entire point of the water. Same 0.9 as the bay, minus
       // the lap foam at the planted edge, which is spray.
+      //
+      // The shared `writeSsrMask` is correct HERE and only here: this is the
+      // one water material in the file that is not a MeshBasicNodeMaterial, so
+      // `normalView` resolves through NodeMaterial.setupNormal() and picks up
+      // the `mat.normalNode = bumpNormal(rippleH)` assigned above (which is
+      // already view-space — bumpNormal builds from positionView derivatives).
+      // The bay sheets cannot use it; see writeWaterGBuffer's note on
+      // MeshBasicNodeMaterial.js:67. Do not "unify" these two call sites.
       writeSsrMask(mat, float(0.9).mul(foam.oneMinus()));
       return mat;
     };
