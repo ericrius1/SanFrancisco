@@ -93,7 +93,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // world-frozen, fully paused) all call it right after hud.update so the combo
   // meter keeps reading true while the world is stopped around it.
   const skateCoach = new SkateCoach();
+  let skateTutorialRequest = core.state.skateTutorialRequest;
   const updateSkateHud = (dt: number) => {
+    if (skateTutorialRequest !== core.state.skateTutorialRequest) {
+      skateTutorialRequest = core.state.skateTutorialRequest;
+      skateCoach.restart();
+    }
     const book = player.skateTricks;
     if (!book) {
       skateHud.update({ book: null, balancing: false, balance: 0 });

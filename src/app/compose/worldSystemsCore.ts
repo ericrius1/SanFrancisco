@@ -160,6 +160,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     stMarys: null as (StMarysRuntime | null),
     sutroBaths: null as (import("../../world/sutroBaths").SutroBaths | null),
     skatePlaza: null as (import("../../world/skatePlaza").SkatePlaza | null),
+    skateTutorialRequest: 0,
     streetSpots: null as (import("../../vehicles/skate/streetSpots").SkateStreetSpots | null),
     museumBookOpen: false as any,
     citygen: null as ({ update?: (dt: number) => void; [k: string]: unknown } | null),

@@ -19,7 +19,7 @@ import {
 import type {  } from "../../world/coronaHeights";
 import type {  } from "../../world/missionDolores";
 import { WILD_REGIONS } from "../../world/wildlands/regions";
-import { inSkatePlazaFootprint } from "../../world/skatePlaza/meta";
+import { inSkatePlazaFootprint, SKATE_PLAZA_ARRIVAL } from "../../world/skatePlaza/meta";
 import { BUENA_VISTA_REGION } from "../../world/buenaVista";
 import { BACKGROUND_STREAM_LIMIT } from "../../world/tiles";
 import { sutroTowerArrivalForDestination } from "../../world/sutroTower";
@@ -103,7 +103,7 @@ type RegionKey = "garden" | "wildlands" | "golf"; // mirrors main.ts's boot-scop
 
 export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, waitForWorldBackgroundWindow, waitForWorldStreamingWindow, aim, tiles, rayOrigin, worldReady, scheduler, pipeline, authoredRegions, waitForCityGenRenderWindow, app, fullTileRadius, invite, startMode, savedSurfboard, savedScooter, savedCar, savedBoard, savedAvatar, resumed, nextPresentationFrame, autoStartHiroTour, releasePianoGodRays, constructionSlice } = ctx;
-  const { hud, fx, fireworks, paintballs, setColor, vehicleAudio, jumpLandingAudio, audioControls, nature, ballImpactAudio, ensureSurfShack, prepareSurfEntry, embodiments, inOrbit, siteGate, setFoliageVisible, armIslandsVegetation, worldQueries, citygenRing, dogParkAudio, buskerTalk, setViewMode } = core;
+  const { hud, toolbar, fx, fireworks, paintballs, setColor, vehicleAudio, jumpLandingAudio, audioControls, nature, ballImpactAudio, ensureSurfShack, prepareSurfEntry, embodiments, inOrbit, siteGate, setFoliageVisible, armIslandsVegetation, worldQueries, citygenRing, dogParkAudio, buskerTalk, setViewMode } = core;
   const state = {
     ghostShip: null as (GhostShip | null),
     ghostShipLoading: null as (Promise<GhostShip | null> | null),
@@ -937,9 +937,35 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       );
     }
   });
+  // Skate mode owns one contextual toolbar action. Like the city tutorial,
+  // the click requests its optional site and relocates through the covered,
+  // collision-safe arrival path; nothing from the skatepark loads at boot.
+  let skateTutorialPending = false;
+  toolbar.setSkateTutorialAction(() => {
+    skateTutorialPending = true;
+    navigation.teleportToPose(
+      {
+        x: SKATE_PLAZA_ARRIVAL.x,
+        y: map.groundTop(SKATE_PLAZA_ARRIVAL.x, SKATE_PLAZA_ARRIVAL.z) + 1.2,
+        z: SKATE_PLAZA_ARRIVAL.z,
+        facing: SKATE_PLAZA_ARRIVAL.heading,
+        mode: "skate"
+      },
+      "Skatepark Tutorial"
+    );
+  });
   navigation.onTeleported = () => {
     jumpLandingAudio.reset();
     tutorial.note("teleport");
+    if (skateTutorialPending) {
+      skateTutorialPending = false;
+      if (
+        player.mode === "skate" &&
+        inSkatePlazaFootprint(player.position.x, player.position.z, 8)
+      ) {
+        core.state.skateTutorialRequest++;
+      }
+    }
   };
   await constructionSlice();
 
