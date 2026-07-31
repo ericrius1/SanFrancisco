@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { analyzeFrameSequence, evaluateShadowTemporalProbe } from "./lib/shadow-temporal-analysis.mjs";
 
 const makeFrame = (value, pixels = 64) => {
@@ -37,5 +38,18 @@ assert(failing2.failures.some((failure) => failure.includes("period-2")));
 const failing4 = evaluateShadowTemporalProbe({ staticFrames, motionFrames: period4HoldFrames });
 assert.equal(failing4.pass, false);
 assert(failing4.failures.some((failure) => failure.includes("period-4")));
+
+// Dynamic-map cadence is a presented-frame correctness contract. A previous
+// governor parity gate turned Sutro's intentional 30 fps pocket into 15 Hz
+// avatar shadows; self-shadow and wall projections then blinked in lockstep.
+const clipmapSource = await readFile(
+  new URL("../src/world/shadows/clipmapShadowNode.ts", import.meta.url),
+  "utf8"
+);
+assert.doesNotMatch(clipmapSource, /heroShadowHalfRate/);
+assert.match(
+  clipmapSource,
+  /if \(domain\.id === ["']hero["']\) reason \|= SHADOW_UPDATE_REASON\.EVERY_FRAME/
+);
 
 console.log("shadow temporal analysis: pass");
