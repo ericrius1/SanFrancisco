@@ -66,10 +66,9 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
    * trunk with at most a handful of frond rosettes, which from underneath is a
    * flat starburst and nothing like a plant.
    *
-   * Two species, not three or four. Each additional species is another pipeline
-   * signature to compile, and the arrival now lands INSIDE the hall — so this
-   * planting is on the critical path of the transition rather than something a
-   * visitor walks down to.
+   * Magnolia + oak for the avenues, plus flowering cherry on the pavilion bank
+   * under the clock. Three species is the compile budget the arrival can stand;
+   * a fourth would put another KTX2 pack on the transition's critical path.
    */
   {
     id: "gallery-magnolia",
@@ -80,52 +79,74 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
         // Shorter and markedly denser than before. The old 7.2 m / 1.8-density
         // magnolia read as a leggy houseplant — a bare stem with a few leaf
         // sprays — because the crown was stretched over too much trunk.
+        // crownDensity clamps at 1.8 inside createNativeTreeArchetype.
         height: 6.4,
-        crownDensity: 2.3,
-        crownWidth: 1.05,
+        crownDensity: 1.8,
+        crownWidth: 1.18,
         // Warmer and a shade lighter than the wild recipe: these live under
         // glass and candlelight, not on a fog-grey headland, and a saturated
         // cold green goes to pure black once the pocket twilight settles.
-        foliageColor: 0x53744a,
-        foliageTint: 0xa3b06c,
+        foliageColor: 0x6a8f52,
+        foliageTint: 0xc4d47a,
         windResponse: 0.22
       },
       sink: 0.1
     }
   },
   {
+    /**
+     * Low wide crowns for the pavilion bank and west deck. Kept deliberately
+     * short so the clock wall reads foliage mass instead of a stick silhouette.
+     */
     id: "gallery-magnolia-low",
     design: {
       species: "magnolia",
       seed: 18965,
       controls: {
-        height: 4.6,
-        crownDensity: 2.4,
-        crownWidth: 1.22,
-        foliageColor: 0x4d7047,
-        foliageTint: 0x9aa966,
+        height: 4.8,
+        crownDensity: 1.8,
+        crownWidth: 1.4,
+        foliageColor: 0x739656,
+        foliageTint: 0xd0e085,
         windResponse: 0.2
       },
       sink: 0.12
     }
   },
   {
+    /** Blossoms under the clock — the period conservatory's living colour. */
+    id: "pavilion-cherry",
+    design: {
+      species: "flowering-cherry",
+      seed: 18969,
+      controls: {
+        height: 4.8,
+        crownDensity: 1.8,
+        crownWidth: 1.28,
+        foliageColor: 0xc47a8c,
+        foliageTint: 0xf5c4d2,
+        leafColorVariant: "blossom",
+        windResponse: 0.28
+      },
+      sink: 0.12
+    }
+  },
+  {
     /**
-     * The big specimens: a spreading oak crown at the north bank and on the
-     * south promenade. Palms were the obvious choice for a bath house, but that
-     * recipe has no branch levels at all — a trunk with three frond rosettes,
-     * which reads as a flat asterisk at every height and distance.
+     * Spreading oak on the south promenade. Palms were the obvious choice for a
+     * bath house, but that recipe has no branch levels at all — a trunk with
+     * three frond rosettes, which reads as a flat asterisk at every height.
      */
     id: "conservatory-specimen",
     design: {
       species: "coast-live-oak",
       seed: 18966,
       controls: {
-        height: 8.4,
-        crownDensity: 2.1,
-        crownWidth: 1.15,
-        foliageColor: 0x56784a,
-        foliageTint: 0xa6b26e,
+        height: 7.2,
+        crownDensity: 1.8,
+        crownWidth: 1.28,
+        foliageColor: 0x6b9154,
+        foliageTint: 0xc6d67e,
         windResponse: 0.24
       },
       sink: 0.1
@@ -134,13 +155,15 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
 ] as const;
 
 const TREE_LAYOUT = [
-  // North conservatory bank, read against the north glass. Clear to the roof.
-  { x: -22, z: -62, scale: 0.95, archetype: "conservatory-specimen" },
-  { x: -8, z: -63, scale: 1, archetype: "conservatory-specimen" },
-  { x: 7, z: -62, scale: 0.92, archetype: "conservatory-specimen" },
-  { x: -27, z: -61, scale: 0.9, archetype: "gallery-magnolia" },
-  { x: 20, z: -63, scale: 0.88, archetype: "gallery-magnolia" },
-  { x: 27, z: -61, scale: 0.85, archetype: "gallery-magnolia" },
+  // North pavilion bank under the clock. Short dense magnolias frame the wall;
+  // flowering cherries sit on the clock axis so the dial reads over blossom
+  // instead of bare twigs. Clear to the roof.
+  { x: -24, z: -62, scale: 0.96, archetype: "gallery-magnolia-low" },
+  { x: -14, z: -63, scale: 1, archetype: "pavilion-cherry" },
+  { x: -4, z: -64, scale: 1.02, archetype: "pavilion-cherry" },
+  { x: 6, z: -63, scale: 0.98, archetype: "pavilion-cherry" },
+  { x: 16, z: -62, scale: 0.94, archetype: "gallery-magnolia-low" },
+  { x: 26, z: -61, scale: 0.9, archetype: "gallery-magnolia-low" },
   // East avenue on the walkway between the graduated baths and the seating
   // tiers: 20.4 m of headroom, and 5.2 m of lateral room before the tiers.
   // Threaded BETWEEN the east tea tables (parlour.ts TABLES, local x 25.4 at
@@ -186,12 +209,14 @@ const SHRUB_PALETTES: readonly AuthoredShrubPalette[] = [
 ] as const;
 
 const SHRUB_LAYOUT = [
-  // Ferny north conservatory bank beneath the specimen crowns.
-  [-24, -66, 1.2, 0, "fern"],
-  [-13, -67, 1.08, 2, "fern"],
-  [1, -66, 1.15, 0, "fern"],
-  [15, -66, 1.08, 2, "fern"],
-  [26, -65.5, 1.1, 0, "fern"],
+  // Ferny north pavilion bank beneath the clock-wall crowns.
+  [-26, -66, 1.22, 0, "fern"],
+  [-18, -67, 1.12, 1, "fern"],
+  [-10, -67.5, 1.18, 2, "fern"],
+  [-2, -68, 1.14, 1, "fern"],
+  [6, -67.5, 1.16, 0, "fern"],
+  [14, -66.5, 1.1, 2, "fern"],
+  [24, -65.5, 1.12, 0, "fern"],
   // Potted foliage under the seating tiers along the east walkway. Shrubs are
   // waist-high, so the 5.6 m tier soffit that ruled out trees here is ample.
   [30.2, -47, 0.82, 0, "natural"],
@@ -213,11 +238,12 @@ const SHRUB_LAYOUT = [
   [-37.8, 8, 0.74, 0, "fern"],
   [-37.8, 44, 0.7, 2, "fern"],
   // Low planting along the central deck spine, between the pool ends.
+  // Keep z ≤ 18: the south court (z 22–44, maxX 19) swallowed the old spine
+  // planter at (-7.6, 42) and left it floating in the plunge.
   [-7.6, -58, 0.8, 1, "natural"],
   [-7.6, -34, 0.86, 0, "fern"],
   [-7.6, -10, 0.82, 2, "natural"],
   [-7.6, 18, 0.88, 1, "fern"],
-  [-7.6, 42, 0.8, 0, "natural"],
   // South promenade beds, kept west of the spiral's inner edge at local x 10.4.
   [-24, 55, 0.9, 1, "fern"],
   [-16, 57, 0.84, 2, "natural"],
@@ -316,9 +342,12 @@ export function createSutroBathsVegetation(): SutroBathsVegetation {
     name: "sutro_baths_conservatory_trees",
     chunkSize: 24,
     visibleDistance: 540,
-    nearRadius: 82,
-    nearExitRadius: 104,
-    nearMax: 28
+    nearRadius: 96,
+    nearExitRadius: 118,
+    // Every tree in the hall plus headroom while the cherry/magnolia near
+    // packs finish decoding — a saturated pool was forcing the pavilion bank
+    // onto leafless-looking horizon cards against the clock wall.
+    nearMax: 36
   });
   const shrubs = createAuthoredShrubPatch(SHRUB_PLACEMENTS, {
     name: "sutro_baths_gallery_shrubs",

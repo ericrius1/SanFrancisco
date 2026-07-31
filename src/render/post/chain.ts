@@ -2,6 +2,7 @@
 // scratch RenderTarget so a stage whose targets are vendor-internal can still be
 // warmed against a matching colour format. See the WARMUP GROUPING note.
 import * as THREE from "three/webgpu"
+import { RENDER_TUNING } from "../../config"
 import { setTemporalResolveReporter } from "../pocketQuality"
 import { createChainTargets } from "./targets"
 import { createTextureSlot } from "./shared/textureSlot"
@@ -299,8 +300,14 @@ export function createPostChain(deps: PostChainDeps): PostChainInternals {
    * replace the reporter rather than race it.
    */
   const temporalStage = byId.get("temporal")
+  // Wireframe forces the master bypass (see render below) so TAA is not live
+  // either — pocket/governor resolution must agree or beauty stays half-res
+  // while the resolve that justified it is skipped.
   setTemporalResolveReporter(
-    () => POST_TUNING.values.enabled === true && temporalStage?.enabled() === true
+    () =>
+      POST_TUNING.values.enabled === true &&
+      RENDER_TUNING.values.wireframe !== true &&
+      temporalStage?.enabled() === true
   )
 
   /**
@@ -435,7 +442,10 @@ export function createPostChain(deps: PostChainDeps): PostChainInternals {
       resizeIfNeeded(frame)
       if (frame.historyInvalid) matrices.reset(camera)
 
-      if (POST_TUNING.values.enabled !== true) {
+      // Wireframe is a debug topology view — TAA/bloom/SSAO smear or glow the
+      // lines. Bypass the stage loop (display tail still presents) without
+      // mutating the user's persisted `post.enabled` preference.
+      if (POST_TUNING.values.enabled !== true || RENDER_TUNING.values.wireframe === true) {
         renderBypass(frame)
         return
       }

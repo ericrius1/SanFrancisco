@@ -94,10 +94,10 @@ const BATHERS: readonly BatherSpec[] = [
   // ---- east gallery and the south promenade: the other tea rooms ---------
   { seed: "sutro-tea-7", pool: "seat:east-a-1", pose: "sitChair", talk: "east-tea-a", tea: true },
   { seed: "sutro-tea-8", pool: "seat:east-a-2", pose: "sitChair", talk: "east-tea-a" },
-  { seed: "sutro-tea-9", pool: "seat:east-b-1", pose: "sitChair", talk: "east-tea-b", tea: true },
-  { seed: "sutro-tea-10", pool: "seat:east-b-2", pose: "sitChair", talk: "east-tea-b" },
-  { seed: "sutro-tea-11", pool: "seat:east-b-3", pose: "sitChair", talk: "east-tea-b", tea: true },
-  { seed: "sutro-tea-12", pool: "seat:east-c-1", pose: "sitChair", tea: true },
+  { seed: "sutro-chat-4", pool: "seat:east-b-1", pose: "sitChair", talk: "east-tea-b", tea: true },
+  { seed: "sutro-chat-5", pool: "seat:east-b-2", pose: "sitChair", talk: "east-tea-b" },
+  { seed: "sutro-tea-12", pool: "seat:east-b-3", pose: "sitChair", talk: "east-tea-b", tea: true },
+  { seed: "sutro-tea-9", pool: "seat:east-c-1", pose: "sitChair", tea: true },
   { seed: "sutro-south-1", pool: "seat:south-1", pose: "sitChair", talk: "south-table" },
   { seed: "sutro-south-2", pool: "seat:south-2", pose: "sitChair", talk: "south-table", tea: true },
   { seed: "sutro-south-3", pool: "seat:south-3", pose: "sitChair", talk: "south-table" },
@@ -144,8 +144,8 @@ const BATHERS: readonly BatherSpec[] = [
   { seed: "sutro-chat-2", pool: "deck", lx: -6.9, lz: -45.2, face: 1.95, pose: "standChat", talk: "north-deck" },
   { seed: "sutro-chat-3", pool: "deck", lx: -5.4, lz: -46.1, face: -1.6, pose: "standChat", talk: "north-deck" },
   // Clear of the east coping candle stands at lx 20.6.
-  { seed: "sutro-chat-4", pool: "deck", lx: 22.9, lz: 19.4, face: -1.5, pose: "standChat", talk: "east-deck" },
-  { seed: "sutro-chat-5", pool: "deck", lx: 22.9, lz: 21.3, face: -1.9, pose: "standChat", talk: "east-deck" }
+  { seed: "sutro-tea-10", pool: "deck", lx: 22.9, lz: 19.4, face: -1.5, pose: "standChat", talk: "east-deck" },
+  { seed: "sutro-tea-11", pool: "deck", lx: 22.9, lz: 21.3, face: -1.9, pose: "standChat", talk: "east-deck" }
 ] as const;
 
 function poolById(id: string): SutroPoolSpec | undefined {

@@ -1,3 +1,4 @@
+import { RENDER_TUNING } from "../../config"
 import { tunables } from "../../core/persist"
 import { governorEffects } from "../adaptiveResolution"
 import { pocketTemporalScale } from "../pocketQuality"
@@ -107,6 +108,9 @@ export const POST_TUNING = tunables("post", {
  */
 export function postInputScale(): number {
   if (!POST_TUNING.values.enabled) return 1
+  // Wireframe bypasses the temporal resolve; a sub-output beauty pass would
+  // just present a softer line image through the display tail.
+  if (RENDER_TUNING.values.wireframe === true) return 1
   // Only the temporal resolve can consume a lower-resolution beauty pass and
   // still present at output resolution. With it off, rendering the beauty pass
   // small would just be a blurrier frame.

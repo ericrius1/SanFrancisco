@@ -5,17 +5,17 @@
   "bake": "npm run bake:region -- --site sutro-baths",
   "tracked": true,
   "inputs": {
-    "assets-src/world/sites/sutro-baths.blend": "2a6d51dc98469807725eb1edfff8c7cdf065a1e9852805ceb1fc32797a5f04d0",
+    "assets-src/world/sites/sutro-baths.blend": "4fc53ef1f428f31d1d246cf95e74a963b58900a1fc264166aa1a94683f26ff33",
     "data/authored-regions.json": "6d9b3a8dbf60bfa388266d59f183d1ef2e52042925be77c7942f4957d0aa888d",
     "tools/export-authored-site.py": "bc1fed401a1fd10e18b7804f39c379665ba470a5d46f795d2c0e64b8632f6692",
-    "tools/inject-authored-site.mjs": "80fced31ccb6713acb3cdbba609e1e8788301482769644951608b3568205c3ff",
+    "tools/inject-authored-site.mjs": "cec2b37728c85137986d207998b78c82421634ea2ee1390729d11ec2583c6664",
     "tools/sync-authored-region.py": "44b9eba826becee2ddec3312666a50902256d2ddad53d389b915801b07145172"
   },
   "outputs": {
-    "data/authored-sites/sutro-baths.json": "6a1e5cd54131306279bc16fb36c9b48eee5b1d2a9672a9f245b6ff66ae9f8759",
-    "public/data/authored-regions.json": "14c2ebe28d49c902baea177da0fdd095aa32d83c2b1e5d17e9659a580f73e42d",
+    "data/authored-sites/sutro-baths.json": "50f6f33b8d82efb45213cafab606930f2a0669a759bae82145e3a62467ddf37d",
+    "public/data/authored-regions.json": "02be67818df413f710cfba5bb625ca107584ed41c00f52b1832227b76a4f590b",
     "public/data/colliders/tile_1_12.json": "475e727e928f6d6e637863fad7817ac9989e040de15b182fbd5c52a1a5098bae",
-    "public/regions/sutro-baths.glb": "ad373321ea9022622bf009195674ca59cb63d3cf1b819d948ae97d0247cd234b",
+    "public/regions/sutro-baths.glb": "55162ee8d24acb45070ac16720a47bf8003aa3a170ca47f446b14dffe95d3913",
     "public/tiles/tile_1_12.glb": "0cfff6bd8ab4761c5a1d82a45ec3092dc44c2b72ba6cd832e627410ce19a16a0"
   }
 }

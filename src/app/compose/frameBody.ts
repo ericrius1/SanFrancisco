@@ -1036,12 +1036,22 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (!worldArrival.active && input.pressed("KeyC")) {
       cycleViewMode();
     }
-    // R: wireframe overlay (unused elsewhere — retained pass override + camera).
+    // \: wireframe overlay (debug-only — retained pass override + camera).
     // Keep transient debug presentation changes behind the identity/loading gate
     // so a key pressed before Start cannot become the first playable frame.
-    if (document.body.classList.contains("started") && input.pressed("KeyR")) {
+    if (document.body.classList.contains("started") && input.pressed("Backslash")) {
       debugPanel.toggleWireframe();
-      hud.message(RENDER_TUNING.values.wireframe ? "Wireframe on (R)" : "Wireframe off (R)", 1.4);
+      hud.message(RENDER_TUNING.values.wireframe ? "Wireframe on (\\)" : "Wireframe off (\\)", 1.4);
+    }
+    // TEMP shot hack — Y toggles the Sutro grand spiral. Remove after the take.
+    if (document.body.classList.contains("started") && input.pressed("KeyY")) {
+      const spiral = scene.getObjectByName("sutro_baths_grand_spiral_v6");
+      if (spiral) {
+        spiral.visible = !spiral.visible;
+        hud.message(spiral.visible ? "Spiral on (Y)" : "Spiral off (Y)", 1.4);
+      } else {
+        hud.message("Spiral not loaded (Y)", 1.4);
+      }
     }
     // O: 180° orbit flip around the current look target (camera mode only)
     if (inOrbit() && input.pressed("KeyO")) {

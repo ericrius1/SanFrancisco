@@ -1,3 +1,4 @@
+import { RENDER_TUNING } from "../../../config"
 import { POST_TUNING } from "../tuning"
 import { TEMPORAL_TUNING } from "../temporal/tuning"
 import { JITTER_TUNING } from "./tuning"
@@ -58,6 +59,9 @@ export const NO_JITTER: JitterOffset = { x: 0, y: 0 }
  * stage is on AND the artist has not zeroed the radius.
  */
 export function jitterActive(): boolean {
+  // Wireframe bypasses the post chain (and its temporal resolve); jitter with
+  // nothing accumulating it is just per-frame line shimmer.
+  if (RENDER_TUNING.values.wireframe === true) return false
   if (POST_TUNING.values.enabled !== true) return false
   if (TEMPORAL_TUNING.values.enabled !== true) return false
   return Number(JITTER_TUNING.values.amount) > 0

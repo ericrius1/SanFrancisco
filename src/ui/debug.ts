@@ -439,7 +439,7 @@ export class DebugPanel {
     }
   }
 
-  /** R key / pane checkbox — flip wireframe via the retained pass override. */
+  /** \\ key / pane checkbox — flip wireframe via the retained pass override. */
   toggleWireframe() {
     const next = !RENDER_TUNING.values.wireframe;
     RENDER_TUNING.values.wireframe = next;

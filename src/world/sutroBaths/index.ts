@@ -259,8 +259,8 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   group.add(hallLayer);
 
   const stats: SutroBathsStats = {
-    architectureMeshes: 54,
-    architectureInstances: 2161,
+    architectureMeshes: 55,
+    architectureInstances: 2145,
     roofRibs: 306,
     glassPanels: 304,
     lamps: 28,

@@ -597,8 +597,14 @@ export function createRenderPipeline(
     get textureDisposalState() {
       return deferredTextureDisposalState(renderer);
     },
-    /** Swap the scene pass to/from the retained wireframe override + camera. */
-    setWireframe: (on: boolean) => wireframe.setWireframe(on),
+    /** Swap the scene pass to/from the retained wireframe override + camera.
+     *  Wireframe also bypasses the post chain (see post/chain.ts); leaving it
+     *  seeds temporal history so the first live resolve does not smear. */
+    setWireframe: (on: boolean) => {
+      const was = wireframe.active;
+      wireframe.setWireframe(on);
+      if (was !== on) invalidateHistory(on ? "wireframe-on" : "wireframe-off");
+    },
     /** Blend the wireframe override from neutral grey to its logarithmic LOD ramp. */
     setWireframeLodGradient: (on: boolean) => wireframe.setLodGradient(on),
     /** Browser-native review capture reads the final post-FX texture here. */

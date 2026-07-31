@@ -71,7 +71,7 @@ export const RENDER_TUNING = tunables("render", {
   // cut GPU/thermal load. Read live each frame in app/frameDriver.ts; no side
   // effect on change, so it needs no onChange when bound.
   quietMode: { v: false, label: "battery saver (30 fps)" },
-  wireframe: { v: false, label: "wireframe mode (R)" },
+  wireframe: { v: false, label: "wireframe mode (\\)" },
   wireframeLodGradient: { v: true, label: "resolution gradient" }
 });
 
