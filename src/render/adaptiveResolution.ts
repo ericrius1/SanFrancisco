@@ -9,8 +9,7 @@
 //   L0  factor 1.0   (default)
 //   L1  factor 0.9
 //   L2  factor 0.8
-//   L3  factor 0.8   + hero-shadow half-rate + tighter contact-shadow scale + FFT economy
-//                    + foliage 0.85
+//   L3  factor 0.8   + tighter contact-shadow scale + FFT economy + foliage 0.85
 //   L4  factor 0.7   + foliage scatter 0.7
 //
 // WHICH resolution that factor degrades depends on whether a temporal UPSAMPLE
@@ -103,7 +102,6 @@ export interface GovernorEffects {
    * axes is ever degrading and they can never compound.
    */
   temporalScale: number;
-  heroShadowHalfRate: boolean; // true at level >= 3
   contactShadowScale: number; // 0.5 normally, 0.35 at level >= 3
   fftEconomy: boolean; // true at level >= 3
   foliageScale: number; // 1.0 normally, 0.85 at level >= 3, 0.7 at level 4
@@ -214,7 +212,6 @@ function computeEffects(level: number, upscale: boolean, ceiling: number): Gover
       upscale && level > 0
         ? Math.min(1, Math.max(TEMPORAL_SCALE_MIN, ceiling * factor))
         : 1,
-    heroShadowHalfRate: level >= 3,
     contactShadowScale: level >= 3 ? 0.35 : 0.5,
     fftEconomy: level >= 3,
     // Mild foliage trim arrives at L3 (before the floor) so a fragment-bound
@@ -276,8 +273,8 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
 
   /**
    * Re-read the temporal axis. Deliberately does NOT notify listeners: nothing
-   * a listener consumes (hero shadows, contact-shadow scale, FFT economy,
-   * foliage scatter) depends on it, and waking the foliage subscribers because
+   * a listener consumes (contact-shadow scale, FFT economy, foliage scatter)
+   * depends on it, and waking the foliage subscribers because
    * an artist dragged a resolution slider would re-scatter three grass fields
    * for nothing. postInputScale() polls this every frame from the frame driver
    * (pipeline.ts:249), which is also what invalidates the temporal history when

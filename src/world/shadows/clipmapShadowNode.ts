@@ -25,7 +25,6 @@ import { SHADOW_TUNING } from "./tuning"
 import { composeRasterAtlasVisibility } from "./visibilityComposition"
 import { tracer } from "../../core/hitchTracer"
 import { motionGate } from "../../core/motionGate"
-import { governorEffects } from "../../render/adaptiveResolution"
 
 // M6 hitch closure: streamed caster attaches arrive in bursts (a ring sweep or
 // a citygen district publish invalidates every frame for seconds — pre-M6 that
@@ -447,18 +446,15 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       let reason: ShadowUpdateReason = 0
 
       if (!domain.initialized) reason |= SHADOW_UPDATE_REASON.INITIAL
-      // The hero domain re-renders its dynamic silhouettes every displayed frame.
-      // Under sustained GPU load the governor halves that cadence: the EVERY_FRAME
-      // redraw is gated to even frames so hero dynamic shadows update at ~30 Hz.
-      // This ONLY suppresses the parity-skipped EVERY_FRAME contribution — every
-      // correctness reason (INITIAL above, plus anchor/teleport/sun/stream below)
-      // still accumulates independently and forces the redraw the same frame.
-      if (
-        domain.id === "hero" &&
-        (!governorEffects().heroShadowHalfRate || (this.#frame & 1) === 0)
-      ) {
-        reason |= SHADOW_UPDATE_REASON.EVERY_FRAME
-      }
+      // Dynamic silhouettes must refresh on every PRESENTED frame. This is
+      // especially load-bearing in capped interiors: the Sutro pocket already
+      // presents at 30 Hz, so a governor parity gate here reduced an animated
+      // caster to 15 Hz. The stale map then sampled against the avatar's current
+      // pose (self-shadow) and against static walls (projection), making both
+      // blink together; TAA prolonged each stale state. Resolution/foliage/
+      // contact-shadow economy may degrade under load, but dynamic-map cadence
+      // cannot be reduced independently from the presented-frame cadence.
+      if (domain.id === "hero") reason |= SHADOW_UPDATE_REASON.EVERY_FRAME
 
       const movedSq = focus.distanceToSquared(domain.lastAnchor)
       if (domain.initialized && domain.config.anchorStep > 0 && movedSq >= domain.config.anchorStep ** 2) {

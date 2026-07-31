@@ -56,9 +56,9 @@ export const TEMPORAL_TUNING = tunables("post.temporal", {
    *    old cost inside its gentle levels. From 1.0 the rungs are 0.9 / 0.8 /
    *    0.7: every one of them is ABOVE 0.667, so on a stop where 0.667 was
    *    already the right cost the ladder could never get there and would park at
-   *    L4 — which also flips heroShadowHalfRate, contactShadowScale 0.5 → 0.35,
-   *    fftEconomy and foliageScale 0.7. A resolution default must not be able to
-   *    conscript the shadow and foliage budget.
+   *    L4 — which also flips contactShadowScale 0.5 → 0.35, fftEconomy and
+   *    foliageScale 0.7. A resolution default must not be able to conscript the
+   *    contact-shadow and foliage budget.
    *
    * What this does NOT settle: whether the chain should be the live default at
    * all. That is `post.enabled` (post/tuning.ts) and BRIEF risk #3's policy
