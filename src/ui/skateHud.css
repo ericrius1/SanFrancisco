@@ -184,13 +184,20 @@
 /* Tutorial coach: one instruction at a time, with a pip per step cleared. */
 #hud .skate-ui .coach {
   display: none;
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
   align-items: center;
   gap: 9px;
+  width: fit-content;
+  max-width: min(620px, calc(100vw - 32px));
+  box-sizing: border-box;
   padding: 6px 12px;
   border-radius: var(--r-sm);
   background: rgba(10, 24, 36, 0.82);
   border: 1px solid var(--accent-line);
-  max-width: min(56vw, 620px);
+  z-index: var(--z-hud-raised, 9);
 }
 #hud .skate-ui .coach.on {
   display: flex;
@@ -202,6 +209,7 @@
   white-space: nowrap;
 }
 #hud .skate-ui .coach .say {
+  min-width: 0;
   font-size: 12.5px;
   color: var(--text-soft);
   white-space: nowrap;

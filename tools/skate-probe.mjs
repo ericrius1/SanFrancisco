@@ -222,16 +222,39 @@ async function main() {
     // A point well outside the taper must be untouched.
     const farBase = sf.map.baseGroundTop(cx+220, cz);
     const farTop = sf.map.groundTop(cx+220, cz);
+    const c=Math.cos(meta.SKATE_PLAZA_YAW), s=Math.sin(meta.SKATE_PLAZA_YAW);
+    const toWorld=(lx,lz)=>({x:cx+lx*c+lz*s,z:cz-lx*s+lz*c});
+    const deck=toWorld(3,-18), launch=toWorld(27,-5), ledge=toWorld(21,-17.2);
+    const authoredSurfaces={
+      deck:+(sf.map.groundTop(deck.x,deck.z)-sf.skatePlaza.deckLevel).toFixed(2),
+      launch:+(sf.map.groundTop(launch.x,launch.z)-sf.skatePlaza.deckLevel).toFixed(2),
+      ledge:+(sf.map.groundTop(ledge.x,ledge.z)-sf.skatePlaza.deckLevel).toFixed(2)
+    };
     return { loaded: !!sf.skatePlaza, railCount: rails.length, rails,
              center:{x:cx,z:cz}, base:+base.toFixed(2), top:+top.toFixed(2),
-             lift:+(top-base).toFixed(2), farUntouched: Math.abs(farTop-farBase) < 1e-6 };
+             lift:+(top-base).toFixed(2), farUntouched: Math.abs(farTop-farBase) < 1e-6,
+             authoredSurfaces };
   })()`);
+
+  // The skate lesson uses the same top-centre lane as the city tutorial. It
+  // used to inherit the score stack's lower-left anchor, where chat and the
+  // toolbar could cover it on wide screens.
+  const coach = await ev(c, `(()=>{
+    const el=document.querySelector('#hud .skate-ui .coach');
+    const r=el?.getBoundingClientRect();
+    return r ? { visible:getComputedStyle(el).display!=='none', top:+r.top.toFixed(1),
+                 centerDelta:+(r.left+r.width/2-innerWidth/2).toFixed(1), width:+r.width.toFixed(1) }
+             : { visible:false, missing:true };
+  })()`);
+  const coachShot = await shot(c, `coach-${LABEL}.png`);
 
   // ---- 2. pushing on the flat --------------------------------------------
   const push = await ev(c, `(async()=>{ ${P}
     const meta = await import('/src/world/skatePlaza/meta.ts');
-    const X = meta.SKATE_PLAZA_CENTER.x, Z = meta.SKATE_PLAZA_CENTER.z - 12;
-    sf.player.teleportTo({x:X, y:sf.map.effectiveGround(X,Z)+0.5, z:Z, facing:Math.PI/2, mode:'skate'});
+    const X = meta.SKATE_PLAZA_CENTER.x, Z = meta.SKATE_PLAZA_CENTER.z;
+    // Open flat line in local +Z: no stair set or ledge in the measurement.
+    sf.player.teleportTo({x:X, y:sf.map.effectiveGround(X,Z)+0.5, z:Z,
+                          facing:meta.SKATE_PLAZA_YAW+Math.PI, mode:'skate'});
     await tick(40);
     const sx=sf.player.position.x, sz=sf.player.position.z;
     key('KeyW',true);
@@ -248,8 +271,9 @@ async function main() {
   // ---- 3. ollie + flip trick ---------------------------------------------
   const air = await ev(c, `(async()=>{ ${P}
     const meta = await import('/src/world/skatePlaza/meta.ts');
-    const X = meta.SKATE_PLAZA_CENTER.x, Z = meta.SKATE_PLAZA_CENTER.z - 12;
-    sf.player.teleportTo({x:X, y:sf.map.effectiveGround(X,Z)+0.5, z:Z, facing:Math.PI/2, mode:'skate'});
+    const X = meta.SKATE_PLAZA_CENTER.x, Z = meta.SKATE_PLAZA_CENTER.z;
+    sf.player.teleportTo({x:X, y:sf.map.effectiveGround(X,Z)+0.5, z:Z,
+                          facing:meta.SKATE_PLAZA_YAW+Math.PI, mode:'skate'});
     await tick(40);
     key('KeyW',true);
     for(let i=0;i<120;i++) await tick(1);
@@ -269,7 +293,69 @@ async function main() {
              score: book.score, banner: book.banner.text, bailed: book.banner.bailed };
   })()`);
 
-  // ---- 4. grind a rail ----------------------------------------------------
+  // ---- 4. solid obstacle faces + a calm missed landing -------------------
+  // The park's collision authority is a height field. Drive a deliberately
+  // low ollie into the 2.4 m half-pipe deck's vertical face: it must stop at the
+  // face, never enter the footprint and get catapulted onto the top.
+  const obstacle = await ev(c, `(async()=>{ ${P}
+    const meta = await import('/src/world/skatePlaza/meta.ts');
+    const c=Math.cos(meta.SKATE_PLAZA_YAW), s=Math.sin(meta.SKATE_PLAZA_YAW);
+    const toWorld=(lx,lz)=>({x:meta.SKATE_PLAZA_CENTER.x+lx*c+lz*s,
+                             z:meta.SKATE_PLAZA_CENTER.z-lx*s+lz*c});
+    const toLocal=(x,z)=>({x:(x-meta.SKATE_PLAZA_CENTER.x)*c-(z-meta.SKATE_PLAZA_CENTER.z)*s,
+                           z:(x-meta.SKATE_PLAZA_CENTER.x)*s+(z-meta.SKATE_PLAZA_CENTER.z)*c});
+    const start=toWorld(-3,9);
+    sf.player.teleportTo({x:start.x,y:sf.map.effectiveGround(start.x,start.z)+0.5,z:start.z,
+                          facing:meta.SKATE_PLAZA_YAW+Math.PI/2,mode:'skate'});
+    await tick(40);
+    key('KeyW',true);
+    let popped=false, maxVy=-99, maxVyAt=null, minX=99, crossed=false;
+    for(let i=0;i<240;i++){
+      const local=toLocal(sf.player.position.x,sf.player.position.z);
+      const gap=local.x-(-8);
+      if(!popped && gap<1.5 && gap>0.75){ key('Space',true); await tick(1); key('Space',false); popped=true; }
+      await tick(1);
+      const now=toLocal(sf.player.position.x,sf.player.position.z);
+      minX=Math.min(minX,now.x); crossed ||= now.x < -8.02;
+      if(sf.player.velocity.y>maxVy){ maxVy=sf.player.velocity.y; maxVyAt={x:+now.x.toFixed(2),y:+sf.player.position.y.toFixed(2)}; }
+    }
+    key('KeyW',false); key('Space',false); await tick(30);
+    const end=toLocal(sf.player.position.x,sf.player.position.z);
+    return {popped,crossed,minLocalX:+minX.toFixed(2),endLocalX:+end.x.toFixed(2),
+            maxVy:+maxVy.toFixed(2),maxVyAt,endSpeed:+sp().toFixed(2)};
+  })()`);
+
+  // Start a frontflip too late to finish it. The miss may flail the rider, but
+  // the dynamic collider must remain upright and must not be solver-launched.
+  const bail = await ev(c, `(async()=>{ ${P}
+    const meta = await import('/src/world/skatePlaza/meta.ts');
+    const c=Math.cos(meta.SKATE_PLAZA_YAW), s=Math.sin(meta.SKATE_PLAZA_YAW);
+    const p={x:meta.SKATE_PLAZA_CENTER.x,z:meta.SKATE_PLAZA_CENTER.z};
+    sf.player.teleportTo({x:p.x,y:sf.map.effectiveGround(p.x,p.z)+0.5,z:p.z,
+                          facing:meta.SKATE_PLAZA_YAW+Math.PI,mode:'skate'});
+    await tick(40); key('KeyW',true); for(let i=0;i<100;i++) await tick(1);
+    key('Space',true); for(let i=0;i<12;i++) await tick(1); key('Space',false); key('KeyW',false);
+    let armed=false,sawBail=false,maxStep=0,maxTilt=0,maxSpeed=0,maxBailStep=0,maxBailTilt=0;
+    let px=sf.player.position.x,pz=sf.player.position.z;
+    for(let i=0;i<180;i++){
+      if(!armed && sf.player.skateAirTime>0.54){ key('KeyW',true); armed=true; }
+      await tick(1);
+      const q=sf.player.quaternion;
+      const upY=Math.max(-1,Math.min(1,1-2*(q.x*q.x+q.z*q.z)));
+      const tilt=Math.acos(upY), step=Math.hypot(sf.player.position.x-px,sf.player.position.z-pz);
+      maxTilt=Math.max(maxTilt,tilt); maxSpeed=Math.max(maxSpeed,sp()); maxStep=Math.max(maxStep,step);
+      if(sf.player.skateState.bailing){ maxBailTilt=Math.max(maxBailTilt,tilt); maxBailStep=Math.max(maxBailStep,step); }
+      px=sf.player.position.x; pz=sf.player.position.z;
+      sawBail ||= sf.player.skateState.bailing;
+      if(sawBail && !sf.player.skateState.bailing) break;
+    }
+    key('KeyW',false); key('KeyQ',false); key('Space',false); await tick(20);
+    return {armed,sawBail,maxStep:+maxStep.toFixed(3),maxTilt:+maxTilt.toFixed(3),
+            maxSpeed:+maxSpeed.toFixed(2),maxBailStep:+maxBailStep.toFixed(3),
+            maxBailTilt:+maxBailTilt.toFixed(3)};
+  })()`);
+
+  // ---- 5. grind a rail ----------------------------------------------------
   const grind = await ev(c, `(async()=>{ ${P}
     const railsMod = await import('/src/vehicles/skate/rails.ts');
     const bar = railsMod.allGrindRails().find(r=>r.id.endsWith('flatbar-w'));
@@ -304,7 +390,7 @@ async function main() {
              score: book.score, banner: book.banner.text, bailed: book.banner.bailed };
   })()`);
 
-  // ---- 5. a look at the RIDER --------------------------------------------
+  // ---- 6. a look at the RIDER --------------------------------------------
   // The stance is the thing that has to read, so frame the skater, not the map.
   await ev(c, `(async()=>{ ${P} sf.sky.setTimeOfDay(11.5); await tick(20); return true; })()`);
   const poses = [
@@ -335,7 +421,7 @@ async function main() {
   }
   await ev(c, `window.__sfFreeCam(null)`);
 
-  // ---- 6. bombing a hill (LAST: 3.9 km away unloads the plaza) --------------------------------------------------
+  // ---- 7. bombing a hill (LAST: 3.9 km away unloads the plaza) --------------------------------------------------
   const hill = await ev(c, `(async()=>{ ${P}
     const X=${HILL.x}, Z=${HILL.z};
     const gy=sf.map.effectiveGround(X,Z);
@@ -356,7 +442,7 @@ async function main() {
   })()`);
 
 
-  const result = { label: LABEL, plaza, push, hill, air, grind, shots };
+  const result = { label: LABEL, plaza, coach, coachShot, push, hill, air, obstacle, bail, grind, shots };
   console.log(JSON.stringify(result, null, 2));
   writeFileSync(path.join(OUT, `skate-${LABEL}.json`), JSON.stringify(result, null, 2));
 

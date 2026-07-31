@@ -419,12 +419,20 @@ export class SkatePlaza {
       const blend = padBlend(lx, lz);
       if (blend <= 0) return base;
       const pad = base + kerb + (deckY - base - kerb) * blend;
+      // Several authored pieces deliberately reach into the taper ring: the
+      // raised street deck, outer ledges, half-pipe decks and launch bank. The
+      // old early return made their meshes visible there but discarded their
+      // height functions, so a skateboard could pass straight through them.
+      // Obstacles are positioned from deckY regardless of the slab blend; use
+      // that same authority everywhere the plaza is drawn.
+      const obstacle = obstacleHeight(lx, lz);
+      if (obstacle > 0) return Math.max(pad, deckY + obstacle);
       if (blend < 1) return pad;
       // Inside the graded slab the park owns the surface outright: ramps raise
       // it, the bowl digs it, and the two never overlap by construction.
       const dip = carveDepth(lx, lz);
       if (dip < 0) return deckY + dip;
-      return Math.max(pad, deckY + obstacleHeight(lx, lz));
+      return pad;
     };
     this.#map.setGroundTopOverlay(overlay);
     this.#overlay = overlay;

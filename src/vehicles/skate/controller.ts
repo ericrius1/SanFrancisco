@@ -12,6 +12,18 @@ const TAU = Math.PI * 2;
 /** How far off the bar's line the deck can be pointing and still 50-50 it. */
 const BOARDSLIDE_COS = 0.64; // ≈ 50°
 const LAND_GRACE = 0.22; // seconds after touchdown you may still start a manual
+/** A skateboard can roll a kerb, not phase through the vertical side of a
+ * ledge. Ground overlays are height fields, so sample them finely enough to
+ * distinguish a continuous transition from an abrupt obstacle face. */
+const MAX_RIDE_STEP = 0.24;
+const RISE_PROBE_STEP = 0.08;
+// Board collider half-length is 0.70 m. Look one fixed-step beyond it so the
+// controller stops before the physics shape can enter a height-field cliff.
+const RISE_PROBE_REACH = 1.05;
+/** Collider-origin clearance needed before the deck may pass over a raised
+ * surface. This is deliberately a little below the settled ride height so an
+ * honest ollie clears an edge without snagging on numerical noise. */
+const RISE_CLEARANCE = SKATE_RIDE_HEIGHT - 0.06;
 
 const V = {
   fwd: new THREE.Vector3(),
@@ -106,7 +118,6 @@ export class SkateController implements ModeController {
   #flipLatchBack = false;
   #grabbedThisAir = false;
   #bailT = 0;
-  #bailSpin = 0;
   #rail: GrindRail | null = null;
   #railT = 0;
   #railSign = 1;
@@ -226,15 +237,17 @@ export class SkateController implements ModeController {
       this.bailing = this.#bailT > 0;
       this.grounded = heightAbove < 0.3;
       this.#speed *= Math.max(0, 1 - 5 * dt);
-      this.#bailSpin += dt * 9;
-      this.lean = Math.sin(this.#bailSpin) * 1.5;
-      this.pitch = Math.cos(this.#bailSpin * 0.8) * 1.1;
+      // The rig already has a readable stumble pose. Rotating the dynamic box
+      // through the ground as well made the contact solver eject the player
+      // sideways and turned an ordinary missed landing into a violent spin.
+      // Keep the collision body upright while the limbs sell the bail.
+      this.lean = 0;
+      this.pitch = 0;
       this.#vy = heightAbove > 0.04 ? this.#vy - t.gravity * dt : Math.max(0, (rideY - ctx.position.y) * 10);
       this.#applyMotion(ctx, w, dt);
       if (this.#bailT <= 0) {
         this.lean = 0;
         this.pitch = 0;
-        this.#bailSpin = 0;
         this.#landGrace = LAND_GRACE;
       }
       return;
@@ -335,6 +348,9 @@ export class SkateController implements ModeController {
       const steerRate = steer * steerDir * t.steerRate * grip * (wantSlide ? 2.1 : 1);
       this.yaw += steerRate * dt;
 
+      const blockedByRise = this.#blockedByRise(ctx, surface);
+      if (blockedByRise) this.#speed = 0;
+
       // Ollie: crouch while held, pop on release (a tap pops immediately with
       // no charge, which is exactly what a tap should give you).
       if (spaceHeld) {
@@ -349,18 +365,22 @@ export class SkateController implements ModeController {
       // before the front truck reaches it.
       if (this.#jumpLock <= 0) {
         const nose = 0.75;
-        const aheadY = ctx.map.rideGround(
-          ctx.position.x + V.fwd.x * nose,
-          ctx.position.z + V.fwd.z * nose,
-          ctx.position.y
-        );
+        const aheadY = blockedByRise
+          ? surface
+          : ctx.map.rideGround(
+              ctx.position.x + V.fwd.x * nose,
+              ctx.position.z + V.fwd.z * nose,
+              ctx.position.y
+            );
         const rideYnose = Math.max(surface, aheadY) + t.ride;
         const slopeRate = THREE.MathUtils.clamp(
           ((aheadY - surface) / nose) * Math.max(Math.abs(this.#speed), 2),
           -16,
           26
         );
-        this.#vy = THREE.MathUtils.clamp((rideYnose - ctx.position.y) * 13, -14, 20) + slopeRate;
+        // Clamp the combined request. Clamping the spring and slope terms
+        // separately allowed their maxima to add up to a 46 m/s launch.
+        this.#vy = THREE.MathUtils.clamp((rideYnose - ctx.position.y) * 13 + slopeRate, -14, 20);
       } else {
         this.#vy -= t.gravity * dt;
       }
@@ -389,6 +409,11 @@ export class SkateController implements ModeController {
       const spinRate = steer * t.airSpin;
       this.yaw += spinRate * dt;
       this.#spinDeg += spinRate * dt * RAD2DEG;
+
+      // An ollie that is still too low at a ledge meets its side and drops; it
+      // must not cross into the height-field footprint and get lifted onto the
+      // top. Once the deck has real clearance, momentum carries through.
+      if (this.#blockedByRise(ctx, surface)) this.#speed = 0;
 
       // Front/back flips, but only from a key pressed AFTER take-off — nobody
       // wants a frontflip every time they ollie while pushing.
@@ -514,6 +539,45 @@ export class SkateController implements ModeController {
     this.#speed *= 0.35;
     this.#grindLockout = 0.5;
     this.crouch = 0;
+    this.lean = 0;
+    this.pitch = 0;
+  }
+
+  /**
+   * Is the deck travelling into an abrupt rise it has not cleared yet?
+   *
+   * The world ground API is intentionally a height field. That is ideal for
+   * ramps and bowls, but a box ledge's vertical wall otherwise appears as an
+   * instantaneous change to its TOP surface. Marching in wheel-sized slices
+   * lets continuous transitions stay rideable while concrete faces behave as
+   * solid faces. The probe follows signed travel, so rolling switch is covered.
+   */
+  #blockedByRise(ctx: PlayerCtx, surface: number): boolean {
+    if (Math.abs(this.#speed) < 0.05) return false;
+    V.fwd.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    const sign = this.#speed < 0 ? -1 : 1;
+    const dx = V.fwd.x * sign;
+    const dz = V.fwd.z * sign;
+    // Flat and gently changing ground is overwhelmingly the common case. One
+    // far sample keeps that path cheap; only a meaningful net rise needs the
+    // wheel-sized march that distinguishes a ramp from a vertical face.
+    const far = ctx.map.rideGround(
+      ctx.position.x + dx * RISE_PROBE_REACH,
+      ctx.position.z + dz * RISE_PROBE_REACH,
+      ctx.position.y
+    );
+    if (far - surface <= MAX_RIDE_STEP) return false;
+    let previous = surface;
+    for (let d = RISE_PROBE_STEP; d <= RISE_PROBE_REACH + 1e-6; d += RISE_PROBE_STEP) {
+      const next = ctx.map.rideGround(
+        ctx.position.x + dx * d,
+        ctx.position.z + dz * d,
+        ctx.position.y
+      );
+      if (next - previous > MAX_RIDE_STEP && ctx.position.y < next + RISE_CLEARANCE) return true;
+      previous = next;
+    }
+    return false;
   }
 
   // ------------------------------------------------------------ deck spins --
