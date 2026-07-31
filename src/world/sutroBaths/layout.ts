@@ -497,9 +497,8 @@ const SPIRAL_FOOT_RADIAL_PAD = 0.8;
 /**
  * Walk surface for the helix, or null when the point is off it.
  *
- * Resolves to the same discrete tread the authored slabs occupy, so the
- * recovery contract and the streamed colliders agree on which step a capsule is
- * standing on rather than disagreeing by half a riser.
+ * Collision is a continuous helical ramp (see tools/patch-sutro-stair-ramps.mjs),
+ * so recovery returns the same continuous height rather than a discrete tread.
  */
 function sutroSpiralWalkSurfaceY(localX: number, localZ: number): number | null {
   const dx = localX - SPIRAL.cx;
@@ -525,8 +524,7 @@ function sutroSpiralWalkSurfaceY(localX: number, localZ: number): number | null 
   if (along >= 0 && along <= SPIRAL.sweepDeg) {
     if (!onFlightRadius) return null;
     const progress = along / SPIRAL.sweepDeg;
-    const step = Math.round(progress * (SPIRAL.steps - 1));
-    return SPIRAL.topY + (SPIRAL.botY - SPIRAL.topY) * step / (SPIRAL.steps - 1);
+    return SPIRAL.topY + (SPIRAL.botY - SPIRAL.topY) * progress;
   }
   if (along > SPIRAL.sweepDeg && along <= SPIRAL.sweepDeg + SPIRAL.footSpanDeg) {
     const onFanRadius = radius >= SPIRAL.inner - SPIRAL_FOOT_RADIAL_PAD - ENTRY_RECOVERY_PAD &&
@@ -603,16 +601,15 @@ function insideRect(x: number, z: number, minX: number, maxX: number, minZ: numb
 }
 
 function stairSurfaceY(across: number, along: number, stair: SutroStairSurface): number | null {
-  const treadHalfRun = Math.abs(stair.endAlong - stair.startAlong) / (stair.steps - 1) * 0.5 + 0.03;
+  const runPad = 0.12;
   if (
     across < stair.minAcross - ENTRY_RECOVERY_PAD ||
     across > stair.maxAcross + ENTRY_RECOVERY_PAD ||
-    along < Math.min(stair.startAlong, stair.endAlong) - treadHalfRun ||
-    along > Math.max(stair.startAlong, stair.endAlong) + treadHalfRun
+    along < Math.min(stair.startAlong, stair.endAlong) - runPad ||
+    along > Math.max(stair.startAlong, stair.endAlong) + runPad
   ) return null;
-  const progress = (along - stair.startAlong) / (stair.endAlong - stair.startAlong);
-  const step = Math.round(Math.max(0, Math.min(1, progress)) * (stair.steps - 1));
-  return stair.startY + (stair.endY - stair.startY) * step / (stair.steps - 1);
+  const progress = Math.max(0, Math.min(1, (along - stair.startAlong) / (stair.endAlong - stair.startAlong)));
+  return stair.startY + (stair.endY - stair.startY) * progress;
 }
 
 /**

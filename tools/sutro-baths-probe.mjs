@@ -673,7 +673,9 @@ async function main() {
     );
     expect(
       "activation-spiral-midflight-fallthrough-recovers",
-      Math.abs(spiralRecovery.y - (18.58 + 0.92)) < 0.12,
+      // Continuous helical ramp surface (was discrete tread 18.58 before the
+      // ramp collider patch); recovery still lands within a skin of the flight.
+      Math.abs(spiralRecovery.y - (18.51 + 0.92)) < 0.12,
       collisionRecovery
     );
     expect(

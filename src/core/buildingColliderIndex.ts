@@ -8,9 +8,7 @@
 
 import { yieldToFrame } from "./cooperativeWork";
 import type { BuildingCollider } from "../world/tiles";
-
-// i,p,x,y,z,hx,hy,hz,yaw,cosYaw,sinYaw,s,vol
-const COLLIDER_FIELDS = 13;
+import { COLLIDER_FIELDS } from "../world/colliderFields";
 
 // Baked OBBs can overhang their owning 800 m tile by just over 102 m. Loading
 // 200 m beyond tile bounds covers the 72 m arrival-safety disk plus that
@@ -429,10 +427,14 @@ export class BuildingColliderIndex {
         let sliceStarted = performance.now();
         for (let k = 0; k < count; k++) {
           const o = k * COLLIDER_FIELDS;
+          const qw = job.buf[o + 16];
           list[k] = {
             i: job.buf[o], p: job.buf[o + 1], x: job.buf[o + 2], y: job.buf[o + 3], z: job.buf[o + 4],
             hx: job.buf[o + 5], hy: job.buf[o + 6], hz: job.buf[o + 7], yaw: job.buf[o + 8],
-            cosYaw: job.buf[o + 9], sinYaw: job.buf[o + 10], s: job.buf[o + 11], vol: job.buf[o + 12]
+            cosYaw: job.buf[o + 9], sinYaw: job.buf[o + 10], s: job.buf[o + 11], vol: job.buf[o + 12],
+            ...(qw !== 0
+              ? { quat: [job.buf[o + 13], job.buf[o + 14], job.buf[o + 15], qw] as const }
+              : {})
           };
           if ((k & 63) === 63 && performance.now() - sliceStarted >= HYDRATE_SLICE_MS) {
             await yieldToFrame();
