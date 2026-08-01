@@ -84,6 +84,43 @@ export const WALK_CAPSULE_HALF_HEIGHT = 0.55;
 export const WALK_CAPSULE_RADIUS = 0.35;
 export const WALK_CAPSULE_HALF_EXTENT = WALK_CAPSULE_HALF_HEIGHT + WALK_CAPSULE_RADIUS;
 
+/**
+ * Footing on things the heightmap has never heard of — stairs, decks, floors.
+ *
+ * `effectiveGround` is terrain (plus bridge decks) and nothing else, so on every
+ * authored surface in the game the only footing test left was "is my vertical
+ * speed under 2 cm/s". That is true standing on a floor and FALSE on every step
+ * of every staircase, which is why walking a flight played the airborne pose:
+ * arms out, legs still, floating up the treads. A short cast under the capsule
+ * answers the question properly — see Physics.supportBelow.
+ */
+const SUPPORT_REACH = 0.32;
+/**
+ * Following that surface instead of inheriting the solver's kick.
+ *
+ * Driving a capsule horizontally into an incline makes the contact solver
+ * convert the push into an upward velocity. The controller used to re-command
+ * whatever velocity it read back (`vy = riseRate`), so that kick became flight:
+ * the walker left the treads, gravity brought them down onto the next one, and
+ * the stair turned into a trampoline. Grounded vertical speed is now derived
+ * from the surface underfoot — the rate that keeps the soles ON it — and the
+ * solver's rebound is only allowed through at a step-climbing pace.
+ */
+const GROUND_SNAP_RATE = 9;
+const GROUND_SNAP_MAX = 2.6;
+const STEP_CLIMB_RATE = 1.4;
+/**
+ * Steeper than this is a wall being brushed, not a floor being walked: follow
+ * it and the walker would rocket up its face.
+ */
+const MIN_WALK_NORMAL_Y = 0.6;
+/**
+ * Rising faster than a walker ever rises under their own steam — a jump, a
+ * launcher, a car. Hand the body back to gravity rather than pinning it to the
+ * ground it is leaving.
+ */
+const LAUNCH_RISE = 3;
+
 const V = {
   tmp: new THREE.Vector3(),
   up: new THREE.Vector3(0, 1, 0)
@@ -148,11 +185,23 @@ export class WalkController implements ModeController {
      * have to survive. See src/world/movingPlatforms.ts.
      */
     const platform = walkerPlatformCarry();
-    // grounded on terrain, or resting on something the heightmap doesn't know
-    // about (floating island, rubble pile, moving deck): no vertical speed
-    // relative to whatever is holding us up means supported.
+    /**
+     * Footing, in three answers.
+     *
+     * A cast under the capsule finds real surfaces — terrain, floors, decks and
+     * every tread of every staircase — and is what makes a climbing walker read
+     * as walking. The heightmap test stays as its cheap agreement on open
+     * ground, and the still-vertical-speed test stays for the surfaces neither
+     * can see: a moving ship's deck, a rubble pile, anything kinematic.
+     */
+    const support = ctx.physics.supportBelow(
+      ctx.position.x,
+      ctx.position.y,
+      ctx.position.z,
+      WALK_CAPSULE_HALF_EXTENT + SUPPORT_REACH
+    );
     const riseRate = v.linear[1] - (platform?.vy ?? 0);
-    this.grounded = bottom - ground < 0.25 || Math.abs(riseRate) < 0.02;
+    this.grounded = support !== null || bottom - ground < 0.25 || Math.abs(riseRate) < 0.02;
     // An idle rider turns with the ship rather than sliding round to face a
     // fixed compass bearing; steering below overwrites this the moment they
     // press a direction.
@@ -262,13 +311,28 @@ export class WalkController implements ModeController {
       const minBottom = bed + (pool ? POOL_FLOOR_CLEARANCE : 0.25);
       if (bottom < minBottom) vy = Math.max(vy, (minBottom - bottom) * 4);
     } else {
+      vx = dir.x * speed;
+      vz = dir.z * speed;
       if (this.#jumpBuf > 0 && (this.grounded || this.#coyote > 0)) {
         vy = Math.max(vy, tw.jump);
         this.#jumpBuf = 0;
         this.#coyote = 0;
+      } else if (support && support.ny >= MIN_WALK_NORMAL_Y && riseRate < LAUNCH_RISE) {
+        // --- vertical speed comes from the surface, not from the solver ------
+        // The rate that keeps the soles on the plane they are standing on. On a
+        // stair that IS the descent, so matching it walks the flight down
+        // instead of falling from each tread to the next.
+        const climb = -(vx * support.nx + vz * support.nz) / support.ny;
+        // While the soles are still ABOVE that plane, loosen the floor so they
+        // can close the gap: holding a hovering body to the stair's own rate
+        // would fly it down the flight a hand's width off the treads.
+        const gap = bottom - support.y;
+        const settle = gap > 0 ? -Math.min(gap * GROUND_SNAP_RATE, GROUND_SNAP_MAX) : 0;
+        // Contacts may still lift the body over a lip the cast never saw, but
+        // only at a step-climbing pace — never at the speed that used to throw
+        // the walker clear of the stair.
+        vy = Math.min(Math.max(riseRate, climb + settle), Math.max(climb, 0) + STEP_CLIMB_RATE);
       }
-      vx = dir.x * speed;
-      vz = dir.z * speed;
     }
     // Back out of the deck's frame. Swimming and the pool haul-out set vy from
     // absolute world targets, but neither can happen aboard a ship, so there is

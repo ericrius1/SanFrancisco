@@ -40,7 +40,18 @@ import {
   type TerrainCollisionPatch
 } from "./terrainCollisionPatch";
 
+/** What a walker is standing on — see Physics.supportBelow. */
+export type WalkSupport = {
+  /** World height of the surface under the query point. */
+  y: number;
+  /** Its outward normal, to walk along rather than into. */
+  nx: number;
+  ny: number;
+  nz: number;
+};
+
 const pointScratch = new THREE.Vector3();
+const supportNormal = new THREE.Vector3();
 const slabUp = new THREE.Vector3(0, 1, 0);
 const slabNormal = new THREE.Vector3();
 const slabQuat = new THREE.Quaternion();
@@ -181,6 +192,10 @@ export class Physics {
   #landmarkSolids: number[] = [];
   #landmarkQueryHydrated = false; // guards duplicate mirrors when initColliderServices retries
   #solidRay: RayCastHit = { handle: 0, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 0, distance: 0 };
+  // supportBelow runs once per fixed step per walker; its ray hit and its answer
+  // are both reused so footing costs no allocation.
+  #supportRay: RayCastHit = { handle: 0, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 0, distance: 0 };
+  #support: WalkSupport = { y: 0, nx: 0, ny: 1, nz: 0 };
   // CityGen exact-poly wall + interior boxes are created on the STEPPED world
   // (world/citygen/stream/ring.ts), so they're invisible to #solids — the query
   // world every raycast (paint, world cursor, aim reticle) consults via
@@ -1170,6 +1185,50 @@ export class Physics {
   /** Hand the scene-aware building-ray refiner to raycastWorld (see below). */
   setBuildingRayRefiner(refiner: BuildingRayRefiner | null): void {
     this.#rayRefiner = refiner;
+  }
+
+  /**
+   * What a walker at (x, y, z) is standing on: the highest surface within
+   * `reach` metres BELOW that point, with the normal to follow while walking
+   * along it. Null when nothing is that close underneath.
+   *
+   * Two sources, whichever is higher: one short downward cast over the
+   * never-stepped #solids world — every authored thing a walker stands on
+   * (streamed building/site boxes, citygen walls and interiors, landmarks, the
+   * bridge) — raced against the terrain height surface. The cast is under two
+   * metres long, so the broadphase rejects the world in a couple of node tests;
+   * this is cheap enough for the walk controller to ask every fixed step.
+   *
+   * Only an UPWARD-facing hit counts. A ray that starts inside a collider
+   * leaves through its underside, and a ceiling is not a floor.
+   *
+   * The returned object is reused between calls — read it before the next one.
+   */
+  supportBelow(x: number, y: number, z: number, reach: number): WalkSupport | null {
+    const out = this.#support;
+    let best = Number.NEGATIVE_INFINITY;
+    const hit = this.#solids.castRayClosest(x, y, z, 0, -1, 0, reach, undefined, this.#supportRay);
+    if (hit && hit.ny > 0.1) {
+      best = hit.py;
+      out.nx = hit.nx;
+      out.ny = hit.ny;
+      out.nz = hit.nz;
+    }
+    // The rendered top ground (draped roads and lawns included), which is what
+    // the terrain collision patch is built from — see terrainCollisionPatch.ts.
+    const ground = this.map.effectiveGround(x, z);
+    if (ground <= y && ground > best) {
+      best = ground;
+      // A metre of span, not the 4 m default: this is the slope underfoot, and
+      // over four metres a stepped kerb or a garden wall would smear into it.
+      this.map.normal(x, z, supportNormal, 1);
+      out.nx = supportNormal.x;
+      out.ny = supportNormal.y;
+      out.nz = supportNormal.z;
+    }
+    if (best < y - reach) return null;
+    out.y = best;
+    return out;
   }
 
   /**

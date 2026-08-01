@@ -557,8 +557,17 @@ def main():
             bpy.data.objects.remove(obj, do_unlink=True)
     # The cascade owned every collider whose name mentions the gallery, plus the
     # spiral's own prefixes on a re-run.
+    #
+    # `_130_guard_` is in this list because it is NOT in the others. The cascade
+    # named its parapet visuals `gallery_guard_*` but their colliders
+    # `sutro_collider_130_guard_*`, so the first pass of this demolition took the
+    # rails out of sight and left twelve of them collidable, hanging in the air
+    # over a hall with no landing under them — one of them right across the
+    # inner half of the new flight, where a walker jammed on a knee-high bar
+    # they could not see. Only the cascade's rails match: the spiral's own
+    # balustrade is `sutro_collider_130_spiral_rail_*`, caught by "spiral".
     for obj in list(colliders.objects):
-        if "gallery" in obj.name or "spiral" in obj.name:
+        if "gallery" in obj.name or "spiral" in obj.name or "_130_guard_" in obj.name:
             bpy.data.objects.remove(obj, do_unlink=True)
 
     entrances = bpy.data.objects.get("sutro_baths_player_entrances_v5")

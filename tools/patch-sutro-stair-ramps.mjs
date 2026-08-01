@@ -1,10 +1,25 @@
 #!/usr/bin/env node
 /**
- * Replace Sutro Baths discrete stair tread colliders with smooth tilted ramps.
+ * Publish the walkable collision for the Sutro Baths descents.
  *
- * box3d capsules have no step-assist, so discrete tread faces jam / slide
- * (same contract as citygen/interior/stairs.ts and ghostShip stair ramps).
- * Authored visuals stay stepped; only collision becomes continuous.
+ * Two passes, both re-runnable:
+ *
+ * 1. Replace discrete stair tread colliders with smooth tilted ramps. box3d
+ *    capsules have no step-assist, so discrete tread faces jam / slide (same
+ *    contract as citygen/interior/stairs.ts and ghostShip stair ramps).
+ *    Authored visuals stay stepped; only collision becomes continuous.
+ *
+ * 2. Delete the demolished v5 switchback gallery's guard rails. The spiral
+ *    rebuild (tools/rebuild-sutro-grand-spiral.py) demolishes the cascade by
+ *    dropping every object whose name mentions "gallery" — which caught the
+ *    flights, the landings and the rails' VISUALS, but not the rail colliders,
+ *    because those are named `sutro_collider_130_guard_*`. Twelve thin iron
+ *    parapets were left hanging in the air over a hall with nothing under them,
+ *    invisible, and the new spiral runs straight through one of them: a walker
+ *    on the inner half of the flight hits a knee-high bar at 210°, jams against
+ *    it, and gets squeezed up and over. That is the "I get stuck, then I start
+ *    bouncing" report. The Blender script's filter is fixed to match, so a
+ *    rebuild does not put them back.
  *
  * Writes data/authored-sites/sutro-baths.json, then re-injects tile_1_12.json.
  */
@@ -28,7 +43,26 @@ const SPIRAL = {
   sweepDeg: 249.34,
   topY: 31.18,
   botY: 5.78,
-  segments: 40
+  /**
+   * ONE RAMP PER VISUAL TREAD (tools/rebuild-sutro-grand-spiral.py's 128), and
+   * that count is the walkability contract for this flight.
+   *
+   * Each ramp is a flat slab: level across the tread, tilted along the tangent
+   * at its own mid-angle. A helix is not flat, so a slab's top plane sits above
+   * the true helical surface on one side of the centre-line and below it on the
+   * other, by half-width × yaw-step × slope. Two neighbouring slabs are
+   * therefore a CONSTANT height apart at any fixed distance from the
+   * centre-line, and the walk surface — the upper envelope of the two — drops
+   * that whole distance where the higher slab's coverage ends.
+   *
+   * At 40 segments that drop was 12 cm on the inner edge, once per segment, all
+   * the way down: a hidden 12 cm stair running against the visible one, which a
+   * capsule with no step-assist catches on, is bounced by, and jams against.
+   * The error scales with the yaw step, so tread-cadence segments put it at
+   * ~4 cm — inside what the walker's step-climb allowance absorbs without the
+   * body ever leaving the surface (see src/player/walk.ts).
+   */
+  segments: 128
 };
 
 const RAMP_HY = 0.13;
@@ -188,14 +222,23 @@ function reindex(colliders, base = 110000) {
 
 async function main() {
   const site = JSON.parse(await fs.readFile(SITE_JSON, "utf8"));
+  // Drops both the discrete treads this pass replaces AND the ramps a previous
+  // run of this pass wrote, so re-running it retunes the flight instead of
+  // stacking a second set of slabs on top of the first.
   const kept = site.colliders.filter((c) => {
     const n = c.name;
     return !(
       n.includes("spiral_tread_") ||
+      n.includes("spiral_ramp_") ||
       n.includes("beach_step_") ||
-      n.includes("road_approach_")
+      n.includes("beach_ramp") ||
+      n.includes("road_approach_") ||
+      // …and the demolished cascade's orphaned parapets (see the header). Match
+      // `guard_` exactly: `130_spiral_rail_*` is the LIVE flight's balustrade.
+      n.includes("_130_guard_")
     );
   });
+  const orphanedGuards = site.colliders.filter((c) => c.name.includes("_130_guard_")).length;
 
   const nextIndex = 110000 + kept.length;
   const ramps = [
@@ -243,6 +286,7 @@ async function main() {
   console.log(
     JSON.stringify({
       kept: kept.length,
+      orphanedGuardsRemoved: orphanedGuards,
       spiralRamps: SPIRAL.segments,
       beachRoadRamps: 2,
       total: site.colliders.length,
