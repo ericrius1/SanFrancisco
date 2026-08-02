@@ -48,7 +48,6 @@ import {
   windGustValue,
 } from "../../world/vegetation/runtime";
 import type {  } from "../../world/citygen";
-import { BACKGROUND_STREAM_LIMIT } from "../../world/tiles";
 import type {  } from "../../gameplay/archery";
 import type {  } from "../../gameplay/pup";
 import type {  } from "../../gameplay/fortMasonEnsemble";
@@ -1018,7 +1017,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       renderer.setSize(window.innerWidth, window.innerHeight);
       CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
       CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
-      sky.setStreamingCullRadius(Math.min(WORLD_TUNING.values.radius, BACKGROUND_STREAM_LIMIT));
+      sky.setStreamingCullRadius(WORLD_TUNING.values.radius);
       setFoliageVisible(FOLIAGE_TUNING.values.visible);
       tiles.forceScan();
       sky.applyFogParams();

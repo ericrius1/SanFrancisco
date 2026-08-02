@@ -3,7 +3,7 @@
 // classification/cut hooks and the per-frame ringUpdate driver — extracted
 // from main.ts's P5 block (docs/MAIN_DECOMPOSITION.md). main assigns the
 // returned hooks onto its boot-scope lets; no behavior change.
-import { CONFIG } from "../../config";
+import { CONFIG, WORLD_TUNING } from "../../config";
 import { bootMark } from "../../core/bootMarks";
 import { materializeField } from "../../render/materialize";
 import { frontGate } from "../../render/frontGate";
@@ -44,6 +44,8 @@ export function installVoidArrival(deps: {
     player,
     prime: deps.primeInitialVisualAt,
     fullRadius: fullTileRadius,
+    // Reveal waits for the mid-ring plateau; baked residency keeps expanding
+    // to the whole city after the fog wall comes down.
     fillRadius: Math.min(fullTileRadius, BACKGROUND_STREAM_LIMIT),
     // M9: surf caps CONFIG.tileLoadRadius at 2 km (< reveal radius); the
     // coordinator reveals at a plateaued live cap instead of waiting forever.
@@ -70,12 +72,12 @@ export function installVoidArrival(deps: {
       // The same restore the worldReady quiet-window block performs, forced
       // after the stall deadline. Surf keeps its explicit 2 km mode cap (its
       // stash restore is handled by that block when the session quiets down).
-      if (player.mode !== "surf" && CONFIG.tileLoadRadius < fullTileRadius) {
-        CONFIG.tileLoadRadius = fullTileRadius;
-        CONFIG.tileUnloadRadius = fullTileRadius + 400;
+      if (player.mode !== "surf") {
+        CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
+        CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
       }
       tiles.beginBackgroundExpansion();
-      sky.setStreamingCullRadius(Math.min(CONFIG.tileLoadRadius, BACKGROUND_STREAM_LIMIT));
+      sky.setStreamingCullRadius(CONFIG.tileLoadRadius);
     }
   });
   // M12: arm the visibility gate synchronously with the coordinator (same

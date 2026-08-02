@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
-import { CONFIG } from "../config";
+import { CONFIG, DRAW_DISTANCE_MAX } from "../config";
 import { attachKtx2Loader } from "../render/textures";
 import { tracer } from "../core/hitchTracer";
 import {
@@ -191,14 +191,12 @@ const FACADE_FAR_EXIT = 240;
 const MAX_FACADE_SLOT_POOL = 64;
 
 // Shared building-batch sizing. Capacity is the alive-atlas row count; 256 covers
-// the whole city (184 building tiles) plus headroom, so even a maxed draw distance
-// never overflows into bundle fallback. The vertex/index arena is sized to hold a
-// full default-draw-distance residency without a mid-play setGeometrySize grow
-// (measured worst case ~3.1M verts / 5.1M idx for a city-centre ring); the ceiling
-// covers the entire baked city (~3.81M verts / 6.32M idx) for a maxed radius.
+// the whole city (184 building tiles) plus headroom. Steady state is full-city
+// residency (~3.81M verts / 6.32M idx), so the arena reserves that up front and
+// avoids a mid-play setGeometrySize grow while the background fill completes.
 const BUILDING_BATCH_CAPACITY = 256;
-const BUILDING_BATCH_INITIAL_VERTICES = 3_145_728;
-const BUILDING_BATCH_INITIAL_INDICES = 5_242_880;
+const BUILDING_BATCH_INITIAL_VERTICES = 4_194_304;
+const BUILDING_BATCH_INITIAL_INDICES = 6_812_672;
 const BUILDING_BATCH_MAX_VERTICES = 4_718_592;
 const BUILDING_BATCH_MAX_INDICES = 8_388_608;
 
@@ -337,18 +335,28 @@ const TILE_MAX_ATTEMPTS = TILE_RETRY_DELAYS_MS.length + 1;
 // Staying just inside half a tile gives one cell at its centre, two across an edge and
 // four around a corner, while still covering a useful local bubble.
 const MINIMUM_VISUAL_RADIUS_CAP = 360;
-// Arrival completion opens a modest 360-degree neighborhood first, then grows
-// the ordinary draw ring in two quiet stages. This keeps a newly requested
-// authored landmark ahead of tiles that cannot yet contribute to its view.
-const BACKGROUND_STREAM_RADII = [1200, 2200] as const;
+// Arrival opens a modest neighborhood, then quietly expands baked-tile
+// residency through mid ring → far ring → whole sandbox. Draw distance (the
+// "/" slider + streaming cull fog) is independent: it only hides far geometry,
+// it does not unload or refuse baked tiles.
+const BACKGROUND_NEAR_RADIUS = 1200;
+const BACKGROUND_MID_RADIUS = 2200;
+const BACKGROUND_FAR_RADIUS = 6000;
+const BACKGROUND_STREAM_RADII = [
+  BACKGROUND_NEAR_RADIUS,
+  BACKGROUND_MID_RADIUS,
+  BACKGROUND_FAR_RADIUS,
+  DRAW_DISTANCE_MAX
+] as const;
 /**
- * Normal play keeps a moving near/mid-distance working set instead of
- * eventually admitting every tile inside the user's full vista radius. The
- * narrow cull-edge fog follows this limit, so cells beyond it remain invisible
- * until the player actually approaches them.
+ * Void-arrival fill / fog-wall plateau. Reveal waits for this mid-ring, not the
+ * whole city — background residency keeps expanding afterward.
  */
-export const BACKGROUND_STREAM_LIMIT = BACKGROUND_STREAM_RADII[BACKGROUND_STREAM_RADII.length - 1];
+export const BACKGROUND_STREAM_LIMIT = BACKGROUND_MID_RADIUS;
+/** Final baked-tile residency target (corner-to-corner sandbox coverage). */
+export const BAKED_CITY_RESIDENCY_RADIUS = DRAW_DISTANCE_MAX;
 const BACKGROUND_STREAM_STAGE_MS = 1800;
+const BACKGROUND_MID_STAGE = BACKGROUND_STREAM_RADII.indexOf(BACKGROUND_MID_RADIUS);
 // residentRadiusAround recompute cadence, in streamer ticks (~0.25 s at 60 Hz).
 // One pass over ~205 manifest entries — cheap, but not per-frame-per-caller.
 const RESIDENT_RADIUS_RECOMPUTE_TICKS = 15;
@@ -656,6 +664,10 @@ export class TileStreamer {
   #maxInFlight = MAX_IN_FLIGHT;
   // out-of-range tiles awaiting dispose, drained one per frame
   #unloads = new Set<string>();
+  // Resident tiles hidden solely by the draw-distance slider. Distinct from
+  // covered-arrival adopts (also visible=false, no front-gate handle) so a
+  // later slider expand can re-show without stealing arrival ownership.
+  #drawCulled = new Set<string>();
   // reusable facade material slots (see FacadeSlot)
   #slotPool: FacadeSlot[] = [];
   #aliveW = 4;
@@ -969,18 +981,20 @@ export class TileStreamer {
     this.#prevPz = focusZ;
     this.#hasPrevPos = true;
     if (!this.#visualPrime && this.#backgroundStage < BACKGROUND_STREAM_RADII.length - 1) {
-      if (this.#fastStream || performance.now() >= this.#nextBackgroundStageAt) {
-        if (this.#fastStream) {
-          // Speed raises fetch concurrency and jumps to the MID ring, not the
-          // full city. Re-centering that ring as the player moves is what makes
-          // newly relevant tiles eligible.
-          this.#backgroundStage = BACKGROUND_STREAM_RADII.length - 1;
-          this.#backgroundRadius = BACKGROUND_STREAM_LIMIT;
-        } else {
-          this.#backgroundStage++;
-          this.#backgroundRadius = BACKGROUND_STREAM_RADII[this.#backgroundStage];
-          this.#nextBackgroundStageAt = performance.now() + BACKGROUND_STREAM_STAGE_MS;
-        }
+      const now = performance.now();
+      let advanced = false;
+      if (this.#fastStream && this.#backgroundStage < BACKGROUND_MID_STAGE) {
+        // Speed raises fetch concurrency and jumps to the mid ring so the local
+        // vista stays dense; timed stages continue filling the baked city.
+        this.#backgroundStage = BACKGROUND_MID_STAGE;
+        advanced = true;
+      } else if (now >= this.#nextBackgroundStageAt) {
+        this.#backgroundStage++;
+        advanced = true;
+      }
+      if (advanced) {
+        this.#backgroundRadius = BACKGROUND_STREAM_RADII[this.#backgroundStage];
+        this.#nextBackgroundStageAt = now + BACKGROUND_STREAM_STAGE_MS;
         this.#scan(focusX, focusZ);
       }
     }
@@ -1102,7 +1116,7 @@ export class TileStreamer {
     return {
       stage: this.#backgroundStage,
       radius: this.#currentLoadRadius(),
-      limit: Math.min(CONFIG.tileLoadRadius, BACKGROUND_STREAM_LIMIT),
+      limit: BAKED_CITY_RESIDENCY_RADIUS,
       fullRadius: CONFIG.tileLoadRadius
     };
   }
@@ -1382,13 +1396,8 @@ export class TileStreamer {
     this.#hasScanned = true;
     const loadRadius = this.#currentLoadRadius();
     const loadR2 = loadRadius * loadRadius;
-    // Retention follows the admitted working set, not the much larger user
-    // vista radius. Otherwise a long drive still accumulates a city-wide trail
-    // even though new far tiles are correctly demand-gated.
-    const unloadRadius = this.#visualPrime
-      ? CONFIG.tileUnloadRadius
-      : Math.min(CONFIG.tileUnloadRadius, loadRadius + 400);
-    const unloadR2 = unloadRadius * unloadRadius;
+    // Baked tiles stay resident once attached. Draw distance only culls; local
+    // collider / shadow-proxy leases keep their own tighter radii below.
     const required = this.#visualPrime?.generation === this.#generation
       ? this.#visualPrime.requiredTileSet
       : null;
@@ -1398,9 +1407,8 @@ export class TileStreamer {
       e.d2 = (px - e.cx) * (px - e.cx) + (pz - e.cz) * (pz - e.cz);
       const loadedTile = this.loaded.get(e.key);
       if (loadedTile && e.d2 < loadR2 && loadedTile.generation !== this.#generation) {
-        // M12: routed through the front gate (re-adopted tiles beyond a
-        // sweeping front stay hidden until the front approaches).
-        this.#applyTileVisibility(loadedTile, true);
+        // M12: re-adopt into this generation; draw-distance sync below decides
+        // whether the tile is actually shown.
         loadedTile.generation = this.#generation;
         loadedTile.loadToken.generation = this.#generation;
         this.#queueColliderApply(e.key, loadedTile.loadToken);
@@ -1418,8 +1426,6 @@ export class TileStreamer {
         (!required || required.has(e.key))
       ) {
         this.#queue.push(e);
-      } else if (e.d2 > unloadR2 && this.loaded.has(e.key)) {
-        this.#unloads.add(e.key);
       }
     }
     // An active prime admits only destination-minimum cells. Once it resolves,
@@ -1430,6 +1436,10 @@ export class TileStreamer {
       return ar === br ? a.d2 - b.d2 : ar - br;
     });
     this.#pump();
+    // Geometry stays resident citywide; the slider hard-hides anything beyond
+    // draw distance. Fog alone cannot do this — at short radii its edge-veil
+    // strength tracks weather opacity and is ~0.
+    this.#syncDrawDistanceVisibility(px, pz);
     // Facade near/far material swap: far tiles drop brick/weather noise ALU.
     // Hysteresis on enter/exit; BundleGroup re-records only when the bind changes.
     for (const tile of this.loaded.values()) {
@@ -1482,9 +1492,10 @@ export class TileStreamer {
   }
 
   #currentLoadRadius(): number {
-    return this.#visualPrime
-      ? CONFIG.tileLoadRadius
-      : Math.min(CONFIG.tileLoadRadius, this.#backgroundRadius);
+    // Visual primes still use the destination bubble from arrival wiring.
+    // Ordinary play expands toward BAKED_CITY_RESIDENCY_RADIUS and ignores the
+    // draw-distance slider — that slider only drives fog / CityGen ceilings.
+    return this.#visualPrime ? CONFIG.tileLoadRadius : this.#backgroundRadius;
   }
 
   #tileInFlightCounts(): { current: number; total: number } {
@@ -1696,11 +1707,9 @@ export class TileStreamer {
     if (index < 0) return false;
     const [{ key, group, token }] = this.#ready.splice(index, 1);
     if (this.#pending.get(key) === token) this.#pending.delete(key);
-    // flown past while it sat in the queue? skip the scene add / GPU upload
-    // entirely — the next scan reloads it if the player comes back
-    const [cx, cz] = this.keyToCenter(key);
-    const d2 = (this.#px - cx) * (this.#px - cx) + (this.#pz - cz) * (this.#pz - cz);
-    if (token.generation !== this.#generation || d2 > CONFIG.tileUnloadRadius * CONFIG.tileUnloadRadius) {
+    // Stale teleport generations are discarded. Same-generation tiles always
+    // attach — draw distance no longer rejects far baked residency.
+    if (token.generation !== this.#generation) {
       token.discarded = true;
       this.#disposeObjectGeometry(group);
       this.#pump();
@@ -1848,10 +1857,23 @@ export class TileStreamer {
         pendingBuildingParts: buildingParts.length ? buildingParts : undefined
       });
       this.#attaching.push(key);
-      // M12: a tile finalizing beyond the sweeping front starts hidden (empty
-      // bundle now; batch instances folded in later start hidden via the
-      // existing `!tile.group.visible` checks). Warm/attach work is untouched.
-      this.#applyTileVisibility(this.loaded.get(key)!, true);
+      // M12 + draw distance: finalizing beyond the front or beyond the slider
+      // starts hidden. Warm/attach work is untouched.
+      {
+        const tile = this.loaded.get(key)!;
+        const half = this.manifest.tile * 0.5;
+        const [cx, cz] = this.keyToCenter(key);
+        const dx = Math.max(0, Math.abs(this.#px - cx) - half);
+        const dz = Math.max(0, Math.abs(this.#pz - cz) - half);
+        const drawR = Math.max(0, CONFIG.tileLoadRadius);
+        const inDraw = dx * dx + dz * dz <= drawR * drawR;
+        if (!inDraw) {
+          this.#applyTileVisibility(tile, false);
+          this.#drawCulled.add(key);
+        } else {
+          this.#applyTileVisibility(tile, true);
+        }
+      }
     } else {
       this.loaded.set(key, {
         key,
@@ -2417,10 +2439,72 @@ export class TileStreamer {
       this.#hideTileVisuals(tile);
       tile.frontGateHandle = frontGate.hide(cx, cz, r, () => {
         tile.frontGateHandle = undefined;
+        // Still beyond the slider? Stay culled until the next sync brings us in.
+        if (this.#drawCulled.has(tile.key)) return;
         this.#showTileVisuals(tile, true);
       });
     } else {
       this.#showTileVisuals(tile);
+    }
+  }
+
+  /**
+   * Hard draw-distance gate for resident baked tiles + landmarks. Residency is
+   * citywide; this only toggles GPU visibility from CONFIG.tileLoadRadius.
+   */
+  #syncDrawDistanceVisibility(px: number, pz: number): void {
+    const drawR = Math.max(0, CONFIG.tileLoadRadius);
+    const drawR2 = drawR * drawR;
+    for (const e of this.#entries) {
+      const tile = this.loaded.get(e.key);
+      if (!tile) continue;
+      const inDraw = this.#distanceToTileBoundsSq(px, pz, e) <= drawR2;
+      if (!inDraw) {
+        if (tile.group.visible || tile.frontGateHandle || this.#drawCulled.has(e.key)) {
+          this.#applyTileVisibility(tile, false);
+          this.#drawCulled.add(e.key);
+        }
+      } else if (this.#drawCulled.has(e.key)) {
+        this.#drawCulled.delete(e.key);
+        this.#applyTileVisibility(tile, true);
+      }
+    }
+    this.#syncLandmarkDrawVisibility(px, pz, drawR);
+  }
+
+  #syncLandmarkDrawVisibility(px: number, pz: number, drawR: number): void {
+    for (const gates of [this.#landmarkGates, this.#landmarkProxyGates]) {
+      for (const gate of gates) {
+        const dx = px - gate.x;
+        const dz = pz - gate.z;
+        const reach = drawR + gate.r;
+        const inDraw = dx * dx + dz * dz <= reach * reach;
+        if (!inDraw) {
+          gate.handle?.cancel();
+          gate.handle = undefined;
+          gate.obj.visible = false;
+          continue;
+        }
+        // In range: re-apply front-gate ownership without thrashing handles that
+        // already match the desired state.
+        if (frontGate.shouldHide(gate.x, gate.z, gate.r)) {
+          if (gate.obj.visible || !gate.handle) {
+            gate.handle?.cancel();
+            gate.obj.visible = false;
+            gate.handle = frontGate.hide(gate.x, gate.z, gate.r, () => {
+              gate.handle = undefined;
+              const rdx = this.#px - gate.x;
+              const rdz = this.#pz - gate.z;
+              const rReach = Math.max(0, CONFIG.tileLoadRadius) + gate.r;
+              if (rdx * rdx + rdz * rdz <= rReach * rReach) gate.obj.visible = true;
+            });
+          }
+        } else if (!gate.obj.visible || gate.handle) {
+          gate.handle?.cancel();
+          gate.handle = undefined;
+          gate.obj.visible = true;
+        }
+      }
     }
   }
 
@@ -2524,6 +2608,7 @@ export class TileStreamer {
     const tile = this.loaded.get(key);
     if (!tile) return;
     this.loaded.delete(key);
+    this.#drawCulled.delete(key);
     tile.loadToken.discarded = true;
     // M12: drop any front-gate registration (a later reload re-gates fresh)
     tile.frontGateHandle?.cancel();

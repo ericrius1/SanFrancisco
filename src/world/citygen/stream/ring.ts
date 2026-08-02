@@ -2045,8 +2045,10 @@ export async function createCityGenRing(
       // as its own quality cap. A reveal therefore starts with only the local
       // cell and grows to nearby cells after the substrate ring expands; CityGen
       // never races ahead and hydrates an unseen 7x7 district grid.
+      // floor(reach/tile) — and allow 0 when the draw-distance slider is inside
+      // a single cell, so CityGen prisms don't outrun the baked visibility gate.
       const cellLoad = Math.max(
-        1,
+        0,
         Math.floor(Math.min(
           CONFIG.tileLoadRadius,
           CHUNK_VISUAL_RADIUS,
@@ -2055,6 +2057,9 @@ export async function createCityGenRing(
       );
       activeCellLoad = cellLoad;
       const cellUnload = cellLoad + 1;
+      // cellLoad 0 still iterates the center cell — skip that when the slider is
+      // inside one tile so CityGen cannot paint an 800 m prism neighborhood.
+      const admitCells = cellLoad >= 1;
       // Fixed visual retention/exit band: no runtime quality contraction.
       const detailR = CT.detailRadius;
       const detailExit = detailR + DETAIL_EXIT_MARGIN, detailExit2 = detailExit * detailExit;
@@ -2079,16 +2084,22 @@ export async function createCityGenRing(
       // down; no rolling average kept.
       const detailBudget = dt < 1 / 50 ? DETAIL_BUDGET_FAST : dt < 1 / 30 ? DETAIL_BUDGET_MED : DETAIL_BUDGET_SLOW;
 
-      // unload cells beyond the ring
+      // unload cells beyond the ring (or every cell when the slider admits none)
       for (const cell of [...loaded.values()]) {
-        if (Math.abs(cell.ix - ptx) > cellUnload || Math.abs(cell.iz - ptz) > cellUnload) unloadCell(cell);
+        if (
+          !admitCells ||
+          Math.abs(cell.ix - ptx) > cellUnload ||
+          Math.abs(cell.iz - ptz) > cellUnload
+        ) {
+          unloadCell(cell);
+        }
       }
       pruneDetailBuildBacklog();
       // Queue cells center-out. Hydration computes live terrain grade only for
       // destination cells, one host build-lane job at a time. A later teleport
       // changes generation before stale jobs can materialize origin geometry.
       const wantedCells: CellRequest[] = [];
-      for (let ix = ptx - cellLoad; ix <= ptx + cellLoad; ix++) {
+      if (admitCells) for (let ix = ptx - cellLoad; ix <= ptx + cellLoad; ix++) {
         for (let iz = ptz - cellLoad; iz <= ptz + cellLoad; iz++) {
           const key = `${ix}_${iz}`;
           if (!cellRanges.has(key) || loaded.has(key) || retiringCells.has(key)) continue;

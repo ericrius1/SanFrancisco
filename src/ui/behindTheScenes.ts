@@ -99,10 +99,10 @@ const TAB_WORLD = `
 
   <section>
     <h3><span class="bts-ic">📥</span> Streaming without the stutter</h3>
-    <p>The whole city can't live in memory at once, so tiles stream in and out around you by distance.
-    The hard part isn't the streaming — it's doing it without a visible hitch <em>every single time</em>
-    a tile arrives, because parsing geometry and uploading it to the GPU are exactly the kind of work
-    that drops a frame.</p>
+    <p>Baked city tiles fill in the background until the whole skyline is resident; draw distance
+    only decides how far you can see. The hard part isn't the residency — it's doing the fill
+    without a visible hitch <em>every single time</em> a tile arrives, because parsing geometry
+    and uploading it to the GPU are exactly the kind of work that drops a frame.</p>
     <p>So the work is spread thin and kept off the main thread: the compressed geometry is decoded on
     worker threads and the collider data on another, a freshly-loaded tile attaches its meshes
     <strong>one per frame</strong> rather than all at once, and facade materials are <strong>pooled and

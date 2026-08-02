@@ -3,7 +3,7 @@
 // returned on the record; crossing lets live on `state`.
 // Soft-HMR guard must register before any other import.meta.hot listeners.
 import * as THREE from "three/webgpu";
-import {   CONFIG } from "../../config";
+import { CONFIG, WORLD_TUNING } from "../../config";
 import {   localizeInteractText } from "../../core/input";
 import { GhostShipBeacon } from "../../world/ghostShip/beacon";
 import {
@@ -21,7 +21,6 @@ import type {  } from "../../world/missionDolores";
 import { WILD_REGIONS } from "../../world/wildlands/regions";
 import { inSkatePlazaFootprint, SKATE_PLAZA_ARRIVAL } from "../../world/skatePlaza/meta";
 import { BUENA_VISTA_REGION } from "../../world/buenaVista";
-import { BACKGROUND_STREAM_LIMIT } from "../../world/tiles";
 import { sutroTowerArrivalForDestination } from "../../world/sutroTower";
 import type { PlayerMode } from "../../player/types";
 import {  PAINT_COLORS } from "../../fx/graffiti";
@@ -1123,17 +1122,17 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       ctx.zoneBoot.cityWoken = true;
       hud.message("Waking the rest of San Francisco…", 3.2);
       if (player.mode !== "surf") {
-        CONFIG.tileLoadRadius = ctx.zoneBoot.worldScope.cityTileRadius;
-        CONFIG.tileUnloadRadius = ctx.zoneBoot.worldScope.cityTileRadius + 400;
+        // Draw distance stays on the slider; waking only expands baked residency.
+        CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
+        CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
       } else if (core.state.surfCullStash) {
         // Surf owns the live radius (capped at 2 km); retarget its exit-restore
-        // values so leaving the water lands on the citywide radius, not the
-        // zone bubble it stashed when surf began.
-        core.state.surfCullStash.load = ctx.zoneBoot.worldScope.cityTileRadius;
-        core.state.surfCullStash.unload = ctx.zoneBoot.worldScope.cityTileRadius + 400;
+        // values so leaving the water lands on the slider, not the zone bubble.
+        core.state.surfCullStash.load = WORLD_TUNING.values.radius;
+        core.state.surfCullStash.unload = WORLD_TUNING.values.radius + 400;
       }
       tiles.beginBackgroundExpansion();
-      sky.setStreamingCullRadius(Math.min(ctx.zoneBoot.worldScope.cityTileRadius, BACKGROUND_STREAM_LIMIT));
+      sky.setStreamingCullRadius(WORLD_TUNING.values.radius);
       while (ctx.zoneBoot.deferredCityWork.length > 0) {
         const work = ctx.zoneBoot.deferredCityWork.shift()!;
         try {
@@ -1311,17 +1310,19 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     await waitForWorldStreamingWindow();
     if (player.mode === "surf") {
       // Surf's explicit 2 km mode cap remains active; only its restore target is
-      // the normal full radius.
+      // the live draw-distance slider.
       if (core.state.surfCullStash) {
-        core.state.surfCullStash.load = fullTileRadius;
-        core.state.surfCullStash.unload = fullTileRadius + 400;
+        core.state.surfCullStash.load = WORLD_TUNING.values.radius;
+        core.state.surfCullStash.unload = WORLD_TUNING.values.radius + 400;
       }
     } else {
-      CONFIG.tileLoadRadius = fullTileRadius;
-      CONFIG.tileUnloadRadius = fullTileRadius + 400;
+      // Restore draw/cull from the slider (boot may have shrunk CONFIG for the
+      // initial visual bubble). Baked residency expands independently below.
+      CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
+      CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
     }
     tiles.beginBackgroundExpansion();
-    sky.setStreamingCullRadius(Math.min(fullTileRadius, BACKGROUND_STREAM_LIMIT));
+    sky.setStreamingCullRadius(WORLD_TUNING.values.radius);
   });
   void worldReady.then(async () => {
     await waitForWorldBackgroundWindow(1800);

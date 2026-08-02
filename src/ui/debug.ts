@@ -25,7 +25,6 @@ import { NATURE_AUDIO_TUNING } from "../audio";
 import { TEE_BEACON_TUNING } from "../gameplay/golf/tuning";
 import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
-import { BACKGROUND_STREAM_LIMIT } from "../world/tiles";
 import { TUNABLES_UPDATED_EVENT, withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
 import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
@@ -742,17 +741,16 @@ export class DebugPanel {
       onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
     });
 
-    // MASTER draw-distance ceiling. Normal play admits a moving near/mid tile
-    // ring capped by BACKGROUND_STREAM_LIMIT; the narrow cull fade follows that
-    // live ceiling instead of implying that the whole city is resident.
-    // forceScan makes a smaller value take effect immediately.
+    // MASTER draw-distance ceiling. Baked tiles stay city-resident; this slider
+    // drives the narrow cull-edge fog and CityGen reach. forceScan makes a
+    // smaller CityGen ceiling take effect immediately.
     WORLD_TUNING.bind(meta, {
       keys: ["radius"],
       onChange: (key, value, last) => {
         if (key !== "radius") return;
         CONFIG.tileLoadRadius = value as number;
         CONFIG.tileUnloadRadius = (value as number) + 400;
-        this.#sky.setStreamingCullRadius(Math.min(value as number, BACKGROUND_STREAM_LIMIT));
+        this.#sky.setStreamingCullRadius(value as number);
         if (last) this.#tiles?.forceScan();
       }
     });

@@ -122,15 +122,16 @@ export const INPUT_TUNING = tunables("input", {
  * distant corner while staying below the camera's 24 km far plane. */
 export const DRAW_DISTANCE_MAX = 21000
 
-/** Default streaming radius. 3.5 km keeps FiDi/Corona vistas readable while
- * cutting the fragment/streaming load of the previous 6 km default (meadow and
- * Corona probes were GPU-bound with millions of far tris still on screen).
- * Players can still crank toward DRAW_DISTANCE_MAX for the whole-city look. */
+/** Default draw/cull radius. 3.5 km keeps FiDi/Corona vistas readable while
+ * cutting the fragment load of the previous 6 km default (meadow and Corona
+ * probes were GPU-bound with millions of far tris still on screen).
+ * Players can still crank toward DRAW_DISTANCE_MAX for the whole-city look.
+ * Baked tile residency is independent and fills the whole city in the background. */
 export const DRAW_DISTANCE_DEFAULT = 3500
 
-/** Draw distance + fog, bound in the "/" panel. `radius` is the MASTER draw
- * distance: one top-level slider drives the tile streaming radii, the narrow
- * cull-edge fade, and the citygen chunk reach. Atmospheric haze is independent. */
+/** Draw distance + fog, bound in the "/" panel. `radius` is the MASTER draw/
+ * cull distance: narrow cull-edge fade and citygen chunk reach. Baked OSM tiles
+ * stay city-resident once attached. Atmospheric haze is independent. */
 export const WORLD_TUNING = tunables("world", {
   radius: {
     v: DRAW_DISTANCE_DEFAULT,
@@ -358,8 +359,8 @@ export const START = {
 }
 
 export const CONFIG = {
-  // streaming (load/unload gap is hysteresis so tiles don't thrash at the boundary;
-  // both live-tweakable via the "/" panel's draw-distance slider)
+  // Draw/cull ceilings (CityGen reach + fog). Baked tile residency expands to the
+  // whole city independently; these no longer unload far OSM tiles.
   tileLoadRadius: WORLD_TUNING.values.radius,
   tileUnloadRadius: WORLD_TUNING.values.radius + 400,
   colliderRadius: 260,
