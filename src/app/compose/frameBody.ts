@@ -618,6 +618,9 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         if (sites.perfAllowed("hang-gliding")) {
           core.state.hangGliding?.update(frameDt, ctx.state.elapsed, player, hud, input, chase);
         }
+        if (sites.perfAllowed("marin-headlands")) {
+          core.state.marinRocket?.update(frameDt, ctx.state.elapsed, player, hud, input, chase);
+        }
       }
       if (inOrbit()) { chase.suspend(player); orbit.update(frameDt); }
       else {
@@ -626,7 +629,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       }
       // keep the vehicle hum, ambience and social presence alive like full pause
       vehicleAudio.update(frameDt, {
-        mode: player.hangGliding ? "walk" : player.mode,
+        mode: player.hangGliding || player.rocketFlying ? "walk" : player.mode,
         speed: player.speed,
         vspeed: player.velocity.y,
         boost: input.down("ShiftLeft"),
@@ -911,6 +914,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       && teaGarden.interact(player.renderPosition, player.mode);
     const hangGlidingOwnsInteract =
       interactPressed && (core.state.hangGliding?.capturesInteraction ?? false);
+    const marinRocketOwnsInteract =
+      interactPressed && (core.state.marinRocket?.capturesInteraction ?? false);
     let passengerExit: PassengerExitPose | undefined;
     if (embodiments.passengerOf === GHOST_SHIP_RIDE_ID && netW.state.ghostShip) {
       const facing = netW.state.ghostShip.deckDismountPose(
@@ -920,7 +925,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (facing !== null) passengerExit = { position: ridePos, facing };
     }
     const exitedToWalk =
-      interactPressed && !teaGardenEConsumed && !hangGlidingOwnsInteract && exitToWalk(passengerExit);
+      interactPressed && !teaGardenEConsumed && !hangGlidingOwnsInteract && !marinRocketOwnsInteract && exitToWalk(passengerExit);
     if (exitedToWalk) {
       teaGardenEConsumed = teaGarden.interact(player.renderPosition, player.mode);
     }
@@ -940,6 +945,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !core.state.missionDolores?.tryInteract(player.position, player.mode, hud) &&
       !core.state.sutroBaths?.tryInteract(player.position, player.mode) &&
       !core.state.hangGliding?.tryInteract(player, hud, input, chase) &&
+      !core.state.marinRocket?.tryInteract(player, hud, input, chase) &&
       !core.state.afterlight?.tryInteract(player, hud)
     ) {
       const nearbyRide = resolveNearbyRideInteraction();
@@ -1541,6 +1547,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (!worldArrival.active && sites.perfAllowed("hang-gliding")) {
       core.state.hangGliding?.update(frameDt, ctx.state.elapsed, player, hud, input, chase);
     }
+    // Marin Orbital: pad prompting while grounded, then atmosphere/space
+    // presentation around the shared fixed-step rocket flight controller.
+    if (!worldArrival.active && sites.perfAllowed("marin-headlands")) {
+      core.state.marinRocket?.update(frameDt, ctx.state.elapsed, player, hud, input, chase);
+    }
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
     if (!worldArrival.active && sites.perfAllowed("goldman")) {
       core.state.goldenGateTennis?.update(frameDt, ctx.state.elapsed, player.position);
@@ -1756,7 +1767,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // Boards live on the shack rack until grabbed — no under-arm carry on the sand.
     player.setCarryingBoard(false);
     vehicleAudio.update(frameDt, {
-      mode: player.hangGliding ? "walk" : player.mode,
+      mode: player.hangGliding || player.rocketFlying ? "walk" : player.mode,
       speed: player.speed,
       vspeed: player.velocity.y,
       boost: input.down("ShiftLeft"),

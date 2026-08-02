@@ -23,6 +23,7 @@ import { inSkatePlazaFootprint, SKATE_PLAZA_ARRIVAL } from "../../world/skatePla
 import { BUENA_VISTA_REGION } from "../../world/buenaVista";
 import { BACKGROUND_STREAM_LIMIT } from "../../world/tiles";
 import { sutroTowerArrivalForDestination } from "../../world/sutroTower";
+import { marinRocketArrivalForDestination } from "../../gameplay/marinRocket/meta";
 import type { PlayerMode } from "../../player/types";
 import {  PAINT_COLORS } from "../../fx/graffiti";
 import {  ProxySet } from "../../core/worldQueries";
@@ -220,6 +221,12 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     label: "Skyline Glide",
     isActive: () => core.state.hangGliding?.active ?? false,
     release: () => { core.state.hangGliding?.releaseForNavigation(player, chase); }
+  });
+  minigameSession.register({
+    id: "marin-rocket",
+    label: "Marin Starjet",
+    isActive: () => core.state.marinRocket?.active ?? false,
+    release: () => { core.state.marinRocket?.releaseForNavigation(player, chase); }
   });
   const releaseGameplayForNavigation = () => {
     if (inOrbit()) setViewMode("third");
@@ -766,6 +773,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     embodiments,
     arrival: worldArrival,
     resolveAuthoredArrival: (x, z, label) =>
+      marinRocketArrivalForDestination(map, x, z, label) ??
       sutroTowerArrivalForDestination(x, z, label) ??
       authoredRegions.arrivalForDestination(x, z, label),
     releaseGameplay: releaseGameplayForNavigation
@@ -1643,7 +1651,10 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   // unchanged, re-synced here via onSitesChanged (the old refreshOptionalSiteDebug
   // points). The __sf assignment payload is byte-for-byte the prior one.
   const sites = createOptionalSites({
-    map, physics, scene, sky, tiles, renderer, camera, nature, net, player,
+    map, physics, scene, sky, tiles, renderer, camera,
+    worldUiScene: pipeline.worldUiScene,
+    beautyDepthTexture: pipeline.beautyDepthTexture as THREE.Texture | null,
+    nature, net, player,
     input, hud, chase, remotes, embodiments, fx, siteGate, worldArrival,
     debugPanel, dogParkAudio, authoredRegions, worldQueries,
     waitForWorldBackgroundWindow,
@@ -1667,6 +1678,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       core.state.palaceReverie = r.palaceReverie;
       core.state.afterlight = r.afterlight;
       core.state.hangGliding = r.hangGliding;
+      core.state.marinRocket = r.marinRocket;
       core.state.coronaHeights = r.coronaHeights;
       core.state.landsEnd = r.landsEnd;
       core.state.waveOrgan = r.waveOrgan;
@@ -1703,6 +1715,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
         palaceReverie: core.state.palaceReverie,
         afterlight: core.state.afterlight,
         hangGliding: core.state.hangGliding,
+        marinRocket: core.state.marinRocket,
         coronaHeights: core.state.coronaHeights,
         landsEnd: core.state.landsEnd,
         waveOrgan: core.state.waveOrgan,

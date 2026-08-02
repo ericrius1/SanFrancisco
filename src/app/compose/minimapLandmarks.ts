@@ -14,6 +14,7 @@ import { BEACH_PIANIST_CENTER } from "../../world/beachPianist/meta";
 import { JAPANESE_TEA_GARDEN_ENTRANCE } from "../../world/japaneseTeaGarden/layout";
 import { CORONA_HEIGHTS_SUMMIT } from "../../world/coronaHeights/meta";
 import { AFTERLIGHT_ARRIVAL } from "../../gameplay/afterlight/meta";
+import { MARIN_ROCKET_LABEL, MARIN_ROCKET_SITE } from "../../gameplay/marinRocket/meta";
 import { BOTANICAL_GARDEN_BOUNDS } from "../../world/garden/layout";
 import { SPAWN_POINTS } from "../../world/spawnPoints";
 import { oceanBeachSurfShackPose } from "../../gameplay/surfing/shack";
@@ -56,6 +57,7 @@ export function registerActivityLandmarks(
   minimap.addLandmark(WAVE_ORGAN_CENTER.x, WAVE_ORGAN_CENTER.z, "Wave Organ");
   // Marshall's Beach grand piano, framed by the Golden Gate Bridge.
   minimap.addLandmark(BEACH_PIANIST_CENTER.x, BEACH_PIANIST_CENTER.z, "Beach Pianist");
+  minimap.addLandmark(MARIN_ROCKET_SITE.x, MARIN_ROCKET_SITE.z, MARIN_ROCKET_LABEL);
 }
 
 /**

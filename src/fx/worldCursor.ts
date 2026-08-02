@@ -9,6 +9,7 @@ import {
   float,
   vec2,
   vec3,
+  vec4,
   mix,
   texture,
   screenUV,
@@ -113,11 +114,18 @@ export class WorldCursor {
         .greaterThan(1e-7)
         .and(sceneViewZ.greaterThan(fragViewZ.add(0.04)))
         .discard();
-      return col;
+      // a=0 keeps the display-tail premultiplied over additive (`c + rgb`) while
+      // opaque world signs can still cover with a>0 in the same overlay pass.
+      return vec4(col, 0);
     })();
 
     mat.transparent = true;
-    mat.blending = THREE.NormalBlending;
+    // Add into the world-UI RT without touching its cleared alpha=0.
+    mat.blending = THREE.CustomBlending;
+    mat.blendSrc = THREE.OneFactor;
+    mat.blendDst = THREE.OneFactor;
+    mat.blendSrcAlpha = THREE.ZeroFactor;
+    mat.blendDstAlpha = THREE.OneFactor;
     mat.depthTest = false; // manual test against beauty depth above
     mat.depthWrite = false;
     mat.side = THREE.DoubleSide;

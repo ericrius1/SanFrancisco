@@ -56,7 +56,14 @@ import {
   CarController,
   type CarConfig
 } from "../vehicles/car";
-import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
+import {
+  buildPlaneMesh,
+  collectPlaneAnim,
+  FlyController,
+  type PlaneAnim,
+  type RocketFlightProfile,
+  type RocketFlightTelemetry
+} from "../vehicles/plane";
 import type { HangGliderFlightProfile } from "../vehicles/plane/hangGliderPhysics";
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, SPEEDBOAT_HULL, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
@@ -341,6 +348,8 @@ export class Player {
   #phoenixRiderRig: Rig; // front saddle seat; two friends attach over the network
   #planeAnim: PlaneAnim;
   #hangGliderVisual: THREE.Group | null = null;
+  #rocketVisual: THREE.Group | null = null;
+  #rocketPresentation: { update(dt: number, telemetry: Readonly<RocketFlightTelemetry>): void } | null = null;
   #planeBaseVisibility = new Map<THREE.Object3D, boolean>();
   #avatar: AvatarTraits;
   #firstPersonView = false;
@@ -562,6 +571,14 @@ export class Player {
     return this.#modes.plane.hangGliderTelemetry;
   }
 
+  get rocketFlying(): boolean {
+    return this.#modes.plane.rocketFlying;
+  }
+
+  get rocketTelemetry(): Readonly<RocketFlightTelemetry> {
+    return this.#modes.plane.rocketTelemetry;
+  }
+
   /**
    * Quest-owned airplane embodiment swap. The optional activity supplies the
    * already-built glider root; Player keeps the persistent avatar rig and the
@@ -573,6 +590,10 @@ export class Player {
     liftSampler: (x: number, z: number, time: number) => number,
     profile: HangGliderFlightProfile
   ): void {
+    if (this.#rocketVisual) {
+      this.#modes.plane.setRocketFlying(false);
+      this.#clearRocketVisual();
+    }
     if (this.#hangGliderVisual) this.#clearHangGliderVisual();
     const plane = this.meshes.plane;
     this.#planeBaseVisibility.clear();
@@ -607,6 +628,67 @@ export class Player {
     for (const [child, visible] of this.#planeBaseVisibility) child.visible = visible;
     this.#planeBaseVisibility.clear();
     plane.userData.hangGliding = false;
+    const cockpit = plane.userData.cockpit as Cockpit;
+    this.#pilotRig.group.position.set(...cockpit.seat);
+    this.#pilotRig.group.rotation.set(0, 0, 0);
+  }
+
+  /** Marin's optional launch site temporarily replaces the stock plane with
+   * its already-built spaceplane. The persistent plane body/controller keeps
+   * camera, physics, networking and avatar ownership on the shared path. */
+  beginRocketFlight(
+    visual: THREE.Group,
+    launch: { x: number; y: number; z: number; heading: number },
+    profile: RocketFlightProfile
+  ): void {
+    if (this.#hangGliderVisual) {
+      this.#modes.plane.setHangGliding(false);
+      this.#clearHangGliderVisual();
+    }
+    if (this.#rocketVisual) this.#clearRocketVisual();
+    const plane = this.meshes.plane;
+    this.#planeBaseVisibility.clear();
+    for (const child of plane.children) {
+      if (child === this.#pilotRig.group) continue;
+      this.#planeBaseVisibility.set(child, child.visible);
+      child.visible = false;
+    }
+    this.#rocketVisual = visual;
+    this.#rocketPresentation =
+      (visual.userData.rocketPresentation as {
+        update(dt: number, telemetry: Readonly<RocketFlightTelemetry>): void;
+      } | undefined) ?? null;
+    visual.visible = true;
+    visual.position.set(0, 0, 0);
+    visual.rotation.set(0, 0, 0);
+    visual.scale.setScalar(1);
+    plane.add(visual);
+    plane.userData.rocketFlying = true;
+    const cockpit = visual.userData.cockpit as Cockpit | undefined;
+    this.#pilotRig.group.position.set(...(cockpit?.seat ?? [0, 0.62, 0.3]));
+    this.#pilotRig.group.rotation.set(0, 0, 0);
+    this.#modes.plane.setRocketFlying(true, profile);
+    this.position.set(launch.x, launch.y, launch.z);
+    this.#spawnBody("plane", launch.heading, launch.y);
+  }
+
+  /** Release the launch-site spaceplane and optionally return the pilot to a
+   * safe on-foot pose. The site reparks its visual after this detaches it. */
+  stopRocketFlight(spawn?: { x: number; y?: number; z: number; heading: number }): void {
+    if (!this.#modes.plane.rocketFlying && !this.#rocketVisual) return;
+    this.#modes.plane.setRocketFlying(false);
+    this.#clearRocketVisual();
+    if (spawn) this.respawn(spawn);
+  }
+
+  #clearRocketVisual(): void {
+    const plane = this.meshes.plane;
+    this.#rocketVisual?.removeFromParent();
+    this.#rocketVisual = null;
+    this.#rocketPresentation = null;
+    for (const [child, visible] of this.#planeBaseVisibility) child.visible = visible;
+    this.#planeBaseVisibility.clear();
+    plane.userData.rocketFlying = false;
     const cockpit = plane.userData.cockpit as Cockpit;
     this.#pilotRig.group.position.set(...cockpit.seat);
     this.#pilotRig.group.rotation.set(0, 0, 0);
@@ -724,6 +806,10 @@ export class Player {
    * spin every mode switch 180°.
    */
   #spawnBody(mode: PlayerMode, facing = this.heading - Math.PI, exactBodyY?: number) {
+    if (mode !== "plane" && this.#modes.plane.rocketFlying) {
+      this.#modes.plane.setRocketFlying(false);
+      this.#clearRocketVisual();
+    }
     const w = this.physics.world;
     const p = this.position;
     // A mode switch can bypass the chase camera for a frame (cinematics/orbit).
@@ -787,6 +873,10 @@ export class Player {
 
   trySwitch(mode: PlayerMode) {
     if (mode === this.mode) return;
+    if (this.#modes.plane.rocketFlying && mode !== "plane") {
+      this.#modes.plane.setRocketFlying(false);
+      this.#clearRocketVisual();
+    }
     let facing = this.heading - Math.PI; // keep pointing the way we face now
     const entered = this.#modes[mode].enter?.(this);
     if (typeof entered === "number") facing = entered;
@@ -2236,7 +2326,10 @@ export class Player {
       // pilot leans with the bank, hands following the yoke; props spin with
       // airspeed (the local mesh's parts — remotes rediscover their clones')
       const bank = this.#modes.plane.bank;
-      if (this.#modes.plane.hangGliding) {
+      if (this.#modes.plane.rocketFlying) {
+        poseDrive(this.#pilotRig, bank, this.#animT, true);
+        this.#rocketPresentation?.update(dt, this.#modes.plane.rocketTelemetry);
+      } else if (this.#modes.plane.hangGliding) {
         const telemetry = this.#modes.plane.hangGliderTelemetry;
         poseHangGlider(this.#pilotRig, telemetry.bank, telemetry.pitch, this.#animT);
       } else {

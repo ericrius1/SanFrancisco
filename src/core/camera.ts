@@ -508,7 +508,7 @@ export class ChaseCamera {
       // the matching interpolated render attitude for camera heading as well;
       // flyForward is the newest fixed-step state and can advance on a frame in
       // which the visible body is still between the previous two physics poses.
-      const f = player.hangGliding
+      const f = player.hangGliding || player.rocketFlying
         ? this.#renderForward.set(0, 0, -1).applyQuaternion(player.renderQuaternion).normalize()
         : player.flyForward
       const targetYaw = Math.atan2(-f.x, -f.z)
@@ -517,7 +517,7 @@ export class ChaseCamera {
         -0.62,
         1.2
       )
-      const follow = 1 - Math.exp(-smoothDt * (player.hangGliding ? 5.6 : 7))
+      const follow = 1 - Math.exp(-smoothDt * (player.hangGliding ? 5.6 : player.rocketFlying ? 10 : 7))
       let dYaw = targetYaw - this.yaw
       dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw)) // shortest way round
       this.yaw += dYaw * follow
@@ -590,6 +590,8 @@ export class ChaseCamera {
     // the boost pulls the camera along instead of away (~5m at full stoop).
     if (player.mode === "bird")
       orbitStiff = THREE.MathUtils.clamp(player.speed * 0.2, 7.5, 17)
+    if (player.rocketFlying)
+      orbitStiff = THREE.MathUtils.clamp(player.speed * 0.025, 12, 32)
     // clamp the smoothing step. A tile-upload spike inflates the *next* frame's
     // dt, and an uncapped 1-exp(-dt*stiff) then snaps an orbit a large fraction
     // of the way to target in that one frame — the visible "hitch" as chunks

@@ -42,8 +42,8 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
     );
   }
 
-  // Reversed float depth keeps distant near-coplanar facades stable out to the
-  // 24 km far plane. Live canvas sampling stays off; offline cinematic capture
+  // Reversed float depth keeps distant near-coplanar facades stable across the
+  // extended space-flight far plane. Live canvas sampling stays off; offline cinematic capture
   // opts only the scene beauty pass into higher sampling.
   const renderer: THREE.WebGPURenderer = new WebGPUOnlyRenderer({
     antialias: false,

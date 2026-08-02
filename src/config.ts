@@ -119,7 +119,8 @@ export const INPUT_TUNING = tunables("input", {
 
 /** The committed heightfield is 15.1 × 13.9 km (20.5 km corner-to-corner).
  * A 21 km radius therefore covers the complete sandbox from even the most
- * distant corner while staying below the camera's 24 km far plane. */
+ * distant corner. The camera's larger space-flight far plane is independent
+ * of this ground-world draw-distance cap. */
 export const DRAW_DISTANCE_MAX = 21000
 
 /** Default streaming radius. 3.5 km keeps FiDi/Corona vistas readable while
@@ -386,6 +387,6 @@ export const CONFIG = {
   camera: {
     fov: 62,
     near: 0.3,
-    far: 24000
+    far: 120000
   }
 }

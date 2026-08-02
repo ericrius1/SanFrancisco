@@ -39,6 +39,7 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["A", "D"], label: "turn" },
     { c: ["Shift"], label: "boost" },
     { c: ["Space"], label: "air brake" },
+    { c: ["E"], label: "return · get out" },
     { c: ["Click"], label: "shoot" }
   ],
   boat: [
@@ -141,6 +142,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RT"], label: "throttle" },
     { c: ["L3", "LT"], label: "boost" },
     { c: ["A"], label: "air brake" },
+    { c: ["Y"], label: "return · get out" },
     { c: ["X"], label: "shoot" }
   ],
   boat: [

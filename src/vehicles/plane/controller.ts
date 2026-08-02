@@ -5,6 +5,7 @@ import type { ModeController, PlayerCtx } from "../../player/types";
 import { PLANE_TUNING } from "./tuning";
 import { TYPICAL_TREE_HEIGHT } from "../shared";
 import type { HangGliderFlightProfile, HangGliderFlightState } from "./hangGliderPhysics";
+import type { RocketFlightProfile, RocketFlightTelemetry } from "./rocketFlight";
 
 const V = {
   tmp: new THREE.Vector3(),
@@ -63,6 +64,20 @@ export class FlyController implements ModeController {
     touchdownSink: 0,
     touchdownSpeed: 0
   };
+  #rocketFlying = false;
+  #rocketProfile: RocketFlightProfile | null = null;
+  #rocketThrottle = 0.58;
+  #rocketTelemetry: RocketFlightTelemetry = {
+    active: false,
+    altitude: 0,
+    verticalSpeed: 0,
+    speed: 0,
+    throttle: 0.58,
+    boost: false,
+    spaceFactor: 0,
+    orbitFactor: 0,
+    stage: "launch"
+  };
 
   /** Visual bank angle — drives the pilot pose and yoke spin. */
   get bank(): number {
@@ -77,12 +92,37 @@ export class FlyController implements ModeController {
     return this.#hangTelemetry;
   }
 
+  get rocketFlying(): boolean {
+    return this.#rocketFlying;
+  }
+
+  get rocketTelemetry(): Readonly<RocketFlightTelemetry> {
+    return this.#rocketTelemetry;
+  }
+
+  setRocketFlying(active: boolean, profile: RocketFlightProfile | null = null): void {
+    if (active && !profile) throw new Error("[plane] rocket flight profile is required");
+    this.#rocketFlying = active;
+    this.#rocketProfile = active ? profile : null;
+    this.#rocketThrottle = 0.58;
+    this.#rocketTelemetry.active = active;
+    this.#rocketTelemetry.altitude = 0;
+    this.#rocketTelemetry.verticalSpeed = 0;
+    this.#rocketTelemetry.speed = profile?.launchSpeed ?? 0;
+    this.#rocketTelemetry.throttle = this.#rocketThrottle;
+    this.#rocketTelemetry.boost = false;
+    this.#rocketTelemetry.spaceFactor = 0;
+    this.#rocketTelemetry.orbitFactor = 0;
+    this.#rocketTelemetry.stage = "launch";
+  }
+
   setHangGliding(
     active: boolean,
     liftSampler: ((x: number, z: number, time: number) => number) | null = null,
     profile: HangGliderFlightProfile | null = null
   ): void {
     if (active && !profile) throw new Error("[plane] hang-glider flight profile is required");
+    if (active) this.setRocketFlying(false);
     this.#hangGliding = active;
     this.#hangProfile = active ? profile : null;
     this.#hangLiftSampler = active ? liftSampler : null;
@@ -100,15 +140,25 @@ export class FlyController implements ModeController {
     ctx.body = w.createBox({
       type: BodyType.Dynamic,
       position: [p.x, p.y + 2.5, p.z],
-      halfExtents: this.#hangGliding ? [0.9, 0.42, 1.45] : [1.1, 0.5, 2.6],
+      halfExtents: this.#hangGliding
+        ? [0.9, 0.42, 1.45]
+        : this.#rocketFlying
+          ? [1.45, 0.62, 3.75]
+          : [1.1, 0.5, 2.6],
       density: 70,
       friction: 0.3,
       restitution: 0.2
     });
     w.setBodyGravityScale(ctx.body, 0);
     // face the way the body was just spawned
-    this.fwd.set(-Math.sin(facing), 0, -Math.cos(facing)).normalize();
-    this.#speed = PLANE_TUNING.values.spawnSpeed;
+    const launchPitch = this.#rocketFlying ? this.#rocketProfile!.launchPitch : 0;
+    const launchCos = Math.cos(launchPitch);
+    this.fwd.set(
+      -Math.sin(facing) * launchCos,
+      Math.sin(launchPitch),
+      -Math.cos(facing) * launchCos
+    ).normalize();
+    this.#speed = this.#rocketFlying ? this.#rocketProfile!.launchSpeed : PLANE_TUNING.values.spawnSpeed;
     this.#bank = 0;
     this.#hangState.heading = facing;
     this.#hangState.pitch = -0.04;
@@ -125,11 +175,17 @@ export class FlyController implements ModeController {
     this.#hangTelemetry.pitch = -0.04;
     this.#hangTelemetry.stalled = false;
     this.#hangTelemetry.landed = false;
+    if (this.#rocketFlying) {
+      this.#rocketThrottle = 0.58;
+      this.#rocketTelemetry.active = true;
+      this.#rocketTelemetry.speed = this.#speed;
+      this.#rocketTelemetry.throttle = this.#rocketThrottle;
+    }
     return p.y + 2.5;
   }
 
   enter(ctx: PlayerCtx) {
-    if (this.#hangGliding) return;
+    if (this.#hangGliding || this.#rocketFlying) return;
     // same XZ as the previous mode; climb to ~2× tree height (+ a little) and
     // clear the local skyline so the first seconds of flight aren't a canyon
     const roof = ctx.physics.highestBuildingTop(ctx.position.x, ctx.position.z, 150);
@@ -144,6 +200,39 @@ export class FlyController implements ModeController {
    * Pitch is kept off vertical so heading stays well-defined.
    */
   steerFly(input: Input, dt: number) {
+    if (this.#rocketFlying) {
+      if (input.suspended) return;
+      const tf = PLANE_TUNING.values;
+      const maxStep = tf.turnRate * dt * 0.82;
+      const keySteer = input.axis("KeyD", "KeyA");
+      const mouseYawDelta = THREE.MathUtils.clamp(-input.mouseDX * tf.mouseYaw * 0.82, -maxStep, maxStep);
+      const keyYawDelta = keySteer * tf.keyYaw * dt * 0.78;
+      const yawDelta = THREE.MathUtils.clamp(
+        mouseYawDelta + keyYawDelta,
+        -(maxStep + tf.keyYaw * dt),
+        maxStep + tf.keyYaw * dt
+      );
+      const pitchDelta = THREE.MathUtils.clamp(
+        -input.mouseDY * tf.mousePitch * 0.9,
+        -maxStep,
+        maxStep
+      );
+      const yaw = Math.atan2(-this.fwd.x, -this.fwd.z) + yawDelta;
+      const pitch = THREE.MathUtils.clamp(
+        Math.asin(THREE.MathUtils.clamp(this.fwd.y, -1, 1)) + pitchDelta,
+        -1.32,
+        1.48
+      );
+      const c = Math.cos(pitch);
+      this.fwd.set(-Math.sin(yaw) * c, Math.sin(pitch), -Math.cos(yaw) * c).normalize();
+      const targetBank = THREE.MathUtils.clamp(
+        (-yawDelta / Math.max(dt, 1e-4)) * tf.bankAmount * 0.72,
+        -0.82,
+        0.82
+      );
+      this.#bank += (targetBank - this.#bank) * Math.min(1, dt * tf.bankSmooth);
+      return;
+    }
     if (this.#hangGliding) {
       if (input.suspended) {
         this.#hangRoll = 0;
@@ -195,6 +284,10 @@ export class FlyController implements ModeController {
   // Attitude is code-owned (banked into turns); the solver owns translation so
   // collisions still land hits.
   update(ctx: PlayerCtx, dt: number, input: Input) {
+    if (this.#rocketFlying) {
+      this.#updateRocket(ctx, dt, input);
+      return;
+    }
     if (this.#hangGliding) {
       this.#updateHangGlider(ctx, dt, input);
       return;
@@ -241,6 +334,79 @@ export class FlyController implements ModeController {
       fwd.y *= 0.9;
       fwd.normalize();
     }
+    ctx.heading = yaw + Math.PI;
+  }
+
+  #updateRocket(ctx: PlayerCtx, dt: number, input: Input): void {
+    const profile = this.#rocketProfile;
+    if (!profile) throw new Error("[plane] active rocket lost its flight profile");
+    const w = ctx.physics.world;
+    const ground = ctx.map.effectiveGround(ctx.position.x, ctx.position.z);
+    const altitude = Math.max(0, ctx.position.y - ground);
+    const throttleInput = THREE.MathUtils.clamp(
+      (input.down("KeyW") ? 1 : 0) - (input.down("KeyS") ? 1 : 0) +
+        input.padAxis("ArrowDown", "ArrowUp"),
+      -1,
+      1
+    );
+    this.#rocketThrottle = THREE.MathUtils.clamp(
+      this.#rocketThrottle + throttleInput * profile.throttleRate * dt,
+      0.2,
+      1
+    );
+    const boost = input.down("ShiftLeft");
+    const limit = profile.speedLimit(altitude);
+    const targetSpeed = Math.max(
+      profile.minimumSpeed,
+      limit * (0.28 + this.#rocketThrottle * 0.72) * (boost ? 1 : 0.82)
+    );
+    const response = boost ? profile.boostResponse : profile.throttleResponse;
+    this.#speed += (targetSpeed - this.#speed) * (1 - Math.exp(-dt * response));
+
+    const fwd = this.fwd;
+    const yaw = Math.atan2(-fwd.x, -fwd.z);
+    const vertical = fwd.y * this.#speed;
+    w.setBodyVelocity(
+      ctx.body,
+      [fwd.x * this.#speed, vertical, fwd.z * this.#speed],
+      [0, 0, 0]
+    );
+
+    const m = V.mat.lookAt(V.tmp.set(0, 0, 0), V.tmp2.copy(fwd), V.up);
+    const q = ctx.quaternion.setFromRotationMatrix(m);
+    q.premultiply(V.quat.setFromAxisAngle(fwd, this.#bank));
+    w.setBodyTransform(
+      ctx.body,
+      [ctx.position.x, ctx.position.y, ctx.position.z],
+      [q.x, q.y, q.z, q.w]
+    );
+
+    if (ctx.position.y < ground + 2.15) {
+      w.setBodyTransform(
+        ctx.body,
+        [ctx.position.x, ground + 2.2, ctx.position.z],
+        [q.x, q.y, q.z, q.w]
+      );
+      if (fwd.y < 0.12) {
+        fwd.y = 0.12;
+        fwd.normalize();
+      }
+    }
+    if (ctx.position.y > profile.maximumAltitude && fwd.y > 0) {
+      fwd.y *= 0.82;
+      fwd.normalize();
+      w.setBodyVelocity(ctx.body, [fwd.x * this.#speed, 0, fwd.z * this.#speed], [0, 0, 0]);
+    }
+
+    this.#rocketTelemetry.active = true;
+    this.#rocketTelemetry.altitude = altitude;
+    this.#rocketTelemetry.verticalSpeed = vertical;
+    this.#rocketTelemetry.speed = this.#speed;
+    this.#rocketTelemetry.throttle = this.#rocketThrottle;
+    this.#rocketTelemetry.boost = boost;
+    this.#rocketTelemetry.spaceFactor = profile.spaceFactor(altitude);
+    this.#rocketTelemetry.orbitFactor = profile.orbitFactor(altitude);
+    this.#rocketTelemetry.stage = profile.stage(altitude);
     ctx.heading = yaw + Math.PI;
   }
 

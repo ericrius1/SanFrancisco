@@ -202,12 +202,12 @@ export function createRenderPipeline(
 
   // ---------------------------------------------------------- world-UI pass
   //
-  // In-world affordances (aim cursor) that need real 3D occlusion but must not
-  // enter TAA history or pick up film grain. Own scene + full-res pass, driven
-  // explicitly like the beauty pass, then additively composited in the display
-  // tail AFTER grade/sharpen/grain. Do NOT mix renderer.render() after
-  // RenderPipeline.present — three rejects that path; compositing inside the
-  // display shader is the supported route.
+  // In-world affordances (aim cursor, readable signs) that need real 3D
+  // occlusion but must not enter TAA history or pick up film grain. Own scene +
+  // full-res pass, driven explicitly like the beauty pass, then composited in
+  // the display tail AFTER grade/sharpen/grain with premultiplied over. Do NOT
+  // mix renderer.render() after RenderPipeline.present — three rejects that
+  // path; compositing inside the display shader is the supported route.
   const worldUiScene = new THREE.Scene();
   worldUiScene.name = "world_ui";
   const worldUiPass = pass(worldUiScene, camera, { samples: 0 });
@@ -215,12 +215,19 @@ export function createRenderPipeline(
   // Always native drawing-buffer resolution — crisp UI, independent of the
   // beauty pass's temporal/governor scale.
   worldUiPass.setResolutionScale(1);
+  const worldUiClearColor = new THREE.Color(0x000000);
   const driveWorldUiPass = () => {
+    // Opaque canvas clear is a=1 by default; world-UI needs a transparent clear
+    // so empty pixels do not replace the graded beauty under premultiplied over.
+    const prevAlpha = renderer.getClearAlpha();
+    renderer.getClearColor(worldUiClearColor);
+    renderer.setClearColor(0x000000, 0);
     (
       worldUiPass as unknown as {
         updateBefore(frame: { renderer: THREE.WebGPURenderer }): void;
       }
     ).updateBefore({ renderer });
+    renderer.setClearColor(worldUiClearColor, prevAlpha);
   };
   const worldUiTextureNode = texture(worldUiPass.getTexture("output")) as N;
   const worldUi: WorldUiOverlay = {
@@ -667,9 +674,9 @@ export function createRenderPipeline(
      */
     grade: postChain.grade,
     /**
-     * Scene for in-world UI that bypasses the post chain (aim cursor). Add
-     * meshes here — never to the beauty scene — then bind beauty depth on the
-     * material for occlusion (`WorldCursor.bindOcclusionDepth`).
+     * Scene for in-world UI that bypasses the post chain (aim cursor, readable
+     * signs). Add meshes here — never to the beauty scene — then bind beauty
+     * depth on the material for occlusion (`WorldCursor` / `WorldSign`).
      */
     worldUiScene,
     /** Beauty-pass depth attachment for world-UI occlusion tests. */

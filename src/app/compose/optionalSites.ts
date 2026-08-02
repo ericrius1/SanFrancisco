@@ -67,6 +67,7 @@ import type { SkatePlaza } from "../../world/skatePlaza";
 import type { TutorialZone } from "../../world/tutorialZone";
 import type { AfterlightExperience } from "../../gameplay/afterlight";
 import type { HangGlidingExperience } from "../../gameplay/hangGliding";
+import type { MarinRocketExperience } from "../../gameplay/marinRocket";
 import type { PickleballController } from "../systems/pickleball";
 import { setPocketCommitted } from "../../render/pocketQuality";
 
@@ -153,6 +154,7 @@ export type OptionalSiteRefs = {
   palaceReverie: PalaceReverieGame | null;
   afterlight: AfterlightExperience | null;
   hangGliding: HangGlidingExperience | null;
+  marinRocket: MarinRocketExperience | null;
   coronaHeights: CoronaHeightsPark | null;
   landsEnd: LandsEndRegion | null;
   waveOrgan: WaveOrgan | null;
@@ -170,6 +172,8 @@ export function createOptionalSites({
   tiles,
   renderer,
   camera,
+  worldUiScene,
+  beautyDepthTexture,
   nature,
   net,
   player,
@@ -201,6 +205,9 @@ export function createOptionalSites({
   tiles: TileStreamer;
   renderer: THREE.WebGPURenderer;
   camera: THREE.PerspectiveCamera;
+  /** Post-chain bypass scene for readable in-world signs (aim cursor lives here too). */
+  worldUiScene: THREE.Scene;
+  beautyDepthTexture?: THREE.Texture | null;
   nature: Nature;
   net: Net;
   player: Player;
@@ -254,6 +261,7 @@ export function createOptionalSites({
   let palaceReverie: PalaceReverieGame | null = null;
   let afterlight: AfterlightExperience | null = null;
   let hangGliding: HangGlidingExperience | null = null;
+  let marinRocket: MarinRocketExperience | null = null;
   let coronaHeights: CoronaHeightsPark | null = null;
   let landsEnd: LandsEndRegion | null = null;
   let waveOrgan: WaveOrgan | null = null;
@@ -371,6 +379,7 @@ export function createOptionalSites({
       palaceReverie,
       afterlight,
       hangGliding,
+      marinRocket,
       coronaHeights,
       landsEnd,
       waveOrgan,
@@ -698,15 +707,26 @@ export function createOptionalSites({
   };
 
   const loadMarinHeadlands = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
-    const { createMarinHeadlandsTunnels } = await import("../../world/marinHeadlands");
+    const [{ createMarinHeadlandsTunnels }, { createMarinRocketExperience }] = await Promise.all([
+      import("../../world/marinHeadlands"),
+      import("../../gameplay/marinRocket")
+    ]);
     await stage();
     const headlands = createMarinHeadlandsTunnels(map, physics, tiles);
+    const rocket = createMarinRocketExperience(map, physics, sky, {
+      scene: worldUiScene,
+      beautyDepth: beautyDepthTexture
+    });
+    headlands.root.add(rocket.root);
     try {
       await prepareOptionalRoot("marin-headlands", headlands.root, stage, compile);
       headlands.addTo(scene);
       marinHeadlands = headlands;
+      marinRocket = rocket;
       sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
     } catch (error) {
+      rocket.dispose();
       headlands.dispose();
       throw error;
     }
@@ -1238,7 +1258,11 @@ export function createOptionalSites({
         };
       case "marin-headlands":
         return {
-          runtime: marinHeadlands?.root.visible ? "STATIC" : "SLEEP",
+          runtime: marinRocket?.active
+            ? "ACTIVE"
+            : marinHeadlands?.root.visible
+              ? "STATIC"
+              : "SLEEP",
           sceneState: optionalSiteSceneState(marinHeadlands?.root)
         };
       case "sutro-baths":
@@ -1465,9 +1489,12 @@ export function createOptionalSites({
       refreshOptionalSiteDebug();
     },
     "marin-headlands": () => {
+      marinRocket?.dispose();
+      marinRocket = null;
       marinHeadlands?.dispose();
       marinHeadlands = null;
       sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
     },
     "sutro-baths": () => {
       sutroBaths?.dispose();
