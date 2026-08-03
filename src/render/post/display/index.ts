@@ -15,7 +15,8 @@
 //   If (uSharpen > 0): c = rcas(...)               // 4 more grade evals, uniform branch
 //   c    += filmGrain(c, screenCoord)              // unconditional, zeroed identity
 //   c     = surfFlowGrade(c)                       // SURVIVOR, verbatim
-//   c    += worldUi.sample(screenUV)               // in-world UI after TAA/grain
+//   ui   = worldUi.sample(screenUV)                // in-world UI after TAA/grain
+//   c    = c*(1-ui.a) + ui.rgb                     // premultiplied over
 import * as THREE from "three/webgpu"
 import { Fn, screenCoordinate, screenUV, vec4 } from "three/tsl"
 import { advanceGrain, filmGrain } from "../grain"
@@ -30,9 +31,10 @@ export { setFlowPostFx } from "./surfFlow"
 
 /**
  * Optional full-res overlay drawn AFTER grade/sharpen/grain. Used for in-world
- * UI (aim cursor) that must keep 3D occlusion but never enter TAA history or
- * pick up film grain. `ensureRendered` runs immediately before the present so
- * capture redirects (H-key / ?fastcapture) still see it.
+ * UI (aim cursor, readable signs) that must keep 3D occlusion but never enter
+ * TAA history or pick up film grain. Composited with premultiplied over.
+ * `ensureRendered` runs immediately before the present so capture redirects
+ * (H-key / ?fastcapture) still see it.
  */
 export type WorldUiOverlay = {
   readonly textureNode: N
@@ -97,7 +99,12 @@ export function createDisplayStage(setup: PostStageSetup, deps: DisplayDeps): Di
 
     surfFlowGrade(c, lens)
     // After every look treatment: world-UI stays sharp and out of TAA history.
-    if (worldUi) c.assign(c.add(worldUi.textureNode.sample(screenUV).rgb))
+    // Premultiplied over — opaque signs write coverage in `a`; additive-only
+    // content (aim cursor) writes `a = 0` so this reduces to `c + rgb`.
+    if (worldUi) {
+      const ui = worldUi.textureNode.sample(screenUV)
+      c.assign(c.mul(ui.a.oneMinus()).add(ui.rgb))
+    }
     return vec4(c, 1.0)
   })()
 

@@ -75,6 +75,7 @@ import type { WaveOrgan } from "../../world/waveOrgan";
 import type {  } from "../../world/beachPianist";
 import type { AfterlightExperience } from "../../gameplay/afterlight";
 import type { HangGlidingExperience } from "../../gameplay/hangGliding";
+import type { MarinRocketExperience } from "../../gameplay/marinRocket";
 import { HUD } from "../../ui/hud";
 // The launcher and reader stay dynamically loaded; a reading entry may create
 // the shared reader before this game module begins.
@@ -173,6 +174,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     unregisterBeachPianistTuning: null as ((() => void) | null),
     afterlight: null as (AfterlightExperience | null),
     hangGliding: null as (HangGlidingExperience | null),
+    marinRocket: null as (MarinRocketExperience | null),
     goldenGateLights: null as (ReturnType<typeof createGoldenGateLights>),
     ridePromptKey: null as (string | null),
     doorPromptShown: false as any,

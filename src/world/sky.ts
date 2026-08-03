@@ -278,8 +278,9 @@ const fogTriNoise = Fn(([position, time]: [N, N]) => {
 // dome sorts against depth. Sizing it above every distance the scene can contain
 // lets it be depth-tested safely: the map diagonal is ~20.5 km, which is how far
 // water's map-wide `horizon` sheet can sit from a camera at the opposite corner,
-// and CONFIG.camera.far is 24 km.
-const SKY_DOME_RADIUS = 23000
+// and CONFIG.camera.far is 1,250 km so the Starjet's next compressed-system
+// destination can remain visible without the directional backdrop clipping.
+const SKY_DOME_RADIUS = 1200000
 // Three r185's RenderList.sort() sorts the opaque list ASCENDING by renderOrder
 // (painterSortStable) and then REVERSES the whole list when the camera runs a
 // reversed depth buffer — so renderOrder effectively resolves DESCENDING here.
@@ -401,6 +402,10 @@ export class Sky {
   // dark holo void. A pure uniform multiply on dome/IBL radiance and on fog
   // opacity — light-set membership and light intensities are never touched.
   #uVoid = uniform(0)
+  // Rocket-flight altitude grade: 0 = terrestrial atmosphere, 1 = black-space
+  // backdrop with daytime stars. Uniform-only so the optional Marin activity
+  // adds no material variants or alternate sky implementation.
+  #uSpace = uniform(0)
   // Void fog wall (M18 fill phase): everything OUTSIDE the circle
   // (#uWallCenter, #uWallRadius) is a participating medium of density
   // #uWallDensity — the world beyond the scanned bubble builds up invisibly
@@ -580,6 +585,7 @@ export class Sky {
     // read behind the holo grid (a multiply, never a branch).
     const voidDim = mix(float(1), float(0.018), this.#uVoid as N)
     const voidKeep = (this.#uVoid as N).oneMinus()
+    const space = this.#uSpace as N
     // The phase weights (day/night/golden/low-sun), the zenith and horizon
     // palettes they blend, the twilight lift and the hemispheric mean are all
     // functions of the sun elevation and the night-brightness slider alone —
@@ -628,6 +634,10 @@ export class Sky {
         .mul(goldW)
         .mul(smoothstep(0.62, -0.06, abs(d.y)))
       sky.addAssign(vec3(1.0, 0.44, 0.17).mul(wedge).mul(0.9))
+      // Climbing through the upper atmosphere drains the blue scattering out
+      // of the same analytic sky that lights the craft. Keep a faint cold floor
+      // instead of absolute black so the silhouette remains graded.
+      sky.assign(mix(sky, vec3(0.0008, 0.0018, 0.0065), space))
 
       if (opts.pointFeatures) {
         // Dome only: a broad magenta-leaning wash centred on the sun. This is
@@ -663,7 +673,7 @@ export class Sky {
         const halo = pow(saturate(mu), 320)
           .mul(1.1)
           .add(pow(saturate(mu), 18).mul(0.16))
-        sky.addAssign(discCol.mul(disc.add(halo)).mul(sunVis))
+        sky.addAssign(discCol.mul(disc.add(halo)).mul(sunVis).mul(space.oneMinus()))
 
         // moon rides opposite the sun — always dead-opposite, so always full:
         // a big cold disc, tight halo, plus a broad moonglow wash, night only
@@ -672,7 +682,13 @@ export class Sky {
           .mul(4)
           .add(pow(saturate(mm), 500).mul(0.8))
           .add(pow(saturate(mm), 40).mul(0.1))
-        sky.addAssign(vec3(0.85, 0.9, 1.02).mul(moon).mul(nightW).mul(lowSunLift))
+        sky.addAssign(
+          vec3(0.85, 0.9, 1.02)
+            .mul(moon)
+            .mul(nightW)
+            .mul(lowSunLift)
+            .mul(space.oneMinus())
+        )
 
         // stars: one hash per direction cell, round dot inside the cell, slow twinkle
         const cells = d.mul(220)
@@ -689,7 +705,7 @@ export class Sky {
         sky.addAssign(
           vec3(0.9, 0.93, 1.0)
             .mul(star)
-            .mul(nightW)
+            .mul(nightW.max(space))
             .mul(saturate(d.y.mul(2.5).add(0.1)))
         )
       }
@@ -698,6 +714,8 @@ export class Sky {
         // roughness blur stand-in: collapse toward the hemispheric mean, keeping a
         // touch of up/down directionality so rough down-facing surfaces stay dimmer
         const mean = (this.#uSkyMean as N).mul(
+          mix(float(1), float(0.05), space)
+        ).mul(
           mix(float(1), float(0.5), smoothstep(0.2, -0.6, d.y))
         )
         return mix(sky, mean, saturate(opts.soften).mul(0.8))
@@ -714,7 +732,7 @@ export class Sky {
           float(FOG_SKY_BLEND_HEIGHT),
           float(0),
           d.y.max(0)
-        ).mul(uFogBackdrop)
+        ).mul(uFogBackdrop).mul(space.oneMinus())
         // Void: the fog backdrop retires with the fog itself, and the whole
         // dome collapses toward the dark floor.
         return mix(
@@ -1086,6 +1104,7 @@ export class Sky {
       // Void realm: fog fades out with the void ramp (a uniform multiply on
       // the fog factor — the graph and pipeline are unchanged).
       combinedFactor.mul((this.#uVoid as N).oneMinus())
+        .mul((this.#uSpace as N).oneMinus())
     )
   }
 
@@ -1110,6 +1129,13 @@ export class Sky {
    */
   setVoidFactor(v: number) {
     this.#uVoid.value = Math.min(1, Math.max(0, v))
+  }
+
+  /** Altitude-driven atmosphere exit for the Marin Starjet. This is reset by
+   * every activity teardown/navigation path, so ordinary flight always sees
+   * the terrestrial palette. */
+  setSpaceFactor(v: number) {
+    this.#uSpace.value = Math.min(1, Math.max(0, v))
   }
 
   /** When set, the cull-edge fade pulls in to this radius instead of the streamed
@@ -1376,6 +1402,7 @@ export class Sky {
     return (this.#uSkyMean as N)
       .mul(SKY_DOME_BOOST)
       .mul(mix(float(1), float(0.018), this.#uVoid as N))
+      .mul(mix(float(1), float(0.05), this.#uSpace as N))
   }
 
   /**
@@ -1450,6 +1477,7 @@ export class Sky {
     return tslFog(
       color(FOG_COLOR).mul(this.#uFogLight as N),
       weatherFactor.mul((this.#uVoid as N).oneMinus())
+        .mul((this.#uSpace as N).oneMinus())
     )
   }
 

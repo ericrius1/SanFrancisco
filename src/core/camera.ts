@@ -73,7 +73,6 @@ const smoothstep = (t: number) => t * t * (3 - 2 * t)
 // follow motion. Keep this local fallback even when the normal teleport caller
 // uses cutTo(), so restores/invites cannot accidentally fly the camera across SF.
 const TELEPORT_SNAP_DISTANCE = 45
-const TELEPORT_SNAP_DISTANCE_SQ = TELEPORT_SNAP_DISTANCE * TELEPORT_SNAP_DISTANCE
 
 // Per-mode camera volume and minimum readable framing. `comfort` is the nearest
 // boom distance we keep once the cutaway takes over; `cutRadius` is the visual
@@ -282,9 +281,15 @@ export class ChaseCamera {
 
   #recordAnchor(player: Player): boolean {
     const anchor = player.renderPosition
+    // Starjet can cross several ordinary teleport thresholds in one frame at
+    // interplanetary speed. Scale only its continuity window with current
+    // airspeed; real world relocations remain orders of magnitude larger.
+    const snapDistance = player.rocketFlying
+      ? Math.max(TELEPORT_SNAP_DISTANCE, player.speed * 0.12)
+      : TELEPORT_SNAP_DISTANCE
     const discontinuity =
       this.#hasLastAnchor &&
-      anchor.distanceToSquared(this.#lastAnchor) > TELEPORT_SNAP_DISTANCE_SQ
+      anchor.distanceToSquared(this.#lastAnchor) > snapDistance * snapDistance
     this.#lastAnchor.copy(anchor)
     this.#hasLastAnchor = true
     return discontinuity
@@ -508,16 +513,16 @@ export class ChaseCamera {
       // the matching interpolated render attitude for camera heading as well;
       // flyForward is the newest fixed-step state and can advance on a frame in
       // which the visible body is still between the previous two physics poses.
-      const f = player.hangGliding
+      const f = player.hangGliding || player.rocketFlying
         ? this.#renderForward.set(0, 0, -1).applyQuaternion(player.renderQuaternion).normalize()
         : player.flyForward
       const targetYaw = Math.atan2(-f.x, -f.z)
       const targetPitch = THREE.MathUtils.clamp(
         -Math.asin(THREE.MathUtils.clamp(f.y, -1, 1)),
-        -0.62,
+        player.rocketFlying ? -1.3 : -0.62,
         1.2
       )
-      const follow = 1 - Math.exp(-smoothDt * (player.hangGliding ? 5.6 : 7))
+      const follow = 1 - Math.exp(-smoothDt * (player.hangGliding ? 5.6 : player.rocketFlying ? 10 : 7))
       let dYaw = targetYaw - this.yaw
       dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw)) // shortest way round
       this.yaw += dYaw * follow
@@ -590,6 +595,8 @@ export class ChaseCamera {
     // the boost pulls the camera along instead of away (~5m at full stoop).
     if (player.mode === "bird")
       orbitStiff = THREE.MathUtils.clamp(player.speed * 0.2, 7.5, 17)
+    if (player.rocketFlying)
+      orbitStiff = THREE.MathUtils.clamp(player.speed * 0.15, 16, 120)
     // clamp the smoothing step. A tile-upload spike inflates the *next* frame's
     // dt, and an uncapped 1-exp(-dt*stiff) then snaps an orbit a large fraction
     // of the way to target in that one frame — the visible "hitch" as chunks
