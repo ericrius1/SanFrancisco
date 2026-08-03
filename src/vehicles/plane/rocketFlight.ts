@@ -6,6 +6,7 @@ export type RocketFlightProfile = {
   readonly throttleRate: number;
   readonly throttleResponse: number;
   readonly boostResponse: number;
+  readonly boostSpeedMultiplier: number;
   speedLimit(altitude: number): number;
   spaceFactor(altitude: number): number;
   orbitFactor(altitude: number): number;
@@ -14,17 +15,18 @@ export type RocketFlightProfile = {
 
 const LIMITS = {
   launchPitch: 1.02,
-  launchSpeed: 72,
+  launchSpeed: 96,
   minimumSpeed: 48,
   seaLevelMaxSpeed: 285,
-  spaceMaxSpeed: 1450,
+  spaceMaxSpeed: 5200,
   throttleRate: 0.55,
   throttleResponse: 0.72,
-  boostResponse: 1.15,
+  boostResponse: 1.45,
+  boostSpeedMultiplier: 15,
   atmosphereEdge: 8_000,
   orbitAltitude: 22_000,
   deepSpaceAltitude: 48_000,
-  maximumAltitude: 90_000
+  maximumAltitude: 4_000_000
 } as const;
 
 export const ROCKET_FLIGHT = LIMITS;
@@ -71,8 +73,41 @@ export const MARIN_ROCKET_FLIGHT: RocketFlightProfile = {
   throttleRate: LIMITS.throttleRate,
   throttleResponse: LIMITS.throttleResponse,
   boostResponse: LIMITS.boostResponse,
+  boostSpeedMultiplier: LIMITS.boostSpeedMultiplier,
   speedLimit: rocketSpeedLimit,
   spaceFactor: (altitude) => smoothRange(LIMITS.atmosphereEdge * 0.72, LIMITS.orbitAltitude, altitude),
   orbitFactor: (altitude) => smoothRange(LIMITS.orbitAltitude * 0.78, LIMITS.deepSpaceAltitude, altitude),
   stage: rocketStage
 };
+
+/**
+ * Predicts distance along a clean, full-throttle boosted launch. The compressed
+ * solar route uses this same flight profile, keeping its milestone times honest
+ * when the pilot holds W + Shift and stays on the locator.
+ */
+export function expectedBoostedRocketDistance(seconds: number): number {
+  if (seconds <= 0) return 0;
+
+  const step = 1 / 30;
+  const verticalShare = Math.sin(LIMITS.launchPitch);
+  let elapsed = 0;
+  let distance = 0;
+  let speed = LIMITS.launchSpeed;
+  let throttle = 0.58;
+
+  while (elapsed < seconds) {
+    const dt = Math.min(step, seconds - elapsed);
+    throttle = Math.min(1, throttle + LIMITS.throttleRate * dt);
+    const altitude = Math.max(0, distance * verticalShare);
+    const limit = rocketSpeedLimit(altitude);
+    const targetSpeed = Math.max(
+      LIMITS.minimumSpeed,
+      limit * (0.28 + throttle * 0.72) * LIMITS.boostSpeedMultiplier
+    );
+    speed += (targetSpeed - speed) * (1 - Math.exp(-LIMITS.boostResponse * dt));
+    distance += speed * dt;
+    elapsed += dt;
+  }
+
+  return distance;
+}

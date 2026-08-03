@@ -11,6 +11,7 @@ import { MARIN_ROCKET_FLIGHT } from "../../vehicles/plane/rocketFlight";
 import { MarinRocketAudio } from "./audio";
 import { MARIN_ROCKET_ARRIVAL, MARIN_ROCKET_PAD_GROUND_Y, MARIN_ROCKET_SITE } from "./meta";
 import { createMarinRocketMesh } from "./mesh";
+import { MARIN_SPACE_LAYER, MarinSolarSystem } from "./solarSystem";
 import { MarinRocketUI } from "./ui";
 
 export type MarinRocketWorldUi = {
@@ -74,7 +75,7 @@ function disposeRoot(root: THREE.Object3D): void {
 
 export class MarinRocketExperience {
   readonly root = new THREE.Group();
-  readonly ready = Promise.resolve();
+  readonly ready: Promise<void>;
   readonly craft: THREE.Group;
   readonly padY: number;
 
@@ -83,6 +84,7 @@ export class MarinRocketExperience {
   #sky: Sky;
   #ui = new MarinRocketUI();
   #audio = new MarinRocketAudio();
+  #solarSystem: MarinSolarSystem;
   #sign: WorldSign;
   #platformBody: number;
   #promptAnchor = new THREE.Vector3();
@@ -91,7 +93,9 @@ export class MarinRocketExperience {
   #lastPlayer: Player | null = null;
   #activeChase: ChaseCamera | null = null;
   #savedZoom: number | null = null;
+  #savedCameraLayerMask: number | null = null;
   #stage: keyof typeof STAGE_EVENT = "launch";
+  #flightElapsed = 0;
   #disposed = false;
 
   constructor(map: WorldMap, physics: Physics, sky: Sky, worldUi: MarinRocketWorldUi) {
@@ -102,6 +106,12 @@ export class MarinRocketExperience {
     const { x, z, heading } = MARIN_ROCKET_SITE;
     this.padY = MARIN_ROCKET_PAD_GROUND_Y + 0.42;
     const padTop = this.padY + 0.32;
+    this.#solarSystem = new MarinSolarSystem(this.padY + 1.45);
+    this.root.add(this.#solarSystem.root);
+    this.ready = this.#solarSystem.ready;
+    this.#sky.mesh.layers.enable(MARIN_SPACE_LAYER);
+    this.#sky.sun.layers.enable(MARIN_SPACE_LAYER);
+    this.#sky.sun.target.layers.enable(MARIN_SPACE_LAYER);
 
     const concrete = new THREE.MeshStandardMaterial({ color: 0x6f7777, roughness: 0.91, metalness: 0.08 });
     const dark = new THREE.MeshStandardMaterial({ color: 0x15242b, roughness: 0.68, metalness: 0.46 });
@@ -182,6 +192,7 @@ export class MarinRocketExperience {
     this.#promptAnchor.set(x + 2.25, padTop + 0.25, z - 1.45);
 
     this.craft = createMarinRocketMesh();
+    this.craft.traverse((object) => object.layers.enable(MARIN_SPACE_LAYER));
     this.root.add(this.craft);
     this.#parkCraft();
 
@@ -223,7 +234,10 @@ export class MarinRocketExperience {
       padY: this.padY,
       craftParked: this.craft.parent === this.root,
       playerRocketFlying: this.#lastPlayer?.rocketFlying ?? false,
-      telemetry: this.#lastPlayer?.rocketTelemetry ?? null
+      telemetry: this.#lastPlayer?.rocketTelemetry ?? null,
+      flightElapsed: this.#flightElapsed,
+      spaceView: this.#savedCameraLayerMask !== null,
+      solarSystem: this.#solarSystem.debugState
     };
   }
 
@@ -266,18 +280,44 @@ export class MarinRocketExperience {
     }
 
     this.#lastPlayer = player;
+    this.#flightElapsed += dt;
     const telemetry = player.rocketTelemetry;
     this.#sky.setSpaceFactor(telemetry.spaceFactor);
     this.#audio.update(telemetry);
-    this.#ui.update(telemetry);
+    const inSpace = telemetry.stage === "orbit" || telemetry.stage === "deep-space";
+    this.#setSpaceView(inSpace, chase, player);
+    if (inSpace && (input.pressed("KeyQ") || input.pressed("KeyR"))) {
+      const target = this.#solarSystem.cycleTarget(input.pressed("KeyR") ? -1 : 1);
+      this.#ui.showEvent(`Target · ${target.label}`);
+      hud.message(`${target.label} selected · turn toward its gold locator`, 2.2);
+    }
+    const navigation = this.#solarSystem.update(
+      player.renderPosition,
+      chase.camera,
+      telemetry,
+      this.#flightElapsed
+    );
+    this.#ui.update(telemetry, navigation);
     this.#ui.setPrompt(interactKeyLabel(input.device), "return to Marin Orbital");
+    if (navigation?.reached) {
+      const stop = navigation.reached;
+      const index = this.#solarSystem.debugState.visited.length;
+      this.#ui.showEvent(`${stop.label} flyby`);
+      this.#audio.milestone(index);
+      hud.message(
+        navigation.complete
+          ? `${stop.label} reached · every world has now been visited`
+          : `${stop.label} reached · Q/R selects another destination`,
+        3.4
+      );
+    }
     if (telemetry.stage !== this.#stage) {
       this.#stage = telemetry.stage;
       const index = ["launch", "stratosphere", "edge", "orbit", "deep-space"].indexOf(this.#stage);
       this.#ui.showEvent(STAGE_EVENT[this.#stage]);
       this.#audio.milestone(Math.max(0, index));
-      if (this.#stage === "orbit") hud.message("Orbital altitude · ease the nose over or keep climbing", 3.2);
-      if (this.#stage === "deep-space") hud.message("Deep space reached · the Bay is a blue spark below", 3.6);
+      if (this.#stage === "orbit") hud.message("Space navigation online · Q/R selects any labeled world", 3.6);
+      if (this.#stage === "deep-space") hud.message("Deep space reached · follow any projected world marker", 3.6);
     }
   }
 
@@ -286,12 +326,14 @@ export class MarinRocketExperience {
     this.#active = false;
     this.#sky.setSpaceFactor(0);
     this.#audio.stop();
+    this.#solarSystem.stop();
     this.#ui.hideFlight();
     this.#ui.setPrompt(null);
     this.#restoreCamera(chase ?? this.#activeChase);
     this.#parkCraft();
     this.#lastPlayer = null;
     this.#stage = "launch";
+    this.#flightElapsed = 0;
   }
 
   dispose(): void {
@@ -301,6 +343,7 @@ export class MarinRocketExperience {
     this.#sky.setSpaceFactor(0);
     this.#restoreCamera(this.#activeChase);
     this.#audio.dispose();
+    this.#solarSystem.dispose();
     this.#ui.dispose();
     this.#sign.dispose();
     this.#physics.removeQuerySolid(this.#platformBody);
@@ -317,6 +360,7 @@ export class MarinRocketExperience {
     this.#lastPlayer = player;
     this.#activeChase = chase;
     this.#stage = "launch";
+    this.#flightElapsed = 0;
     this.#savedZoom ??= chase.zoom;
     chase.zoom = THREE.MathUtils.clamp(chase.zoom, 1.05, 1.38);
     chase.yaw = MARIN_ROCKET_SITE.heading;
@@ -332,12 +376,14 @@ export class MarinRocketExperience {
       },
       MARIN_ROCKET_FLIGHT
     );
+    player.meshes.plane.traverse((object) => object.layers.enable(MARIN_SPACE_LAYER));
     this.#sky.setSpaceFactor(0);
     this.#audio.begin();
+    this.#solarSystem.begin();
     this.#ui.begin();
     this.#ui.setPrompt(interactKeyLabel(input.device), "return to Marin Orbital");
     chase.cutTo(player);
-    hud.message("Starjet 01 · mouse aims · W/S thrust · Shift main drive · E returns to Marin", 6);
+    hud.message("Starjet 01 · reach orbit, then Q/R selects any world · E returns to Marin", 6);
   }
 
   #returnToMarin(player: Player, hud: HUD, chase: ChaseCamera): void {
@@ -350,11 +396,13 @@ export class MarinRocketExperience {
     this.#active = false;
     this.#sky.setSpaceFactor(0);
     this.#audio.stop();
+    this.#solarSystem.stop();
     this.#ui.hideFlight();
     this.#restoreCamera(chase);
     this.#parkCraft();
     this.#lastPlayer = null;
     this.#stage = "launch";
+    this.#flightElapsed = 0;
     chase.cutTo(player);
     hud.message("Welcome back to Marin Orbital · Starjet 01 is recharged", 2.8);
   }
@@ -369,9 +417,31 @@ export class MarinRocketExperience {
   }
 
   #restoreCamera(chase: ChaseCamera | null): void {
-    if (chase && this.#savedZoom !== null) chase.zoom = this.#savedZoom;
+    if (chase) {
+      if (this.#savedZoom !== null) chase.zoom = this.#savedZoom;
+      if (this.#savedCameraLayerMask !== null) {
+        chase.camera.layers.mask = this.#savedCameraLayerMask;
+      }
+    }
     this.#savedZoom = null;
+    this.#savedCameraLayerMask = null;
     this.#activeChase = null;
+  }
+
+  #setSpaceView(enabled: boolean, chase: ChaseCamera, player: Player): void {
+    if (enabled) {
+      if (this.#savedCameraLayerMask !== null) return;
+      player.meshes.plane.traverse((object) => object.layers.enable(MARIN_SPACE_LAYER));
+      this.#savedCameraLayerMask = chase.camera.layers.mask;
+      chase.camera.layers.disableAll();
+      chase.camera.layers.enable(MARIN_SPACE_LAYER);
+      chase.cutTo(player);
+      return;
+    }
+    if (this.#savedCameraLayerMask === null) return;
+    chase.camera.layers.mask = this.#savedCameraLayerMask;
+    this.#savedCameraLayerMask = null;
+    chase.cutTo(player);
   }
 }
 

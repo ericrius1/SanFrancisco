@@ -719,6 +719,7 @@ export function createOptionalSites({
     });
     headlands.root.add(rocket.root);
     try {
+      await rocket.ready;
       await prepareOptionalRoot("marin-headlands", headlands.root, stage, compile);
       headlands.addTo(scene);
       marinHeadlands = headlands;

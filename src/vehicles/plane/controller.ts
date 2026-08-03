@@ -298,7 +298,7 @@ export class FlyController implements ModeController {
     // throttle
     const keyThrottle = (input.down("KeyW") ? 1 : 0) - (input.down("KeyS") ? 1 : 0);
     const throttle = THREE.MathUtils.clamp(keyThrottle + input.padAxis("ArrowDown", "ArrowUp"), -1, 1);
-    const boost = input.down("ShiftLeft");
+    const boost = input.down("ShiftLeft") || input.down("ShiftRight");
     const brake = input.down("Space");
     const maxSpeed = boost ? tf.boostMaxSpeed : tf.maxSpeed;
     this.#speed += throttle * tf.throttleAccel * dt + (boost ? tf.boostAccel * dt : 0) - (brake ? tf.brakeDecel * dt : 0);
@@ -358,7 +358,8 @@ export class FlyController implements ModeController {
     const limit = profile.speedLimit(altitude);
     const targetSpeed = Math.max(
       profile.minimumSpeed,
-      limit * (0.28 + this.#rocketThrottle * 0.72) * (boost ? 1 : 0.82)
+      limit * (0.28 + this.#rocketThrottle * 0.72) *
+        (boost ? profile.boostSpeedMultiplier : 0.82)
     );
     const response = boost ? profile.boostResponse : profile.throttleResponse;
     this.#speed += (targetSpeed - this.#speed) * (1 - Math.exp(-dt * response));
@@ -366,20 +367,35 @@ export class FlyController implements ModeController {
     const fwd = this.fwd;
     const yaw = Math.atan2(-fwd.x, -fwd.z);
     const vertical = fwd.y * this.#speed;
-    w.setBodyVelocity(
-      ctx.body,
-      [fwd.x * this.#speed, vertical, fwd.z * this.#speed],
-      [0, 0, 0]
-    );
-
     const m = V.mat.lookAt(V.tmp.set(0, 0, 0), V.tmp2.copy(fwd), V.up);
     const q = ctx.quaternion.setFromRotationMatrix(m);
     q.premultiply(V.quat.setFromAxisAngle(fwd, this.#bank));
-    w.setBodyTransform(
-      ctx.body,
-      [ctx.position.x, ctx.position.y, ctx.position.z],
-      [q.x, q.y, q.z, q.w]
-    );
+    if (boost) {
+      // Box3D intentionally caps per-step translation for contact stability.
+      // Shift drive is interplanetary and far exceeds that cap, so integrate its
+      // transform directly while keeping the body parked for the solver step.
+      w.setBodyVelocity(ctx.body, [0, 0, 0], [0, 0, 0]);
+      w.setBodyTransform(
+        ctx.body,
+        [
+          ctx.position.x + fwd.x * this.#speed * dt,
+          ctx.position.y + vertical * dt,
+          ctx.position.z + fwd.z * this.#speed * dt
+        ],
+        [q.x, q.y, q.z, q.w]
+      );
+    } else {
+      w.setBodyVelocity(
+        ctx.body,
+        [fwd.x * this.#speed, vertical, fwd.z * this.#speed],
+        [0, 0, 0]
+      );
+      w.setBodyTransform(
+        ctx.body,
+        [ctx.position.x, ctx.position.y, ctx.position.z],
+        [q.x, q.y, q.z, q.w]
+      );
+    }
 
     if (ctx.position.y < ground + 2.15) {
       w.setBodyTransform(

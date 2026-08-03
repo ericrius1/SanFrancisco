@@ -13,6 +13,31 @@ type RocketGraph = {
   releaseHold: () => void;
 };
 
+export type RocketAudioTargets = {
+  lowFrequency: number;
+  bodyFrequency: number;
+  lowGain: number;
+  bodyGain: number;
+  noiseGain: number;
+  filterFrequency: number;
+};
+
+export function rocketAudioTargets(
+  telemetry: Readonly<RocketFlightTelemetry>
+): RocketAudioTargets {
+  const thrust = Math.min(1, telemetry.throttle + (telemetry.boost ? 0.18 : 0));
+  const vacuum = telemetry.spaceFactor;
+  const speedTone = Math.min(1, telemetry.speed / 5_200);
+  return {
+    lowFrequency: 25 + thrust * 11 + speedTone * 4,
+    bodyFrequency: 50 + thrust * 15 + speedTone * 5,
+    lowGain: 0.062 + thrust * 0.052,
+    bodyGain: 0.006 + thrust * 0.008,
+    noiseGain: (0.008 + thrust * 0.018) * (1 - vacuum * 0.94),
+    filterFrequency: 180 + thrust * 260
+  };
+}
+
 export class MarinRocketAudio {
   #graph: RocketGraph | null = null;
 
@@ -22,18 +47,18 @@ export class MarinRocketAudio {
     if (!bus) return;
     const { ctx, input } = bus;
     const limiter = ctx.createDynamicsCompressor();
-    limiter.threshold.value = -20;
-    limiter.ratio.value = 7;
-    limiter.attack.value = 0.003;
-    limiter.release.value = 0.24;
+    limiter.threshold.value = -16;
+    limiter.ratio.value = 3;
+    limiter.attack.value = 0.02;
+    limiter.release.value = 0.32;
     limiter.connect(input);
 
     const low = ctx.createOscillator();
-    low.type = "sawtooth";
-    low.frequency.value = 38;
+    low.type = "sine";
+    low.frequency.value = 28;
     const high = ctx.createOscillator();
-    high.type = "triangle";
-    high.frequency.value = 76;
+    high.type = "sine";
+    high.frequency.value = 56;
     const lowGain = ctx.createGain();
     const highGain = ctx.createGain();
     lowGain.gain.value = 0;
@@ -53,7 +78,8 @@ export class MarinRocketAudio {
     noise.loop = true;
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
-    filter.frequency.value = 540;
+    filter.frequency.value = 220;
+    filter.Q.value = 0.68;
     const noiseGain = ctx.createGain();
     noiseGain.gain.value = 0;
     noise.connect(filter).connect(noiseGain).connect(limiter);
@@ -77,14 +103,13 @@ export class MarinRocketAudio {
     const graph = this.#graph;
     if (!graph) return;
     const now = graph.ctx.currentTime;
-    const thrust = Math.min(1, telemetry.throttle + (telemetry.boost ? 0.22 : 0));
-    const vacuum = telemetry.spaceFactor;
-    graph.low.frequency.setTargetAtTime(34 + thrust * 32 + telemetry.speed * 0.012, now, 0.08);
-    graph.high.frequency.setTargetAtTime(72 + thrust * 68 + telemetry.speed * 0.025, now, 0.08);
-    graph.lowGain.gain.setTargetAtTime(0.045 + thrust * 0.07, now, 0.08);
-    graph.highGain.gain.setTargetAtTime(0.015 + thrust * 0.035, now, 0.08);
-    graph.noiseGain.gain.setTargetAtTime((0.035 + thrust * 0.07) * (1 - vacuum * 0.82), now, 0.1);
-    graph.filter.frequency.setTargetAtTime(420 + thrust * 1_450, now, 0.1);
+    const targets = rocketAudioTargets(telemetry);
+    graph.low.frequency.setTargetAtTime(targets.lowFrequency, now, 0.16);
+    graph.high.frequency.setTargetAtTime(targets.bodyFrequency, now, 0.18);
+    graph.lowGain.gain.setTargetAtTime(targets.lowGain, now, 0.14);
+    graph.highGain.gain.setTargetAtTime(targets.bodyGain, now, 0.18);
+    graph.noiseGain.gain.setTargetAtTime(targets.noiseGain, now, 0.2);
+    graph.filter.frequency.setTargetAtTime(targets.filterFrequency, now, 0.2);
   }
 
   milestone(index: number): void {
@@ -127,4 +152,3 @@ export class MarinRocketAudio {
     this.stop();
   }
 }
-

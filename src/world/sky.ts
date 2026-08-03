@@ -278,9 +278,9 @@ const fogTriNoise = Fn(([position, time]: [N, N]) => {
 // dome sorts against depth. Sizing it above every distance the scene can contain
 // lets it be depth-tested safely: the map diagonal is ~20.5 km, which is how far
 // water's map-wide `horizon` sheet can sit from a camera at the opposite corner,
-// and CONFIG.camera.far is 120 km so the starjet can climb through the edge of
-// the atmosphere without the directional backdrop clipping away.
-const SKY_DOME_RADIUS = 115000
+// and CONFIG.camera.far is 1,250 km so the Starjet's next compressed-system
+// destination can remain visible without the directional backdrop clipping.
+const SKY_DOME_RADIUS = 1200000
 // Three r185's RenderList.sort() sorts the opaque list ASCENDING by renderOrder
 // (painterSortStable) and then REVERSES the whole list when the camera runs a
 // reversed depth buffer — so renderOrder effectively resolves DESCENDING here.
@@ -673,7 +673,7 @@ export class Sky {
         const halo = pow(saturate(mu), 320)
           .mul(1.1)
           .add(pow(saturate(mu), 18).mul(0.16))
-        sky.addAssign(discCol.mul(disc.add(halo)).mul(sunVis))
+        sky.addAssign(discCol.mul(disc.add(halo)).mul(sunVis).mul(space.oneMinus()))
 
         // moon rides opposite the sun — always dead-opposite, so always full:
         // a big cold disc, tight halo, plus a broad moonglow wash, night only
@@ -682,7 +682,13 @@ export class Sky {
           .mul(4)
           .add(pow(saturate(mm), 500).mul(0.8))
           .add(pow(saturate(mm), 40).mul(0.1))
-        sky.addAssign(vec3(0.85, 0.9, 1.02).mul(moon).mul(nightW).mul(lowSunLift))
+        sky.addAssign(
+          vec3(0.85, 0.9, 1.02)
+            .mul(moon)
+            .mul(nightW)
+            .mul(lowSunLift)
+            .mul(space.oneMinus())
+        )
 
         // stars: one hash per direction cell, round dot inside the cell, slow twinkle
         const cells = d.mul(220)

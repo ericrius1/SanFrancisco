@@ -219,9 +219,11 @@ export function createMarinRocketMesh(): THREE.Group {
       streaks.visible = telemetry.spaceFactor > 0.18 && telemetry.speed > 420;
       const streakOpacity = Math.min(0.64, telemetry.spaceFactor * 0.46 + telemetry.speed / 5_000);
       streakMaterial.opacity = streakOpacity;
+      const streakStretch = 1 + Math.min(6, telemetry.speed / 900);
       for (const child of streaks.children) {
         const phase = child.userData.phase as number;
         child.position.z = 7 + ((phase + flightTime * (0.25 + telemetry.speed / 1_800)) % 1) * 30;
+        child.scale.z = streakStretch;
       }
     }
   } satisfies RocketPresentation;

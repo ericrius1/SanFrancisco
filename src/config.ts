@@ -387,6 +387,6 @@ export const CONFIG = {
   camera: {
     fov: 62,
     near: 0.3,
-    far: 120000
+    far: 1250000
   }
 }
