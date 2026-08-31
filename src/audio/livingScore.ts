@@ -54,13 +54,21 @@ type StemVoice = {
 };
 
 const MANIFEST_URL = "/audio/music/manifest.json";
-const MASTER_GAIN = 0.56;
+// Separated stems are substantially quieter than a mastered stereo song. The
+// deck restores that lost summing gain before the shared Music slider; a
+// stem-count normalization and compressor below keep sparse and dense sets in
+// the same musical neighborhood.
+const MASTER_GAIN = 3.2;
 const REGION_HOLD_SECONDS = 7;
 const PASSAGE_MIN_SECONDS = 26;
 const PASSAGE_SPREAD_SECONDS = 22;
 const PLAYLIST_MIN_SECONDS = 330;
 const PLAYLIST_SPREAD_SECONDS = 210;
 const CROSSFADE_SECONDS = 14;
+const TARGET_DECK_DB = -20;
+const MAX_MAKEUP_GAIN = 8;
+const SILENCE_DB = -52;
+const SILENCE_SKIP_SECONDS = 3.5;
 
 const ROLE_BASE: Record<StemRole, number> = {
   drums: 0.76,
@@ -120,12 +128,32 @@ class ScoreDeck {
   readonly master: GainNode;
   readonly voices: StemVoice[] = [];
   #ctx: AudioContext;
+  #highpass: BiquadFilterNode;
+  #makeup: GainNode;
+  #compressor: DynamicsCompressorNode;
+  #meter: AnalyserNode;
+  // ~170 ms at 48 kHz: long enough that an ambient zero crossing does not look
+  // like silence, short enough to react before a musical pause feels broken.
+  #meterData = new Float32Array(8192);
   #ready = false;
   #started = false;
   #passage = 0;
   #passageLeft = 0;
   #syncLeft = 0;
+  #levelSampleLeft = 0;
+  #silentFor = 0;
   #density = 0.55;
+
+  get playbackState() {
+    const leader = this.voices[0]?.media;
+    return {
+      playingStemCount: this.voices.filter((voice) => !voice.media.paused && !voice.media.ended).length,
+      leaderTime: leader ? +leader.currentTime.toFixed(3) : 0,
+      outputDb: +this.#readOutputDb().toFixed(1),
+      gainReductionDb: +this.#compressor.reduction.toFixed(1),
+      makeupGain: +this.#makeup.gain.value.toFixed(2)
+    };
+  }
 
   constructor(ctx: AudioContext, destination: AudioNode, set: LivingScoreSet) {
     this.#ctx = ctx;
@@ -134,11 +162,29 @@ class ScoreDeck {
     this.master.gain.value = 0;
 
     const highpass = ctx.createBiquadFilter();
+    this.#highpass = highpass;
     highpass.type = "highpass";
     highpass.frequency.value = 28;
     highpass.Q.value = 0.6;
+    const makeup = ctx.createGain();
+    this.#makeup = makeup;
+    makeup.gain.value = 1;
+    const compressor = ctx.createDynamicsCompressor();
+    this.#compressor = compressor;
+    compressor.threshold.value = -14;
+    compressor.knee.value = 18;
+    compressor.ratio.value = 4;
+    compressor.attack.value = 0.008;
+    compressor.release.value = 0.24;
+    const meter = ctx.createAnalyser();
+    this.#meter = meter;
+    meter.fftSize = 8192;
+    meter.smoothingTimeConstant = 0.72;
     this.master.connect(highpass);
-    highpass.connect(destination);
+    highpass.connect(makeup);
+    makeup.connect(compressor);
+    compressor.connect(meter);
+    meter.connect(destination);
 
     for (const stem of set.stems) {
       const media = document.createElement("audio");
@@ -258,10 +304,42 @@ class ScoreDeck {
       }
     }
 
+    // Studio-separated sources do not share a mastered loudness: a sparse pad
+    // set can be 20 dB below a dense band. Sample four times a second and ride
+    // only upward, slowly, before the compressor. Do not normalize away the
+    // intentional indoor attenuation or the score's duck around live players.
+    this.#levelSampleLeft -= dt;
+    if (this.#levelSampleLeft <= 0) {
+      const sampleDt = 0.25 - Math.min(0, this.#levelSampleLeft);
+      this.#levelSampleLeft = 0.25;
+      const outputDb = this.#readOutputDb();
+      if (outputDb <= SILENCE_DB) {
+        this.#silentFor += sampleDt;
+        if (this.#silentFor >= SILENCE_SKIP_SECONDS) {
+          this.#seekTogether(11.3);
+          this.#silentFor = 0;
+        }
+      } else {
+        this.#silentFor = 0;
+        if (!input.indoor && direction.liveMusicDuck > 0.85) {
+          const current = Math.max(1, this.#makeup.gain.value);
+          const desired = Math.min(
+            MAX_MAKEUP_GAIN,
+            Math.max(1, current * 10 ** ((TARGET_DECK_DB - outputDb) / 20))
+          );
+          this.#makeup.gain.setTargetAtTime(desired, now, desired > current ? 2.8 : 1.2);
+        }
+      }
+    }
+
     // Direction intensity and live-performer duck move the deck as one coherent
     // mix. Per-stem automation remains relative underneath it.
-    const targetMaster = MASTER_GAIN * direction.intensity * direction.liveMusicDuck;
+    const targetMaster = this.#masterFor(direction);
     this.master.gain.setTargetAtTime(targetMaster, now, 1.1);
+  }
+
+  targetFor(direction: ScoreDirection): number {
+    return this.#masterFor(direction);
   }
 
   dispose(): void {
@@ -274,7 +352,33 @@ class ScoreDeck {
       voice.gain.disconnect();
     }
     this.master.disconnect();
+    this.#highpass.disconnect();
+    this.#makeup.disconnect();
+    this.#compressor.disconnect();
+    this.#meter.disconnect();
     this.voices.length = 0;
+  }
+
+  #masterFor(direction: ScoreDirection): number {
+    const countNormalization = Math.sqrt(6 / Math.max(1, this.voices.length));
+    return MASTER_GAIN * countNormalization * direction.intensity * direction.liveMusicDuck;
+  }
+
+  #readOutputDb(): number {
+    this.#meter.getFloatTimeDomainData(this.#meterData);
+    let energy = 0;
+    for (const sample of this.#meterData) energy += sample * sample;
+    const rms = Math.sqrt(energy / this.#meterData.length);
+    return 20 * Math.log10(Math.max(0.000001, rms));
+  }
+
+  #seekTogether(deltaSeconds: number): void {
+    const leader = this.voices[0]?.media;
+    if (!leader) return;
+    const span = Math.max(1, this.set.loopEndSeconds - this.set.loopStartSeconds);
+    const next = this.set.loopStartSeconds +
+      ((leader.currentTime - this.set.loopStartSeconds + deltaSeconds) % span + span) % span;
+    for (const voice of this.voices) voice.media.currentTime = next;
   }
 
   #waitForMedia(media: HTMLAudioElement): Promise<void> {
@@ -320,6 +424,13 @@ export class LivingScore {
   #lastInput: LivingScoreInput | null = null;
 
   get debugState() {
+    const playback = this.#deck?.playbackState ?? this.#incoming?.playbackState ?? {
+      playingStemCount: 0,
+      leaderTime: 0,
+      outputDb: -120,
+      gainReductionDb: 0,
+      makeupGain: 1
+    };
     return {
       status: this.#failed ? "failed" : this.#manifest ? "ready" : this.#manifestLoading ? "loading" : "dormant",
       profile: this.#profile,
@@ -328,6 +439,11 @@ export class LivingScore {
       set: this.#deck?.set.id ?? null,
       incoming: this.#incoming?.set.id ?? null,
       loadedStemCount: (this.#deck?.voices.length ?? 0) + (this.#incoming?.voices.length ?? 0),
+      playingStemCount: playback.playingStemCount,
+      leaderTime: playback.leaderTime,
+      outputDb: playback.outputDb,
+      gainReductionDb: playback.gainReductionDb,
+      makeupGain: playback.makeupGain,
       libraryStemSeconds: this.#manifest?.totalStemSeconds ?? 0
     };
   }
@@ -449,9 +565,10 @@ export class LivingScore {
       if (!bus) return;
       const deck = new ScoreDeck(bus.ctx, bus.input, set);
       this.#incoming = deck;
-      const span = Math.max(8, set.loopEndSeconds - set.loopStartSeconds - 12);
-      const offset = unitHash(seed ^ 0xa511e9b3) * span;
-      await deck.prepare(offset);
+      // Enter on the authored post-intro cue. Random time offsets can land in a
+      // breakdown where every separated stem rests at once; the live passage
+      // director below already supplies variation without a silent first read.
+      await deck.prepare(0);
       await deck.start();
       if (this.#muted) deck.pause();
       else if (!this.#releaseHold) this.#releaseHold = audioEngine.acquireHold();
@@ -464,8 +581,9 @@ export class LivingScore {
       this.#candidateAge = 0;
       this.#lastSetId = set.id;
       this.#playlistLeft = PLAYLIST_MIN_SECONDS + unitHash(seed ^ 0x63d83595) * PLAYLIST_SPREAD_SECONDS;
-      deck.update(0, input, this.#lastDirection ?? scoreDirectionAt(input.x, input.z, input.timeOfDay));
-      deck.setMaster(MASTER_GAIN * (this.#lastDirection?.intensity ?? 0.6), immediate ? 3.5 : CROSSFADE_SECONDS);
+      const transitionDirection = this.#lastDirection ?? scoreDirectionAt(input.x, input.z, input.timeOfDay);
+      deck.update(0, input, transitionDirection);
+      deck.setMaster(deck.targetFor(transitionDirection), immediate ? 3.5 : CROSSFADE_SECONDS);
       if (old) {
         old.setMaster(0, CROSSFADE_SECONDS);
         window.setTimeout(() => old.dispose(), CROSSFADE_SECONDS * 1000 + 500);

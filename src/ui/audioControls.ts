@@ -4,7 +4,7 @@ export type MocapControlState = "off" | "loading" | "searching" | "tracking" | "
 
 /**
  * Compact master audio widget. The always-visible row stays small; a disclosure
- * opens the live/FX/world/voice mixer only when the player asks for it.
+ * opens the music/FX/world/voice mixer only when the player asks for it.
  * Pure DOM inside #hud
  * (pointer-events: none — this widget opts itself back in, like the toolbar).
  * Writes core/audioSettings; the audio systems poll it, so there's nothing to
