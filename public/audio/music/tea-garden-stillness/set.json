@@ -1,0 +1,49 @@
+{
+  "id": "tea-garden-stillness",
+  "title": "SF Living Score 02 — Tea Garden Stillness",
+  "profile": "tea-garden-stillness",
+  "bpm": 64,
+  "key": "D pentatonic",
+  "durationSeconds": 243.4,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 238.4,
+  "sourceSongId": "b8034568-27d4-42fe-837f-05683b6b15c3",
+  "stems": [
+    {
+      "id": "01-0-lead-vocals",
+      "role": "melody",
+      "url": "/audio/music/tea-garden-stillness/01-0-lead-vocals.m4a",
+      "gain": 0.68
+    },
+    {
+      "id": "02-1-backing-vocals",
+      "role": "melody",
+      "url": "/audio/music/tea-garden-stillness/02-1-backing-vocals.m4a",
+      "gain": 0.68
+    },
+    {
+      "id": "03-2-drums",
+      "role": "drums",
+      "url": "/audio/music/tea-garden-stillness/03-2-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "04-3-bass",
+      "role": "bass",
+      "url": "/audio/music/tea-garden-stillness/04-3-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "05-4-percussion",
+      "role": "drums",
+      "url": "/audio/music/tea-garden-stillness/05-4-percussion.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "06-5-synth",
+      "role": "harmony",
+      "url": "/audio/music/tea-garden-stillness/06-5-synth.m4a",
+      "gain": 0.76
+    }
+  ]
+}

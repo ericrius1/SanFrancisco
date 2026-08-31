@@ -1,0 +1,67 @@
+{
+  "id": "city-rain",
+  "title": "SF Living Score 11 — City Rain",
+  "profile": "city-rain",
+  "bpm": 74,
+  "key": "E-flat major",
+  "durationSeconds": 479.2,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 474.2,
+  "sourceSongId": "117bf7a3-771c-4e3e-9c49-e7638de224f2",
+  "stems": [
+    {
+      "id": "01-0-lead-vocals",
+      "role": "melody",
+      "url": "/audio/music/city-rain/01-0-lead-vocals.m4a",
+      "gain": 0.68
+    },
+    {
+      "id": "02-1-backing-vocals",
+      "role": "melody",
+      "url": "/audio/music/city-rain/02-1-backing-vocals.m4a",
+      "gain": 0.68
+    },
+    {
+      "id": "03-2-drums",
+      "role": "drums",
+      "url": "/audio/music/city-rain/03-2-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "04-3-bass",
+      "role": "bass",
+      "url": "/audio/music/city-rain/04-3-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "05-4-guitar",
+      "role": "harmony",
+      "url": "/audio/music/city-rain/05-4-guitar.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "06-5-keyboard",
+      "role": "harmony",
+      "url": "/audio/music/city-rain/06-5-keyboard.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "07-6-synth",
+      "role": "harmony",
+      "url": "/audio/music/city-rain/07-6-synth.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "08-7-other",
+      "role": "texture",
+      "url": "/audio/music/city-rain/08-7-other.m4a",
+      "gain": 0.7
+    },
+    {
+      "id": "09-8-woodwinds",
+      "role": "melody",
+      "url": "/audio/music/city-rain/09-8-woodwinds.m4a",
+      "gain": 0.68
+    }
+  ]
+}

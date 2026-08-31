@@ -1,0 +1,55 @@
+{
+  "id": "california-gold",
+  "title": "SF Living Score 12 — California Gold",
+  "profile": "california-gold",
+  "bpm": 88,
+  "key": "C major",
+  "durationSeconds": 109.36,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 104.36,
+  "sourceSongId": "fb59b4fa-b982-45d0-955d-9c4b2a43f31b",
+  "stems": [
+    {
+      "id": "01-0-drums",
+      "role": "drums",
+      "url": "/audio/music/california-gold/01-0-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "02-1-bass",
+      "role": "bass",
+      "url": "/audio/music/california-gold/02-1-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "03-2-guitar",
+      "role": "harmony",
+      "url": "/audio/music/california-gold/03-2-guitar.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "04-3-keyboard",
+      "role": "harmony",
+      "url": "/audio/music/california-gold/04-3-keyboard.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "05-4-percussion",
+      "role": "drums",
+      "url": "/audio/music/california-gold/05-4-percussion.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "06-5-synth",
+      "role": "harmony",
+      "url": "/audio/music/california-gold/06-5-synth.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "07-6-other",
+      "role": "texture",
+      "url": "/audio/music/california-gold/07-6-other.m4a",
+      "gain": 0.7
+    }
+  ]
+}

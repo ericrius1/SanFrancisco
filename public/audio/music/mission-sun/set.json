@@ -1,0 +1,49 @@
+{
+  "id": "mission-sun",
+  "title": "SF Living Score 08 — Mission Sun",
+  "profile": "mission-sun",
+  "bpm": 96,
+  "key": "A Mixolydian",
+  "durationSeconds": 244.6,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 239.6,
+  "sourceSongId": "bfffd343-9234-4710-9312-439628f4276d",
+  "stems": [
+    {
+      "id": "01-0-drums",
+      "role": "drums",
+      "url": "/audio/music/mission-sun/01-0-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "02-1-bass",
+      "role": "bass",
+      "url": "/audio/music/mission-sun/02-1-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "03-2-guitar",
+      "role": "harmony",
+      "url": "/audio/music/mission-sun/03-2-guitar.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "04-3-keyboard",
+      "role": "harmony",
+      "url": "/audio/music/mission-sun/04-3-keyboard.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "05-4-percussion",
+      "role": "drums",
+      "url": "/audio/music/mission-sun/05-4-percussion.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "06-5-synth",
+      "role": "harmony",
+      "url": "/audio/music/mission-sun/06-5-synth.m4a",
+      "gain": 0.76
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "id": "bay-lights",
+  "title": "SF Living Score 10 — Bay Lights",
+  "profile": "bay-lights",
+  "bpm": 80,
+  "key": "B major",
+  "durationSeconds": 244.36,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 239.36,
+  "sourceSongId": "590d78e5-e550-4f70-8e28-5202a3356a3a",
+  "stems": [
+    {
+      "id": "01-0-drums",
+      "role": "drums",
+      "url": "/audio/music/bay-lights/01-0-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "02-1-bass",
+      "role": "bass",
+      "url": "/audio/music/bay-lights/02-1-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "03-2-guitar",
+      "role": "harmony",
+      "url": "/audio/music/bay-lights/03-2-guitar.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "04-3-percussion",
+      "role": "drums",
+      "url": "/audio/music/bay-lights/04-3-percussion.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "05-4-synth",
+      "role": "harmony",
+      "url": "/audio/music/bay-lights/05-4-synth.m4a",
+      "gain": 0.76
+    }
+  ]
+}

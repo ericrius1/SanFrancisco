@@ -42,6 +42,7 @@ import {
 import { Bubbles } from "../../fx/bubbles";
 import { WorldCursor } from "../../fx/worldCursor";
 import { WorldQueries } from "../../core/worldQueries";
+import { musicAudioLevel } from "../../core/audioSettings";
 import { BuildingRayRefiner } from "../../core/buildingRayRefine";
 import { Toolbar } from "../../ui/toolbar";
 import { SkateHUD } from "../../ui/skateHud";
@@ -182,6 +183,9 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     doorScanHit: null as (ReturnType<CityGenRing["nearestDoor"]>),
     highUp: false as any,
     uiOpen: true as any,
+    // Optional non-diegetic score: both code and media stay out of clean boot.
+    livingScore: null as (import("../../audio/livingScore").LivingScore | null),
+    livingScoreLoading: null as (Promise<void> | null),
   };
   const water = new Water(scene, map, renderer, sky);
   voidRealm.attachWater(water);
@@ -310,6 +314,28 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // / Marin): sampled beds + gust-locked wind synth + spatial animal calls, all
   // fading in per region. Suspends itself when the player is out in the city.
   const nature = createNatureSoundscape();
+  const updateLivingScore = (
+    dt: number,
+    signal: import("../../audio/livingScore").LivingScoreInput
+  ) => {
+    state.livingScore?.update(dt, signal);
+    if (
+      state.livingScore ||
+      state.livingScoreLoading ||
+      !signal.allowNewLoads ||
+      !audioEngine.unlocked ||
+      musicAudioLevel() <= 0.0001
+    ) return;
+    state.livingScoreLoading = import("../../audio/livingScore")
+      .then(({ LivingScore }) => {
+        state.livingScore = new LivingScore();
+        state.livingScore.update(dt, signal);
+      })
+      .catch((error) => console.warn("[living-score] module activation failed", error))
+      .finally(() => {
+        state.livingScoreLoading = null;
+      });
+  };
   // Reusable ocean-wave layer (breaking surf at Ocean Beach + shoreline wash
   // anywhere near water); rides the nature AudioContext.
   const waveAudio = new WaveAudio(nature);
@@ -1255,6 +1281,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     doorAudio,
     audioControls,
     nature,
+    updateLivingScore,
     waveAudio,
     ballImpactAudio,
     updatePlayerFoley,

@@ -1,0 +1,49 @@
+{
+  "id": "presidio-fog",
+  "title": "SF Living Score 05 — Presidio Fog",
+  "profile": "presidio-fog",
+  "bpm": 72,
+  "key": "C Dorian",
+  "durationSeconds": 152.04,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 147.04,
+  "sourceSongId": "235f0ac8-14ee-45bd-a909-4419d1d1de56",
+  "stems": [
+    {
+      "id": "01-0-drums",
+      "role": "drums",
+      "url": "/audio/music/presidio-fog/01-0-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "02-1-bass",
+      "role": "bass",
+      "url": "/audio/music/presidio-fog/02-1-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "03-2-keyboard",
+      "role": "harmony",
+      "url": "/audio/music/presidio-fog/03-2-keyboard.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "04-3-strings",
+      "role": "harmony",
+      "url": "/audio/music/presidio-fog/04-3-strings.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "05-4-synth",
+      "role": "harmony",
+      "url": "/audio/music/presidio-fog/05-4-synth.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "06-5-woodwinds",
+      "role": "melody",
+      "url": "/audio/music/presidio-fog/06-5-woodwinds.m4a",
+      "gain": 0.68
+    }
+  ]
+}

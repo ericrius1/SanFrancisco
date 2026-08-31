@@ -47,7 +47,7 @@ export class AudioControls {
 
     this.#musicSlider = this.#makeSlider(
       "music",
-      "live music volume: buskers, beach piano, Fort Mason",
+      "music volume: living score, buskers, beach piano, and Fort Mason",
       (v) => {
         AUDIO_PREFS.musicVolume = v;
       }
@@ -69,7 +69,7 @@ export class AudioControls {
     const sliders = document.createElement("div");
     sliders.className = "audio-sliders";
     sliders.append(
-      this.#labeledRow("Live", this.#musicSlider),
+      this.#labeledRow("Music", this.#musicSlider),
       this.#labeledRow("FX", this.#effectsSlider),
       this.#labeledRow("World", this.#soundscapeSlider),
       this.#labeledRow("Voice", this.#voiceSlider)
