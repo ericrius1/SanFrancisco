@@ -1813,9 +1813,10 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       citygenRing.current = await citygenMod.createCityGenRing(
         {
           excludeBuilding: (key, index) =>
-            // The roster is fixed here, before the restored hall wakes. Reserve
-            // its boiler-room footprint alongside the authored Tea Garden and
-            // the six source-authored Fort Mason replacements.
+            // The authored-region roster is loaded before CityGen starts. Its
+            // replacement claim is permanent even while the site's optional GLB
+            // is dormant, so a generic twin can never race the landmark load.
+            authoredRegions.reservesBuilding(key, index) ||
             isTeaGardenBuilding(key, index) ||
             // The Point Lobos headland. Five OSM footprints land on the cliff
             // between the restored hall and the Cliff House shelf, isolated from
@@ -1828,8 +1829,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
             // (21.4 m) sits below the terrain under it (23.4 m), so it is a
             // fully buried building that still draws. Removing the cluster
             // restores an empty headland; the Richmond skyline is untouched.
-            (key === "1_12" && [0, 1, 2, 3, 4].includes(index)) ||
-            (key === "10_8" && [0, 19, 20, 22, 23, 24].includes(index))
+            (key === "1_12" && [0, 1, 2, 3, 4].includes(index))
         },
         {
           scene,

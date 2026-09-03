@@ -5,15 +5,15 @@
   "bake": "npm run bake:region -- --site sutro-baths",
   "tracked": true,
   "inputs": {
-    "assets-src/world/sites/sutro-baths.blend": "4fc53ef1f428f31d1d246cf95e74a963b58900a1fc264166aa1a94683f26ff33",
+    "assets-src/world/sites/sutro-baths.blend": "924c67f0aacfa10262bdfbece52be27bab84af29da6ea1a38ae0e607bf136c10",
     "data/authored-regions.json": "6d9b3a8dbf60bfa388266d59f183d1ef2e52042925be77c7942f4957d0aa888d",
     "tools/export-authored-site.py": "bc1fed401a1fd10e18b7804f39c379665ba470a5d46f795d2c0e64b8632f6692",
-    "tools/inject-authored-site.mjs": "cec2b37728c85137986d207998b78c82421634ea2ee1390729d11ec2583c6664",
+    "tools/inject-authored-site.mjs": "a9622ac04870c33be94b42b214e6a3daa0b7a2b987299b719d0422c814caf0cb",
     "tools/sync-authored-region.py": "44b9eba826becee2ddec3312666a50902256d2ddad53d389b915801b07145172"
   },
   "outputs": {
     "data/authored-sites/sutro-baths.json": "50f6f33b8d82efb45213cafab606930f2a0669a759bae82145e3a62467ddf37d",
-    "public/data/authored-regions.json": "02be67818df413f710cfba5bb625ca107584ed41c00f52b1832227b76a4f590b",
+    "public/data/authored-regions.json": "966a2a0ed642967a0f3878b6794a0885e67abd7289418413970b42a0a94a9cd0",
     "public/data/colliders/tile_1_12.json": "475e727e928f6d6e637863fad7817ac9989e040de15b182fbd5c52a1a5098bae",
     "public/regions/sutro-baths.glb": "55162ee8d24acb45070ac16720a47bf8003aa3a170ca47f446b14dffe95d3913",
     "public/tiles/tile_1_12.glb": "0cfff6bd8ab4761c5a1d82a45ec3092dc44c2b72ba6cd832e627410ce19a16a0"

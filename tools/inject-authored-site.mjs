@@ -138,8 +138,9 @@ colliders.push(...metadata.colliders.map((collider) => ({
 })));
 await fs.writeFile(colliderPath, JSON.stringify(colliders));
 
-// Runtime receives only spatial/loading data. Blender paths, collection names,
-// replacement indices and full collider arrays stay in the authoring tree.
+// Runtime receives spatial/loading data plus the tiny replacement roster needed
+// to keep CityGen from recreating an authored landmark. Blender paths,
+// collection names and full collider arrays stay in the authoring tree.
 const runtimeRegions = [];
 for (const definition of sourceManifest.regions) {
   const builtPath = path.join(ROOT, "data", "authored-sites", `${definition.id}.json`);
@@ -157,6 +158,7 @@ for (const definition of sourceManifest.regions) {
     arrivalDistance: built.arrivalDistance,
     loadDistance: built.loadDistance,
     unloadDistance: built.unloadDistance,
+    replaces: built.replaces ?? [],
     ...(built.terrain ? { terrain: built.terrain } : {})
   });
 }

@@ -12,6 +12,21 @@ import {
 } from "../src/world/citygen/stream/detailAdmission.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const authoredSource = JSON.parse(readFileSync(path.join(ROOT, "data", "authored-regions.json"), "utf8"));
+const authoredRuntime = JSON.parse(readFileSync(path.join(ROOT, "public", "data", "authored-regions.json"), "utf8"));
+const runtimeRegions = new Map(authoredRuntime.regions.map((region) => [region.id, region]));
+for (const sourceRegion of authoredSource.regions) {
+  assert.deepEqual(
+    runtimeRegions.get(sourceRegion.id)?.replaces,
+    sourceRegion.replaces ?? [],
+    `${sourceRegion.id} runtime replacement reservations must match the authored manifest`,
+  );
+}
+assert.deepEqual(
+  runtimeRegions.get("grace-cathedral")?.replaces,
+  [{ tile: "12_10", index: 1 }],
+  "Grace Cathedral must permanently reserve the generic footprint that overlaps its authored model",
+);
 const boundsOf = (poly) => ({
   minx: Math.min(...poly.map(([x]) => x)),
   maxx: Math.max(...poly.map(([x]) => x)),
@@ -61,6 +76,11 @@ const cityGenStart = worldSystemsSource.indexOf("const citygenMod = await import
 const cityGenEnd = worldSystemsSource.indexOf("// Legacy procedural-spawn probes", cityGenStart);
 assert.ok(cityGenStart >= 0 && cityGenEnd > cityGenStart, "CityGen lazy-start block should remain discoverable");
 const cityGenBlock = worldSystemsSource.slice(cityGenStart, cityGenEnd);
+assert.match(
+  cityGenBlock,
+  /authoredRegions\.reservesBuilding\(key, index\)/,
+  "CityGen must reserve every authored-region source footprint before lazy region assets load",
+);
 assert.doesNotMatch(
   cityGenBlock,
   /waitForWorldBackgroundWindow/,
@@ -100,6 +120,39 @@ assert.match(
   /shouldAdmitNewDetail\(inCore, centerDistance2, admissionR2, c, costLeft\)/,
   "the guaranteed core and legacy outer-cost policy must share the tested admission helper",
 );
+assert.doesNotMatch(
+  ringSource,
+  /maskedShellCells|maskCellShells/,
+  "queued/hydrating CityGen cells must retain the baked visual fallback",
+);
+const publishStart = ringSource.indexOf("const publishChunk =");
+const publishEnd = ringSource.indexOf("const applyCellFrontGate =", publishStart);
+assert.ok(publishStart >= 0 && publishEnd > publishStart, "CityGen publish block should remain discoverable");
+const publishBlock = ringSource.slice(publishStart, publishEnd);
+assert.match(
+  publishBlock,
+  /ctx\.scene\.add\(cell\.chunk\.mesh\)[\s\S]*?suppressBuildingMesh\(e\.key, e\.i/,
+  "chunk publication must install the prepared owner before suppressing its baked twin in the same task",
+);
+assert.doesNotMatch(
+  publishBlock,
+  /markVisibleBirth/,
+  "ordinary chunk publication must not turn the atomic refinement into a visible birth animation",
+);
+const finishDetailStart = ringSource.indexOf("const finishDetail =");
+const finishDetailEnd = ringSource.indexOf("let nextDetailBuildReservation", finishDetailStart);
+assert.ok(finishDetailStart >= 0 && finishDetailEnd > finishDetailStart, "CityGen detail handoff should remain discoverable");
+const finishDetailBlock = ringSource.slice(finishDetailStart, finishDetailEnd);
+assert.match(
+  finishDetailBlock,
+  /b\.setOpacity\(1\)[\s\S]*?setBuildingVisible\(e\.i, false\)/,
+  "detail must be fully settled before atomically taking ownership from its prism",
+);
+assert.doesNotMatch(
+  finishDetailBlock,
+  /b\.setOpacity\(0\)/,
+  "detail must not begin as a dithered owner over its prism",
+);
 
 console.log(JSON.stringify({
   ok: true,
@@ -107,10 +160,15 @@ console.log(JSON.stringify({
   longBlock: { centroidDistance: 135, facadeDistance: Math.sqrt(longSurface2) },
   contracts: {
     postRevealLazyImport: true,
+    runtimeReplacementManifestParity: true,
+    authoredReplacementReservation: true,
     movementQuietGateExcluded: true,
     ownerPredicateForwarded: true,
     scenePassContextPreparation: true,
     prototypeOnlyChunkWarmup: true,
     corePrecedesLegacyCost: true,
+    bakedFallbackUntilPublish: true,
+    atomicChunkOwnership: true,
+    atomicDetailOwnership: true,
   },
 }, null, 2));

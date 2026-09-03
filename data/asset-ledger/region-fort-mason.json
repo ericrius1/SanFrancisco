@@ -5,17 +5,17 @@
   "bake": "npm run bake:region -- --site fort-mason",
   "tracked": true,
   "inputs": {
-    "assets-src/world/sites/fort-mason.blend": "96d784fae41617b111592a2586ec688e411cd9f91d0687bfb55001a875b75372",
-    "data/authored-regions.json": "dcbbb562570611d5a4dc2be26ff92948773d6cc2f181e581e211c5629c1d7ab3",
-    "tools/export-authored-site.py": "1eeadae42a8df528656b2cc815558e17ab53207d44deaa2cadab6780067d000b",
-    "tools/inject-authored-site.mjs": "2d50e6ae61e2b575bfb0403586a1a1e0d2c947f093fb69773affef41bb8a0101",
+    "assets-src/world/sites/fort-mason.blend": "4b37a0644d5966501c31e7041a032ba978222737049851069ef5743957cd6713",
+    "data/authored-regions.json": "6d9b3a8dbf60bfa388266d59f183d1ef2e52042925be77c7942f4957d0aa888d",
+    "tools/export-authored-site.py": "bc1fed401a1fd10e18b7804f39c379665ba470a5d46f795d2c0e64b8632f6692",
+    "tools/inject-authored-site.mjs": "a9622ac04870c33be94b42b214e6a3daa0b7a2b987299b719d0422c814caf0cb",
     "tools/sync-authored-region.py": "44b9eba826becee2ddec3312666a50902256d2ddad53d389b915801b07145172"
   },
   "outputs": {
     "data/authored-sites/fort-mason.json": "f9bc5f100933808bee9793382db7604cb5fc61693a8995a549d11df186b6e702",
-    "public/data/authored-regions.json": "44baa8439a3958dbbc8cb19534d6d63c1fe5ef1e26af3e447fbfe110077d5acb",
+    "public/data/authored-regions.json": "966a2a0ed642967a0f3878b6794a0885e67abd7289418413970b42a0a94a9cd0",
     "public/data/colliders/tile_10_8.json": "5d19d7b10785d538c5f31b8816a5ef9df5927185be71de3c79da43ddae5045b0",
-    "public/regions/fort-mason.glb": "1d3887404b5ab7263a55334208ff93c552bf1e030bcc37e01b757a166435a352",
+    "public/regions/fort-mason.glb": "baabd058c12059856be3df29a0acb5a76f9246fb20b53315a94cf285789b9536",
     "public/tiles/tile_10_8.glb": "29cbc168045de25b2cc416c4772ab87f910d32fb563d5f230fb83344450a2ea8"
   }
 }
