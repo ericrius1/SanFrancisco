@@ -28,6 +28,17 @@ export type ScoreDirection = {
   /** Non-diegetic score gives way to an authored performer inside these areas. */
   liveMusicDuck: number;
   label: string;
+  /** Continuous day character: 0 at night, 1 through the broad daylight arc. */
+  daylight: number;
+  rain: number;
+  storm: number;
+  lightning: number;
+};
+
+export type ScoreWeather = {
+  rain?: number;
+  storm?: number;
+  lightning?: number;
 };
 
 type CircleZone = {
@@ -186,8 +197,32 @@ function liveMusicDuckAt(x: number, z: number): number {
 
 const isNight = (hour: number) => hour >= 19.5 || hour < 6.5;
 
+function daylightAt(hour: number): number {
+  if (hour < 5.5 || hour >= 20.5) return 0;
+  if (hour < 8) return smooth01((hour - 5.5) / 2.5);
+  if (hour >= 17.5) return 1 - smooth01((hour - 17.5) / 3);
+  return 1;
+}
+
+function rainProfile(profile: ScoreProfileId, rain: number): ScoreProfileId {
+  if (rain < 0.56) return profile;
+  // Strongly authored intimate/coastal places keep their melodic identity.
+  if (
+    profile === "tea-garden-stillness" ||
+    profile === "sutro-memory" ||
+    profile === "pacific-tide" ||
+    profile === "afterlight-cosmos"
+  ) return profile;
+  return "city-rain";
+}
+
 /** Pure, allocation-light direction lookup used once per score update. */
-export function scoreDirectionAt(x: number, z: number, hour: number): ScoreDirection {
+export function scoreDirectionAt(
+  x: number,
+  z: number,
+  hour: number,
+  weather: ScoreWeather = {}
+): ScoreDirection {
   let best:
     | { profile: ScoreProfileId; label: string; intensity: number; influence: number }
     | undefined;
@@ -225,10 +260,19 @@ export function scoreDirectionAt(x: number, z: number, hour: number): ScoreDirec
   // At a feathered region edge, the score also thins before the next profile
   // has held long enough to take over. This makes geography audible without a
   // hard musical fence.
+  const rain = clamp01(weather.rain ?? 0);
+  const storm = clamp01(weather.storm ?? 0);
+  const lightning = clamp01(weather.lightning ?? 0);
+  const profile = rainProfile(best.profile, rain);
+  const weatherSuffix = storm > 0.38 ? " · electrical storm" : rain > 0.12 ? " · rain" : "";
   return {
-    profile: best.profile,
-    label: best.label,
-    intensity: best.intensity * (0.72 + 0.28 * best.influence),
-    liveMusicDuck: liveMusicDuckAt(x, z)
+    profile,
+    label: `${best.label}${weatherSuffix}`,
+    intensity: best.intensity * (0.72 + 0.28 * best.influence) * (1 - rain * 0.11 - storm * 0.08),
+    liveMusicDuck: liveMusicDuckAt(x, z),
+    daylight: daylightAt(hour),
+    rain,
+    storm,
+    lightning
   };
 }

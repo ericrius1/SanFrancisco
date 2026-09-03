@@ -116,7 +116,7 @@ try {
   await page.evaluate(({ x, z, hour }) => {
     const score = window.__sf.getLivingScore();
     const input = { x, z, speed: 0, timeOfDay: hour, indoor: false, allowNewLoads: true };
-    for (let i = 0; i < 9; i++) score.update(1, input);
+    for (let i = 0; i < 14; i++) score.update(1, input);
   }, target);
   await page.waitForFunction(
     (profile) => window.__sf?.getLivingScore?.()?.debugState?.profile === profile,

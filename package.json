@@ -85,6 +85,8 @@
     "test:nature-audio:browser": "node tools/nature-audio-lifecycle-browser-probe.mjs",
     "test:living-score": "node --experimental-strip-types tools/living-score-direction-probe.mjs",
     "test:living-score:browser": "node tools/living-score-browser-probe.mjs",
+    "test:weather": "node --experimental-strip-types tools/weather-system-probe.mjs",
+    "test:weather:browser": "node tools/weather-browser-probe.mjs",
     "build:living-score-manifest": "node tools/build-living-score-manifest.mjs",
     "test:voice:browser": "node tools/voice-echo-browser-probe.mjs && node tools/voice-mic-persistence-probe.mjs",
     "test:voice-duck:browser": "node tools/voice-open-mic-duck-probe.mjs",

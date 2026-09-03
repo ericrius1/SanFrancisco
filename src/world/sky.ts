@@ -461,6 +461,9 @@ export class Sky {
   #fogDriftRate = WORLD_TUNING.values.fogDrift
   #fogWindX = 0
   #fogWindZ = 0
+  #weatherCloud = 0
+  #weatherStorm = 0
+  #weatherLightning = 0
 
   // night-only brightness multiplier (the "/" panel's night brightness slider);
   // the setter re-applies so edits land even while the cycle is paused
@@ -1157,6 +1160,22 @@ export class Sky {
     this.applyFogParams()
   }
 
+  /** Slowly blended global weather grade supplied by WeatherDirector. */
+  setWeatherMood(cloud: number, storm: number, lightning: number) {
+    const nextCloud = Math.min(1, Math.max(0, cloud))
+    const nextStorm = Math.min(1, Math.max(0, storm))
+    const nextLightning = Math.min(1, Math.max(0, lightning))
+    if (
+      Math.abs(nextCloud - this.#weatherCloud) < 0.003 &&
+      Math.abs(nextStorm - this.#weatherStorm) < 0.003 &&
+      Math.abs(nextLightning - this.#weatherLightning) < 0.01
+    ) return
+    this.#weatherCloud = nextCloud
+    this.#weatherStorm = nextStorm
+    this.#weatherLightning = nextLightning
+    this.#applySun()
+  }
+
   applyFogParams() {
     const v = WORLD_TUNING.values
     const weather = this.#effectiveFog
@@ -1684,6 +1703,14 @@ export class Sky {
       0.02 * twilight,
       0.038 * twilight
     )
+    // A cloud front cools and dims the existing civil-time palette without
+    // introducing a second sky implementation. Clear weather is bit-identical.
+    const weatherDim = 1 - this.#weatherCloud * 0.3 - this.#weatherStorm * 0.12
+    const weatherBlue = this.#weatherCloud * 0.022
+    zen.set(zen.x * weatherDim + weatherBlue * 0.65, zen.y * weatherDim + weatherBlue * 0.86, zen.z * weatherDim + weatherBlue)
+    hor.set(hor.x * weatherDim + weatherBlue * 0.8, hor.y * weatherDim + weatherBlue * 0.9, hor.z * weatherDim + weatherBlue)
+    band.set(band.x * weatherDim + weatherBlue * 0.7, band.y * weatherDim + weatherBlue * 0.88, band.z * weatherDim + weatherBlue)
+    mean.set(mean.x * weatherDim + weatherBlue * 0.72, mean.y * weatherDim + weatherBlue * 0.88, mean.z * weatherDim + weatherBlue)
     this.#uSkyGold.value = goldW
   }
 
@@ -1723,15 +1750,20 @@ export class Sky {
     const skyFill =
       SKY_TUNING.values.hemiDay * dayW +
       EXPOSURE_REBASE * lowSunLift * (3.8 * goldW + 3.1 * nightW)
+    const weatherLight = Math.max(
+      0.42,
+      1 - this.#weatherCloud * 0.38 - this.#weatherStorm * 0.14 + this.#weatherLightning * 0.32
+    )
     this.#scene.environmentIntensity =
-      SKY_IBL_REFERENCE_INTENSITY * skyFill / 0.9
+      SKY_IBL_REFERENCE_INTENSITY * skyFill / 0.9 * weatherLight
     // Keep the official fog hue neutral at every hour. Only incident-light
     // energy falls with the sun, and the dome uses this same value so fully
     // fogged geometry has no horizon seam. Midday remains the exact reference.
-    this.#uFogLight.value =
+    this.#uFogLight.value = (
       dayW +
       FOG_GOLD_LIGHT * goldW * lowSunLift +
       FOG_NIGHT_LIGHT * nightW * lowSunLift
+    ) * weatherLight
     const sinEl = Math.sin(THREE.MathUtils.degToRad(elevation))
     if (elevation > -2) {
       const transmittance = Math.sqrt(Math.max(sinEl, 0))
@@ -1746,6 +1778,7 @@ export class Sky {
         6.2 * EXPOSURE_REBASE * lowSunLift * smooth01(1.5, 10, -elevation)
       SUN_DIR.copy(this.#sunVec).negate() // the moon is the light source now
     }
+    this.sun.intensity *= weatherLight
 
     // the crown display holds its proportion to the ambient light: brilliant at
     // noon, eased down after dark so emissive landmarks do not blow out

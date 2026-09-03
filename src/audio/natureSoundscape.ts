@@ -214,6 +214,8 @@ export class NatureSoundscape {
       camera: THREE.Camera;
       gust: number;
       timeOfDay: number;
+      weatherRain?: number;
+      weatherWind?: number;
       /** Existing ambience may keep mixing, but destination-critical work can
        * defer the first sampled-bed fetch/decode until its visual prime settles. */
       allowNewLoads?: boolean;
@@ -312,6 +314,8 @@ export class NatureSoundscape {
     const now = ctx.currentTime;
     const day = daylight(o.timeOfDay);
     const gust = clamp01(o.gust);
+    const weatherRain = clamp01(o.weatherRain ?? 0);
+    const weatherWind = clamp01(o.weatherWind ?? 0);
 
     // ---- beds ------------------------------------------------------------
     for (const id of BED_IDS) {
@@ -331,7 +335,10 @@ export class NatureSoundscape {
         den += w;
       }
       const blend = den > 0 ? Math.min(1, num / den) : 0;
-      const target = blend * bedFactor(id, day, gust) * Number(T.beds);
+      const rainShelter = id === "windTree" || id === "windGrass"
+        ? 0.9 + weatherWind * 0.2
+        : 1 - weatherRain * 0.42;
+      const target = blend * bedFactor(id, day, gust) * Number(T.beds) * rainShelter;
       bed.level = target;
       bed.gain.gain.setTargetAtTime(target, now, 0.25);
       // mist/fog softens the whole region: pull the bed lowpass down
@@ -342,7 +349,12 @@ export class NatureSoundscape {
     if (this.#wind) {
       const nearMix = presence; // deeper in a region = more leaf/grass rustle
       if (windRunning) {
-        this.#wind.update(gust, o.camera, Number(T.wind) * windBias * presence, nearMix);
+        this.#wind.update(
+          Math.max(gust, weatherWind * 0.72),
+          o.camera,
+          Number(T.wind) * windBias * presence * (1 + weatherWind * 0.24),
+          nearMix
+        );
       }
     }
 
@@ -352,7 +364,7 @@ export class NatureSoundscape {
       for (let i = 0; i < NATURE_REGIONS.length; i++) {
         ratePerMin += this.#inf[i] * NATURE_REGIONS[i].density;
       }
-      ratePerMin *= timeDensity(o.timeOfDay) * windLull(gust) * Number(T.density);
+      ratePerMin *= timeDensity(o.timeOfDay) * windLull(gust) * Number(T.density) * (1 - weatherRain * 0.86);
       ratePerMin = Math.min(44, ratePerMin);
       if (ratePerMin > 0.01) {
         this.#voiceTimer -= dt;

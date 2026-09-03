@@ -43,6 +43,10 @@ export type LivingScoreInput = {
   timeOfDay: number;
   indoor: boolean;
   allowNewLoads: boolean;
+  cloud?: number;
+  rain?: number;
+  storm?: number;
+  lightning?: number;
 };
 
 type StemVoice = {
@@ -59,12 +63,12 @@ const MANIFEST_URL = "/audio/music/manifest.json";
 // stem-count normalization and compressor below keep sparse and dense sets in
 // the same musical neighborhood.
 const MASTER_GAIN = 3.2;
-const REGION_HOLD_SECONDS = 7;
+const REGION_HOLD_SECONDS = 12;
 const PASSAGE_MIN_SECONDS = 26;
 const PASSAGE_SPREAD_SECONDS = 22;
 const PLAYLIST_MIN_SECONDS = 330;
 const PLAYLIST_SPREAD_SECONDS = 210;
-const CROSSFADE_SECONDS = 14;
+const CROSSFADE_SECONDS = 22;
 const TARGET_DECK_DB = -20;
 const MAX_MAKEUP_GAIN = 8;
 const SILENCE_DB = -52;
@@ -80,6 +84,7 @@ const ROLE_BASE: Record<StemRole, number> = {
 };
 
 const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
 function hashText(value: string): number {
   let h = 2166136261;
@@ -98,10 +103,6 @@ function unitHash(seed: number): number {
   h = Math.imul(h, 0x846ca68b);
   h ^= h >>> 16;
   return (h >>> 0) / 4294967296;
-}
-
-function isNight(hour: number): boolean {
-  return hour >= 19.5 || hour < 6.5;
 }
 
 function assertManifest(value: unknown): LivingScoreManifest {
@@ -260,8 +261,10 @@ class ScoreDeck {
     }
 
     const moving = clamp01(input.speed / 14);
-    const directedDensity = clamp01(this.#density * 0.72 + moving * 0.28);
-    const night = isNight(input.timeOfDay);
+    const rain = direction.rain;
+    const storm = direction.storm;
+    const nightMood = 1 - direction.daylight;
+    const directedDensity = clamp01(this.#density * 0.72 + moving * 0.28 - rain * 0.16 - storm * 0.08);
     const now = this.#ctx.currentTime;
     for (let i = 0; i < this.voices.length; i++) {
       const voice = this.voices[i]!;
@@ -276,10 +279,27 @@ class ScoreDeck {
       else if (stem.role === "texture") presence = 0.58 + (1 - moving) * 0.42;
       else presence = 0.72 + chance * 0.28;
 
-      const dayPart = night ? (stem.night ?? 1) : (stem.day ?? 1);
+      const authoredDayPart = lerp(stem.night ?? 1, stem.day ?? 1, direction.daylight);
+      let timeMood = 1;
+      if (stem.role === "drums") timeMood = lerp(0.72, 1.04, direction.daylight) * (1 - rain * 0.34);
+      else if (stem.role === "bass") timeMood = lerp(0.82, 1, direction.daylight) * (1 - rain * 0.2);
+      else if (stem.role === "harmony") timeMood = lerp(0.96, 1.06, direction.daylight) * (1 - rain * 0.06);
+      else if (stem.role === "melody") timeMood = lerp(0.8, 1.06, direction.daylight) * (1 - rain * 0.24);
+      else if (stem.role === "texture") timeMood = lerp(1.2, 0.84, direction.daylight) * (1 + rain * 0.34 + storm * 0.14);
+      else timeMood = lerp(1.08, 0.96, direction.daylight) * (1 + direction.lightning * 0.62);
       const interior = input.indoor ? (stem.role === "texture" ? 0.42 : 0.66) : 1;
-      const target = stem.gain * ROLE_BASE[stem.role] * presence * dayPart * interior;
-      voice.gain.gain.setTargetAtTime(target, now, stem.role === "accent" ? 1.8 : 3.2);
+      const target = stem.gain * ROLE_BASE[stem.role] * presence * authoredDayPart * timeMood * interior;
+      voice.gain.gain.setTargetAtTime(target, now, stem.role === "accent" ? 2.8 : 5.5);
+      // Night and rain progressively soften the same source; no filter mode or
+      // deck changes at a threshold, so twilight and an arriving front read as
+      // a long tonal drift instead of an effect switch.
+      const sourceCutoff = stem.cutoffHz ?? 20_000;
+      const weatherTone = Math.max(0.38, 0.64 + direction.daylight * 0.3 - rain * 0.17 - storm * 0.09);
+      voice.filter.frequency.setTargetAtTime(
+        Math.max(900, Math.min(sourceCutoff, sourceCutoff * weatherTone)),
+        now,
+        7.5 + nightMood * 2.5
+      );
     }
 
     const leader = this.voices[0]?.media;
@@ -335,7 +355,7 @@ class ScoreDeck {
     // Direction intensity and live-performer duck move the deck as one coherent
     // mix. Per-stem automation remains relative underneath it.
     const targetMaster = this.#masterFor(direction);
-    this.master.gain.setTargetAtTime(targetMaster, now, 1.1);
+    this.master.gain.setTargetAtTime(targetMaster, now, 3.8);
   }
 
   targetFor(direction: ScoreDirection): number {
@@ -444,6 +464,9 @@ export class LivingScore {
       outputDb: playback.outputDb,
       gainReductionDb: playback.gainReductionDb,
       makeupGain: playback.makeupGain,
+      daylight: +(this.#lastDirection?.daylight ?? 0).toFixed(3),
+      rain: +(this.#lastDirection?.rain ?? 0).toFixed(3),
+      storm: +(this.#lastDirection?.storm ?? 0).toFixed(3),
       libraryStemSeconds: this.#manifest?.totalStemSeconds ?? 0
     };
   }
@@ -451,7 +474,7 @@ export class LivingScore {
   update(dt: number, input: LivingScoreInput): void {
     if (this.#failed) return;
     this.#lastInput = input;
-    const direction = scoreDirectionAt(input.x, input.z, input.timeOfDay);
+    const direction = scoreDirectionAt(input.x, input.z, input.timeOfDay, input);
     this.#lastDirection = direction;
 
     const muted = musicAudioLevel() <= 0.0001;
@@ -581,9 +604,9 @@ export class LivingScore {
       this.#candidateAge = 0;
       this.#lastSetId = set.id;
       this.#playlistLeft = PLAYLIST_MIN_SECONDS + unitHash(seed ^ 0x63d83595) * PLAYLIST_SPREAD_SECONDS;
-      const transitionDirection = this.#lastDirection ?? scoreDirectionAt(input.x, input.z, input.timeOfDay);
+      const transitionDirection = this.#lastDirection ?? scoreDirectionAt(input.x, input.z, input.timeOfDay, input);
       deck.update(0, input, transitionDirection);
-      deck.setMaster(deck.targetFor(transitionDirection), immediate ? 3.5 : CROSSFADE_SECONDS);
+      deck.setMaster(deck.targetFor(transitionDirection), immediate ? 4.5 : CROSSFADE_SECONDS);
       if (old) {
         old.setMaster(0, CROSSFADE_SECONDS);
         window.setTimeout(() => old.dispose(), CROSSFADE_SECONDS * 1000 + 500);
