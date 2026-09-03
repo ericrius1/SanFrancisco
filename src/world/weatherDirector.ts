@@ -2,11 +2,11 @@ import type * as THREE from "three/webgpu";
 import {
   forcedWeather,
   labelForWeather,
-  sampleProceduralWeather,
+  sampleProceduralWeatherAtDay,
   type WeatherKind,
   type WeatherState
 } from "./weatherModel";
-import type { SfCivilTime } from "./solar";
+import { sfCivilScalarDays, type SfCivilTime } from "./solar";
 
 export type WeatherUpdate = {
   civil: SfCivilTime;
@@ -24,6 +24,11 @@ type WeatherEffects = {
 };
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+// Weather owns a game-scale clock so the default real-world sky clock does not
+// pin one forecast for hours. One forecast day per 30 minutes matches the
+// authored local day-cycle default and yields multi-minute rain events separated
+// by much longer clear spells.
+const WEATHER_DAY_SECONDS = 30 * 60;
 const approach = (current: number, target: number, dt: number, halfLife: number) =>
   current + (target - current) * (1 - Math.exp((-Math.LN2 * Math.max(0, dt)) / halfLife));
 
@@ -56,6 +61,7 @@ export class WeatherDirector {
   #effectsLoading = false;
   #lightningTimer = 9;
   #lightningCount = 0;
+  #weatherDay: number | null = null;
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -72,6 +78,9 @@ export class WeatherDirector {
       wetness: +this.state.wetness.toFixed(3),
       lightning: +this.state.lightning.toFixed(3),
       override: this.#override,
+      forecastHour: this.#weatherDay === null
+        ? null
+        : +((this.#weatherDay - Math.floor(this.#weatherDay)) * 24).toFixed(2),
       effects: this.#effects ? "active" : this.#effectsLoading ? "loading" : "dormant",
       effectState: this.#effects?.debugState ?? null
     };
@@ -83,10 +92,19 @@ export class WeatherDirector {
   }
 
   update(dt: number, input: WeatherUpdate): Readonly<WeatherState> {
-    if (this.#override) forcedWeather(this.#override, this.#target);
-    else sampleProceduralWeather(input.civil, input.x, input.z, this.#target);
-
     const safeDt = Math.min(1, Math.max(0, dt));
+    if (this.#weatherDay === null) this.#weatherDay = sfCivilScalarDays(input.civil);
+    else this.#weatherDay += safeDt / WEATHER_DAY_SECONDS;
+
+    if (this.#override) forcedWeather(this.#override, this.#target);
+    else sampleProceduralWeatherAtDay(
+      this.#weatherDay,
+      input.civil.month,
+      input.x,
+      input.z,
+      this.#target
+    );
+
     if (!this.#initialized) {
       Object.assign(this.state, this.#target);
       this.#initialized = true;
@@ -165,4 +183,3 @@ export class WeatherDirector {
       });
   }
 }
-
