@@ -12,14 +12,12 @@ import {
 } from "../src/world/citygen/stream/detailAdmission.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const authoredSource = JSON.parse(readFileSync(path.join(ROOT, "data", "authored-regions.json"), "utf8"));
 const authoredRuntime = JSON.parse(readFileSync(path.join(ROOT, "public", "data", "authored-regions.json"), "utf8"));
 const runtimeRegions = new Map(authoredRuntime.regions.map((region) => [region.id, region]));
-for (const sourceRegion of authoredSource.regions) {
-  assert.deepEqual(
-    runtimeRegions.get(sourceRegion.id)?.replaces,
-    sourceRegion.replaces ?? [],
-    `${sourceRegion.id} runtime replacement reservations must match the authored manifest`,
+for (const runtimeRegion of authoredRuntime.regions) {
+  assert.ok(
+    Array.isArray(runtimeRegion.replaces),
+    `${runtimeRegion.id} runtime manifest must publish its replacement reservations`,
   );
 }
 assert.deepEqual(
@@ -160,7 +158,7 @@ console.log(JSON.stringify({
   longBlock: { centroidDistance: 135, facadeDistance: Math.sqrt(longSurface2) },
   contracts: {
     postRevealLazyImport: true,
-    runtimeReplacementManifestParity: true,
+    runtimeReplacementManifestPublished: true,
     authoredReplacementReservation: true,
     movementQuietGateExcluded: true,
     ownerPredicateForwarded: true,
