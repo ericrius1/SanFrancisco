@@ -2,7 +2,7 @@
 // Extracted from main.ts per docs/MAIN_DECOMPOSITION.md: pure wiring around
 // the player's landing-feedback serial, no scene ownership of its own.
 import * as THREE from "three/webgpu";
-import { CAR_LANDING_TUNING } from "../../vehicles/car";
+import { CAR_LANDING_TUNING } from "../../vehicles/car/tuning";
 import type { Player } from "../../player/player";
 import type { ChaseCamera } from "../../core/camera";
 import type { FX } from "../../fx/fx";

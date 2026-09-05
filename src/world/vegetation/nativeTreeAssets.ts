@@ -1,12 +1,11 @@
 import * as THREE from "three/webgpu";
+import { getKtx2Loader, loadKtx2Texture } from "../../render/textures";
 import { requireRenderer } from "../../app/rendererRegistry";
 
 const MANIFEST_URL = "/native-foliage/manifest.json";
 const MATERIAL_CACHE_LIMIT = 16;
 const TEXTURE_CACHE_LIMIT = 64;
-const KTX2_WORKER_LIMIT = 2;
 const MAX_ANISOTROPY = 8;
-const BASIS_TRANSCODER_PATH = "/native-foliage/basis-r185/";
 
 export type NativeTreeLeafStyle = Readonly<{
   alphaCutoff: number;
@@ -109,7 +108,6 @@ const FAMILY_FALLBACKS: Readonly<Record<string, string>> = Object.freeze({
 
 let clock = 0;
 let manifestPromise: Promise<NativeFoliageManifest> | null = null;
-let loaderPromise: Promise<import("three/addons/loaders/KTX2Loader.js").KTX2Loader> | null = null;
 let rendererAnisotropy = 1;
 const warned = new Set<string>();
 const textureCache = new Map<string, TextureCacheEntry>();
@@ -152,28 +150,10 @@ function configureTexture(texture: THREE.Texture, role: TextureRole): THREE.Text
   texture.repeat.set(1, 1);
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
+  try { rendererAnisotropy = requireRenderer().getMaxAnisotropy(); } catch { /* CPU fixtures use 1x. */ }
   texture.anisotropy = Math.max(1, Math.min(MAX_ANISOTROPY, rendererAnisotropy));
   texture.needsUpdate = true;
   return texture;
-}
-
-async function getKtx2Loader(): Promise<import("three/addons/loaders/KTX2Loader.js").KTX2Loader> {
-  if (!loaderPromise) {
-    // This function is never evaluated at module import. The renderer registry
-    // is consulted only when a forest asks for its first native material set.
-    const renderer = requireRenderer();
-    rendererAnisotropy = Math.max(1, renderer.getMaxAnisotropy());
-    loaderPromise = import("three/addons/loaders/KTX2Loader.js").then(({ KTX2Loader }) => {
-      const loader = new KTX2Loader();
-      // Pin the worker runtime to the matching Three release. Relying on the
-      // lazy module URL makes Vite dev resolve this into an HTML fallback.
-      loader.setTranscoderPath(BASIS_TRANSCODER_PATH);
-      loader.setWorkerLimit(KTX2_WORKER_LIMIT);
-      loader.detectSupport(renderer);
-      return loader;
-    });
-  }
-  return loaderPromise;
 }
 
 async function getManifest(): Promise<NativeFoliageManifest> {
@@ -225,8 +205,7 @@ function acquireTexture(uri: string, role: TextureRole, errors: string[]): Textu
     touched: ++clock,
     cached,
     released: false,
-    promise: getKtx2Loader()
-      .then((loader) => loader.loadAsync(uri))
+    promise: loadKtx2Texture(uri)
       .then((texture) => configureTexture(texture, role))
       .catch((error: unknown) => {
         const detail = `${uri}: ${error instanceof Error ? error.message : String(error)}`;
@@ -473,8 +452,6 @@ export async function clearNativeTreeAssetCache(): Promise<void> {
     if (!Object.values(fallbackTextures).includes(texture)) texture.dispose();
   }));
 
-  if (loaderPromise) (await loaderPromise).dispose();
-  loaderPromise = null;
   manifestPromise = null;
   warned.clear();
 }

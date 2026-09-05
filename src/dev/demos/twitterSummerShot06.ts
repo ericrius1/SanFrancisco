@@ -20,6 +20,7 @@ const DRIVEN_KEYS = ["KeyW", "KeyA", "KeyD", "ShiftLeft", "Space"] as const;
 /** Botanical Garden board study: flower-level macro into a summer promenade sweep. */
 export const twitterSummerShot06: Demo = {
   name: "twitter-summer-06",
+  modes: ["board"],
   run(ctx) {
     const { map, sky, setBoardConfig } = ctx;
     if (!map || !sky || !setBoardConfig) {

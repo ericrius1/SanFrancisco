@@ -18,6 +18,7 @@ const DRIVEN_KEYS = ["KeyW", "KeyA", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "Space
 /** Downtown blue-hour finale: an intimate roof launch opens into the whole skyline. */
 export const twitterSummerShot08: Demo = {
   name: "twitter-summer-08",
+  modes: ["drone"],
   run(ctx) {
     const { map, sky, fireworks } = ctx;
     if (!map || !sky) {

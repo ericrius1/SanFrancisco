@@ -18,6 +18,7 @@ const DRIVEN_KEYS = ["KeyW", "KeyA", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "Space
  */
 export const phoenixPalaceFlyby: Demo = {
   name: "phoenix-palace-flyby",
+  modes: ["bird"],
   run(ctx) {
     const { map, sky } = ctx;
     if (!map || !sky) {

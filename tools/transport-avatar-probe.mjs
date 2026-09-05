@@ -112,7 +112,7 @@ try {
     });
 
     for (const mode of modes) {
-      sf.player.trySwitch(mode);
+      await sf.player.trySwitch(mode);
       for (let i = 0; i < 3; i++) {
         sf.tick(1 / 60);
         await device.queue.onSubmittedWorkDone();

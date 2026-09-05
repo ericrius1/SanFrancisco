@@ -23,6 +23,7 @@
 // gracefully but should win headroom), then "build" (visible world assembly),
 // then "upload"/"background".
 
+import { laptopProfile } from "../render/laptopProfiles";
 import { tracer } from "./hitchTracer";
 
 export type Lane = "physics" | "build" | "upload" | "background";
@@ -60,9 +61,10 @@ export interface FrameScheduler {
 export function streamingBudgetMs(frameDt: number, revealed: boolean, cpuMs = 0): number {
   if (!revealed) return 24;
   if (cpuMs > 12) return 0;
-  if (frameDt < 1 / 55) return 3;
-  if (frameDt < 1 / 35) return 1.5;
-  return 0.8;
+  const scale = laptopProfile().streamBudgetScale;
+  if (frameDt < 1 / 55) return 3 * scale;
+  if (frameDt < 1 / 35) return 1.5 * scale;
+  return 0.8 * scale;
 }
 
 /** O(1) dequeue for arrival backlogs that can exceed 10,000 collision jobs.

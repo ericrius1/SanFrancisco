@@ -20,6 +20,7 @@ const DRIVEN_KEYS = ["KeyW", "KeyA", "KeyD", "ShiftLeft"] as const;
  */
 export const twitterSummerShot07: Demo = {
   name: "twitter-summer-07",
+  modes: ["boat", "speedboat"],
   run(ctx) {
     const { fireworks, map, sky } = ctx;
     if (!fireworks || !map || !sky) {

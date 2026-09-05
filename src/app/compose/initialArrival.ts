@@ -7,7 +7,7 @@ import { CONFIG, START, START_DEFAULTS } from "../../config";
 import { loadPlayerState } from "../../core/persist";
 import { beganAsReadingVisit } from "../startupIntent";
 import { consumeDevReloadSnapshot } from "../hmr/devReloadSnapshot";
-import { oceanBeachSurfShackPose } from "../../gameplay/surfing/shack";
+import { oceanBeachSurfShackPose } from "../../gameplay/surfing/shackMeta";
 import { findOpenSpawn } from "../../world/spawn";
 import {
   pickLandmarkSpawn,

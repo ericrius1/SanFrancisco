@@ -101,6 +101,17 @@ try {
  assert.ok(report.city.cars<=18&&report.city.walkers<=12&&report.city.carDraws<=3);
  await city.screenshot({path:`${out}/city-life.png`});
  console.log('PASS bounded street life:',JSON.stringify(report.city));
+ await city.evaluate(()=>{window.__sf.RENDER_TUNING.values.profile='quiet'});
+ await city.waitForTimeout(2000);
+ report.quietCity=await city.evaluate(()=>window.__sf.getAmbientCity().debugState());
+ assert.ok(report.quietCity.cars<=9&&report.quietCity.walkers<=6,'Quiet must shrink the existing pools');
+ const streetPose=await city.evaluate(()=>{const sf=window.__sf;return {x:sf.player.position.x,y:sf.player.position.y,z:sf.player.position.z,facing:sf.player.heading-Math.PI,mode:'walk'}});
+ await city.evaluate(()=>window.__sf.player.teleportTo({x:-9000,y:80,z:-6500,facing:0,mode:'walk'}));
+ await city.waitForFunction(()=>{const s=window.__sf.getAmbientCity().debugState();return s.cars===0&&s.walkers===0},null,{timeout:30000});
+ await city.evaluate(p=>window.__sf.player.teleportTo(p),streetPose);
+ await city.waitForFunction(()=>{const s=window.__sf.getAmbientCity().debugState();return s.cars>0&&s.walkers>0},null,{timeout:60000});
+ report.returnCity=await city.evaluate(()=>window.__sf.getAmbientCity().debugState());
+ console.log('PASS street life: Quiet budget, distance recycle, return hydration');
  assert.equal(errors.length,0,errors.join('\n'));
  report.ok=true;
 } catch(error) {report.ok=false;report.failure=error.stack;throw error;}

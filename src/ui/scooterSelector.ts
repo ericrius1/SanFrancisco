@@ -1,3 +1,4 @@
+import { paintScooterSurface, prepareScooterSurface } from "../vehicles/scooter/surfaceTexture";
 import {
   SCOOTER_BODIES,
   SCOOTER_CARGO,
@@ -10,15 +11,13 @@ import {
   SCOOTER_TRIM_COLORS,
   SCOOTER_WHEELS,
   normalizeScooterConfig,
-  paintScooterSurface,
-  prepareScooterSurface,
   randomScooterConfig,
   scooterKey,
   scooterPaintHex,
   scooterSeatHex,
   scooterTrimHex,
   type ScooterConfig
-} from "../vehicles/scooter";
+} from "../vehicles/scooter/config";
 
 type ColorKey = "paint" | "trim" | "upholstery";
 type ChoiceKey = "body" | "seat" | "screen" | "cargo" | "wheel" | "surface" | "decal";

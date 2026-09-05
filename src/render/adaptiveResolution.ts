@@ -55,6 +55,7 @@ import { RENDER_TUNING } from "../config";
 import { tracer } from "../core/hitchTracer";
 import { pocketRenderScale, temporalResolveLive } from "./pocketQuality";
 import { TEMPORAL_TUNING } from "./post/temporal/tuning";
+import { laptopProfile } from "./laptopProfiles";
 import { createQualityDwell } from "./qualityDwell";
 
 // Per-level degradation factor. Index = level. It multiplies EITHER the tuned
@@ -112,7 +113,8 @@ type GovernorListener = (effects: GovernorEffects) => void;
 
 export type AdaptiveResolution = {
   /** Call once per frame with the tracer's frame-dt EMA (ms). */
-  update(emaMs: number): void;
+  update(emaMs: number, cpuMs?: number, gpuMs?: number): void;
+  readonly pressure: { cpuMs: number; gpuMs: number | null; source: "cpu" | "gpu" | "pacing" | "stable" };
   /** Current applied scale (1 = the tuned pixel ratio). */
   readonly scale: number;
   /** Pin to L0 / scale 1 and stop adapting (probes, capture). */
@@ -199,8 +201,8 @@ function foliageScaleFor(level: number): number {
   return level >= 4 ? 0.7 : level >= 3 ? 0.85 : 1;
 }
 
-function computeEffects(level: number, upscale: boolean, ceiling: number): GovernorEffects {
-  const factor = SCALE_BY_LEVEL[level];
+function computeEffects(level: number, upscale: boolean, ceiling: number, profileScale = laptopProfile().scale): GovernorEffects {
+  const factor = SCALE_BY_LEVEL[level] * profileScale;
   return Object.freeze({
     level,
     // Exactly one axis carries the ladder. Degrading both would compound to
@@ -210,7 +212,7 @@ function computeEffects(level: number, upscale: boolean, ceiling: number): Gover
     // that avoids the compounding and still did not pay.
     renderScale: upscale ? 1 : factor,
     temporalScale:
-      upscale && level > 0
+      upscale && factor < 1
         ? Math.min(1, Math.max(TEMPORAL_SCALE_MIN, ceiling * factor))
         : 1,
     contactShadowScale: level >= 3 ? 0.35 : 0.5,
@@ -242,6 +244,10 @@ export function onGovernorChange(cb: GovernorListener): () => void {
 
 export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): AdaptiveResolution {
   let level = 0;
+  let cpuEma = 0;
+  let lastGpuMs: number | null = null;
+  let source: "cpu" | "gpu" | "pacing" | "stable" = "stable";
+  let profile = laptopProfile();
   let enabled = true;
   let lastChange = performance.now() + WARMUP_MS;
   // Display-interval estimate, kept as a tumbling-window minimum of the real
@@ -285,10 +291,13 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
   const refreshTemporalAxis = () => {
     const nextUpscale = upscaleAvailable();
     const nextCeiling = temporalCeiling();
-    if (nextUpscale === upscale && nextCeiling === ceiling) return;
+    const nextProfile = laptopProfile();
+    if (nextUpscale === upscale && nextCeiling === ceiling && profile === nextProfile) return;
+    profile = nextProfile;
+    pressure.reset();
     upscale = nextUpscale;
     ceiling = nextCeiling;
-    currentEffects = computeEffects(level, upscale, ceiling);
+    currentEffects = computeEffects(level, upscale, ceiling, enabled ? profile.scale : 1);
     // Switching axes moves the drawing buffer back to (or off) the tuned
     // ceiling; apply() below re-lands it on the same tick.
   };
@@ -298,15 +307,16 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
     level = next;
     lastChange = now;
     pressure.reset();
-    currentEffects = computeEffects(level, upscale, ceiling);
+    currentEffects = computeEffects(level, upscale, ceiling, enabled ? profile.scale : 1);
     apply();
     tracer.count("govLevel");
     for (const cb of changeListeners) cb(currentEffects);
   };
 
   return {
-    update(emaMs: number) {
-      if (!enabled) return;
+    get pressure() { return { cpuMs: cpuEma, gpuMs: lastGpuMs, source }; },
+    update(emaMs: number, cpuMs = 0, gpuMs?: number) {
+      if (!enabled) { refreshTemporalAxis(); apply(); return; }
       const now = performance.now();
       // Refresh estimate: frame gaps are vsync-quantized, so their minimum over a
       // couple of seconds is the refresh period. Hitches, a hidden tab and quiet
@@ -336,6 +346,13 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
         pressure.reset();
         return;
       }
+      cpuEma += (Math.min(100, cpuMs) - cpuEma) * 0.08;
+      lastGpuMs = gpuMs ?? null;
+      source = emaMs > hotMs ? (gpuMs !== undefined && gpuMs > 12 && gpuMs >= cpuEma ? "gpu" : cpuEma > 12 ? "cpu" : "pacing") : "stable";
+      // Shrinking pixels cannot repair a CPU streaming stall. The scheduler
+      // independently limits work from measured tick CPU time; wait for it to
+      // recover before spending image quality on frame-pacing pressure.
+      if (source === "cpu") { pressure.reset(); return; }
       if (emaMs > hotMs && level < LEVEL_MAX) {
         // Foliage re-scatter has real cost — require the longer sustained window
         // whenever the next step changes foliageScale (L2↔L3 and L3↔L4).
@@ -366,7 +383,11 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
     setEnabled(on: boolean) {
       enabled = on;
       pressure.reset();
-      if (!on) setLevel(0, performance.now()); // pin L0 (no-op if already there)
+      if (!on) setLevel(0, performance.now());
+      // Capture disables every resolution reduction, including Quiet at L0.
+      refreshTemporalAxis();
+      currentEffects = computeEffects(level, upscale, ceiling, enabled ? profile.scale : 1);
+      apply();
     },
     governorEffects,
     onGovernorChange

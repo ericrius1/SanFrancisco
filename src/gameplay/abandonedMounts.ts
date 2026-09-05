@@ -1,23 +1,45 @@
+import { vehicleRuntime } from "../vehicles/runtime";
+import { localCarConfig } from "../vehicles/car/config";
+import { SAILBOAT_HULL } from "../vehicles/boat/buoyancy";
+import { SPEEDBOAT_HULL } from "../vehicles/boat/buoyancy";
+import { localBoardConfig } from "../vehicles/board/config";
+import { SKATE_RIDE_HEIGHT } from "../vehicles/skate/dimensions";
+import { localScooterConfig } from "../vehicles/scooter/config";
+import { SCOOTER_RIDE_HEIGHT } from "../vehicles/scooter/dimensions";
 import * as THREE from "three/webgpu";
 import { BodyType } from "../core/physics";
 import type { Physics } from "../core/physics";
 import type { PlayerMode } from "../player/types";
 import { DEFAULT_DRIVE_SPEC } from "../player/types";
 import { seaTime, waterHeight, type WorldMap } from "../world/heightmap";
-import { buildCarMesh, localCarConfig } from "../vehicles/car";
-import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
-import { buildBoatMesh, buildSpeedboatMesh, SAILBOAT_HULL, SPEEDBOAT_HULL } from "../vehicles/boat";
+
+import type { PlaneAnim } from "../vehicles/plane";
+
 import { makeHullFloat, sampleHullFloat } from "../vehicles/boat/buoyancy";
-import { buildDroneMesh } from "../vehicles/drone";
-import { buildBoardMesh, localBoardConfig } from "../vehicles/board";
-import { activateBirdAssets, buildBirdMesh, type BirdRig } from "../vehicles/bird";
-import { buildSurfboardMesh } from "../vehicles/surf";
-import { buildSkateMesh, SKATE_RIDE_HEIGHT } from "../vehicles/skate";
-import { buildScooterMesh, localScooterConfig, SCOOTER_RIDE_HEIGHT } from "../vehicles/scooter";
-import { CAR_RIDE_HEIGHT } from "../vehicles/car/mesh";
+
+
+import type { BirdRig } from "../vehicles/bird";
+
+
+
+import { CAR_RIDE_HEIGHT } from "../vehicles/car/dimensions";
 import { driveHalfExtentsWithClearance } from "../vehicles/shared";
-import { poseBone } from "../vehicles/bird/mesh";
+
 import { setEmbodimentVisible } from "../player/embodimentVisibility";
+
+const buildCarMesh: typeof import("../vehicles/car").buildCarMesh = (...args) => vehicleRuntime("drive").buildCarMesh(...args);
+const buildPlaneMesh: typeof import("../vehicles/plane").buildPlaneMesh = (...args) => vehicleRuntime("plane").buildPlaneMesh(...args);
+const collectPlaneAnim: typeof import("../vehicles/plane").collectPlaneAnim = (...args) => vehicleRuntime("plane").collectPlaneAnim(...args);
+const buildBoatMesh: typeof import("../vehicles/boat").buildBoatMesh = (...args) => vehicleRuntime("boat").buildBoatMesh(...args);
+const buildSpeedboatMesh: typeof import("../vehicles/boat").buildSpeedboatMesh = (...args) => vehicleRuntime("boat").buildSpeedboatMesh(...args);
+const buildDroneMesh: typeof import("../vehicles/drone").buildDroneMesh = (...args) => vehicleRuntime("drone").buildDroneMesh(...args);
+const buildBoardMesh: typeof import("../vehicles/board").buildBoardMesh = (...args) => vehicleRuntime("board").buildBoardMesh(...args);
+const activateBirdAssets: typeof import("../vehicles/bird").activateBirdAssets = (...args) => vehicleRuntime("bird").activateBirdAssets(...args);
+const buildBirdMesh: typeof import("../vehicles/bird").buildBirdMesh = (...args) => vehicleRuntime("bird").buildBirdMesh(...args);
+const buildSurfboardMesh: typeof import("../vehicles/surf").buildSurfboardMesh = (...args) => vehicleRuntime("surf").buildSurfboardMesh(...args);
+const buildSkateMesh: typeof import("../vehicles/skate").buildSkateMesh = (...args) => vehicleRuntime("skate").buildSkateMesh(...args);
+const buildScooterMesh: typeof import("../vehicles/scooter").buildScooterMesh = (...args) => vehicleRuntime("scooter").buildScooterMesh(...args);
+const poseBone: typeof import("../vehicles/bird/mesh").poseBone = (...args) => vehicleRuntime("bird").poseBone(...args);
 
 type MountMode = Exclude<PlayerMode, "walk">;
 

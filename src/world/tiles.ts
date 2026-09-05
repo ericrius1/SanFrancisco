@@ -1,6 +1,8 @@
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
+import { laptopProfile } from "../render/laptopProfiles";
+import type { CitySkyline } from "./citySkyline";
 import { CONFIG, DRAW_DISTANCE_MAX } from "../config";
 import { attachKtx2Loader } from "../render/textures";
 import { tracer } from "../core/hitchTracer";
@@ -198,13 +200,12 @@ const BUILDING_VISUAL_RADIUS = 12000;
 // radius/settings changes from turning the pool into an unbounded session cache.
 const MAX_FACADE_SLOT_POOL = 64;
 
-// Shared building-batch sizing. Capacity is the alive-atlas row count; 256 covers
-// the whole city (184 building tiles) plus headroom. Steady state is full-city
-// residency (~3.81M verts / 6.32M idx), so the arena reserves that up front and
-// avoids a mid-play setGeometrySize grow while the background fill completes.
+// Shared building arena starts at a neighborhood budget. Size-class reuse keeps
+// released districts reusable, and the existing hard ceiling bounds dense-city
+// growth. 256 instance rows cover all tiles without making them all resident.
 const BUILDING_BATCH_CAPACITY = 256;
-const BUILDING_BATCH_INITIAL_VERTICES = 4_194_304;
-const BUILDING_BATCH_INITIAL_INDICES = 6_812_672;
+const BUILDING_BATCH_INITIAL_VERTICES = 1_048_576;
+const BUILDING_BATCH_INITIAL_INDICES = 2_097_152;
 const BUILDING_BATCH_MAX_VERTICES = 4_718_592;
 const BUILDING_BATCH_MAX_INDICES = 8_388_608;
 
@@ -343,10 +344,9 @@ const TILE_MAX_ATTEMPTS = TILE_RETRY_DELAYS_MS.length + 1;
 // Staying just inside half a tile gives one cell at its centre, two across an edge and
 // four around a corner, while still covering a useful local bubble.
 const MINIMUM_VISUAL_RADIUS_CAP = 360;
-// Arrival opens a modest neighborhood, then quietly expands baked-tile
-// residency through mid ring → far ring → whole sandbox. Draw distance (the
-// "/" slider + streaming cull fog) is independent: it only hides far geometry,
-// it does not unload or refuse baked tiles.
+// Arrival opens a neighborhood, then expands to the active laptop profile.
+// The prepared skyline covers farther buildings. Before it is ready (or if
+// its load fails), the original full-detail expansion preserves the vista.
 const BACKGROUND_NEAR_RADIUS = 1200;
 const BACKGROUND_MID_RADIUS = 2200;
 const BACKGROUND_FAR_RADIUS = 6000;
@@ -654,6 +654,27 @@ export class TileStreamer {
   #backgroundStage: number = BACKGROUND_STREAM_RADII.length - 1;
   #backgroundRadius = Number.POSITIVE_INFINITY;
   #residencyLimit = Number.POSITIVE_INFINITY;
+  #skyline: CitySkyline | null = null;
+  #skylineLoading = false;
+  #skylineRetryAt = 0;
+  #distantSince = new Map<string, number>();
+  prepareSkyline: ((root: THREE.Object3D) => Promise<void>) | null = null;
+  get skylineDebug() { return this.#skyline?.stats() ?? null; }
+  #updateSkyline(): void {
+    this.#skyline?.update(this.#px, this.#pz, CONFIG.tileLoadRadius, key => {
+      const tile = this.loaded.get(key);
+      return !!tile && tile.group.visible && !tile.pendingBuildingParts?.length && !tile.pendingParts?.length;
+    });
+  }
+  #ensureSkyline(): void {
+    if (this.#skyline || this.#skylineLoading || !this.prepareSkyline || this.#visualPrime ||
+        this.#residencyLimit <= laptopProfile().cityRadius || performance.now() < this.#skylineRetryAt) return;
+    this.#skylineLoading = true;
+    void import("./citySkyline").then(({CitySkyline}) => CitySkyline.load(this.manifest, this.prepareSkyline!))
+      .then(skyline => { this.#skyline = skyline; this.#updateSkyline(); this.#scene.add(skyline.mesh); })
+      .catch(error => { this.#skylineRetryAt = performance.now()+30000; console.warn("[skyline] retaining detailed city after preparation failure", error); })
+      .finally(() => { this.#skylineLoading = false; });
+  }
   #nextBackgroundStageAt = 0;
   // residentRadiusAround memo (reused object — no per-query allocation)
   #residentRadiusCache = { x: Number.NaN, z: Number.NaN, tick: -1e9, value: 0 };
@@ -1132,7 +1153,7 @@ export class TileStreamer {
     return {
       stage: this.#backgroundStage,
       radius: this.#currentLoadRadius(),
-      limit: Math.min(BAKED_CITY_RESIDENCY_RADIUS, this.#residencyLimit),
+      limit: Math.min(BAKED_CITY_RESIDENCY_RADIUS, this.#residencyLimit, this.#skyline ? laptopProfile().cityRadius : Infinity),
       fullRadius: CONFIG.tileLoadRadius
     };
   }
@@ -1410,10 +1431,11 @@ export class TileStreamer {
     this.#px = px;
     this.#pz = pz;
     this.#hasScanned = true;
+    this.#ensureSkyline();
     const loadRadius = this.#currentLoadRadius();
     const loadR2 = loadRadius * loadRadius;
-    // Baked tiles stay resident once attached. Draw distance only culls; local
-    // collider / shadow-proxy leases keep their own tighter radii below.
+    // Hysteresis + a grace interval prevent boundary churn. Local collision
+    // retains its independent lease; eviction is always kilometers outside it.
     const required = this.#visualPrime?.generation === this.#generation
       ? this.#visualPrime.requiredTileSet
       : null;
@@ -1422,6 +1444,11 @@ export class TileStreamer {
     for (const e of this.#entries) {
       e.d2 = (px - e.cx) * (px - e.cx) + (pz - e.cz) * (pz - e.cz);
       const loadedTile = this.loaded.get(e.key);
+      if (this.#skyline && loadedTile && !required?.has(e.key) && e.d2 > (laptopProfile().cityRadius + 800) ** 2) {
+        const since = this.#distantSince.get(e.key) ?? now;
+        this.#distantSince.set(e.key, since);
+        if (now - since >= 5000) this.#unloads.add(e.key);
+      } else this.#distantSince.delete(e.key);
       if (loadedTile && e.d2 < loadR2 && loadedTile.generation !== this.#generation) {
         // M12: re-adopt into this generation; draw-distance sync below decides
         // whether the tile is actually shown.
@@ -1452,7 +1479,7 @@ export class TileStreamer {
       return ar === br ? a.d2 - b.d2 : ar - br;
     });
     this.#pump();
-    // Geometry stays resident citywide; the slider hard-hides anything beyond
+    // The slider hard-hides detailed geometry and the skyline beyond
     // draw distance. Fog alone cannot do this — at short radii its edge-veil
     // strength tracks weather opacity and is ~0.
     this.#syncDrawDistanceVisibility(px, pz);
@@ -1509,9 +1536,9 @@ export class TileStreamer {
 
   #currentLoadRadius(): number {
     // Visual primes still use the destination bubble from arrival wiring.
-    // Ordinary play expands toward BAKED_CITY_RESIDENCY_RADIUS and ignores the
-    // draw-distance slider — that slider only drives fog / CityGen ceilings.
-    return Math.min(this.#residencyLimit, this.#visualPrime ? CONFIG.tileLoadRadius : this.#backgroundRadius);
+    // Once its skyline is ready, ordinary play uses a profile-sized detail ring.
+    // Draw distance remains the horizon/fog control.
+    return Math.min(this.#residencyLimit, this.#skyline ? laptopProfile().cityRadius : Infinity, this.#visualPrime ? CONFIG.tileLoadRadius : this.#backgroundRadius);
   }
 
   #tileInFlightCounts(): { current: number; total: number } {
@@ -2487,7 +2514,7 @@ export class TileStreamer {
 
   /**
    * Hard draw-distance gate for resident baked tiles + landmarks. Residency is
-   * citywide; this only toggles GPU visibility from CONFIG.tileLoadRadius.
+   * bounded separately; this only toggles GPU visibility from CONFIG.tileLoadRadius.
    */
   #syncDrawDistanceVisibility(px: number, pz: number): void {
     const drawR = Math.max(0, CONFIG.tileLoadRadius);
@@ -2509,6 +2536,7 @@ export class TileStreamer {
       }
     }
     this.#syncLandmarkDrawVisibility(px, pz, drawR);
+    this.#updateSkyline();
   }
 
   #syncLandmarkDrawVisibility(px: number, pz: number, drawR: number): void {
@@ -2629,7 +2657,7 @@ export class TileStreamer {
 
   /** Dispose one out-of-range tile per call. Returns false when idle. */
   #drainUnload(): boolean {
-    const loadR2 = CONFIG.tileLoadRadius * CONFIG.tileLoadRadius;
+    const loadR2 = (laptopProfile().cityRadius + 800) ** 2;
     for (const key of this.#unloads) {
       this.#unloads.delete(key);
       if (!this.loaded.has(key)) continue; // already gone
@@ -2647,6 +2675,8 @@ export class TileStreamer {
     const tile = this.loaded.get(key);
     if (!tile) return;
     this.loaded.delete(key);
+    this.#distantSince.delete(key);
+    this.#updateSkyline();
     this.#drawCulled.delete(key);
     tile.loadToken.discarded = true;
     // M12: drop any front-gate registration (a later reload re-gates fresh)

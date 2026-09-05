@@ -65,14 +65,14 @@ import { Voice } from "../../net/voice";
 import { Minimap } from "../../ui/minimap";
 import { PlayerLocator } from "../../ui/playerLocator";
 import { avatarFromSeed,  saveAvatarTraits } from "../../player/avatar";
-import { boardFromSeed, boardVisualKey,  saveBoardConfig, setLocalBoardConfig } from "../../vehicles/board";
+import { boardFromSeed, boardVisualKey,  saveBoardConfig, setLocalBoardConfig } from "../../vehicles/board/config";
 import {
   carFromSeed,
   carKey,
   saveCarConfig,
   setLocalCarConfig
-} from "../../vehicles/car";
-import {   saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "../../vehicles/scooter";
+} from "../../vehicles/car/config";
+import {   saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "../../vehicles/scooter/config";
 import { passengerCapacity } from "../../vehicles/rideable";
 import {
   saveSurfboardConfig,
@@ -80,7 +80,7 @@ import {
   surfboardFromSeed,
   surfboardVisualKey,
   type SurfboardConfig
-} from "../../vehicles/surf";
+} from "../../vehicles/surf/config";
 import { saveKiteConfig, type KiteConfig } from "../../world/oceanBeachKite/kiteConfig";
 import {
   GARDEN_XZ,
@@ -102,7 +102,7 @@ type RegionKey = "garden" | "wildlands" | "golf"; // mirrors main.ts's boot-scop
 
 export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, waitForWorldBackgroundWindow, waitForWorldStreamingWindow, aim, tiles, rayOrigin, worldReady, scheduler, pipeline, authoredRegions, waitForCityGenRenderWindow, app, fullTileRadius, invite, startMode, savedSurfboard, savedScooter, savedCar, savedBoard, savedAvatar, resumed, nextPresentationFrame, autoStartHiroTour, releasePianoGodRays, constructionSlice } = ctx;
-  const { hud, toolbar, fx, fireworks, paintballs, setColor, vehicleAudio, jumpLandingAudio, audioControls, nature, ballImpactAudio, ensureSurfShack, prepareSurfEntry, embodiments, inOrbit, siteGate, setFoliageVisible, armIslandsVegetation, worldQueries, citygenRing, dogParkAudio, buskerTalk, setViewMode } = core;
+  const { hud, toolbar, fx, fireworks, paintballs, setColor, vehicleAudio, jumpLandingAudio, audioControls, nature, ballImpactAudio, prepareSurfEntry, embodiments, inOrbit, siteGate, setFoliageVisible, armIslandsVegetation, worldQueries, citygenRing, dogParkAudio, buskerTalk, setViewMode } = core;
   const state = {
     ghostShip: null as (GhostShip | null),
     ghostShipLoading: null as (Promise<GhostShip | null> | null),
@@ -539,7 +539,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   const remotePaint = new THREE.Color();
   // shared skies: my rocket launches go out, friends' volleys replay here
   fireworks.onVolley = (rockets) => net.sendFireworks(rockets);
-  net.onFireworks = (_id, rockets) => fireworks.launchRemote(rockets);
+  net.onFireworks = (_id, rockets) => fireworks.receiveRemote(rockets);
   // ephemeral text chat (T to type) — fire-and-forget over the relay, no history.
   // Esc-blur must not re-lock (see Escape priority stack below); Enter-submit may.
   let skipChatRelock = false;
@@ -757,9 +757,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   // re-issues this through ctx.late.minimap).
   void core.state.roadGraphPromise?.then((roads) => minimap.setRoadGraph(roads)).catch(() => {});
   // Activity-site pins (static coords) — extracted per docs/MAIN_DECOMPOSITION.md.
-  void ctx.zoneBoot.deferCity("activity-landmarks", () =>
-    registerActivityLandmarks(minimap, map, ghostShipBeacon.pose, ensureSurfShack)
-  );
+  registerActivityLandmarks(minimap, map, ghostShipBeacon.pose);
   const playerLocator = new PlayerLocator();
   // worldArrival + backgroundAdmission were constructed in P1 (the reveal path
   // and void loop need them); only navigation composes here.
@@ -793,6 +791,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       return;
     }
     if (mode === "surf") {
+      navigation.cancelPendingMode();
       void prepareSurfEntry().then((ready) => {
         if (ready && request === state.surfEntryRequest && player.mode !== "surf") navigation.switchMode("surf");
       });
@@ -848,6 +847,10 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     });
   };
   const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) => {
+    const pocket = ctx.zoneBoot.worldScope.zone;
+    if (!ctx.zoneBoot.cityWoken && pocket && Math.hypot(x - pocket.center.x, z - pocket.center.z) > pocket.bubbleRadius) {
+      void wakeCity();
+    }
     if (toName === GHOST_SHIP_LANDMARK_NAME) {
       teleportAboardGhostShip();
       return;
@@ -1129,6 +1132,9 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       // runners branch on it for their wake-only sub-steps.
       ctx.zoneBoot.cityWoken = true;
       ctx.zoneBoot.liftResidencyLimit();
+      // Destination admission cannot wait behind unrelated city builders.
+      sites.liftZoneRestriction();
+      shareButton.setZone(null);
       hud.message("Waking the rest of San Francisco…", 3.2);
       if (player.mode !== "surf") {
         // Draw distance stays on the slider; waking only expands baked residency.
@@ -1151,8 +1157,6 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
         }
       }
       ctx.zoneBoot.worldScope.mode = "full";
-      sites.liftZoneRestriction();
-      shareButton.setZone(null);
       wakeButton?.remove();
       wakeButton = null;
     })();
@@ -1344,7 +1348,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   const NEAR_GATE = 1300;
   // Park + authored-region map pins (eager, coords-only) — extracted per
   // docs/MAIN_DECOMPOSITION.md; GARDEN_XZ/GOLF_XZ now live beside the pins.
-  void ctx.zoneBoot.deferCity("park-landmarks", () => registerParkLandmarks(minimap, authoredRegions));
+  registerParkLandmarks(minimap, authoredRegions);
 
   type LazyRegionTimingEvent = { phase: string; atMs: number; elapsedMs: number };
   const lazyRegionTimings: Record<string, { startedAt: number; events: LazyRegionTimingEvent[] }> = {};

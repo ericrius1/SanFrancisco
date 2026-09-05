@@ -3,8 +3,8 @@ import type { GardenRakeMotion } from "../player/gardenRake";
 import type { PlayerMode } from "../player/types";
 import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTraits } from "../player/avatar";
 import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig } from "../vehicles/board/config";
-import { carFromSeed, isDefaultCar, normalizeCarConfig, type CarConfig } from "../vehicles/car";
-import { isDefaultScooter, normalizeScooterConfig, scooterFromSeed, type ScooterConfig } from "../vehicles/scooter";
+import { carFromSeed, isDefaultCar, normalizeCarConfig, type CarConfig } from "../vehicles/car/config";
+import { isDefaultScooter, normalizeScooterConfig, scooterFromSeed, type ScooterConfig } from "../vehicles/scooter/config";
 import { MAX_PASSENGER_SEATS } from "../vehicles/rideable";
 import {
   isDefaultSurfboard,

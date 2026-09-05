@@ -5,7 +5,7 @@
 import * as THREE from "three/webgpu";
 import CameraControls from "camera-controls";
 import {  CITYGEN_TUNING, CONFIG } from "../../config";
-import { createSurfShack, type SurfShack } from "../../gameplay/surfing/shack";
+import type { SurfShack } from "../../gameplay/surfing/shack";
 import {
   GHOST_SHIP_RIDE_ID
 } from "../../world/ghostShip/route";
@@ -56,7 +56,7 @@ import { DoorAudio } from "../../fx/doorAudio";
 import { createNatureSoundscape, DogParkAudio, BallImpactAudio } from "../../audio";
 import { WaveAudio } from "../../audio/waveAudio";
 import { AbandonedMounts } from "../../gameplay/abandonedMounts";
-import { spawnScatterBoats } from "../../gameplay/scatterBoats";
+import { createScatterBoats } from "../../gameplay/scatterBoats";
 import type { Creatures } from "../../gameplay/creatures";
 import type { Forest } from "../../gameplay/forest";
 import {
@@ -215,10 +215,9 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     warmHiddenRoot(renderer, camera, scene, root)
   );
   const splashes = new WaterSplashes(scene, wake, map);
-  const fireworks = new Fireworks(renderer, scene, map);
+  const fireworks = new Fireworks(renderer, scene, map, pipeline.prepareSceneOwner);
   // Compile the optional firework renderer under the loading cover. Its audio
   // graph now warms after the first launch, during the rocket's flight time.
-  fireworks.prewarm();
   // Fundamental player/interaction foley shares one small procedural graph.
   // Prewarming here avoids synthesizing its noise/room buffers on the first W.
   const gameplaySfxBus = new GameplaySfxBus();
@@ -386,8 +385,11 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // (state.surfRuntimeLoading hoisted to the module state record)
   // (state.surfShack hoisted to the module state record)
   // (state.surfEntryPreparations hoisted to the module state record)
-  const ensureSurfShack = () => {
-    if (state.surfShack) return;
+  let surfShackLoading: Promise<void> | null = null;
+  const ensureSurfShack = (): Promise<void> => {
+    if (state.surfShack) return Promise.resolve();
+    if (surfShackLoading) return surfShackLoading;
+    surfShackLoading = import("../../gameplay/surfing/shack").then(({ createSurfShack }) => {
     state.surfShack = createSurfShack(map);
     scene.add(state.surfShack.group);
     // M15 void purity: the shack is a boot-resident one-off prop no streamer
@@ -405,6 +407,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
       }
     }
     refreshSurfDebug();
+    }).finally(() => { surfShackLoading = null; });
+    return surfShackLoading;
   };
   const refreshSurfDebug = () => {
     const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
@@ -421,11 +425,11 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     // intentional exception because the first visible surf frame needs both the
     // authored break and its HUD ready.
     if (!surfing && !prepareEntry) return Promise.resolve();
-    ensureSurfShack();
     if (ctx.state.oceanBeachWaves && state.surfExperience) return Promise.resolve();
     if (state.surfRuntimeLoading) return state.surfRuntimeLoading;
     state.surfRuntimeLoading = import("../../gameplay/surfing")
       .then(async ({ OceanBeachWaves, SurfExperience }) => {
+        await ensureSurfShack();
         // A direct transition may have been canceled while the chunk was in
         // flight. Do not resurrect the activity after its owner has left.
         if (!prepareEntry && player.mode !== "surf" && state.surfEntryPreparations === 0) return;
@@ -469,42 +473,10 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // Pre-compile the surf embodiment (board deck + rider rig) pipelines while
   // it is detached, so the first ridden frame draws with zero pipeline work.
   // Same detached-compile pattern the covered encounters use.
-  const warmSurfEmbodiment = async (): Promise<void> => {
-    const rig = player.meshes.surf;
-    if (!rig || rig.userData.surfPipelinesWarm) return;
-    // Concurrent preparations (proximity prime + shack E in its window) must
-    // share one in-flight warm, or the second resolves while the rig is still
-    // detached and the first's restore clobbers a live mode switch.
-    const inFlight = rig.userData.surfWarmPromise as Promise<void> | undefined;
-    if (inFlight) return inFlight;
-    const parent = rig.parent;
-    const wasVisible = rig.visible;
-    parent?.remove(rig);
-    rig.visible = true;
-    const run = (async () => {
-      try {
-        await renderer.compileAsync(rig, camera, scene);
-      } catch (error) {
-        console.warn("[surf] embodiment warmup compile failed", error);
-      } finally {
-        delete rig.userData.surfWarmPromise;
-        rig.userData.surfPipelinesWarm = true;
-        // Restore from LIVE state: the player may have entered surf while the
-        // rig was detached, and a rig replaced by setSurfboardConfig mid-warm
-        // (player.meshes.surf !== rig) is disposed — never resurrect it.
-        if (player.meshes.surf === rig) {
-          rig.visible = player.mode === "surf" ? true : wasVisible;
-          if (parent && !rig.parent) parent.add(rig);
-        }
-      }
-    })();
-    rig.userData.surfWarmPromise = run;
-    return run;
-  };
   const prepareSurfEntry = async () => {
     state.surfEntryPreparations++;
     try {
-      await Promise.all([chase.ensureSurfCamera(), ensureSurfRuntime(true), warmSurfEmbodiment()]);
+      await Promise.all([chase.ensureSurfCamera(), ensureSurfRuntime(true), player.prepareMode("surf")]);
       return ctx.state.oceanBeachWaves !== null && state.surfExperience !== null;
     } catch (error) {
       console.warn("[surf] entry preparation failed", error);
@@ -624,6 +596,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   const updateShorebreak = (dt: number, time: number) => {
     const { x, z } = player.position;
     if (nearOceanBeachShore(x, z, { shorePad: 620, inlandPad: 400, zPad: 300 })) {
+      void ensureSurfShack().catch((error) => console.warn("[surf shack]", error));
       void ensureShorebreak();
       void ensureSpray();
       void ensureGulls();
@@ -665,8 +638,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   state.setRemoteCarAssetsActive = () => {};
   state.setRemoteBirdAssetsActive = () => {};
   let leaveCameraModeForSurf: () => void = () => {};
-  const birdTrails = new BirdTrails(scene, player.meshes.bird);
-  const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
+  const birdTrails = new BirdTrails(scene, () => player.meshes.bird);
   // startMode was applied in P1; a surf start upgrades below once the surf
   // runtime + debug panel exist (onModeChange references the latter).
   await constructionSlice();
@@ -884,7 +856,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   const inOrbit = () => viewMode === "orbit";
   // Scattered boardable bay boats (persistent, self-sailing, far-hidden) —
   // extracted per docs/MAIN_DECOMPOSITION.md.
-  void ctx.zoneBoot.deferCity("scatter-boats", () => spawnScatterBoats(abandonedMounts));
+  const updateScatterBoats = createScatterBoats(abandonedMounts);
   await constructionSlice();
   // Nature uses one sandbox vegetation runtime now. The old primitive Flora
   // and site-local blob/tree renderers are gone: regions own placement, while
@@ -1317,8 +1289,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     prepareSurfEntry,
     updateSurfPresentation,
     birdTrails,
-    droneFireworkMounts,
     abandonedMounts,
+    updateScatterBoats,
     embodiments,
     exitToWalk,
     inOrbit,

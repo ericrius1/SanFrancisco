@@ -16,7 +16,7 @@ import {
   normalizeCarConfig,
   randomCarConfig,
   type CarConfig
-} from "../vehicles/car";
+} from "../vehicles/car/config";
 
 type ChoiceKey = "form" | "surface" | "decal" | "wheel";
 type ColorKey = "paint" | "trim" | "interior" | "rim" | "brake";

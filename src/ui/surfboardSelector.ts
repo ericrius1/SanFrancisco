@@ -1,19 +1,17 @@
+import { paintSurfboardSurface, prepareSurfboardSurface, surfboardSurfacePaintKey } from "../vehicles/surf/surfaceTexture";
 import {
   SURFBOARD_COLORS,
   SURFBOARD_DECALS,
   SURFBOARD_SHAPES,
   SURFBOARD_SURFACES,
   normalizeSurfboardConfig,
-  paintSurfboardSurface,
-  prepareSurfboardSurface,
   randomSurfboardConfig,
   surfboardAccentHex,
   surfboardBaseHex,
   surfboardKey,
   surfboardRailHex,
-  surfboardSurfacePaintKey,
   type SurfboardConfig
-} from "../vehicles/surf";
+} from "../vehicles/surf/config";
 
 type ColorRow = "base" | "rail" | "accent";
 type PadKind = "texture" | "offset" | "motion" | "decal" | "decal-position";

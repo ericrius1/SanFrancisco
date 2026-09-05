@@ -93,6 +93,7 @@ export class NavigationController {
       label: spot.label,
       replayPointReveal: true,
       resolve: async (signal) => {
+        await this.#player.prepareMode(spot.mode);
         if (signal.aborted) throw aborted();
         return {
           x: spot.x,
@@ -121,7 +122,17 @@ export class NavigationController {
     });
   }
 
+  #modeRequest = 0;
+  /** Supersede a cold ride request before an activity's own preparation starts. */
+  cancelPendingMode(): void { this.#modeRequest++; }
   switchMode(mode: PlayerMode): void {
+    const request = ++this.#modeRequest;
+    if (!this.#player.isModeReady(mode)) {
+      this.#hud.message("Preparing your ride…", 2);
+      void this.#player.prepareMode(mode).then(() => { if(request === this.#modeRequest) this.switchMode(mode); })
+        .catch(() => this.#hud.message("That ride could not load. Try again.", 3));
+      return;
+    }
     if (mode === this.#player.mode || this.#arrival.active) return;
     const relocation = this.#embodiments.modeSwitchRelocation(mode);
     // Surf from its own beach is a local hop onto an activity-owned analytic
@@ -170,6 +181,7 @@ export class NavigationController {
   }
 
   teleportToTarget(x: number, z: number, toName?: string, playerId?: number): void {
+    this.#modeRequest++;
     if (playerId !== undefined && !this.#remotes.stateOf(playerId)) {
       this.#hud.message(`${toName ?? "Player"} is no longer available`, 2.2);
       return;
@@ -192,6 +204,8 @@ export class NavigationController {
         const heading = Math.atan2(-dx, -dz);
 
         if (target) {
+          await this.#player.prepareMode(target.mode);
+          if (signal.aborted) throw aborted();
           const arrivalX = tx - (dx / distance) * back;
           const arrivalZ = tz - (dz / distance) * back;
           return {
@@ -327,6 +341,7 @@ export class NavigationController {
       label,
       replayPointReveal: true,
       resolve: async (signal) => {
+        await this.#player.prepareMode(forceWalkLanding ? "walk" : target.mode);
         if (signal.aborted) throw aborted();
         return {
           x: target.x,

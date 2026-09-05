@@ -1,5 +1,7 @@
+import { createGpuFrameTiming } from "../render/gpuFrameTiming";
 import type * as THREE from "three/webgpu";
 import { RENDER_TUNING } from "../config";
+import { laptopFrameIntervalMs } from "../render/laptopProfiles";
 import { pocketFrameIntervalMs } from "../render/pocketQuality";
 
 /** One 60 Hz frame. Only used to un-inflate a deliberately capped frame time. */
@@ -20,6 +22,7 @@ export type FrameDriver = {
    */
   manualTick(forcedDt?: number): void;
   resize(): void;
+  readonly gpuTiming: ReturnType<typeof createGpuFrameTiming>["stats"];
   readonly debugState: {
     manual: boolean;
     pageVisible: boolean;
@@ -72,64 +75,38 @@ export function startFrameDriver(opts: {
   tracer: FrameTracer;
   isRevealed: () => boolean;
   /** Adaptive-resolution governor; only driven by the live rAF loop (never manual probe ticks). */
-  adaptiveRes?: { update(emaMs: number): void };
+  adaptiveRes?: { update(emaMs: number, cpuMs?: number, gpuMs?: number): void };
 }): FrameDriver {
   const { renderer, camera, app, tick, tracer, isRevealed, adaptiveRes } = opts;
   const throttleRaf = navigator.webdriver && !new URLSearchParams(location.search).has("fullfps");
+  const gpuTiming = createGpuFrameTiming(renderer);
   let lastLoop = performance.now();
   let manual = false;
   let pageVisible = document.visibilityState === "visible";
   let loopRunning = false;
   let ticks = 0;
-  let quietParity = 0;
 
   const loop = () => {
     // setAnimationLoop(null) is the primary background gate. Keep this guard as
     // a hard backstop in case a queued callback crosses the visibility edge.
     if (!pageVisible || manual) return;
-    // Battery/quiet mode: render every 2nd rAF (~30 fps). Skip the ENTIRE tick —
-    // tick() derives its dt from a clamped wall-clock timer, so the next rendered
-    // frame simply sees a ~33 ms delta (the same gap handling as a resumed tab).
-    // Do NOT advance lastLoop on a skipped frame, so the tracer/governor measure
-    // the true render-to-render interval on the frame that does run.
-    const quiet = RENDER_TUNING.values.quietMode;
-    if (quiet) {
-      quietParity ^= 1;
-      if (quietParity) return;
-    } else {
-      quietParity = 0;
-    }
-    // Interior pockets trade frame rate for per-frame quality (render/
-    // pocketQuality.ts). Unlike quiet mode this is a WALL-CLOCK gate, not rAF
-    // parity: the pocket's budget must be the same on a 60 Hz panel and a
-    // 120 Hz one, and parity would silently hand the latter twice the rate and
-    // half the budget. Skip the whole tick exactly as quiet mode does, and do
-    // not advance lastLoop, so the tracer still measures true render-to-render.
-    const pocketIntervalMs = pocketFrameIntervalMs();
-    if (pocketIntervalMs > 0 && performance.now() - lastLoop < pocketIntervalMs) return;
+    // Wall-clock caps work on 60/90/120 Hz panels. A parity skip only caps a
+    // 60 Hz display, and combining it with an interior cap halves twice.
+    const cappedIntervalMs = Math.max(pocketFrameIntervalMs(), laptopFrameIntervalMs());
+    if (cappedIntervalMs > 0 && performance.now() - lastLoop < cappedIntervalMs) return;
     const now = performance.now();
     if (throttleRaf && now - lastLoop < 50) return;
     const frameMs = now - lastLoop;
     lastLoop = now;
     ticks++;
-    tick();
+    gpuTiming.begin();
+    const cpuStarted = performance.now();
+    try { tick(); } finally { gpuTiming.end(); }
+    const cpuMs = performance.now() - cpuStarted;
     if (isRevealed()) {
       tracer.frame(frameMs);
-      // Quiet mode roughly doubles the render-to-render interval by design; feed
-      // the governor the halved EMA so a capped-but-healthy frame reads as its
-      // true per-frame cost and never triggers a spurious downscale.
-      //
-      // The interior frame cap needs exactly the same correction, and without it
-      // the pocket boost defeats itself: a 30 fps cap makes every frame measure
-      // ~33 ms, the governor reads that as a GPU in trouble and walks all the way
-      // down its ladder, so a requested 1.5x render scale lands at 1.05x — the
-      // cap bought budget and the governor immediately spent it going backwards.
-      // Scaling by refresh/cap says "capped but healthy reads as healthy" while
-      // still leaving genuine overruns above the hot gate, so the protection is
-      // intact: a pocket that really cannot hold the cap is still stepped down.
-      const capMs = pocketIntervalMs;
-      const capFactor = capMs > 0 ? Math.min(1, DISPLAY_INTERVAL_MS / capMs) : 1;
-      adaptiveRes?.update(tracer.ema * (quiet ? 0.5 : 1) * capFactor);
+      const capFactor = cappedIntervalMs > 0 ? Math.min(1, DISPLAY_INTERVAL_MS / (cappedIntervalMs + 1)) : 1;
+      adaptiveRes?.update(tracer.ema * capFactor, cpuMs * capFactor, gpuTiming.totalMs === undefined ? undefined : gpuTiming.totalMs * capFactor);
     }
   };
 
@@ -197,6 +174,7 @@ export function startFrameDriver(opts: {
   syncAnimationLoop();
 
   return {
+    get gpuTiming() { return gpuTiming.stats; },
     setManual,
     manualTick(forcedDt?: number) {
       // Only when the renderer's loop is parked: a live frame already got its
@@ -211,6 +189,7 @@ export function startFrameDriver(opts: {
       return { manual, pageVisible, loopRunning, ticks };
     },
     dispose() {
+      gpuTiming.dispose();
       renderer.setAnimationLoop(null);
       loopRunning = false;
       window.removeEventListener("resize", resize);

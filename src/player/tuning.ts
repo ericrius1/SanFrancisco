@@ -1,16 +1,17 @@
 import type { FolderApi, Pane } from "tweakpane";
 import { WALK_TUNING } from "./walk";
-import { CAR_HEADLIGHT_TUNING, CAR_LANDING_TUNING, CAR_SKID_TUNING, CAR_TUNING } from "../vehicles/car";
-import { PLANE_TUNING } from "../vehicles/plane";
-import { BOAT_TUNING, SPEEDBOAT_TUNING } from "../vehicles/boat";
-import { DRONE_TUNING } from "../vehicles/drone";
-import { BOARD_TUNING } from "../vehicles/board";
+import { CAR_HEADLIGHT_TUNING } from "../vehicles/car/lights";
+import { CAR_LANDING_TUNING, CAR_SKID_TUNING, CAR_TUNING } from "../vehicles/car/tuning";
+import { PLANE_TUNING } from "../vehicles/plane/tuning";
+import { BOAT_TUNING, SPEEDBOAT_TUNING } from "../vehicles/boat/tuning";
+import { DRONE_TUNING } from "../vehicles/drone/tuning";
+import { BOARD_TUNING } from "../vehicles/board/tuning";
 import { BOARD_EFFECT_TUNING, HALO_TUNING } from "../vehicles/board/tuning";
-import { BIRD_TUNING } from "../vehicles/bird";
+import { BIRD_TUNING } from "../vehicles/bird/tuning";
 import { SURF_TUNING } from "../vehicles/surf/tuning";
 import { SURF_CAMERA_TUNING } from "../vehicles/surf/cameraTuning";
-import { SCOOTER_TUNING } from "../vehicles/scooter";
-import { SKATE_TUNING } from "../vehicles/skate";
+import { SCOOTER_TUNING } from "../vehicles/scooter/tuning";
+import { SKATE_TUNING } from "../vehicles/skate/tuning";
 import type { PlayerMode } from "./types";
 
 type Folder = ReturnType<Pane["addFolder"]>;

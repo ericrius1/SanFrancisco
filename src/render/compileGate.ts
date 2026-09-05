@@ -39,7 +39,8 @@ export type CompileGate = {
   waitForCompileIdle(): Promise<void>;
   /** Prepare a detached object in the exact render context used by the live
    *  beauty scene pass. */
-  prepareSceneOwner(owner: THREE.Object3D): Promise<void>;
+  prepareSceneOwner(owner: THREE.Object3D, priority?: boolean): Promise<void>;
+  prepareOffscreenOwner(owner: THREE.Object3D, camera: THREE.Camera, target: THREE.RenderTarget): Promise<void>;
   /** Compile a PassNode behind a restoring boundary. */
   compilePass(node: ScenePass): Promise<void>;
   /** Compile every persistent fullscreen material in one traversal. */
@@ -307,7 +308,7 @@ export function createCompileGate(deps: {
    * warms a different r185 NodeManager cache key and does not prevent a
    * synchronous first-draw build inside PassNode.
    */
-  const prepareSceneOwner = (owner: THREE.Object3D): Promise<void> => {
+  const prepareSceneOwner = (owner: THREE.Object3D, priority = false): Promise<void> => {
     const renderTarget = renderer.getRenderTarget();
     const activeCubeFace = renderer.getActiveCubeFace();
     const activeMipmapLevel = renderer.getActiveMipmapLevel();
@@ -316,11 +317,19 @@ export function createCompileGate(deps: {
     renderer.setMRT(scenePass.getMRT());
     try {
       // The wrapper above snapshots this target synchronously before enqueuing.
-      return renderer.compileAsync(owner, camera, scene);
+      return priority ? compileAsyncPrioritized(owner, camera, scene) : renderer.compileAsync(owner, camera, scene);
     } finally {
       renderer.setRenderTarget(renderTarget, activeCubeFace, activeMipmapLevel);
       renderer.setMRT(renderMRT);
     }
+  };
+
+  const prepareOffscreenOwner = (owner:THREE.Object3D, ownerCamera:THREE.Camera, target:THREE.RenderTarget):Promise<void> => {
+    const previous=renderer.getRenderTarget(),mrt=renderer.getMRT(),face=renderer.getActiveCubeFace(),mip=renderer.getActiveMipmapLevel();
+    renderer.setRenderTarget(target);
+    renderer.setMRT(null);
+    try { return compileAsyncPrioritized(owner,ownerCamera); }
+    finally { renderer.setRenderTarget(previous,face,mip);renderer.setMRT(mrt); }
   };
 
   /**
@@ -405,6 +414,7 @@ export function createCompileGate(deps: {
       )) as typeof renderer.compileAsync,
     waitForCompileIdle: () => waitForCompileIdle(),
     prepareSceneOwner,
+    prepareOffscreenOwner,
     compilePass,
     compileFullscreenQuads
   };

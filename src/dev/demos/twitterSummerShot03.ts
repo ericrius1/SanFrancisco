@@ -19,6 +19,7 @@ const RIGHT = new THREE.Vector3(Math.cos(PRESIDIO.facing), 0, -Math.sin(PRESIDIO
 /** A clean-plate phoenix glide through the Presidio's summer canopy. */
 export const twitterSummerShot03: Demo = {
   name: "twitter-summer-03",
+  modes: ["bird"],
   run(ctx) {
     const { map, sky } = ctx;
     if (!map || !sky) {

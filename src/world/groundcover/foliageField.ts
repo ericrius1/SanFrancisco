@@ -12,6 +12,7 @@
 // further out.
 
 import * as THREE from "three/webgpu";
+import { uploadFloatTextureRegions, type TextureRegion } from "../../render/floatTextureUpload";
 import { valueNoise } from "./scatter";
 
 export const FOLIAGE_FIELD_SPACING = 1;
@@ -61,7 +62,7 @@ export type FoliageFieldStats = Readonly<{
   centerZ: number;
 }>;
 
-type Cell = Readonly<{ x: number; z: number }>;
+type Strip = { x: number; z: number; width: number; height: number; data: Float32Array };
 
 type Build = {
   id: number;
@@ -69,7 +70,10 @@ type Build = {
   maxX: number;
   minZ: number;
   maxZ: number;
-  cells: Cell[];
+  strips: Strip[];
+  count: number;
+  stripIndex: number;
+  stripCursor: number;
   cursor: number;
   full: boolean;
   promise: Promise<void>;
@@ -156,7 +160,7 @@ export class FoliageField {
     return {
       generation: this.#generation,
       ready: this.#valid && this.#build === null,
-      pendingCells: this.#build ? this.#build.cells.length - this.#build.cursor : 0,
+      pendingCells: this.#build ? this.#build.count - this.#build.cursor : 0,
       sampledCells: this.#sampledCells,
       fullRebuilds: this.#fullRebuilds,
       slabUpdates: this.#slabUpdates,
@@ -206,35 +210,22 @@ export class FoliageField {
       this.#minX === minX && this.#minZ === minZ
     ) return Promise.resolve();
 
-    // A cancelled slice may already have overwritten toroidal slots belonging
-    // to the last published square. Those CPU cells are no longer reusable,
-    // even when the replacement destination overlaps the published bounds.
-    // The GPU retains the last complete upload until this rebuild publishes.
-    const full = !this.#valid || (this.#build?.cursor ?? 0) > 0 ||
-      Math.abs(minX - this.#minX) >= this.size ||
+    // Sampling is transactional: unpublished strips never overwrite resident
+    // toroidal slots. Reversals can reuse the last complete square immediately.
+    const full = !this.#valid || Math.abs(minX - this.#minX) >= this.size ||
       Math.abs(minZ - this.#minZ) >= this.size;
-    const cells: Cell[] = [];
-    if (full) {
-      for (let z = minZ; z <= maxZ; z++) {
-        for (let x = minX; x <= maxX; x++) cells.push({ x, z });
-      }
-    } else {
-      // Entering X slabs span the complete new Z range.
-      for (let x = minX; x < this.#minX; x++) {
-        for (let z = minZ; z <= maxZ; z++) cells.push({ x, z });
-      }
-      for (let x = this.#maxX + 1; x <= maxX; x++) {
-        for (let z = minZ; z <= maxZ; z++) cells.push({ x, z });
-      }
-      // Entering Z slabs cover only the X overlap to avoid double-sampling the corners.
+    const strips: Strip[] = [];
+    const strip = (x: number, z: number, width: number, height: number) => {
+      if (width > 0 && height > 0) strips.push({ x, z, width, height, data: new Float32Array(width * height * 4) });
+    };
+    if (full) strip(minX, minZ, this.size, this.size);
+    else {
+      strip(minX, minZ, this.#minX - minX, this.size);
+      strip(this.#maxX + 1, minZ, maxX - this.#maxX, this.size);
       const overlapMinX = Math.max(minX, this.#minX);
-      const overlapMaxX = Math.min(maxX, this.#maxX);
-      for (let z = minZ; z < this.#minZ; z++) {
-        for (let x = overlapMinX; x <= overlapMaxX; x++) cells.push({ x, z });
-      }
-      for (let z = this.#maxZ + 1; z <= maxZ; z++) {
-        for (let x = overlapMinX; x <= overlapMaxX; x++) cells.push({ x, z });
-      }
+      const overlapWidth = Math.min(maxX, this.#maxX) - overlapMinX + 1;
+      strip(overlapMinX, minZ, overlapWidth, this.#minZ - minZ);
+      strip(overlapMinX, this.#maxZ + 1, overlapWidth, maxZ - this.#maxZ);
     }
 
     // A newer request invalidates the old scheduled slices. Resolve it so a
@@ -248,7 +239,10 @@ export class FoliageField {
       maxX,
       minZ,
       maxZ,
-      cells,
+      strips,
+      count: strips.reduce((sum, strip) => sum + strip.width * strip.height, 0),
+      stripIndex: 0,
+      stripCursor: 0,
       cursor: 0,
       full,
       promise,
@@ -259,9 +253,9 @@ export class FoliageField {
     return promise;
   }
 
-  #writeCell(cell: Cell): void {
-    const wx = cell.x * this.spacing;
-    const wz = cell.z * this.spacing;
+  #writeCell(strip: Strip, index: number): void {
+    const wx = (strip.x + index % strip.width) * this.spacing;
+    const wz = (strip.z + Math.floor(index / strip.width)) * this.spacing;
     const patch = valueNoise(wx, wz, 26, 701);
     const authored = this.#options.paint?.(wx, wz);
     const density = THREE.MathUtils.clamp(
@@ -279,13 +273,11 @@ export class FoliageField {
       0.25,
       2
     );
-    const tx = positiveModulo(cell.x, this.size);
-    const tz = positiveModulo(cell.z, this.size);
-    const offset = (tz * this.size + tx) * 4;
-    this.data[offset] = this.#options.groundHeight(wx, wz);
-    this.data[offset + 1] = density;
-    this.data[offset + 2] = species;
-    this.data[offset + 3] = height;
+    const offset = index * 4;
+    strip.data[offset] = this.#options.groundHeight(wx, wz);
+    strip.data[offset + 1] = density;
+    strip.data[offset + 2] = species;
+    strip.data[offset + 3] = height;
     this.#sampledCells++;
   }
 
@@ -293,15 +285,41 @@ export class FoliageField {
     if (this.#disposed || this.#build !== build || build.id !== this.#generation) return;
     const started = this.#now();
     let sampled = 0;
-    while (build.cursor < build.cells.length) {
-      this.#writeCell(build.cells[build.cursor++]);
+    while (build.cursor < build.count) {
+      const strip = build.strips[build.stripIndex];
+      this.#writeCell(strip, build.stripCursor++);
+      build.cursor++;
+      if (build.stripCursor === strip.width * strip.height) {
+        build.stripIndex++;
+        build.stripCursor = 0;
+      }
       sampled++;
       if (sampled >= this.#maxCellsPerSlice || this.#now() - started >= this.#sliceBudgetMs) {
         return "again";
       }
     }
-    this.texture.needsUpdate = true;
-    this.#uploadedBytes += this.data.byteLength;
+    const regions: TextureRegion[] = [];
+    for (const strip of build.strips) {
+      const x = positiveModulo(strip.x, this.size);
+      const y = positiveModulo(strip.z, this.size);
+      const left = Math.min(strip.width, this.size - x);
+      const top = Math.min(strip.height, this.size - y);
+      for (let row = 0; row < strip.height; row++) {
+        const dest = (positiveModulo(y + row, this.size) * this.size + x) * 4;
+        const source = row * strip.width * 4;
+        this.data.set(strip.data.subarray(source, source + left * 4), dest);
+        if (left < strip.width) {
+          this.data.set(strip.data.subarray(source + left * 4, source + strip.width * 4), dest - x * 4);
+        }
+      }
+      regions.push({ x, y, width: left, height: top });
+      if (left < strip.width) regions.push({ x: 0, y, width: strip.width - left, height: top });
+      if (top < strip.height) {
+        regions.push({ x, y: 0, width: left, height: strip.height - top });
+        if (left < strip.width) regions.push({ x: 0, y: 0, width: strip.width - left, height: strip.height - top });
+      }
+    }
+    this.#uploadedBytes += uploadFloatTextureRegions(this.texture, regions);
     this.#minX = build.minX;
     this.#maxX = build.maxX;
     this.#minZ = build.minZ;

@@ -355,7 +355,18 @@ export class MarinRocketExperience {
     this.#lastPlayer = null;
   }
 
+  #preparingFlight = false;
   #begin(player: Player, hud: HUD, input: Input, chase: ChaseCamera): void {
+    if (!player.isModeReady("plane")) {
+      if (this.#preparingFlight) return;
+      this.#preparingFlight = true;
+      const origin = player.position.clone();
+      hud.message("Preparing flight…", 2);
+      void player.prepareMode("plane").then(() => {
+        if (!this.#disposed && player.mode === "walk" && player.position.distanceTo(origin) < 10) this.#begin(player, hud, input, chase);
+      }).catch(() => hud.message("Flight could not load. Try again.", 3)).finally(() => { this.#preparingFlight = false; });
+      return;
+    }
     this.#active = true;
     this.#lastPlayer = player;
     this.#activeChase = chase;

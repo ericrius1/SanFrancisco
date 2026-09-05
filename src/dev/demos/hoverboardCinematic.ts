@@ -17,6 +17,7 @@ const FACING = 2.25;
  */
 export const hoverboardCinematic: Demo = {
   name: "hoverboard",
+  modes: ["board"],
   run(ctx) {
     if (!ctx.map || !ctx.sky || !ctx.setBoardConfig) {
       console.warn("[demo:hoverboard] map, sky or board-config service unavailable");

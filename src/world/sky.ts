@@ -337,7 +337,13 @@ export class Sky {
   #cloudLoading = false
   #cloudFailed = false
 
-  configureVolumetricClouds(prepare: (root: THREE.Object3D) => Promise<unknown>) {
+  #cloudQuadPrepare: ((quad:THREE.QuadMesh,target:THREE.RenderTarget)=>Promise<unknown>) | null = null
+  get cloudDebug() { return this.#cloudLayer?.stats() ?? null }
+  renderVolumetricClouds(renderer:THREE.WebGPURenderer,camera:THREE.Camera) {
+    if(CLOUD_TUNING.values.enabled) this.#cloudLayer?.render(renderer,camera,this.timeOfDay)
+  }
+  configureVolumetricClouds(prepare: (root: THREE.Object3D) => Promise<unknown>, prepareQuad:(quad:THREE.QuadMesh,target:THREE.RenderTarget)=>Promise<unknown>) {
+    this.#cloudQuadPrepare=prepareQuad
     this.#cloudPrepare = prepare
     this.#clearSkyMaterial = this.mesh.material as THREE.Material
     if (new URLSearchParams(location.search).get("clouds") === "1") CLOUD_TUNING.values.enabled = true
@@ -349,6 +355,7 @@ export class Sky {
     if (!enabled) {
       this.mesh.material = this.#clearSkyMaterial
       this.#cloudFailed = false
+      this.#cloudLayer?.invalidate()
       return
     }
     if (this.#cloudLayer) {
@@ -366,6 +373,7 @@ export class Sky {
         warm.scale.copy(this.mesh.scale)
         warm.frustumCulled = false
         try {
+          await layer.prepare(this.#cloudQuadPrepare!)
           await this.#cloudPrepare!(warm)
           this.#cloudLayer = layer
         } catch (error) { layer.dispose(); throw error }

@@ -184,17 +184,17 @@ const DELTA = new THREE.Vector3();
 export class BirdTrails {
   #ribbons: [LightRibbon, LightRibbon];
   #tips: [TipState, TipState];
-  #mesh: THREE.Group;
+  #getMesh: () => THREE.Group;
 
-  constructor(scene: THREE.Scene, birdMesh: THREE.Group) {
-    this.#mesh = birdMesh;
+  constructor(scene: THREE.Scene, birdMesh: THREE.Group | (() => THREE.Group)) {
+    this.#getMesh = typeof birdMesh === "function" ? birdMesh : () => birdMesh;
     this.#ribbons = [new LightRibbon(scene), new LightRibbon(scene)];
     const tip = (): TipState => ({ prev: new THREE.Vector3(), dir: new THREE.Vector3(0, 0, 1), acc: 0, live: false });
     this.#tips = [tip(), tip()];
   }
 
   update(elapsed: number, bird: BirdState) {
-    const anchors = this.#mesh.userData.trailPoints as THREE.Object3D[] | undefined;
+    const anchors = this.#getMesh().userData.trailPoints as THREE.Object3D[] | undefined;
     const flying = bird.mode === "bird" && bird.speed >= MIN_SPEED && !!anchors;
     for (let i = 0; i < 2; i++) {
       const rib = this.#ribbons[i];

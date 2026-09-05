@@ -18,7 +18,7 @@ import { AFTERLIGHT_ARRIVAL } from "../../gameplay/afterlight/meta";
 import { MARIN_ROCKET_LABEL, MARIN_ROCKET_SITE } from "../../gameplay/marinRocket/meta";
 import { BOTANICAL_GARDEN_BOUNDS } from "../../world/garden/layout";
 import { SPAWN_POINTS } from "../../world/spawnPoints";
-import { oceanBeachSurfShackPose } from "../../gameplay/surfing/shack";
+import { oceanBeachSurfShackPose } from "../../gameplay/surfing/shackMeta";
 import type { Minimap } from "../../ui/minimap";
 import type { AuthoredRegionStreamer } from "../../world/authoredRegions";
 
@@ -33,8 +33,7 @@ export const GOLF_XZ = { x: -1979, z: -194 }; // Presidio course centroid (golf.
 export function registerActivityLandmarks(
   minimap: Minimap,
   map: { isWater(x: number, z: number): boolean },
-  ghostShipPose: Readonly<{ x: number; z: number }>,
-  ensureSurfShack: () => void
+  ghostShipPose: Readonly<{ x: number; z: number }>
 ): void {
   minimap.addLandmark(GOLDMAN_GAMEPLAY_LANDMARK.x, GOLDMAN_GAMEPLAY_LANDMARK.z, "Goldman Tennis & Pickleball");
   // Archery range — NW corner of Golden Gate Park. Static known coords (the
@@ -51,7 +50,6 @@ export function registerActivityLandmarks(
   {
     const apron = oceanBeachSurfShackPose(map);
     minimap.addLandmark(apron.x, apron.z, "Ocean Beach · Surf");
-    ensureSurfShack();
   }
   minimap.addLandmark(LANDS_END_CENTER.x, LANDS_END_CENTER.z, "Lands End · Labyrinth");
   // The Marina breakwater sculpture. The pin is just the place's name — what

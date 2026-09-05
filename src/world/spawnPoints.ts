@@ -3,7 +3,7 @@
 // generic and proximity-driven, never customized per landmark.
 
 import type { PlayerMode } from "../player/types";
-import { oceanBeachSurfShackApproxPose } from "../gameplay/surfing/shack";
+import { oceanBeachSurfShackApproxPose } from "../gameplay/surfing/shackMeta";
 import { mdToWorldXZ, Z_ENTRANCE } from "./missionDolores/layout";
 import { BEACH_PIANIST_BRIDGE_AIM, BEACH_PIANIST_SITE } from "./beachPianist/meta";
 import { SKATE_PLAZA_ARRIVAL } from "./skatePlaza/meta";

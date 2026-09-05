@@ -14,6 +14,7 @@ const BAY = { x: 5200, z: -650, facing: -2.58 } as const;
 /** A clean-plate tour: five locations, five visual languages, zero text. */
 export const roqnOpenRoadCinematic: Demo = {
   name: "roqn-open-road",
+  modes: ["bird", "drive", "drone", "speedboat"],
   run(ctx) {
     const { map, sky, fireworks } = ctx;
     if (!map || !sky || !fireworks) {

@@ -2,18 +2,21 @@
 // live rAF timings are presentation intervals, never mislabeled GPU timings.
 import { chromium } from 'playwright-core';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { acquirePerformanceProbe } from './performance-probe-lock.mjs';
 
+const release = await acquirePerformanceProbe();
+let browser;
 const base = process.env.SF_PROBE_URL ?? 'http://localhost:5270';
 const out = process.env.SF_PROBE_OUT ?? '.data/world-upgrade/baseline';
 const routes = (process.env.SF_PROBE_ROUTES ?? 'goldenGate,japaneseTeaGarden,marinRedwoods').split(',');
 await mkdir(out, { recursive: true });
-const browser = await chromium.launch({
+const results = [];
+try {
+  browser = await chromium.launch({
   executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: true,
   args: ['--enable-unsafe-webgpu', '--enable-features=WebGPUDeveloperFeatures', '--use-angle=metal', '--mute-audio'],
 });
-const results = [];
-try {
   for (const route of routes) {
     const context = await browser.newContext({ viewport: { width: 1512, height: 982 }, deviceScaleFactor: 1 });
     const page = await context.newPage();
@@ -36,7 +39,9 @@ try {
       const sf = window.__sf;
       const samples = [];
       let last = 0;
-      let lastCalls = sf.renderer.info.render.calls;
+      if (!sf.pipeline.frameTelemetry) throw new Error("Missing authoritative presentation counter");
+      let lastCalls = sf.pipeline.frameTelemetry.submittedFrames;
+      const initial = { ...sf.pipeline.frameTelemetry };
       let lastRendered = performance.now();
       const renderedIntervals = [];
       let skipped = 0;
@@ -44,7 +49,7 @@ try {
         const step = now => {
           if (last) samples.push(now - last);
           last = now;
-          const calls = sf.renderer.info.render.calls;
+          const calls = sf.pipeline.frameTelemetry.submittedFrames;
           if (calls > lastCalls) { renderedIntervals.push(now-lastRendered); lastRendered=now; lastCalls=calls; }
           else skipped++;
           if (samples.length === 240) resolve(); else requestAnimationFrame(step);
@@ -58,6 +63,12 @@ try {
       return {
         p50: samples[120], p95: samples[228], p99: samples[237],
         renderedFrames: renderedIntervals.length, skippedRefreshes: skipped,
+        submittedFrames: sf.pipeline.frameTelemetry.submittedFrames-initial.submittedFrames,
+        compileSkippedFrames: sf.pipeline.frameTelemetry.compileSkippedFrames-initial.compileSkippedFrames,
+        cpuRenderMs: sf.pipeline.frameTelemetry.cpuRenderMs,
+        compileQueueDepth: sf.pipeline.compileQueueDepth, scheduler: sf.scheduler.depths(),
+        drawingBuffer: [sf.renderer.domElement.width,sf.renderer.domElement.height],
+        userAgent: navigator.userAgent, adapter: sf.renderer.backend.device.adapterInfo ?? sf.renderer.backend.adapter?.info,
         renderedP95: renderedIntervals[Math.floor(renderedIntervals.length*0.95)] ?? null,
         over33ms: samples.filter(n => n > 33.5).length,
         pixelRatio: sf.renderer.getPixelRatio(), visibleMeshes: meshes,
@@ -73,6 +84,23 @@ try {
         tracer: sf.tracer?.summary?.(),
       };
     });
+    // GPU samples are a SEPARATE serialized manual-tick phase. Never label
+    // these readback-paced ticks FPS; the presentation samples above stay live.
+    metrics.gpu = await page.evaluate(async () => {
+      const sf=window.__sf, r=sf.renderer;
+      if (!r.hasFeature('timestamp-query')) return {available:false};
+      sf.frameDriver.setManual(true);
+      r.backend.trackTimestamp=true;
+      const samples=[];
+      try {
+        for(let i=0;i<35;i++) {
+          sf.tick(1/60);
+          const [render,compute]=await Promise.all([r.resolveTimestampsAsync('render'),r.resolveTimestampsAsync('compute')]);
+          if(i>=5&&!sf.pipeline.compileHeld&&render>0)samples.push({render,compute});
+        }
+        return {available:true,method:'GPU timestamps; separate serialized phase',samples};
+      } finally {r.backend.trackTimestamp=false;sf.frameDriver.setManual(false);}
+    });
     await page.screenshot({ path: `${out}/${route.replace(':','-')}.png` });
     const row = { route, bootMs, metrics, requests, errors, warnings };
     results.push(row);
@@ -84,5 +112,6 @@ try {
     if (metrics.renderedFrames < 200) throw new Error(`${route}: too few actual renders to claim steady-state performance`);
   }
 } finally {
-  await browser.close();
+  await browser?.close();
+  await release();
 }

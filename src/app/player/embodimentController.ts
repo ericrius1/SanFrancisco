@@ -5,7 +5,7 @@ import type { Player } from "../../player/player";
 import type { PlayerMode } from "../../player/types";
 import type { HUD } from "../../ui/hud";
 import { seaTime, waterHeight } from "../../world/heightmap";
-import { oceanBeachSurfShackPose } from "../../gameplay/surfing/shack";
+import { oceanBeachSurfShackPose } from "../../gameplay/surfing/shackMeta";
 import { findLand, findWater } from "../../vehicles/shared";
 import { MAX_PASSENGER_SEATS } from "../../vehicles/rideable";
 import { oceanBeachSurfEntryPose } from "../../vehicles/surf/entry";
@@ -98,6 +98,7 @@ export class EmbodimentController {
 
   /** E (or pad Y): leave any vehicle, creature, or passenger seat for on-foot. */
   exitToWalk(passengerExit?: PassengerExitPose): boolean {
+    this.#switchRequest++;
     const player = this.#player;
     if (this.passengerOf !== null) {
       this.passengerOf = null;
@@ -177,8 +178,16 @@ export class EmbodimentController {
     return true;
   }
 
+  #switchRequest = 0;
   switchMode(mode: PlayerMode): void {
     const player = this.#player;
+    const request = ++this.#switchRequest;
+    if (!player.isModeReady(mode)) {
+      this.#hud.message("Preparing your ride…", 2);
+      void player.prepareMode(mode).then(() => { if (request === this.#switchRequest) this.switchMode(mode); })
+        .catch(() => this.#hud.message("That ride could not load. Try again.", 3));
+      return;
+    }
     if (mode === player.mode) return;
     if (mode === "walk") {
       this.exitToWalk();

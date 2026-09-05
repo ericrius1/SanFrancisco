@@ -5,15 +5,15 @@
   "bake": "npm run bake:region -- --site st-marys",
   "tracked": true,
   "inputs": {
-    "assets-src/world/sites/st-marys/st-marys.blend": "9b1e4fbf86e82a89e9f4d5e5138404de0fbd5cb0cfa8e252306666f549498166",
-    "data/authored-regions.json": "9b76c9839b9200b72a32235ebe6a588123e29d16189cf143a1abe1194a675153",
+    "assets-src/world/sites/st-marys/st-marys.blend": "455b2ce66c4c824612e51ff2c3f9518450ee18569b817b2c4e0d9beeb26f9a72",
+    "data/authored-regions.json": "6d9b3a8dbf60bfa388266d59f183d1ef2e52042925be77c7942f4957d0aa888d",
     "tools/export-authored-site.py": "bc1fed401a1fd10e18b7804f39c379665ba470a5d46f795d2c0e64b8632f6692",
-    "tools/inject-authored-site.mjs": "80fced31ccb6713acb3cdbba609e1e8788301482769644951608b3568205c3ff",
+    "tools/inject-authored-site.mjs": "cec2b37728c85137986d207998b78c82421634ea2ee1390729d11ec2583c6664",
     "tools/sync-authored-region.py": "44b9eba826becee2ddec3312666a50902256d2ddad53d389b915801b07145172"
   },
   "outputs": {
     "data/authored-sites/st-marys.json": "358f72819f5cc11c2b0c746be9df67a23c8fed3058b6f5bc4f687da98b7a55f7",
-    "public/data/authored-regions.json": "b66d828f1774a447c44f8a7b745e69753273d0ccf221019faa7976d873358c16",
+    "public/data/authored-regions.json": "02be67818df413f710cfba5bb625ca107584ed41c00f52b1832227b76a4f590b",
     "public/data/colliders/tile_11_11.json": "8cb24d8c190ac8afc5cffe8366d4a00f76c1815034c27660324cb502436ce46e",
     "public/regions/st-marys.glb": "a1ac5d84be88dcdfa856944d7951823cebfb8e99f6650e19bccc98609919d273",
     "public/tiles/tile_11_11.glb": "ae8c4949f23a0010490f17ff3d5fe381e86412baf97a05fd769db78d01e7255e"

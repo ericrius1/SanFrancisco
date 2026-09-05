@@ -59,6 +59,11 @@ export function buildBirdMesh(): THREE.Group {
   g.userData.rideCapacity = PHOENIX_PASSENGER_CAPACITY;
   g.userData.embodimentVisible = false;
   g.visible = false;
+  g.userData.dispose = () => {
+    g.userData.disposed = true;
+    (g.userData.disposeAsset as (() => void) | undefined)?.();
+    delete g.userData.disposeAsset;
+  };
   return g;
 }
 

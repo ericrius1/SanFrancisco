@@ -44,18 +44,18 @@ import { beganAsReadingVisit } from "./app/startupIntent";
 import { createRenderPipeline } from "./render/pipeline";
 import { GODRAYS_TUNING } from "./render/post/godrays/tuning";
 import {  loadSavedAvatar, randomAvatarTraits } from "./player/avatar";
-import {   loadSavedBoard, randomBoardConfig,  setLocalBoardConfig } from "./vehicles/board";
+import {   loadSavedBoard, randomBoardConfig,  setLocalBoardConfig } from "./vehicles/board/config";
 import {
   loadSavedCar,
   randomCarConfig,
   setLocalCarConfig
-} from "./vehicles/car";
-import { loadSavedScooter, randomScooterConfig,  setLocalScooterConfig } from "./vehicles/scooter";
+} from "./vehicles/car/config";
+import { loadSavedScooter, randomScooterConfig,  setLocalScooterConfig } from "./vehicles/scooter/config";
 import {
   loadSavedSurfboard,
   randomSurfboardConfig,
   setLocalSurfboardConfig,
-} from "./vehicles/surf";
+} from "./vehicles/surf/config";
 import { loadSavedKite, normalizeKiteConfig } from "./world/oceanBeachKite/kiteConfig";
 import {  ModeDiscovery, ALL_MODES } from "./player/discovery";
 import { BootScreen } from "./app/bootScreen";
@@ -307,9 +307,11 @@ async function boot() {
 
   // post-processing: scene pass AA + optional stylized screen effects
   const pipeline = createRenderPipeline(renderer, scene, camera, sky.sun);
+  player.prepareVisual = (root) => pipeline.prepareSceneOwner(root, true);
   // M10: while an exclusive compile window holds presented frames, the tile
   // streamer pauses its live attach drain (see tiles.isRenderHeld doc).
   tiles.isRenderHeld = () => pipeline.compileHeld;
+  tiles.prepareSkyline = root => pipeline.prepareSceneOwner(root);
 
   // Void-safe aliases: renderFrame reads these from the first void frame,
   // long before P3 constructs the systems behind them.
@@ -418,7 +420,7 @@ async function boot() {
   // upgrade to the wave in P3.
   if (resumed) {
     const resumedInitialMode = resumed.mode === "surf" ? "walk" : resumed.mode;
-    player.restoreState({ ...resumed, mode: resumedInitialMode });
+    await player.restoreState({ ...resumed, mode: resumedInitialMode });
     modeDiscovery.discover(resumedInitialMode);
     chase.yaw = devReload?.camera.yaw ?? resumed.heading + Math.PI;
     if (devReload) {
@@ -436,7 +438,7 @@ async function boot() {
     const side = inviteMode === "boat" || inviteMode === "plane" ? 7 : inviteMode === "drive" ? 4 : 2.5;
     const jx = invite.x + Math.cos(invite.facing) * side;
     const jz = invite.z - Math.sin(invite.facing) * side;
-    player.teleportTo({ x: jx, y: invite.y, z: jz, facing: invite.facing, mode: inviteMode });
+    await player.teleportTo({ x: jx, y: invite.y, z: jz, facing: invite.facing, mode: inviteMode });
     chase.yaw = invite.facing;
     chase.cutTo(player);
     // one-shot: strip the params so a refresh resumes the session instead of
@@ -473,9 +475,9 @@ async function boot() {
   input.setMode(player.mode);
   const startMode = invite || resumed ? "walk" : (spawnPoint?.mode ?? START.mode);
   // Surf needs its runtime/camera chunks (deferred to P3); every other
-  // embodiment already exists on the Player and can start immediately.
+  // embodiment prepares its own runtime and mesh before committing the start.
   if (startMode !== "walk" && startMode !== "surf" && ALL_MODES.includes(startMode)) {
-    player.trySwitch(startMode);
+    await player.trySwitch(startMode);
   }
 
   // Collapse the materialize state at the arrival: the world boots as pure
@@ -842,8 +844,8 @@ async function boot() {
     // hold the governor until the P4 handoff so they can never trigger a
     // spurious downscale of the freshly revealed world.
     adaptiveRes: {
-      update: (emaMs: number) => {
-        if (constructionDoneFlag) adaptiveRes.update(emaMs);
+      update: (emaMs: number, cpuMs?: number, gpuMs?: number) => {
+        if (constructionDoneFlag) adaptiveRes.update(emaMs, cpuMs, gpuMs);
       }
     }
   });
@@ -1042,7 +1044,11 @@ async function boot() {
   resolveConstructionDone();
   // Clouds are a first-use graphics option; their code and WGSL stay absent
   // from default boot. The selected variant warms through the compile owner.
-  sky.configureVolumetricClouds(root => pipeline.compileAsyncPrioritized(root, camera, scene));
+  sky.configureVolumetricClouds(
+    root => pipeline.prepareSceneOwner(root, true),
+    (quad,target) => pipeline.prepareOffscreenOwner(quad,quad.camera,target)
+  );
+  pipeline.setSkyFrame(() => sky.renderVolumetricClouds(renderer,camera));
   for (const action of pendingStartActions.splice(0)) action();
   persistBootHistory();
   console.info(`[boot] construction done — ${bootMarkSummary()}`);

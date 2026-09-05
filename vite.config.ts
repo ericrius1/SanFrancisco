@@ -257,6 +257,7 @@ export default defineConfig({
     include: ["camera-controls", "three/webgpu", "three/tsl", "lil-gui", "tweakpane"]
   },
   build: {
+    manifest: true,
     rollupOptions: {
       output: {
         // Split the entry monolith so the browser can parse/cache three.js and

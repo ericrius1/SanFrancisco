@@ -51,12 +51,13 @@ export const WINDOW_LIT_BRIGHTNESS_MEAN = WINDOW_LIT_DIM + (1 - WINDOW_LIT_DIM) 
 /**
  * Universal render settings live with the systems they configure: drawing-buffer
  * pixel ratio in RENDER_TUNING (default 1, slider 0.5–2; devicePixelRatio is
- * ignored), and CSM shadow knobs via SHADOW_TUNING (world/sky.ts). The old quality-preset /
- * dynamic-res governor stack was removed — one default, optional "/" overrides.
+ * ignored), and CSM shadow knobs via SHADOW_TUNING (world/sky.ts). Laptop profiles
+ * and the adaptive governor use the existing single resolution owner.
  */
 
 /** Renderer grading + drawing buffer, bound in the "/" panel. */
 export const RENDER_TUNING = tunables("render", {
+  profile: { v: "balanced", options: { Balanced: "balanced", Quiet: "quiet", High: "high" }, label: "performance profile" },
   // Drawing-buffer pixel ratio. Default 1 for a low-fi / fragment-cheap look
   // (devicePixelRatio is ignored, including retina Macs). Slider for profiling.
   pixelRatio: { v: 1, min: 0.5, max: 2, step: 0.05, label: "pixel ratio" },
@@ -67,8 +68,8 @@ export const RENDER_TUNING = tunables("render", {
   // grey-card calibration chart (src/ui/calibrationChart.ts): camera-locked row
   // of matte spheres at 5/18/50/90% albedo — the referee for any grading change.
   greyCards: { v: false, label: "grey cards (5·18·50·90%)" },
-  // Battery/quiet mode: the frame driver renders every 2nd rAF (~30 fps cap) to
-  // cut GPU/thermal load. Read live each frame in app/frameDriver.ts; no side
+  // Battery saver: the frame driver applies a wall-clock 30 fps cap on any
+  // panel refresh rate. Read live in app/frameDriver.ts; no side
   // effect on change, so it needs no onChange when bound.
   quietMode: { v: false, label: "battery saver (30 fps)" },
   wireframe: { v: false, label: "wireframe mode (\\)" },

@@ -16,6 +16,7 @@ const DRIVEN_KEYS = ["KeyW", "KeyA", "KeyD", "ShiftLeft", "Space"] as const;
  */
 export const twitterSummerShot01: Demo = {
   name: "twitter-summer-01",
+  modes: ["surf"],
   run(ctx) {
     const { map, sky } = ctx;
     if (!map || !sky) {

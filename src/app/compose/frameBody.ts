@@ -64,11 +64,11 @@ import { PauseToggle } from "../../ui/pauseToggle";
 // the shared reader before this game module begins.
 import {
   refreshCarHeadlightUniforms,
-} from "../../vehicles/car";
+} from "../../vehicles/car/lights";
 import {
   setLocalSurfboardConfig,
   type SurfboardConfig,
-} from "../../vehicles/surf";
+} from "../../vehicles/surf/config";
 import { MENU_MODES } from "../../player/discovery";
 import { SkateCoach } from "../../vehicles/skate/coach";
 import { SKATE_PLAZA_CENTER } from "../../world/skatePlaza/meta";
@@ -88,7 +88,7 @@ import type { MainCtx } from "./ctx";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, droneFireworkMounts, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
 
   // One place decides what the trick HUD sees; the three frame paths (live,
   // world-frozen, fully paused) all call it right after hud.update so the combo
@@ -752,8 +752,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         prompt: formatInteractPrompt(`ride with ${driver.name}`, input.device),
         perform: () => {
           if (driver.mode === "bird") core.state.setRemoteBirdAssetsActive!(true);
-          embodiments.startPassengerRide(driver.id, driver.seat);
-          hud.message(`Riding with ${driver.name} — E to hop out`, 2.6);
+          const origin = player.position.clone();
+          void player.prepareMode(driver.mode).then(() => {
+            const nearby = remotes.nearestDriver(player.position, 5.5);
+            if (player.mode !== "walk" || origin.distanceTo(player.position) > 5 || nearby?.id !== driver.id) return;
+            embodiments.startPassengerRide(driver.id, nearby.seat);
+            hud.message(`Riding with ${driver.name} — E to hop out`, 2.6);
+          }).catch(() => hud.message("That ride could not load. Try again.", 3));
         }
       };
     }
@@ -1161,7 +1166,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (!input.suspended && input.firePressed && netW.state.fireCooldown <= 0) {
         chase.lookDir(aim);
         netW.state.fireCooldown = 0.22;
-        fireworks.launchDroneSalvo(droneFireworkMounts ?? [], aim, player.velocity);
+        fireworks.launchDroneSalvo((player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined) ?? [], aim, player.velocity);
         chase.shake(0.08);
       }
     } else if (input.firing && embodiments.currentAnimal === "raccoon") {
@@ -1398,6 +1403,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       tracer.end("cityLife");
     }
     refreshCarHeadlightUniforms();
+    if (ctx.zoneBoot.cityWoken) core.updateScatterBoats(player.position, player.mode);
     abandonedMounts.update(frameDt, player.position);
     if (!worldArrival.active) {
       core.state.creatures?.update(ctx.state.elapsed, camera.position);

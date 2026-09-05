@@ -4,11 +4,11 @@ const browser=await chromium.launch({executablePath:'/Applications/Google Chrome
 try {
  const page=await browser.newPage();
  page.on('pageerror',e=>console.error(e));
- await page.goto(`${process.env.SF_PROBE_URL??'http://localhost:5270'}/tools/world-upgrade-gpu-probe.html`);
+ await page.goto(`${process.env.SF_PROBE_URL??'http://localhost:5270'}/tools/${process.env.SF_GPU_PROBE ?? "world-upgrade-gpu-probe"}.html`);
  await page.waitForFunction(()=>window.__gpuResult,null,{timeout:120000});
  const result=await page.evaluate(()=>window.__gpuResult);
  await mkdir('.data/world-upgrade',{recursive:true});
- await writeFile('.data/world-upgrade/gpu.json',JSON.stringify(result,null,2));
+ await writeFile(`.data/world-upgrade/${process.env.SF_GPU_PROBE ?? "gpu"}.json`,JSON.stringify(result,null,2));
  console.log(JSON.stringify(result,null,2));
  if(!result.ok)process.exitCode=1;
 }finally{await browser.close();}

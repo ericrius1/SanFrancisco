@@ -11,20 +11,14 @@
  * barrage stays a rumble instead of clipping.
  */
 
-import { tunables } from "../core/persist";
+import { AUDIO_TUNING } from "./fireworksAudioSettings";
+export { AUDIO_TUNING } from "./fireworksAudioSettings";
 import { effectsAudioLevel } from "../core/audioSettings";
 import { audioEngine } from "../audio/engine";
 
 const SPEED_OF_SOUND = 343; // m/s
 const MAX_BOOMS_PER_SEC = 18;
 
-// Persisted mix tuning; lives in the fireworks folder of the "/" panel.
-export const AUDIO_TUNING = tunables("fireworksAudio", {
-  volume: { v: 0.6, min: 0, max: 1, step: 0.05, label: "boom volume" },
-  bass: { v: 1, min: 0, max: 2, step: 0.05, label: "boom bass" },
-  echo: { v: 0.55, min: 0, max: 1, step: 0.05, label: "sky echo" },
-  muted: { v: false, label: "mute booms" }
-});
 
 export class FireworksAudio {
   params = AUDIO_TUNING.values;
@@ -35,6 +29,19 @@ export class FireworksAudio {
   #noise!: AudioBuffer;
   #crackle!: AudioBuffer;
   #recent: number[] = [];
+  #busNodes: AudioNode[] = [];
+  #voices = new Set<AudioNode[]>();
+
+  dispose(): void {
+    for (const nodes of [this.#busNodes, ...this.#voices]) for (const node of nodes) {
+      if ("stop" in node) { try { (node as AudioScheduledSourceNode).stop(); } catch { /* already ended */ } }
+      node.disconnect();
+    }
+    this.#busNodes = [];
+    this.#voices.clear();
+    this.#ctx = null;
+    this.#recent.length = 0;
+  }
 
   get debugState() {
     return { ctx: this.#ctx?.state ?? "none", ready: this.#ctx !== null };
@@ -96,6 +103,7 @@ export class FireworksAudio {
     panB.connect(this.#master);
     lpB.connect(fbB);
     fbB.connect(dA);
+    this.#busNodes = [limiter, this.#master, this.#echoSend, dA, dB, fbA, fbB, lpA, lpB, panA, panB];
 
     // 2s of white noise, reused by every voice at random offsets
     const sr = ctx.sampleRate;
@@ -270,7 +278,9 @@ export class FireworksAudio {
     // The rumble is the final direct voice to end. Explicitly sever the entire
     // per-boom subgraph then; otherwise repeated volleys leave hundreds of
     // zero-output nodes connected to the persistent master/echo buses.
+    this.#voices.add(voiceNodes);
     rum.onended = () => {
+      this.#voices.delete(voiceNodes);
       for (const node of voiceNodes) {
         try { node.disconnect(); } catch { /* already disconnected */ }
       }

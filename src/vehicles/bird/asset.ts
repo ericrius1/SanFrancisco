@@ -21,6 +21,7 @@ function disposeUnclaimedScene(scene: THREE.Object3D): void {
     const mesh = object as THREE.Mesh;
     if (!mesh.isMesh) return;
     if (mesh.geometry) geometries.add(mesh.geometry);
+    if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) (mesh as THREE.SkinnedMesh).skeleton.dispose();
     const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     for (const material of list) {
       if (!material) continue;
@@ -122,6 +123,11 @@ export async function loadBirdAssets(root: THREE.Group): Promise<void> {
           scene.scale.setScalar(PHOENIX_SCALE);
           root.add(scene);
           installPhoenixSaddle(root);
+          root.userData.disposeAsset = () => {
+            // The remote rider is detached by its owner before disposal.
+            disposeUnclaimedScene(root);
+            root.clear();
+          };
           root.userData.rig = rig;
           resolve();
         } catch (error) {

@@ -41,6 +41,7 @@ import {
   vec3,
   vec4
 } from "three/tsl";
+import { laptopProfile } from "../../render/laptopProfiles";
 import { type FoliageField } from "./foliageField";
 import { rankAnnulusAccept } from "./rankDissolve";
 import { releaseRendererAttribute } from "../../app/rendererRegistry";
@@ -342,6 +343,7 @@ export function createGpuGrassPlacement(
   const focus = new THREE.Vector2();
   const focusU = uniform(focus);
   const densityU = uniform(1);
+  const distantCoverageU = uniform(laptopProfile().distantCoverage);
   const patchinessU = uniform(0.5);
   const densityNode = densityU as N;
   const patchinessNode = patchinessU as N;
@@ -584,12 +586,17 @@ export function createGpuGrassPlacement(
         // outer edge longest and the inner edge shortest, so the two bands of a
         // co-located pair partition the clusters instead of doubling them. The
         // material shrinks against this exact same window (rankDissolve.ts).
-        const accept = rankAnnulusAccept(dist, rank, {
+        let accept = rankAnnulusAccept(dist, rank, {
           visibleRadius: s.w,
           fadeBand: input.spec.fadeBand,
           minRadius: input.spec.minRadius,
           innerBand: input.spec.innerBand
         });
+        // Keep the hero 60 m intact. Stable ranks thin overlapping distant
+        // clusters gradually across a broad band, with no placement rebuild.
+        const distanceGrade = dist.sub(60).div(140).clamp(0, 1);
+        const coverage = mix(float(1), distantCoverageU, distanceGrade);
+        accept = accept.and(rank.lessThanEqual(coverage));
         const radius = s.x.max(s.y).mul(float(localRadius)).add(CULL_RADIUS_SLACK);
         const center = vec3(t.x, t.y.add(s.y.mul(0.55)), t.z);
         return { center, radius, accept, emit: () => record.append(idx) };
@@ -645,6 +652,7 @@ export function createGpuGrassPlacement(
     get cullPasses() { return dispatchReady ? cullPasses : emptyCullPasses; },
     updateCullCamera(camera: THREE.Camera) {
       cullCamera.update(camera);
+      distantCoverageU.value = laptopProfile().distantCoverage;
     },
     focus,
     cullFocus,

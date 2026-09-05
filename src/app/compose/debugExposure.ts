@@ -1,3 +1,4 @@
+import { CLOUD_TUNING } from "../../world/cloudSettings";
 // __sf debug surface + dev demo harness, extracted from main.ts's P4 tail
 // (docs/MAIN_DECOMPOSITION.md). Pure exposure — no boot-order coupling; main
 // calls this once after the P4 handoff.
@@ -5,7 +6,7 @@ import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import { CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_TUNING, WORLD_TUNING } from "../../config";
 import { POST_TUNING } from "../../render/post/tuning";
-import { CAR_LANDING_TUNING } from "../../vehicles/car";
+import { CAR_LANDING_TUNING } from "../../vehicles/car/tuning";
 import { PROCEDURAL_LAMP_TUNING } from "../../world/citygen/interior/lampTuning";
 import { sharedMaterialLeakSnapshot } from "../../render/renderObjectRegistry";
 import { materializeField } from "../../render/materialize";
@@ -81,7 +82,7 @@ export async function installDebugSurfaces(
     registry.refs({
       scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, frameDriver: extra.frameDriver,
       dynRes: extra.dynRes, tracer, scheduler, POST_TUNING, WORLD_TUNING, FLOWER_TUNING,
-      RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks,
+      CLOUD_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks,
       graffiti, bubbles, setTool, setColor, sky, farOcclusion: extra.farOcclusion, debugPanel, CONFIG,
       THREE, tick, splashes, sandPrints, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
       audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
@@ -308,7 +309,7 @@ export async function installDebugSurfaces(
       // demo asking afterwards is asking after the fact.
       pipeline.setCinematicMultisampling(demoWantsMultisampling(name));
       await pipeline.warmup("boot");
-      runDemo(name, demoCtx);
+      await runDemo(name, demoCtx);
     };
     (window as never as { __demo: (n: string) => void }).__demo = (n: string) => {
       void runDevDemo(n);

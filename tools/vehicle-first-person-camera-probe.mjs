@@ -1,7 +1,7 @@
 // End-to-end regression probe for the C-cycle first-person camera in every
 // travel mode. Boots the real WebGPU app, switches the live Player through all
 // embodiments, and verifies that the settled camera reaches each animated eye
-// (or the stock drone gimbal) without hiding the vehicle root.
+// (or the stock drone gimbal), preserving each mode's first-person visibility.
 //
 //   SF_URL=http://127.0.0.1:5244 node tools/vehicle-first-person-camera-probe.mjs
 
@@ -69,10 +69,10 @@ try {
   const outdoorFov = await page.evaluate(() => window.__sf.camera.fov);
   const results = [];
   for (const mode of MODES) {
-    const result = await page.evaluate((nextMode) => {
+    const result = await page.evaluate(async (nextMode) => {
       const s = window.__sf;
       const p = s.player;
-      if (p.mode !== nextMode) p.trySwitch(nextMode);
+      if (p.mode !== nextMode) await p.trySwitch(nextMode);
       s.chase.manualFirstPerson = true;
       for (let i = 0; i < 150; i++) {
         p.syncMesh(1 / 60);
@@ -134,9 +134,7 @@ try {
     cCycleEnablesVehicleFirstPerson: cCycleEnabled,
     cCycleEnablesSurfFirstPerson: surfCCycleEnabled,
     everyModeReachedEye: results.every((r) => r.mode && r.blend > 0.999 && r.eyeError < 0.035),
-    everyVehicleRemainsVisible: results
-      .filter((r) => r.mode !== "walk")
-      .every((r) => r.vehicleVisible),
+    firstPersonVisibilityMatchesCockpit: results.every(r => r.vehicleVisible === (r.mode !== "walk" && r.mode !== "drone")),
     everyDirectionValid: results.every((r) => Math.abs(r.directionLength - 1) < 1e-5),
     firstPersonFovApplied: results.every((r) => r.fov > outdoorFov + 10),
     zoomIgnoredInFirstPerson: Math.abs(zoomCheck.after - zoomCheck.before) < 1e-9,

@@ -3,7 +3,6 @@ import { LIGHT_SCALE } from "../../config";
 import { lightAnchor } from "../../player/lightPool";
 import type { Cockpit } from "../../player/types";
 import { applyVehicleShadowPolicy } from "../shadows";
-import { rideHeightFromContact } from "../shared";
 import {
   normalizeScooterConfig,
   scooterPaintHex,
@@ -41,11 +40,8 @@ type ScooterSurfaceState = {
 
 const surfaceStates = new WeakMap<THREE.Group, ScooterSurfaceState>();
 
-/** Wheel hub Y and tire outer radius in scooter-local space. */
-export const SCOOTER_WHEEL_HUB_Y = 0.055;
-export const SCOOTER_WHEEL_OUTER_RADIUS = 0.39 + 0.105;
-export const SCOOTER_CONTACT_Y = SCOOTER_WHEEL_HUB_Y - SCOOTER_WHEEL_OUTER_RADIUS;
-export const SCOOTER_RIDE_HEIGHT = rideHeightFromContact(SCOOTER_CONTACT_Y);
+import { SCOOTER_WHEEL_HUB_Y, SCOOTER_WHEEL_OUTER_RADIUS, SCOOTER_CONTACT_Y } from "./dimensions";
+export { SCOOTER_WHEEL_HUB_Y, SCOOTER_WHEEL_OUTER_RADIUS, SCOOTER_CONTACT_Y, SCOOTER_RIDE_HEIGHT } from "./dimensions";
 
 function roundedBox(w: number, h: number, d: number, r: number): THREE.ExtrudeGeometry {
   const shape = new THREE.Shape();

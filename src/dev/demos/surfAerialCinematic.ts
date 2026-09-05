@@ -57,6 +57,7 @@ type SurfAerialWindow = Window &
  */
 export const surfAerialCinematic: Demo = {
   name: "surf-aerial",
+  modes: ["surf"],
   run(ctx) {
     const { map, sky } = ctx;
     if (!map || !sky) {

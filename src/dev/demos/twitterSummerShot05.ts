@@ -19,6 +19,7 @@ const RIGHT = new THREE.Vector3(FORWARD.z, 0, -FORWARD.x);
 /** Warm-waterfront sports-car chase with a compression-friendly speed finish. */
 export const twitterSummerShot05: Demo = {
   name: "twitter-summer-05",
+  modes: ["drive"],
   run(ctx) {
     const { map, sky } = ctx;
     if (!map || !sky) {

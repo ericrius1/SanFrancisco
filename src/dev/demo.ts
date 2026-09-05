@@ -119,6 +119,7 @@ export type Demo = {
    * inside `run()` cannot undo a depth buffer that already exists.
    */
   multisample?: boolean;
+  modes?: readonly import("../player/types").PlayerMode[];
   run(ctx: DemoContext): void;
 };
 
@@ -172,12 +173,13 @@ const DEMOS: Record<string, Demo> = {
   ...Object.fromEntries(kiteToSutroDemos.map((demo) => [demo.name, demo]))
 };
 
-export function runDemo(name: string, ctx: DemoContext) {
+export async function runDemo(name: string, ctx: DemoContext) {
   const demo = DEMOS[name];
   if (!demo) {
     console.warn(`[demo] unknown demo "${name}". Available: ${Object.keys(DEMOS).join(", ")}`);
     return;
   }
+  for (const mode of demo.modes ?? []) await ctx.player.prepareMode(mode);
   demo.run(ctx);
 }
 

@@ -1,0 +1,32 @@
+<!doctype html><script type="module">
+import * as THREE from 'three/webgpu';
+import { registerRenderer } from '/src/app/rendererRegistry.ts';
+import { FoliageField } from '/src/world/groundcover/foliageField.ts';
+const renderer=new THREE.Renderer(new THREE.WebGPUBackend(),{getFallback:null});
+renderer.library=new THREE.StandardNodeLibrary();
+const errors=[],rows=[],jobs=[]; let paint=0;
+const assert=(ok,msg)=>{if(!ok)throw Error(msg)};
+const opts={size:32,spacing:1,groundHeight:(x,z)=>x*0.25+z*2+paint,plantable:(x,z)=>(x+z)%3!==0,paint:(x,z)=>({species:((x*z)%13+13)/26,height:1+paint*0.1}),schedule:j=>jobs.push(j),maxCellsPerSlice:16};
+const field=new FoliageField(opts);
+async function drain(){while(jobs.length){const j=jobs.shift();if(j()==='again')jobs.push(j);}await Promise.resolve();}
+async function gpuData(){
+ const device=renderer.backend.device,buffer=device.createBuffer({size:32*32*16,usage:9});
+ const encoder=device.createCommandEncoder();encoder.copyTextureToBuffer({texture:renderer.backend.get(field.texture).texture},{buffer,bytesPerRow:512},{width:32,height:32});device.queue.submit([encoder.finish()]);
+ await buffer.mapAsync(1);const values=new Float32Array(buffer.getMappedRange().slice(0));buffer.unmap();buffer.destroy();return values;
+}
+try{
+ await renderer.init();registerRenderer(renderer);renderer.backend.device.addEventListener('uncapturederror',e=>errors.push(e.error.message));
+ for(const [x,z,cancel] of [[0,0,false],[1,0,false],[2,3,false],[-3,-2,true],[120,-70,true],[-120,70,false],[1,0,false]]){
+  if(cancel){void field.request({x:x+1,z:z+2});const j=jobs.shift();if(j()==='again')jobs.push(j);}
+  const before=field.stats;void field.request({x,z});await drain();
+  const actual=await gpuData();const reference=new FoliageField(opts);void reference.request({x,z});await drain();
+  assert(actual.every((v,i)=>Object.is(v,reference.data[i])),`GPU differs from full rebuild at ${x},${z}`);
+  assert(field.data.every((v,i)=>Object.is(v,reference.data[i])),`CPU differs at ${x},${z}`);
+  const row={x,z,cancel,bytes:field.stats.uploadedBytes-before.uploadedBytes,sampled:field.stats.sampledCells-before.sampledCells};rows.push(row);
+  if(x===1&&z===0&&rows.length===2)assert(row.bytes===32*16,'one-column walk must upload 512 bytes, not 16384');
+  reference.dispose();
+ }
+ paint=1;field.invalidate();void field.request({x:1,z:0});await drain();assert((await gpuData()).every((v,i)=>Object.is(v,field.data[i])),'paint invalidation');
+ assert(errors.length===0,errors.join('\n'));window.__gpuResult={ok:true,rows,errors};
+}catch(e){window.__gpuResult={ok:false,error:e.stack,rows,errors};}finally{field.dispose();renderer.dispose();}
+</script>

@@ -13,6 +13,7 @@ export const TWITTER_SUMMER_SHOT_02_SECONDS = 7.5;
  */
 export const twitterSummerShot02: Demo = {
   name: "twitter-summer-02",
+  modes: ["scooter"],
   run(ctx) {
     const { map, sky } = ctx;
     if (!map || !sky) {

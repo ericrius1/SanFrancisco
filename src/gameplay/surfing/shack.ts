@@ -14,23 +14,15 @@ import {
   type SurfboardShape
 } from "../../vehicles/surf";
 import { enableLocalShadowLayer } from "../../world/shadows/shadowLayers";
-import {
-  OCEAN_BEACH_SURF,
-  oceanBeachApproxShoreX,
-  oceanBeachShoreline
-} from "../../world/oceanBeachWaves";
+import { SURF_SHACK_APRON_INLAND, SURF_SHACK_INLAND, SURF_BOARD_REACH, type SurfShackPose } from "./shackMeta";
+import { OCEAN_BEACH_SURF, oceanBeachShoreline } from "../../world/oceanBeachWaves";
+export { SURF_SHACK_APRON_INLAND, SURF_SHACK_INLAND, SURF_BOARD_REACH, oceanBeachSurfShackApproxPose, oceanBeachSurfShackPose } from "./shackMeta";
+export type { SurfShackPose } from "./shackMeta";
 
 type Ground = {
   groundTop(x: number, z: number): number;
   isWater(x: number, z: number): boolean;
 };
-
-/** Metres east of the live shoreline to the shack building centre. */
-export const SURF_SHACK_INLAND = 20;
-/** Metres east of the shoreline for the spawn / exit apron (facing the boards). */
-export const SURF_SHACK_APRON_INLAND = 17;
-/** Reach to grab a racked board. */
-export const SURF_BOARD_REACH = 2.6;
 
 const MAT = {
   wood: new THREE.MeshLambertMaterial({ color: 0x6b4a2f }),
@@ -78,28 +70,6 @@ const BOARD_PRESETS: { shape: SurfboardShape; label: string; config: Partial<Sur
     }
   }
 ];
-
-export type SurfShackPose = { x: number; z: number; heading: number };
-
-/** Approx apron pose without a live map (spawn registry). */
-export function oceanBeachSurfShackApproxPose(): SurfShackPose {
-  const z = OCEAN_BEACH_SURF.entryZ;
-  return {
-    x: oceanBeachApproxShoreX(z) + SURF_SHACK_APRON_INLAND,
-    z,
-    heading: -Math.PI / 2 // east, toward the open shack front
-  };
-}
-
-/** Live shoreline-refined apron pose (boot, landmark, surf exit). */
-export function oceanBeachSurfShackPose(map: { isWater(x: number, z: number): boolean }): SurfShackPose {
-  const shore = oceanBeachShoreline(map, OCEAN_BEACH_SURF.entryZ, 3);
-  return {
-    x: shore.x + (SURF_SHACK_APRON_INLAND - 3),
-    z: shore.z,
-    heading: -Math.PI / 2
-  };
-}
 
 type BoardSlot = {
   config: SurfboardConfig;

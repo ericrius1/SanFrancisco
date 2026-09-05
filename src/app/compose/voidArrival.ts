@@ -49,7 +49,7 @@ export function installVoidArrival(deps: {
     fillRadius: Math.min(fullTileRadius, BACKGROUND_STREAM_LIMIT),
     // M9: surf caps CONFIG.tileLoadRadius at 2 km (< reveal radius); the
     // coordinator reveals at a plateaued live cap instead of waiting forever.
-    liveLoadRadius: () => CONFIG.tileLoadRadius,
+    liveLoadRadius: () => Math.min(CONFIG.tileLoadRadius, tiles.activeStreamingRadius),
     // M18: the scan wave chases installed terrain DATA only — the particle
     // field must never form ground whose real heights haven't landed.
     terrainRadius: (x, z) =>

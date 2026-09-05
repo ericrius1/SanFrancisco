@@ -1,3 +1,5 @@
+import { loadVehicleRuntime, vehicleRuntime, activateVehicleRuntime, type VehicleMode } from "../vehicles/runtime";
+import { IDLE_LANDING, IDLE_SLIDE, IDLE_JUMP, IDLE_SURF, IDLE_HANG, IDLE_ROCKET } from "./idleTelemetry";
 import * as THREE from "three/webgpu";
 import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
@@ -47,59 +49,22 @@ import {
   prepareBallGlowMaterial,
   TENNIS_BALL_COLOR
 } from "../fx/ballGlow";
-import {
-  activateCarAssets,
-  animateCar,
-  buildCarMesh,
-  previewCarConfig as previewCarAppearance,
-  updateCarLights,
-  CarController,
-  type CarConfig
-} from "../vehicles/car";
-import {
-  buildPlaneMesh,
-  collectPlaneAnim,
-  FlyController,
-  type PlaneAnim,
-  type RocketFlightProfile,
-  type RocketFlightTelemetry
-} from "../vehicles/plane";
+import type { CarController, CarConfig } from "../vehicles/car";
+import type { FlyController, PlaneAnim, RocketFlightProfile, RocketFlightTelemetry } from "../vehicles/plane";
 import type { HangGliderFlightProfile } from "../vehicles/plane/hangGliderPhysics";
-import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, SPEEDBOAT_HULL, type BoatSailRig } from "../vehicles/boat";
-import { buildDroneMesh, DroneController } from "../vehicles/drone";
-import { buildBoardMesh, activateBoardSurface, animateBoard, updateBoardSurface, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
-import {
-  activateSurfboardAssets,
-  animateSurfboard,
-  buildSurfboardMesh,
-  updateSurfboardSurface,
-  SurfController,
-  SURFBOARD_FLAT_DECK_TOP,
-  SURF_TUNING,
-  type SurfboardConfig,
-  type SurfTelemetry
-} from "../vehicles/surf";
-import {
-  activateScooterAssets,
-  animateScooter,
-  buildScooterMesh,
-  previewScooterConfig as previewScooterAppearance,
-  ScooterController,
-  type ScooterConfig
-} from "../vehicles/scooter";
-import { activateBirdAssets, buildBirdMesh, BirdController } from "../vehicles/bird";
-import {
-  animateSkate,
-  buildSkateMesh,
-  SkateController,
-  SKATE_RIG_ROOT_Y,
-  type TrickBook
-} from "../vehicles/skate";
+import type { BoatController, BoatSailRig } from "../vehicles/boat";
+import type { DroneController } from "../vehicles/drone";
+import type { BoardController, BoardConfig } from "../vehicles/board";
+import type { SurfController, SurfboardConfig, SurfTelemetry } from "../vehicles/surf";
+import type { ScooterController, ScooterConfig } from "../vehicles/scooter";
+import type { BirdController } from "../vehicles/bird";
+import type { SkateController, TrickBook } from "../vehicles/skate";
 import { setEmbodimentVisible } from "./embodimentVisibility";
 
 export type { GardenRakeMotion, GardenRakeTool } from "./gardenRake";
 
 const V = {
+  forward: new THREE.Vector3(0, 0, -1),
   tmp: new THREE.Vector3(),
   tmp2: new THREE.Vector3(),
   up: new THREE.Vector3(0, 1, 0),
@@ -252,6 +217,20 @@ export type SkateHudState = {
   speed: number;
 };
 
+type ModeControllers = {
+    walk: WalkController;
+    drive: CarController;
+    scooter: ScooterController;
+    plane: FlyController;
+    boat: BoatController;
+    speedboat: BoatController;
+    drone: DroneController;
+    board: BoardController;
+    skate: SkateController;
+    surf: SurfController;
+    bird: BirdController;
+  };
+
 export class Player {
   mode: PlayerMode = "walk";
   body = 0;
@@ -287,19 +266,8 @@ export class Player {
   #meshYawQuat = new THREE.Quaternion();
 
   // per-mode behavior; adding a vehicle = new folder + one entry here
-  #modes: {
-    walk: WalkController;
-    drive: CarController;
-    scooter: ScooterController;
-    plane: FlyController;
-    boat: BoatController;
-    speedboat: BoatController;
-    drone: DroneController;
-    board: BoardController;
-    skate: SkateController;
-    surf: SurfController;
-    bird: BirdController;
-  };
+  #modes: Partial<ModeControllers> = {};
+
 
   // character rigs: one per embodiment (walker, board rider, car driver).
   // Poses are written every rendered frame in #animate.
@@ -346,7 +314,7 @@ export class Player {
   #speedWheel: { group: THREE.Group; spin: THREE.Group };
   #pilotRig: Rig; // plane crew: open cockpit, hands on the built-in yoke
   #phoenixRiderRig: Rig; // front saddle seat; two friends attach over the network
-  #planeAnim: PlaneAnim;
+  #planeAnim!: PlaneAnim;
   #hangGliderVisual: THREE.Group | null = null;
   #rocketVisual: THREE.Group | null = null;
   #rocketPresentation: { update(dt: number, telemetry: Readonly<RocketFlightTelemetry>): void } | null = null;
@@ -438,101 +406,25 @@ export class Player {
     this.#ballProp.position.set(0, -0.02, -0.05); // cupped in the curled fingers
     this.#ballProp.visible = false;
     this.#walkRig.handR.add(this.#ballProp);
-    this.meshes = {
-      walk: walkGroup,
-      drive: buildCarMesh(car),
-      scooter: buildScooterMesh(scooter),
-      plane: buildPlaneMesh(),
-      boat: buildBoatMesh(),
-      speedboat: buildSpeedboatMesh(),
-      drone: buildDroneMesh(),
-      // The board is invisible in the ordinary walking boot. Its selected
-      // procedural deck art hydrates in a worker only if board mode is used.
-      board: buildBoardMesh(board, { deferSurface: true }),
-      skate: buildSkateMesh(),
-      surf: buildSurfboardMesh(surfboard),
-      bird: buildBirdMesh()
-    };
-    this.#modes = {
-      walk: new WalkController(),
-      drive: new CarController(),
-      scooter: new ScooterController(),
-      plane: new FlyController(),
-      boat: new BoatController(),
-      speedboat: new BoatController(SPEEDBOAT_TUNING, SPEEDBOAT_HULL),
-      drone: new DroneController(this.meshes.drone),
-      board: new BoardController(),
-      skate: new SkateController(),
-      surf: new SurfController(),
-      bird: new BirdController(this.meshes.bird)
-    };
-    this.#modes.surf.setConfig(surfboard ?? this.#modes.surf.config);
-    // surf stance across the deck; ZYX order so the carve lean (z) rolls the
-    // already-yawed stance around the board's long axis
+    this.#configs = { board, scooter, surfboard, car };
+    this.meshes = { walk: walkGroup, drive: new THREE.Group(), scooter: new THREE.Group(), plane: new THREE.Group(), boat: new THREE.Group(), speedboat: new THREE.Group(), drone: new THREE.Group(), board: new THREE.Group(), skate: new THREE.Group(), surf: new THREE.Group(), bird: new THREE.Group() };
+    this.#modes.walk = new WalkController();
     this.#riderRig = buildRig(this.#avatar);
-    this.#riderRig.group.rotation.order = "ZYX";
-    this.#riderRig.group.rotation.y = 1.05;
-    this.#riderRig.group.position.y = 0.93; // soles on the deck top
-    this.meshes.board.add(this.#riderRig.group);
     this.#surfRig = buildRig(this.#avatar);
-    this.#surfRig.group.rotation.order = "ZYX";
-    this.#surfRig.group.rotation.y = 1.05;
-    this.#surfRig.group.position.y = 0.93;
-    this.meshes.surf.add(this.#surfRig.group);
-    prepareLocalSurfHero(this.meshes.surf);
-    // Skate stance. The rig is NOT yawed across the board: leg pitch has to
-    // separate the feet along the deck's LENGTH, and poseSkate turns the shoes
-    // across the griptape at the knee instead. Rooted so both soles land on
-    // the grip; hung off the mesh ROOT, not the trick pivot, so a kickflip
-    // spins the deck under the rider's feet.
     this.#skateRig = buildRig(this.#avatar);
-    this.#skateRig.group.rotation.order = "ZYX";
-    this.#skateRig.group.position.set(0, SKATE_RIG_ROOT_Y, 0.02);
-    this.meshes.skate.add(this.#skateRig.group);
-    // A surfboard tucked upright under the arm, shown on foot at the beach so
-    // you arrive holding your board, ready to start the surf activity. Built here but not
-    // parented yet — setCarryingBoard grips it into the walk rig's hand (the
-    // golf-club/bow pattern) on first use, so it swings with the arm instead
-    // of floating at a fixed offset off the mesh root.
-    this.#carryBoard = buildSurfboardMesh(surfboard);
-    this.#carryBoard.visible = false;
     this.#scooterRig = buildRig(this.#avatar);
-    const scooterCockpit = this.meshes.scooter.userData.cockpit as Cockpit;
-    this.#scooterRig.group.position.set(...scooterCockpit.seat);
-    this.meshes.scooter.add(this.#scooterRig.group);
     this.#driverRig = buildRig(this.#avatar);
-    this.#wheel = buildSteeringWheel();
-    // helmsman on the stern bench, hands on a wheel at the console (same
-    // seat→wheel offsets as the car cockpit so poseDrive's reach lines up)
     this.#helmRig = buildRig(this.#avatar);
-    this.#helmWheel = buildSteeringWheel();
-    const boatDeck = (this.meshes.boat.userData.sail as BoatSailRig).heel;
-    const boatCockpit = this.meshes.boat.userData.cockpit as Cockpit;
-    this.#helmRig.group.position.set(...boatCockpit.seat);
-    this.#helmWheel.group.position.set(...boatCockpit.wheel!);
-    boatDeck.add(this.#helmRig.group, this.#helmWheel.group);
-    // speedboat helmsman at the open console (cockpit anchors on the mesh)
     this.#speedRig = buildRig(this.#avatar);
-    this.#speedWheel = buildSteeringWheel();
-    const sc = this.meshes.speedboat.userData.cockpit as Cockpit;
-    this.#speedRig.group.position.set(sc.seat[0], sc.seat[1], sc.seat[2]);
-    this.#speedWheel.group.position.set(sc.wheel![0], sc.wheel![1], sc.wheel![2]);
-    this.meshes.speedboat.add(this.#speedRig.group, this.#speedWheel.group);
-    // pilot in the plane's open cockpit; the yoke is part of the plane mesh
     this.#pilotRig = buildRig(this.#avatar);
-    const pc = this.meshes.plane.userData.cockpit as Cockpit;
-    this.#pilotRig.group.position.set(pc.seat[0], pc.seat[1], pc.seat[2]);
-    this.meshes.plane.add(this.#pilotRig.group);
     this.#phoenixRiderRig = buildRig(this.#avatar);
-    this.#phoenixRiderRig.group.name = "phoenix_local_rider";
-    const birdSeat = (this.meshes.bird.userData.cockpit as Cockpit).seat;
-    this.#phoenixRiderRig.group.position.set(...birdSeat);
-    this.#phoenixRiderRig.group.visible = false;
-    this.meshes.bird.add(this.#phoenixRiderRig.group);
-    this.#planeAnim = collectPlaneAnim(this.meshes.plane);
+    this.#wheel = buildSteeringWheel();
+    this.#helmWheel = buildSteeringWheel();
+    this.#speedWheel = buildSteeringWheel();
+    this.#carryBoard = new THREE.Group();
+    this.#carryBoard.visible = false;
     this.#defaultDriveMesh = this.meshes.drive;
     this.#defaultDroneMesh = this.meshes.drone;
-    this.#seatDriver(this.meshes.drive);
     // pool constructed before the first render so the warm-up compile already
     // sees the final (and only-ever) light set
     this.#lightPool = new LightPool(scene);
@@ -542,6 +434,96 @@ export class Player {
     }
     this.position.set(spawn.x, spawn.y ?? map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
     this.#spawnBody("walk", spawn.heading);
+  }
+
+  #configs: { board?: BoardConfig; scooter?: ScooterConfig; surfboard?: SurfboardConfig; car?: CarConfig } = {};
+  #modeLoading = new Map<PlayerMode, Promise<void>>();
+  #readyModes = new Set<PlayerMode>(["walk"]);
+  #transitionSerial = 0;
+  prepareVisual: (root: THREE.Object3D) => Promise<void> = async () => {};
+  isModeReady(mode: PlayerMode): boolean { return this.#readyModes.has(mode); }
+  #controller<M extends PlayerMode>(mode: M): ModeControllers[M] {
+    const controller = this.#modes[mode];
+    if (!controller) throw new Error(`Player mode ${mode} was not prepared`);
+    return controller;
+  }
+  async #deferTransition(mode: PlayerMode, commit: () => Promise<void>): Promise<void> {
+    const serial = ++this.#transitionSerial;
+    await this.prepareMode(mode);
+    if (serial === this.#transitionSerial) await commit();
+  }
+  #configRevision = 0;
+  #driveStyleRequest = 0;
+  #droneStyleRequest = 0;
+  #applyModeConfig(mode: PlayerMode): void {
+    this.#readyModes.add(mode);
+    try {
+      if (mode === "drive" && this.#configs.car) this.setCarConfig(this.#configs.car);
+      if (mode === "board" && this.#configs.board) this.setBoardConfig(this.#configs.board);
+      if (mode === "scooter" && this.#configs.scooter) this.setScooterConfig(this.#configs.scooter);
+      if (mode === "surf" && this.#configs.surfboard) this.setSurfboardConfig(this.#configs.surfboard);
+    } finally { this.#readyModes.delete(mode); }
+  }
+  prepareMode(mode: PlayerMode): Promise<void> {
+    if (this.isModeReady(mode)) return Promise.resolve();
+    const pending = this.#modeLoading.get(mode);
+    if (pending) return pending;
+    if (mode === "walk") return Promise.resolve();
+    const loading = loadVehicleRuntime(mode).then(async () => {
+      const retry = !!this.#modes[mode];
+      this.#buildMode(mode);
+      // A rejected compile leaves a hidden shell. Its configuration may have
+      // changed between attempts, before this attempt starts watching revisions.
+      if (retry) this.#applyModeConfig(mode);
+      let revision: number;
+      do {
+        revision = this.#configRevision;
+        const root = this.meshes[mode];
+        root.removeFromParent();
+        root.visible = true;
+        try { await this.prepareVisual(root); }
+        finally { root.visible = false; this.#scene.add(root); }
+        if (revision !== this.#configRevision) {
+          // Selection changed during asynchronous compilation. Publish only the
+          // newest shell, then prepare that shell before revealing the mode.
+          this.#applyModeConfig(mode);
+          revision = -1;
+        }
+      } while (revision !== this.#configRevision);
+      this.#readyModes.add(mode);
+      activateVehicleRuntime(mode);
+    }).finally(() => this.#modeLoading.delete(mode));
+    this.#modeLoading.set(mode, loading);
+    return loading;
+  }
+  #buildMode(mode: VehicleMode): void {
+    if (this.#modes[mode]) return;
+    let root = this.meshes[mode];
+    const attach = (visual: THREE.Group) => {
+      root.removeFromParent();
+      this.meshes[mode] = root = visual;
+      root.visible = false;
+      this.#scene.add(root);
+      if (mode === "drive") this.#defaultDriveMesh = root;
+      if (mode === "drone") this.#defaultDroneMesh = root;
+    };
+    const seat = (rig: Rig, wheel?: { group: THREE.Group; spin: THREE.Group }, parent: THREE.Object3D = root) => {
+      const cockpit = root.userData.cockpit as Cockpit | undefined;
+      if (cockpit) { rig.group.position.set(...cockpit.seat); if (wheel && cockpit.wheel) wheel.group.position.set(...cockpit.wheel); }
+      parent.add(rig.group); if (wheel) parent.add(wheel.group);
+    };
+    switch (mode) {
+      case "drive": { const m=vehicleRuntime(mode); attach(m.buildCarMesh(this.#configs.car)); this.#modes.drive=new m.CarController(); this.#seatDriver(root); break; }
+      case "scooter": { const m=vehicleRuntime(mode); attach(m.buildScooterMesh(this.#configs.scooter)); this.#modes.scooter=new m.ScooterController(); seat(this.#scooterRig); break; }
+      case "plane": { const m=vehicleRuntime(mode); attach(m.buildPlaneMesh()); this.#modes.plane=new m.FlyController(); seat(this.#pilotRig); this.#planeAnim=m.collectPlaneAnim(root); break; }
+      case "boat": { const m=vehicleRuntime(mode); attach(m.buildBoatMesh()); this.#modes.boat=new m.BoatController(); seat(this.#helmRig,this.#helmWheel,(root.userData.sail as BoatSailRig).heel); break; }
+      case "speedboat": { const m=vehicleRuntime(mode); attach(m.buildSpeedboatMesh()); this.#modes.speedboat=new m.BoatController(m.SPEEDBOAT_TUNING,m.SPEEDBOAT_HULL); seat(this.#speedRig,this.#speedWheel); break; }
+      case "drone": { const m=vehicleRuntime(mode); attach(m.buildDroneMesh()); this.#modes.drone=new m.DroneController(root); break; }
+      case "board": { const m=vehicleRuntime(mode); attach(m.buildBoardMesh(this.#configs.board,{deferSurface:true})); this.#modes.board=new m.BoardController(); this.#riderRig.group.rotation.order="ZYX"; this.#riderRig.group.rotation.set(0,1.05,0); this.#riderRig.group.position.set(0,0.93,0); root.add(this.#riderRig.group); break; }
+      case "skate": { const m=vehicleRuntime(mode); attach(m.buildSkateMesh()); this.#modes.skate=new m.SkateController(); this.#skateRig.group.rotation.order="ZYX"; this.#skateRig.group.position.set(0,m.SKATE_RIG_ROOT_Y,0.02); root.add(this.#skateRig.group); break; }
+      case "surf": { const m=vehicleRuntime(mode); attach(m.buildSurfboardMesh(this.#configs.surfboard)); this.#modes.surf=new m.SurfController(); if(this.#configs.surfboard)this.#modes.surf.setConfig(this.#configs.surfboard); this.#surfRig.group.rotation.order="ZYX"; this.#surfRig.group.rotation.set(0,1.05,0); this.#surfRig.group.position.set(0,0.93,0); root.add(this.#surfRig.group); prepareLocalSurfHero(root); this.#carryBoard=m.buildSurfboardMesh(this.#configs.surfboard); this.#carryBoard.visible=false; break; }
+      case "bird": { const m=vehicleRuntime(mode); attach(m.buildBirdMesh()); this.#modes.bird=new m.BirdController(root); this.#phoenixRiderRig.group.name="phoenix_local_rider"; seat(this.#phoenixRiderRig); this.#phoenixRiderRig.group.visible=false; break; }
+    }
   }
 
   setAvatar(avatar: AvatarTraits) {
@@ -564,19 +546,19 @@ export class Player {
   }
 
   get hangGliding(): boolean {
-    return this.#modes.plane.hangGliding;
+    return this.#modes.plane?.hangGliding ?? false;
   }
 
   get hangGliderTelemetry() {
-    return this.#modes.plane.hangGliderTelemetry;
+    return this.#modes.plane?.hangGliderTelemetry ?? IDLE_HANG;
   }
 
   get rocketFlying(): boolean {
-    return this.#modes.plane.rocketFlying;
+    return this.#modes.plane?.rocketFlying ?? false;
   }
 
   get rocketTelemetry(): Readonly<RocketFlightTelemetry> {
-    return this.#modes.plane.rocketTelemetry;
+    return this.#modes.plane?.rocketTelemetry ?? IDLE_ROCKET;
   }
 
   /**
@@ -591,7 +573,7 @@ export class Player {
     profile: HangGliderFlightProfile
   ): void {
     if (this.#rocketVisual) {
-      this.#modes.plane.setRocketFlying(false);
+      this.#controller("plane").setRocketFlying(false);
       this.#clearRocketVisual();
     }
     if (this.#hangGliderVisual) this.#clearHangGliderVisual();
@@ -608,15 +590,15 @@ export class Player {
     plane.userData.hangGliding = true;
     this.#pilotRig.group.position.set(0, -1.42, 0.38);
     this.#pilotRig.group.rotation.set(-Math.PI / 2, 0, 0);
-    this.#modes.plane.setHangGliding(true, liftSampler, profile);
+    this.#controller("plane").setHangGliding(true, liftSampler, profile);
     this.position.set(launch.x, launch.y, launch.z);
     this.#spawnBody("plane", launch.heading, launch.y);
   }
 
   /** End the quest embodiment and optionally place the pilot back on foot. */
   stopHangGliding(spawn?: { x: number; y?: number; z: number; heading: number }): void {
-    if (!this.#modes.plane.hangGliding && !this.#hangGliderVisual) return;
-    this.#modes.plane.setHangGliding(false);
+    if (!this.hangGliding && !this.#hangGliderVisual) return;
+    this.#controller("plane").setHangGliding(false);
     this.#clearHangGliderVisual();
     if (spawn) this.respawn(spawn);
   }
@@ -642,7 +624,7 @@ export class Player {
     profile: RocketFlightProfile
   ): void {
     if (this.#hangGliderVisual) {
-      this.#modes.plane.setHangGliding(false);
+      this.#controller("plane").setHangGliding(false);
       this.#clearHangGliderVisual();
     }
     if (this.#rocketVisual) this.#clearRocketVisual();
@@ -667,7 +649,7 @@ export class Player {
     const cockpit = visual.userData.cockpit as Cockpit | undefined;
     this.#pilotRig.group.position.set(...(cockpit?.seat ?? [0, 0.62, 0.3]));
     this.#pilotRig.group.rotation.set(0, 0, 0);
-    this.#modes.plane.setRocketFlying(true, profile);
+    this.#controller("plane").setRocketFlying(true, profile);
     this.position.set(launch.x, launch.y, launch.z);
     this.#spawnBody("plane", launch.heading, launch.y);
   }
@@ -675,8 +657,8 @@ export class Player {
   /** Release the launch-site spaceplane and optionally return the pilot to a
    * safe on-foot pose. The site reparks its visual after this detaches it. */
   stopRocketFlight(spawn?: { x: number; y?: number; z: number; heading: number }): void {
-    if (!this.#modes.plane.rocketFlying && !this.#rocketVisual) return;
-    this.#modes.plane.setRocketFlying(false);
+    if (!this.rocketFlying && !this.#rocketVisual) return;
+    this.#controller("plane").setRocketFlying(false);
     this.#clearRocketVisual();
     if (spawn) this.respawn(spawn);
   }
@@ -806,8 +788,8 @@ export class Player {
    * spin every mode switch 180°.
    */
   #spawnBody(mode: PlayerMode, facing = this.heading - Math.PI, exactBodyY?: number) {
-    if (mode !== "plane" && this.#modes.plane.rocketFlying) {
-      this.#modes.plane.setRocketFlying(false);
+    if (mode !== "plane" && this.rocketFlying) {
+      this.#controller("plane").setRocketFlying(false);
       this.#clearRocketVisual();
     }
     const w = this.physics.world;
@@ -821,7 +803,7 @@ export class Player {
     this.mode = mode;
     const q: [number, number, number, number] = [0, Math.sin(facing / 2), 0, Math.cos(facing / 2)];
     // the controller creates its body shape at p and resets its per-mode state
-    const placedY = this.#modes[mode].spawnBody(this, facing);
+    const placedY = this.#controller(mode).spawnBody(this, facing);
     const bodyY = exactBodyY ?? placedY;
     w.setBodyTransform(this.body, [p.x, bodyY, p.z], q);
     if (exactBodyY !== undefined) p.y = bodyY;
@@ -845,14 +827,14 @@ export class Player {
     }
     // Surf art is intentionally absent from boot. The active board requests
     // only its selected surface/decal the first time surfing actually starts.
-    if (mode === "surf") void activateSurfboardAssets(this.meshes.surf);
-    if (mode === "board") void activateBoardSurface(this.meshes.board);
-    if (mode === "scooter") void activateScooterAssets(this.meshes.scooter);
-    if (mode === "drive" && this.meshes.drive === this.#defaultDriveMesh) void activateCarAssets(this.meshes.drive);
+    if (mode === "surf") void vehicleRuntime("surf").activateSurfboardAssets(this.meshes.surf);
+    if (mode === "board") void vehicleRuntime("board").activateBoardSurface(this.meshes.board);
+    if (mode === "scooter") void vehicleRuntime("scooter").activateScooterAssets(this.meshes.scooter);
+    if (mode === "drive" && this.meshes.drive === this.#defaultDriveMesh) void vehicleRuntime("drive").activateCarAssets(this.meshes.drive);
     // Imported phoenix geometry/plumage is likewise first-use only. The stable
     // root and controller already exist, so switching remains synchronous while
     // the visual asset hydrates into that root.
-    if (mode === "bird") void activateBirdAssets(this.meshes.bird);
+    if (mode === "bird") void vehicleRuntime("bird").activateBirdAssets(this.meshes.bird);
     this.#lightPool.claim(this.meshes[mode]);
     this.onModeChange(mode);
   }
@@ -871,16 +853,19 @@ export class Player {
     }
   }
 
-  trySwitch(mode: PlayerMode) {
-    if (mode === this.mode) return;
-    if (this.#modes.plane.rocketFlying && mode !== "plane") {
-      this.#modes.plane.setRocketFlying(false);
+  trySwitch(mode: PlayerMode): Promise<void> {
+    if (!this.isModeReady(mode)) return this.#deferTransition(mode, () => this.trySwitch(mode));
+    this.#transitionSerial++;
+    if (mode === this.mode) return Promise.resolve();
+    if (this.rocketFlying && mode !== "plane") {
+      this.#controller("plane").setRocketFlying(false);
       this.#clearRocketVisual();
     }
     let facing = this.heading - Math.PI; // keep pointing the way we face now
-    const entered = this.#modes[mode].enter?.(this);
+    const entered = this.#controller(mode).enter?.(this);
     if (typeof entered === "number") facing = entered;
     this.#spawnBody(mode, facing);
+    return Promise.resolve();
   }
 
   /**
@@ -888,15 +873,19 @@ export class Player {
    * particular, boarding a grounded Phoenix must preserve its waiting body
    * height instead of invoking BirdController.enter() and jumping to cruise.
    */
-  boardMount(pose: { mode: PlayerMode; x: number; y: number; z: number; heading: number }) {
-    if (pose.mode === this.mode) return;
+  boardMount(pose: { mode: PlayerMode; x: number; y: number; z: number; heading: number }): Promise<void> {
+    if (!this.isModeReady(pose.mode)) return this.#deferTransition(pose.mode, () => this.boardMount(pose));
+    this.#transitionSerial++;
+    if (pose.mode === this.mode) return Promise.resolve();
     this.position.set(pose.x, pose.y, pose.z);
     this.#spawnBody(pose.mode, pose.heading - Math.PI, pose.y);
+    return Promise.resolve();
   }
 
   /** Landmark teleport landing — always on foot. Callers should exitToWalk first
    *  so surf/vehicles leave an abandoned mount and fire mode-change cleanup. */
   respawn(spawn: { x: number; y?: number; z: number; heading: number }) {
+    this.#transitionSerial++;
     this.position.set(spawn.x, spawn.y ?? this.map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
     this.#spawnBody("walk", spawn.heading);
   }
@@ -990,10 +979,13 @@ export class Player {
    * fall straight through it — the clearance keeps the spawn outside the
    * defer margin for the first sweep, then we drop onto the now-solid roof.
    */
-  teleportTo(t: { x: number; y: number; z: number; facing: number; mode: PlayerMode }) {
+  teleportTo(t: { x: number; y: number; z: number; facing: number; mode: PlayerMode }): Promise<void> {
+    if (!this.isModeReady(t.mode)) return this.#deferTransition(t.mode, () => this.teleportTo(t));
+    this.#transitionSerial++;
     const y = Math.max(t.y + 2.0, this.map.effectiveGround(t.x, t.z) + 1.5);
-    this.position.set(t.x, y - this.#modes[t.mode].spawnLift, t.z);
+    this.position.set(t.x, y - this.#controller(t.mode).spawnLift, t.z);
     this.#spawnBody(t.mode, t.facing);
+    return Promise.resolve();
   }
 
   /**
@@ -1003,10 +995,13 @@ export class Player {
    * spawnBody adds so a refresh doesn't creep the player upward. The saved
    * heading is the facing+π convention, so the facing yaw is heading−π.
    */
-  restoreState(s: SavedPlayer) {
-    const mode = s.mode in this.#modes ? s.mode : "walk";
-    this.position.set(s.x, s.y - this.#modes[mode].spawnLift, s.z);
+  restoreState(s: SavedPlayer): Promise<void> {
+    if (!this.isModeReady(s.mode)) return this.#deferTransition(s.mode, () => this.restoreState(s));
+    this.#transitionSerial++;
+    const mode = s.mode in this.meshes ? s.mode : "walk";
+    this.position.set(s.x, s.y - this.#controller(mode).spawnLift, s.z);
     this.#spawnBody(mode, s.heading - Math.PI);
+    return Promise.resolve();
   }
 
   /**
@@ -1138,32 +1133,32 @@ export class Player {
       return;
     }
 
-    this.#modes[this.mode].update(this, dt, input, { camYaw, aim, v });
+    this.#controller(this.mode).update(this, dt, input, { camYaw, aim, v });
   }
 
   requestBoardJump() {
-    if (this.mode === "board") this.#modes.board.requestJump();
+    if (this.mode === "board") this.#controller("board").requestJump();
   }
 
   requestSurfJump() {
-    if (this.mode === "surf") this.#modes.surf.requestJump();
+    if (this.mode === "surf") this.#controller("surf").requestJump();
   }
 
   /** Latch a Space edge for the skateboard at render rate — the ollie pops on
    *  RELEASE, so a 120 Hz tap must not fall between two physics steps. */
   requestSkatePop() {
-    if (this.mode === "skate") this.#modes.skate.requestJump();
+    if (this.mode === "skate") this.#controller("skate").requestJump();
   }
 
   /** Seconds the board has been off the ground — the tutorial proves an ollie
    *  with it, since "left the ground" is the only honest test. */
   get skateAirTime(): number {
-    return this.#modes.skate.airTime;
+    return this.#modes.skate?.airTime ?? 0;
   }
 
   /** Live trick/combo state for the skate HUD (null in every other mode). */
   get skateTricks(): TrickBook | null {
-    return this.mode === "skate" ? this.#modes.skate.book : null;
+    return this.mode === "skate" ? this.#controller("skate").book : null;
   }
 
   /** Everything the skate HUD, audio and skid marks read, without exposing the
@@ -1171,6 +1166,7 @@ export class Player {
    *  times per frame and must not allocate to do it. */
   get skateState(): Readonly<SkateHudState> {
     const s = this.#modes.skate;
+    if (!s) return this.#skateStateOut;
     const out = this.#skateStateOut;
     out.grounded = s.grounded;
     out.grinding = s.grinding;
@@ -1189,65 +1185,65 @@ export class Player {
    *  mouse deltas are per-frame quantities that must be banked exactly once. */
   steerSurf(input: Input, dt: number) {
     if (this.mode !== "surf") return;
-    this.#modes.surf.steerSurf(input, dt);
+    this.#controller("surf").steerSurf(input, dt);
   }
 
   requestSurfFlow() {
-    if (this.mode === "surf") return this.#modes.surf.requestFlow();
+    if (this.mode === "surf") return this.#controller("surf").requestFlow();
     return false;
   }
 
   get surfTelemetry(): SurfTelemetry {
-    return this.#modes.surf.telemetry;
+    return this.#modes.surf?.telemetry ?? IDLE_SURF;
   }
 
   /** How much of the boat's hull is in the water — 1 on her lines, 0 flying off
    *  a crest. 1 in every non-boat mode. Read by the wake (no rings from a hull
    *  that is airborne). */
   get hullSub(): number {
-    if (this.mode === "boat") return this.#modes.boat.hullSub;
-    if (this.mode === "speedboat") return this.#modes.speedboat.hullSub;
+    if (this.mode === "boat") return this.#controller("boat").hullSub;
+    if (this.mode === "speedboat") return this.#controller("speedboat").hullSub;
     return 1;
   }
 
   /** Closing speed of a boat splashdown on this step (m/s), 0 otherwise. */
   get slamSpeed(): number {
-    if (this.mode === "boat") return this.#modes.boat.slamSpeed;
-    if (this.mode === "speedboat") return this.#modes.speedboat.slamSpeed;
+    if (this.mode === "boat") return this.#controller("boat").slamSpeed;
+    if (this.mode === "speedboat") return this.#controller("speedboat").slamSpeed;
     return 0;
   }
 
   /** Exact sole-to-deck gaps used by surf QA and cinematic regression checks. */
   get surfFootDeckClearance(): { left: number; right: number } {
     return {
-      left: soleBottomInBoardSpace(this.#surfRig.soleL, this.meshes.surf) - SURFBOARD_FLAT_DECK_TOP,
-      right: soleBottomInBoardSpace(this.#surfRig.soleR, this.meshes.surf) - SURFBOARD_FLAT_DECK_TOP
+      left: soleBottomInBoardSpace(this.#surfRig.soleL, this.meshes.surf) - vehicleRuntime("surf").SURFBOARD_FLAT_DECK_TOP,
+      right: soleBottomInBoardSpace(this.#surfRig.soleR, this.meshes.surf) - vehicleRuntime("surf").SURFBOARD_FLAT_DECK_TOP
     };
   }
 
   requestWalkJump() {
-    if (this.mode === "walk") this.#modes.walk.requestJump();
+    if (this.mode === "walk") this.#controller("walk").requestJump();
   }
 
   /** Air/landing state for probes and the window.__sf diagnostics surface. */
   get driveJumpState() {
-    return this.#modes.drive.jumpDebug;
+    return this.#modes.drive?.jumpDebug ?? IDLE_JUMP;
   }
 
   /** One-shot landing telemetry; main owns the camera/audio/VFX consumers. */
   get driveLandingFeedback() {
-    return this.#modes.drive.landingFeedback;
+    return this.#modes.drive?.landingFeedback ?? IDLE_LANDING;
   }
 
   /** Continuous skid intensity for tire marks + audio (drive or scooter). */
   get driveSlideFeedback() {
     return this.mode === "scooter"
-      ? this.#modes.scooter.slideFeedback
-      : this.#modes.drive.slideFeedback;
+      ? (this.#modes.scooter?.slideFeedback ?? IDLE_SLIDE)
+      : (this.#modes.drive?.slideFeedback ?? IDLE_SLIDE);
   }
 
   get scooterJumpState() {
-    return this.#modes.scooter.jumpDebug;
+    return this.#modes.scooter?.jumpDebug ?? IDLE_JUMP;
   }
 
   /** Gameplay-owned golfer pose; the normal walk/idle animator resumes when off. */
@@ -1382,6 +1378,11 @@ export class Player {
    *  Grips into the walk rig's right hand on first use (attach once, toggle
    *  visibility after — the golf-club/bow pattern) so it tracks the arm. */
   setCarryingBoard(on: boolean) {
+    this.#carryingBoard = on;
+    if (on && !this.#modes.surf) {
+      void this.prepareMode("surf").then(() => { if (this.#carryingBoard) this.setCarryingBoard(true); });
+      return;
+    }
     if (on && !this.#heldCarryBoard) {
       this.#heldCarryBoard = attachToHand(this.#walkRig, "R", this.#carryBoard, CARRY_BOARD_GRIP);
       this.#carryBoard.scale.multiplyScalar(CARRY_BOARD_SCALE);
@@ -1819,21 +1820,21 @@ export class Player {
 
   /** Board airborne state — the hoverboard hum softens in the air. */
   get boardGrounded(): boolean {
-    return this.#modes.board.grounded;
+    return this.#modes.board?.grounded ?? true;
   }
 
   /** True while the walk controller has you in the bay (drives swim audio / pose). */
   get swimming(): boolean {
-    return this.mode === "walk" && this.#modes.walk.swimming;
+    return this.mode === "walk" && this.#controller("walk").swimming;
   }
 
   /** Stable contact bit used by movement foley and headless audio probes. */
   get walkGrounded(): boolean {
-    return this.mode === "walk" && this.#modes.walk.grounded;
+    return this.mode === "walk" && this.#controller("walk").grounded;
   }
 
   get walkSwimming(): boolean {
-    return this.mode === "walk" && this.#modes.walk.swimming;
+    return this.mode === "walk" && this.#controller("walk").swimming;
   }
 
   /** The exact animation phase that alternates the visible feet. */
@@ -1844,12 +1845,12 @@ export class Player {
   /** Frame-rate flight steering — mouse aims the plane, A/D add banked yaw. */
   steerFly(input: Input, dt: number) {
     if (this.mode !== "plane") return;
-    this.#modes.plane.steerFly(input, dt);
+    this.#controller("plane").steerFly(input, dt);
   }
 
   /** Plane forward (fly mode). */
   get flyForward(): THREE.Vector3 {
-    return this.#modes.plane.fwd;
+    return this.#modes.plane?.fwd ?? V.forward;
   }
 
   /**
@@ -1858,9 +1859,12 @@ export class Player {
    * hidden until that mount is released.
    */
   setCarConfig(config: CarConfig) {
+    this.#configs.car = config;
+    this.#configRevision++;
+    if (!this.isModeReady("drive")) return;
     const old = this.#defaultDriveMesh;
     const wasSelected = this.meshes.drive === old;
-    const next = buildCarMesh(config);
+    const next = vehicleRuntime("drive").buildCarMesh(config);
     next.position.copy(old.position);
     next.quaternion.copy(old.quaternion);
     setEmbodimentVisible(old, false);
@@ -1875,7 +1879,7 @@ export class Player {
       this.driveSpec = DEFAULT_DRIVE_SPEC;
       if (this.mode === "drive") {
         this.#lightPool.claim(next);
-        void activateCarAssets(next);
+        void vehicleRuntime("drive").activateCarAssets(next);
       }
     } else {
       setEmbodimentVisible(next, false);
@@ -1884,7 +1888,7 @@ export class Player {
 
   /** Held slider/color preview on the existing stock car, without rebuilding or broadcasting. */
   previewCarConfig(config: CarConfig) {
-    previewCarAppearance(this.#defaultDriveMesh, config);
+    vehicleRuntime("drive").previewCarConfig(this.#defaultDriveMesh, config);
   }
 
   /**
@@ -1893,6 +1897,13 @@ export class Player {
    * on the next drive body spawn.
    */
   setDriveStyle(mesh: THREE.Group | null, spec?: DriveSpec) {
+    const request = ++this.#driveStyleRequest;
+    if (!this.isModeReady("drive")) {
+      if (mesh) void this.prepareMode("drive").then(() => {
+        if (request === this.#driveStyleRequest) this.setDriveStyle(mesh, spec);
+      }).catch(error => console.warn("[vehicle] drive style preparation failed", error));
+      return;
+    }
     const next = mesh ?? this.#defaultDriveMesh;
     if (next !== this.meshes.drive) {
       const old = this.meshes.drive;
@@ -1909,6 +1920,13 @@ export class Player {
 
   /** Swap the drone mesh for a custom flyer. Null restores the stock drone. */
   setDroneStyle(mesh: THREE.Group | null) {
+    const request = ++this.#droneStyleRequest;
+    if (!this.isModeReady("drone")) {
+      if (mesh) void this.prepareMode("drone").then(() => {
+        if (request === this.#droneStyleRequest) this.setDroneStyle(mesh);
+      }).catch(error => console.warn("[vehicle] drone style preparation failed", error));
+      return;
+    }
     const next = mesh ?? this.#defaultDroneMesh;
     if (next === this.meshes.drone) return;
     const old = this.meshes.drone;
@@ -1943,8 +1961,11 @@ export class Player {
    * whose stance transform lives on its own group — moves across untouched.
    */
   setBoardConfig(config: BoardConfig) {
+    this.#configs.board = config;
+    this.#configRevision++;
+    if (!this.isModeReady("board")) return;
     const old = this.meshes.board;
-    const next = buildBoardMesh(config);
+    const next = vehicleRuntime("board").buildBoardMesh(config);
     next.position.copy(old.position);
     next.quaternion.copy(old.quaternion);
     // the rider rig is shared with the broom drone style — only re-seat it if
@@ -1968,10 +1989,13 @@ export class Player {
 
   /** Rebuild both the ridden and carried surfboards from one identity. */
   setSurfboardConfig(config: SurfboardConfig) {
-    this.#modes.surf.setConfig(config);
+    this.#configs.surfboard = config;
+    this.#configRevision++;
+    if (!this.isModeReady("surf")) return;
+    this.#controller("surf").setConfig(config);
 
     const old = this.meshes.surf;
-    const next = buildSurfboardMesh(config);
+    const next = vehicleRuntime("surf").buildSurfboardMesh(config);
     next.position.copy(old.position);
     next.quaternion.copy(old.quaternion);
     this.#surfRig.group.removeFromParent();
@@ -1988,11 +2012,11 @@ export class Player {
     setEmbodimentVisible(next, this.mode === "surf");
     if (this.mode === "surf") {
       this.#lightPool.claim(next);
-      void activateSurfboardAssets(next);
+      void vehicleRuntime("surf").activateSurfboardAssets(next);
     }
 
     const oldCarry = this.#carryBoard;
-    const carry = buildSurfboardMesh(config);
+    const carry = vehicleRuntime("surf").buildSurfboardMesh(config);
     carry.visible = oldCarry.visible;
     if (this.#heldCarryBoard) {
       // already gripped into the hand — release the old mesh and re-grip the
@@ -2009,8 +2033,11 @@ export class Player {
 
   /** Rebuild the cosmetic scooter shell without disturbing its live pose. */
   setScooterConfig(config: ScooterConfig) {
+    this.#configs.scooter = config;
+    this.#configRevision++;
+    if (!this.isModeReady("scooter")) return;
     const old = this.meshes.scooter;
-    const next = buildScooterMesh(config);
+    const next = vehicleRuntime("scooter").buildScooterMesh(config);
     next.position.copy(old.position);
     next.quaternion.copy(old.quaternion);
     this.#scooterRig.group.removeFromParent();
@@ -2026,25 +2053,25 @@ export class Player {
     setEmbodimentVisible(next, this.mode === "scooter");
     if (this.mode === "scooter") {
       this.#lightPool.claim(next);
-      void activateScooterAssets(next);
+      void vehicleRuntime("scooter").activateScooterAssets(next);
     }
   }
 
   /** Held-pad/slider preview without rebuilding or broadcasting the scooter. */
   previewScooterConfig(config: ScooterConfig) {
-    previewScooterAppearance(this.meshes.scooter, config);
+    vehicleRuntime("scooter").previewScooterConfig(this.meshes.scooter, config);
   }
 
   /** Lightweight local-only preview used while the deck XY pad is held. */
   previewBoardSurface(config: BoardConfig) {
-    updateBoardSurface(this.meshes.board, config);
+    vehicleRuntime("board").updateBoardSurface(this.meshes.board, config);
   }
 
   /** Lightweight local preview; shape clicks commit through setSurfboardConfig. */
   previewSurfboardSurface(config: SurfboardConfig) {
-    updateSurfboardSurface(this.meshes.surf, config);
-    updateSurfboardSurface(this.#carryBoard, config);
-    this.#modes.surf.setConfig(config);
+    vehicleRuntime("surf").updateSurfboardSurface(this.meshes.surf, config);
+    vehicleRuntime("surf").updateSurfboardSurface(this.#carryBoard, config);
+    this.#controller("surf").setConfig(config);
   }
 
   /**
@@ -2138,7 +2165,7 @@ export class Player {
     if (this.mode !== "walk") applyBallGlow(this.#ballMaterial, 0);
     if (this.mode === "walk") {
       const r = this.#walkRig;
-      const walk = this.#modes.walk;
+      const walk = this.#controller("walk");
       const golfing = this.#golfPose.active && walk.grounded && !walk.swimming;
       const archering = !golfing && this.#archerPose.active && walk.grounded && !walk.swimming;
       if (this.#gardenRakeTool && this.#gardenRakeLegacy) this.#updateLegacyGardenRakeMotion();
@@ -2253,13 +2280,13 @@ export class Player {
         this.#mocapPoseDriver(r, dt);
       }
     } else if (this.mode === "board") {
-      const board = this.#modes.board;
-      const crouch = Math.min(1, this.speed / BOARD_TUNING.values.boostMaxSpeed + Math.abs(board.lean) * 0.6);
+      const board = this.#controller("board");
+      const crouch = Math.min(1, this.speed / vehicleRuntime("board").BOARD_TUNING.values.boostMaxSpeed + Math.abs(board.lean) * 0.6);
       poseRide(this.#riderRig, board.lean, crouch, !board.grounded, this.#animT);
       this.#riderRig.group.rotation.z = board.lean * 0.4; // whole-body dip on top of the deck roll
-      animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board);
+      vehicleRuntime("board").animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board);
     } else if (this.mode === "skate") {
-      const skate = this.#modes.skate;
+      const skate = this.#controller("skate");
       poseSkate(this.#skateRig, {
         lean: skate.lean,
         carve: skate.carve,
@@ -2276,10 +2303,10 @@ export class Player {
       // The deck already carries the carve roll; tip the whole rider a little
       // further so a hard carve reads from behind without breaking foot contact.
       this.#skateRig.group.rotation.z = skate.lean * 0.22;
-      animateSkate(this.meshes.skate, dt, skate.visual);
+      vehicleRuntime("skate").animateSkate(this.meshes.skate, dt, skate.visual);
     } else if (this.mode === "surf") {
-      const surf = this.#modes.surf;
-      const crouch = Math.min(1, this.speed / SURF_TUNING.values.maxTrim + Math.abs(surf.lean) * 0.5);
+      const surf = this.#controller("surf");
+      const crouch = Math.min(1, this.speed / vehicleRuntime("surf").SURF_TUNING.values.maxTrim + Math.abs(surf.lean) * 0.5);
       poseSurfRide(
         this.#surfRig,
         surf.lean,
@@ -2293,7 +2320,7 @@ export class Player {
       // in poseSurfRide provides the carve silhouette without breaking contact.
       this.#surfRig.group.rotation.z = 0;
       this.#surfRig.group.rotation.x = 0;
-      animateSurfboard(
+      vehicleRuntime("surf").animateSurfboard(
         this.meshes.surf,
         dt,
         this.#animT,
@@ -2301,10 +2328,10 @@ export class Player {
         surf.telemetry.landingSerial
       );
     } else if (this.mode === "scooter") {
-      const scooter = this.#modes.scooter;
+      const scooter = this.#controller("scooter");
       const airborne = scooter.jumpDebug.airborne;
       poseScooter(this.#scooterRig, scooter.steerVis, this.#animT, airborne);
-      animateScooter(
+      vehicleRuntime("scooter").animateScooter(
         this.meshes.scooter,
         dt,
         Math.hypot(this.velocity.x, this.velocity.z),
@@ -2317,20 +2344,20 @@ export class Player {
       poseRide(this.#riderRig, lean, crouch, this.speed > 8, this.#animT);
       this.#riderRig.group.rotation.z = lean * 0.35;
     } else if (this.mode === "drive") {
-      const steer = this.#modes.drive.steerVis;
+      const steer = this.#controller("drive").steerVis;
       poseDrive(this.#driverRig, steer, this.#animT, this.#hasWheel);
       this.#wheel.spin.rotation.z = steer * 2.3;
-      animateCar(this.meshes.drive, dt, Math.hypot(this.velocity.x, this.velocity.z), steer);
-      updateCarLights(this.meshes.drive, this.#modes.drive.brakeLevel);
+      vehicleRuntime("drive").animateCar(this.meshes.drive, dt, Math.hypot(this.velocity.x, this.velocity.z), steer);
+      vehicleRuntime("drive").updateCarLights(this.meshes.drive, this.#controller("drive").brakeLevel);
     } else if (this.mode === "plane") {
       // pilot leans with the bank, hands following the yoke; props spin with
       // airspeed (the local mesh's parts — remotes rediscover their clones')
-      const bank = this.#modes.plane.bank;
-      if (this.#modes.plane.rocketFlying) {
+      const bank = this.#controller("plane").bank;
+      if (this.rocketFlying) {
         poseDrive(this.#pilotRig, bank, this.#animT, true);
-        this.#rocketPresentation?.update(dt, this.#modes.plane.rocketTelemetry);
-      } else if (this.#modes.plane.hangGliding) {
-        const telemetry = this.#modes.plane.hangGliderTelemetry;
+        this.#rocketPresentation?.update(dt, this.#controller("plane").rocketTelemetry);
+      } else if (this.hangGliding) {
+        const telemetry = this.#controller("plane").hangGliderTelemetry;
         poseHangGlider(this.#pilotRig, telemetry.bank, telemetry.pitch, this.#animT);
       } else {
         poseDrive(this.#pilotRig, bank, this.#animT, true);
@@ -2339,20 +2366,20 @@ export class Player {
         for (const p of this.#planeAnim.props) p.rotation.z += spin;
       }
     } else if (this.mode === "boat") {
-      const steer = this.#modes.boat.steerVis;
+      const steer = this.#controller("boat").steerVis;
       poseDrive(this.#helmRig, steer, this.#animT, true);
       this.#helmWheel.spin.rotation.z = steer * 2.3;
       // wind response: idle canvas luffs hard with no belly; speed sheets the
       // boom in, fills the sail and heels the hull. Turns dip into the carve.
       const s = this.meshes.boat.userData.sail as BoatSailRig;
-      const wind = THREE.MathUtils.clamp(this.speed / BOAT_TUNING.values.maxSpeed, 0, 1);
+      const wind = THREE.MathUtils.clamp(this.speed / vehicleRuntime("boat").BOAT_TUNING.values.maxSpeed, 0, 1);
       const k = Math.min(1, dt * 2);
       s.flap.value += (0.5 - wind * 0.42 - s.flap.value) * k;
       s.billow.value += (0.1 + wind * 0.36 - s.billow.value) * k;
       s.boom.rotation.y = 0.1 + wind * 0.2 + Math.sin(this.#animT * 0.6) * 0.05;
       s.heel.rotation.z = steer * 0.1 - wind * 0.08;
     } else if (this.mode === "speedboat") {
-      const steer = this.#modes.speedboat.steerVis;
+      const steer = this.#controller("speedboat").steerVis;
       poseDrive(this.#speedRig, steer, this.#animT, true);
       this.#speedWheel.spin.rotation.z = steer * 2.3;
     } else if (this.mode === "bird" && this.#phoenixRiderRig.group.visible) {

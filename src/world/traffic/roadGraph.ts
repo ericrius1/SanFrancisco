@@ -407,6 +407,43 @@ export class RoadGraph {
 
   #hopOut = { x: 0, z: 0 };
 
+  /** Deterministic legal exit at a junction. Reads the worker-built endpoint
+   * index, not the full city. One-way restrictions apply to cars; walkers may
+   * use either direction. Near-coincident ends avoid hopping across medians. */
+  junctionExit(seg: number, dir: 1 | -1, choice = 0, walker = false): { seg: number; dir: 1 | -1; s: number } | null {
+    const start = this.segStart[seg], count = this.segNum[seg];
+    if (count < 2) return null;
+    const at = dir === 1 ? start + count - 1 : start;
+    const prev = at - dir;
+    const bx = this.px[at], bz = this.pz[at];
+    let tx = bx - this.px[prev], tz = bz - this.pz[prev];
+    const length = Math.hypot(tx, tz) || 1; tx /= length; tz /= length;
+    const ccx = Math.floor(bx / CELL), ccz = Math.floor(bz / CELL);
+    let best = -Infinity, selected = -1, selectedDir: 1 | -1 = 1;
+    for (let cx = ccx - 1; cx <= ccx + 1; cx++) for (let cz = ccz - 1; cz <= ccz + 1; cz++) {
+      const slot = packedRoadCellSlot(this.endCells, cx, cz);
+      if (slot < 0) continue;
+      for (let i = this.endCells.starts[slot]; i < this.endCells.starts[slot + 1]; i++) {
+        const endpoint = this.endCells.members[i], next = this.endSeg[endpoint];
+        if (next === seg || this.segTotal[next] < 3) continue;
+        const nextDir: 1 | -1 = this.endWhich[endpoint] === 0 ? 1 : -1;
+        if (!walker && this.segDir[next] !== 0 && this.segDir[next] !== nextDir) continue;
+        if (this.segW[next] < 6 || this.segW[next] > 28) continue;
+        const gap = Math.hypot(this.endX[endpoint] - bx, this.endZ[endpoint] - bz);
+        if (gap > 2.5) continue;
+        const head = this.segStart[next] + (nextDir === 1 ? 0 : this.segNum[next] - 1);
+        let nx = this.px[head + nextDir] - this.px[head], nz = this.pz[head + nextDir] - this.pz[head];
+        const nl = Math.hypot(nx, nz) || 1; nx /= nl; nz /= nl;
+        const dot = tx * nx + tz * nz;
+        if (dot < -0.75) continue;
+        const variation = ((Math.imul(next + 1, 1664525) ^ Math.imul(choice + 1, 1013904223)) >>> 0) / 0x100000000;
+        const score = dot * 0.55 + variation * 0.65 - gap;
+        if (score > best) { best = score; selected = next; selectedDir = nextDir; }
+      }
+    }
+    return selected < 0 ? null : { seg: selected, dir: selectedDir, s: selectedDir === 1 ? 0 : this.segTotal[selected] };
+  }
+
   /**
    * Point `dist` metres further along the polyline from (segId, s) in direction
    * `dir` (+1 walks toward increasing point order, −1 toward decreasing). Clamps

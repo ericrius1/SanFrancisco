@@ -118,12 +118,12 @@ carry `zone=<id>` until the city is woken.
   spawn is at the site.
 - **Wake semantics** (`main.ts` `wakeCity()` + `ui/wakeCity.ts`). Skipped
   city-wide systems (traffic + signals, scatter boats, islands, the
-  citygen ring, forest + creatures, and the minimap landmark pins) are collected
+  citygen ring, forest + creatures) are collected
   into `deferredCityWork` instead of constructed at boot. The "Wake the city"
   HUD button raises `CONFIG.tileLoadRadius` back to `cityTileRadius`, kicks the
-  background tile expansion, runs the deferred builders sequentially, lifts the
-  site restriction (registering the held foliage), and clears the shared-link
-  zone param. It is idempotent and also exposed as `__sf.wakeCity()`. The ring
+  background tile expansion, immediately lifts the site restriction (registering
+  the held foliage) and clears the shared-link zone param, then runs the deferred
+  builders sequentially. Distant map travel must not wait behind those builders. It is idempotent and also exposed as `__sf.wakeCity()`. The ring
   has already settled and the front gate is inactive post-settle, so newly
   loaded tiles simply appear — no new sweep.
 - **Adding a zone.** Append a `ZoneSpec` to `ZONES` in `zoneMode.ts`: the
@@ -132,3 +132,17 @@ carry `zone=<id>` until the city is woken.
   `SPAWN_POINTS` (otherwise the player lands at `center`), and a `bubbleRadius`.
   Default boot (no `?zone`) must stay byte-for-byte identical: every new path is
   inert when `worldScope.mode === "full"`.
+
+## Map discovery and distant city
+
+All landmark pins register from lightweight metadata at boot, including pocket
+worlds. Clicking a pin outside the pocket wakes the city and lifts the site
+restriction before traveling. Registering a pin must never construct the site
+or its surf shack, foliage, models, or audio.
+
+Detailed city tiles use profile radii after the shared far-city silhouette is
+prepared (Quiet 2.4 km, Balanced 3.6 km, High 6 km). An 800 m exit margin and
+five-second grace period prevent residency churn. The skyline loads only in
+full-city scope; pocket boot does not fetch it. Landmark models and the global
+terrain height field retain their own ownership. On skyline failure, full
+detailed residency is preserved until preparation can retry.

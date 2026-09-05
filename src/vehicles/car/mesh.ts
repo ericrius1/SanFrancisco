@@ -2,7 +2,6 @@ import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
 import type { Cockpit } from "../../player/types";
 import { applyVehicleShadowPolicy } from "../shadows";
-import { rideHeightFromContact } from "../shared";
 import {
   carInteriorHex,
   carRimHex,
@@ -21,11 +20,8 @@ import {
 } from "./surfaceTexture";
 import { attachCarLights, previewCarBrakeColor } from "./lights";
 
-/** Wheel hub and actual tire radius in mesh space (root = physics body centre). */
-export const CAR_WHEEL_HUB_Y = -0.38;
-export const CAR_WHEEL_RADIUS = 0.43;
-export const CAR_CONTACT_Y = CAR_WHEEL_HUB_Y - CAR_WHEEL_RADIUS;
-export const CAR_RIDE_HEIGHT = rideHeightFromContact(CAR_CONTACT_Y);
+import { CAR_WHEEL_HUB_Y, CAR_WHEEL_RADIUS, CAR_CONTACT_Y } from "./dimensions";
+export { CAR_WHEEL_HUB_Y, CAR_WHEEL_RADIUS, CAR_CONTACT_Y, CAR_RIDE_HEIGHT } from "./dimensions";
 
 export type CarAnim = {
   wheels: THREE.Group[];

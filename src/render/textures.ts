@@ -8,57 +8,91 @@ import type { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 // tools/optimize-textures.mjs. loadTexture() is stateless (no global cache) so
 // lazy-loaded features can dispose their textures and actually free the VRAM.
 
-let ktx2Promise: Promise<import("three/examples/jsm/loaders/KTX2Loader.js").KTX2Loader | null> | null = null;
-let ktx2Failed = false;
-let warnedKtx2 = false;
+type Ktx2Loader = import("three/examples/jsm/loaders/KTX2Loader.js").KTX2Loader;
+type DecoderService = {
+  renderer: THREE.WebGPURenderer;
+  promise: Promise<Ktx2Loader | null> | null;
+  loader: Ktx2Loader | null;
+  users: number;
+  retired: boolean;
+  failed: boolean;
+};
+let service: DecoderService | null = null;
+const services = new Set<DecoderService>();
 const basicLoader = new THREE.TextureLoader();
+let warnedKtx2 = false;
+const decodeWaiters: Array<() => void> = [];
+let activeDecodes = 0;
 
-/**
- * Remember the active renderer without importing the optional transcoder.
- * The KTX2 loader, worker, and WASM stay off the boot path until an activated
- * feature asks for its first authored texture.
- */
-export function initTextures(nextRenderer: THREE.WebGPURenderer): void {
-  // A renderer replacement is only expected during a full app restart. Drop
-  // the old loader promise so capability detection belongs to the new device.
-  if (nextRenderer !== activeRenderer) {
-    ktx2Promise = null;
-    ktx2Failed = false;
-  }
-  activeRenderer = nextRenderer;
+function retireIfIdle(owner: DecoderService): void {
+  if (!owner.retired || owner.users) return;
+  owner.loader?.dispose();
+  owner.loader = null;
+  services.delete(owner);
 }
 
-export function ktx2Available(): boolean {
-  return activeRenderer !== null && !ktx2Failed;
+/** Capability registration only: no decoder code or WASM enters boot here. */
+export function initTextures(renderer: THREE.WebGPURenderer): void {
+  if (service?.renderer === renderer) return;
+  if (service) { service.retired = true; retireIfIdle(service); }
+  service = { renderer, promise: null, loader: null, users: 0, retired: false, failed: false };
+}
+export function ktx2Available(): boolean { return !!service && !service.failed; }
+export function textureDecoderStats() {
+  return { active: activeDecodes, queued: decodeWaiters.length, limit: 2, services: services.size };
 }
 
-// Kept separate from the parameter name so initTextures remains a tiny,
-// synchronous boot hook and does not accidentally capture the loader chunk.
-let activeRenderer: THREE.WebGPURenderer | null = null;
-
-export async function getKtx2Loader(): Promise<import("three/examples/jsm/loaders/KTX2Loader.js").KTX2Loader | null> {
-  const currentRenderer = activeRenderer;
-  if (!currentRenderer || ktx2Failed) return null;
-  if (!ktx2Promise) {
-    ktx2Promise = import("three/examples/jsm/loaders/KTX2Loader.js")
-      .then(({ KTX2Loader }) => {
-        const loader = new KTX2Loader().setTranscoderPath("/basis/").detectSupport(currentRenderer);
-        loader.setWorkerLimit(2);
-        return loader;
-      })
-      .catch((err: unknown) => {
-        // Memoize terminal capability/import failure for this renderer. A
-        // gallery requesting several textures should not retry the same failed
-        // dynamic import and capability detection for every file.
-        ktx2Failed = true;
-        if (!warnedKtx2) {
-          warnedKtx2 = true;
-          console.warn("[textures] KTX2 unavailable — falling back to WebP:", err);
-        }
-        return null;
-      });
+export async function getKtx2Loader(): Promise<Ktx2Loader | null> {
+  const owner = service;
+  if (!owner || owner.failed) return null;
+  if (!owner.promise) {
+    owner.promise = import("three/examples/jsm/loaders/KTX2Loader.js").then(({ KTX2Loader }) => {
+      if (owner.retired) return null;
+      const loader = new KTX2Loader().setTranscoderPath("/basis/").detectSupport(owner.renderer).setWorkerLimit(2);
+      owner.loader = loader;
+      services.add(owner);
+      const rawLoad = loader.load.bind(loader);
+      // GLTF's embedded Basis textures also enter through load(). Admission at
+      // this shared boundary covers both authored GLBs and standalone foliage.
+      loader.load = (url, onLoad, onProgress, onError) => {
+        owner.users++;
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          owner.users--;
+          const next = decodeWaiters.shift();
+          if (next) queueMicrotask(next); else activeDecodes--;
+          retireIfIdle(owner);
+        };
+        const fail = (error: unknown) => { finish(); onError?.(error); };
+        const run = () => {
+          if (owner.retired) { fail(new Error("Texture renderer was replaced")); return; }
+          try {
+            rawLoad(url, texture => {
+              if (owner.retired) { texture.dispose(); fail(new Error("Texture renderer was replaced during decode")); return; }
+              finish();
+              onLoad?.(texture);
+            }, onProgress, fail);
+          } catch (error) { fail(error); }
+        };
+        if (activeDecodes >= 2) decodeWaiters.push(run);
+        else { activeDecodes++; run(); }
+        return undefined;
+      };
+      return loader;
+    }).catch((error: unknown) => {
+      owner.failed = true;
+      if (!warnedKtx2) { warnedKtx2 = true; console.warn("[textures] KTX2 unavailable; using WebP:", error); }
+      return null;
+    });
   }
-  return ktx2Promise;
+  return owner.promise;
+}
+export async function loadKtx2Texture(url: string): Promise<THREE.CompressedTexture> {
+  const loader = await getKtx2Loader();
+  if (!loader) throw new Error("KTX2 decoder is unavailable");
+  return loader.loadAsync(url);
 }
 
 /**
@@ -102,18 +136,21 @@ export interface LoadTextureOpts {
  * The caller owns disposal.
  */
 export async function loadTexture(name: string, opts: LoadTextureOpts = {}): Promise<THREE.Texture> {
+  const owner = service;
   const srgb = opts.srgb ?? true;
   let tex: THREE.Texture;
   const ktx2 = opts.webpOnly ? null : await getKtx2Loader();
   if (ktx2) {
     try {
       tex = await ktx2.loadAsync(`${name}.ktx2`);
-    } catch {
+    } catch (error) {
+      if (service !== owner) throw error;
       tex = await loadWebp(name);
     }
   } else {
     tex = await loadWebp(name);
   }
+  if (service !== owner) { tex.dispose(); throw new Error("Texture renderer was replaced"); }
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   tex.anisotropy = opts.anisotropy ?? 4;
   tex.needsUpdate = true;

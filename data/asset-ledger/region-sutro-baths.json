@@ -5,7 +5,7 @@
   "bake": "npm run bake:region -- --site sutro-baths",
   "tracked": true,
   "inputs": {
-    "assets-src/world/sites/sutro-baths.blend": "4fc53ef1f428f31d1d246cf95e74a963b58900a1fc264166aa1a94683f26ff33",
+    "assets-src/world/sites/sutro-baths.blend": "d2fc1dedd8c1003d0e59368295a15692e9b6be70f485c560fdc453872c5029bb",
     "data/authored-regions.json": "6d9b3a8dbf60bfa388266d59f183d1ef2e52042925be77c7942f4957d0aa888d",
     "tools/export-authored-site.py": "bc1fed401a1fd10e18b7804f39c379665ba470a5d46f795d2c0e64b8632f6692",
     "tools/inject-authored-site.mjs": "cec2b37728c85137986d207998b78c82421634ea2ee1390729d11ec2583c6664",

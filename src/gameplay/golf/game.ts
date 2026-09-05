@@ -311,11 +311,22 @@ export class GolfGame {
     if (this.#driveCart) setCartBags(this.#driveCart, this.#cartOccupants);
   }
 
+  #cartPreparing = false;
   #tryBoardCart(player: Player, hud: HUD): boolean {
     if (!this.#parkedCart || this.#cartBoarded || this.#parkedCart.visible === false) return false;
     const p = player.renderPosition;
     const cp = this.#parkedCart.position;
     if (Math.hypot(p.x - cp.x, p.z - cp.z) > 3.6) return false;
+    if (!player.isModeReady("drive")) {
+      if (!this.#cartPreparing) {
+        this.#cartPreparing = true;
+        void player.prepareMode("drive").then(() => {
+          if (player.mode === "walk") this.#tryBoardCart(player, hud);
+        }).catch(() => hud.message("The cart could not load. Try again.", 3))
+          .finally(() => { this.#cartPreparing = false; });
+      }
+      return true;
+    }
     // swap the player's drive embodiment to the cart + its lighter, tippier spec
     this.#driveCart = buildGolfCartMesh();
     this.#driveCart.name = "golf-cart-active";

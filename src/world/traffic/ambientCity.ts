@@ -5,6 +5,7 @@ import type { RoadGraph } from "./roadGraph";
 import { buildRig, poseWalk, type Rig } from "../../player/rig";
 import { avatarFromSeed } from "../../player/avatar";
 import { yieldToFrame } from "../../core/cooperativeWork";
+import { laptopProfile } from "../../render/laptopProfiles";
 import { governorEffects } from "../../render/adaptiveResolution";
 const CAR_COUNT = 18, WALKER_COUNT = 12, RADIUS = 220;
 type Agent = {
@@ -20,6 +21,8 @@ type Agent = {
     yaw: number;
     walker: boolean;
     side: 1 | -1;
+    poseAt: number;
+    routeChoice: number;
 };
 function carGeometry(kind: number) {
     const parts: THREE.BufferGeometry[] = [];
@@ -69,6 +72,8 @@ export class AmbientCity {
     private nextSpawn = 0;
     private seed = 49217;
     private disposed = false;
+    private junctions = 0;
+    private poseUpdates = 0;
     private constructor(private roads: RoadGraph, private map: WorldMap) {
         this.root.name = "ambient_city_life";
         const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.65, metalness: 0.2 });
@@ -84,7 +89,7 @@ export class AmbientCity {
             this.root.add(mesh);
         }
         for (let i = 0; i < CAR_COUNT + WALKER_COUNT; i++)
-            this.agents.push({ seg: 0, s: 0, dir: 1, total: 0, halfWidth: 0, speed: i < CAR_COUNT ? 5 + (i % 4) : 0.85 + (i % 3) * 0.17, active: false, pos: new THREE.Vector3(), target: new THREE.Vector3(), yaw: 0, walker: i >= CAR_COUNT, side: i % 2 ? 1 : -1 });
+            this.agents.push({ seg: 0, s: 0, dir: 1, total: 0, halfWidth: 0, speed: i < CAR_COUNT ? 5 + (i % 4) : 0.85 + (i % 3) * 0.17, active: false, pos: new THREE.Vector3(), target: new THREE.Vector3(), yaw: 0, walker: i >= CAR_COUNT, side: i % 2 ? 1 : -1, poseAt: 0, routeChoice: i });
     }
     static async create(roads: RoadGraph, map: WorldMap) {
         const city = new AmbientCity(roads, map);
@@ -142,8 +147,10 @@ export class AmbientCity {
     private sample(agent: Agent): boolean {
         const p = this.roads.lookAhead(agent.seg, agent.s, agent.dir, 0);
         const x = p.x, z = p.z;
-        const ahead = this.roads.lookAhead(agent.seg, Math.max(1, Math.min(agent.total - 1, agent.s)), agent.dir, 0.8);
-        let dx = ahead.x - x, dz = ahead.z - z;
+        const arc = Math.max(0, Math.min(agent.total, agent.s + agent.dir * 0.8));
+        const reverse = Math.abs(arc - agent.s) < 0.01;
+        const ahead = this.roads.lookAhead(agent.seg, reverse ? agent.s - agent.dir * 0.8 : arc, agent.dir, 0);
+        let dx = (ahead.x - x) * (reverse ? -1 : 1), dz = (ahead.z - z) * (reverse ? -1 : 1);
         const len = Math.hypot(dx, dz);
         if (len < 0.001)
             return false;
@@ -164,7 +171,7 @@ export class AmbientCity {
     update(dt: number, elapsed: number, focus: THREE.Vector3) {
         if (this.disposed)
             return;
-        const economy = governorEffects().level >= 3;
+        const economy = governorEffects().level >= 3 || laptopProfile().label === "Quiet";
         const carLimit = economy ? 9 : CAR_COUNT, walkerLimit = economy ? 6 : WALKER_COUNT;
         this.simAccumulator += Math.min(dt, 0.1);
         const simulate = this.simAccumulator >= 0.1;
@@ -200,21 +207,27 @@ export class AmbientCity {
                         advance = 0;
                 }
                 const next = a.s + a.dir * advance;
-                if (next < 2 || next > a.total - 2) {
-                    if (a.walker) {
+                if (next < 0 || next > a.total) {
+                    const exit = this.roads.junctionExit(a.seg, a.dir, a.routeChoice++, a.walker);
+                    if (exit) {
+                        const overflow = next < 0 ? -next : next - a.total;
+                        const meta = this.roads.segmentMeta(exit.seg);
+                        a.seg = exit.seg; a.dir = exit.dir; a.total = meta.total; a.halfWidth = meta.halfWidth;
+                        a.s = Math.max(0, Math.min(a.total, exit.s + exit.dir * overflow));
+                        this.junctions++;
+                    } else if (a.walker) {
                         a.dir = a.dir === 1 ? -1 : 1;
-                        // Direction reversal must keep the same physical sidewalk.
                         a.side = a.side === 1 ? -1 : 1;
-                    }
-                    else if (distance > 60)
-                        a.active = false;
-                }
-                else
-                    a.s = next;
+                    } else if (distance > 60) a.active = false;
+                    else a.s = Math.max(0.1, Math.min(a.total - 0.1, next));
+                } else a.s = next;
                 if (a.active && !this.sample(a))
                     a.active = false;
-                if (a.walker && a.active)
+                if (a.walker && a.active && elapsed >= a.poseAt) {
                     poseWalk(this.walkers[i - CAR_COUNT], elapsed * a.speed * 1.8, 0);
+                    a.poseAt = elapsed + (distance > 100 ? 0.5 : distance > 45 ? 0.2 : 0.09);
+                    this.poseUpdates++;
+                }
             }
             if (a.active)
                 a.pos.lerp(a.target, 1 - Math.exp(-dt * 18));
@@ -236,7 +249,7 @@ export class AmbientCity {
         }
         this.cars.forEach((mesh, i) => { mesh.count = counts[i]; mesh.instanceMatrix.needsUpdate = counts[i] > 0; });
     }
-    debugState() { return { cars: this.agents.filter(a => a.active && !a.walker).length, walkers: this.agents.filter(a => a.active && a.walker).length, carDraws: this.cars.filter(m => m.count > 0).length }; }
+    debugState() { return { junctions: this.junctions, poseUpdates: this.poseUpdates, cars: this.agents.filter(a => a.active && !a.walker).length, walkers: this.agents.filter(a => a.active && a.walker).length, carDraws: this.cars.filter(m => m.count > 0).length }; }
     dispose() {
         if (this.disposed)
             return;

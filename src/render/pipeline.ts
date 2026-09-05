@@ -105,7 +105,9 @@ export function createRenderPipeline(
   // setSize / MRT / layer / override-material handling, so a bare
   // `{ renderer }` is a safe and complete drive.
   scenePass.updateBeforeType = NodeUpdateType.NONE;
+  let skyFrame: (() => void) | null = null;
   const driveBeautyPass = () => {
+    skyFrame?.();
     (
       scenePass as unknown as {
         updateBefore(frame: { renderer: THREE.WebGPURenderer }): void;
@@ -265,6 +267,7 @@ export function createRenderPipeline(
   // ------------------------------------------------------------ frame driver
   const drawingBufferSize = new THREE.Vector2();
   let frameIndex = 0;
+  const frameTelemetry = { submittedFrames: 0, compileSkippedFrames: 0, lastSubmittedAt: 0, intervalMs: 0, cpuRenderMs: 0 };
   let lastFrameAt = performance.now();
   let historyInvalidPending = true;
   let lastOutputWidth = 0;
@@ -371,6 +374,7 @@ export function createRenderPipeline(
   });
 
   const render = () => {
+    const renderStarted = performance.now();
     // M11: the stillness gate samples the presented camera every render call —
     // including held ones, so movement DURING a hold is still observed and
     // waiters/deadlines keep progressing while frames are frozen.
@@ -380,6 +384,7 @@ export function createRenderPipeline(
       // No frameIndex bump and no markTextureDisposalFrame — the jitter
       // sequence and the temporal history are both keyed to PRESENTED frames,
       // and textureDisposePatch.ts:74 counts presented frames too.
+      frameTelemetry.compileSkippedFrames++;
       tracer.count("renderSkipCompile");
       return;
     }
@@ -427,6 +432,11 @@ export function createRenderPipeline(
       postChain.render(frame);
     }
     markTextureDisposalFrame(renderer);
+    const submittedAt = performance.now();
+    frameTelemetry.intervalMs = frameTelemetry.lastSubmittedAt > 0 ? submittedAt - frameTelemetry.lastSubmittedAt : 0;
+    frameTelemetry.lastSubmittedAt = submittedAt;
+    frameTelemetry.cpuRenderMs = submittedAt - renderStarted;
+    frameTelemetry.submittedFrames++;
   };
 
   /**
@@ -584,12 +594,16 @@ export function createRenderPipeline(
 
   return {
     render,
+    /** Counts completed live presentation submissions, excluding captures and compile holds. */
+    frameTelemetry,
     /** Late-bind app-level arrival/reveal admission after the phase machine is
      * constructed. Boot compilation remains unblocked before this binding. */
     setCompileBlocker(blocker: () => boolean) {
       compileGate.setBlocker(blocker);
     },
-    prepareSceneOwner: (owner: THREE.Object3D) => compileGate.prepareSceneOwner(owner),
+    setSkyFrame(callback: () => void) { skyFrame = callback; },
+    prepareOffscreenOwner: compileGate.prepareOffscreenOwner,
+    prepareSceneOwner: (owner: THREE.Object3D, priority = false) => compileGate.prepareSceneOwner(owner, priority),
     /** Destination-exhibit compile lane: same exclusive-window serialization,
      * but the request jumps queued scenery owners, bypasses the arrival/reveal
      * compile blocker, and near-skips the stillness wait. Reserve it for the

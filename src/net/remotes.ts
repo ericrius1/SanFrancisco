@@ -1,41 +1,36 @@
+import { vehicleRuntime, vehicleRuntimeActivated } from "../vehicles/runtime";
+import { carFromSeed } from "../vehicles/car/config";
+import { carKey } from "../vehicles/car/config";
+import { normalizeCarConfig } from "../vehicles/car/config";
+import { boardFromSeed } from "../vehicles/board/config";
+import { boardVisualKey } from "../vehicles/board/config";
+import { normalizeBoardConfig } from "../vehicles/board/config";
+import { SKATE_RIG_ROOT_Y } from "../vehicles/skate/dimensions";
+import { normalizeScooterConfig } from "../vehicles/scooter/config";
+import { scooterFromSeed } from "../vehicles/scooter/config";
+import { scooterKey } from "../vehicles/scooter/config";
 import * as THREE from "three/webgpu";
 import { applyAvatarToRig, buildRig, poseAir, poseDrive, poseIdle, poseRide, poseScooter, poseSkate, poseWalk, type Rig } from "../player/rig";
 import { emoteByIndex, EmoteRunner } from "../player/emotes";
 import { avatarFromSeed, avatarKey, type AvatarTraits } from "../player/avatar";
-import {
-  activateCarAssets,
-  animateCar,
-  buildCarMesh,
-  carFromSeed,
-  carKey,
-  normalizeCarConfig,
-  type CarConfig
-} from "../vehicles/car";
-import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
-import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
-import { buildDroneMesh } from "../vehicles/drone";
-import { buildBoardMesh, animateBoard, boardFromSeed, boardVisualKey, normalizeBoardConfig, type BoardConfig } from "../vehicles/board";
-import { activateBirdAssets, buildBirdMesh, type BirdRig } from "../vehicles/bird";
-import { PhoenixPoser, RemotePhoenixFlight } from "../vehicles/bird/pose";
+import type { CarConfig } from "../vehicles/car";
+import type { PlaneAnim } from "../vehicles/plane";
+
+
+import type { BoardConfig } from "../vehicles/board";
+import type { BirdRig } from "../vehicles/bird";
+import type { PhoenixPoser, RemotePhoenixFlight } from "../vehicles/bird/pose";
 import { FootfallTracker, type SandPrintSink } from "../fx/sandPrints";
-import { FEATHER_RANK, publishFeatherDrive } from "../vehicles/bird/wind";
-import { activateSurfboardAssets, animateSurfboard, buildSurfboardMesh } from "../vehicles/surf";
-import { animateSkate, buildSkateMesh, skateHueFor, SKATE_RIG_ROOT_Y } from "../vehicles/skate";
+
+
+
 import {
   normalizeSurfboardConfig,
   surfboardFromSeed,
   surfboardVisualKey,
   type SurfboardConfig
 } from "../vehicles/surf/config";
-import {
-  activateScooterAssets,
-  animateScooter,
-  buildScooterMesh,
-  normalizeScooterConfig,
-  scooterFromSeed,
-  scooterKey,
-  type ScooterConfig
-} from "../vehicles/scooter";
+import type { ScooterConfig } from "../vehicles/scooter";
 import { passengerCapacity } from "../vehicles/rideable";
 import type { Cockpit, PlayerMode } from "../player/types";
 import type { GardenRakeMotion, GardenRakeTool } from "../player/gardenRake";
@@ -43,6 +38,29 @@ import { GardenRakePoseController } from "../player/gardenRakePose";
 import type { NetSample, RemoteInfo } from "./net";
 import { setEmbodimentVisible } from "../player/embodimentVisibility";
 import { CANVAS_FONT_FAMILY } from "../core/typography";
+
+const activateCarAssets: typeof import("../vehicles/car").activateCarAssets = (...args) => vehicleRuntime("drive").activateCarAssets(...args);
+const animateCar: typeof import("../vehicles/car").animateCar = (...args) => vehicleRuntime("drive").animateCar(...args);
+const buildCarMesh: typeof import("../vehicles/car").buildCarMesh = (...args) => vehicleRuntime("drive").buildCarMesh(...args);
+const buildPlaneMesh: typeof import("../vehicles/plane").buildPlaneMesh = (...args) => vehicleRuntime("plane").buildPlaneMesh(...args);
+const collectPlaneAnim: typeof import("../vehicles/plane").collectPlaneAnim = (...args) => vehicleRuntime("plane").collectPlaneAnim(...args);
+const buildBoatMesh: typeof import("../vehicles/boat").buildBoatMesh = (...args) => vehicleRuntime("boat").buildBoatMesh(...args);
+const buildSpeedboatMesh: typeof import("../vehicles/boat").buildSpeedboatMesh = (...args) => vehicleRuntime("boat").buildSpeedboatMesh(...args);
+const buildDroneMesh: typeof import("../vehicles/drone").buildDroneMesh = (...args) => vehicleRuntime("drone").buildDroneMesh(...args);
+const buildBoardMesh: typeof import("../vehicles/board").buildBoardMesh = (...args) => vehicleRuntime("board").buildBoardMesh(...args);
+const animateBoard: typeof import("../vehicles/board").animateBoard = (...args) => vehicleRuntime("board").animateBoard(...args);
+const activateBirdAssets: typeof import("../vehicles/bird").activateBirdAssets = (...args) => vehicleRuntime("bird").activateBirdAssets(...args);
+const buildBirdMesh: typeof import("../vehicles/bird").buildBirdMesh = (...args) => vehicleRuntime("bird").buildBirdMesh(...args);
+const publishFeatherDrive: typeof import("../vehicles/bird/wind").publishFeatherDrive = (...args) => vehicleRuntime("bird").publishFeatherDrive(...args);
+const activateSurfboardAssets: typeof import("../vehicles/surf").activateSurfboardAssets = (...args) => vehicleRuntime("surf").activateSurfboardAssets(...args);
+const animateSurfboard: typeof import("../vehicles/surf").animateSurfboard = (...args) => vehicleRuntime("surf").animateSurfboard(...args);
+const buildSurfboardMesh: typeof import("../vehicles/surf").buildSurfboardMesh = (...args) => vehicleRuntime("surf").buildSurfboardMesh(...args);
+const animateSkate: typeof import("../vehicles/skate").animateSkate = (...args) => vehicleRuntime("skate").animateSkate(...args);
+const buildSkateMesh: typeof import("../vehicles/skate").buildSkateMesh = (...args) => vehicleRuntime("skate").buildSkateMesh(...args);
+const skateHueFor: typeof import("../vehicles/skate").skateHueFor = (...args) => vehicleRuntime("skate").skateHueFor(...args);
+const activateScooterAssets: typeof import("../vehicles/scooter").activateScooterAssets = (...args) => vehicleRuntime("scooter").activateScooterAssets(...args);
+const animateScooter: typeof import("../vehicles/scooter").animateScooter = (...args) => vehicleRuntime("scooter").animateScooter(...args);
+const buildScooterMesh: typeof import("../vehicles/scooter").buildScooterMesh = (...args) => vehicleRuntime("scooter").buildScooterMesh(...args);
 
 /**
  * Visuals for everyone else in the world: one avatar per remote player, driven
@@ -291,16 +309,7 @@ export class RemotePlayers {
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
-    // prototypes share the exact material instances the clones will use;
-    // built up front so nothing compiles at first join
-    // boards are NOT prototyped: each remote builds its own from their config
-    // (same material classes as the local player's board, so nothing compiles)
-    this.#protos = {
-      plane: buildPlaneMesh(),
-      boat: buildBoatMesh(),
-      speedboat: buildSpeedboatMesh(),
-      drone: buildDroneMesh()
-    };
+
   }
 
   #walkScratch: { x: number; z: number }[] = [];
@@ -685,11 +694,7 @@ export class RemotePlayers {
     this.#scene.remove(a.root);
     a.tag.material.map?.dispose();
     a.tag.material.dispose();
-    // Per-player customizable vehicle builds own their resources.
-    (a.bodies.drive?.userData.dispose as (() => void) | undefined)?.();
-    (a.bodies.board?.userData.dispose as (() => void) | undefined)?.();
-    (a.bodies.scooter?.userData.dispose as (() => void) | undefined)?.();
-    (a.bodies.surf?.userData.dispose as (() => void) | undefined)?.();
+    for (const mode of Object.keys(a.bodies) as PlayerMode[]) this.#retireBody(a, mode);
     a.rakePose?.dispose();
   }
 
@@ -703,8 +708,27 @@ export class RemotePlayers {
   }
 
   /** Lazily build/show the embodiment for a mode; hide the previous one. */
+  #retireBody(a: Avatar, mode: PlayerMode): void {
+    const body = a.bodies[mode];
+    if (!body) return;
+    body.removeFromParent();
+    const rig = body.userData.remoteRig as Rig | undefined;
+    rig?.group.removeFromParent();
+    rig?.group.traverse(o => { if (o instanceof THREE.SkinnedMesh) { o.skeleton.dispose(); (o.material as THREE.Material).dispose(); } });
+    (body.userData.dispose as (() => void) | undefined)?.();
+    delete a.bodies[mode];
+    if (a.mode === mode) { a.mode = null; a.rig = null; }
+    if (mode === "bird") { a.birdFlight = null; a.birdPoser = null; }
+  }
+  #canHydrate(a: Avatar, mode: PlayerMode): boolean {
+    const local = this.localPlayerPosition();
+    return mode === "walk" || (vehicleRuntimeActivated(mode) && !!local && a.root.position.distanceToSquared(local) <= 180 * 180);
+  }
   #embody(a: Avatar, mode: PlayerMode) {
-    if (a.mode === mode) return;
+    const existing = a.bodies[mode];
+    const hydrate = existing?.userData.runtimeFallback && this.#canHydrate(a, mode);
+    if (a.mode === mode && !hydrate) return;
+    if (hydrate) this.#retireBody(a, mode);
     if (a.mode) {
       const prev = a.bodies[a.mode];
       if (prev) setEmbodimentVisible(prev, false);
@@ -729,6 +753,11 @@ export class RemotePlayers {
   }
 
   #buildBody(a: Avatar, mode: PlayerMode): THREE.Group {
+    if (!this.#canHydrate(a, mode)) {
+      const fallback = this.#buildBody(a, "walk");
+      fallback.userData.runtimeFallback = true;
+      return fallback;
+    }
     if (mode === "walk") {
       const g = new THREE.Group();
       const rig = buildRig(a.avatar);
@@ -806,7 +835,7 @@ export class RemotePlayers {
       }
       return g;
     }
-    const proto = this.#protos[mode]!;
+    const proto = this.#protos[mode] ??= mode === "plane" ? buildPlaneMesh() : mode === "boat" ? buildBoatMesh() : mode === "speedboat" ? buildSpeedboatMesh() : buildDroneMesh();
     const g = proto.clone(true);
     if (mode === "plane" || mode === "boat" || mode === "speedboat") {
       const c = proto.userData.cockpit as Cockpit | undefined;
@@ -878,7 +907,6 @@ export class RemotePlayers {
         // renderT past the newest sample: hold the last pose (no extrapolation)
       }
 
-      this.#embody(a, b.mode);
       TMP.pa.set(from.x, from.y, from.z);
       TMP.pb.set(b.x, b.y, b.z);
       a.root.position.lerpVectors(TMP.pa, TMP.pb, alpha);
@@ -907,6 +935,14 @@ export class RemotePlayers {
       } else {
         a.farHidden = false;
       }
+      // Retire selected art and vehicle shells outside a wider exit radius.
+      // Shared prototype geometry stays owned by Remotes; only owned shell and
+      // rig disposers run here. Returning peers hydrate through the same gate.
+      if (dist2 > 260 * 260) for (const mode of Object.keys(a.bodies) as PlayerMode[]) {
+        const body = a.bodies[mode]!;
+        if (mode !== "walk" && !body.userData.runtimeFallback) this.#retireBody(a, mode);
+      }
+      this.#embody(a, b.mode);
       a.root.visible = !a.farHidden;
       if (a.farHidden) {
         a.rakeMotion = null;
@@ -939,7 +975,7 @@ export class RemotePlayers {
         const body = a.bodies.surf;
         if (
           local &&
-          body &&
+          body && !body.userData.runtimeFallback &&
           !body.userData.surfAssetsActivated &&
           a.root.position.distanceToSquared(local) <= 180 * 180
         ) {
@@ -952,7 +988,7 @@ export class RemotePlayers {
         const body = a.bodies.scooter;
         if (
           local &&
-          body &&
+          body && !body.userData.runtimeFallback &&
           !body.userData.scooterAssetsActivated &&
           a.root.position.distanceToSquared(local) <= 180 * 180
         ) {
@@ -965,7 +1001,7 @@ export class RemotePlayers {
         const body = a.bodies.drive;
         if (
           local &&
-          body &&
+          body && !body.userData.runtimeFallback &&
           !body.userData.carAssetsActivated &&
           a.root.position.distanceToSquared(local) <= 180 * 180
         ) {
@@ -978,7 +1014,7 @@ export class RemotePlayers {
         const body = a.bodies.bird;
         if (
           local &&
-          body &&
+          body && !body.userData.runtimeFallback &&
           !body.userData.birdAssetsActivated &&
           a.root.position.distanceToSquared(local) <= 180 * 180
         ) {
@@ -1000,26 +1036,27 @@ export class RemotePlayers {
     // Only claims the feathers when nobody is flying their own phoenix — the
     // local controller outranks this and holds the claim while it is airborne.
     const feather = featherBird?.birdPoser?.feather;
-    if (feather) publishFeatherDrive(FEATHER_RANK.nearby, feather);
+    if (feather) publishFeatherDrive(vehicleRuntime("bird").FEATHER_RANK.nearby, feather);
   }
 
   #animate(a: Avatar, dt: number) {
+    const mode = a.mode && a.bodies[a.mode]?.userData.runtimeFallback ? "walk" : a.mode;
     a.animT += dt;
-    if (a.mode === "plane") {
+    if (mode === "plane") {
       const anim = a.bodies.plane?.userData.planeAnim as PlaneAnim | undefined;
       if (anim) for (const p of anim.props) p.rotation.z += dt * (7 + a.speed * 0.55);
     }
-    if (a.mode === "surf") {
+    if (mode === "surf") {
       const body = a.bodies.surf;
       if (body) animateSurfboard(body, dt, a.animT);
     }
-    if (a.mode === "drive") {
+    if (mode === "drive") {
       const body = a.bodies.drive;
       if (body) animateCar(body, dt, a.speed, 0);
     }
-    if (a.mode === "bird") this.#animateBird(a, dt);
+    if (mode === "bird") this.#animateBird(a, dt);
     const rig = a.rig;
-    if (!rig || !a.mode) return;
+    if (!rig || !mode) return;
     // A held loop whose owner stopped announcing (tab closed, network gone)
     // gets let go here rather than dancing forever.
     if (a.emoteHoldUntil && performance.now() > a.emoteHoldUntil) {
@@ -1028,11 +1065,11 @@ export class RemotePlayers {
     }
     // Only the walking body emotes; anything else means the rig is busy
     // driving/riding, exactly as on the local player.
-    if (a.emote.active && (a.mode !== "walk" || a.ride)) {
+    if (a.emote.active && (mode !== "walk" || a.ride)) {
       a.emote.cancel(rig);
       a.emoteHoldUntil = 0;
     }
-    if (a.mode === "walk") {
+    if (mode === "walk") {
       if (a.ride) {
         // passenger: seated, no wheel — before the vy check (a car on a hill
         // would read as airborne)
@@ -1087,12 +1124,12 @@ export class RemotePlayers {
       if (a.rakePose && a.rakeMotion) {
         a.rakePose.pose(rig, a.root.position, a.root.quaternion, a.rakeMotion, a.strideT);
       }
-    } else if (a.mode === "board") {
+    } else if (mode === "board") {
       const crouch = Math.min(1, a.speed / 34);
       poseRide(rig, 0, crouch, Math.abs(a.vy) > 4, a.animT);
       const body = a.bodies.board;
       if (body) animateBoard(body, dt, a.animT, a.speed);
-    } else if (a.mode === "skate") {
+    } else if (mode === "skate") {
       REMOTE_SKATE_POSE.air = Math.abs(a.vy) > 2.6;
       REMOTE_SKATE_POSE.crouch = Math.min(1, a.speed / 20);
       REMOTE_SKATE_POSE.t = a.animT;
@@ -1104,18 +1141,18 @@ export class RemotePlayers {
         REMOTE_SKATE.speed = a.speed;
         animateSkate(body, dt, REMOTE_SKATE);
       }
-    } else if (a.mode === "surf") {
+    } else if (mode === "surf") {
       const crouch = Math.min(1, a.speed / 28);
       poseRide(rig, 0, crouch, Math.abs(a.vy) > 3.5, a.animT);
-    } else if (a.mode === "scooter") {
+    } else if (mode === "scooter") {
       poseScooter(rig, 0, a.animT, Math.abs(a.vy) > 3.5);
       const body = a.bodies.scooter;
       if (body) animateScooter(body, dt, a.speed, 0, a.speed > 34);
-    } else if (a.mode === "drive") {
+    } else if (mode === "drive") {
       poseDrive(rig, 0, a.animT, false);
-    } else if (a.mode === "plane" || a.mode === "boat" || a.mode === "speedboat") {
+    } else if (mode === "plane" || mode === "boat" || mode === "speedboat") {
       poseDrive(rig, 0, a.animT, true);
-    } else if (a.mode === "bird") {
+    } else if (mode === "bird") {
       const body = a.bodies.bird;
       rig.group.visible = Boolean(body?.userData.phoenixAsset);
       if (rig.group.visible) poseDrive(rig, 0, a.animT, false);
@@ -1133,8 +1170,8 @@ export class RemotePlayers {
   #animateBird(a: Avatar, dt: number) {
     const rig = a.bodies.bird?.userData.rig as BirdRig | undefined;
     if (!rig) return; // GLB still loading (or never gated in)
-    const flight = (a.birdFlight ??= new RemotePhoenixFlight());
-    const poser = (a.birdPoser ??= new PhoenixPoser());
+    const flight = (a.birdFlight ??= new (vehicleRuntime("bird").RemotePhoenixFlight)());
+    const poser = (a.birdPoser ??= new (vehicleRuntime("bird").PhoenixPoser)());
     flight.update(dt, a.speed, a.root.position.y, a.root.quaternion);
     poser.update(rig, dt, flight.drive, flight);
   }
