@@ -11,6 +11,7 @@
 
 import * as THREE from "three/webgpu";
 import { createFrameBudgetCheckpoint, yieldToFrame } from "../../core/cooperativeWork";
+import { tracer } from "../../core/hitchTracer";
 import {
   loadNativeTreeMaterialSet,
   releaseNativeTreeMaterialSet,
@@ -146,6 +147,10 @@ const REBIN_MOVE_SQ = 4;
 // materialize + near-detail work into hitch spikes. A wider step still keeps
 // the prefetch ring ahead of the camera while cutting refresh frequency.
 const RESIDENCY_MOVE = 40;
+/** Dispose at most this many chunks per update so a drone crossing rings
+ *  cannot dump a whole prefetch ring in one frame. Hidden leftovers drain
+ *  on subsequent updates (applyDistanceCull already stops them drawing). */
+const MAX_CHUNK_RETIRES_PER_UPDATE = 4;
 /** At most one new close-detail KTX2 pack starts per rebin (per forest). */
 const MAX_NEAR_LOAD_STARTS_PER_REBIN = 1;
 const HORIZON_HYSTERESIS = 14;
@@ -1161,21 +1166,32 @@ export function createNativeTreeForest(
 
   function retireDistantChunks(x: number, z: number): boolean {
     if (!Number.isFinite(x) || !Number.isFinite(z)) return false;
-    let retired = false;
-    for (const chunk of [...chunks]) {
+    let retired = 0;
+    // Walk backward so requestChunkRetirement can splice in place.
+    for (let i = chunks.length - 1; i >= 0 && retired < MAX_CHUNK_RETIRES_PER_UPDATE; i--) {
+      const chunk = chunks[i];
       if (descriptorEdgeDistance(chunk, x, z) > retireDistance) {
-        retired = requestChunkRetirement(chunk) || retired;
+        if (requestChunkRetirement(chunk)) {
+          retired++;
+          tracer.count("treeChunkRetire");
+        }
       }
     }
-    if (chunks.length <= maxResidentChunks) return retired;
+    if (chunks.length <= maxResidentChunks || retired >= MAX_CHUNK_RETIRES_PER_UPDATE) {
+      return retired > 0;
+    }
     const overflow = chunks
       .filter((chunk) => descriptorEdgeDistance(chunk, x, z) >= visibleDistance + VISIBILITY_HYSTERESIS)
       .sort((a, b) => descriptorEdgeDistance(b, x, z) - descriptorEdgeDistance(a, x, z));
     for (const chunk of overflow) {
+      if (retired >= MAX_CHUNK_RETIRES_PER_UPDATE) break;
       if (chunks.length <= maxResidentChunks) break;
-      retired = requestChunkRetirement(chunk) || retired;
+      if (requestChunkRetirement(chunk)) {
+        retired++;
+        tracer.count("treeChunkRetire");
+      }
     }
-    return retired;
+    return retired > 0;
   }
 
   async function materializeRelevantChunks(epoch: number, x: number, z: number): Promise<void> {
@@ -2098,11 +2114,16 @@ export function createNativeTreeForest(
         focus.z - lastResidencyFocus.z
       ) >= RESIDENCY_MOVE;
       applyDistanceCull(focus.x, focus.z);
+      // Drain distant chunks every update (capped), not only on the 40 m
+      // residency step — leftover retires from a flyover would otherwise sit
+      // until the next ring crossing.
+      const retired = descriptorsInitialized && finiteFocus
+        ? retireDistantChunks(focus.x, focus.z)
+        : false;
       if (refreshResidency) {
         lastResidencyFocus.x = focus.x;
         lastResidencyFocus.z = focus.z;
         const epoch = ++residencyEpoch;
-        const retired = descriptorsInitialized ? retireDistantChunks(focus.x, focus.z) : false;
         if (retired) rebin(focus.x, focus.z, true);
         if (readySettled) {
           void queueResidencyRefresh(epoch, focus.x, focus.z).catch((error) => {
@@ -2110,6 +2131,8 @@ export function createNativeTreeForest(
           });
         }
         requestHorizonPrefetchPreparation();
+      } else if (retired) {
+        rebin(focus.x, focus.z, true);
       }
       rebin(focus.x, focus.z, force);
       // Legacy CPU far path has no per-frame cull registry; reveal immediately.

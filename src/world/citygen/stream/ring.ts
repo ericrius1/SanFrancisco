@@ -77,12 +77,12 @@ const DETAIL_COST_BUDGET = 55_000;
 const COLLIDER_R = 90;
 const COLLIDER_EXIT = 115; // hysteresis: drop back to baked only past here
 const COLLIDER_BUDGET = 20; // exact-collider swaps per scan (cheap: no mesh) — nearest first
-const CHUNK_BUDGET = 96; // buildings merged into chunk geometry per frame (bounded upload slices)
+const CHUNK_BUDGET = 32; // buildings merged into chunk geometry per frame (bounded upload slices)
 // Converting the packed worker payload into rich Entry/poly objects is allocation
 // heavy in a dense cell. Bound that work so a 1,600-building downtown cell never
 // becomes one GC-prone teleport frame. This is scheduling only; visual quality is
 // identical once the cell's atomic baked→chunk swap completes.
-const CELL_HYDRATE_SLICE = 96;
+const CELL_HYDRATE_SLICE = 32;
 // Far teleports can retire dozens of dense cells at once. Most entries only
 // flip a baked-mesh visibility bit; collider/detail owners are costlier, so cap
 // both the total entries and heavy owners handled by one scheduler slice.

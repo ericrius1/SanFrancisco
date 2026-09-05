@@ -6,7 +6,7 @@ import {  saveTweak } from "./core/persist";
 import { Input } from "./core/input";
 import { tracer } from "./core/hitchTracer";
 import { bootMarkStart, bootMark, bootMarkList, bootMarkSummary, persistBootHistory } from "./core/bootMarks";
-import { createFrameScheduler } from "./core/frameBudget";
+import { createFrameScheduler, streamingBudgetMs } from "./core/frameBudget";
 import { createFrameBudgetCheckpoint } from "./core/cooperativeWork";
 import { prefetchBox3D } from "./core/box3dWorld";
 import { Sky } from "./world/sky";
@@ -803,7 +803,11 @@ async function boot() {
     applyLightFrontRamps();
     tracer.end("world");
     tracer.begin("sched");
-    scheduler.run(revealed ? (frameDt < 1 / 55 ? 3 : frameDt < 1 / 35 ? 1.5 : 0.8) : 24);
+    scheduler.run(streamingBudgetMs(
+      frameDt,
+      revealed,
+      tracer.phaseMs("physics") + tracer.phaseMs("world")
+    ));
     bootArrivalTick();
     tracer.end("sched");
     input.endFrame();

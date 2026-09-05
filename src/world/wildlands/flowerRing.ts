@@ -1214,6 +1214,9 @@ export function createFlowerRing(
   let lastSyncX = Number.NaN;
   let lastSyncZ = Number.NaN;
   const lastFocus = { x: 1e9, z: 1e9 };
+  // Compact finished at least once this residency. Per-frame cull used to
+  // early-out on CPU live counts, which forced a MAP_READ every stream step.
+  let placementReady = false;
 
   function configuredReach(): number {
     return Math.min(
@@ -1222,13 +1225,10 @@ export function createFlowerRing(
     );
   }
 
-  const publishLive = (liveCounts: Uint32Array): void => {
-    for (let index = 0; index < rungs.length; index++) rungs[index].live = liveCounts[index] ?? 0;
-  };
-
   const clearLive = (): void => {
     for (const rung of rungs) rung.live = 0;
     for (const layer of gpu.layers) layer.mesh.visible = false;
+    placementReady = false;
   };
 
   const requestGeneration = (focus: { x: number; z: number }, force = false): void => {
@@ -1261,15 +1261,23 @@ export function createFlowerRing(
       // Reset and every rung's compactor share one command encoder, so rendering
       // can only ever observe the whole old field or the whole new one.
       await renderer.computeAsync([gpu.reset, ...gpu.layers.map((layer) => layer.compute)]);
+      if (disposed || id !== generation) return;
       // This frame's frustum pass may already have run against the previous
       // placement; re-cull immediately so the draw counts match the new buffers.
       renderer.compute(gpu.cullPasses);
-      const readback = await renderer.getArrayBufferAsync(gpu.liveCounts);
-      if (disposed || id !== generation) return;
-      publishLive(new Uint32Array(readback as ArrayBuffer));
-      for (let index = 0; index < gpu.layers.length; index++) {
-        gpu.layers[index].mesh.visible = rungs[index].live > 0;
+      // Zero-instance indirect draws are free. Showing every rung after the
+      // first compact avoids toggling visibility from a MAP_READ. Stats still
+      // read back once per residency so probes have a real population.
+      if (!placementReady) {
+        const readback = await renderer.getArrayBufferAsync(gpu.liveCounts);
+        if (disposed || id !== generation) return;
+        const liveCounts = new Uint32Array(readback as ArrayBuffer);
+        for (let index = 0; index < rungs.length; index++) {
+          rungs[index].live = liveCounts[index] ?? 0;
+        }
       }
+      placementReady = true;
+      for (const layer of gpu.layers) layer.mesh.visible = true;
     })();
     activePromise = run.catch((error) => {
       if (id === generation) console.warn("[flowers] placement failed", error);
@@ -1316,8 +1324,7 @@ export function createFlowerRing(
       requestGeneration(focus);
     },
     cullFrame(camera) {
-      if (disposed || !group.visible) return;
-      if (!rungs.some((rung) => rung.live > 0)) return;
+      if (disposed || !group.visible || !placementReady) return;
       renderer ??= optionalRenderer();
       if (!renderer) return;
       // The per-instance dissolve tracks the live player focus, matching each

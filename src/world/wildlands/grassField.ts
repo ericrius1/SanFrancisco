@@ -245,6 +245,7 @@ type GrassStreamingStats = {
   gpuCandidateThreads: number;
   indirectReadbackBytes: number;
   staleGenerations: number;
+  statsPublished: boolean;
   field: FoliageFieldStats;
 };
 
@@ -374,6 +375,7 @@ export function createWildGrass(
     gpuCandidateThreads: stats.sourceCount,
     indirectReadbackBytes: stats.indirectBytes,
     staleGenerations: 0,
+    statsPublished: false,
     field: field.stats
   };
   group.userData.grassStats = stats;
@@ -454,16 +456,25 @@ export function createWildGrass(
       // Reset and all four compactors share one command encoder. Rendering can
       // therefore observe only the old complete field or the new complete field.
       await renderer.computeAsync([gpu.reset, ...gpu.layers.map((layer) => layer.compute)]);
-      // The frame's frustum pass may already have run against the previous
-      // field; re-cull immediately so this frame draws a visibility set that
-      // matches the freshly compacted instance buffers.
-      renderer.compute(gpu.cullPasses);
-      const readback = await renderer.getArrayBufferAsync(gpu.liveCounts);
       if (disposed || id !== generation) {
         streaming.staleGenerations++;
         return;
       }
-      publishStats(new Uint32Array(readback as ArrayBuffer));
+      // The frame's frustum pass may already have run against the previous
+      // field; re-cull immediately so this frame draws a visibility set that
+      // matches the freshly compacted instance buffers.
+      renderer.compute(gpu.cullPasses);
+      // MAP_READ once per residency (probes + debug stats). Repeating it every
+      // 6 m stream step stalled the GPU timeline during ordinary walking.
+      if (!streaming.statsPublished) {
+        const readback = await renderer.getArrayBufferAsync(gpu.liveCounts);
+        if (disposed || id !== generation) {
+          streaming.staleGenerations++;
+          return;
+        }
+        publishStats(new Uint32Array(readback as ArrayBuffer));
+        streaming.statsPublished = true;
+      }
       streaming.gpuDispatches++;
       streaming.criticalReady = true;
       streaming.criticalLayers = gpu.layers.length;
@@ -512,6 +523,7 @@ export function createWildGrass(
         streaming.generation = generation;
         streaming.pendingJobs = 0;
         streaming.criticalReady = false;
+        streaming.statsPublished = false;
         group.visible = false;
         lastSyncX = Number.NaN;
         lastSyncZ = Number.NaN;

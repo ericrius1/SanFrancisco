@@ -186,6 +186,14 @@ type TileMaterialSet = {
 // Swap facade detail material past this distance (m). Hysteresis avoids flicker.
 const FACADE_FAR_ENTER = 280;
 const FACADE_FAR_EXIT = 240;
+// The master draw slider can reach the whole sandbox so Twin Peaks / Marin /
+// plane flights keep landmarks + the skyline. Surfaces self-cull sooner:
+// parks and roads go sub-pixel long before haze does, and even building
+// tiles past ~12 km are ~80% fogged at the default haze (still in frustum
+// from a hill). Landmarks stay on the slider.
+const ROAD_VISUAL_RADIUS = 4200;
+const PARK_VISUAL_RADIUS = 2800;
+const BUILDING_VISUAL_RADIUS = 12000;
 // A healthy residency set is much smaller than this. The cap prevents unusual
 // radius/settings changes from turning the pool into an unbounded session cache.
 const MAX_FACADE_SLOT_POOL = 64;
@@ -1038,9 +1046,9 @@ export class TileStreamer {
     }
     // one mesh attach (GPU upload) OR one finalize OR one dispose per frame,
     // so tile streaming costs stay flat instead of spiking when loads land in
-    // bursts. Exception: while #catchingUp, drain up to 4/frame so a
-    // post-descent detail backlog (see #resumeDetail) clears in a handful of
-    // frames instead of trickling in one mesh at a time.
+    // bursts. Exception: while #catchingUp, drain up to 2/frame so a
+    // post-descent detail backlog (see #resumeDetail) clears quickly without
+    // stacking four arena uploads on the same presented frame.
     let spent = false;
     // Once the local visual minimum is ready, interleave old-region retirement
     // and deferred collider/shadow application with remaining visual uploads.
@@ -1052,7 +1060,7 @@ export class TileStreamer {
       spent = this.#drainColliderReady();
     }
     if (!spent) {
-      for (let i = 0, n = this.#catchingUp ? 4 : 1; i < n; i++) {
+      for (let i = 0, n = this.#catchingUp ? 2 : 1; i < n; i++) {
         if (!this.#drainAttach()) { this.#catchingUp = false; break; }
         spent = true;
       }
@@ -2257,9 +2265,9 @@ export class TileStreamer {
       // publish this tile's alive data into its atlas row before the instance can
       // render (addInstance made it visible; no frame elapses before this sync)
       this.#syncBuildingAtlasRow(tile);
-      // a building folded into a currently-hidden tile (non-destination during a
-      // covered arrival) must start hidden — the batch is not under tile.group
+      // Batched buildings are not under tile.group — inherit tile + distance gates.
       if (!tile.group.visible) handle.setVisible(false);
+      else this.#applySurfaceVisuals(tile);
       mesh.geometry.dispose(); // the batch copied the geometry into its arena
     } else {
       // batch full/exhausted — keep this building on the per-tile bundle with its
@@ -2315,10 +2323,10 @@ export class TileStreamer {
     const handle = this.#roadBatch.add(mesh.geometry, mesh.matrixWorld);
     if (handle) {
       stampBatchBirth(this.#roadBirth!, handle.instanceId);
-      // a road folded into a currently-hidden tile (non-destination during a
-      // covered arrival) must start hidden — the batch is not under tile.group
-      if (!tile.group.visible) handle.setVisible(false);
       (tile.roadBatchHandles ??= []).push(handle);
+      // Batched roads are not under tile.group — inherit tile + distance gates.
+      if (!tile.group.visible) handle.setVisible(false);
+      else this.#applySurfaceVisuals(tile);
       mesh.geometry.dispose(); // the batch copied the geometry into its arena
     } else {
       // batch full/exhausted — keep this road on the per-tile bundle (its
@@ -2367,8 +2375,9 @@ export class TileStreamer {
     const handle = this.#parkBatch.add(mesh.geometry, mesh.matrixWorld);
     if (handle) {
       stampBatchBirth(this.#parkBirth!, handle.instanceId);
-      if (!tile.group.visible) handle.setVisible(false);
       (tile.parkBatchHandles ??= []).push(handle);
+      if (!tile.group.visible) handle.setVisible(false);
+      else this.#applySurfaceVisuals(tile);
       mesh.geometry.dispose(); // the batch copied the geometry into its arena
     } else {
       // batch full/exhausted — keep this deck on the per-tile bundle (its
@@ -2410,10 +2419,30 @@ export class TileStreamer {
       }
     }
     tile.group.visible = true;
-    this.#setTileRoadVisible(tile, true);
-    this.#setTileBuildingVisible(tile, true);
-    this.#setTileParkVisible(tile, true);
+    this.#applySurfaceVisuals(tile);
     if (tile.shadowProxy) tile.shadowProxy.group.visible = true;
+  }
+
+  /** World-space distance from the current streamer focus to the tile bounds. */
+  #tileFocusDistSq(tile: LoadedTile): number {
+    const [cx, cz] = this.keyToCenter(tile.key);
+    const half = (this.manifest?.tile ?? 800) * 0.5;
+    const dx = Math.max(0, Math.abs(this.#px - cx) - half);
+    const dz = Math.max(0, Math.abs(this.#pz - cz) - half);
+    return dx * dx + dz * dz;
+  }
+
+  /** Hide far road/park instances while the skyline stays on the draw slider. */
+  #applySurfaceVisuals(tile: LoadedTile): void {
+    if (!tile.group.visible) return;
+    const d2 = this.#tileFocusDistSq(tile);
+    const drawR = Math.max(0, CONFIG.tileLoadRadius);
+    const buildingR = Math.min(drawR, BUILDING_VISUAL_RADIUS);
+    const roadR = Math.min(drawR, ROAD_VISUAL_RADIUS);
+    const parkR = Math.min(drawR, PARK_VISUAL_RADIUS);
+    this.#setTileBuildingVisible(tile, d2 <= buildingR * buildingR);
+    this.#setTileRoadVisible(tile, d2 <= roadR * roadR);
+    this.#setTileParkVisible(tile, d2 <= parkR * parkR);
   }
 
   #hideTileVisuals(tile: LoadedTile): void {
@@ -2467,6 +2496,8 @@ export class TileStreamer {
       } else if (this.#drawCulled.has(e.key)) {
         this.#drawCulled.delete(e.key);
         this.#applyTileVisibility(tile, true);
+      } else if (tile.group.visible) {
+        this.#applySurfaceVisuals(tile);
       }
     }
     this.#syncLandmarkDrawVisibility(px, pz, drawR);

@@ -34,7 +34,9 @@ export type Job = () => void | "again";
 export interface FrameScheduler {
   /** Queue one unit of deferrable work on a lane. */
   schedule(lane: Lane, job: Job): void;
-  /** Drain jobs in priority order until budgetMs is spent. Call once per frame. */
+  /** Drain jobs in priority order until budgetMs is spent. Call once per frame.
+   *  `budgetMs <= 0` skips the frame entirely (no starvation job) so a CPU-hot
+   *  tick cannot grow a 10 ms assemble into a hitch. */
   run(budgetMs: number): void;
   /** Queued job count (all lanes) — probes/debug. */
   readonly pending: number;
@@ -48,6 +50,19 @@ export interface FrameScheduler {
   readonly waiting: number;
   /** Per-lane queue depths — probes/debug. */
   depths(): Record<Lane, number>;
+}
+
+/**
+ * Headroom-scaled streaming budget. GPU-bound frames (big rAF dt, cheap CPU)
+ * still drain — the meadow is 28–36 ms of grass fill with ~8 ms of CPU left.
+ * A CPU-hot world/physics tick gets nothing this frame; the backlog waits.
+ */
+export function streamingBudgetMs(frameDt: number, revealed: boolean, cpuMs = 0): number {
+  if (!revealed) return 24;
+  if (cpuMs > 12) return 0;
+  if (frameDt < 1 / 55) return 3;
+  if (frameDt < 1 / 35) return 1.5;
+  return 0.8;
 }
 
 export function createFrameScheduler(): FrameScheduler {
@@ -65,11 +80,14 @@ export function createFrameScheduler(): FrameScheduler {
         waiting = 0;
         return;
       }
+      // Callers pass 0 when this tick is already CPU-late. Forcing a job then
+      // is how assembleBuilding / hydrate slices become hitch spikes.
+      // Positive budgets still guarantee one job so queues cannot wedge forever.
+      if (budgetMs <= 0) return;
       const t0 = performance.now();
       const deadline = t0 + budgetMs;
-      // Starvation guard: however tight the frame, run at least one job so the
-      // queues always drain under sustained load (a single job is ~1 ms — the
-      // alternative, an ever-growing backlog, is worse than paying it).
+      // Starvation guard: however tight the (positive) budget, run at least
+      // one job so the queues always drain under sustained load.
       let ran = 0;
       const requeued: [Lane, Job][] = [];
       for (const lane of LANES) {

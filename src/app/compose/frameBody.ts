@@ -6,6 +6,7 @@ import { suppressesFullReload } from "../../app/hmr/suppressFullReload";
 import * as THREE from "three/webgpu";
 import { CAMERA_TUNING,  CONFIG,  FOLIAGE_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "../../config";
 import { resetAllTweaks } from "../../core/persist";
+import { streamingBudgetMs } from "../../core/frameBudget";
 import {  formatInteractPrompt, localizeInteractText } from "../../core/input";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "../../world/oceanBeachWaves";
 import { setSeaTime } from "../../world/heightmap";
@@ -663,7 +664,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       updateSkateHud(frameDt);
       // paused-but-roaming still streams tiles/core.state.citygen — keep their deferred
       // assembly draining so the frozen city fills in around the live player
-      scheduler.run(frameDt < 1 / 55 ? 3 : 1.5);
+      scheduler.run(streamingBudgetMs(frameDt, true));
       updateSurfPresentation(frameDt);
       // The world clock stays frozen, but the player and camera can move in this
       // branch. Keep shadow coverage and the every-frame subject map current.

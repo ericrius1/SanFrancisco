@@ -69,6 +69,11 @@ class HitchTracer {
     this.#counts.set(name, (this.#counts.get(name) ?? 0) + n);
   }
 
+  /** Cost of a named phase on the OPEN frame (0 if it has not ended yet). */
+  phaseMs(name: string): number {
+    return this.#phase.get(name) ?? 0;
+  }
+
   /** Close a frame. Call once per rendered frame with the true rAF delta. */
   frame(dtMs: number): void {
     this.frames++;

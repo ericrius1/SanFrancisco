@@ -123,12 +123,13 @@ export const INPUT_TUNING = tunables("input", {
  * of this ground-world draw-distance cap. */
 export const DRAW_DISTANCE_MAX = 21000
 
-/** Default draw/cull radius. 3.5 km keeps FiDi/Corona vistas readable while
- * cutting the fragment load of the previous 6 km default (meadow and Corona
- * probes were GPU-bound with millions of far tris still on screen).
- * Players can still crank toward DRAW_DISTANCE_MAX for the whole-city look.
- * Baked tile residency is independent and fills the whole city in the background. */
-export const DRAW_DISTANCE_DEFAULT = 3500
+/** Default draw/cull radius. The sandbox is ~15 × 14 km, so 18 km keeps the
+ * skyline, landmarks and terrain in the frame from Twin Peaks, Marin and
+ * high flights. Roads and park decks self-cull much sooner (tiles.ts) —
+ * they go sub-pixel long before this, and drawing them citywide was the
+ * 6 km / 3.5 km GPU cliff. Baked tile residency is independent and fills
+ * the whole city in the background. */
+export const DRAW_DISTANCE_DEFAULT = 18000
 
 /** Draw distance + fog, bound in the "/" panel. `radius` is the MASTER draw/
  * cull distance: narrow cull-edge fade and citygen chunk reach. Baked OSM tiles

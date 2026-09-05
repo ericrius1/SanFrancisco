@@ -18,7 +18,7 @@
 // all of that shared mutable state across the module boundary — the "big risky"
 // path docs/MAIN_DECOMPOSITION.md defers. Instead the hooks are plain closures
 // over main's scope, so there is zero state threading and zero behavior change.
-import type { FrameScheduler } from "../core/frameBudget";
+import { streamingBudgetMs, type FrameScheduler } from "../core/frameBudget";
 import { tracer } from "../core/hitchTracer";
 
 /** A frame that a reduced-tick branch fully handled (already rendered, or a
@@ -135,7 +135,11 @@ export function createGameLoop(deps: GameLoopDeps): (forcedDt?: number) => void 
     // catch up, tight frames yield. Behind the opaque loading cover nothing is
     // visible, so the budget jumps to 24 ms/frame and the settle gate re-checks.
     tracer.begin("sched");
-    scheduler.run(isRevealed() ? (frameDt < 1 / 55 ? 3 : frameDt < 1 / 35 ? 1.5 : 0.8) : 24);
+    scheduler.run(streamingBudgetMs(
+      frameDt,
+      isRevealed(),
+      tracer.phaseMs("physics") + tracer.phaseMs("world")
+    ));
     hooks.postSchedule(frameDt);
     tracer.end("sched");
 

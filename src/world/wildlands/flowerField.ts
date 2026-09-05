@@ -119,12 +119,11 @@ export function createFlowerFields(
     sliceBudgetMs?: number;
   } = {}
 ): FlowerFields {
-  // A world arrival waits on the near square, so it gets a bigger slice than the
-  // default streaming budget: a bloom field that is still filling in when the
-  // cover lifts reads as flowers appearing out of nowhere, which is the exact
-  // artefact this pass exists to remove. Both squares are far smaller than the
-  // blade field, so even at this budget they are not the arrival's long pole.
-  const sliceBudgetMs = options.sliceBudgetMs ?? 2.5;
+  // Match the blade field's default slice (0.8 ms / 256 cells). Arrival cover
+  // already hides the fill-in; a 2.5 ms / 768-cell turn was a hitch on the
+  // first meadow walk after reveal. Callers that truly gate reveal on the near
+  // square can still pass a larger `sliceBudgetMs`.
+  const sliceBudgetMs = options.sliceBudgetMs ?? 0.8;
   const paint = (x: number, z: number) => flowerEcologyAt(map, x, z, excluded);
   const shared = {
     groundHeight: (x: number, z: number) => map.groundHeight(x, z),
@@ -135,7 +134,7 @@ export function createFlowerFields(
     schedule: options.schedule,
     now: options.now,
     sliceBudgetMs,
-    maxCellsPerSlice: 768
+    maxCellsPerSlice: 256
   };
   const near = new FoliageField({ ...shared, ...FLOWER_FIELD });
   const horizon = new FoliageField({ ...shared, ...FLOWER_HORIZON_FIELD });
