@@ -42,6 +42,7 @@ import {
 import { Bubbles } from "../../fx/bubbles";
 import { WorldCursor } from "../../fx/worldCursor";
 import { WorldQueries } from "../../core/worldQueries";
+import { musicAudioLevel } from "../../core/audioSettings";
 import { BuildingRayRefiner } from "../../core/buildingRayRefine";
 import { Toolbar } from "../../ui/toolbar";
 import { SkateHUD } from "../../ui/skateHud";
@@ -77,6 +78,7 @@ import type { AfterlightExperience } from "../../gameplay/afterlight";
 import type { HangGlidingExperience } from "../../gameplay/hangGliding";
 import type { MarinRocketExperience } from "../../gameplay/marinRocket";
 import { HUD } from "../../ui/hud";
+import { WeatherDirector, type WeatherUpdate } from "../../world/weatherDirector";
 // The launcher and reader stay dynamically loaded; a reading entry may create
 // the shared reader before this game module begins.
 import { setFlowPostFx } from "../../render/post/display/surfFlow";
@@ -91,6 +93,7 @@ import type { MainCtx } from "./ctx";
 
 export async function composeWorldSystemsCore(ctx: MainCtx) {
   const { player, input, camera, scene, chase, map, physics, renderer, sky, tiles, authoredRegions, app, voidRealm, audioEngine, modeDiscovery, constructionSlice, progress, waitForWorldBackgroundWindow, pipeline } = ctx;
+  const weather = new WeatherDirector(scene);
   const state = {
     garden: null as {
     group: THREE.Group;
@@ -183,6 +186,10 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     doorScanHit: null as (ReturnType<CityGenRing["nearestDoor"]>),
     highUp: false as any,
     uiOpen: true as any,
+    // Optional non-diegetic score: both code and media stay out of clean boot.
+    livingScore: null as (import("../../audio/livingScore").LivingScore | null),
+    livingScoreLoading: null as (Promise<void> | null),
+    weather,
   };
   const water = new Water(scene, map, renderer, sky);
   voidRealm.attachWater(water);
@@ -310,6 +317,30 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // / Marin): sampled beds + gust-locked wind synth + spatial animal calls, all
   // fading in per region. Suspends itself when the player is out in the city.
   const nature = createNatureSoundscape();
+  const updateLivingScore = (
+    dt: number,
+    signal: import("../../audio/livingScore").LivingScoreInput
+  ) => {
+    state.livingScore?.update(dt, signal);
+    if (
+      state.livingScore ||
+      state.livingScoreLoading ||
+      !signal.allowNewLoads ||
+      !audioEngine.unlocked ||
+      musicAudioLevel() <= 0.0001
+    ) return;
+    state.livingScoreLoading = import("../../audio/livingScore")
+      .then(({ LivingScore }) => {
+        state.livingScore = new LivingScore();
+        state.livingScore.update(dt, signal);
+      })
+      .catch((error) => console.warn("[living-score] module activation failed", error))
+      .finally(() => {
+        state.livingScoreLoading = null;
+      });
+  };
+  const updateWeather = (dt: number, signal: WeatherUpdate) => weather.update(dt, signal);
+  import.meta.hot?.dispose(() => weather.dispose());
   // Reusable ocean-wave layer (breaking surf at Ocean Beach + shoreline wash
   // anywhere near water); rides the nature AudioContext.
   const waveAudio = new WaveAudio(nature);
@@ -1277,6 +1308,9 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     doorAudio,
     audioControls,
     nature,
+    weather,
+    updateWeather,
+    updateLivingScore,
     waveAudio,
     ballImpactAudio,
     updatePlayerFoley,

@@ -7,8 +7,8 @@
 //     every `new AudioContext()` anywhere in the app is tallied,
 //   - OfflineAudioContext is wrapped separately (allowed, but 0 in normal play),
 //   - exactly ONE ctx exists at boot and it sits SUSPENDED (no gesture yet),
-//   - a no-op unlock does not instantiate vehicle/swim/firework graphs and the
-//     context returns to SUSPENDED when its explicit activity hold expires,
+//   - a no-op unlock admits the persistent living score without instantiating
+//     vehicle/swim/firework graphs,
 //   - a short walk unlocks it to RUNNING with the effects group above zero,
 //   - overlapping external nature leases release independently,
 //   - muting via the HUD creates no new ctx,
@@ -282,10 +282,15 @@ async function main() {
     const bootNodes = webAudio.nodes.size;
     const bootParams = webAudio.params.size;
 
-    // ---- 4) no-op gesture: resume only for a real hold, then idle-suspend ----
+    // ---- 4) no-op gesture: admit the persistent score, not feature graphs ----
     await setKey(cdp, true, "Slash", "/", 191);
     await setKey(cdp, false, "Slash", "/", 191);
     await ev(cdp, "window.__sf.audioEngine.touch(0.4)");
+    const scoreDeadline = Date.now() + 25_000;
+    while (Date.now() < scoreDeadline) {
+      if (await ev(cdp, "window.__sf.getLivingScore?.()?.debugState?.status === 'ready'")) break;
+      await sleep(250);
+    }
     await sleep(120);
     const held = await ev(cdp, `(() => ({
       state: window.__audioCtxProbe.states()[0],
@@ -294,7 +299,8 @@ async function main() {
         vehicle: window.__sf.vehicleAudio.debugState.ctx,
         swim: window.__sf.swimAudio.debugState.ctx,
         fireworks: window.__sf.fireworks.audio.debugState.ctx
-      }
+      },
+      score: window.__sf.getLivingScore?.()?.debugState ?? null
     }))()`);
     assert.equal(held.state, "running", `explicit hold did not resume ctx: ${JSON.stringify(held)}`);
     assert.deepEqual(
@@ -302,16 +308,18 @@ async function main() {
       { vehicle: "none", swim: "none", fireworks: "none" },
       `no-op unlock constructed optional graphs: ${JSON.stringify(held.featureGraphs)}`
     );
-    assert.equal(webAudio.nodes.size, bootNodes, `no-op unlock added WebAudio nodes (${bootNodes} -> ${webAudio.nodes.size})`);
-    assert.equal(webAudio.params.size, bootParams, `no-op unlock added AudioParams (${bootParams} -> ${webAudio.params.size})`);
+    assert.equal(held.score?.status, "ready", `no-op unlock did not admit the living score: ${JSON.stringify(held)}`);
+    assert(held.score?.loadedStemCount > 0, `living score loaded no stems: ${JSON.stringify(held.score)}`);
+    assert(webAudio.nodes.size > bootNodes, `living score added no WebAudio nodes (${bootNodes} -> ${webAudio.nodes.size})`);
+    assert(webAudio.params.size > bootParams, `living score added no AudioParams (${bootParams} -> ${webAudio.params.size})`);
     await sleep(1000);
     const idle = await ev(cdp, `(() => ({
       state: window.__audioCtxProbe.states()[0],
       debug: window.__sf.audioEngine.debugState
     }))()`);
-    assert.equal(idle.debug.hold, 0, `timed hold did not expire: ${JSON.stringify(idle)}`);
-    assert.equal(idle.debug.persistent, 0, `unexpected persistent hold: ${JSON.stringify(idle)}`);
-    assert.equal(idle.state, "suspended", `idle ctx stayed on with no activity: ${JSON.stringify(idle)}`);
+    assert(idle.debug.hold > 0, `living score did not refresh its activity hold: ${JSON.stringify(idle)}`);
+    assert.equal(idle.debug.persistent, 1, `living score should own one persistent hold: ${JSON.stringify(idle)}`);
+    assert.equal(idle.state, "running", `persistent living score was suspended: ${JSON.stringify(idle)}`);
 
     // Leases are token-owned: releasing A must not cancel B.
     const leases = await ev(cdp, `(() => {
@@ -364,7 +372,8 @@ async function main() {
       state: window.__audioCtxProbe.states()[0],
       debug: window.__sf.audioEngine.debugState
     })`);
-    assert.equal(afterTail.state, "suspended", `walk/foley tail did not idle-suspend: ${JSON.stringify(afterTail)}`);
+    assert.equal(afterTail.state, "running", `living score was suspended after the foley tail: ${JSON.stringify(afterTail)}`);
+    assert.equal(afterTail.debug.persistent, 1, `living-score hold changed after walking: ${JSON.stringify(afterTail)}`);
 
     // First-use construction is incremental: board activation must not build
     // the seven other vehicle voices. Swim's continuous source must park after
@@ -434,6 +443,8 @@ async function main() {
     if (muteInfo.clicked) {
       await sleep(1200);
       mutedDebug = await ev(cdp, "window.__sf?.audioEngine?.debugState ?? null");
+      assert.equal(mutedDebug.persistent, 0, `mute did not release the living-score hold: ${JSON.stringify(mutedDebug)}`);
+      assert.equal(mutedDebug.ctx, "suspended", `muted audio graph did not idle-suspend: ${JSON.stringify(mutedDebug)}`);
     } else {
       console.warn("[probe] mute button not found; skipping mute assertion (no clean window path)");
     }

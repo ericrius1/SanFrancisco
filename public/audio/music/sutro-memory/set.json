@@ -1,0 +1,55 @@
+{
+  "id": "sutro-memory",
+  "title": "SF Living Score 04 — Sutro Memory",
+  "profile": "sutro-memory",
+  "bpm": 58,
+  "key": "E minor",
+  "durationSeconds": 244.72,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 239.72,
+  "sourceSongId": "4b4544fd-f661-467d-8e86-207b656a505d",
+  "stems": [
+    {
+      "id": "01-0-lead-vocals",
+      "role": "melody",
+      "url": "/audio/music/sutro-memory/01-0-lead-vocals.m4a",
+      "gain": 0.68
+    },
+    {
+      "id": "02-1-drums",
+      "role": "drums",
+      "url": "/audio/music/sutro-memory/02-1-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "03-2-bass",
+      "role": "bass",
+      "url": "/audio/music/sutro-memory/03-2-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "04-3-keyboard",
+      "role": "harmony",
+      "url": "/audio/music/sutro-memory/04-3-keyboard.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "05-4-percussion",
+      "role": "drums",
+      "url": "/audio/music/sutro-memory/05-4-percussion.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "06-5-synth",
+      "role": "harmony",
+      "url": "/audio/music/sutro-memory/06-5-synth.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "07-6-other",
+      "role": "texture",
+      "url": "/audio/music/sutro-memory/07-6-other.m4a",
+      "gain": 0.7
+    }
+  ]
+}

@@ -45,8 +45,12 @@ if (!Number.isInteger(PORT) || PORT < 1024) {
 }
 const RELAY = Number(arg("relay", String(PORT + 3000)));
 const OPEN_PATH = arg("open", "/?autostart=1");
-const MARKER = arg("marker", "/src/vehicles/skate/streetSpots.ts");
-const CONTAINS = arg("contains", "SkateStreetSpots");
+// The audio-controls module is part of the always-loaded shell, and this code
+// string distinguishes the living-score worktree from the older mixer that
+// labels the same bus LIVE. A generic shared-world marker can incorrectly bless
+// a sibling worktree and open exactly the wrong build.
+const MARKER = arg("marker", "/src/ui/audioControls.ts");
+const CONTAINS = arg("contains", "music volume: living score, buskers, beach piano, and Fort Mason");
 const BASE = `http://localhost:${PORT}`;
 
 /**

@@ -61,6 +61,9 @@ for (const definition of source.regions) {
   if (JSON.stringify(published.arrival ?? null) !== JSON.stringify(metadata.arrival ?? null)) {
     throw new Error(`${definition.id} arrival pose is missing or stale in the runtime manifest`);
   }
+  if (JSON.stringify(published.replaces ?? null) !== JSON.stringify(metadata.replaces ?? [])) {
+    throw new Error(`${definition.id} replacement roster is missing or stale in the runtime manifest`);
+  }
   console.log(
     `[authored-region] ${definition.id}: ${regionVertices} vertices, ` +
     `${ownedColliders.length} colliders, standalone visual confirmed`

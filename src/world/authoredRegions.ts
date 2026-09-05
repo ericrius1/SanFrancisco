@@ -30,6 +30,11 @@ export type AuthoredRegionArrival = {
   heading: number;
 };
 
+export type AuthoredBuildingReplacement = {
+  tile: string;
+  index: number;
+};
+
 export type AuthoredRegionDefinition = {
   id: string;
   label: string;
@@ -40,6 +45,8 @@ export type AuthoredRegionDefinition = {
   arrivalDistance: number;
   loadDistance: number;
   unloadDistance: number;
+  /** Baked/CityGen source footprints permanently owned by this authored site. */
+  replaces: AuthoredBuildingReplacement[];
   terrain?: {
     mode: "flat-ownership";
     groundY: number;
@@ -111,6 +118,20 @@ function validateManifest(value: unknown): asserts value is AuthoredRegionManife
     ids.add(region.id);
     if (!region.asset?.startsWith("/regions/") || !region.tile) {
       throw new Error(`authored region ${region.id} has an invalid asset or tile`);
+    }
+    if (!Array.isArray(region.replaces)) {
+      throw new Error(`authored region ${region.id} has no replacement roster`);
+    }
+    const replacements = new Set<string>();
+    for (const replacement of region.replaces) {
+      const key = `${replacement?.tile}:${replacement?.index}`;
+      if (
+        !replacement?.tile || !Number.isSafeInteger(replacement.index) || replacement.index < 0 ||
+        replacements.has(key)
+      ) {
+        throw new Error(`authored region ${region.id} has an invalid replacement roster`);
+      }
+      replacements.add(key);
     }
     const bounds = region.bounds;
     if (
@@ -318,6 +339,7 @@ export class AuthoredRegionStreamer {
   readonly #loader = new GLTFLoader();
   readonly #states = new Map<string, RegionState>();
   readonly #watchers = new Map<string, Set<RegionWatcher>>();
+  readonly #buildingReservations = new Set<string>();
 
   constructor(options: AuthoredRegionStreamerOptions) {
     this.#scene = options.scene;
@@ -336,6 +358,9 @@ export class AuthoredRegionStreamer {
     const manifest: unknown = await response.json();
     validateManifest(manifest);
     for (const definition of manifest.regions) {
+      for (const replacement of definition.replaces) {
+        this.#buildingReservations.add(`${replacement.tile}:${replacement.index}`);
+      }
       this.#states.set(definition.id, {
         definition,
         status: "dormant",
@@ -346,6 +371,13 @@ export class AuthoredRegionStreamer {
         error: null
       });
     }
+  }
+
+  /** True when an authored site permanently owns this source footprint.
+   * CityGen asks before materializing a cell, so a lazy GLB never races its
+   * generic predecessor back into existence. */
+  reservesBuilding(tile: string, index: number): boolean {
+    return this.#buildingReservations.has(`${tile}:${index}`);
   }
 
   /** Required arrival participant: only regions intersecting the destination
@@ -483,6 +515,7 @@ export class AuthoredRegionStreamer {
       if (state.root) this.#unload(state);
     }
     this.#watchers.clear();
+    this.#buildingReservations.clear();
   }
 
   #ensure(state: RegionState, signal?: AbortSignal): Promise<void> {

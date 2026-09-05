@@ -88,7 +88,7 @@ import type { MainCtx } from "./ctx";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, updateWeather, updateLivingScore, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
 
   // One place decides what the trick HUD sees; the three frame paths (live,
   // world-frozen, fully paused) all call it right after hud.update so the combo
@@ -307,6 +307,27 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // (active, map-open, paused, and the reading-overlay freeze; voice keeps
     // running while paused).
     audioEngine.update(frameDt, camera);
+    const weather = updateWeather(frameDt, {
+      civil: sky.civilTime,
+      x: player.renderPosition.x,
+      z: player.renderPosition.z,
+      camera,
+      indoor: player.indoor,
+      allowNewLoads: !worldArrival.active
+    });
+    sky.setWeatherMood(weather.cloud, weather.storm, weather.lightning);
+    updateLivingScore(frameDt, {
+      x: player.renderPosition.x,
+      z: player.renderPosition.z,
+      speed: player.speed,
+      timeOfDay: sky.timeOfDay,
+      indoor: player.indoor,
+      allowNewLoads: !worldArrival.active,
+      cloud: weather.cloud,
+      rain: weather.rain,
+      storm: weather.storm,
+      lightning: weather.lightning
+    });
     // Optional regions and shader warmups require a genuinely quiet user
     // window. Continuous first-play movement keeps pushing those stages back;
     // the fixed-quality local tile streamer remains active throughout.
@@ -424,6 +445,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         camera,
         gust: windGustValue(),
         timeOfDay: sky.timeOfDay,
+        weatherRain: core.weather.state.rain,
+        weatherWind: core.weather.state.wind,
         allowNewLoads: !worldArrival.active
       });
       sendLocalPresence(0);
@@ -525,6 +548,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         camera,
         gust: windGustValue(),
         timeOfDay: sky.timeOfDay,
+        weatherRain: core.weather.state.rain,
+        weatherWind: core.weather.state.wind,
         allowNewLoads: !worldArrival.active
       });
       // stay social while frozen: peers keep moving, our keepalive keeps flowing
@@ -654,6 +679,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         camera,
         gust: windGustValue(),
         timeOfDay: sky.timeOfDay,
+        weatherRain: core.weather.state.rain,
+        weatherWind: core.weather.state.wind,
         allowNewLoads: !worldArrival.active
       });
       sendLocalPresence();
@@ -1519,6 +1546,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       camera,
       gust: windGustValue(),
       timeOfDay: sky.timeOfDay,
+      weatherRain: core.weather.state.rain,
+      weatherWind: core.weather.state.wind,
       allowNewLoads: !worldArrival.active
     });
     // live loop only: the dogs freeze during pause, so barking there would lie

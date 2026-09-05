@@ -1,0 +1,31 @@
+{
+  "id": "afterlight-cosmos",
+  "title": "SF Living Score 07 — Afterlight Cosmos",
+  "profile": "afterlight-cosmos",
+  "bpm": 70,
+  "key": "F-sharp minor",
+  "durationSeconds": 244.6,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 239.6,
+  "sourceSongId": "8a04b27c-d21a-45ea-b422-28cf4930e54b",
+  "stems": [
+    {
+      "id": "01-0-drums",
+      "role": "drums",
+      "url": "/audio/music/afterlight-cosmos/01-0-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "02-1-bass",
+      "role": "bass",
+      "url": "/audio/music/afterlight-cosmos/02-1-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "03-2-synth",
+      "role": "harmony",
+      "url": "/audio/music/afterlight-cosmos/03-2-synth.m4a",
+      "gain": 0.76
+    }
+  ]
+}

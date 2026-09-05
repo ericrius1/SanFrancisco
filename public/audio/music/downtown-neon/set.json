@@ -1,0 +1,55 @@
+{
+  "id": "downtown-neon",
+  "title": "SF Living Score 09 — Downtown Neon",
+  "profile": "downtown-neon",
+  "bpm": 92,
+  "key": "D minor",
+  "durationSeconds": 244.72,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 239.72,
+  "sourceSongId": "3097ac0e-6f15-4c90-99bd-06166246ff7e",
+  "stems": [
+    {
+      "id": "01-0-drums",
+      "role": "drums",
+      "url": "/audio/music/downtown-neon/01-0-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "02-1-bass",
+      "role": "bass",
+      "url": "/audio/music/downtown-neon/02-1-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "03-2-keyboard",
+      "role": "harmony",
+      "url": "/audio/music/downtown-neon/03-2-keyboard.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "04-3-percussion",
+      "role": "drums",
+      "url": "/audio/music/downtown-neon/04-3-percussion.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "05-4-synth",
+      "role": "harmony",
+      "url": "/audio/music/downtown-neon/05-4-synth.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "06-5-other",
+      "role": "texture",
+      "url": "/audio/music/downtown-neon/06-5-other.m4a",
+      "gain": 0.7
+    },
+    {
+      "id": "07-6-woodwinds",
+      "role": "melody",
+      "url": "/audio/music/downtown-neon/07-6-woodwinds.m4a",
+      "gain": 0.68
+    }
+  ]
+}

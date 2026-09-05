@@ -1,14 +1,15 @@
-// Citywide CityGen streaming ring — CHUNKED LOD + own crossfade, no baked fabric.
+// Citywide CityGen streaming ring — CHUNKED LOD with atomic visual ownership.
 //
 // The whole visible city is OURS. Buildings are grouped by tile cell; each cell
 // within view is baked into ONE merged LOD chunk (render/chunkLod.ts) — a couple
 // dozen draw calls for the entire skyline. The baked OSM mesh is hidden across
 // every loaded cell (mesh-only suppression: R=1, so the ACCURATE baked collider
 // stays live and catches cars/players via the multi-anchor physics — no oversized
-// proxy box). As you approach a building (DETAIL_R) its full grammar mesh dithers
-// in OVER the chunk prism (an all-ours crossfade), its baked collider is swapped
-// for per-edge walk-in walls with a CLOSED street door (E toggles it — nearestDoor/
-// toggleDoor), and the lazy interior gates on being inside.
+// proxy box). As you approach a building (DETAIL_R), its full grammar mesh takes
+// ownership in the same task that hides the chunk prism. This single-owner swap
+// avoids both coplanar overlap and screen-door shimmer; its baked collider is
+// swapped for per-edge walk-in walls with a CLOSED street door (E toggles it —
+// nearestDoor/toggleDoor), and the lazy interior gates on being inside.
 //
 // Everything is STATIC: world-space geometry, matrixAutoUpdate off, Static bodies.
 // Nothing is destructible — buildings don't break; a crash just stops you.
@@ -32,14 +33,14 @@ import {
 } from "./detailAdmission";
 import type { CityGridIngestReply, PackedCityGrid } from "./ingestTypes";
 import { frontGate, type FrontGateHandle } from "../../../render/frontGate";
-import { MATERIALIZE_BIRTH_SECONDS, materializeField } from "../../../render/materialize";
+import { materializeField } from "../../../render/materialize";
 import { tracer } from "../../../core/hitchTracer";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 
 // Live-tunable streaming params (CITYGEN_TUNING, "/" panel). Read fresh each scan.
 const CT = CITYGEN_TUNING.values;
-const DETAIL_EXIT_MARGIN = 25; // detail fades back to the chunk prism this far past detailRadius
+const DETAIL_EXIT_MARGIN = 25; // detail hands back to the chunk prism this far past detailRadius
 // detail MESH builds per scan — buildBuilding() is the expensive synchronous call here.
 // Adaptive on frame headroom (gauged off dt, the delta update() was just called with) so
 // rounding a corner into a dense block backfills faster instead of visibly sharpening one
@@ -140,11 +141,6 @@ interface Tiles {
   unsuppressBuilding(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
   suppressBuildingMesh(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
   unsuppressBuildingMesh(key: string, index: number, opts?: { invalidateShadows?: boolean }): void;
-  /** Optional batched forms of the mesh-only suppress/restore (one alive-row
-   *  sync instead of per-building syncs). The hydration pre-mask hides a whole
-   *  tile's shells at once; hosts without them fall back to per-building calls. */
-  suppressBuildingMeshBatch?(key: string, indices: readonly number[]): void;
-  unsuppressBuildingMeshBatch?(key: string, indices: readonly number[]): void;
   /** Authored replacements (landmarks, bespoke sites) own these footprints and
    *  must never be materialized or revived by the procedural building ring. */
   isBuildingSuppressed?(key: string, index: number): boolean;
@@ -256,7 +252,7 @@ interface CellState {
 // The two used to be hand-duplicated here and in render/foundation.ts, which is
 // why only one tier ever got the skirt.
 
-/** One faded-in detail building's street door, in world space — enough for a probe
+/** One active detail building's street door, in world space — enough for a probe
  *  to raycast the opening and push a body through it. Matches the collider gap and
  *  the visible doorway exactly (all read core's doorMetrics/doorEligible). */
 export interface CityGenDoorProbe {
@@ -353,9 +349,9 @@ export interface CityGenRing {
     cx: number; cz: number; base: number; top: number; grade?: number; foot?: number;
     poly: readonly (readonly [number, number])[];
   }[];
-  /** DEBUG/probe: world-space door frames for every faded-in detail building. */
+  /** DEBUG/probe: world-space door frames for every active detail building. */
   debugDoors(): CityGenDoorProbe[];
-  /** Nearest operable street door within ~8 m of pos (fully faded-in detail
+  /** Nearest operable street door within ~8 m of pos (active detail
    *  buildings only), or null. Alloc-light: per-entry door metrics are cached on
    *  first sight (no repeated ensureCCW/doorMetrics) and the scan allocates
    *  nothing — one small result object only when a door is in range.
@@ -367,7 +363,7 @@ export interface CityGenRing {
    *  ajar; closing
    *  reverses the swing, then restores the SOLID walls and the baked leaf.
    *  "blocked" = refused — the player is standing in the doorway (never wall
-   *  someone in). "gone" = the building is no longer a faded-in detail mesh. */
+   *  someone in). "gone" = the building no longer owns detail. */
   toggleDoor(id: number): "opened" | "closed" | "blocked" | "gone";
 }
 
@@ -465,12 +461,9 @@ export async function createCityGenRing(
   // publication boundary that guarantees no half-warm object reaches a frame.
   const renderRoot = new THREE.Group();
   renderRoot.name = "cityGenRenderOwners";
-  // Previously-resident detail owners are city-wide batches rather than cell
-  // children. After a far-arrival gate, keep them behind the growing chunk LOD
-  // for the same one-second birth window; showing them earlier would leave
-  // full-height windows/trim floating over a rising base silhouette.
-  let sharedOwnersWereGated = frontGate.active;
-  let sharedOwnersReleaseAt = -Infinity;
+  // Detail owners are city-wide batches rather than cell children. The front
+  // gate hides the shared roots as a unit; once it opens, per-building atomic
+  // ownership decides whether the chunk prism or detail is visible.
   // instanced kit-of-parts windows: every detail building's panes/frames draw
   // as a handful of city-wide instanced meshes (see render/moduleLayer.ts)
   const moduleLayer = createModuleLayer(renderRoot);
@@ -812,8 +805,8 @@ export async function createCityGenRing(
       if (materializedCells.size <= MATERIALIZED_CELL_CACHE_MAX) break;
     }
   };
-  // Every entry that currently holds a detail mesh (≤ maxDetail + in-flight
-  // fades). The per-frame loops (interior gate, fades) walk THIS, not every
+  // Every entry that currently holds a detail mesh (≤ maxDetail). The per-frame
+  // interior/door loops walk THIS, not every
   // loaded building — with a wide tileLoadRadius that's thousands of entries
   // per frame doing nothing but an early-out (measured ~8% of frame CPU).
   const detailSet = new Set<Entry>();
@@ -972,11 +965,17 @@ export async function createCityGenRing(
   // the main thread, through the host's "build" lane. A missing/failed worker
   // falls back to the old synchronous path so the module keeps working anywhere.
   const finishDetail = (e: Entry, b: BuiltGroup) => {
-    b.setOpacity(0);
+    // The detail bundle is fully settled before it enters the scene. Adding a
+    // dithered owner over the still-visible prism made a newly visited district
+    // look like its roofs and facades were flickering for every streamed build.
+    // Both writes happen inside this task, between presented frames: the detail
+    // owner arrives opaque and its one matching prism is discarded atomically.
+    b.setOpacity(1);
     ctx.scene.add(b.group);
-    e.detail = b; e.fade = 0; e.fadeDir = 1;
+    e.detail = b; e.fade = 1; e.fadeDir = 0;
     detailSet.add(e);
-    // R6: DON'T open the door gap — the walls stay SOLID after fade-in too, because
+    loaded.get(e.key)?.chunk?.setBuildingVisible(e.i, false);
+    // R6: DON'T open the door gap — the walls stay SOLID on publication, because
     // doors are now player-operated: they materialize CLOSED (doorPending=true) and
     // only toggleDoor → openDoorway() swaps in the door-gapped walls.
     // Reuse the "coll" solid walls if we came from there; otherwise (from "lod", or
@@ -1435,8 +1434,8 @@ export async function createCityGenRing(
     if (rt.needSolid) markDoorActive(e);
     else restoreClosedVisual(e, rt);
   };
-  // instant close (no animation) — fade-out path: the baked leaf must dither away
-  // with the bundle, and no dynamic leaf may outlive the detail mesh
+  // Instant close (no animation) for interior lifecycle transitions. No dynamic
+  // leaf may outlive the detail mesh.
   const closeDoorNow = (e: Entry) => {
     const rt = e.door;
     if (!rt) return;
@@ -1485,27 +1484,6 @@ export async function createCityGenRing(
     ctx.tiles.unsuppressBuilding(e.key, e.i, { invalidateShadows: false });
     ctx.tiles.suppressBuildingMesh(e.key, e.i, { invalidateShadows: false });
     e.state = "lod"; e.fade = 0; e.fadeDir = 0; e.doorPending = true; e.pendingBuild = false;
-  };
-  const advanceFades = (dt: number) => {
-    for (const e of detailSet) {
-      if (!e.detail || e.fadeDir === 0) continue;
-      // A fade request can predate this frame's doorway crossing. Cancel it before
-      // any close/drop work if the player now occupies the home or its open reveal.
-      if (e.fadeDir < 0 && playerOccupiesDetail(e)) e.fadeDir = 1;
-      // fading out with the door open/mid-swing → snap it shut first, so the baked
-      // leaf dithers away with the bundle and the walls settle back to solid
-      if (e.fadeDir < 0 && (!e.doorPending || e.door?.leaf)) closeDoorNow(e);
-      e.fade += e.fadeDir * (dt / CT.fadeTime);
-      // at fade end the door stays CLOSED (solid walls) — the player opens it with E
-      if (e.fadeDir > 0 && e.fade >= 1) {
-        e.fade = 1; e.fadeDir = 0; e.detail.setOpacity(1);
-        // The detailed shell is now fully opaque and owns this silhouette. Hide
-        // only its merged LOD prism so real door/window holes reveal the room.
-        loaded.get(e.key)?.chunk?.setBuildingVisible(e.i, false);
-      }
-      else if (e.fadeDir < 0 && e.fade <= 0) dropDetail(e);
-      else e.detail.setOpacity(e.fade);
-    }
   };
   // advance swinging doors + retry deferred wall swaps; drop settled doors from
   // the active list (a resting OPEN door costs nothing per frame)
@@ -1608,58 +1586,6 @@ export async function createCityGenRing(
     }
   };
 
-  // ---- hydration shell pre-mask ----------------------------------------------
-  // The moment a cell is WANTED (queued for hydration), its baked far shells are
-  // mesh-masked. Without this, an arrival/teleport showed every surrounding
-  // tile's baked building shells for the full hydrate→merge→publish pipeline
-  // (~15-25 s), reading as floating facade tops over hills that occlude their
-  // bases; each cell then swapped its shells out abruptly at publish. Masking at
-  // queue time makes hydration read as buildings BIRTHING into an intact
-  // landscape (publishChunk stamps the chunk birth) instead of a stale skyline
-  // dissolving tile-by-tile. The registry guarantees restore: a dropped or
-  // emptied request unmasks (pump drop paths + scan sweep + dispose), and a
-  // loaded cell hands ownership to its entries, whose existing restore paths
-  // (retireEntry, publish rollback) already revive the baked meshes.
-  const maskedShellCells = new Map<string, number[]>();
-  const setShellMeshesSuppressed = (key: string, indices: readonly number[], suppressed: boolean) => {
-    if (suppressed) {
-      if (ctx.tiles.suppressBuildingMeshBatch) ctx.tiles.suppressBuildingMeshBatch(key, indices);
-      else for (const i of indices) ctx.tiles.suppressBuildingMesh(key, i, { invalidateShadows: false });
-    } else {
-      if (ctx.tiles.unsuppressBuildingMeshBatch) ctx.tiles.unsuppressBuildingMeshBatch(key, indices);
-      else for (const i of indices) ctx.tiles.unsuppressBuildingMesh(key, i, { invalidateShadows: false });
-    }
-  };
-  const maskCellShells = (key: string) => {
-    if (maskedShellCells.has(key)) return;
-    // Same eligibility materializeBuilding applies, read straight off the packed
-    // grid (or the retained rich-cell cache) — no Entry hydration happens here.
-    let indices: number[];
-    const cached = materializedCells.get(key);
-    if (cached) indices = cached.map((e) => e.i);
-    else {
-      indices = [];
-      const range = cellRanges.get(key);
-      if (grid && range) {
-        for (let p = range[0]; p < range[1]; p++) {
-          if (!READY.has(grid.archetypes[grid.archetypeCodes[p]])) continue;
-          const i = grid.sourceIndices[p];
-          if (ctx.tiles.isBuildingSuppressed?.(key, i) || opts.excludeBuilding?.(key, i)) continue;
-          indices.push(i);
-        }
-      }
-    }
-    if (!indices.length) return;
-    setShellMeshesSuppressed(key, indices, true);
-    maskedShellCells.set(key, indices);
-  };
-  const unmaskCellShells = (key: string) => {
-    const indices = maskedShellCells.get(key);
-    if (!indices) return;
-    maskedShellCells.delete(key);
-    setShellMeshesSuppressed(key, indices, false);
-  };
-
   // ---- cell load / unload -----------------------------------------------------
   const disposeCellChunk = (cell: CellState) => {
     cell.frontGateHandle?.cancel();
@@ -1670,20 +1596,6 @@ export async function createCityGenRing(
     cell.chunk = null;
   };
   const loadCell = (key: string, entries: Entry[]) => {
-    // Queue-time shell-mask handoff: every materialized entry's baked shell is
-    // (re)asserted hidden for the chunk-building phase — from here on the
-    // per-entry paths own restoration (retireEntry on unload, publishChunk's
-    // rollback on failure). Any pre-masked building the hydration did NOT
-    // materialize (exclusion landed mid-flight) is unmasked now, or nothing
-    // would ever revive it.
-    const masked = maskedShellCells.get(key);
-    maskedShellCells.delete(key);
-    if (masked) {
-      const materialized = new Set(entries.map((e) => e.i));
-      const orphaned = masked.filter((i) => !materialized.has(i));
-      if (orphaned.length) setShellMeshesSuppressed(key, orphaned, false);
-    }
-    setShellMeshesSuppressed(key, entries.map((e) => e.i), true);
     const [ix, iz] = key.split("_").map(Number);
     const cell: CellState = { key, ix, iz, entries,
       // conform LOD chunk buildings to terrain (highest ground under each footprint
@@ -1798,7 +1710,6 @@ export async function createCityGenRing(
     if (activeCellHydration && !cellRequestIsCurrent(activeCellHydration)) {
       if (pendingCells.get(activeCellHydration.key) === activeCellHydration.generation) {
         pendingCells.delete(activeCellHydration.key);
-        unmaskCellShells(activeCellHydration.key);
       }
       activeCellHydration = null;
     }
@@ -1809,11 +1720,8 @@ export async function createCityGenRing(
         return;
       }
       if (!cellRequestIsCurrent(request)) {
-        // A same-key request under a NEWER generation keeps the mask — only a
-        // request that dies without a successor restores the baked shells.
         if (pendingCells.get(request.key) === request.generation) {
           pendingCells.delete(request.key);
-          unmaskCellShells(request.key);
         }
         continue;
       }
@@ -1822,7 +1730,6 @@ export async function createCityGenRing(
         touchMaterializedCell(request.key, cached);
         pendingCells.delete(request.key);
         if (cached.length) loadCell(request.key, cached);
-        else unmaskCellShells(request.key);
         if (cellQueue.length) return "again";
         cellHydrationScheduled = false;
         return;
@@ -1830,7 +1737,6 @@ export async function createCityGenRing(
       const range = cellRanges.get(request.key);
       if (!range) {
         pendingCells.delete(request.key);
-        unmaskCellShells(request.key);
         continue;
       }
       activeCellHydration = { ...request, cursor: range[0], end: range[1], entries: [] };
@@ -1851,7 +1757,6 @@ export async function createCityGenRing(
     activeCellHydration = null;
     if (pendingCells.get(task.key) === task.generation) pendingCells.delete(task.key);
     if (cellRequestWithinRange(task) && task.entries.length) loadCell(task.key, task.entries);
-    else unmaskCellShells(task.key); // dropped or hydrated empty — restore the baked shells
     if (cellQueue.length) return "again";
     cellHydrationScheduled = false;
     return;
@@ -1876,11 +1781,6 @@ export async function createCityGenRing(
         ctx.tiles.suppressBuildingMesh(e.key, e.i, { invalidateShadows: false });
         suppressed.push(e);
       }
-      // The tile's shells were masked back at queue time, so publication is no
-      // longer an atomic same-silhouette swap: stamp the shared-material birth
-      // so this cell's buildings GROW in (the same ramp the front-gate reveal
-      // uses) instead of popping into an empty block.
-      cell.chunk.markVisibleBirth(materializeField.worldTime.value as number);
       cell.phase = "ready";
       tracer.count("citygenChunkPublish");
     } catch (error) {
@@ -1983,17 +1883,7 @@ export async function createCityGenRing(
     },
     update(playerPos, dt) {
       if (disposed) return;
-      if (frontGate.active) {
-        sharedOwnersWereGated = true;
-        sharedOwnersReleaseAt = Infinity;
-      } else if (sharedOwnersWereGated) {
-        sharedOwnersWereGated = false;
-        sharedOwnersReleaseAt =
-          (materializeField.worldTime.value as number) + MATERIALIZE_BIRTH_SECONDS;
-      }
-      const sharedOwnersVisible =
-        !frontGate.active &&
-        (materializeField.worldTime.value as number) >= sharedOwnersReleaseAt;
+      const sharedOwnersVisible = !frontGate.active;
       if (renderRoot.visible !== sharedOwnersVisible) renderRoot.visible = sharedOwnersVisible;
       if (doorRoot.visible !== sharedOwnersVisible) doorRoot.visible = sharedOwnersVisible;
       // The complete baked city remains the fallback underneath the reveal.
@@ -2024,11 +1914,10 @@ export async function createCityGenRing(
         if (inst < 200) speedEma += (inst - speedEma) * Math.min(1, dt * 2.5);
       }
       lastPlayer.copy(playerPos); // read by queued coll jobs (anti-wedge) + stale-build check
-      // per-frame: interior gate + detail crossfade + chunk merging
+      // per-frame: interior gate + chunk merging
       const previousInside = insideBuilding;
       insideBuilding = null;
       for (const e of detailSet) gateInterior(e, playerPos, e === previousInside);
-      advanceFades(dt);
       advanceDoors(dt);
       if (building.length && !destinationChanged) {
         const cell = building[0]; // one cell slice per frame (bounded, no hitch)
@@ -2112,18 +2001,6 @@ export async function createCityGenRing(
       for (const cellRequest of wantedCells) {
         pendingCells.set(cellRequest.key, cellRequest.generation);
         cellQueue.push(cellRequest);
-        // Hide this tile's baked shells NOW (see the pre-mask block above):
-        // hydration must read as buildings arriving, not shells lingering.
-        maskCellShells(cellRequest.key);
-      }
-      // Sweep masks whose request died without reaching a pump restore path —
-      // a teleport clears the queue wholesale before the pump can see it. The
-      // invariant after every scan: masked ⇒ pending (loaded cells hand their
-      // mask to per-entry ownership in loadCell).
-      if (maskedShellCells.size) {
-        for (const key of [...maskedShellCells.keys()]) {
-          if (!pendingCells.has(key) && !loaded.has(key)) unmaskCellShells(key);
-        }
       }
       ensureCellHydrationPump();
 
@@ -2137,8 +2014,7 @@ export async function createCityGenRing(
       // hundreds of buildings; without eviction the cap fills with far ones and
       // nearby façades stay as chunk prisms forever (and raising maxDetail only
       // helps after a long drive frees slots). Rank everyone in range, keep the
-      // closest maxDetail, fade the rest. Fading-out holders do NOT count toward
-      // the cap, so a nearer candidate can start building while the far one fades.
+      // closest maxDetail, then atomically hand evicted owners back to their prism.
       type RankedDetail = {
         entry: Entry;
         centerDistance2: number;
@@ -2172,7 +2048,7 @@ export async function createCityGenRing(
               entry: e,
               centerDistance2: d2,
               surfaceDistance2,
-              sticky: e.fadeDir >= 0,
+              sticky: true,
             });
           } else if (inCore || d2 < admissionR2) {
             candidates.push({
@@ -2195,13 +2071,12 @@ export async function createCityGenRing(
       // Holders past detailExit are ranked but never kept (they must leave).
       //
       // ADMISSION HYSTERESIS (the "roof flicker" fix): a building already showing
-      // detail and not fading out sorts as if ~13% nearer, so at the maxDetail /
+      // detail sorts as if ~13% nearer, so at the maxDetail /
       // cost-budget bubble a candidate must be clearly closer to bump it, and a
       // bumped holder can't re-qualify until the nearer crowd genuinely thins.
       // Without this dead-band a building whose rank hovered at the cap flip-flopped
-      // admit<->evict every scan and never settled — a permanent alphaHash dither
-      // dissolve on one façade/roof while its neighbours were solid. The bonus also
-      // covers fading-IN holders so an in-flight fade can finish before it's evictable.
+      // admit<->evict every scan and never settled. That was especially glaring
+      // when the transition used alphaHash; it remains an avoidable ownership pop.
       const STICKY = 0.76; // ≈0.87² on squared distance → ~13% linear dead-band
       const ranked = haveDetail.concat(candidates);
       ranked.sort((a, b) => compareDetailAdmission(a, b, detailCoreR2, STICKY));
@@ -2236,39 +2111,30 @@ export async function createCityGenRing(
         if (!inCore && centerDistance2 > detailExit2) continue; // past both retention bands
         const c = costOf(e);
         // Grandfather clause (second half of the flicker fix): a building that
-        // ALREADY owns detail and isn't fading out skips the entry-band + cost-
+        // ALREADY owns detail skips the entry-band + cost-
         // budget gates — those gate NEW admissions only. Re-evicting a holder
         // because the facade-area budget was momentarily tight was the other
-        // flip-flop source: a big building on the cost bubble rebuilt, fade-
-        // dithered, got cost-evicted, rebuilt… forever. A holder now leaves ONLY
+        // flip-flop source: a big building on the cost bubble rebuilt, got
+        // cost-evicted, rebuilt… forever. A holder now leaves ONLY
         // when it falls past detailExit2 (distance) or the sticky rank pushes it
         // past the count cap.
-        const holder = e.detail && e.fadeDir >= 0;
+        const holder = Boolean(e.detail);
         if (!holder && !shouldAdmitNewDetail(inCore, centerDistance2, admissionR2, c, costLeft)) continue;
         costLeft -= c;
         keep.add(e);
       }
       lastDetailCostUsed = DETAIL_COST_BUDGET - costLeft;
-      // Drive fade direction from keep membership (not a separate distance hysteresis
-      // that would fight eviction and flicker opacity every scan).
-      for (const { entry: e, centerDistance2, surfaceDistance2 } of haveDetail) {
-        if (keep.has(e)) {
-          if (e.fadeDir < 0) e.fadeDir = 1; // reclaimed a slot → fade back in
-        } else if (surfaceDistance2 > detailCoreR2 && centerDistance2 > detailExit2) {
-          dropDetail(e); // past hard exit — free the slot now
-        } else if (e.fadeDir >= 0) {
-          // Restore the prism BEFORE detail opacity starts falling, preserving
-          // the no-hole crossfade contract on eviction.
-          loaded.get(e.key)?.chunk?.setBuildingVisible(e.i, true);
-          e.fadeDir = -1; // displaced by nearer / over cap — crossfade out
-        }
+      // Detail and its prism never overlap across presented frames. Admission
+      // hysteresis keeps ownership stable; eviction restores the prism and
+      // removes detail inside one synchronous task.
+      for (const { entry: e } of haveDetail) {
+        if (keep.has(e)) continue;
+        dropDetail(e);
       }
-      // Active (not fading-out) detail count — fading holders don't block new
-      // builds; in-flight worker requests DO count so a fast scan cadence can't
-      // over-request past the cap while replies are pending.
+      // Live detail plus in-flight worker requests count against the cap.
       let detailCount = 0;
       for (const cell of loaded.values()) {
-        for (const e of cell.entries) if ((e.detail && e.fadeDir >= 0) || e.pendingBuild) detailCount++;
+        for (const e of cell.entries) if (e.detail || e.pendingBuild) detailCount++;
       }
       let db = detailBudget;
       for (const { entry: e } of ranked) {
@@ -2295,9 +2161,6 @@ export async function createCityGenRing(
       cellQueue.length = 0;
       activeCellHydration = null;
       pendingCells.clear();
-      // Restore shells of never-loaded masked cells; loaded cells restore
-      // theirs per entry through finishCellRetirementNow below.
-      for (const key of [...maskedShellCells.keys()]) unmaskCellShells(key);
       if (activeDetailBuild) clearTimeout(activeDetailBuild.timer);
       activeDetailBuild = null;
       detailBuildQueue.length = 0;

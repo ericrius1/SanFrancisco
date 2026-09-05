@@ -299,6 +299,11 @@ const MIME = {
   ".bin": "application/octet-stream",
   ".glb": "model/gltf-binary",
   ".wasm": "application/wasm",
+  ".m4a": "audio/mp4",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".webm": "audio/webm",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".webp": "image/webp",
@@ -313,6 +318,26 @@ const WORLD_ASSET_PREFIXES = ["/data/", "/tiles/", "/models/", "/native-foliage/
 
 const acceptsEncoding = (req, token) => String(req.headers["accept-encoding"] ?? "").includes(token);
 const weakEtag = (st) => `W/"${st.size.toString(16)}-${Math.trunc(st.mtimeMs).toString(16)}"`;
+const byteRange = (header, size) => {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(header).trim());
+  if (!match || (!match[1] && !match[2])) return false;
+  let start;
+  let end;
+  if (!match[1]) {
+    const suffix = Number(match[2]);
+    if (!Number.isSafeInteger(suffix) || suffix <= 0) return false;
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Number(match[2]) : size - 1;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return false;
+    end = Math.min(end, size - 1);
+  }
+  if (start < 0 || start >= size || end < start) return false;
+  return { start, end };
+};
 const cacheControlFor = (urlPath) => {
   if (urlPath.startsWith("/assets/")) return "public, max-age=31536000, immutable";
   if (/^\/native-foliage\/materials\/.+-[a-f0-9]{16}\.ktx2$/.test(urlPath)) {
@@ -467,9 +492,39 @@ const server = http.createServer(async (req, res) => {
       res.end();
       return;
     }
+    const range = byteRange(req.headers.range, st.size);
+    if (range === false) {
+      res.writeHead(416, {
+        "accept-ranges": "bytes",
+        "content-range": `bytes */${st.size}`,
+        "cache-control": cacheControlFor(urlPath),
+        "etag": etag
+      });
+      res.end();
+      return;
+    }
+    if (range) {
+      const headers = {
+        "content-type": MIME[ext] || "application/octet-stream",
+        "content-length": range.end - range.start + 1,
+        "content-range": `bytes ${range.start}-${range.end}/${st.size}`,
+        "accept-ranges": "bytes",
+        "cache-control": cacheControlFor(urlPath),
+        "etag": etag,
+        "last-modified": st.mtime.toUTCString()
+      };
+      res.writeHead(206, headers);
+      if (req.method === "HEAD") {
+        res.end();
+        return;
+      }
+      createReadStream(filePath, { start: range.start, end: range.end }).pipe(res);
+      return;
+    }
     const body = await compressedVariant(req, filePath, ext, st);
     const headers = {
       "content-type": MIME[ext] || "application/octet-stream",
+      "accept-ranges": "bytes",
       "cache-control": cacheControlFor(urlPath),
       "etag": etag,
       "last-modified": st.mtime.toUTCString(),

@@ -131,6 +131,8 @@ export async function installDebugSurfaces(
       getBubbleAudio: () => core.state.bubbleAudio,
       getTidalChoir: () => sites.tidalChoir,
       getAmbientCity: () => core.state.ambientCity,
+      getLivingScore: () => core.state.livingScore,
+      getWeather: () => core.state.weather,
       // Lazily built on approach, so this has to stay a live read: the boot
       // snapshot would freeze it at null for the whole session.
       getShorebreak: () => core.currentShorebreak(),

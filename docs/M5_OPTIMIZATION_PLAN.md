@@ -2,6 +2,12 @@
 
 Updated 2026-09-05. Target: the Apple M5 MacBook Air with 24 GB in this workspace, plus WebGPU-capable laptops and desktops. Full mobile support is outside this pass. The changes live on `codex/m5-world-upgrade`; the original checkout's local work is preserved in the worktree baseline.
 
+## Main integration
+
+The release combines optimization commit `94bfb5e` with main's `7708a2f` weather, living-score and atomic CityGen ownership changes. Conflict resolution retains both the optional optimization owners and the weather/music updates in world composition, and uses main's matched authored-site sources and ledgers. The integrated production bundle is `main-BQrDIaRg.js`.
+
+Asset validation, TypeScript, the production lazy-chunk contract, eight focused CPU regressions, and headless production landmark, weather and living-score checks pass on the combined source. The performance measurements below belong to the earlier `main-tXiqEXIq.js` optimization snapshot; the 20-minute timed run was not repeated after incorporating main's newer weather/music work. Integration logs are under `.data/merge-release/`.
+
 ## Outcome
 
 This pass implements the main architecture changes in the original ranked plan: optional vehicle loading, bounded detailed city residency with a far skyline, representative shader preparation, transactional ecology uploads, distant groundcover coverage, laptop profiles, shared texture decoding, junction-aware ambient life, and a smaller cloud pass. Japanese Tea Garden, Beach Pianist and the other activity/park pins are discoverable even from a pocket world. Selecting a distant pin wakes destination admission before traveling.

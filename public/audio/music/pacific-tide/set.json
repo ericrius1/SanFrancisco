@@ -1,0 +1,49 @@
+{
+  "id": "pacific-tide",
+  "title": "SF Living Score 03 — Pacific Tide",
+  "profile": "pacific-tide",
+  "bpm": 62,
+  "key": "A Dorian",
+  "durationSeconds": 244.6,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 239.6,
+  "sourceSongId": "f71337f1-4373-48c4-aa01-e7302ae48eea",
+  "stems": [
+    {
+      "id": "01-0-drums",
+      "role": "drums",
+      "url": "/audio/music/pacific-tide/01-0-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "02-1-bass",
+      "role": "bass",
+      "url": "/audio/music/pacific-tide/02-1-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "03-2-guitar",
+      "role": "harmony",
+      "url": "/audio/music/pacific-tide/03-2-guitar.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "04-3-percussion",
+      "role": "drums",
+      "url": "/audio/music/pacific-tide/04-3-percussion.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "05-4-synth",
+      "role": "harmony",
+      "url": "/audio/music/pacific-tide/05-4-synth.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "06-5-other",
+      "role": "texture",
+      "url": "/audio/music/pacific-tide/06-5-other.m4a",
+      "gain": 0.7
+    }
+  ]
+}

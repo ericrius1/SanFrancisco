@@ -1,0 +1,49 @@
+{
+  "id": "marin-sky",
+  "title": "SF Living Score 06 — Marin Open Sky",
+  "profile": "marin-sky",
+  "bpm": 84,
+  "key": "G Mixolydian",
+  "durationSeconds": 244.16,
+  "loopStartSeconds": 8,
+  "loopEndSeconds": 239.16,
+  "sourceSongId": "fc52382c-0802-4b77-95eb-0ece23644e4e",
+  "stems": [
+    {
+      "id": "01-0-drums",
+      "role": "drums",
+      "url": "/audio/music/marin-sky/01-0-drums.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "02-1-bass",
+      "role": "bass",
+      "url": "/audio/music/marin-sky/02-1-bass.m4a",
+      "gain": 0.78
+    },
+    {
+      "id": "03-2-guitar",
+      "role": "harmony",
+      "url": "/audio/music/marin-sky/03-2-guitar.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "04-3-percussion",
+      "role": "drums",
+      "url": "/audio/music/marin-sky/04-3-percussion.m4a",
+      "gain": 0.82
+    },
+    {
+      "id": "05-4-synth",
+      "role": "harmony",
+      "url": "/audio/music/marin-sky/05-4-synth.m4a",
+      "gain": 0.76
+    },
+    {
+      "id": "06-5-other",
+      "role": "texture",
+      "url": "/audio/music/marin-sky/06-5-other.m4a",
+      "gain": 0.7
+    }
+  ]
+}

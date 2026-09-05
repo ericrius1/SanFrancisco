@@ -1,0 +1,619 @@
+{
+  "schema": 1,
+  "generatedWith": "Suno v5.5 + Suno Studio multitrack stems",
+  "totalStemSeconds": 21066.4,
+  "sets": [
+    {
+      "id": "afterlight-cosmos",
+      "title": "SF Living Score 07 — Afterlight Cosmos",
+      "profile": "afterlight-cosmos",
+      "bpm": 70,
+      "key": "F-sharp minor",
+      "durationSeconds": 244.6,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 239.6,
+      "sourceSongId": "8a04b27c-d21a-45ea-b422-28cf4930e54b",
+      "stems": [
+        {
+          "id": "01-0-drums",
+          "role": "drums",
+          "url": "/audio/music/afterlight-cosmos/01-0-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "02-1-bass",
+          "role": "bass",
+          "url": "/audio/music/afterlight-cosmos/02-1-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "03-2-synth",
+          "role": "harmony",
+          "url": "/audio/music/afterlight-cosmos/03-2-synth.m4a",
+          "gain": 0.76
+        }
+      ]
+    },
+    {
+      "id": "bay-lights",
+      "title": "SF Living Score 10 — Bay Lights",
+      "profile": "bay-lights",
+      "bpm": 80,
+      "key": "B major",
+      "durationSeconds": 244.36,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 239.36,
+      "sourceSongId": "590d78e5-e550-4f70-8e28-5202a3356a3a",
+      "stems": [
+        {
+          "id": "01-0-drums",
+          "role": "drums",
+          "url": "/audio/music/bay-lights/01-0-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "02-1-bass",
+          "role": "bass",
+          "url": "/audio/music/bay-lights/02-1-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "03-2-guitar",
+          "role": "harmony",
+          "url": "/audio/music/bay-lights/03-2-guitar.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "04-3-percussion",
+          "role": "drums",
+          "url": "/audio/music/bay-lights/04-3-percussion.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "05-4-synth",
+          "role": "harmony",
+          "url": "/audio/music/bay-lights/05-4-synth.m4a",
+          "gain": 0.76
+        }
+      ]
+    },
+    {
+      "id": "california-gold",
+      "title": "SF Living Score 12 — California Gold",
+      "profile": "california-gold",
+      "bpm": 88,
+      "key": "C major",
+      "durationSeconds": 109.36,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 104.36,
+      "sourceSongId": "fb59b4fa-b982-45d0-955d-9c4b2a43f31b",
+      "stems": [
+        {
+          "id": "01-0-drums",
+          "role": "drums",
+          "url": "/audio/music/california-gold/01-0-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "02-1-bass",
+          "role": "bass",
+          "url": "/audio/music/california-gold/02-1-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "03-2-guitar",
+          "role": "harmony",
+          "url": "/audio/music/california-gold/03-2-guitar.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "04-3-keyboard",
+          "role": "harmony",
+          "url": "/audio/music/california-gold/04-3-keyboard.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "05-4-percussion",
+          "role": "drums",
+          "url": "/audio/music/california-gold/05-4-percussion.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "06-5-synth",
+          "role": "harmony",
+          "url": "/audio/music/california-gold/06-5-synth.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "07-6-other",
+          "role": "texture",
+          "url": "/audio/music/california-gold/07-6-other.m4a",
+          "gain": 0.7
+        }
+      ]
+    },
+    {
+      "id": "city-rain",
+      "title": "SF Living Score 11 — City Rain",
+      "profile": "city-rain",
+      "bpm": 74,
+      "key": "E-flat major",
+      "durationSeconds": 479.2,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 474.2,
+      "sourceSongId": "117bf7a3-771c-4e3e-9c49-e7638de224f2",
+      "stems": [
+        {
+          "id": "01-0-lead-vocals",
+          "role": "melody",
+          "url": "/audio/music/city-rain/01-0-lead-vocals.m4a",
+          "gain": 0.68
+        },
+        {
+          "id": "02-1-backing-vocals",
+          "role": "melody",
+          "url": "/audio/music/city-rain/02-1-backing-vocals.m4a",
+          "gain": 0.68
+        },
+        {
+          "id": "03-2-drums",
+          "role": "drums",
+          "url": "/audio/music/city-rain/03-2-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "04-3-bass",
+          "role": "bass",
+          "url": "/audio/music/city-rain/04-3-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "05-4-guitar",
+          "role": "harmony",
+          "url": "/audio/music/city-rain/05-4-guitar.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "06-5-keyboard",
+          "role": "harmony",
+          "url": "/audio/music/city-rain/06-5-keyboard.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "07-6-synth",
+          "role": "harmony",
+          "url": "/audio/music/city-rain/07-6-synth.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "08-7-other",
+          "role": "texture",
+          "url": "/audio/music/city-rain/08-7-other.m4a",
+          "gain": 0.7
+        },
+        {
+          "id": "09-8-woodwinds",
+          "role": "melody",
+          "url": "/audio/music/city-rain/09-8-woodwinds.m4a",
+          "gain": 0.68
+        }
+      ]
+    },
+    {
+      "id": "downtown-neon",
+      "title": "SF Living Score 09 — Downtown Neon",
+      "profile": "downtown-neon",
+      "bpm": 92,
+      "key": "D minor",
+      "durationSeconds": 244.72,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 239.72,
+      "sourceSongId": "3097ac0e-6f15-4c90-99bd-06166246ff7e",
+      "stems": [
+        {
+          "id": "01-0-drums",
+          "role": "drums",
+          "url": "/audio/music/downtown-neon/01-0-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "02-1-bass",
+          "role": "bass",
+          "url": "/audio/music/downtown-neon/02-1-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "03-2-keyboard",
+          "role": "harmony",
+          "url": "/audio/music/downtown-neon/03-2-keyboard.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "04-3-percussion",
+          "role": "drums",
+          "url": "/audio/music/downtown-neon/04-3-percussion.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "05-4-synth",
+          "role": "harmony",
+          "url": "/audio/music/downtown-neon/05-4-synth.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "06-5-other",
+          "role": "texture",
+          "url": "/audio/music/downtown-neon/06-5-other.m4a",
+          "gain": 0.7
+        },
+        {
+          "id": "07-6-woodwinds",
+          "role": "melody",
+          "url": "/audio/music/downtown-neon/07-6-woodwinds.m4a",
+          "gain": 0.68
+        }
+      ]
+    },
+    {
+      "id": "golden-gate-canopy",
+      "title": "SF Living Score 01 — Golden Gate Canopy",
+      "profile": "golden-gate-canopy",
+      "bpm": 76,
+      "key": "F major",
+      "durationSeconds": 479.2,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 474.2,
+      "sourceSongId": "8e2fd1d2-a584-43fb-af57-c307091399f8",
+      "stems": [
+        {
+          "id": "01-0-lead-vocals",
+          "role": "melody",
+          "url": "/audio/music/golden-gate-canopy/01-0-lead-vocals.m4a",
+          "gain": 0.68
+        },
+        {
+          "id": "02-1-backing-vocals",
+          "role": "melody",
+          "url": "/audio/music/golden-gate-canopy/02-1-backing-vocals.m4a",
+          "gain": 0.68
+        },
+        {
+          "id": "03-2-drums",
+          "role": "drums",
+          "url": "/audio/music/golden-gate-canopy/03-2-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "04-3-bass",
+          "role": "bass",
+          "url": "/audio/music/golden-gate-canopy/04-3-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "05-4-guitar",
+          "role": "harmony",
+          "url": "/audio/music/golden-gate-canopy/05-4-guitar.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "06-5-keyboard",
+          "role": "harmony",
+          "url": "/audio/music/golden-gate-canopy/06-5-keyboard.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "07-6-synth",
+          "role": "harmony",
+          "url": "/audio/music/golden-gate-canopy/07-6-synth.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "08-7-other",
+          "role": "texture",
+          "url": "/audio/music/golden-gate-canopy/08-7-other.m4a",
+          "gain": 0.7
+        }
+      ]
+    },
+    {
+      "id": "marin-sky",
+      "title": "SF Living Score 06 — Marin Open Sky",
+      "profile": "marin-sky",
+      "bpm": 84,
+      "key": "G Mixolydian",
+      "durationSeconds": 244.16,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 239.16,
+      "sourceSongId": "fc52382c-0802-4b77-95eb-0ece23644e4e",
+      "stems": [
+        {
+          "id": "01-0-drums",
+          "role": "drums",
+          "url": "/audio/music/marin-sky/01-0-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "02-1-bass",
+          "role": "bass",
+          "url": "/audio/music/marin-sky/02-1-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "03-2-guitar",
+          "role": "harmony",
+          "url": "/audio/music/marin-sky/03-2-guitar.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "04-3-percussion",
+          "role": "drums",
+          "url": "/audio/music/marin-sky/04-3-percussion.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "05-4-synth",
+          "role": "harmony",
+          "url": "/audio/music/marin-sky/05-4-synth.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "06-5-other",
+          "role": "texture",
+          "url": "/audio/music/marin-sky/06-5-other.m4a",
+          "gain": 0.7
+        }
+      ]
+    },
+    {
+      "id": "mission-sun",
+      "title": "SF Living Score 08 — Mission Sun",
+      "profile": "mission-sun",
+      "bpm": 96,
+      "key": "A Mixolydian",
+      "durationSeconds": 244.6,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 239.6,
+      "sourceSongId": "bfffd343-9234-4710-9312-439628f4276d",
+      "stems": [
+        {
+          "id": "01-0-drums",
+          "role": "drums",
+          "url": "/audio/music/mission-sun/01-0-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "02-1-bass",
+          "role": "bass",
+          "url": "/audio/music/mission-sun/02-1-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "03-2-guitar",
+          "role": "harmony",
+          "url": "/audio/music/mission-sun/03-2-guitar.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "04-3-keyboard",
+          "role": "harmony",
+          "url": "/audio/music/mission-sun/04-3-keyboard.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "05-4-percussion",
+          "role": "drums",
+          "url": "/audio/music/mission-sun/05-4-percussion.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "06-5-synth",
+          "role": "harmony",
+          "url": "/audio/music/mission-sun/06-5-synth.m4a",
+          "gain": 0.76
+        }
+      ]
+    },
+    {
+      "id": "pacific-tide",
+      "title": "SF Living Score 03 — Pacific Tide",
+      "profile": "pacific-tide",
+      "bpm": 62,
+      "key": "A Dorian",
+      "durationSeconds": 244.6,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 239.6,
+      "sourceSongId": "f71337f1-4373-48c4-aa01-e7302ae48eea",
+      "stems": [
+        {
+          "id": "01-0-drums",
+          "role": "drums",
+          "url": "/audio/music/pacific-tide/01-0-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "02-1-bass",
+          "role": "bass",
+          "url": "/audio/music/pacific-tide/02-1-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "03-2-guitar",
+          "role": "harmony",
+          "url": "/audio/music/pacific-tide/03-2-guitar.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "04-3-percussion",
+          "role": "drums",
+          "url": "/audio/music/pacific-tide/04-3-percussion.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "05-4-synth",
+          "role": "harmony",
+          "url": "/audio/music/pacific-tide/05-4-synth.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "06-5-other",
+          "role": "texture",
+          "url": "/audio/music/pacific-tide/06-5-other.m4a",
+          "gain": 0.7
+        }
+      ]
+    },
+    {
+      "id": "presidio-fog",
+      "title": "SF Living Score 05 — Presidio Fog",
+      "profile": "presidio-fog",
+      "bpm": 72,
+      "key": "C Dorian",
+      "durationSeconds": 152.04,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 147.04,
+      "sourceSongId": "235f0ac8-14ee-45bd-a909-4419d1d1de56",
+      "stems": [
+        {
+          "id": "01-0-drums",
+          "role": "drums",
+          "url": "/audio/music/presidio-fog/01-0-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "02-1-bass",
+          "role": "bass",
+          "url": "/audio/music/presidio-fog/02-1-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "03-2-keyboard",
+          "role": "harmony",
+          "url": "/audio/music/presidio-fog/03-2-keyboard.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "04-3-strings",
+          "role": "harmony",
+          "url": "/audio/music/presidio-fog/04-3-strings.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "05-4-synth",
+          "role": "harmony",
+          "url": "/audio/music/presidio-fog/05-4-synth.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "06-5-woodwinds",
+          "role": "melody",
+          "url": "/audio/music/presidio-fog/06-5-woodwinds.m4a",
+          "gain": 0.68
+        }
+      ]
+    },
+    {
+      "id": "sutro-memory",
+      "title": "SF Living Score 04 — Sutro Memory",
+      "profile": "sutro-memory",
+      "bpm": 58,
+      "key": "E minor",
+      "durationSeconds": 244.72,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 239.72,
+      "sourceSongId": "4b4544fd-f661-467d-8e86-207b656a505d",
+      "stems": [
+        {
+          "id": "01-0-lead-vocals",
+          "role": "melody",
+          "url": "/audio/music/sutro-memory/01-0-lead-vocals.m4a",
+          "gain": 0.68
+        },
+        {
+          "id": "02-1-drums",
+          "role": "drums",
+          "url": "/audio/music/sutro-memory/02-1-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "03-2-bass",
+          "role": "bass",
+          "url": "/audio/music/sutro-memory/03-2-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "04-3-keyboard",
+          "role": "harmony",
+          "url": "/audio/music/sutro-memory/04-3-keyboard.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "05-4-percussion",
+          "role": "drums",
+          "url": "/audio/music/sutro-memory/05-4-percussion.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "06-5-synth",
+          "role": "harmony",
+          "url": "/audio/music/sutro-memory/06-5-synth.m4a",
+          "gain": 0.76
+        },
+        {
+          "id": "07-6-other",
+          "role": "texture",
+          "url": "/audio/music/sutro-memory/07-6-other.m4a",
+          "gain": 0.7
+        }
+      ]
+    },
+    {
+      "id": "tea-garden-stillness",
+      "title": "SF Living Score 02 — Tea Garden Stillness",
+      "profile": "tea-garden-stillness",
+      "bpm": 64,
+      "key": "D pentatonic",
+      "durationSeconds": 243.4,
+      "loopStartSeconds": 8,
+      "loopEndSeconds": 238.4,
+      "sourceSongId": "b8034568-27d4-42fe-837f-05683b6b15c3",
+      "stems": [
+        {
+          "id": "01-0-lead-vocals",
+          "role": "melody",
+          "url": "/audio/music/tea-garden-stillness/01-0-lead-vocals.m4a",
+          "gain": 0.68
+        },
+        {
+          "id": "02-1-backing-vocals",
+          "role": "melody",
+          "url": "/audio/music/tea-garden-stillness/02-1-backing-vocals.m4a",
+          "gain": 0.68
+        },
+        {
+          "id": "03-2-drums",
+          "role": "drums",
+          "url": "/audio/music/tea-garden-stillness/03-2-drums.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "04-3-bass",
+          "role": "bass",
+          "url": "/audio/music/tea-garden-stillness/04-3-bass.m4a",
+          "gain": 0.78
+        },
+        {
+          "id": "05-4-percussion",
+          "role": "drums",
+          "url": "/audio/music/tea-garden-stillness/05-4-percussion.m4a",
+          "gain": 0.82
+        },
+        {
+          "id": "06-5-synth",
+          "role": "harmony",
+          "url": "/audio/music/tea-garden-stillness/06-5-synth.m4a",
+          "gain": 0.76
+        }
+      ]
+    }
+  ]
+}
