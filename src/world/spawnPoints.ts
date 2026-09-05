@@ -7,6 +7,7 @@ import { oceanBeachSurfShackApproxPose } from "../gameplay/surfing/shack";
 import { mdToWorldXZ, Z_ENTRANCE } from "./missionDolores/layout";
 import { BEACH_PIANIST_BRIDGE_AIM, BEACH_PIANIST_SITE } from "./beachPianist/meta";
 import { SKATE_PLAZA_ARRIVAL } from "./skatePlaza/meta";
+import { TIDAL_CHOIR_CENTER, TIDAL_CHOIR_LABEL } from "../gameplay/tidalChoir/meta";
 
 /** Lightweight gate metadata stays in the boot spawn registry; the restored
  * hall, pools, vegetation and effects remain wholly behind their dynamic import. */
@@ -69,6 +70,7 @@ export type SpawnPoint = {
 };
 
 export const SPAWN_POINTS: Record<string, SpawnPoint> = {
+  tidalChoir: { key: "tidalChoir", label: TIDAL_CHOIR_LABEL, x: TIDAL_CHOIR_CENTER.x, z: TIDAL_CHOIR_CENTER.z + 28, heading: 0, mode: "walk" },
   // Exterior forecourt, eight metres before the open west doors. The museum's
   // dynamic proximity gate wakes immediately, while the player begins on real
   // park ground and walks naturally into the raised sanctuary floor.

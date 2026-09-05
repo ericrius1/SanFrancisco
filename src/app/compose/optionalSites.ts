@@ -26,6 +26,8 @@ import {
 import { ARCHERY_CENTER } from "../../gameplay/archery/meta";
 import { PUP_CENTER } from "../../gameplay/pup/meta";
 import { FORT_MASON_ENSEMBLE_CENTER } from "../../gameplay/fortMasonEnsemble/meta";
+import { TIDAL_CHOIR_CENTER, TIDAL_CHOIR_LABEL } from "../../gameplay/tidalChoir/meta";
+import type { TidalChoir } from "../../gameplay/tidalChoir";
 import { REVERIE_CENTER } from "../../gameplay/palaceReverie/meta";
 import { AFTERLIGHT_ARRIVAL, isAfterlightOpenAtHour } from "../../gameplay/afterlight/meta";
 import { HANG_GLIDING_SITE } from "../../gameplay/hangGliding/meta";
@@ -92,6 +94,7 @@ export type OptionalSiteId =
   | "skate-plaza"
   | "pup"
   | "fort-mason-ensemble"
+  | "tidal-choir"
   | "beach-pianist"
   | "marin-headlands"
   | "tutorial-zone";
@@ -240,6 +243,8 @@ export function createOptionalSites({
   zoneAllowlist?: ReadonlySet<OptionalSiteId>;
 }): {
   update: () => void;
+  updateTidalChoir: (dt: number, elapsed: number) => void;
+  readonly tidalChoir: TidalChoir | null;
   /** Per-frame (runs even during arrival, unlike update): re-assert the streaming
    * panel's A/B visibility toggles while its gating is active — a no-op otherwise. */
   applyPerfGates: () => void;
@@ -258,6 +263,7 @@ export function createOptionalSites({
   let archery: ArcheryGame | null = null;
   let pup: PupPen | null = null;
   let fortMasonEnsemble: FortMasonEnsemble | null = null;
+  let tidalChoir: TidalChoir | null = null;
   let palaceReverie: PalaceReverieGame | null = null;
   let afterlight: AfterlightExperience | null = null;
   let hangGliding: HangGlidingExperience | null = null;
@@ -573,6 +579,20 @@ export function createOptionalSites({
     }
   };
 
+  const loadTidalChoir = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
+    const { TidalChoir } = await import("../../gameplay/tidalChoir");
+    await stage();
+    const choir = new TidalChoir(map, net);
+    try {
+      await prepareOptionalRoot("tidal choir", choir.root, stage, compile);
+      tidalChoir = choir;
+      scene.add(choir.root);
+    } catch (error) {
+      choir.dispose();
+      throw error;
+    }
+  };
+
   const loadPalace = async ({ stage, compile }: OptionalSiteLoadContext): Promise<void> => {
     const { createPalaceReverie } = await import("../../gameplay/palaceReverie");
     await stage();
@@ -844,6 +864,7 @@ export function createOptionalSites({
   });
 
   const optionalWorldSites: OptionalWorldSite[] = [
+    optionalWorldSite({ id: "tidal-choir", label: TIDAL_CHOIR_LABEL, ...TIDAL_CHOIR_CENTER, load: loadTidalChoir, loadDistance: 300, unloadDistance: 700 }),
     optionalWorldSite({
       id: "goldman",
       label: "Goldman Tennis Center",
@@ -1016,6 +1037,10 @@ export function createOptionalSites({
     zone: OptionalSiteId;
     entry: Parameters<SiteFoliageStreamer["register"]>[0];
   }> = [
+    { zone: "tidal-choir", entry: {
+      id: "tidal-choir-garden", ...TIDAL_CHOIR_CENTER, loadDistance: 750, unloadDistance: 1000,
+      build: async () => (await import("../../gameplay/tidalChoir/vegetation")).createChoirVegetation(map)
+    } },
     {
       zone: "lands-end",
       entry: {
@@ -1103,6 +1128,7 @@ export function createOptionalSites({
     "skate-plaza": true,
     pup: true,
     "fort-mason-ensemble": true,
+    "tidal-choir": true,
     "beach-pianist": true,
     "marin-headlands": true,
     "tutorial-zone": true
@@ -1126,6 +1152,9 @@ export function createOptionalSites({
     const gateId = OPTIONAL_SITE_GATE_ID[site.id];
     if (gateId) siteGate.suppress(gateId, !on);
     switch (site.id) {
+      case "tidal-choir":
+        if (!on) tidalChoir?.suspend();
+        break;
       case "goldman":
         if (goldenGateTennis) goldenGateTennis.group.visible = on;
         break;
@@ -1187,6 +1216,8 @@ export function createOptionalSites({
     site: OptionalWorldSite
   ): { runtime: "ACTIVE" | "DETAIL" | "STATIC" | "SLEEP"; sceneState: string } => {
     switch (site.id) {
+      case "tidal-choir":
+        return { runtime: tidalChoir?.root.visible ? "ACTIVE" : "SLEEP", sceneState: optionalSiteSceneState(tidalChoir?.root) };
       case "goldman":
         return {
           runtime: siteGate.awake("pickleball") ? "ACTIVE" : "STATIC",
@@ -1404,6 +1435,7 @@ export function createOptionalSites({
   // state. A site the streaming panel force-loaded is pinned until its toggle
   // releases it.
   const OPTIONAL_SITE_UNLOADERS: Record<OptionalSiteId, () => void> = {
+    "tidal-choir": () => { tidalChoir?.dispose(); tidalChoir = null; },
     goldman: teardownGoldman,
     "fort-mason-ensemble": () => {
       fortMasonEnsemble?.dispose();
@@ -1621,6 +1653,10 @@ export function createOptionalSites({
 
   return {
     update: updateOptionalWorldSites,
+    updateTidalChoir: (dt: number, elapsed: number) => {
+      if (optionalSitePerfAllowed("tidal-choir")) tidalChoir?.update(dt, elapsed, player, remotes, hud);
+    },
+    get tidalChoir() { return tidalChoir; },
     applyPerfGates: () => {
       if (optionalSitePerfGating) applyAllOptionalSitePerfGates();
     },

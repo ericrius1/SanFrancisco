@@ -15,7 +15,7 @@ import { BACKGROUND_STREAM_LIMIT } from "../../world/tiles";
 import type { MainCtx } from "./ctx";
 
 export function installVoidArrival(deps: {
-  ctx: Pick<MainCtx, "player" | "tiles" | "authoredRegions" | "sky" | "map" | "fullTileRadius">;
+  ctx: Pick<MainCtx, "player" | "tiles" | "authoredRegions" | "sky" | "map" | "fullTileRadius" | "zoneBoot">;
   bootQuery: URLSearchParams;
   terrainTiles: TerrainTileStreamer | null;
   scanParticles: TerrainScanParticles | null;
@@ -73,8 +73,8 @@ export function installVoidArrival(deps: {
       // after the stall deadline. Surf keeps its explicit 2 km mode cap (its
       // stash restore is handled by that block when the session quiets down).
       if (player.mode !== "surf") {
-        CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
-        CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
+        CONFIG.tileLoadRadius = deps.ctx.zoneBoot.limitRadius(WORLD_TUNING.values.radius);
+        CONFIG.tileUnloadRadius = CONFIG.tileLoadRadius + 400;
       }
       tiles.beginBackgroundExpansion();
       sky.setStreamingCullRadius(CONFIG.tileLoadRadius);

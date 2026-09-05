@@ -490,7 +490,7 @@ export class BotanicalGrassController extends THREE.Group {
       for (const material of this.#materials) material.focus.set(destination.x, destination.z);
       // Reset + all four compactors share one command encoder; rendering can only
       // ever observe the complete old field or the complete new field.
-      await this.#renderer.computeAsync([this.#gpu.reset, ...this.#gpu.layers.map((layer) => layer.compute)]);
+      await this.#renderer.computeAsync([this.#gpu.reset, ...this.#gpu.layers.map((layer) => layer.compute), ...this.#gpu.finalize]);
       if (this.#disposed || id !== this.#generation) return;
       // Re-cull immediately so this frame draws a visibility set that matches the
       // freshly compacted instance buffers.

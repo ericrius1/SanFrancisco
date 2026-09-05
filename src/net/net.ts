@@ -533,6 +533,13 @@ export class Net {
   // absorbs the residual jitter)
   #clockOffset: number | null = null;
 
+  /** Shared musical phase from the existing snapshot clock; offline uses UTC. */
+  synchronizedTimeMs(): number {
+    return this.status === "online" && this.#clockOffset !== null
+      ? performance.now() - this.#clockOffset
+      : Date.now();
+  }
+
   constructor(
     name = pickName(),
     avatar?: AvatarTraits,

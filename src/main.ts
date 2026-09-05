@@ -228,11 +228,22 @@ async function boot() {
     },
     deferredCityWork: [] as { name: string; run: () => void | Promise<void> }[],
     cityWoken: !zone,
+    limitRadius(radius: number): number {
+      return this.cityWoken || !zone ? radius : Math.min(radius, zone.bubbleRadius);
+    },
+    liftResidencyLimit(): void {
+      tiles.setResidencyLimit(Infinity);
+      terrainTiles?.setResidencyLimit(Infinity);
+    },
     deferCity(name: string, run: () => void | Promise<void>): void | Promise<void> {
       if (zoneBoot.cityWoken) return run();
       zoneBoot.deferredCityWork.push({ name, run });
     }
   };
+  if (zone) {
+    tiles.setResidencyLimit(zone.bubbleRadius);
+    terrainTiles?.setResidencyLimit(zone.bubbleRadius);
+  }
 
   // ------------------------------------------------------ P1 void essentials
   // (docs/VOID_STREAM_REWRITE.md M3.) Only what the first live void frame
@@ -868,7 +879,7 @@ async function boot() {
   // Ring coordinator + fabric gate + far-arrival hooks + ringUpdate driver —
   // extracted to app/compose/voidArrival.ts.
   const arrival = installVoidArrival({
-    ctx: { player, tiles, authoredRegions, sky, map, fullTileRadius },
+    ctx: { player, tiles, authoredRegions, sky, map, fullTileRadius, zoneBoot },
     bootQuery,
     terrainTiles,
     scanParticles,
@@ -1029,6 +1040,9 @@ async function boot() {
   bootMark("handoff");
   constructionDoneFlag = true;
   resolveConstructionDone();
+  // Clouds are a first-use graphics option; their code and WGSL stay absent
+  // from default boot. The selected variant warms through the compile owner.
+  sky.configureVolumetricClouds(root => pipeline.compileAsyncPrioritized(root, camera, scene));
   for (const action of pendingStartActions.splice(0)) action();
   persistBootHistory();
   console.info(`[boot] construction done — ${bootMarkSummary()}`);

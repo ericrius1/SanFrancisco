@@ -1,0 +1,78 @@
+<!doctype html><html><body><script type="module">
+import * as THREE from 'three/webgpu';
+import { FoliageField } from '/src/world/groundcover/foliageField.ts';
+import { createGpuGrassPlacement } from '/src/world/groundcover/gpuGrassPlacement.ts';
+const assert=(v,m)=>{if(!v)throw new Error(m)};
+const renderer=new THREE.Renderer(new THREE.WebGPUBackend(),{getFallback:null});
+renderer.library=new THREE.StandardNodeLibrary();
+const field=new FoliageField({size:256,spacing:1,groundHeight:()=>0,plantable:()=>true,paint:()=>({density:1,species:0.5,height:1}),sliceBudgetMs:4,maxCellsPerSlice:2048});
+const rows=[];
+const errors=[];
+try {
+ await renderer.init();
+ renderer.backend.device.addEventListener('uncapturederror',e=>errors.push(e.error.message));
+ await field.request({x:0,z:0});
+ const camera=new THREE.PerspectiveCamera(60,1,0.1,500);
+ camera.position.set(0,12,80);camera.lookAt(0,0,0);camera.updateMatrixWorld();
+ for(const capacityFraction of [1,0.01]) {
+  const geometry=new THREE.PlaneGeometry(0.2,0.8);
+  const material=new THREE.MeshBasicNodeMaterial();
+  const gpu=createGpuGrassPlacement(field,[{spec:{name:'probe',gridStride:1,visibleRadius:100,fadeBand:10,densityLayers:3},geometry,materialFor:()=>({material,focus:new THREE.Vector2()}),trianglesPerCluster:2,capacityFraction}],1,3,'upgrade-probe');
+  gpu.updateCullCamera(camera);
+  // First frame while ecology is unresolved must neither draw nor dispatch an
+  // uncreated GPUBuffer. This is the actual runtime's pre-placement state.
+  renderer.compute(gpu.cullPasses);
+  for(const density of [0,0.15,1,2.5]) {
+   gpu.density.value=density;
+   await renderer.computeAsync([gpu.reset,...gpu.layers.map(l=>l.compute),...gpu.finalize]);
+   renderer.compute(gpu.cullPasses);
+   const layer=gpu.layers[0];
+   const live=new Uint32Array(await renderer.getArrayBufferAsync(gpu.liveCounts))[0];
+   const dispatch=new Uint32Array(await renderer.getArrayBufferAsync(layer.cullDispatch));
+   const indirectDraw=new Uint32Array(await renderer.getArrayBufferAsync(gpu.indirect))[1];
+   assert(dispatch[0]===Math.ceil(Math.min(live,layer.capacity)/256),'workgroup count must reflect the bounded live population');
+   assert(dispatch[1]===1&&dispatch[2]===1,'one-dimensional dispatch');
+   layer.cull.dispatchSize=null;
+   renderer.compute(gpu.cullPasses);
+   const fixedDraw=new Uint32Array(await renderer.getArrayBufferAsync(gpu.indirect))[1];
+   assert(fixedDraw===indirectDraw,'indirect and capacity culls must retain identical visible populations');
+   layer.cull.dispatchSize=layer.cullDispatch;
+   const row={capacityFraction,density,capacity:layer.capacity,live,workgroups:dispatch[0],draw:indirectDraw,capacityWorkgroups:Math.ceil(layer.capacity/256)};
+   if(capacityFraction===1&&density===0.15) {
+    const timings={indirect:[],fixed:[]};
+    for(let trial=0;trial<4;trial++)for(const mode of trial%2?['fixed','indirect']:['indirect','fixed']) {
+     layer.cull.dispatchSize=mode==='fixed'?null:layer.cullDispatch;
+     for(let i=0;i<15;i++)renderer.compute(gpu.cullPasses);
+     await renderer.backend.device.queue.onSubmittedWorkDone();
+     const start=performance.now();
+     for(let i=0;i<100;i++)renderer.compute(gpu.cullPasses);
+     await renderer.backend.device.queue.onSubmittedWorkDone();
+     timings[mode].push((performance.now()-start)/100);
+    }
+    row.serializedBatchMs=timings;
+   }
+   layer.cull.dispatchSize=layer.cullDispatch;rows.push(row);
+  }
+  gpu.dispose();material.dispose();geometry.dispose();
+ }
+ // The production wildflower field exceeds the guaranteed storage binding
+ // count if publishing all dispatch buffers in one shader.
+ const geometry=new THREE.PlaneGeometry(0.2,0.8);
+ const material=new THREE.MeshBasicNodeMaterial();
+ const many=createGpuGrassPlacement(field,Array.from({length:11},(_,i)=>({spec:{name:'flower-'+i,gridStride:2,visibleRadius:20,fadeBand:5,densityLayers:1},geometry,materialFor:()=>({material,focus:new THREE.Vector2()}),trianglesPerCluster:2})),1,1,'multi-layer-probe');
+ many.updateCullCamera(camera);
+ await renderer.computeAsync([many.reset,...many.layers.map(l=>l.compute),...many.finalize]);
+ renderer.compute(many.cullPasses);
+ const populations=new Uint32Array(await renderer.getArrayBufferAsync(many.liveCounts));
+ for(let i=0;i<many.layers.length;i++) {
+  const d=new Uint32Array(await renderer.getArrayBufferAsync(many.layers[i].cullDispatch));
+  assert(d[0]===Math.ceil(Math.min(populations[i],many.layers[i].capacity)/256),'11-layer dispatch '+i);
+ }
+ rows.push({multiLayer:11,finalizePasses:many.finalize.length});
+ many.dispose();material.dispose();geometry.dispose();
+ await renderer.backend.device.queue.onSubmittedWorkDone();
+ assert(errors.length===0,errors.join('\n'));
+ window.__gpuResult={ok:true,rows,errors};
+}catch(e){window.__gpuResult={ok:false,error:e.stack,rows,errors};}
+finally {field.dispose();renderer.dispose();}
+</script></body></html>

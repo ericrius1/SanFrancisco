@@ -12,6 +12,7 @@ import { CORONA_HEIGHTS_SUMMIT } from "../../world/coronaHeights/meta";
 import { ARCHERY_CENTER } from "../../gameplay/archery/meta";
 import { PUP_CENTER } from "../../gameplay/pup/meta";
 import { FORT_MASON_ENSEMBLE_CENTER } from "../../gameplay/fortMasonEnsemble/meta";
+import { TIDAL_CHOIR_CENTER, TIDAL_CHOIR_LABEL } from "../../gameplay/tidalChoir/meta";
 import { REVERIE_CENTER } from "../../gameplay/palaceReverie/meta";
 import { AFTERLIGHT_ARRIVAL } from "../../gameplay/afterlight/meta";
 import { LANDS_END_CENTER } from "../../world/landsEnd/meta";
@@ -35,6 +36,7 @@ export type ZoneSpec = {
 const DEFAULT_BUBBLE = 900;
 
 export const ZONES: readonly ZoneSpec[] = [
+  { id: "tidal-choir", label: TIDAL_CHOIR_LABEL, siteId: "tidal-choir", spawnKey: "tidalChoir", center: TIDAL_CHOIR_CENTER, bubbleRadius: DEFAULT_BUBBLE },
   {
     id: "goldman",
     label: "Goldman Tennis Center",

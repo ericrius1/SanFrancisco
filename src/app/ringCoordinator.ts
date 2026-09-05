@@ -172,6 +172,7 @@ export class RingCoordinator {
   #cx: number;
   #cz: number;
   #radius = 0;
+  readonly #scanRadius: number;
   #velocity = V_SCAN_START;
   #age = 0; // seconds since the current phase began
   #resident = 0; // cached fill residency around the focus
@@ -185,6 +186,8 @@ export class RingCoordinator {
    */
   constructor(cx: number, cz: number, opts: RingCoordinatorOptions) {
     this.#opts = opts;
+    // A pocket must not wait for terrain outside its residency boundary.
+    this.#scanRadius = Math.min(SCAN_RADIUS, opts.fullRadius);
     this.#cx = cx;
     this.#cz = cz;
     this.#state = opts.holdHolo ? "holding" : "scanning";
@@ -231,7 +234,7 @@ export class RingCoordinator {
     if (this.#state === "settled" || this.#state === "revealing") return true;
     const dx = x - this.#cx;
     const dz = z - this.#cz;
-    const r = this.#state === "filling" ? SCAN_RADIUS : this.#radius;
+    const r = this.#state === "filling" ? this.#scanRadius : this.#radius;
     return dx * dx + dz * dz <= r * r;
   }
 
@@ -258,7 +261,7 @@ export class RingCoordinator {
       // Keep the current phase for short covered hops; just recenter.
       const c = materializeField.frontCenter.value as { set(x: number, z: number): void };
       c.set(x, z);
-      this.#opts.fogWall?.(x, z, this.#state === "filling" ? SCAN_RADIUS : 1e9, this.#state === "filling" ? WALL_DENSITY : 0);
+      this.#opts.fogWall?.(x, z, this.#state === "filling" ? this.#scanRadius : 1e9, this.#state === "filling" ? WALL_DENSITY : 0);
     }
     this.#resident = 0;
     this.#framesSinceResidency = RESIDENCY_REFRESH_FRAMES;
@@ -331,9 +334,9 @@ export class RingCoordinator {
     // below the player's pool and never shrinking.
     const terrain = this.#opts.terrainRadius?.(this.#cx, this.#cz) ?? Infinity;
     let target = Math.min(
-      SCAN_RADIUS,
+      this.#scanRadius,
       Math.max(
-        Number.isFinite(terrain) ? terrain - SCAN_TERRAIN_MARGIN : SCAN_RADIUS,
+        Number.isFinite(terrain) ? terrain - SCAN_TERRAIN_MARGIN : this.#scanRadius,
         playerDist + PLAYER_CLEAR,
         this.#radius
       )
@@ -348,7 +351,7 @@ export class RingCoordinator {
     }
     materializeField.frontBand.value = bandForRadius(this.#radius);
 
-    if (this.#radius >= SCAN_RADIUS - 0.5) this.#beginMorph();
+    if (this.#radius >= this.#scanRadius - 0.5) this.#beginMorph();
   }
 
   // ---- morphing -----------------------------------------------------------
@@ -357,7 +360,7 @@ export class RingCoordinator {
     this.#age = 0;
     // Arm the wall at the bubble edge BEFORE the dawn: the sky's (1 − void)
     // multiply ramps its visible density in exactly as the world lights up.
-    this.#opts.fogWall?.(this.#cx, this.#cz, SCAN_RADIUS, WALL_DENSITY);
+    this.#opts.fogWall?.(this.#cx, this.#cz, this.#scanRadius, WALL_DENSITY);
   }
 
   #updateMorph(dt: number): void {
@@ -453,7 +456,7 @@ export class RingCoordinator {
     this.#age += dt;
     const t = Math.min(1, this.#age / REVEAL_SECONDS);
     const eased = smooth01(t);
-    const radius = SCAN_RADIUS + (REVEAL_END_RADIUS - SCAN_RADIUS) * eased;
+    const radius = this.#scanRadius + (REVEAL_END_RADIUS - this.#scanRadius) * eased;
     // Density holds through the first stretch (the wall visibly recedes),
     // then dissolves entirely over the back half.
     const density = WALL_DENSITY * (1 - smooth01((t - 0.45) / 0.55));

@@ -65,8 +65,27 @@ export function streamingBudgetMs(frameDt: number, revealed: boolean, cpuMs = 0)
   return 0.8;
 }
 
+/** O(1) dequeue for arrival backlogs that can exceed 10,000 collision jobs.
+ * Release consumed closures immediately; compact only amortized, off the head. */
+class WorkQueue {
+  private items: (Job | undefined)[] = [];
+  private head = 0;
+  get length() { return this.items.length - this.head; }
+  push(job: Job) { this.items.push(job); }
+  shift(): Job | undefined {
+    if (!this.length) return undefined;
+    const job = this.items[this.head];
+    this.items[this.head++] = undefined;
+    if (this.head === this.items.length) { this.items.length = 0; this.head = 0; }
+    else if (this.head >= 4096 && this.head * 2 >= this.items.length) {
+      this.items = this.items.slice(this.head); this.head = 0;
+    }
+    return job;
+  }
+}
+
 export function createFrameScheduler(): FrameScheduler {
-  const queues: Record<Lane, Job[]> = { physics: [], build: [], upload: [], background: [] };
+  const queues: Record<Lane, WorkQueue> = { physics: new WorkQueue(), build: new WorkQueue(), upload: new WorkQueue(), background: new WorkQueue() };
   let pending = 0;
   let waiting = 0;
 

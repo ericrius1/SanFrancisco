@@ -122,6 +122,7 @@ export type GpuGrassLayer = Readonly<{
   trianglesPerCluster: number;
   compute: N;
   cull: N;
+  cullDispatch: THREE.IndirectStorageBufferAttribute;
 }>;
 
 export type GpuGrassPlacement = Readonly<{
@@ -131,6 +132,8 @@ export type GpuGrassPlacement = Readonly<{
   liveCounts: THREE.StorageBufferAttribute;
   /** Placement-time pass: zero the live compaction counters. */
   reset: N;
+  /** After placement: publish live-count-sized workgroups for each cull. */
+  finalize: N[];
   /** Per-frame passes: zero draw counts, then frustum-cull every live layer. */
   cullPasses: N[];
   /** Point the per-frame culls at the render camera (call before dispatch). */
@@ -566,6 +569,7 @@ export function createGpuGrassPlacement(
     // to nothing just before this rejection, so the edge dissolves without a pop.
     // A layer with `minRadius` also carries the mirrored INNER rejection, which
     // is what keeps co-located layers from drawing the same anchor twice.
+    const cullDispatch = new THREE.IndirectStorageBufferAttribute(new Uint32Array([0, 1, 1]), 1);
     const cull = buildCullPass({
       name: `scatter cull ${input.spec.name}`,
       dispatch: capacity,
@@ -591,6 +595,10 @@ export function createGpuGrassPlacement(
         return { center, radius, accept, emit: () => record.append(idx) };
       }
     });
+    // Retain the capacity guard in the generated shader, but launch only the
+    // compacted population. The GPU publishes this buffer after placement;
+    // there is no per-frame readback, allocation, or extra dispatch.
+    cull.dispatchSize = cullDispatch;
 
     return {
       spec: input.spec,
@@ -600,18 +608,41 @@ export function createGpuGrassPlacement(
       candidateSide,
       trianglesPerCluster: input.trianglesPerCluster,
       compute,
-      cull
+      cull,
+      cullDispatch
     };
   });
 
+  const dispatchWrites = layers.map(layer => storage(layer.cullDispatch, "uint", 3));
+  let dispatchReady = false;
+  // WebGPU guarantees eight storage buffers per shader stage: one live-count
+  // buffer plus at most seven dispatch buffers. Flower fields have 11 layers.
+  const finalize: N[] = [];
+  for (let first = 0; first < layers.length; first += 7) {
+    const end = Math.min(first + 7, layers.length);
+    finalize.push(Fn(() => {
+      for (let index = first; index < end; index++) {
+        const count = (atomicLoad(liveStorage.element(uint(index))) as N).min(uint(layers[index].capacity));
+        dispatchWrites[index].element(uint(0)).assign(count.add(uint(255)).div(uint(256)));
+        dispatchWrites[index].element(uint(1)).assign(uint(1));
+        dispatchWrites[index].element(uint(2)).assign(uint(1));
+      }
+    })().compute(1).setName(`${namePrefix} publish cull dispatch ${first}`));
+  }
+  // Before placement initializes indirect buffers, only reset the draws.
+  // Initialization, binding and submission of this final pass are synchronous.
+  finalize[finalize.length - 1]?.onInit(() => { dispatchReady = true; });
+
   const cullPasses = [drawSet.drawReset, ...layers.map((layer) => layer.cull)];
+  const emptyCullPasses = [drawSet.drawReset];
 
   return {
     layers,
     indirect: drawSet.indirect,
     liveCounts,
     reset,
-    cullPasses,
+    finalize,
+    get cullPasses() { return dispatchReady ? cullPasses : emptyCullPasses; },
     updateCullCamera(camera: THREE.Camera) {
       cullCamera.update(camera);
     },
@@ -621,9 +652,11 @@ export function createGpuGrassPlacement(
     patchiness: patchinessU,
     dispose() {
       reset.dispose();
+      for (const pass of finalize) pass.dispose();
       for (const layer of layers) {
         layer.compute.dispose();
         layer.cull.dispose();
+        releaseRendererAttribute(layer.cullDispatch);
       }
       // Releases the shared indirect buffer, every layer geometry (setIndirect
       // null + dispose + detach) and the draw-reset compute.

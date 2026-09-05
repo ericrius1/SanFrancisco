@@ -455,7 +455,7 @@ export function createWildGrass(
 
       // Reset and all four compactors share one command encoder. Rendering can
       // therefore observe only the old complete field or the new complete field.
-      await renderer.computeAsync([gpu.reset, ...gpu.layers.map((layer) => layer.compute)]);
+      await renderer.computeAsync([gpu.reset, ...gpu.layers.map((layer) => layer.compute), ...gpu.finalize]);
       if (disposed || id !== generation) {
         streaming.staleGenerations++;
         return;

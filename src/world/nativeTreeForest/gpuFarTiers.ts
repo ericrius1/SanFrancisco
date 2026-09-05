@@ -14,6 +14,7 @@
 // this module sets no shadow state (the indirect meshes default castShadow=false).
 
 import * as THREE from "three/webgpu";
+import { tracer } from "../../core/hitchTracer";
 import { If, float, floor, int, uint, uniform, vec3 } from "three/tsl";
 import {
   buildCullPass,
@@ -246,6 +247,7 @@ export function createNativeTreeGpuFarTiers(
   // (scale 0), then inside the frustum branch picks a tier by a hash-dithered
   // distance band and appends to that tier's branch + foliage records.
   const designCulls: N[] = [];
+  const cullOwners: DesignTier[] = [];
   designs.forEach((design, designIndex) => {
     const tier = tiers.get(design.design);
     if (!tier) return;
@@ -305,9 +307,11 @@ export function createNativeTreeGpuFarTiers(
       }
     });
     designCulls.push(cull);
+    cullOwners.push(tier);
   });
 
-  const cullPasses: N[] = [drawSet.drawReset, ...designCulls];
+  let cullPasses: N[] = [drawSet.drawReset];
+  let cullDirty = true;
 
   let totalUsed = 0;
   // The cull is the only writer that zeroes the indirect instanceCounts, so a
@@ -344,6 +348,7 @@ export function createNativeTreeGpuFarTiers(
     tier.arena.uploadRange(ROOT, base, base + slots.length);
     tier.arena.uploadRange(YAW, base, base + slots.length);
     totalUsed += slots.length;
+    cullDirty = true;
     return { design, base, count: slots.length };
   };
 
@@ -356,6 +361,7 @@ export function createNativeTreeGpuFarTiers(
     tier.arena.uploadRange(ROOT, handle.base, handle.base + handle.count);
     tier.allocator.free(handle.base, handle.count);
     totalUsed = Math.max(0, totalUsed - handle.count);
+    cullDirty = true;
   };
 
   const setInstanceHidden = (
@@ -369,6 +375,7 @@ export function createNativeTreeGpuFarTiers(
     const a = (handle.base + localIndex) * 4 + 3;
     tier.rootHost[a] = hidden ? 0 : scale;
     tier.arena.uploadRange(ROOT, handle.base + localIndex, handle.base + localIndex + 1);
+    cullDirty = true;
   };
 
   let disposed = false;
@@ -395,9 +402,17 @@ export function createNativeTreeGpuFarTiers(
       }
       parked = false;
       group.visible = true;
-      cullCamera.update(camera);
+      const cameraChanged = cullCamera.update(camera);
+      if (!cullDirty && !cameraChanged && focus.x === focusX && focus.y === focusZ) return;
+      if (cullDirty) {
+        // Reset every draw, but dispatch only designs with allocated instances.
+        // Empty designs must still have their previous draw counts cleared.
+        cullPasses = [drawSet.drawReset, ...designCulls.filter((_, i) => cullOwners[i].allocator.used > 0)];
+      }
       focus.set(focusX, focusZ);
       renderer.compute(cullPasses);
+      tracer.count("treeCullPasses", cullPasses.length);
+      cullDirty = false;
     },
     async prepare(prepareObject) {
       if (disposed || drawSet.records.length === 0) return;

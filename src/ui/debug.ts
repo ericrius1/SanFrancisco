@@ -17,6 +17,7 @@ import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
 import { SKY_TUNING, type Sky } from "../world/sky";
+import { CLOUD_TUNING } from "../world/cloudSettings";
 import type { PostChainState, PostStage } from "../render/post/types";
 import { GRADE_TUNING, type GradeRuntime } from "../render/grade";
 import { governorEffects } from "../render/adaptiveResolution";
@@ -901,6 +902,7 @@ export class DebugPanel {
       keys: ["sunDay", "hemiDay"],
       onChange: () => this.#sky.applyLightGrade()
     });
+    CLOUD_TUNING.bind(lighting);
     await checkpoint();
 
     this.#moveFolders = addMovementTuning(advanced);

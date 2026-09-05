@@ -91,6 +91,13 @@ export class TerrainTileStreamer {
   #playerZ = Number.NaN;
   #installed = 0;
   #lastInstallMs = 0;
+  #residencyLimit = Number.POSITIVE_INFINITY;
+
+  /** A pocket needs its local real ground; whole-city terrain waits for wake. */
+  setResidencyLimit(radius: number): void {
+    this.#residencyLimit = Math.max(0, radius);
+    this.#orderStale = true;
+  }
 
   constructor(options: {
     map: WorldMap;
@@ -325,7 +332,7 @@ export class TerrainTileStreamer {
     this.#callsSinceOrder = 0;
     const hasAnchor = Number.isFinite(this.#anchorX);
     const hasPlayer = Number.isFinite(this.#playerX);
-    const playerRadius = CONFIG.tileLoadRadius + PLAYER_STREAM_MARGIN;
+    const playerRadius = Math.min(CONFIG.tileLoadRadius, this.#residencyLimit) + PLAYER_STREAM_MARGIN;
     const wanted: { ix: number; iz: number; d: number }[] = [];
     for (const key of Object.keys(manifest.tiles)) {
       const [ix, iz] = key.split("_").map(Number);
@@ -333,7 +340,7 @@ export class TerrainTileStreamer {
       let d = Infinity;
       if (hasAnchor) {
         const focusDistance = this.#tileRectDistance(ix, iz, this.#anchorX, this.#anchorZ);
-        if (focusDistance <= FOCUS_STREAM_RADIUS) d = focusDistance;
+        if (focusDistance <= Math.min(FOCUS_STREAM_RADIUS, this.#residencyLimit + PLAYER_STREAM_MARGIN)) d = focusDistance;
       }
       if (hasPlayer) {
         const playerDistance = this.#tileRectDistance(ix, iz, this.#playerX, this.#playerZ);

@@ -206,7 +206,11 @@ export class FoliageField {
       this.#minX === minX && this.#minZ === minZ
     ) return Promise.resolve();
 
-    const full = !this.#valid ||
+    // A cancelled slice may already have overwritten toroidal slots belonging
+    // to the last published square. Those CPU cells are no longer reusable,
+    // even when the replacement destination overlaps the published bounds.
+    // The GPU retains the last complete upload until this rebuild publishes.
+    const full = !this.#valid || (this.#build?.cursor ?? 0) > 0 ||
       Math.abs(minX - this.#minX) >= this.size ||
       Math.abs(minZ - this.#minZ) >= this.size;
     const cells: Cell[] = [];

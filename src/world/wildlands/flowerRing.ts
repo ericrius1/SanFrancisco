@@ -1260,7 +1260,7 @@ export function createFlowerRing(
 
       // Reset and every rung's compactor share one command encoder, so rendering
       // can only ever observe the whole old field or the whole new one.
-      await renderer.computeAsync([gpu.reset, ...gpu.layers.map((layer) => layer.compute)]);
+      await renderer.computeAsync([gpu.reset, ...gpu.layers.map((layer) => layer.compute), ...gpu.finalize]);
       if (disposed || id !== generation) return;
       // This frame's frustum pass may already have run against the previous
       // placement; re-cull immediately so the draw counts match the new buffers.

@@ -28,6 +28,7 @@ import {
   vec4
 } from "three/tsl"
 import { registerSkyAtmosphere } from "./skyRegistry"
+import { CLOUD_TUNING } from "./cloudSettings"
 import { CROWN_INTENSITY } from "./salesforceCrown"
 import { WINDOW_GLOW_W } from "./facade"
 import { BAY_LIGHTS_INTENSITY } from "./bayLights"
@@ -330,6 +331,50 @@ const SKY_BAND_T = 0.55
  */
 export class Sky {
   mesh: THREE.Mesh
+  #clearSkyMaterial: THREE.Material | null = null
+  #cloudLayer: ReturnType<typeof import("./volumetricClouds").createVolumetricCloudMaterial> | null = null
+  #cloudPrepare: ((root: THREE.Object3D) => Promise<unknown>) | null = null
+  #cloudLoading = false
+  #cloudFailed = false
+
+  configureVolumetricClouds(prepare: (root: THREE.Object3D) => Promise<unknown>) {
+    this.#cloudPrepare = prepare
+    this.#clearSkyMaterial = this.mesh.material as THREE.Material
+    if (new URLSearchParams(location.search).get("clouds") === "1") CLOUD_TUNING.values.enabled = true
+  }
+
+  #syncVolumetricClouds(elapsed: number) {
+    if (!this.#cloudPrepare || !this.#clearSkyMaterial) return
+    const enabled = Boolean(CLOUD_TUNING.values.enabled)
+    if (!enabled) {
+      this.mesh.material = this.#clearSkyMaterial
+      this.#cloudFailed = false
+      return
+    }
+    if (this.#cloudLayer) {
+      this.#cloudLayer.update(elapsed)
+      this.mesh.material = this.#cloudLayer.material
+    } else if (!this.#cloudLoading && !this.#cloudFailed) {
+      this.#cloudLoading = true
+      void import("./volumetricClouds").then(async ({ createVolumetricCloudMaterial }) => {
+        const layer = createVolumetricCloudMaterial(
+          (this.#clearSkyMaterial as THREE.MeshBasicNodeMaterial).colorNode,
+          this.#uSun,
+          (this.#uVoid as N).oneMinus().mul((this.#uSpace as N).oneMinus())
+        )
+        const warm = new THREE.Mesh(this.mesh.geometry, layer.material)
+        warm.scale.copy(this.mesh.scale)
+        warm.frustumCulled = false
+        try {
+          await this.#cloudPrepare!(warm)
+          this.#cloudLayer = layer
+        } catch (error) { layer.dispose(); throw error }
+      }).catch(error => {
+        this.#cloudFailed = true
+        console.warn("[clouds] volumetric cloud preparation failed", error)
+      }).finally(() => { this.#cloudLoading = false })
+    }
+  }
   sun: THREE.DirectionalLight
   timeOfDay = SKY_TUNING.values.timeOfDay
   /** Degrees above the horizon; negative when the sun is down. */
@@ -1812,6 +1857,7 @@ export class Sky {
     this.#updateFogWeather()
 
     this.mesh.position.copy(cameraPos)
+    this.#syncVolumetricClouds(elapsed)
 
     this.#starlink?.update(this, cameraPos)
 

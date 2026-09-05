@@ -91,6 +91,8 @@ export interface MainCtx {
     };
     deferredCityWork: { name: string; run: () => void | Promise<void> }[];
     cityWoken: boolean;
+    limitRadius(radius: number): number;
+    liftResidencyLimit(): void;
     deferCity(name: string, run: () => void | Promise<void>): void | Promise<void>;
   };
   state: {

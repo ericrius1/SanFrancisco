@@ -6,6 +6,7 @@ import { GOLDMAN_GAMEPLAY_LANDMARK } from "../../world/goldenGateTennis/meta";
 import { ARCHERY_CENTER } from "../../gameplay/archery/meta";
 import { PUP_CENTER } from "../../gameplay/pup/meta";
 import { FORT_MASON_ENSEMBLE_CENTER } from "../../gameplay/fortMasonEnsemble/meta";
+import { TIDAL_CHOIR_CENTER, TIDAL_CHOIR_LABEL } from "../../gameplay/tidalChoir/meta";
 import { REVERIE_CENTER } from "../../gameplay/palaceReverie/meta";
 import { GHOST_SHIP_LANDMARK_NAME } from "../../world/ghostShip/route";
 import { LANDS_END_CENTER } from "../../world/landsEnd/meta";
@@ -42,6 +43,7 @@ export function registerActivityLandmarks(
   minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
   minimap.addLandmark(PUP_CENTER.x, PUP_CENTER.z, "Puppy Nursery");
   minimap.addLandmark(FORT_MASON_ENSEMBLE_CENTER.x, FORT_MASON_ENSEMBLE_CENTER.z, "Fort Mason Jam");
+  minimap.addLandmark(TIDAL_CHOIR_CENTER.x, TIDAL_CHOIR_CENTER.z, TIDAL_CHOIR_LABEL);
   minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
   minimap.addLandmark(ghostShipPose.x, ghostShipPose.z, GHOST_SHIP_LANDMARK_NAME);
   // Ocean Beach surf shack. Teleporting arrives on foot at the apron;

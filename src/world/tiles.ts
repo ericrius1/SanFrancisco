@@ -653,6 +653,7 @@ export class TileStreamer {
   #unsubscribeColliderSource: (() => void) | null = null;
   #backgroundStage: number = BACKGROUND_STREAM_RADII.length - 1;
   #backgroundRadius = Number.POSITIVE_INFINITY;
+  #residencyLimit = Number.POSITIVE_INFINITY;
   #nextBackgroundStageAt = 0;
   // residentRadiusAround memo (reused object — no per-query allocation)
   #residentRadiusCache = { x: Number.NaN, z: Number.NaN, tick: -1e9, value: 0 };
@@ -1085,6 +1086,13 @@ export class TileStreamer {
     }
   }
 
+  /** Explicit pocket-world residency boundary, independent of draw distance. */
+  setResidencyLimit(radius: number): void {
+    this.#residencyLimit = Math.max(0, radius);
+    this.#residentRadiusCache.tick = -1e9;
+    this.forceScan();
+  }
+
   /**
    * Release a completed destination-minimum hold and resume the ordinary fixed
    * draw ring. World arrival calls this only after reveal and collision release,
@@ -1124,7 +1132,7 @@ export class TileStreamer {
     return {
       stage: this.#backgroundStage,
       radius: this.#currentLoadRadius(),
-      limit: BAKED_CITY_RESIDENCY_RADIUS,
+      limit: Math.min(BAKED_CITY_RESIDENCY_RADIUS, this.#residencyLimit),
       fullRadius: CONFIG.tileLoadRadius
     };
   }
@@ -1503,7 +1511,7 @@ export class TileStreamer {
     // Visual primes still use the destination bubble from arrival wiring.
     // Ordinary play expands toward BAKED_CITY_RESIDENCY_RADIUS and ignores the
     // draw-distance slider — that slider only drives fog / CityGen ceilings.
-    return this.#visualPrime ? CONFIG.tileLoadRadius : this.#backgroundRadius;
+    return Math.min(this.#residencyLimit, this.#visualPrime ? CONFIG.tileLoadRadius : this.#backgroundRadius);
   }
 
   #tileInFlightCounts(): { current: number; total: number } {

@@ -386,26 +386,32 @@ export type CullCamera = Readonly<{
   viewProjection: N;
   /** uniform(Vector2) — projection x/y scales, for the world-margin test. */
   projScale: N;
-  /** Refresh both uniforms from the render camera; call before dispatching culls. */
-  update(camera: THREE.Camera): void;
+  /** Refresh both uniforms; true only when culling inputs changed. */
+  update(camera: THREE.Camera): boolean;
 }>;
 
 export function createCullCamera(): CullCamera {
   const viewProjection = uniform(new THREE.Matrix4());
   const projScale = uniform(new THREE.Vector2(1, 1));
+  const nextProjection = new THREE.Matrix4();
   return {
     viewProjection,
     projScale,
     update(camera: THREE.Camera) {
       camera.updateMatrixWorld();
-      (viewProjection.value as THREE.Matrix4).multiplyMatrices(
+      nextProjection.multiplyMatrices(
         camera.projectionMatrix,
         camera.matrixWorldInverse
       );
+      const matrix = viewProjection.value as THREE.Matrix4;
+      const scale = projScale.value as THREE.Vector2;
+      const changed = !matrix.equals(nextProjection) || scale.x !== camera.projectionMatrix.elements[0] || scale.y !== camera.projectionMatrix.elements[5];
+      matrix.copy(nextProjection);
       (projScale.value as THREE.Vector2).set(
         camera.projectionMatrix.elements[0],
         camera.projectionMatrix.elements[5]
       );
+      return changed;
     }
   };
 }

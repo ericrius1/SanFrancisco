@@ -142,6 +142,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     setRemoteBirdAssetsActive: undefined as undefined | ((active: boolean) => void),
     surfCullStash: null as ({ load: number; unload: number; detail: number; maxDetail: number } | null),
     trafficLights: null as (TrafficLightView | null),
+    ambientCity: null as import("../../world/traffic/ambientCity").AmbientCity | null,
     roadGraphPromise: null as (Promise<RoadGraph> | null),
     islands: null as (Islands | null),
     creatures: null as (Creatures | null),
@@ -796,6 +797,54 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
         .catch(() => {});
     }
   });
+  // Walking/driving into the city is the first-use boundary. A clean boot,
+  // distant multiplayer cosmetics, or opening a map cannot load this fleet.
+  let cityLifeLoading = false;
+  let cityLifeFailed = false;
+  let cityLifeTravel = 0;
+  let cityLifeAwaySince = 0;
+  let nextCityLifeAttempt = 0;
+  const cityLifePrevious = player.position.clone();
+  const cityLifeQuery = new URLSearchParams(location.search).get("citylife");
+  const updateCityLife = (dt: number, elapsed: number) => {
+    if (cityLifeQuery === "0" || !state.roadGraphPromise) return;
+    const moved = player.position.distanceTo(cityLifePrevious);
+    cityLifePrevious.copy(player.position);
+    if (moved < 20) cityLifeTravel += moved;
+    if (cityLifeTravel < 12 && cityLifeQuery !== "1") return;
+    const grounded = ["walk", "drive", "scooter", "skate", "board"].includes(player.mode)
+      && Math.abs(player.position.y - map.groundTop(player.position.x, player.position.z)) < 8;
+    if (!grounded) {
+      if (state.ambientCity) {
+        state.ambientCity.root.visible = false;
+        cityLifeAwaySince ||= elapsed;
+        if (elapsed - cityLifeAwaySince > 20) { state.ambientCity.dispose(); state.ambientCity = null; }
+      }
+      return;
+    }
+    cityLifeAwaySince = 0;
+    if (state.ambientCity) {
+      state.ambientCity.root.visible = true;
+      state.ambientCity.update(dt, elapsed, player.position);
+    } else if (!cityLifeLoading && !cityLifeFailed && elapsed >= nextCityLifeAttempt) {
+      nextCityLifeAttempt = elapsed + 1;
+      cityLifeLoading = true;
+      void (async () => {
+        const roads = await state.roadGraphPromise!;
+        if (!roads.nearestPoint(player.position.x, player.position.z, 35)) return;
+        const { AmbientCity } = await import("../../world/traffic/ambientCity");
+        const city = await AmbientCity.create(roads, map);
+        try {
+          await warmHiddenRoot(renderer, camera, scene, city.root);
+          state.ambientCity = city;
+          scene.add(city.root);
+        } catch (error) { city.dispose(); throw error; }
+      })().catch(error => {
+        cityLifeFailed = true;
+        console.warn("[city-life] preparation failed", error);
+      }).finally(() => { cityLifeLoading = false; });
+    }
+  };
   // (state.creatures hoisted to the module state record)
   // (state.forest hoisted to the module state record)
   // state.ANIMALS record — populated by the deferred state.forest module load
@@ -1224,6 +1273,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
 
   hud.setMode(player.mode);
   return {
+    updateCityLife,
     water,
     underwater,
     hud,

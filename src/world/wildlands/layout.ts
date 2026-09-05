@@ -21,6 +21,7 @@
 //  Marin     x[-6300,-2700] z[-7800,-5000]
 
 import type { NativeTreeDesignSpec } from "../nativeTreeForest/templates";
+import { TIDAL_CHOIR_CENTER } from "../../gameplay/tidalChoir/meta";
 import { BOTANICAL_GARDEN_BOUNDS, inBotanicalGarden, type GardenTerrain } from "../garden/layout";
 import { BUENA_VISTA_SUMMIT_CLEARING, inBuenaVistaPark } from "../buenaVista";
 import { inGoldmanTennisSite, inGoldmanVegetationZone } from "../goldenGateTennis/layout";
@@ -44,6 +45,7 @@ export {
 // --- keep-out zones (existing world content owns these) --------------------------
 
 const AVOID: readonly { x: number; z: number; r: number; label: string }[] = [
+  { ...TIDAL_CHOIR_CENTER, r: 17, label: "tidal choir clearing" },
   { x: -388, z: -1426, r: 80, label: "palace of fine arts" },
   { x: -3150, z: -5100, r: 70, label: "gg bridge marin landing" },
   { x: -2900, z: -2260, r: 90, label: "gg bridge presidio anchorage" }
@@ -602,6 +604,7 @@ const SURFACE_SAND = 2;
  * plants its developed class-0 ground); everywhere else it's parks-only.
  */
 export function grassyGround(map: GardenTerrain, x: number, z: number): boolean {
+  if ((x - TIDAL_CHOIR_CENTER.x) ** 2 + (z - TIDAL_CHOIR_CENTER.z) ** 2 < 17 ** 2) return false;
   if (inBotanicalGarden(x, z, 6)) return false; // the garden plants its own flora
   if (inJapaneseTeaGarden(x, z, 4)) return false; // the Tea Garden owns its clipped moss, ponds and paths
   if (inGoldmanTennisSite(x, z, 2)) return false; // hard courts/path aprons own this footprint

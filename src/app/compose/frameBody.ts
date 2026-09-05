@@ -4,6 +4,7 @@
 // Soft-HMR guard must register before any other import.meta.hot listeners.
 import { suppressesFullReload } from "../../app/hmr/suppressFullReload";
 import * as THREE from "three/webgpu";
+import { tracer } from "../../core/hitchTracer";
 import { CAMERA_TUNING,  CONFIG,  FOLIAGE_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "../../config";
 import { resetAllTweaks } from "../../core/persist";
 import { streamingBudgetMs } from "../../core/frameBudget";
@@ -1022,9 +1023,9 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       renderer.toneMappingExposure = RENDER_TUNING.values.exposure;
       renderer.setPixelRatio(RENDER_TUNING.values.pixelRatio);
       renderer.setSize(window.innerWidth, window.innerHeight);
-      CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
-      CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
-      sky.setStreamingCullRadius(WORLD_TUNING.values.radius);
+      CONFIG.tileLoadRadius = ctx.zoneBoot.limitRadius(WORLD_TUNING.values.radius);
+      CONFIG.tileUnloadRadius = CONFIG.tileLoadRadius + 400;
+      sky.setStreamingCullRadius(CONFIG.tileLoadRadius);
       setFoliageVisible(FOLIAGE_TUNING.values.visible);
       tiles.forceScan();
       sky.applyFogParams();
@@ -1391,6 +1392,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (!worldArrival.active) authoredRegions.update(player.position.x, player.position.z);
     tiles.update(player.position.x, player.position.z, core.state.highUp, !ctx.state.revealed);
     core.state.trafficLights?.update(player.position, performance.now() / 1000);
+    if (!worldArrival.active && ringCoordinator.state === "settled") {
+      tracer.begin("cityLife");
+      core.updateCityLife(frameDt, ctx.state.elapsed);
+      tracer.end("cityLife");
+    }
     refreshCarHeadlightUniforms();
     abandonedMounts.update(frameDt, player.position);
     if (!worldArrival.active) {
@@ -1528,6 +1534,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       core.state.palaceReverie?.update(frameDt, ctx.state.elapsed, player.position, hud);
       const welcome = core.state.palaceReverie?.takeWelcome();
       if (welcome) hud.message(welcome, 6.2);
+    }
+    if (!worldArrival.active) {
+      tracer.begin("tidalChoir");
+      sites.updateTidalChoir(frameDt, ctx.state.elapsed);
+      tracer.end("tidalChoir");
     }
     // Archery: site-gated, one boolean early-return when asleep with nothing live
     if (!worldArrival.active && sites.perfAllowed("archery")) {

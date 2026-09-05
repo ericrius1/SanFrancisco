@@ -55,6 +55,7 @@ import { RENDER_TUNING } from "../config";
 import { tracer } from "../core/hitchTracer";
 import { pocketRenderScale, temporalResolveLive } from "./pocketQuality";
 import { TEMPORAL_TUNING } from "./post/temporal/tuning";
+import { createQualityDwell } from "./qualityDwell";
 
 // Per-level degradation factor. Index = level. It multiplies EITHER the tuned
 // pixel-ratio ceiling or the beauty-pass scale — never both, see the header.
@@ -250,6 +251,7 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
   let windowMin = Infinity;
   let windowStart = performance.now();
   let lastUpdateAt = 0;
+  const pressure = createQualityDwell();
   // Which axis the ladder is on, and what it degrades down from. Both are read
   // off live tunables, so they are sampled once per tick rather than per call.
   let upscale = false;
@@ -295,6 +297,7 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
     if (next === level) return;
     level = next;
     lastChange = now;
+    pressure.reset();
     currentEffects = computeEffects(level, upscale, ceiling);
     apply();
     tracer.count("govLevel");
@@ -327,25 +330,31 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
       // A resize or manual tweak may have re-applied the raw tuned value —
       // keep the governed value in force without waiting out the cooldown.
       apply();
+      // A paused/hidden tab, boot warmup or invalid observation cannot count
+      // as sustained pressure. Start a fresh window when real frames resume.
+      if (now < lastChange || gap > 1000 || !Number.isFinite(emaMs)) {
+        pressure.reset();
+        return;
+      }
       if (emaMs > hotMs && level < LEVEL_MAX) {
         // Foliage re-scatter has real cost — require the longer sustained window
         // whenever the next step changes foliageScale (L2↔L3 and L3↔L4).
         const hold =
           foliageScaleFor(level + 1) !== foliageScaleFor(level) ? LEVEL4_HOLD_MS : DOWN_COOLDOWN_MS;
-        if (now - lastChange >= hold) {
+        if (pressure.ready(1, now, hold) && now - lastChange >= hold) {
           setLevel(level + 1, now);
           tracer.count("govDown");
         }
       } else if (emaMs < coolMs && level > 0) {
         const hold =
           foliageScaleFor(level - 1) !== foliageScaleFor(level) ? LEVEL4_HOLD_MS : UP_COOLDOWN_MS;
-        if (now - lastChange >= hold) {
+        if (pressure.ready(-1, now, hold) && now - lastChange >= hold) {
           setLevel(level - 1, now);
           // Directional counters: the probe has to be able to assert the
           // governor RECOVERS, not just that it moved at all.
           tracer.count("govUp");
         }
-      }
+      } else pressure.reset();
     },
     get scale() {
       // The DRAWING-BUFFER axis, which is what this getter has always meant and
@@ -356,6 +365,7 @@ export function createAdaptiveResolution(renderer: THREE.WebGPURenderer): Adapti
     },
     setEnabled(on: boolean) {
       enabled = on;
+      pressure.reset();
       if (!on) setLevel(0, performance.now()); // pin L0 (no-op if already there)
     },
     governorEffects,
