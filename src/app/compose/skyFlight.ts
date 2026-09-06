@@ -5,6 +5,8 @@ import { WALK_CAPSULE_HALF_EXTENT } from "../../player/walk";
 import type { MainCtx } from "./ctx";
 
 const JOURNAL_KEY = "sf.sky-flight.discovered.v1";
+const MAP_PLANETOID_ID: SkyIslandId = "first-breath";
+const MAP_PLANETOID_LABEL = "Sky Planetoid · The First Breath";
 
 /** Boot owns only an affordance and metadata. Island geometry, gardens and the
  * journal panel each cross their own first-use/proximity boundary. */
@@ -54,6 +56,21 @@ export function createSkyFlightFeature(
   let disposed = false;
   let loadFailedAt = -Infinity;
   const projected = new THREE.Vector3();
+
+  // Give the archipelago one permanent gateway on the ordinary map. The pin
+  // remains metadata-only at boot; selecting it takes the same lazy, covered
+  // travel path as the Flight & gravity panel and loads only the destination.
+  const mapPlanetoid = getSkyIsland(MAP_PLANETOID_ID);
+  netW.minimap.addLandmark(mapPlanetoid.center.x, mapPlanetoid.center.z, MAP_PLANETOID_LABEL);
+  const previousMapTeleport = netW.minimap.onTeleport;
+  const onMapTeleport = (x: number, z: number, toName?: string, playerId?: number) => {
+    if (playerId === undefined && toName === MAP_PLANETOID_LABEL) {
+      travel(MAP_PLANETOID_ID);
+      return;
+    }
+    previousMapTeleport(x, z, toName, playerId);
+  };
+  netW.minimap.onTeleport = onMapTeleport;
 
   for (const island of SKY_ISLANDS) {
     ctx.state.siteFoliage?.register({
@@ -235,6 +252,7 @@ export function createSkyFlightFeature(
     debugSnapshot: () => ({ visited: [...visited], target, awakened: islands?.isAwakened() ?? false, islands: islands?.debugSnapshot() ?? [] }),
     dispose() {
       disposed = true;
+      if (netW.minimap.onTeleport === onMapTeleport) netW.minimap.onTeleport = previousMapTeleport;
       panel?.dispose();
       islands?.dispose();
       launch.remove(); signal.remove(); style.remove();

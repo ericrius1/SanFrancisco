@@ -55,8 +55,10 @@ try {
  check('positive and inverse gravity',motion.down< -5&&motion.up>5,{down:motion.down,up:motion.up});
  check('first person animated eye',motion.eye.blend>.99&&motion.eye.hidden,motion.eye);
  console.log('TRAVEL');
+ const firstPin=await page.evaluate(()=>window.__sf.minimap.focusLandmark('Sky Planetoid · The First Breath'));
+ check('first planetoid is a map destination',firstPin?.x===520&&firstPin?.z===2480,firstPin);
  const before=requests.length;
- await page.evaluate(()=>window.__sf.skyFlight.travel('first-breath'));
+ await page.evaluate(()=>window.__sf.minimap.padTeleport());
  await page.waitForFunction(()=>window.__sf.player.position.y>420&&window.__sf.player.position.z>2400&&!window.__sf.worldArrival.active,null,{timeout:150000});
  await page.waitForFunction(()=>window.__sf.skyFlight.debugSnapshot().visited.includes('first-breath'),null,{timeout:90000});
  check('first garden loads on approach',requests.slice(before).some(u=>u.includes('/world/skyIslands/index.ts')),requests.slice(before).filter(optional));
