@@ -132,6 +132,10 @@ export class ChaseCamera {
   #lookMatrix = new THREE.Matrix4()
   #firstPersonEuler = new THREE.Euler(0, 0, 0, "YXZ")
   #up = new THREE.Vector3(0, 1, 0)
+  #gravityFrame = new THREE.Quaternion()
+  #gravityTurn = new THREE.Quaternion()
+  #gravityIdentity = new THREE.Quaternion()
+  #gravityTargetUp = new THREE.Vector3(0, 1, 0)
   #firstPersonAvatarHidden = false
   #safeBoomDistance = 0
   #cutaway = 0
@@ -308,16 +312,23 @@ export class ChaseCamera {
       back = backBase * (1 + fast * 0.38)
       up += fast * 1.1
     }
+    if (player.personalFlying) {
+      back *= 1 + Math.min(player.speed / 95, 1) * 0.45
+      up *= 0.65
+    }
 
     // Anchor on the interpolated render transform. Player relocations reset that
     // interpolation history, so this is also the authoritative cut destination.
     const anchor = player.renderPosition
     this.#target.copy(anchor)
-    this.#target.y += o.look
-    const cx = anchor.x + Math.sin(this.yaw) * Math.cos(this.pitch) * back
-    const cz = anchor.z + Math.cos(this.yaw) * Math.cos(this.pitch) * back
-    const cy = anchor.y + up + Math.sin(this.pitch) * back
-    this.#chasePos.set(cx, cy, cz)
+    this.#target.addScaledVector(this.#up, o.look)
+    this.#chasePos.set(
+      Math.sin(this.yaw) * Math.cos(this.pitch) * back,
+      up + Math.sin(this.pitch) * back,
+      Math.cos(this.yaw) * Math.cos(this.pitch) * back
+    ).applyQuaternion(this.#gravityFrame).add(anchor)
+    const cx = this.#chasePos.x
+    const cz = this.#chasePos.z
 
     // Keep above the terrain/seabed only — NOT above sea level. Clamping to y=0
     // used to pin the camera on the surface, so diving or a sinking car left the
@@ -398,6 +409,7 @@ export class ChaseCamera {
   }
 
   update(dt: number, player: Player, input: Input) {
+    this.#updateGravityFrame(dt, player)
     this.#resume(player)
     const discontinuity = this.#cutOnResume || this.#recordAnchor(player)
     if (discontinuity) this.cutTo(player)
@@ -550,12 +562,12 @@ export class ChaseCamera {
       // as first person takes over, then contracts with the same smooth blend on
       // exit so an extreme indoor pitch never snaps back in one frame.
       const pitchMin = THREE.MathUtils.lerp(
-        VIEW.outdoorPitchMin,
+        player.personalFlying ? VIEW.firstPersonPitchMin : VIEW.outdoorPitchMin,
         VIEW.firstPersonPitchMin,
         firstPersonBlend
       )
       const pitchMax = THREE.MathUtils.lerp(
-        VIEW.outdoorPitchMax,
+        player.personalFlying ? VIEW.firstPersonPitchMax : VIEW.outdoorPitchMax,
         VIEW.firstPersonPitchMax,
         firstPersonBlend
       )
@@ -597,6 +609,8 @@ export class ChaseCamera {
       orbitStiff = THREE.MathUtils.clamp(player.speed * 0.2, 7.5, 17)
     if (player.rocketFlying)
       orbitStiff = THREE.MathUtils.clamp(player.speed * 0.15, 16, 120)
+    if (player.personalFlying)
+      orbitStiff = THREE.MathUtils.clamp(player.speed * 0.22, 11, 24)
     // clamp the smoothing step. A tile-upload spike inflates the *next* frame's
     // dt, and an uncapped 1-exp(-dt*stiff) then snaps an orbit a large fraction
     // of the way to target in that one frame — the visible "hitch" as chunks
@@ -738,7 +752,7 @@ export class ChaseCamera {
     } else {
       this.#boardLookInit = false
       this.#firstPersonEuler.set(-this.pitch, this.yaw, 0, "YXZ")
-      this.#firstPersonQuat.setFromEuler(this.#firstPersonEuler)
+      this.#firstPersonQuat.setFromEuler(this.#firstPersonEuler).premultiply(this.#gravityFrame)
       this.camera.quaternion.slerpQuaternions(
         this.#orbitQuat,
         this.#firstPersonQuat,
@@ -840,7 +854,7 @@ export class ChaseCamera {
       -Math.sin(this.pitch),
       -Math.cos(this.yaw) * Math.cos(this.pitch)
     )
-    return out
+    return out.applyQuaternion(this.#gravityFrame)
   }
 
   /** Direction the player aims/fires along. */
@@ -851,6 +865,26 @@ export class ChaseCamera {
       -Math.sin(this.pitch) + 0.12,
       -Math.cos(this.yaw) * Math.cos(this.pitch)
     )
-    return out.normalize()
+    return out.applyQuaternion(this.#gravityFrame).normalize()
+  }
+
+  /** Parallel-transport the view around a moon: the horizon follows local
+   * gravity without a pole singularity or an unsolicited yaw recenter. */
+  #updateGravityFrame(dt: number, player: Player) {
+    if (!player.personalFlying) {
+      if (this.#gravityFrame.angleTo(this.#gravityIdentity) > 0.00001) {
+        this.lookDir(this.#viewDir)
+        this.yaw = Math.atan2(-this.#viewDir.x, -this.#viewDir.z)
+        this.pitch = -Math.asin(THREE.MathUtils.clamp(this.#viewDir.y, -1, 1))
+        this.#gravityFrame.identity()
+      }
+      this.#up.set(0, 1, 0)
+      return
+    }
+    this.#gravityTargetUp.copy(player.skyFlight.up).normalize()
+    this.#gravityTurn.setFromUnitVectors(this.#up, this.#gravityTargetUp)
+    this.#gravityTurn.slerp(this.#gravityIdentity, Math.exp(-Math.min(dt, 0.05) * 9))
+    this.#gravityFrame.premultiply(this.#gravityTurn).normalize()
+    this.#up.set(0, 1, 0).applyQuaternion(this.#gravityFrame)
   }
 }

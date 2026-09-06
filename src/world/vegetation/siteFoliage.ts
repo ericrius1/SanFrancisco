@@ -30,6 +30,9 @@ export type SiteFoliageRegistration = {
   id: string;
   x: number;
   z: number;
+  /** Optional altitude for spherical residency (sky gardens). Ground sites
+   * retain their existing horizontal landscape rings. */
+  y?: number;
   /** Begin building inside this radius (m). Choose it beyond the patch's own
    * visibleDistance so appearance is governed by LOD fade, never residency. */
   loadDistance: number;
@@ -88,7 +91,7 @@ export class SiteFoliageStreamer {
   #visible = true;
   #building = false;
   #disposed = false;
-  #focus = { x: 0, z: 0 };
+  #focus = { x: 0, y: 0, z: 0 };
 
   constructor(options: SiteFoliageStreamerOptions) {
     this.#options = options;
@@ -119,14 +122,15 @@ export class SiteFoliageStreamer {
     this.root.visible = visible;
   }
 
-  update(x: number, z: number): void {
+  update(x: number, z: number, y = 0): void {
     if (this.#disposed || !this.#visible) return;
     this.#focus.x = x;
     this.#focus.z = z;
+    this.#focus.y = y;
     const now = performance.now();
     for (const entry of this.#entries) {
       const { registration } = entry;
-      const distance = Math.hypot(x - registration.x, z - registration.z);
+      const distance = this.#distance(registration);
       if (entry.status === "ready") {
         if (distance >= registration.unloadDistance) this.#unload(entry);
         else entry.patch?.update(this.#focus);
@@ -147,9 +151,7 @@ export class SiteFoliageStreamer {
     return this.#entries.map((entry) => ({
       id: entry.registration.id,
       status: entry.status,
-      distance: Math.round(
-        Math.hypot(this.#focus.x - entry.registration.x, this.#focus.z - entry.registration.z)
-      )
+      distance: Math.round(this.#distance(entry.registration))
     }));
   }
 
@@ -224,10 +226,7 @@ export class SiteFoliageStreamer {
           return;
         }
         patch.update(this.#focus, true);
-        const distance = Math.hypot(
-          this.#focus.x - registration.x,
-          this.#focus.z - registration.z
-        );
+        const distance = this.#distance(registration);
         if (this.#stale(entry, generation) || distance >= registration.unloadDistance) {
           patch.dispose();
           if (entry.status === "loading") entry.status = "dormant";
@@ -260,6 +259,14 @@ export class SiteFoliageStreamer {
 
   #stale(entry: EntryState, generation: number): boolean {
     return this.#disposed || !this.#visible || entry.generation !== generation;
+  }
+
+  #distance(registration: SiteFoliageRegistration): number {
+    return Math.hypot(
+      this.#focus.x - registration.x,
+      this.#focus.z - registration.z,
+      registration.y === undefined ? 0 : this.#focus.y - registration.y
+    );
   }
 
   #unload(entry: EntryState): void {

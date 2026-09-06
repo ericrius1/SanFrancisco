@@ -4,6 +4,7 @@
 
 export {
   createAuthoredFlowerPatch,
+  type AuthoredFlowerForm,
   type AuthoredFlowerPalette,
   type AuthoredFlowerPlacement,
   type AuthoredFlowerSpecies

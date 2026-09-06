@@ -8,8 +8,9 @@ const KB: Record<PlayerMode, Row[]> = {
   walk: [
     { c: ["Mouse"], label: "look" },
     { c: ["W", "A", "S", "D"], label: "move" },
-    { c: ["Shift"], label: "run" },
-    { c: ["Space"], label: "jump" },
+    { c: ["Shift"], label: "run · flight boost" },
+    { c: ["Space", "Q"], label: "take off / rise · descend" },
+    { c: ["G"], label: "flight / Earth gravity" },
     { c: ["E"], label: "hop on a ride" },
     { c: ["J"], label: "emotes" },
     { c: ["Click"], label: "shoot" }
@@ -331,6 +332,12 @@ export class HUD {
     this.#helpToggle.innerHTML =
       `<span class="help-toggle-label">Controls</span>` +
       `<span class="help-toggle-chevron" aria-hidden="true">${this.#helpCollapsed ? "▴" : "▾"}</span>`
+  }
+
+  collapseHelp() {
+    if (this.#helpCollapsed) return;
+    this.#helpCollapsed = true;
+    this.#syncHelpCollapse();
   }
 
   /** The Click/X row tracks the active toolbar tool. */

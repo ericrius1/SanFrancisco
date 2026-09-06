@@ -1131,6 +1131,24 @@ export function poseAir(r: Rig) {
   set(r.foreR, 0.35, 0, 0);
 }
 
+/** Quiet suspended hover opens into a reaching, head-first flight silhouette. */
+export function posePersonalFlight(r: Rig, time: number, speed: number) {
+  const reach = THREE.MathUtils.smoothstep(speed, 4, 48);
+  const breath = Math.sin(time * 1.8) * 0.025;
+  r.hips.position.y = 0;
+  set(r.hips, -1.2 * reach, 0, 0);
+  set(r.torso, -0.12 * reach + breath, 0, 0);
+  set(r.head, 0.65 * reach, 0, 0);
+  set(r.armL, 2.9 * reach, 0, 0.24 * (1 - reach));
+  set(r.armR, 2.72 * reach, 0, -0.24 * (1 - reach));
+  set(r.foreL, 0.12 + 0.08 * (1 - reach), 0, 0);
+  set(r.foreR, 0.18, 0, 0);
+  set(r.legL, 0.08 - 0.1 * reach, 0, 0.06);
+  set(r.legR, 0.22 * (1 - reach), 0, -0.06);
+  set(r.shinL, -0.12 * (1 - reach), 0, 0);
+  set(r.shinR, -0.24 * (1 - reach), 0, 0);
+}
+
 /**
  * Swimming. `drive` 0..1 blends TREADING WATER (0) into a full front crawl (1),
  * so a swimmer who is holding station stops windmilling at racing cadence — the

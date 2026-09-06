@@ -11,6 +11,7 @@ import {
   buildRig,
   buildSteeringWheel,
   poseAir,
+  posePersonalFlight,
   poseDrive,
   poseIdle,
   poseGolf,
@@ -43,6 +44,7 @@ import { ARCHER_BOW_GRIP, poseArcher } from "../gameplay/archery/poses";
 import { avatarFromSeed, normalizeAvatarTraits, type AvatarTraits } from "./avatar";
 import { DEFAULT_DRIVE_SPEC, type Cockpit, type DriveSpec, type PlayerMode } from "./types";
 import { WalkController, WALK_CAPSULE_HALF_EXTENT, WALK_TUNING } from "./walk";
+import { SkyFlightController } from "./skyFlight";
 import { LightPool } from "./lightPool";
 import {
   applyBallGlow,
@@ -240,6 +242,11 @@ export class Player {
   heading = 0;
   speed = 0;
   time = 0; // sim seconds, advanced by fixed steps (controllers read this)
+  readonly skyFlight = new SkyFlightController();
+
+  get personalFlying(): boolean {
+    return this.mode === "walk" && (this.skyFlight.active || this.skyFlight.currentIsland !== null) && !this.riding;
+  }
   /** Set by main from the indoor camera gate; walk/run scale by indoorSpeed. */
   indoor = false;
   /** True while carrying the garden rake; walk/run drop to a deliberate half pace. */
@@ -788,6 +795,7 @@ export class Player {
    * spin every mode switch 180°.
    */
   #spawnBody(mode: PlayerMode, facing = this.heading - Math.PI, exactBodyY?: number) {
+    this.skyFlight.reset();
     if (mode !== "plane" && this.rocketFlying) {
       this.#controller("plane").setRocketFlying(false);
       this.#clearRocketVisual();
@@ -1013,7 +1021,7 @@ export class Player {
    * shove while driving would feel like a physics bug.
    */
   separateFromAvatars(others: readonly { x: number; z: number }[], dt: number) {
-    if (this.worldArrivalHeld || this.riding || this.mode !== "walk" || !this.body) return;
+    if (this.worldArrivalHeld || this.riding || this.mode !== "walk" || this.personalFlying || !this.body) return;
     const RADIUS = 0.7; // rig shoulders are ~0.6 m wide
     const SPEED = 1.1; // m/s of drift, slow enough to read as a polite step
     let px = 0;
@@ -1133,7 +1141,13 @@ export class Player {
       return;
     }
 
-    this.#controller(this.mode).update(this, dt, input, { camYaw, aim, v });
+    if (this.mode === "walk" && this.skyFlight.update(this, dt, input, { camYaw, aim, v })) {
+      const walk = this.#controller("walk");
+      walk.grounded = this.skyFlight.grounded;
+      walk.swimming = false;
+    } else {
+      this.#controller(this.mode).update(this, dt, input, { camYaw, aim, v });
+    }
   }
 
   requestBoardJump() {
@@ -1222,7 +1236,9 @@ export class Player {
   }
 
   requestWalkJump() {
-    if (this.mode === "walk") this.#controller("walk").requestJump();
+    if (this.mode !== "walk") return;
+    if (this.skyFlight.enabled) this.skyFlight.requestTakeoff();
+    else this.#controller("walk").requestJump();
   }
 
   /** Air/landing state for probes and the window.__sf diagnostics surface. */
@@ -2146,8 +2162,9 @@ export class Player {
     mesh.position.copy(this.renderPosition);
     if (this.mode === "walk") {
       // the capsule's physics rotation is pinned; face the travel heading smoothly
-      this.#meshYawQuat.setFromAxisAngle(V.up, this.heading + Math.PI);
-      mesh.quaternion.slerp(this.#meshYawQuat, 0.22);
+      if (this.personalFlying) this.#meshYawQuat.copy(this.skyFlight.orientation);
+      else this.#meshYawQuat.setFromAxisAngle(V.up, this.heading + Math.PI);
+      mesh.quaternion.slerp(this.#meshYawQuat, 1 - Math.exp(-Math.min(dt, 0.1) * 15));
     } else {
       mesh.quaternion.copy(this.renderQuaternion);
     }
@@ -2202,8 +2219,10 @@ export class Player {
       }
       this.#ballProp.visible = this.#ballHeld;
       applyBallGlow(this.#ballMaterial, this.#ballHeld ? undefined : 0);
-      const h = Math.hypot(this.velocity.x, this.velocity.z);
-      if (golfing) {
+      const h = this.personalFlying ? this.speed : Math.hypot(this.velocity.x, this.velocity.z);
+      if (this.personalFlying && !walk.grounded) {
+        posePersonalFlight(r, this.#animT, this.speed);
+      } else if (golfing) {
         poseGolf(r, this.#golfPose.swing);
       } else if (archering) {
         poseArcher(r, this.#archerPose.draw, this.#archerPose.pitch);

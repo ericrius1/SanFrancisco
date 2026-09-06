@@ -99,11 +99,35 @@ export type AuthoredFlowerPlacement = {
   yaw: number;
   scale: number;
   species: AuthoredFlowerSpecies;
+  /** Authored-only silhouette. These never add GPU rungs to the wildland field. */
+  form?: AuthoredFlowerForm;
   /** Stable 0..1 colour variation within the species palette. */
   tint?: number;
 };
 
 export type AuthoredFlowerPalette = { a: number; b: number };
+
+/** Distinct alien bloom geometry available to compact authored gardens. */
+export type AuthoredFlowerForm = "starbell" | "prism-orchid" | "moon-cup";
+
+export type AuthoredFlowerFormDefinition = {
+  /** Lazy form-specific geometry builder. Called only when a patch places it. */
+  build(): THREE.BufferGeometry;
+  heads: number;
+};
+
+const AUTHORED_FORM_REGISTRY = new Map<AuthoredFlowerForm, AuthoredFlowerFormDefinition>();
+
+/**
+ * Registers an optional authored silhouette without adding it to wildland GPU
+ * rungs. Feature chunks call this immediately before creating their patch.
+ */
+export function registerAuthoredFlowerForm(
+  form: AuthoredFlowerForm,
+  definition: AuthoredFlowerFormDefinition
+): void {
+  AUTHORED_FORM_REGISTRY.set(form, definition);
+}
 
 // ---- geometry: real 3D curved petals -------------------------------------------
 // A petal is a curved ruled strip that grows +Z outward from the origin and arcs
@@ -302,6 +326,19 @@ function flowerClump(flowers: ClumpFlower[]): THREE.BufferGeometry {
   merged.computeBoundingSphere();
   return merged;
 }
+
+/**
+ * Geometry primitives for optional authored-form chunks. These are the same
+ * stem/petal/clump compiler used by native flowers, exposed so a lazy feature
+ * can contribute silhouettes without duplicating botanical rendering code.
+ */
+export const AUTHORED_FLOWER_GEOMETRY_KIT = {
+  makeStem,
+  bloomRings,
+  makeCentre,
+  finalizeBloom,
+  flowerClump
+} as const;
 
 /** A poppy bloom, with detail concentrated in the nearby hero and cheaper satellite
  *  flowers. Both remain genuinely curved, layered 3D geometry. */
@@ -812,7 +849,7 @@ export function createAuthoredFlowerPatch(
   placements: readonly AuthoredFlowerPlacement[],
   options: {
     name: string;
-    palettes?: Partial<Record<AuthoredFlowerSpecies, AuthoredFlowerPalette>>;
+    palettes?: Partial<Record<AuthoredFlowerSpecies | AuthoredFlowerForm, AuthoredFlowerPalette>>;
   }
 ) {
   const group = new THREE.Group();
@@ -822,19 +859,40 @@ export function createAuthoredFlowerPatch(
   // gate — no distance dissolve, so the focus is inert for them.
   materialState.focus.set(0, 0);
   const material = materialState.material;
-  const geoms = BUILDERS.map((builder) => builder());
-  const speciesIds = FLOWER_SPECIES_IDS;
+  // Existing authored gardens pay nothing for sky-only silhouettes: construct
+  // only the extra forms this compact patch actually places.
+  const usedForms = [...new Set(
+    placements.flatMap((placement) => placement.form ? [placement.form] : [])
+  )];
+  const formDefinitions = usedForms.map((form) => {
+    const definition = AUTHORED_FORM_REGISTRY.get(form);
+    if (!definition) {
+      throw new Error(`[vegetation:${options.name}] authored flower form '${form}' is not registered`);
+    }
+    return definition;
+  });
+  const geoms = [
+    ...BUILDERS.map((builder) => builder()),
+    ...formDefinitions.map((definition) => definition.build())
+  ];
+  const speciesIds: readonly (AuthoredFlowerSpecies | AuthoredFlowerForm)[] = [
+    ...FLOWER_SPECIES_IDS,
+    ...usedForms
+  ];
   const speciesIndex = new Map(speciesIds.map((id, index) => [id, index] as const));
+  const nativeSpeciesIndex = new Map(FLOWER_SPECIES_IDS.map((id, index) => [id, index] as const));
   const rows: Row[][] = geoms.map(() => []);
   const colorA = new THREE.Color();
   const colorB = new THREE.Color();
   const color = new THREE.Color();
 
   placements.forEach((placement, index) => {
-    const species = speciesIndex.get(placement.species);
+    const form = placement.form ?? placement.species;
+    const species = speciesIndex.get(form);
     if (species === undefined) return;
-    const fallback = PALETTES[species];
-    const palette = options.palettes?.[placement.species] ?? fallback;
+    const nativeSpecies = nativeSpeciesIndex.get(placement.species) ?? 0;
+    const fallback = PALETTES[nativeSpecies];
+    const palette = options.palettes?.[form] ?? options.palettes?.[placement.species] ?? fallback;
     const tint = placement.tint ?? hash2(Math.floor(placement.x * 10), Math.floor(placement.z * 10), index + 883);
     colorA.setHex(palette.a);
     colorB.setHex(palette.b);
@@ -877,7 +935,12 @@ export function createAuthoredFlowerPatch(
     meshes.push(mesh);
     const triangles = (geometry.index?.count ?? geometry.getAttribute("position").count) / 3;
     instances += list.length;
-    heads += list.length * HEADS_PER_CLUMP[species];
+    const speciesId = speciesIds[species];
+    const nativeHeadIndex = nativeSpeciesIndex.get(speciesId as AuthoredFlowerSpecies);
+    const headsPerClump = nativeHeadIndex === undefined
+      ? AUTHORED_FORM_REGISTRY.get(speciesId as AuthoredFlowerForm)?.heads ?? 0
+      : HEADS_PER_CLUMP[nativeHeadIndex];
+    heads += list.length * headsPerClump;
     submittedTriangles += list.length * triangles;
   });
 

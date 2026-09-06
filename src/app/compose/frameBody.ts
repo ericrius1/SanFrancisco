@@ -84,6 +84,7 @@ import {
 import { writeDevReloadSnapshot } from "../../app/hmr/devReloadSnapshot";
 import type {  } from "../../app/systems/pickleball";
 import type { MainCtx } from "./ctx";
+import { createSkyFlightFeature } from "./skyFlight";
 
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
@@ -137,6 +138,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // Reused every frame by the wave-audio listener below; the basis extraction
   // wants three vectors and only one of them is interesting.
   const waveListener: WaveListener = { x: 0, z: 0, rightX: 1, rightZ: 0 };
+  const skyFlight = createSkyFlightFeature(ctx, core, netW);
   const waveRight = new THREE.Vector3();
   const waveUp = new THREE.Vector3();
   const waveForward = new THREE.Vector3();
@@ -861,6 +863,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   const liveInput = (frameDt: number) => {
     ctx.state.elapsed += frameDt;
     ctx.state.accumulator += frameDt;
+    if (!input.suspended && !worldArrival.active && !playingPickleball && !playingFortMasonEnsemble &&
+        !core.state.golf?.active && player.mode === "walk" && !player.riding && input.pressed("KeyG")) {
+      player.skyFlight.toggle(player);
+      hud.message(player.skyFlight.active ? "Free flight · Space rise · Q descend · Shift boost" : "Earth gravity · Space to take off again", 3);
+    }
 
     // Plain number keys switch travel modes; Ctrl+number still jumps click-tools;
     // Shift+number teleports to player slots. Arrows: ↑/↓ between toolbar rows,
@@ -1476,7 +1483,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       }
       // Landscape vegetation rings (internally gated on the master foliage
       // toggle; a few hypot tests per frame when idle).
-      ctx.state.siteFoliage?.update(player.position.x, player.position.z);
+      ctx.state.siteFoliage?.update(player.position.x, player.position.z, player.position.y);
+      skyFlight.update(frameDt);
     }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
@@ -1987,6 +1995,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   });
   return {
     tick,
-    state
+    state,
+    skyFlight
   };
 }

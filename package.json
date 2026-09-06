@@ -134,7 +134,9 @@
     "sync:box3d": "rm -rf vendor/box3d-wasm && mkdir -p vendor/box3d-wasm && cp -R ../box3d-wasm/packages/box3d-wasm/dist ../box3d-wasm/packages/box3d-wasm/package.json vendor/box3d-wasm/ && npm install",
     "assets:check": "node tools/assets-check.mjs",
     "assets:heal": "node tools/assets-check.mjs --heal",
-    "assets:list": "node tools/assets-check.mjs --list"
+    "assets:list": "node tools/assets-check.mjs --list",
+    "test:sky-flight": "node tools/sky-flight-physics-probe.mjs",
+    "test:sky-flight:browser": "node tools/sky-flight-browser-probe.mjs"
   },
   "dependencies": {
     "@litertjs/core": "^2.5.3",
