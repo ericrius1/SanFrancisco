@@ -114,6 +114,8 @@ export type NativeTreeFarTiersOptions = Readonly<{
 export type NativeTreeGpuFarTiers = Readonly<{
   /** Add to the forest group; hidden with it and by the master foliage toggle. */
   group: THREE.Group;
+  /** Register a lazily compiled design before admitting its first source tile. */
+  addDesign(design: NativeTreeFarDesign): void;
   /** Any live instance resident? Dispatch is skipped when false. */
   hasResident(): boolean;
   /** Admit every slot, splitting large chunks across resident pages. */
@@ -167,7 +169,7 @@ function createTreeFarArena(
   designs: readonly NativeTreeFarDesign[],
   options: NativeTreeFarTiersOptions,
   capacity: number
-): NativeTreeGpuFarTiers {
+): Omit<NativeTreeGpuFarTiers, "addDesign"> {
   const group = new THREE.Group();
   group.name = `${options.name}_far_tiers`;
 
@@ -456,7 +458,7 @@ export function createNativeTreeGpuFarTiers(
   options: NativeTreeFarTiersOptions
 ): NativeTreeGpuFarTiers {
   type Page = {
-    owner: NativeTreeGpuFarTiers;
+    owner: Omit<NativeTreeGpuFarTiers, "addDesign">;
     container: THREE.Group;
     capacity: number;
     used: number;
@@ -525,6 +527,9 @@ export function createNativeTreeGpuFarTiers(
   };
   return Object.freeze({
     group,
+    addDesign(design: NativeTreeFarDesign) {
+      if (!disposed && !byDesign.has(design.design)) byDesign.set(design.design, { design, pages: [] });
+    },
     hasResident: () => handles.size > 0,
     admitChunk(designIndex: number, slots: readonly FarInstanceInput[]) {
       const entry = byDesign.get(designIndex);
@@ -598,7 +603,7 @@ export function createNativeTreeGpuFarTiers(
       await Promise.all(pages().map(preparePage));
     },
     get farDraws() { let draws = 0; for (const page of livePages) draws += page.owner.farDraws; return draws; },
-    designCount: byDesign.size,
+    get designCount() { return byDesign.size; },
     residencyStats() {
       const live = pages();
       const held = [...live, ...retired];

@@ -1,0 +1,50 @@
+<!doctype html><html><head><link rel="icon" href="data:,"></head><body><script type="module">
+import * as THREE from 'three/webgpu';
+import {registerRenderer} from '/src/app/rendererRegistry.ts';
+import {createNativeTreeForest} from '/src/world/nativeTreeForest/index.ts';
+import {renderNativeTreeForestFarCulls} from '/src/world/nativeTreeForest/gpuFarTiers.ts';
+import {WILD_TREE_DESIGNS,collectWildTrees} from '/src/world/wildlands/layout.ts';
+const check=(x,m)=>{if(!x)throw Error(m)};
+const errors=[];
+const renderer=new THREE.Renderer(new THREE.WebGPUBackend(),{getFallback:null});renderer.library=new THREE.StandardNodeLibrary();
+try {
+ await renderer.init();registerRenderer(renderer);renderer.setSize(320,240);renderer.backend.device.addEventListener('uncapturederror',e=>errors.push(e.error.message));
+ const camera=new THREE.PerspectiveCamera(60,4/3,.1,3000),scene=new THREE.Scene();scene.add(new THREE.HemisphereLight(0xffffff,0x777777,2));
+ const placement=(x,design)=>({x,y:0,z:0,scale:1,yaw:.4,design});
+ const all=[placement(2000,0),placement(20020,1)],requests=[];
+ const forest=createNativeTreeForest(WILD_TREE_DESIGNS,{tileSize:352,load(bounds){requests.push(bounds);return all.filter(s=>s.x>=bounds.minX&&s.x<bounds.maxX&&s.z>=bounds.minZ&&s.z<bounds.maxZ)}},{name:'source_qa',chunkSize:176,visibleDistance:350,impostorDistance:1,nearMax:0});scene.add(forest.group);
+ forest.update({x:0,y:300,z:0});await forest.ready;
+ check(forest.stats.instances===0&&forest.stats.designs===0,'empty initial area must compile zero prototypes');
+ check(forest.stats.sourceResidency().tiles<50,'empty tile metadata locally bounded');
+ const prep=root=>renderer.compileAsync(root,camera,scene);
+ async function visit(x){camera.position.set(x,150,50);camera.lookAt(x,0,0);camera.updateMatrixWorld(true);await forest.prepareAt({x,y:150,z:0},prep);renderNativeTreeForestFarCulls(camera);renderer.render(scene,camera);await renderer.backend.device.queue.onSubmittedWorkDone();let visible=0;const buffers=new Set();forest.group.traverse(o=>{if(o.geometry?.indirect)buffers.add(o.geometry.indirect)});for(const b of buffers){const a=new Uint32Array(await renderer.getArrayBufferAsync(b));for(let i=0;i<a.length;i+=5)visible+=a[i+1];}return {visible,source:forest.stats.sourceResidency(),far:forest.stats.farResidency(),designs:forest.stats.designs};}
+ const first=await visit(2000);check(first.visible===1&&first.designs===1,'first populated tile lazily compiles only its design and draws: '+JSON.stringify(first));
+ const second=await visit(20020);check(second.visible===1&&second.designs===2,'new species registers on existing page manager');
+ check(second.source.slots===1&&second.source.releases>0,'old source placements released');
+ const churn=[];for(let i=0;i<8;i++){const row=await visit(i%2?20020:2000);check(row.visible===1&&row.source.slots===1&&row.far.used===1,'return visit has exactly one stable tree');check(row.source.tiles<50,'travel history cannot grow metadata');churn.push(row)}
+ const empty=await visit(40000);check(empty.source.slots===0&&empty.far.capacity===0,'leaving all trees releases source and GPU storage');forest.dispose();
+ // Compare actual GPU submissions with the untiled representation at one fixed view.
+ const terrain={groundHeight:()=>10,surfaceType:()=>1,isWater:()=>false};
+ const regions=new Set(['ggpark','presidio','marin','twinpeaks']);
+ const whole=collectWildTrees(terrain,undefined,regions);
+ const options={name:'equivalence',chunkSize:176,visibleDistance:1050,horizonDistance:220,impostorDistance:420,nearMax:0};
+ const authored=createNativeTreeForest(WILD_TREE_DESIGNS,whole,options);
+ const tiled=createNativeTreeForest(WILD_TREE_DESIGNS,{tileSize:704,load:b=>collectWildTrees(terrain,undefined,regions,b)}, {...options,name:'equivalence_tiled'});
+ scene.add(authored.group,tiled.group);const focus={x:-3500,y:250,z:2300};camera.position.set(focus.x,focus.y,focus.z);camera.lookAt(-2600,30,2300);camera.updateMatrixWorld(true);
+ authored.update(focus);tiled.update(focus);await authored.prepareAt(focus,prep);await tiled.prepareAt(focus,prep);
+ renderNativeTreeForestFarCulls(camera);renderer.render(scene,camera);await renderer.backend.device.queue.onSubmittedWorkDone();
+ async function counts(f){let triangles=0,instances=0;const buffers=new Set();f.group.traverse(o=>{if(o.geometry?.indirect)buffers.add(o.geometry.indirect)});for(const b of buffers){const a=new Uint32Array(await renderer.getArrayBufferAsync(b));for(let i=0;i<a.length;i+=5){triangles+=a[i]*a[i+1]/3;instances+=a[i+1]}}return {triangles,instances,slots:f.stats.instances,designs:f.stats.designs,source:f.stats.sourceResidency()}}
+ const equivalence={authored:await counts(authored),tiled:await counts(tiled)};
+ check(equivalence.authored.triangles>0&&equivalence.authored.triangles===equivalence.tiled.triangles&&equivalence.authored.instances===equivalence.tiled.instances,'source tiles preserve GPU submissions: '+JSON.stringify(equivalence));
+ check(equivalence.tiled.slots<equivalence.authored.slots,'local metadata is smaller');authored.dispose();tiled.dispose();
+ // Async source resolution must never resurrect an obsolete destination.
+ let resolveLoad,startedResolve;const started=new Promise(r=>startedResolve=r);
+ const stale=createNativeTreeForest(WILD_TREE_DESIGNS,{tileSize:352,load(bounds){if(bounds.minX===0&&bounds.minZ===0){startedResolve();return new Promise(r=>resolveLoad=r)}return []}},{name:'stale_source',visibleDistance:100,nearMax:0});
+ stale.update({x:20,z:20});await started;const moved=stale.prepareAt({x:30000,z:30000},prep);resolveLoad([placement(20,0)]);await moved;
+ check(stale.stats.instances===0&&stale.stats.designs===0,'obsolete loaded data never compiles or publishes');stale.dispose();
+ let resolveDisposed,startedDisposedResolve;const startedDisposed=new Promise(r=>startedDisposedResolve=r);
+ const disposed=createNativeTreeForest(WILD_TREE_DESIGNS,{tileSize:352,load(){startedDisposedResolve();return new Promise(r=>resolveDisposed=r)}},{name:'disposed_source',visibleDistance:100,nearMax:0});disposed.update({x:0,z:0});await startedDisposed;disposed.dispose();resolveDisposed([placement(0,0)]);await disposed.ready;
+ check(disposed.group.children.length===0&&disposed.stats.designs===0,'late source completion after disposal cannot publish');
+ check(!errors.length,errors.join('\n'));window.__sourceResult={ok:true,first,second,empty,churn,equivalence,requests:requests.length,errors};
+}catch(e){window.__sourceResult={ok:false,error:String(e.stack??e),errors};}
+</script></body></html>

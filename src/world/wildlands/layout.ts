@@ -284,13 +284,16 @@ function appendGoldmanEllipse(
  * gameplay only, while one deferred renderer owns every GG Park tree. */
 function collectGoldmanTrees(
   map: GardenTerrain,
-  excluded?: (x: number, z: number) => boolean
+  excluded?: (x: number, z: number) => boolean,
+  bounds?: WildTreeBounds
 ): WildTree[] {
   const candidates: GoldmanTreePlacement[] = [];
   appendGoldmanEllipse(candidates, -1411, 2192, 22, 65, 24, 11, WILD_SPECIES.cypress);
   appendGoldmanEllipse(candidates, -1335, 2283, 82, 12, 25, 23, WILD_SPECIES.cypress);
   appendGoldmanEllipse(candidates, -1271, 2203, 15, 58, 18, 37, WILD_SPECIES.eucalyptus);
   appendGoldmanEllipse(candidates, -1227, 2228, 67, 54, 24, 51, WILD_SPECIES.oak, true);
+
+  if (bounds && !candidates.some(tree => inTreeBounds(bounds, tree.x, tree.z))) return [];
 
   const placements = candidates.filter((tree) => {
     if (excluded?.(tree.x, tree.z)) return false;
@@ -689,16 +692,84 @@ export function collectBuenaVistaShrubs(
 export type WildTree = { x: number; y: number; z: number; yaw: number; scale: number; design: number };
 export type WildTreeExclusion = (x: number, z: number) => boolean;
 export type WildTreeRegionFilter = ReadonlySet<WildRegionId>;
+/** Half-open world-space tile requested from the deterministic tree layout. */
+export type WildTreeBounds = { minX: number; maxX: number; minZ: number; maxZ: number };
 
 const TREE_CELL = 8;
 const TREE_MIN_SPACING = 5.5;
 
+type TreeBounds = WildTreeBounds;
+
+function inTreeBounds(bounds: TreeBounds | undefined, x: number, z: number): boolean {
+  return !bounds || (x >= bounds.minX && x < bounds.maxX && z >= bounds.minZ && z < bounds.maxZ);
+}
+
+/**
+ * Return the grid indices whose jittered positions can enter `bounds`. The
+ * original index remains the hash input: clipping is only an iteration-space
+ * optimization, never a new local coordinate system.
+ */
+function jitteredGridRange(
+  origin: number,
+  cell: number,
+  count: number,
+  jitter: number,
+  min: number,
+  max: number
+): readonly [number, number] {
+  const first = Math.max(0, Math.ceil((min - jitter - origin) / cell));
+  // Keep the upper edge conservative; an extra candidate is harmless and
+  // avoids changing a placement when floating-point arithmetic lands on it.
+  const last = Math.min(count, Math.floor((max + jitter - origin) / cell));
+  return [first, last];
+}
+
+function savannaGridRange(
+  origin: number,
+  cell: number,
+  count: number,
+  min: number,
+  max: number
+): readonly [number, number] {
+  // Savanna jitter is [0, cell), unlike the centred grove/matrix jitter.
+  const first = Math.max(0, Math.ceil((min - cell - origin) / cell));
+  const last = Math.min(count, Math.floor((max - origin) / cell));
+  return [first, last];
+}
+
+function linearRange(
+  start: number,
+  delta: number,
+  count: number,
+  jitter: number,
+  min: number,
+  max: number
+): readonly [number, number] | null {
+  if (delta === 0) return start + jitter < min || start - jitter >= max ? null : [0, count];
+  const low = (min - jitter - start) / delta;
+  const high = (max + jitter - start) / delta;
+  const first = Math.max(0, Math.ceil(Math.min(low, high)));
+  const last = Math.min(count, Math.floor(Math.max(low, high)));
+  return first > last ? null : [first, last];
+}
+
 export function collectWildTrees(
   map: GardenTerrain,
   excluded?: WildTreeExclusion,
-  includedRegions?: WildTreeRegionFilter
+  includedRegions?: WildTreeRegionFilter,
+  bounds?: WildTreeBounds
 ): WildTree[] {
   const trees: WildTree[] = [];
+  // A contender can only reserve the same rounded spacing bucket as a tile
+  // placement when it lies within one spacing unit on both axes. Evaluate that
+  // halo to preserve whole-world de-duplication, but return the requested
+  // half-open tile only.
+  const workBounds = bounds && {
+    minX: bounds.minX - TREE_MIN_SPACING,
+    maxX: bounds.maxX + TREE_MIN_SPACING,
+    minZ: bounds.minZ - TREE_MIN_SPACING,
+    maxZ: bounds.maxZ + TREE_MIN_SPACING
+  };
   // spatial hash for min spacing across overlapping features
   const taken = new Set<string>();
   const takenKey = (x: number, z: number) => `${Math.round(x / TREE_MIN_SPACING)}:${Math.round(z / TREE_MIN_SPACING)}`;
@@ -709,6 +780,7 @@ export function collectWildTrees(
   };
 
   const push = (x: number, z: number, species: number, sBoost: number, salt: number, gx: number, gz: number) => {
+    if (!inTreeBounds(workBounds, x, z)) return false;
     if (excluded?.(x, z)) return false;
     const region = wildRegionAt(x, z);
     if (!region || !includesRegion(region.id) || !plantable(map, region, x, z)) return false;
@@ -718,14 +790,15 @@ export function collectWildTrees(
     if (taken.has(k)) return false;
     taken.add(k);
     const [sMin, sMax] = SPECIES_SCALE[species];
-    trees.push({
+    const tree = {
       x,
       y: map.groundHeight(x, z),
       z,
       yaw: hash2(gx, gz, salt + 7) * Math.PI * 2,
       scale: (sMin + hash2(gx, gz, salt + 13) * (sMax - sMin)) * sBoost,
       design: species
-    });
+    };
+    if (inTreeBounds(bounds, x, z)) trees.push(tree);
     return true;
   };
 
@@ -734,8 +807,11 @@ export function collectWildTrees(
     if (!includesFeatureAt(g.cx, g.cz)) return;
     const salt = 1000 + gi * 37;
     const cells = Math.ceil((g.r * 2) / TREE_CELL);
-    for (let iz = 0; iz <= cells; iz++) {
-      for (let ix = 0; ix <= cells; ix++) {
+    const gridBounds = workBounds ?? { minX: -Infinity, maxX: Infinity, minZ: -Infinity, maxZ: Infinity };
+    const [minIz, maxIz] = jitteredGridRange(g.cz - g.r, TREE_CELL, cells, TREE_CELL * 0.45, gridBounds.minZ, gridBounds.maxZ);
+    const [minIx, maxIx] = jitteredGridRange(g.cx - g.r, TREE_CELL, cells, TREE_CELL * 0.45, gridBounds.minX, gridBounds.maxX);
+    for (let iz = minIz; iz <= maxIz; iz++) {
+      for (let ix = minIx; ix <= maxIx; ix++) {
         const px = g.cx - g.r + ix * TREE_CELL + (hash2(ix, iz, salt) - 0.5) * TREE_CELL * 0.9;
         const pz = g.cz - g.r + iz * TREE_CELL + (hash2(ix, iz, salt + 1) - 0.5) * TREE_CELL * 0.9;
         const dn = Math.hypot(px - g.cx, pz - g.cz) / g.r;
@@ -755,7 +831,13 @@ export function collectWildTrees(
     const salt = 4000 + wi * 41;
     const len = Math.hypot(w.bx - w.ax, w.bz - w.az);
     const n = Math.floor(len / w.spacing);
-    for (let i = 0; i <= n; i++) {
+    const gridBounds = workBounds ?? { minX: -Infinity, maxX: Infinity, minZ: -Infinity, maxZ: Infinity };
+    const xRange = linearRange(w.ax, (w.bx - w.ax) / n, n, w.jitter * 0.5, gridBounds.minX, gridBounds.maxX);
+    const zRange = linearRange(w.az, (w.bz - w.az) / n, n, w.jitter * 0.5, gridBounds.minZ, gridBounds.maxZ);
+    if (!xRange || !zRange) return;
+    const minI = Math.max(xRange[0], zRange[0]);
+    const maxI = Math.min(xRange[1], zRange[1]);
+    for (let i = minI; i <= maxI; i++) {
       const t = i / n;
       const px = w.ax + (w.bx - w.ax) * t + (hash2(i, 0, salt) - 0.5) * w.jitter;
       const pz = w.az + (w.bz - w.az) * t + (hash2(i, 1, salt) - 0.5) * w.jitter;
@@ -772,10 +854,15 @@ export function collectWildTrees(
     if (!spec) return; // Marin: no matrix, stays open
     const salt = 6000 + region.id.length * 17;
     const cell = spec.cell ?? MATRIX_CELL;
-    let gx = 0;
-    for (let x = region.minX; x <= region.maxX; x += cell, gx++) {
-      let gz = 0;
-      for (let z = region.minZ; z <= region.maxZ; z += cell, gz++) {
+    const xCount = Math.floor((region.maxX - region.minX) / cell);
+    const zCount = Math.floor((region.maxZ - region.minZ) / cell);
+    const gridBounds = workBounds ?? { minX: -Infinity, maxX: Infinity, minZ: -Infinity, maxZ: Infinity };
+    const [minGx, maxGx] = jitteredGridRange(region.minX, cell, xCount, cell * 0.7, gridBounds.minX, gridBounds.maxX);
+    const [minGz, maxGz] = jitteredGridRange(region.minZ, cell, zCount, cell * 0.7, gridBounds.minZ, gridBounds.maxZ);
+    for (let gx = minGx; gx <= maxGx; gx++) {
+      const x = region.minX + gx * cell;
+      for (let gz = minGz; gz <= maxGz; gz++) {
+        const z = region.minZ + gz * cell;
         const px = x + (hash2(gx, gz, salt) - 0.5) * cell * 1.4;
         const pz = z + (hash2(gx, gz, salt + 1) - 0.5) * cell * 1.4;
         // stand mask: smooth so stands have dense hearts + feathered edges
@@ -795,10 +882,15 @@ export function collectWildTrees(
     const salt = 7000 + si * 53;
     const region = WILD_REGIONS.find((r) => r.id === s.region)!;
     const cell = 26;
-    let gx = 0;
-    for (let x = region.minX; x <= region.maxX; x += cell, gx++) {
-      let gz = 0;
-      for (let z = region.minZ; z <= region.maxZ; z += cell, gz++) {
+    const xCount = Math.floor((region.maxX - region.minX) / cell);
+    const zCount = Math.floor((region.maxZ - region.minZ) / cell);
+    const gridBounds = workBounds ?? { minX: -Infinity, maxX: Infinity, minZ: -Infinity, maxZ: Infinity };
+    const [minGx, maxGx] = savannaGridRange(region.minX, cell, xCount, gridBounds.minX, gridBounds.maxX);
+    const [minGz, maxGz] = savannaGridRange(region.minZ, cell, zCount, gridBounds.minZ, gridBounds.maxZ);
+    for (let gx = minGx; gx <= maxGx; gx++) {
+      const x = region.minX + gx * cell;
+      for (let gz = minGz; gz <= maxGz; gz++) {
+        const z = region.minZ + gz * cell;
         const px = x + hash2(gx, gz, salt) * cell;
         const pz = z + hash2(gx, gz, salt + 1) * cell;
         if (!savannaGate(s, px, pz)) continue;
@@ -812,7 +904,11 @@ export function collectWildTrees(
   // The broad Goldman ownership mask above keeps the region-wide matrix out of
   // the courts and Hippie Hill. Add its intentional perimeter recipe only after
   // every generic collector has run, preserving the old overlapping clusters.
-  if (includesRegion("ggpark")) trees.push(...collectGoldmanTrees(map, excluded));
+  if (includesRegion("ggpark")) {
+    // Its scale hashes use the filtered authored index, so generate the recipe
+    // intact and clip only after those indices have been resolved.
+    trees.push(...collectGoldmanTrees(map, excluded, bounds).filter((tree) => inTreeBounds(bounds, tree.x, tree.z)));
+  }
 
   return trees;
 }

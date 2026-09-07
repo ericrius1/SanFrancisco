@@ -37,6 +37,7 @@ import {
 } from "./lodTransition";
 import { growTemplate, type GrownTemplate, type NativeTreeDesignSpec } from "./templates";
 import { nativeTreeNearDistanceSquared, nativeTreeNearFocusMovementSquared } from "./nearDistance";
+import { collectNativeTreeSourceTiles, NativeTreeStreamMotion, type NativeTreeTileBounds } from "./sourceTiles";
 import { NativeTreeResidencyIndex } from "./residencyIndex";
 import type { TreeCullFocus } from "../vegetation/treeCullFocus";
 import {
@@ -59,6 +60,12 @@ export type NativeTreeSlot = {
   design: number;
   /** False keeps this individual in landscape LOD at every distance. */
   nearDetail?: boolean;
+};
+
+export type NativeTreeSlotSource = {
+  /** Multiple of the renderer chunk size; source tiles never split a chunk. */
+  tileSize: number;
+  load(bounds: NativeTreeTileBounds): readonly NativeTreeSlot[] | Promise<readonly NativeTreeSlot[]>;
 };
 
 export type NativeTreeForestOptions = {
@@ -141,6 +148,7 @@ export type NativeTreeForest = {
     nearActive(): number;
     farResidency(): ReturnType<NativeTreeGpuFarTiers["residencyStats"]> | null;
     residencyLookup: { lookups: number; examined: number; matched: number };
+    sourceResidency(): { tiles: number; slots: number; loads: number; releases: number; ahead: { x: number; z: number } } | null;
   };
 };
 
@@ -600,10 +608,21 @@ function chunkHorizontalRadius(
 
 export function createNativeTreeForest(
   designs: readonly NativeTreeDesignSpec[],
-  sourceSlots: readonly NativeTreeSlot[],
+  sourceSlots: readonly NativeTreeSlot[] | NativeTreeSlotSource,
   options: NativeTreeForestOptions
 ): NativeTreeForest {
   const chunkSize = options.chunkSize ?? 176;
+  const source = Array.isArray(sourceSlots) ? null : sourceSlots as NativeTreeSlotSource;
+  if (source && (!Number.isInteger(source.tileSize / chunkSize) || source.tileSize < chunkSize)) {
+    throw new RangeError("Tree source tile size must be a positive multiple of chunk size");
+  }
+  const sourceTiles = new Map<string, { bounds: NativeTreeTileBounds; keys: string[] }>();
+  const streamMotion = new NativeTreeStreamMotion();
+  let streamAhead = { x: 0, z: 0 };
+  let sourceLoads = 0;
+  let sourceReleases = 0;
+  let sourceRetryAt = Infinity;
+  let residencyJobs = 0;
   const visibleDistance = options.visibleDistance ?? 520;
   const horizonDistance = Math.min(
     visibleDistance - 24,
@@ -641,28 +660,9 @@ export function createNativeTreeForest(
     instanceBytes: 0,
     nearActive: () => active.size,
     farResidency: () => farTiers?.residencyStats() ?? null,
-    residencyLookup: { lookups: 0, examined: 0, matched: 0 }
+    residencyLookup: { lookups: 0, examined: 0, matched: 0 },
+    sourceResidency: () => source ? { tiles: sourceTiles.size, slots: stats.instances, loads: sourceLoads, releases: sourceReleases, ahead: { ...streamAhead } } : null
   };
-
-  const chunkSlots = new Map<string, Slot[]>();
-  for (const source of sourceSlots) {
-    const design = designs[source.design];
-    if (!design || source.scale <= 0 || !Number.isFinite(source.scale)) continue;
-    const chunk = `${Math.floor(source.x / chunkSize)},${Math.floor(source.z / chunkSize)}`;
-    const slot: Slot = {
-      ...source,
-      y: source.y - design.sink * source.scale,
-      index: 0,
-      chunk,
-      key: "",
-      variation: slotRandom(source, design.seed, 0x2c1b3c6d),
-      dryness: Math.pow(slotRandom(source, design.seed, 0x6a09e667), 3) * 0.32,
-      lodRank: slotRandom(source, design.seed, 0x510e527f)
-    };
-    const bucket = chunkSlots.get(chunk);
-    if (bucket) bucket.push(slot);
-    else chunkSlots.set(chunk, [slot]);
-  }
 
   const templates: (GrownTemplate | null)[] = designs.map(() => null);
   const assets: (NativeTreeMaterialAssets | null)[] = designs.map(() => null);
@@ -688,8 +688,6 @@ export function createNativeTreeForest(
   const lastResidencyFocus = { x: 1e9, z: 1e9 };
   const lastRebinFocus: TreeCullFocus = { x: 1e9, z: 1e9 };
   const rebinFocus: TreeCullFocus = { x: 0, z: 0 };
-  const requestedDesigns = new Set<number>();
-  for (const slots of chunkSlots.values()) for (const slot of slots) requestedDesigns.add(slot.design);
   let lastRebin = 0;
   let hasCullFocus = false;
   let prepareUnit: NativeTreePrepareUnit | null = null;
@@ -945,8 +943,20 @@ export function createNativeTreeForest(
     }
   }
 
+  function hasNearEntries(): boolean {
+    for (const state of nearPreparations.values()) if (state.entries.length) return true;
+    return false;
+  }
+
   function rebin(x: number, z: number, force = false): void {
     if (nearMax === 0 || allNearSlots.length === 0) {
+      if (active.size || hasNearEntries()) {
+        for (const pool of nearPools.values()) {
+          setNearBatchEntries(pool.canopy, []);
+          setNearBatchEntries(pool.grove, []);
+        }
+        active.clear();
+      }
       wantedNearDesigns.clear();
       return;
     }
@@ -1183,7 +1193,8 @@ export function createNativeTreeForest(
     // Walk backward so requestChunkRetirement can splice in place.
     for (let i = chunks.length - 1; i >= 0 && retired < MAX_CHUNK_RETIRES_PER_UPDATE; i--) {
       const chunk = chunks[i];
-      if (descriptorEdgeDistance(chunk, x, z) > retireDistance) {
+      if (descriptorEdgeDistance(chunk, x, z) > retireDistance &&
+          (!source || descriptorEdgeDistance(chunk, streamAhead.x, streamAhead.z) > prefetchDistance)) {
         if (requestChunkRetirement(chunk)) {
           retired++;
           tracer.count("treeChunkRetire");
@@ -1207,11 +1218,97 @@ export function createNativeTreeForest(
     return retired > 0;
   }
 
+  function sourceTileDistance(bounds: NativeTreeTileBounds, x: number, z: number): number {
+    return Math.hypot(Math.max(bounds.minX - x, 0, x - bounds.maxX), Math.max(bounds.minZ - z, 0, z - bounds.maxZ));
+  }
+
+  async function refreshSourceTiles(epoch: number, x: number, z: number): Promise<void> {
+    if (!source) return;
+    const ahead = { ...streamAhead };
+    // A source tile includes full renderer chunks. Crown slack covers trees
+    // rooted just outside the visibility ring; the exact chunk bounds cull later.
+    const radius = prefetchDistance + chunkSize;
+    for (const [key, tile] of sourceTiles) {
+      if (sourceTileDistance(tile.bounds, x, z) <= retireDistance + chunkSize ||
+          sourceTileDistance(tile.bounds, ahead.x, ahead.z) <= radius) continue;
+      let retained = false;
+      for (const chunkKey of tile.keys) {
+        const descriptor = descriptorsByKey.get(chunkKey);
+        if (descriptor?.chunk && !requestChunkRetirement(descriptor.chunk)) retained = true;
+      }
+      if (retained) {
+        sourceRetryAt = performance.now() + 500;
+        continue;
+      }
+      for (const chunkKey of tile.keys) {
+        const descriptor = descriptorsByKey.get(chunkKey);
+        if (!descriptor) continue;
+        for (const slot of descriptor.slots) {
+          const template = templates[slot.design];
+          if (!template) continue;
+          stats.instances--;
+          stats.farTriangles -= template.geometry.lods[LOD_LANDSCAPE].triangles;
+          stats.horizonTriangles -= template.geometry.lods[LOD_HORIZON].triangles;
+          stats.instanceBytes -= 64;
+        }
+        descriptorsByKey.delete(chunkKey);
+        const index = chunkDescriptors.indexOf(descriptor);
+        if (index >= 0) chunkDescriptors.splice(index, 1);
+      }
+      sourceTiles.delete(key);
+      sourceReleases++;
+    }
+    // Rebuild from the bounded local metadata, keeping index extrema local too.
+    residencyIndex.clear();
+    for (const descriptor of chunkDescriptors) residencyIndex.add(descriptor);
+    stats.chunks = chunkDescriptors.length;
+    rebin(x, z, true);
+    const wanted = collectNativeTreeSourceTiles(x, z, source.tileSize, radius, ahead);
+    for (const tile of wanted) {
+      if (disposed || epoch !== residencyEpoch) return;
+      if (sourceTiles.has(tile.key)) continue;
+      const slots = await source.load(tile.bounds);
+      if (disposed || epoch !== residencyEpoch) return;
+      const keys = await appendSourceSlots(slots);
+      if (disposed) return;
+      sourceTiles.set(tile.key, { bounds: tile.bounds, keys });
+      sourceLoads++;
+      if (epoch !== residencyEpoch) return;
+      // Publish each useful tile immediately; don't hide local trees behind the
+      // remaining source ring. Epoch checks stop obsolete destination work.
+      for (const key of keys) {
+        const descriptor = descriptorsByKey.get(key)!;
+        if (disposed || epoch !== residencyEpoch) return;
+        if (descriptorEdgeDistance(descriptor, x, z) < prefetchDistance ||
+            descriptorEdgeDistance(descriptor, ahead.x, ahead.z) < prefetchDistance) {
+          materializeDescriptor(descriptor);
+          applyDistanceCull(x, z, true);
+          await yieldToFrame();
+        }
+      }
+      applyDistanceCull(x, z, true);
+      await yieldToFrame();
+    }
+  }
+
   async function materializeRelevantChunks(epoch: number, x: number, z: number): Promise<void> {
     if (!descriptorsInitialized || !Number.isFinite(x) || !Number.isFinite(z)) return;
+    if (disposed || epoch !== residencyEpoch) return;
+    if (source) await refreshSourceTiles(epoch, x, z);
+    if (disposed || epoch !== residencyEpoch) return;
     const relevant = residencyIndex.collect(x, z, prefetchDistance);
-    stats.residencyLookup = { lookups: relevant.lookups, examined: relevant.examined, matched: relevant.candidates.length };
-    for (const { descriptor } of relevant.candidates) {
+    const candidates = [...relevant.candidates];
+    let lookups = relevant.lookups;
+    let examined = relevant.examined;
+    if (source && Math.hypot(streamAhead.x - x, streamAhead.z - z) > RESIDENCY_MOVE) {
+      const forward = residencyIndex.collect(streamAhead.x, streamAhead.z, prefetchDistance);
+      const present = new Set(candidates.map(item => item.descriptor.key));
+      for (const item of forward.candidates) if (!present.has(item.descriptor.key)) candidates.push(item);
+      lookups += forward.lookups;
+      examined += forward.examined;
+    }
+    stats.residencyLookup = { lookups, examined, matched: candidates.length };
+    for (const { descriptor } of candidates) {
       if (disposed || epoch !== residencyEpoch) return;
       if (descriptor.chunk) {
         descriptor.chunk.retireRequested = false;
@@ -1234,8 +1331,13 @@ export function createNativeTreeForest(
   }
 
   function queueResidencyRefresh(epoch: number, x: number, z: number): Promise<void> {
-    const queued = residencyTail.then(() => materializeRelevantChunks(epoch, x, z));
-    residencyTail = queued.catch(() => {});
+    residencyJobs++;
+    const queued = residencyTail.then(() => materializeRelevantChunks(epoch, x, z)).finally(() => {
+      residencyJobs--;
+    });
+    residencyTail = queued.catch(() => {
+      if (source && !disposed) sourceRetryAt = performance.now() + 1000;
+    });
     return queued;
   }
 
@@ -1873,7 +1975,33 @@ export function createNativeTreeForest(
     };
   }
 
-  const ready = (async () => {
+  async function appendSourceSlots(incoming: readonly NativeTreeSlot[]): Promise<string[]> {
+    if (incoming.length === 0) return [];
+    const chunkSlots = new Map<string, Slot[]>();
+    for (const source of incoming) {
+      const design = designs[source.design];
+      if (!design || source.scale <= 0 || !Number.isFinite(source.scale)) continue;
+      const chunk = `${Math.floor(source.x / chunkSize)},${Math.floor(source.z / chunkSize)}`;
+      const slot: Slot = {
+        ...source,
+        y: source.y - design.sink * source.scale,
+        index: 0,
+        chunk,
+        key: "",
+        variation: slotRandom(source, design.seed, 0x2c1b3c6d),
+        dryness: Math.pow(slotRandom(source, design.seed, 0x6a09e667), 3) * 0.32,
+        lodRank: slotRandom(source, design.seed, 0x510e527f)
+      };
+      const bucket = chunkSlots.get(chunk);
+      if (bucket) bucket.push(slot);
+      else chunkSlots.set(chunk, [slot]);
+    }
+
+    const requestedDesigns = new Set<number>();
+    for (const slots of chunkSlots.values()) for (const slot of slots) {
+      if (!templates[slot.design]) requestedDesigns.add(slot.design);
+    }
+    const addedKeys: string[] = [];
     const loaded = await Promise.all(designs.map(async (design, index) => {
       if (!requestedDesigns.has(index)) return null;
       let template: GrownTemplate | null = null;
@@ -1898,26 +2026,25 @@ export function createNativeTreeForest(
     }));
     for (const result of loaded) {
       if (!result) continue;
-      templates[result.index] = result.template;
-      assets[result.index] = result.materialAssets;
-      materials[result.index] = result.materialPack;
-    }
-    if (disposed) {
-      for (let index = 0; index < designs.length; index++) {
-        materials[index]?.dispose();
-        const materialAssets = assets[index];
-        if (materialAssets) releaseNativeTreeMaterialSet(materialAssets);
-        nearMaterials[index]?.dispose();
-        const detailAssets = nearAssets[index];
-        if (detailAssets) releaseNativeTreeMaterialSet(detailAssets);
-        templates[index]?.release();
+      if (disposed) {
+        result.materialPack.dispose();
+        releaseNativeTreeMaterialSet(result.materialAssets);
+        result.template.release();
+      } else {
+        templates[result.index] = result.template;
+        assets[result.index] = result.materialAssets;
+        materials[result.index] = result.materialPack;
       }
-      return;
+    }
+    if (disposed) return [];
+    if (source && [...requestedDesigns].some(index => !templates[index])) {
+      throw new Error(`Tree source prototypes failed for ${options.name}; tile will retry`);
     }
 
-    let instanceBytes = 0;
+    let instanceBytes = stats.instanceBytes;
     const assemblyCheckpoint = createFrameBudgetCheckpoint(6);
     for (const [key, slots] of chunkSlots) {
+      if (descriptorsByKey.has(key)) throw new Error(`Overlapping tree source chunk: ${key}`);
       const sphere = chunkSphere(slots, templates);
       const validDesigns = new Set<number>();
       for (const slot of slots) {
@@ -1947,11 +2074,12 @@ export function createNativeTreeForest(
         designs: Array.from(validDesigns),
         chunk: null
       };
+      addedKeys.push(key);
       chunkDescriptors.push(descriptor);
       descriptorsByKey.set(key, descriptor);
       residencyIndex.add(descriptor);
       await assemblyCheckpoint();
-      if (disposed) return;
+      if (disposed) return addedKeys;
     }
     descriptorsInitialized = true;
 
@@ -1978,35 +2106,39 @@ export function createNativeTreeForest(
           canopyRadii: template.geometry.canopy.radii,
           boundsCenterY: bounds.sphereCenter[1],
           boundsRadius: bounds.sphereRadius,
-          total: designTotals.get(design) ?? 0
+          total: source ? 4096 : designTotals.get(design) ?? 0
         });
       }
       if (farDesigns.length > 0) {
-        farTiers = createNativeTreeGpuFarTiers(farDesigns, {
-          name: options.name,
-          horizonDistance,
-          visibleDistance,
-          impostorDistance: options.impostorDistance,
-          // Near-pool misses inside this radius keep a far draw; prefer the
-          // smaller horizon cards over landscape's oversized opaque triangles.
-          nearCardSuppressDistance: nearRadius * 0.92
-        });
-        group.add(farTiers.group);
-        // Self-register the per-frame cull; frameBody drives it once per frame for
-        // every forest (see renderNativeTreeForestFarCulls). The distance band
-        // follows the forest's tethered focus, the frustum the render camera.
-        // Pending close-LOD reveals flush after the cull so scale-zero hides are
-        // consumed before canopy/grove meshes become visible.
-        unregisterFarCull = registerForestFarCull((renderer, camera) => {
-          if (disposed || !farTiers) return;
-          farTiers.dispatch(renderer, camera, lastFocus.x, lastFocus.z);
-          flushPendingNearReveals();
-        });
+        if (!farTiers) {
+          farTiers = createNativeTreeGpuFarTiers([], {
+            name: options.name,
+            horizonDistance,
+            visibleDistance,
+            impostorDistance: options.impostorDistance,
+            // Near-pool misses inside this radius keep a far draw; prefer the
+            // smaller horizon cards over landscape's oversized opaque triangles.
+            nearCardSuppressDistance: nearRadius * 0.92
+          });
+          group.add(farTiers.group);
+          // Self-register the per-frame cull; frameBody drives it once per frame for
+          // every forest (see renderNativeTreeForestFarCulls). The distance band
+          // follows the forest's tethered focus, the frustum the render camera.
+          // Pending close-LOD reveals flush after the cull so scale-zero hides are
+          // consumed before canopy/grove meshes become visible.
+          unregisterFarCull = registerForestFarCull((renderer, camera) => {
+            if (disposed || !farTiers) return;
+            farTiers.dispatch(renderer, camera, lastFocus.x, lastFocus.z);
+            flushPendingNearReveals();
+          });
+        }
+        for (const design of farDesigns) farTiers.addDesign(design);
       }
     }
 
     if (nearMax > 0) {
       for (const design of usedDesigns) {
+        if (nearPools.has(design)) continue;
         const template = templates[design];
         const materialPack = materials[design];
         if (!template || !materialPack || template.design.nearDetail === false) continue;
@@ -2063,7 +2195,7 @@ export function createNativeTreeForest(
         });
         instanceBytes += nearMax * (4 + 4) * 4 * 2;
         await assemblyCheckpoint();
-        if (disposed) return;
+        if (disposed) return addedKeys;
       }
     }
 
@@ -2077,6 +2209,14 @@ export function createNativeTreeForest(
       0
     );
     stats.instanceBytes = instanceBytes;
+    return addedKeys;
+  }
+
+  const ready = (async () => {
+    // Let the caller name the initial focus before a procedural source starts.
+    await Promise.resolve();
+    if (!source) await appendSourceSlots(sourceSlots as readonly NativeTreeSlot[]);
+    descriptorsInitialized = true;
     group.userData.nativeTreeStats = stats;
     group.userData.nativeTreeResidentChunks = () => chunks.length;
     group.userData.nativeTreePreparedHorizonChunks = () =>
@@ -2122,10 +2262,11 @@ export function createNativeTreeForest(
         Number.isFinite(focus.z) &&
         Math.abs(focus.x) < 1e8 &&
         Math.abs(focus.z) < 1e8;
-      const refreshResidency = finiteFocus && Math.hypot(
+      const refreshResidency = finiteFocus && (Math.hypot(
         focus.x - lastResidencyFocus.x,
         focus.z - lastResidencyFocus.z
-      ) >= RESIDENCY_MOVE;
+      ) >= RESIDENCY_MOVE || (source && residencyJobs === 0 && performance.now() >= sourceRetryAt));
+      if (source && finiteFocus) streamAhead = streamMotion.update(focus.x, focus.z, performance.now());
       applyDistanceCull(focus.x, focus.z);
       // Drain distant chunks every update (capped), not only on the 40 m
       // residency step — leftover retires from a flyover would otherwise sit
@@ -2134,6 +2275,7 @@ export function createNativeTreeForest(
         ? retireDistantChunks(focus.x, focus.z)
         : false;
       if (refreshResidency) {
+        sourceRetryAt = Infinity;
         lastResidencyFocus.x = focus.x;
         lastResidencyFocus.z = focus.z;
         const epoch = ++residencyEpoch;
@@ -2167,6 +2309,8 @@ export function createNativeTreeForest(
       lastResidencyFocus.x = focus.x;
       lastResidencyFocus.z = focus.z;
 
+      streamMotion.reset();
+      streamAhead = { x: focus.x, z: focus.z };
       const epoch = ++residencyEpoch;
       const onAbort = () => cancelResidencyPrime(epoch);
       signal?.addEventListener("abort", onAbort, { once: true });
@@ -2230,6 +2374,8 @@ export function createNativeTreeForest(
       chunkDescriptors.length = 0;
       descriptorsByKey.clear();
       residencyIndex.clear();
+      sourceTiles.clear();
+      streamMotion.reset();
       // Frees every far arena, visible buffer, indirect draw set and cull pass.
       farTiers?.dispose();
       farTiers = null;

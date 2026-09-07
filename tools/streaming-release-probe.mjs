@@ -53,8 +53,10 @@ try {
   assert.equal(requested(canopy.map(c => c.name)).length, 0, 'subsequent approach reuses canopy chunk');
   await page.evaluate(async () => { const s = window.__sf; await s.wildlands.prepareTrees(unit => s.pipeline.prepareSceneOwner(unit)); });
   await page.waitForFunction(() => window.__sf.renderIdle(), null, { timeout: 120000 });
-  report.flight = await page.evaluate(() => ({ nearActive: window.__sf.wildlands.trees.stats.nearActive(), residency: window.__sf.wildlands.trees.stats.farResidency(), sameForest: window.__sf.wildlands.trees === window.__sf.wildlandsCanopy.trees, backend: window.__sf.renderer.backend.constructor.name }));
+  report.flight = await page.evaluate(() => ({ nearActive: window.__sf.wildlands.trees.stats.nearActive(), residency: window.__sf.wildlands.trees.stats.farResidency(), source: window.__sf.wildlands.trees.stats.sourceResidency(), sameForest: window.__sf.wildlands.trees === window.__sf.wildlandsCanopy.trees, backend: window.__sf.renderer.backend.constructor.name }));
   assert.ok(report.flight.residency.used > 0 && report.flight.residency.capacity < 20000, 'bounded resident pages are present');
+  assert.ok(report.flight.source.tiles > 0 && report.flight.source.tiles < 64, "source tile metadata is local");
+  assert.ok(report.flight.source.slots > 0 && report.flight.source.slots < 10151, "forest does not retain all authored SF placements");
   assert.ok(report.flight.sameForest, 'single shared forest owner');
   assert.equal(report.flight.nearActive, 0, 'altitude prevents close tree allocation');
   assert.equal(leafRequests().length, 0, 'park flight still requests no near textures');

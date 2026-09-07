@@ -157,3 +157,54 @@ these changes alone are not an overall FPS guarantee. In a separate matched
 0.756 ms for the previous authored-size arena and 0.616 ms for 4,096-slot pages.
 Median compute time was 0.059 versus 0.028 ms. These small local measurements
 are diagnostic, not a device-wide performance claim.
+
+## Follow-up: regional procedural source tiles
+
+Wildlands now asks the shared forest for 704m source tiles (four 176m renderer
+chunks per edge), rather than constructing every SF tree on first approach.
+The existing placement recipes generate only the requested grid ranges. Their
+original hash indices, ordering, terrain/exclusion gates, and 5.5m spacing-bucket
+halo preserve placements across half-open tile seams. Goldman keeps its authored
+filtered indices, because those indices determine tree heights.
+
+This is procedural source streaming: there are no new placement downloads or
+prebaked files. The compact SF botanical recipes remain one lazy code module;
+placement objects and chunk descriptors now have local lifetimes. An asynchronous
+source interface leaves room for data-backed regions later. Network cancellation,
+a geographically partitioned recipe catalog, and building metadata tiles are
+not implemented by this phase.
+
+Source admission prioritizes the current position, then a two-second motion
+projection capped at 450m. Teleports and long frame gaps reset that prediction.
+Both source data and GPU chunks may prepare ahead; actual visibility still uses
+the current camera/focus and the existing 1,050m cutoff. A larger retirement ring
+retains nearby tiles for turns. Deferred retirement retries while stationary.
+Source results from superseded destinations or disposed forests cannot publish.
+Each tile reuses the same far-page manager and close pools; tile boundaries add
+no independent forest renderers. Empty-area startup compiles zero species, and
+later arrivals register their required designs with that manager. Successfully
+encountered prototypes/materials stay shared within the forest until disposal;
+this is lazy first use, not a new prototype memory eviction budget. The existing
+cross-forest template cache still has its 48-entry inactive-cache limit.
+
+Validation:
+
+- Bounded layout collection reconstructs 16,359 placements exactly on varied
+  synthetic terrain with exclusions, including negative-coordinate seams.
+- A fixed-view GPU comparison submits the same 9,500 triangles / 950 instance
+  draws for full-source and tiled forests. Tiled metadata holds 4,835 placements
+  and three designs versus 15,564 placements and four designs in that fixture.
+- Real WebGPU source tests cover an empty starting area, later species admission,
+  eight distant return trips, complete evacuation, and late source completions.
+  Travel retains 16–18 source tile records in the small fixture; leaving all
+  trees returns placement and GPU instance storage to zero. No GPU errors.
+- The full-world flight probe passes clean boot, canopy-only approach, descent
+  textures, and moving city detail. These are correctness/request checks, not a
+  new FPS claim. GPU pages retain the established 4,096-slot policy; a newly
+  encountered species no longer has a global authored count to shrink its page.
+
+Reproduce with `node tools/wildlands-tree-tiles-test.mjs`,
+`node --experimental-strip-types tools/native-tree-source-tiles-test.mjs`, and
+`node tools/native-tree-source-probe.mjs` against the worktree preview. Source
+residency is exposed by `wildlandsCanopy.trees.stats.sourceResidency()` alongside
+the existing GPU residency counters.

@@ -62,7 +62,7 @@ try {
    trees.group.traverse(o=>{if(o.geometry?.indirect)buffers.add(o.geometry.indirect)});
    let triangles=0,nonemptyDraws=0,instanceDraws=0;
    for(const buffer of buffers){const a=new Uint32Array(await s.renderer.getArrayBufferAsync(buffer));for(let i=0;i<a.length;i+=5){triangles+=a[i]*a[i+1]/3;if(a[i+1])nonemptyDraws++;instanceDraws+=a[i+1];}}
-   return {...trees.stats,farResidency:trees.stats.farResidency?.(),nearActive:trees.stats.nearActive(),farSubmittedTriangles:triangles,farNonemptyDraws:nonemptyDraws,farInstanceDraws:instanceDraws};
+   return {...trees.stats,farResidency:trees.stats.farResidency?.(),sourceResidency:trees.stats.sourceResidency?.(),nearActive:trees.stats.nearActive(),farSubmittedTriangles:triangles,farNonemptyDraws:nonemptyDraws,farInstanceDraws:instanceDraws};
   });
   assert.ok(row.trees.farSubmittedTriangles>0,'park flight must submit visible far trees');
   row.resolution=await page.evaluate(()=>({width:window.__sf.renderer.domElement.width,height:window.__sf.renderer.domElement.height,gpu:window.__sf.renderer.backend.device.adapterInfo}));

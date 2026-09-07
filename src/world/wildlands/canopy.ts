@@ -31,8 +31,10 @@ export function createWildlandsCanopy(
   excludeTree?: (x: number, z: number) => boolean,
 ): WildlandsCanopy {
   // Buena Vista owns an independent forest; it does not wake these prototypes.
-  const slots = collectWildTrees(map, excludeTree, PRIMARY_WILD_REGIONS);
-  const trees = createNativeTreeForest(WILD_TREE_DESIGNS, slots, {
+  const trees = createNativeTreeForest(WILD_TREE_DESIGNS, {
+    tileSize: 704,
+    load: bounds => collectWildTrees(map, excludeTree, PRIMARY_WILD_REGIONS, bounds),
+  }, {
     name: "wildlands_trees",
     chunkSize: 176,
     visibleDistance: WILDLANDS_CANOPY_VISIBLE_DISTANCE,
