@@ -85,6 +85,7 @@ export class SkyFlightController {
   #takeoffTime = 0;
   #takeoffHoldTime = 0;
   #takeoffHoldArmed = true;
+  #takeoffHoldTracking = false;
   #lastForward = new THREE.Vector3(0, 0, -1);
 
   /** Latch the render-rate Space edge until the next fixed physics step. */
@@ -97,17 +98,28 @@ export class SkyFlightController {
    * from the ordinary walker. The release-to-rearm latch prevents one long
    * hold from starting flight again after another control path lands it.
    */
-  updateTakeoffHold(dt: number, held: boolean): boolean {
+  updateTakeoffHold(dt: number, held: boolean, pressed: boolean): boolean {
     if (!held) {
       this.#takeoffHoldTime = 0;
       this.#takeoffHoldArmed = true;
+      this.#takeoffHoldTracking = false;
       return false;
     }
     if (!this.enabled || this.active || !this.#takeoffHoldArmed) return false;
+    // Begin timing only from Space's own down edge. A generic held rail is not
+    // enough: Shift/L3 is also a sustained movement modifier, and entering walk
+    // while an old synthetic/pad hold is present must never turn that hold into
+    // a flight request.
+    if (pressed) {
+      this.#takeoffHoldTime = 0;
+      this.#takeoffHoldTracking = true;
+    }
+    if (!this.#takeoffHoldTracking) return false;
     this.#takeoffHoldTime += Math.max(0, Math.min(dt, 0.1));
     if (this.#takeoffHoldTime < SKY_FLIGHT_TAKEOFF_HOLD_SECONDS) return false;
     this.#takeoffHoldTime = 0;
     this.#takeoffHoldArmed = false;
+    this.#takeoffHoldTracking = false;
     this.requestTakeoff();
     return true;
   }
@@ -121,6 +133,7 @@ export class SkyFlightController {
       this.#takeoffTime = 0;
       this.#takeoffHoldTime = 0;
       this.#takeoffHoldArmed = false;
+      this.#takeoffHoldTracking = false;
       this.grounded = false;
       if (!sampleSkyGravity(ctx.position)) this.#restoreEarthOrientation(ctx);
       return false;
@@ -148,6 +161,7 @@ export class SkyFlightController {
     this.#takeoffTime = 0;
     this.#takeoffHoldTime = 0;
     this.#takeoffHoldArmed = false;
+    this.#takeoffHoldTracking = false;
     this.grounded = false;
     if (ctx && !sampleSkyGravity(ctx.position)) this.#restoreEarthOrientation(ctx);
   }
@@ -161,6 +175,7 @@ export class SkyFlightController {
     this.#takeoffTime = 0;
     this.#takeoffHoldTime = 0;
     this.#takeoffHoldArmed = true;
+    this.#takeoffHoldTracking = false;
     this.field = null;
     this.currentIsland = null;
     this.grounded = false;

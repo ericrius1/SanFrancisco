@@ -135,18 +135,25 @@ try {
     const c = new SkyFlightController();
     const h = createHarness(new THREE.Vector3(9000, 100, 9000));
     for (let i = 0; i < 59; i++) {
-      assert.equal(c.updateTakeoffHold(DT, true), false);
+      assert.equal(c.updateTakeoffHold(DT, true, i === 0), false);
       assert.equal(h.step(c), false);
     }
     assert.equal(c.active, false, "short Space hold entered flight");
-    assert.equal(c.updateTakeoffHold(DT, true), true);
+    assert.equal(c.updateTakeoffHold(DT, true, false), true);
     assert.equal(h.step(c), true);
     assert.equal(c.active, true, "one-second Space hold did not enter flight");
     c.suspend(h.ctx);
-    assert.equal(c.updateTakeoffHold(DT, true), false, "unreleased Space re-triggered flight");
-    c.updateTakeoffHold(DT, false);
-    for (let i = 0; i < 60; i++) c.updateTakeoffHold(DT, true);
+    assert.equal(c.updateTakeoffHold(DT, true, false), false, "unreleased Space re-triggered flight");
+    c.updateTakeoffHold(DT, false, false);
+    for (let i = 0; i < 60; i++) c.updateTakeoffHold(DT, true, i === 0);
     assert.equal(h.step(c), true, "released Space did not rearm held takeoff");
+
+    c.reset(h.ctx);
+    for (let i = 0; i < 120; i++) {
+      assert.equal(c.updateTakeoffHold(DT, false, false), false);
+      assert.equal(h.step(c), false);
+    }
+    assert.equal(c.active, false, "a sustained non-Space movement modifier entered flight");
   }
 
   // Open-sky W follows camera pitch; released hover damps all inherited motion.

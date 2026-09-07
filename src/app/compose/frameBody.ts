@@ -601,8 +601,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       }
       const pausedWalkSpace = !playingPickleball && !playingFortMasonEnsemble &&
         !input.suspended && player.mode === "walk";
-      if (pausedWalkSpace && input.pressed("Space")) player.requestWalkJump();
-      if (player.skyFlight.updateTakeoffHold(frameDt, pausedWalkSpace && input.down("Space"))) {
+      const pausedSpacePressed = pausedWalkSpace && input.pressed("Space");
+      if (pausedSpacePressed) player.requestWalkJump();
+      if (player.skyFlight.updateTakeoffHold(
+        frameDt,
+        pausedWalkSpace && input.down("Space"),
+        pausedSpacePressed
+      )) {
         hud.message("Free flight · Space rise · Q descend · Shift boost", 3);
       }
       chase.lookDir(aim);
@@ -1324,8 +1329,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !afterlightControlsCaptured &&
       !input.suspended &&
       player.mode === "walk";
-    if (walkSpaceAvailable && input.pressed("Space")) player.requestWalkJump();
-    if (player.skyFlight.updateTakeoffHold(frameDt, walkSpaceAvailable && input.down("Space"))) {
+    const walkSpacePressed = walkSpaceAvailable && input.pressed("Space");
+    if (walkSpacePressed) player.requestWalkJump();
+    if (player.skyFlight.updateTakeoffHold(
+      frameDt,
+      walkSpaceAvailable && input.down("Space"),
+      walkSpacePressed
+    )) {
       hud.message("Free flight · Space rise · Q descend · Shift boost", 3);
     }
 
