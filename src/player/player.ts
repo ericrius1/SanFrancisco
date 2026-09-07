@@ -1237,8 +1237,7 @@ export class Player {
 
   requestWalkJump() {
     if (this.mode !== "walk") return;
-    if (this.skyFlight.enabled) this.skyFlight.requestTakeoff();
-    else this.#controller("walk").requestJump();
+    this.#controller("walk").requestJump();
   }
 
   /** Air/landing state for probes and the window.__sf diagnostics surface. */

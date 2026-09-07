@@ -598,7 +598,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
         player.requestSurfFlow();
       }
-      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
+      const pausedWalkSpace = !playingPickleball && !playingFortMasonEnsemble &&
+        !input.suspended && player.mode === "walk";
+      if (pausedWalkSpace && input.pressed("Space")) player.requestWalkJump();
+      if (player.skyFlight.updateTakeoffHold(frameDt, pausedWalkSpace && input.down("Space"))) {
+        hud.message("Free flight · Space rise · Q descend · Shift boost", 3);
+      }
       chase.lookDir(aim);
       physics.maintainStreaming(player.position);
       let steps = 0;
@@ -866,7 +871,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (!input.suspended && !worldArrival.active && !playingPickleball && !playingFortMasonEnsemble &&
         !core.state.golf?.active && player.mode === "walk" && !player.riding && input.pressed("KeyG")) {
       player.skyFlight.toggle(player);
-      hud.message(player.skyFlight.active ? "Free flight · Space rise · Q descend · Shift boost" : "Earth gravity · Space to take off again", 3);
+      hud.message(player.skyFlight.active ? "Free flight · Space rise · Q descend · Shift boost" : "Earth gravity · Hold Space 1 second to fly", 3);
     }
 
     // Plain number keys switch travel modes; Ctrl+number still jumps click-tools;
@@ -1311,14 +1316,16 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
       player.requestSurfFlow();
     }
-    if (
+    const walkSpaceAvailable =
       !playingPickleball &&
       !playingFortMasonEnsemble &&
       !afterlightControlsCaptured &&
       !input.suspended &&
-      player.mode === "walk" &&
-      input.pressed("Space")
-    ) player.requestWalkJump();
+      player.mode === "walk";
+    if (walkSpaceAvailable && input.pressed("Space")) player.requestWalkJump();
+    if (player.skyFlight.updateTakeoffHold(frameDt, walkSpaceAvailable && input.down("Space"))) {
+      hud.message("Free flight · Space rise · Q descend · Shift boost", 3);
+    }
 
     chase.lookDir(aim); // drone moves along the true view direction (no shot bias)
   };

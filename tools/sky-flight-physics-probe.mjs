@@ -119,7 +119,7 @@ function run(harness, controller, seconds) {
 }
 
 try {
-  // Space's render-rate latch activates default-available flight immediately.
+  // Explicit UI/programmatic takeoff remains immediate.
   {
     const c = new SkyFlightController();
     const h = createHarness(new THREE.Vector3(9000, 500, 9000));
@@ -127,6 +127,26 @@ try {
     assert.equal(h.step(c), true);
     assert.equal(c.active, true);
     assert.ok(h.velocity().y > 10, `takeoff was not immediate: vy=${h.velocity().y}`);
+  }
+
+  // A Space tap remains a jump owned by the walker; only a continuous one-
+  // second hold promotes the input into flight, and release rearms it.
+  {
+    const c = new SkyFlightController();
+    const h = createHarness(new THREE.Vector3(9000, 100, 9000));
+    for (let i = 0; i < 59; i++) {
+      assert.equal(c.updateTakeoffHold(DT, true), false);
+      assert.equal(h.step(c), false);
+    }
+    assert.equal(c.active, false, "short Space hold entered flight");
+    assert.equal(c.updateTakeoffHold(DT, true), true);
+    assert.equal(h.step(c), true);
+    assert.equal(c.active, true, "one-second Space hold did not enter flight");
+    c.suspend(h.ctx);
+    assert.equal(c.updateTakeoffHold(DT, true), false, "unreleased Space re-triggered flight");
+    c.updateTakeoffHold(DT, false);
+    for (let i = 0; i < 60; i++) c.updateTakeoffHold(DT, true);
+    assert.equal(h.step(c), true, "released Space did not rearm held takeoff");
   }
 
   // Open-sky W follows camera pitch; released hover damps all inherited motion.
@@ -263,7 +283,7 @@ try {
     }
   }
 
-  console.log(JSON.stringify({ ok: true, cases: 9 }, null, 2));
+  console.log(JSON.stringify({ ok: true, cases: 10 }, null, 2));
 } finally {
   await vite.close();
 }

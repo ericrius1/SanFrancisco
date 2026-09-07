@@ -1,7 +1,8 @@
 # Personal flight and the sky gardens
 
-Flight is available on foot by default. Press **Space** to leave the ground,
-**WASD** to fly along the view/strafe, **Space** or **U** to rise, **Q** to descend,
+Flight is available on foot by default. Tap **Space** for a normal jump or hold
+it for one second to enter flight. **WASD** flies along the view/strafe,
+**Space** or **U** rises, **Q** descends,
 and **Shift** to accelerate. Mouse and trackpad use the existing look controls.
 **C** cycles the existing third-person, first-person, and orbit cameras.
 **G** starts personal flight or returns to natural gravity. Vehicles retain their

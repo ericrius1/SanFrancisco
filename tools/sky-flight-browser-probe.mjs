@@ -25,6 +25,28 @@ try {
  await page.waitForFunction(()=>window.__sf?.skyFlight && document.body.classList.contains('started'),null,{timeout:180000});
  console.log('READY');
  await page.waitForFunction(()=>window.__sf.renderIdle(),null,{timeout:120000});
+ const takeoffInput=await page.evaluate(()=>{
+  const sf=window.__sf;window.__sfManual(true);
+  sf.player.skyFlight.reset(sf.player);
+  sf.physics.world.setBodyVelocity(sf.player.body,[0,0,0],[0,0,0]);
+  let frame=0;
+  sf.input.setDriver({update(dt,c){if(frame++===0)c.tap('Space')}});
+  for(let i=0;i<12;i++)sf.tick(1/60);
+  const tap={active:sf.player.skyFlight.active,rise:sf.player.velocity.y};
+  sf.input.setDriver(null);
+  sf.player.skyFlight.reset(sf.player);
+  sf.physics.world.setBodyVelocity(sf.player.body,[0,0,0],[0,0,0]);
+  sf.input.setDriver({update(dt,c){c.hold('Space')}});
+  for(let i=0;i<55;i++)sf.tick(1/60);
+  const beforeHold=sf.player.skyFlight.active;
+  for(let i=0;i<10;i++)sf.tick(1/60);
+  const afterHold=sf.player.skyFlight.active;
+  sf.input.setDriver(null);
+  sf.player.skyFlight.suspend(sf.player);
+  window.__sfManual(false);
+  return {tap,beforeHold,afterHold};
+ });
+ check('Space taps jump; one-second holds fly',!takeoffInput.tap.active&&takeoffInput.tap.rise>0&&!takeoffInput.beforeHold&&takeoffInput.afterHold,takeoffInput);
  const optional=u=>/\/src\/(world\/(skyIslands\/(index|vegetation)|vegetation\/alienFlowerForms)|ui\/skyFlight)\.ts/.test(u);
  check('zero optional sky requests at boot',requests.filter(optional).length===0,requests.filter(optional));
  await page.screenshot({path:out+'boot.png'});

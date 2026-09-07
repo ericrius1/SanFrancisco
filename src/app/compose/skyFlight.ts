@@ -20,7 +20,7 @@ export function createSkyFlightFeature(
   const launch = document.createElement("button");
   launch.id = "sky-flight-launch";
   launch.type = "button";
-  launch.textContent = "✦ Flight & gravity · Space to soar";
+  launch.textContent = "✦ Flight & gravity · Hold Space 1s to soar";
   launch.setAttribute("aria-label", "Open flight and gravity controls");
   const style = document.createElement("style");
   style.textContent = `
@@ -205,7 +205,7 @@ export function createSkyFlightFeature(
     });
     if (!panel) launch.textContent = player.personalFlying
       ? `✦ Flight & gravity · ${Math.round(player.position.y)} m`
-      : "✦ Flight & gravity · Space to soar";
+      : "✦ Flight & gravity · Hold Space 1s to soar";
   }
 
   function update(dt: number) {
