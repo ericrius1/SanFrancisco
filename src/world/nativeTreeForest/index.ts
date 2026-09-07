@@ -1228,13 +1228,22 @@ export function createNativeTreeForest(
     // A source tile includes full renderer chunks. Crown slack covers trees
     // rooted just outside the visibility ring; the exact chunk bounds cull later.
     const radius = prefetchDistance + chunkSize;
+    let retiredThisSlice = 0;
     for (const [key, tile] of sourceTiles) {
       if (sourceTileDistance(tile.bounds, x, z) <= retireDistance + chunkSize ||
           sourceTileDistance(tile.bounds, ahead.x, ahead.z) <= radius) continue;
       let retained = false;
       for (const chunkKey of tile.keys) {
         const descriptor = descriptorsByKey.get(chunkKey);
-        if (descriptor?.chunk && !requestChunkRetirement(descriptor.chunk)) retained = true;
+        if (descriptor?.chunk) {
+          if (!requestChunkRetirement(descriptor.chunk)) retained = true;
+          else if (++retiredThisSlice >= MAX_CHUNK_RETIRES_PER_UPDATE) {
+            retiredThisSlice = 0;
+            rebin(x, z, true);
+            await yieldToFrame();
+            if (disposed || epoch !== residencyEpoch) return;
+          }
+        }
       }
       if (retained) {
         sourceRetryAt = performance.now() + 500;
@@ -2120,6 +2129,9 @@ export function createNativeTreeForest(
             // smaller horizon cards over landscape's oversized opaque triangles.
             nearCardSuppressDistance: nearRadius * 0.92
           });
+          // An empty first source ring can be prepared before any manager
+          // exists. Register that callback now, before its first page admission.
+          if (prepareUnit) void farTiers.prepare(prepareObject);
           group.add(farTiers.group);
           // Self-register the per-frame cull; frameBody drives it once per frame for
           // every forest (see renderNativeTreeForestFarCulls). The distance band

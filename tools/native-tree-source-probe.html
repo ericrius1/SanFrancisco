@@ -23,6 +23,14 @@ try {
  check(second.source.slots===1&&second.source.releases>0,'old source placements released');
  const churn=[];for(let i=0;i<8;i++){const row=await visit(i%2?20020:2000);check(row.visible===1&&row.source.slots===1&&row.far.used===1,'return visit has exactly one stable tree');check(row.source.tiles<50,'travel history cannot grow metadata');churn.push(row)}
  const empty=await visit(40000);check(empty.source.slots===0&&empty.far.capacity===0,'leaving all trees releases source and GPU storage');forest.dispose();
+ // Preparing an empty forest must gate the first later pages before reveal.
+ const gated=createNativeTreeForest(WILD_TREE_DESIGNS,{tileSize:352,load:b=>all.slice(0,1).filter(s=>s.x>=b.minX&&s.x<b.maxX&&s.z>=b.minZ&&s.z<b.maxZ)},{name:'gated_source',visibleDistance:350,nearMax:0});
+ gated.update({x:0,z:0});await gated.ready;let gateRelease,gateStartedResolve;const gateStarted=new Promise(r=>gateStartedResolve=r);let gateCalls=0;
+ await gated.prepareFarTiers(async()=>{gateCalls++;if(gateCalls===1){gateStartedResolve();await new Promise(r=>gateRelease=r)}});
+ gated.update({x:2000,z:0});await gateStarted;
+ const farRoot=gated.group.children.find(o=>o.name==='gated_source_far_tiers');
+ check(farRoot&&farRoot.children.length>0&&farRoot.children.every(o=>!o.visible),'late first pages stay hidden during registered preparation');
+ gateRelease();await gated.prepareVisible(prep);gated.dispose();
  // Compare actual GPU submissions with the untiled representation at one fixed view.
  const terrain={groundHeight:()=>10,surfaceType:()=>1,isWater:()=>false};
  const regions=new Set(['ggpark','presidio','marin','twinpeaks']);

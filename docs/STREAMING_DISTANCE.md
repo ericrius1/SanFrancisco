@@ -195,7 +195,8 @@ Validation:
   draws for full-source and tiled forests. Tiled metadata holds 4,835 placements
   and three designs versus 15,564 placements and four designs in that fixture.
 - Real WebGPU source tests cover an empty starting area, later species admission,
-  eight distant return trips, complete evacuation, and late source completions.
+  eight distant return trips, complete evacuation, late source completions, and
+  preparation gating when the first populated tile arrives after an empty start.
   Travel retains 16–18 source tile records in the small fixture; leaving all
   trees returns placement and GPU instance storage to zero. No GPU errors.
 - The full-world flight probe passes clean boot, canopy-only approach, descent
