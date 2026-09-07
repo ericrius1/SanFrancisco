@@ -152,11 +152,10 @@ export function createBackgroundAdmission({
     requestAnimationFrame(() => resolve());
   });
   /**
-   * CityGen is an enhancement over the complete baked city. Its one-time
-   * detached prototype preparations therefore wait for the reveal to settle
-   * AND for a real quiet window; if motion begins, at most the one already
-   * admitted owner can finish before the sequence pauses again. A current-owner
-   * predicate can cancel obsolete work before non-cancellable driver compilation.
+   * CityGen stays behind the reveal, then yields one presentation frame. The
+   * renderer's compile gate already serializes owners and bounds its motion
+   * wait. Requiring idle here as well starves the entire city during continuous
+   * flight before that bounded gate can even see the work.
    */
   const waitForCityGenRenderWindow = async (isCurrent?: () => boolean): Promise<boolean> => {
     while (isArrivalActive() || !revealSettled()) {
@@ -165,7 +164,7 @@ export function createBackgroundAdmission({
       await nextPresentationFrame();
     }
     if (isCurrent && !isCurrent()) return false;
-    await waitForWindow();
+    await nextPresentationFrame();
     return !isCurrent || isCurrent();
   };
   const setRevealLifecycle = (lifecycle: { fabricHeld(): boolean; settled(): boolean }) => {

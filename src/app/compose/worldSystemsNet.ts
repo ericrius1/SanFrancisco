@@ -19,6 +19,7 @@ import {
 import type {  } from "../../world/coronaHeights";
 import type {  } from "../../world/missionDolores";
 import { WILD_REGIONS } from "../../world/wildlands/regions";
+import { copyTreeCullFocus, type TreeCullFocus } from "../../world/vegetation/treeCullFocus";
 import { inSkatePlazaFootprint, SKATE_PLAZA_ARRIVAL } from "../../world/skatePlaza/meta";
 import { BUENA_VISTA_REGION } from "../../world/buenaVista";
 import { sutroTowerArrivalForDestination } from "../../world/sutroTower";
@@ -1375,11 +1376,21 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
 
   type WildlandsGroundcoverBootstrap = {
     site: import("../../world/wildlands").Wildlands;
-    golfMod: typeof import("../../gameplay/golf");
-    loadedGolfCourse: import("../../gameplay/golf").GolfCourse | null;
+    loadedGolfCourse: import("../../gameplay/golf/data").GolfCourse | null;
   };
   let wildlandsGroundcoverPromise: Promise<WildlandsGroundcoverBootstrap> | null = null;
-  let requestedWildlandsFocus: { x: number; z: number } | null = null;
+  let requestedWildlandsFocus: TreeCullFocus | null = null;
+  let wildlandsDisposed = false;
+  // Planting needs course footprints, not the playable course renderer. Both
+  // canopy and groundcover share one data request; gameplay imports later at its
+  // existing close gate. Merely defining the loader requests nothing.
+  let golfCourseDataPromise: Promise<import("../../gameplay/golf/data").GolfCourse | null> | null = null;
+  const loadWildlandsGolfData = () => golfCourseDataPromise ??= import("../../gameplay/golf/data")
+    .then(({ GolfCourse }) => GolfCourse.load(map))
+    .catch((error) => {
+      console.warn("[golf] foliage exclusion data unavailable:", error);
+      return null;
+    });
 
   /**
    * Request only the selected Wildlands destination's immediate surface. This
@@ -1398,47 +1409,106 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     wildlandsArrivalPriority
       ? pipeline.compileAsyncPrioritized(root, camera, scene)
       : renderer.compileAsync(root, camera, scene);
+  // Canopy readiness is independent of flowers, grass, gameplay and near-leaf
+  // textures. Its own distant approach gate opens before the close park gate.
+  let wildlandsCanopyBuildPromise: Promise<import("../../world/wildlands/canopy").WildlandsCanopy> | null = null;
+  let requestedCanopyFocus: TreeCullFocus | null = null;
+  let wildlandsCanopyPromise: Promise<void> | null = null;
+  const prepareWildlandsTree = async (unit: THREE.Object3D): Promise<void> => {
+    await waitForWorldBackgroundWindow(0, performance.now() + 2500);
+    await pipeline.prepareSceneOwner(unit);
+  };
+  const showWildlandsCanopy = (canopy: import("../../world/wildlands/canopy").WildlandsCanopy): Promise<void> => {
+    if (wildlandsCanopyPromise) return wildlandsCanopyPromise;
+    const attempt = (async () => {
+      await worldReady;
+      // update names the initial residency before ready. Repeat with the latest
+      // focus after each await: movement/another arrival may have retargeted it.
+      await canopy.trees.ready;
+      if (wildlandsDisposed || core.state.wildlandsCanopy !== canopy) return;
+      canopy.update(canopy.focus, true);
+      await canopy.trees.prepareFarTiers(prepareWildlandsTree);
+      if (wildlandsDisposed || core.state.wildlandsCanopy !== canopy) return;
+      canopy.update(canopy.focus, true);
+      const treeGroup = canopy.trees.group;
+      treeGroup.visible = ctx.state.foliageOn;
+      scene.add(treeGroup);
+      markLazyRegion("wildlands", "canopy-attached");
+    })();
+    wildlandsCanopyPromise = attempt;
+    void attempt.catch(() => {
+      if (wildlandsCanopyPromise === attempt) wildlandsCanopyPromise = null;
+    });
+    return attempt;
+  };
+  const startWildlandsCanopy = (
+    focus: Readonly<TreeCullFocus>
+  ): Promise<import("../../world/wildlands/canopy").WildlandsCanopy> => {
+    requestedCanopyFocus = copyTreeCullFocus(focus);
+    core.state.wildlandsCanopy?.update(focus);
+    if (wildlandsCanopyBuildPromise) return wildlandsCanopyBuildPromise;
+    let candidate: import("../../world/wildlands/canopy").WildlandsCanopy | null = null;
+    const attempt = (async () => {
+      markLazyRegion("wildlands", "canopy-requested");
+      const [canopyMod, course] = await Promise.all([
+        import("../../world/wildlands/canopy"),
+        loadWildlandsGolfData(),
+      ]);
+      if (wildlandsDisposed) throw new DOMException("Wildlands disposed", "AbortError");
+      candidate = canopyMod.createWildlandsCanopy(map, (x, z) =>
+        inSkatePlazaFootprint(x, z, 4) || (course?.clearsProceduralTrees(x, z) ?? false)
+      );
+      const canopy = candidate;
+      canopy.trees.group.visible = false;
+      core.state.wildlandsCanopy = canopy;
+      canopy.update(requestedCanopyFocus ?? player.renderPosition);
+      markLazyRegion("wildlands", "canopy-constructed");
+      const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (hooks) Object.assign(hooks, { wildlandsCanopy: canopy, lazyRegionTimings });
+      void showWildlandsCanopy(canopy).catch((error) =>
+        console.warn("[wildlands] distant canopy preparation failed:", error)
+      );
+      return canopy;
+    })();
+    wildlandsCanopyBuildPromise = attempt;
+    void attempt.catch(() => {
+      if (wildlandsCanopyBuildPromise !== attempt) return;
+      wildlandsCanopyBuildPromise = null;
+      wildlandsCanopyPromise = null;
+      if (candidate) {
+        if (core.state.wildlandsCanopy === candidate) core.state.wildlandsCanopy = null;
+        candidate.dispose();
+      }
+    });
+    return attempt;
+  };
   const startWildlandsGroundcover = (
-    focus: Readonly<{ x: number; z: number }>
+    focus: Readonly<TreeCullFocus>
   ): Promise<WildlandsGroundcoverBootstrap> => {
-    requestedWildlandsFocus = { x: focus.x, z: focus.z };
+    requestedWildlandsFocus = copyTreeCullFocus(focus);
     if (wildlandsGroundcoverPromise) return wildlandsGroundcoverPromise;
 
     let candidate: import("../../world/wildlands").Wildlands | null = null;
     const attempt = (async (): Promise<WildlandsGroundcoverBootstrap> => {
       markLazyRegion("wildlands", "requested");
-      const [wildlandsMod, golfMod, afterlightLayout] = await Promise.all([
+      const [wildlandsMod, canopy, loadedGolfCourse, afterlightLayout] = await Promise.all([
         import("../../world/wildlands"),
-        import("../../gameplay/golf"),
+        startWildlandsCanopy(focus),
+        loadWildlandsGolfData(),
         import("../../gameplay/afterlight/layout")
       ]);
-      let loadedGolfCourse: import("../../gameplay/golf").GolfCourse | null = null;
-      try {
-        loadedGolfCourse = await golfMod.loadGolfCourse(map);
-      } catch (error) {
-        // Golf data is optional to the world surface. The park remains usable
-        // if a deploy is missing its course manifest.
-        console.warn("[core.state.golf] course unavailable:", error);
-      }
-
+      if (wildlandsDisposed) throw new DOMException("Wildlands disposed", "AbortError");
       candidate = wildlandsMod.createWildlands(map, {
         scheduleGroundcoverBuild: (job) => scheduler.schedule("build", job),
         groundcover: (x: number, z: number) =>
           afterlightLayout.inAfterlightGroundcoverClear(x, z, 1.2) ||
           inSkatePlazaFootprint(x, z, 1.5) ||
           (loadedGolfCourse?.contains(x, z, 1.2) ?? false),
-        // The skate plaza's granite is graded ground: blades and park trees
-        // must stay off it from boot, because the plaza streams in later and
-        // cannot retroactively uproot a cypress standing on its funbox.
-        trees: (x: number, z: number) =>
-          inSkatePlazaFootprint(x, z, 4) ||
-          (loadedGolfCourse?.clearsProceduralTrees(x, z) ?? false)
-      });
+      }, canopy);
       const site = candidate;
       core.state.wildlands = site;
       markLazyRegion("wildlands", "constructed");
-      const [treeGroup, ...groundcoverGroups] = site.groups;
-      treeGroup.visible = false;
+      const [, ...groundcoverGroups] = site.groups;
       const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (hooks) Object.assign(hooks, { wildlands: site, lazyRegionTimings });
 
@@ -1446,8 +1516,10 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       // position under the travel cover. Native-tree assembly records the same
       // focus but remains detached and optional.
       const destination = requestedWildlandsFocus ?? player.renderPosition;
-      site.trees.update(destination);
       site.update(destination, destination);
+      void showWildlandsCanopy(canopy).catch((error) =>
+        console.warn("[wildlands] distant canopy preparation failed:", error)
+      );
       try {
         markLazyRegion("wildlands", "groundcover-compile-start");
         await site.prepareGroundcover(async (root) => { await wildlandsCompile(root); });
@@ -1458,12 +1530,15 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
         // an empty destination forever.
         console.warn("[core.state.wildlands] destination groundcover compile failed:", error);
       }
+      if (wildlandsDisposed || core.state.wildlands !== site) {
+        throw new DOMException("Wildlands disposed", "AbortError");
+      }
       for (const group of groundcoverGroups) {
         group.visible = ctx.state.foliageOn;
         scene.add(group);
       }
       markLazyRegion("wildlands", "groundcover-attached");
-      return { site, golfMod, loadedGolfCourse };
+      return { site, loadedGolfCourse };
     })();
     wildlandsGroundcoverPromise = attempt;
     void attempt.catch(() => {
@@ -1478,7 +1553,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   };
 
   const prepareWildlandsGroundcoverAt = async (
-    focus: Readonly<{ x: number; z: number }>,
+    focus: Readonly<TreeCullFocus>,
     signal?: AbortSignal
   ): Promise<void> => {
     wildlandsArrivalPriority = true;
@@ -1493,29 +1568,24 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     );
   };
 
-  // Destination trees (fire-and-forget, never awaited by the travel cover):
-  // materialize + warm the native-tree ring around the arrival focus through
-  // wildlands.prepareAt, which is latest-wins internally. The group attaches
-  // before the warm so chunks reveal as their pipelines land; the later golf
-  // enrichment re-adding it is a no-op. A new arrival aborts the previous
-  // prime so a superseded park never keeps compiling on the priority lane.
+  // Destination trees use the canopy owner directly: neither grass preparation
+  // nor golf construction can delay the first silhouette at an arrival.
   let wildlandsTreePrimeController: AbortController | null = null;
   const ARRIVAL_TREE_PRIME_WINDOW_MS = 60_000;
   const primeWildlandsTreesAt = async (
-    focus: Readonly<{ x: number; z: number }>,
+    focus: Readonly<TreeCullFocus>,
     signal: AbortSignal
   ): Promise<void> => {
-    const bootstrap = await waitForAbortable(startWildlandsGroundcover(focus), signal);
-    const site = bootstrap.site;
-    await waitForAbortable(site.ready, signal);
+    const canopy = await waitForAbortable(startWildlandsCanopy(focus), signal);
+    await waitForAbortable(canopy.trees.ready, signal);
     // The destination exhibit outranks its scenery: hold the tree warm until
     // no optional site is mid-construction (bounded — builds complete/abort).
     while (!sites.streamingIdle()) {
       if (signal.aborted) return;
       await nextPresentationFrame();
     }
-    if (signal.aborted) return;
-    const [wildTreeGroup] = site.groups;
+    if (signal.aborted || wildlandsDisposed) return;
+    const wildTreeGroup = canopy.trees.group;
     wildTreeGroup.visible = ctx.state.foliageOn;
     scene.add(wildTreeGroup);
     markLazyRegion("wildlands", "destination-trees-start");
@@ -1525,14 +1595,13 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     // background enrichment preparer (re-admit + normal lane) so no unpaced
     // compile train runs during ordinary play.
     const primeStartedAt = performance.now();
-    await site.prepareAt(focus, async (unit) => {
+    await canopy.prepareAt(focus, async (unit) => {
       try {
         if (
           signal.aborted ||
           performance.now() - primeStartedAt > ARRIVAL_TREE_PRIME_WINDOW_MS
         ) {
-          await waitForWorldBackgroundWindow();
-          await renderer.compileAsync(unit, camera, scene);
+          await prepareWildlandsTree(unit);
           return;
         }
         await wildlandsCompile(unit);
@@ -1544,7 +1613,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     }, signal);
     markLazyRegion("wildlands", "destination-trees-ready");
   };
-  const requestWildlandsTreePrime = (focus: Readonly<{ x: number; z: number }>): void => {
+  const requestWildlandsTreePrime = (focus: Readonly<TreeCullFocus>): void => {
     wildlandsTreePrimeController?.abort(new DOMException("superseded", "AbortError"));
     const controller = new AbortController();
     wildlandsTreePrimeController = controller;
@@ -1553,6 +1622,26 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       console.warn("[core.state.wildlands] destination tree prime failed:", error);
     });
   };
+
+  core.state.wakeDeferredWildlandsCanopy = () => {
+    core.state.wakeDeferredWildlandsCanopy = null;
+    void startWildlandsCanopy(player.renderPosition).catch((error) =>
+      console.warn("[wildlands] first-approach canopy failed:", error)
+    );
+  };
+
+  import.meta.hot?.dispose(() => {
+    wildlandsDisposed = true;
+    wildlandsTreePrimeController?.abort(new DOMException("Wildlands disposed", "AbortError"));
+    core.state.wakeDeferredWildlandsCanopy = null;
+    core.state.wakeDeferredWildlandsGolf = null;
+    core.state.wakeDeferredGolf = null;
+    // Groundcover borrows the canopy; each owner frees only its own resources.
+    core.state.wildlands?.dispose();
+    core.state.wildlands = null;
+    core.state.wildlandsCanopy?.dispose();
+    core.state.wildlandsCanopy = null;
+  });
 
   // Walking into a park before the broader deferred coordinator reaches its
   // region setup receives the same early bootstrap. The callback itself is
@@ -1751,7 +1840,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     // Boot spawn inside a primary wild region (e.g. the archery range in GG
     // Park): the spawn IS the destination, so its lawn and trees take the same
     // arrival lane a teleport would get (the garden owns its own foliage).
-    const spawn = { x: player.position.x, z: player.position.z };
+    const spawn = copyTreeCullFocus(player.position);
     const nearSpawn = (region: (typeof WILD_REGIONS)[number]): boolean =>
       spawn.x >= region.minX - 320 && spawn.x <= region.maxX + 320 &&
       spawn.z >= region.minZ - 320 && spawn.z <= region.maxZ + 320;
@@ -1788,16 +1877,19 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   const nearRegionByDistance = (r: RegionKey): boolean => {
     const p = player.position;
     if (r === "garden") return Math.hypot(p.x - GARDEN_XZ.x, p.z - GARDEN_XZ.z) < NEAR_GATE;
-    if (r === "golf") return Math.hypot(p.x - GOLF_XZ.x, p.z - GOLF_XZ.z) < NEAR_GATE;
-    return nearPrimaryWildRegion(p.x, p.z, NEAR_GATE);
+    if (r === "golf") return Math.hypot(p.x - GOLF_XZ.x, p.z - GOLF_XZ.z) < 700;
+    return nearPrimaryWildRegion(p.x, p.z, 320);
   };
   const regionGates = (r: RegionKey): boolean => nearRegionByDistance(r);
-  // Wildlands' groundcover/tree masks depend on the core.state.golf course footprint, so
-  // the pair always builds together and in the same order (course data → grove
-  // masks → course meshes), gating iff EITHER is near.
+  // Groundcover keeps the same close gate at boot and during traversal. The
+  // distant canopy's broader gate must never pull in these optional fields.
   const gardenGates = regionGates("garden");
   const buenaVistaGates = nearBuenaVista(player.position.x, player.position.z, NEAR_GATE);
-  const wildlandsGolfGates = regionGates("wildlands") || regionGates("golf");
+  const wildlandsGolfGates = regionGates("golf") || (
+    (regionGates("wildlands") || nearBuenaVista(player.position.x, player.position.z, 320)) &&
+    Math.hypot(player.position.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
+      player.position.z - JAPANESE_TEA_GARDEN_ENTRANCE.z) >= 820
+  );
   void (async () => {
     // CityGen remains a post-reveal dynamic import, so it cannot compete with
     // the local first frame or enter the clean-boot bundle/request waterfall.
@@ -1939,9 +2031,9 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     // compact core.state.forest its own first-approach gate so a Corona visit cannot grow
     // or texture distant redwoods in Golden Gate Park, Marin, or Mount Sutro.
     const buildBuenaVistaTrees = async (deferred: boolean) => {
-      await waitForWorldBackgroundWindow(1800);
+      await waitForWorldBackgroundWindow(1800, performance.now() + 2500);
       const mod = await loadBuenaVistaTreesMod();
-      await waitForWorldBackgroundWindow(1800);
+      await waitForWorldBackgroundWindow(1800, performance.now() + 2500);
       // local, shadows the Marin `forest` state field deliberately
       const forest = mod.createBuenaVistaTrees(map);
       core.state.buenaVistaTrees = forest;
@@ -1957,7 +2049,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       // Near starts and later approaches use the same detached path; neither may
       // leak an uncompiled tree material into the live renderer.
       const compile = async (unit: THREE.Object3D) => {
-        await waitForWorldBackgroundWindow();
+        await waitForWorldBackgroundWindow(0, performance.now() + 2500);
         await renderer.compileAsync(unit, camera, scene);
       };
       // Attach on the distant canopy tier, not on the whole forest. Waiting for
@@ -1994,50 +2086,31 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
       });
     }
 
-    // Wildlands groves + Presidio core.state.golf, built as one coupled unit: the course
-    // footprint masks groundcover/trees off the fairways, so the order is fixed
-    // (course data → masked groves → course meshes). Gate together when near;
-    // otherwise the whole pair streams in after reveal, groves hidden until
-    // compiled. `deferred` selects which.
-    const buildWildlandsGolf = async (deferred: boolean) => {
+    // Close foliage enriches the existing canopy without importing golf play.
+    const buildWildlandsGolf = async () => {
       // Destination groundcover has an independent early gate above. Reuse that
       // exact owner here so the later tree/core.state.golf enrichment cannot construct a
       // duplicate park or refetch its chunks.
       const {
         site: _wildlands,
-        golfMod,
-        loadedGolfCourse
       } = await startWildlandsGroundcover(player.renderPosition);
-      const [wildTreeGroup] = _wildlands.groups;
-
-      // Tree assembly and driver preparation continue as optional enrichment.
-      // They retain the quiet-window policy without holding back the lawn.
-      await _wildlands.ready;
-      markLazyRegion("wildlands", "trees-ready");
-      await waitForWorldBackgroundWindow();
-      await _wildlands.prepareTrees(async (unit) => {
-        try {
-          // A stationary player can resume moving between two native-tree
-          // pipelines. Re-admit every unit instead of letting one old idle
-          // decision launch an uninterruptible compile train during play.
-          await waitForWorldBackgroundWindow();
-          await renderer.compileAsync(unit, camera, scene);
-        } catch (err) {
-          // A failed precompile is non-fatal: resolving this unit preserves the
-          // existing visual fallback instead of leaving a region hidden forever.
-          console.warn(
-            `[core.state.wildlands] ${deferred ? "deferred" : "near"} prepare failed for ${unit.name || unit.type}:`,
-            err
-          );
-        }
-      });
-      wildTreeGroup.visible = ctx.state.foliageOn;
-      scene.add(wildTreeGroup);
+      // The far canopy can already be drawing from the early proximity gate.
+      // Near textures and close pipelines enrich it without holding it hostage.
+      const canopy = core.state.wildlandsCanopy;
+      if (wildlandsDisposed || !canopy) return;
+      await showWildlandsCanopy(canopy);
+      await _wildlands.prepareTrees(prepareWildlandsTree);
       markLazyRegion("wildlands", "trees-attached");
+    };
+    const buildGolf = async () => {
+      const loadedGolfCourse = await loadWildlandsGolfData();
       // Presidio core.state.golf game. Own guard — a bad core.state.golf.json must not take the
       // groves/city down with it.
       if (loadedGolfCourse) {
         await waitForWorldBackgroundWindow(1800);
+        if (wildlandsDisposed) return;
+        const golfMod = await import("../../gameplay/golf");
+        if (wildlandsDisposed) return;
         const game = await golfMod.createGolf(map, physics, scene, loadedGolfCourse, {
           daylight: () => sky.sunElevation > 0.05
         });
@@ -2080,16 +2153,25 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     };
     let wildlandsGolfReady: Promise<unknown> | null = null;
     if (wildlandsGolfGates) {
-      wildlandsGolfReady = buildWildlandsGolf(false);
+      wildlandsGolfReady = buildWildlandsGolf();
     } else {
       void worldReady.then(() => {
         core.state.wakeDeferredWildlandsGolf = () => {
           core.state.wakeDeferredWildlandsGolf = null;
-          void buildWildlandsGolf(true).catch((err) => {
+          void buildWildlandsGolf().catch((err) => {
             console.warn("[core.state.wildlands/core.state.golf] first-approach construction failed:", err);
           });
         };
       });
+    }
+    let golfReady: Promise<unknown> | null = null;
+    if (regionGates("golf")) {
+      golfReady = buildGolf();
+    } else {
+      core.state.wakeDeferredGolf = () => {
+        core.state.wakeDeferredGolf = null;
+        void buildGolf().catch((error) => console.warn("[golf] first-approach construction failed:", error));
+      };
     }
 
     // Gate the reveal on whatever is near; deferred regions run post-reveal and
@@ -2097,7 +2179,8 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     await Promise.all([
       gardenReady,
       buenaVistaTreesReady,
-      wildlandsGolfReady
+      wildlandsGolfReady,
+      golfReady,
     ].filter(Boolean));
 
   })()

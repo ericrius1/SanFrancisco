@@ -1,3 +1,4 @@
+import { STRUCTURE_HEX, STRUCTURE_EMISSIVE } from "./palette";
 // SF theme materials — resolves the material ids the grammar emits into real
 // THREE materials. Render-side of the theme pack (THREE lives here, never in
 // core/). The host calls buildCityGenMaterials() once and looks up
@@ -107,8 +108,8 @@ function wallNodes(kind: WallKind): WallNodes {
  *  trim mesh per instance instead of binding these materials (KEEP IN SYNC with
  *  the `standard()` colours in buildCityGenMaterials below). */
 export const MODULE_TRIM_HEX: Record<string, number> = {
-  "trim.victorian": 0xf9f4ea,
-  "trim.edwardian": 0xf2eee4,
+  "trim.victorian": STRUCTURE_HEX["trim.victorian"],
+  "trim.edwardian": STRUCTURE_HEX["trim.edwardian"],
 };
 
 export function makeWallMaterial(hex: number, kind: WallKind = "smooth"): THREE.MeshStandardNodeMaterial {
@@ -140,10 +141,10 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "wall.brick": standard(0x8f4a3a, 0.95),
     "wall.chinatown": standard(0xcabf9e, 0.88),
     // trim / cornice / bay frames — bright painted trim, the SF contrast
-    "trim.victorian": standard(0xf9f4ea, 0.55, { emissive: 0.16 }),
-    "trim.edwardian": standard(0xf2eee4, 0.55, { emissive: 0.16 }),
+    "trim.victorian": standard(STRUCTURE_HEX["trim.victorian"], 0.55, { emissive: STRUCTURE_EMISSIVE["trim.victorian"] }),
+    "trim.edwardian": standard(STRUCTURE_HEX["trim.edwardian"], 0.55, { emissive: STRUCTURE_EMISSIVE["trim.edwardian"] }),
     // ground-floor base tones
-    "base.stoop": standard(0xa89e8c, 0.82),
+    "base.stoop": standard(STRUCTURE_HEX["base.stoop"], 0.82),
     "citygen.door": standard(0x53382c, 0.55, { emissive: 0.12 }),
     // operable front-door LEAF — same look as citygen.door but its OWN id +
     // material instance: mergePanels buckets it into a dedicated sub-mesh (named
@@ -167,7 +168,7 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "int.floor": standard(0x6b4e34, 0.8, { emissive: 0.4 }),    // wood floor
     "int.floor.light": standard(0x9c7449, 0.78, { emissive: 0.42 }), // sunlit oak / refined homes
     "int.floor.tile": standard(0xc9bba4, 0.82, { emissive: 0.48 }),  // kitchens, baths, polished entries
-    "int.wood": standard(0x5a4028, 0.7, { emissive: 0.35 }),    // furniture / stairs
+    "int.wood": standard(STRUCTURE_HEX["int.wood"], 0.7, { emissive: STRUCTURE_EMISSIVE["int.wood"] }),    // furniture / stairs
     "int.sofa": standard(0x7a5a52, 0.85, { emissive: 0.4 }),    // upholstery
     "int.fabric.blue": standard(0x486a82, 0.86, { emissive: 0.42 }),
     "int.fabric.green": standard(0x55715c, 0.88, { emissive: 0.4 }),
@@ -208,15 +209,15 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "int.art3": standard(0x5a7a4a, 0.85, { emissive: 0.9 }),    // green pastoral
     "int.art4": standard(0x7a3550, 0.85, { emissive: 0.9 }),    // rose abstract
     // large-commercial (big downtown/warehouse blocks) — stone base + banding
-    "lc.stone": standard(0xb8b0a2, 0.82),                       // limestone/precast base
+    "lc.stone": standard(STRUCTURE_HEX["lc.stone"], 0.82),                       // limestone/precast base
     "lc.band": standard(0xd9d2c4, 0.7, { emissive: 0.14 }),     // spandrel banding
     "lc.pier": standard(0x9a948a, 0.85),                        // vertical piers
     // glass
     "glass": glass,
     // roofs — you see these from the air + hills, so they must READ (not crush to
     // black at play exposure): tar-and-gravel grey with a strong self-lit term.
-    "roof.flatTrim": standard(0x9a9384, 0.92, { emissive: 0.5 }),
-    "roof.tileCornice": standard(0xb56545, 0.85, { emissive: 0.4 }),   // clay tile, warm
-    "roof.parapet": standard(0x969084, 0.9, { emissive: 0.5 }),
+    "roof.flatTrim": standard(STRUCTURE_HEX["roof.flatTrim"], 0.92, { emissive: STRUCTURE_EMISSIVE["roof.flatTrim"] }),
+    "roof.tileCornice": standard(STRUCTURE_HEX["roof.tileCornice"], 0.85, { emissive: STRUCTURE_EMISSIVE["roof.tileCornice"] }),   // clay tile, warm
+    "roof.parapet": standard(STRUCTURE_HEX["roof.parapet"], 0.9, { emissive: STRUCTURE_EMISSIVE["roof.parapet"] }),
   };
 }

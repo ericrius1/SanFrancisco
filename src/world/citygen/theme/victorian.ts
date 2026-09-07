@@ -9,9 +9,10 @@
 // primitives — no THREE here.
 import {
   type FacadeDecorator, type FacadeEdge, type Vec3,
-  PanelBuilder, pointOnWall, outset, floorBands, bayCount, aboveGrade,
+  PanelBuilder, pointOnWall, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
 import { wallWithDoorway, frontStoop, faceWindow } from "./facadeKit";
+import { cantedBay, corniceCrown } from "./envelope";
 import { doorEligible, doorMetrics } from "../core/collider";
 
 // ---- small vector helpers ---------------------------------------------------
@@ -45,8 +46,8 @@ function bracketedCornice(out: PanelBuilder, e: FacadeEdge, mat: string, proj: n
   const crownY = e.top - 0.05;
   const cc: Vec3 = [(gp(e, 0)[0] + gp(e, 1)[0]) / 2, crownY, (gp(e, 0)[2] + gp(e, 1)[2]) / 2];
   // main crown slab
-  out.box(mat, [cc[0] + n3[0] * proj * 0.5, crownY + 0.16, cc[2] + n3[2] * proj * 0.5],
-    [e.length / 2 + 0.05, 0.16, proj], along, UP, n3, false);
+  const crown = corniceCrown(e, proj);
+  out.box(mat, crown.center, crown.half, along, UP, n3, false);
   // dentil band just under the crown
   out.box(mat, [cc[0] + n3[0] * proj * 0.3, crownY - 0.05, cc[2] + n3[2] * proj * 0.3],
     [e.length / 2, 0.06, proj * 0.6], along, UP, n3, true);
@@ -169,12 +170,7 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
 
   if (e.isStreet && arch.bayProjection && upper.length >= 1) {
     // canted bay over ~55% of the façade; flanking wall gets its own windows
-    const proj = arch.bayProjection;
-    const bl = 0.30, br = 0.70;                    // bay opening fraction
-    const cant = (br - bl) * 0.2;
-    const wallL = gp(e, bl), wallR = gp(e, br);
-    const frontL = outset(gp(e, bl + cant), e, proj);
-    const frontR = outset(gp(e, br - cant), e, proj);
+    const { wallL, wallR, frontL, frontR } = cantedBay(e);
     // start the projecting bay at the ground line so it never juts out below grade
     const yb = Math.max(upper[0].y0, e.grade), yt = e.top;
     const fL: Vec3 = [frontL[0], 0, frontL[2]], fR: Vec3 = [frontR[0], 0, frontR[2]];

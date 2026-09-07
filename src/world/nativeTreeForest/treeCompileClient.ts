@@ -1,11 +1,12 @@
-import type { CompiledTreePrototype, TreeRecipe } from "../treeCompiler";
+import type { TreeRecipe } from "../treeCompiler";
+import type { CompiledImpostorTree } from "./impostorBake";
 
 type CompileResponse =
-  | { id: number; ok: true; prototype: CompiledTreePrototype }
+  | { id: number; ok: true; prototype: CompiledImpostorTree }
   | { id: number; ok: false; error: { name: string; message: string; stack?: string } };
 
 type PendingCompile = {
-  resolve(prototype: CompiledTreePrototype): void;
+  resolve(prototype: CompiledImpostorTree): void;
   reject(error: Error): void;
 };
 
@@ -61,11 +62,11 @@ function getWorker(): Worker | null {
 }
 
 /** Compile off the render thread, transferring every typed array without a copy. */
-export async function compileTreeAsync(recipe: TreeRecipe, seed: number): Promise<CompiledTreePrototype> {
+export async function compileTreeAsync(recipe: TreeRecipe, seed: number): Promise<CompiledImpostorTree> {
   const target = getWorker();
   if (!target) throw new Error("Native tree compiler worker is unavailable");
   const id = nextId++;
-  return new Promise<CompiledTreePrototype>((resolve, reject) => {
+  return new Promise<CompiledImpostorTree>((resolve, reject) => {
     pending.set(id, { resolve, reject });
     try {
       target.postMessage({ id, recipe, seed });

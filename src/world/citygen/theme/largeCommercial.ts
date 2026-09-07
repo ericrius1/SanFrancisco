@@ -26,6 +26,7 @@ import {
 import type { Rng } from "../core/rng";
 import { MODULE_SHAFT_WINDOW } from "../core/types";
 import { sub, len, unit, lerp, UP, gp, beltCourse, cornice, faceWindowAvoidDoor, frontDoor, frontStoop, wallWithDoorway, type WinMats } from "./facadeKit";
+import { commercialBaseTop } from "./envelope";
 import { doorEligible, doorMetrics } from "../core/collider";
 
 // Relief depths (metres proud of the flat wall). Piers stand deepest, then the
@@ -154,13 +155,11 @@ export function largeCommercialFacade(e: FacadeEdge, out: PanelBuilder, _rng: Rn
   const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
   const along = unit(sub(gp(e, 1), gp(e, 0)));
 
-  const base = e.base, top = e.top, H = top - base, visibleH = top - e.grade;
+  const base = e.base, top = e.top;
   const bands = floorBands(e);
 
   // ---- tripartite split: stone base · shaft · cap --------------------------
-  const nBase = H >= 26 ? 2 : 1;                          // 2-storey base on the tall ones
-  let baseTopY = bands[Math.min(nBase, bands.length) - 1]?.y1 ?? base + arch.floorH;
-  baseTopY = clamp(baseTopY, e.grade + Math.min(visibleH * 0.45, arch.floorH * 0.9), e.grade + visibleH * 0.55);
+  const baseTopY = commercialBaseTop(e);
 
   // ---- backdrop wall (stone base tone below, body colour above) ------------
   // the stone base is cut open at the entrance so the collider's walk-through gap

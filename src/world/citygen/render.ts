@@ -19,35 +19,14 @@ import type { ModuleLayer } from "./render/moduleLayer";
 import type { ShellBatchLayer, ShellHandle } from "./render/shellBatch";
 import { enableLocalFarShadowLayers } from "../shadows/shadowLayers";
 
-// SF "painted lady" body colours — mid-saturated so the bright white trim reads
-// as the classic Victorian contrast (bodies vary building-to-building).
-// Per-archetype body palettes. Victorians are saturated painted ladies; other
-// districts read as their real materials (stucco pastels, grey masonry, brick).
-const PAINTED_LADY = [
-  0x2e8577, 0xb05f28, 0x4666b8, 0x5f8a2e, 0xc06e26, 0x3f52a8,
-  0xb03a52, 0xc79320, 0x1f7f92, 0x74459f, 0x3f8f4a, 0xc17c1e,
-];
-const PALETTES: Record<string, number[]> = {
-  victorian: PAINTED_LADY,
-  edwardian: [0xdcd8cc, 0xcdc6b4, 0xd8d0be, 0xc6cdc0, 0xd0c8b8, 0xbfc4c0], // pale Edwardian
-  marina: [0xe6d8bc, 0xe0c9a6, 0xd9b48a, 0xe8d2b0, 0xcdd8c0, 0xe8cfc0, 0xefe2c2], // stucco pastels
-  downtown: [0x9a9d9f, 0xb0a894, 0x8f9498, 0xa6a29a, 0x8a8d90, 0xa89f8c], // grey/tan masonry
-  soma: [0x8f4a3a, 0x9c5540, 0x7a3f34, 0xa5634a, 0x86584a, 0x944e3c], // brick reds
-  chinatown: [0xcabf9e, 0xc7b58a, 0xbfae86],
-};
+import { bodyColour, PAINTED_LADY } from "./theme/palette";
+export { bodyColour } from "./theme/palette";
 
 export interface CityGenMeshBundle {
   group: THREE.Group;
   buildings: number;
   triangles: number;
   dispose(): void;
-}
-
-/** seeded body colour for a building, keyed to its archetype's palette */
-export function bodyColour(seed: number, archetype = "victorian"): number {
-  const pal = PALETTES[archetype] ?? PAINTED_LADY;
-  const r = rng(seed, 99);
-  return pal[Math.floor(r() * pal.length) % pal.length];
 }
 
 /** The PROUD transform: sit the detail mesh a hair above its chunk-LOD prism (same
@@ -209,9 +188,9 @@ function assembleBuildingMeshes(
   const tint = new THREE.Color(bodyColour(spec.seed, spec.archetype));
 
   // ===== BATCHED SHELL PATH (default) =========================================
-  // walls/roof/trim/stoop/doors go into the shared BatchedMesh layer — one GPU
-  // draw per material citywide instead of one bundle-replay per building — and
-  // fade/tint ride a per-instance texel (no material clones). Windows still go to
+  // Walls/roof/trim/stoop/doors share material arenas with per-building culling.
+  // Three r185 still submits each visible subgeometry as a GPU draw.
+  // Fade/tint ride a per-instance texel (no material clones). Windows still go to
   // the instanced module layer; both fade from the single setOpacity call below so
   // they stay in lockstep. Falls through to the bundle path only if a batch is full.
   if (shellBatch) {

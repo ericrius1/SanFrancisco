@@ -2,13 +2,12 @@
 // main thread. One request = one building: massing + façade decoration +
 // panel merge (core/), producing MeshData typed arrays that transfer back
 // zero-copy. The main thread (stream/ring.ts) only assembles THREE objects
-// from the arrays — the ~30-100 ms-per-building generate() cost that used to
-// land in a driving frame lands here instead.
+// from the arrays; variable grammar cost stays off the presentation thread.
 //
 // PURITY CONTRACT: this module's import graph must stay THREE-free (core/ +
 // theme grammar only — the "no THREE-in-core" rule in ../index.ts). Materials
 // and scene assembly live on the main thread.
-import { generate } from "../index";
+import { generate } from "../generate";
 import type { BuildingSpec } from "../core/types";
 
 interface BuildRequest {
@@ -31,7 +30,7 @@ self.onmessage = (e: MessageEvent<BuildRequest>) => {
     );
   } catch (error) {
     // A malformed building is a per-request failure, not a reason to kill the
-    // shared worker and reintroduce synchronous 30–100 ms grammar work.
+    // shared worker and reintroduce synchronous grammar work.
     (self as unknown as Worker).postMessage({
       id,
       ok: false,

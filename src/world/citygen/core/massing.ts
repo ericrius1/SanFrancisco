@@ -7,6 +7,7 @@
 // to a flat wall (Phase-1 shell). Pure geometry — no THREE, no textures.
 import type { ArchetypeSpec, BuildingSpec, ModuleInstance, Panel, Vec2 } from "./types";
 import { centroid, edgeOutwardNormal, ensureCCW, streetEdgeIndex, triangulate } from "./footprint";
+import { roofVolumes } from "./roof";
 import { PanelBuilder, defaultFlatWall, pointOnWall, type FacadeDecorator, type FacadeEdge, type Vec3 } from "./facade";
 
 export interface Massing {
@@ -88,48 +89,23 @@ export function massBuilding(spec: BuildingSpec, arch: ArchetypeSpec, decorate: 
     roof.normals.push(0, 1, 0);
     roof.uvs.push((x - cx) / UV_SCALE, (z - cz) / UV_SCALE);
   }
-  for (const t of tris) roof.indices.push(t);
+  // A CCW polygon in XZ faces -Y in Three's XYZ basis. Keep the actual
+  // triangle front aligned with its +Y normal: DoubleSide otherwise flips the
+  // normal when viewed from above and incorrectly shades the roof from below.
+  for (let i = 0; i < tris.length; i += 3) roof.indices.push(tris[i], tris[i + 2], tris[i + 1]);
 
   // ---- rooftop clutter (flat roofs only): a stairwell bulkhead, a vent or two,
   //      and an occasional rooftop unit — so the roofscape reads from the air/hills
   //      instead of a bare slab. Deterministic, cheap (a handful of boxes). -------
-  if (arch.roofType === "flat") roofProps(out, poly, cx, cz, top, edgeRng(spec.seed, 97), arch);
+  if (arch.roofType === "flat") {
+    for (const volume of roofVolumes(poly, top, spec.seed, arch)) {
+      out.box(volume.materialId, volume.center, volume.half, [1, 0, 0], [0, 1, 0], [0, 0, 1], false, volume.skipBottom);
+    }
+  }
 
   const panels = out.panels();
   if (roof.indices.length) panels.push(roof);
   return { panels, instances: out.moduleInstances(), matTable: out.matTable(), floors, center: [cx, cz], base, top };
-}
-
-/** small deterministic rooftop props inside a footprint (flat roofs). */
-function roofProps(out: PanelBuilder, poly: Vec2[], cx: number, cz: number, top: number, rng: () => number, arch: ArchetypeSpec): void {
-  let minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity;
-  for (const [x, z] of poly) { if (x < minx) minx = x; if (x > maxx) maxx = x; if (z < minz) minz = z; if (z > maxz) maxz = z; }
-  const w = maxx - minx, d = maxz - minz;
-  if (w < 4 || d < 4) return; // too small to clutter
-  const X: Vec3 = [1, 0, 0], Y: Vec3 = [0, 1, 0], Z: Vec3 = [0, 0, 1];
-  // keep props inside the footprint bbox with an inset (concave overhang is minor)
-  const spot = (fx: number, fz: number): [number, number] => [
-    Math.min(maxx - 0.9, Math.max(minx + 0.9, cx + fx)),
-    Math.min(maxz - 0.9, Math.max(minz + 0.9, cz + fz)),
-  ];
-  // stairwell bulkhead near centre
-  const [bx, bz] = spot((rng() - 0.5) * w * 0.3, (rng() - 0.5) * d * 0.3);
-  // These are freestanding roof volumes, so every vertical side must render.
-  // Their bottom is supplied by the roof cap itself; emitting another DoubleSide
-  // face at exactly `top` causes the close-range z-fighting seen from the board.
-  out.box(arch.roofMaterial, [bx, top + 0.9, bz], [0.9, 0.9, 1.1], X, Y, Z, false, true);
-  // a couple of low vents
-  const nv = 1 + Math.floor(rng() * 2);
-  for (let i = 0; i < nv; i++) {
-    const [vx, vz] = spot((rng() - 0.5) * w * 0.7, (rng() - 0.5) * d * 0.7);
-    out.box("roof.flatTrim", [vx, top + 0.35, vz], [0.35, 0.35, 0.35], X, Y, Z, false, true);
-  }
-  // ~30%: a wooden rooftop water tank (a box on stubby legs, iconic on SF/Bay roofs)
-  if (rng() < 0.3 && w > 6 && d > 6) {
-    const [tx, tz] = spot((rng() - 0.5) * w * 0.5, (rng() - 0.5) * d * 0.5);
-    out.box("int.wood", [tx, top + 1.5, tz], [0.7, 0.9, 0.7], X, Y, Z, false);          // tank
-    out.box("int.wood", [tx, top + 0.35, tz], [0.75, 0.35, 0.75], X, Y, Z, false, true); // frame base
-  }
 }
 
 // local mulberry32 salted per edge (avoids importing rng cycle concerns)

@@ -36,6 +36,8 @@ import {
   type NativeTreeSilhouetteLod
 } from "./lodTransition";
 import { growTemplate, type GrownTemplate, type NativeTreeDesignSpec } from "./templates";
+import { nativeTreeNearDistanceSquared, nativeTreeNearFocusMovementSquared } from "./nearDistance";
+import type { TreeCullFocus } from "../vegetation/treeCullFocus";
 import {
   createNativeTreeGpuFarTiers,
   registerForestFarCull,
@@ -66,6 +68,8 @@ export type NativeTreeForestOptions = {
   visibleDistance?: number;
   /** Landscape → horizon LOD switch (default 58% of visibleDistance). */
   horizonDistance?: number;
+  /** Whole-tree impostor starts at this 3D camera distance (default 420m). */
+  impostorDistance?: number;
   /** Distance at which a tree can enter the two close batched LODs. */
   nearRadius?: number;
   /** Hysteretic distance at which a close tree returns to its chunk batch. */
@@ -93,14 +97,14 @@ export type NativeTreeForest = {
   ready: Promise<void>;
   /** Call every frame with the player/view position. `force` re-publishes the
    * current LOD assignment after an external detached-root warmup. */
-  update(focus: { x: number; z: number }, force?: boolean): void;
+  update(focus: TreeCullFocus, force?: boolean): void;
   /**
    * Latest-wins destination prime for boot/teleport transactions. It records
    * `focus`, materializes only that local residency ring, and waits until all
    * visible chunks are prepared. It does not depend on the normal update loop.
    */
   prepareAt(
-    focus: { x: number; z: number },
+    focus: TreeCullFocus,
     prepare?: NativeTreePrepareUnit,
     signal?: AbortSignal
   ): Promise<void>;
@@ -111,7 +115,7 @@ export type NativeTreeForest = {
    */
   prepareVisible(prepare: NativeTreePrepareUnit): Promise<void>;
   /**
-   * Compiles ONLY the always-resident landscape/horizon indirect meshes — the
+   * Compiles ONLY the always-resident landscape/horizon/impostor indirect meshes — the
    * tier that carries the whole distant canopy — and nothing else. A first
    * approach can attach the forest to the scene the moment this resolves: every
    * chunk and near batch stays internally invisible until its own pipeline is
@@ -167,7 +171,7 @@ const LOD_HORIZON = 3;
 // through the shared GPU indirect core (gpuFarTiers.ts): per-design arenas, one
 // per-frame cull compute that frustum-tests every live slot and hash-dithers it
 // into a landscape or horizon indirect draw. Far draw count becomes a fixed
-// designs × 2 tiers × 2 meshes, and the per-chunk far batches / rebin sort / LOD
+// designs × 5, and the per-chunk far batches / rebin sort / LOD
 // transition fade batches below are bypassed. Flip to false to fall back to the
 // legacy per-chunk far batch path (kept fully intact for A/B and regression).
 // The near close pool (canopy/grove) and CPU chunk residency are unaffected.
@@ -674,9 +678,10 @@ export function createNativeTreeForest(
   const nearPools = new Map<number, NearPool>();
   const nearPreparations = new Map<TreeBatch, NearPreparation>();
   const active = new Map<string, ActiveNear>();
-  const lastFocus = { x: 1e9, z: 1e9 };
+  const lastFocus: TreeCullFocus = { x: 1e9, z: 1e9 };
   const lastResidencyFocus = { x: 1e9, z: 1e9 };
-  const lastRebinFocus = { x: 1e9, z: 1e9 };
+  const lastRebinFocus: TreeCullFocus = { x: 1e9, z: 1e9 };
+  const rebinFocus: TreeCullFocus = { x: 0, z: 0 };
   const requestedDesigns = new Set<number>();
   for (const slots of chunkSlots.values()) for (const slot of slots) requestedDesigns.add(slot.design);
   let lastRebin = 0;
@@ -692,6 +697,7 @@ export function createNativeTreeForest(
   let farTiers: NativeTreeGpuFarTiers | null = null;
   let unregisterFarCull: (() => void) | null = null;
   let farPrepared = false;
+  let farPreparation: Promise<void> | null = null;
 
   function ensureNearMaterials(design: number): Promise<void> {
     if (disposed || nearMaterials[design] || nearLoadFailures.has(design)) {
@@ -943,21 +949,24 @@ export function createNativeTreeForest(
     const now = performance.now();
     // Allocation-free throttle: rebin runs every frame per site and
     // short-circuits here almost always.
-    const focusDx = x - lastRebinFocus.x;
-    const focusDz = z - lastRebinFocus.z;
-    const moved = focusDx * focusDx + focusDz * focusDz;
+    const focusY = lastFocus.y;
+    rebinFocus.x = x;
+    rebinFocus.y = focusY;
+    rebinFocus.z = z;
+    const moved = nativeTreeNearFocusMovementSquared(rebinFocus, lastRebinFocus);
     if (!force && (now - lastRebin < REBIN_MS || moved < REBIN_MOVE_SQ)) return;
     lastRebin = now;
     lastRebinFocus.x = x;
     lastRebinFocus.z = z;
+    lastRebinFocus.y = focusY;
 
     const enterSq = nearRadius * nearRadius;
     const exitSq = nearExit * nearExit;
     const candidates: { slot: Slot; chunk: Chunk; d2: number; lod: 0 | 1 }[] = [];
     for (const entry of allNearSlots) {
-      const dx = entry.slot.x - x;
-      const dz = entry.slot.z - z;
-      const d2 = dx * dx + dz * dz;
+      const d2 = nativeTreeNearDistanceSquared(
+        lastRebinFocus, entry.slot, templates[entry.slot.design]?.geometry.bounds,
+      );
       if (d2 >= (active.has(entry.slot.key) ? exitSq : enterSq)) continue;
       const previous = active.get(entry.slot.key);
       const canopyExit = canopyRadius * 1.12;
@@ -1238,6 +1247,7 @@ export function createNativeTreeForest(
       hasCullFocus = false;
       lastFocus.x = 1e9;
       lastFocus.z = 1e9;
+      lastFocus.y = undefined;
       lastResidencyFocus.x = 1e9;
       lastResidencyFocus.z = 1e9;
       return;
@@ -1642,7 +1652,7 @@ export function createNativeTreeForest(
   }
 
   function requestHorizonPrefetchPreparation(): void {
-    // The GPU far path has no per-chunk horizon render objects to warm — the four
+    // The GPU far path has no per-chunk horizon render objects to warm — the five
     // per-design far pipelines are compiled once in prepareWantedUnits.
     if (GPU_FAR_TIERS) return;
     if (!prepareUnit || disposed || horizonPrefetchPump) return;
@@ -1678,18 +1688,28 @@ export function createNativeTreeForest(
     rebin(1e9, 1e9, true);
   }
 
+  async function prepareFarOnce(): Promise<void> {
+    if (!GPU_FAR_TIERS || !farTiers || farPrepared || disposed) return;
+    if (!farPreparation) {
+      const owner = farTiers;
+      farPreparation = owner.prepare(prepareObject).then(() => {
+        if (!disposed && farTiers === owner) farPrepared = true;
+      }).finally(() => {
+        farPreparation = null;
+      });
+    }
+    // Concurrent callers share readiness, including a rejection. An unsuccessful
+    // compile never publishes a ready latch, so the next approach can retry.
+    await farPreparation;
+  }
+
   async function prepareWantedUnits(expectedResidencyEpoch?: number): Promise<void> {
     if (!prepareUnit || disposed) return;
     // GPU far path: the far tier is a fixed, always-resident set of per-design
-    // indirect meshes (no per-chunk far render objects). Compile those four
+    // indirect meshes (no per-chunk far render objects). Compile those five
     // pipelines once, detached, so the first reveal never stalls on them.
-    if (GPU_FAR_TIERS && farTiers && !farPrepared) {
-      // Set before awaiting so a concurrent prepareWantedUnits (overlapping
-      // teleports) can't detach/compile the far group twice.
-      farPrepared = true;
-      await farTiers.prepare(prepareObject);
-      if (disposed) return;
-    }
+    await prepareFarOnce();
+    if (disposed) return;
     // An in-flight unit can belong to the focus that was just superseded. Loop
     // until the *current* wanted set is prepared rather than merely awaiting the
     // stale promise returned by its first queue lookup.
@@ -1840,7 +1860,7 @@ export function createNativeTreeForest(
       detailMaterialReady: nearMaterials[entry.slot.design] !== null
     })).sort((a, b) => a.distance - b.distance)[0] ?? null;
     return {
-      focus: { x: lastRebinFocus.x, z: lastRebinFocus.z },
+      focus: { x: lastRebinFocus.x, y: lastRebinFocus.y, z: lastRebinFocus.z },
       nearRadius,
       nearExit,
       canopyRadius,
@@ -1944,7 +1964,7 @@ export function createNativeTreeForest(
     if (GPU_FAR_TIERS && usedDesigns.size > 0) {
       // One arena per design, sized to its authored total (+ fragmentation
       // headroom). Built here at forest-ready — arenas allocate on forest build,
-      // never at import (massive-app loading policy). The four per-design far
+      // never at import (massive-app loading policy). The five per-design far
       // pipelines compile lazily on first render / prepare, not now.
       const farDesigns: NativeTreeFarDesign[] = [];
       for (const design of usedDesigns) {
@@ -1959,6 +1979,7 @@ export function createNativeTreeForest(
           landscapeFoliage: lods[LOD_LANDSCAPE].foliage,
           horizonBranch: lods[LOD_HORIZON].branch,
           horizonFoliage: lods[LOD_HORIZON].foliage,
+          impostor: template.geometry.impostor,
           style: template.archetype.style,
           assets: materialAssets,
           canopyCenter: template.geometry.canopy.center,
@@ -1973,6 +1994,7 @@ export function createNativeTreeForest(
           name: options.name,
           horizonDistance,
           visibleDistance,
+          impostorDistance: options.impostorDistance,
           // Near-pool misses inside this radius keep a far draw; prefer the
           // smaller horizon cards over landscape's oversized opaque triangles.
           nearCardSuppressDistance: nearRadius * 0.92
@@ -2055,7 +2077,7 @@ export function createNativeTreeForest(
 
     stats.designs = usedDesigns.size;
     stats.chunks = chunkDescriptors.length;
-    // GPU far path: far draws are FIXED (designs × 2 tiers × 2 meshes) rather than
+    // GPU far path: far draws are FIXED (designs × 5) rather than
     // scaling with resident chunks. Near pool remains 4 batch draws per design.
     stats.draws = (farTiers ? farTiers.farDraws : chunkDescriptors.reduce(
       (sum, descriptor) => sum + descriptor.designs.length * 2, 0
@@ -2104,6 +2126,9 @@ export function createNativeTreeForest(
     ready,
     update(focus, force = false) {
       if (disposed) return;
+      // Vertical motion changes only near-detail admission; terrain/chunk
+      // residency and far visibility keep their existing planar focus.
+      lastFocus.y = Number.isFinite(focus.y) ? focus.y : undefined;
       const finiteFocus =
         Number.isFinite(focus.x) &&
         Number.isFinite(focus.z) &&
@@ -2149,6 +2174,7 @@ export function createNativeTreeForest(
       }
       if (signal?.aborted) throw superseded();
       if (prepare) prepareUnit = prepare;
+      lastFocus.y = Number.isFinite(focus.y) ? focus.y : undefined;
 
       lastResidencyFocus.x = focus.x;
       lastResidencyFocus.z = focus.z;
@@ -2196,11 +2222,7 @@ export function createNativeTreeForest(
       await ready;
       if (disposed) return;
       prepareUnit = prepare;
-      if (!GPU_FAR_TIERS || !farTiers || farPrepared) return;
-      // Latch before awaiting, exactly as prepareWantedUnits does: a concurrent
-      // prepare must not detach and compile the shared far group twice.
-      farPrepared = true;
-      await farTiers.prepare(prepareObject);
+      await prepareFarOnce();
     },
     dispose() {
       if (disposed) return;

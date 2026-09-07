@@ -76,8 +76,8 @@ export const ZONES: Record<ParallaxZone, ZoneLook> = {
 /**
  * A node material for a flat glass pane: dark zone-tinted glass with a grazing
  * sky sheen by day, and a warm per-pane emissive on the ~lit panes at night. No
- * interior raymarch. DoubleSide (the grammar's quad winding isn't guaranteed
- * outward). Drop-in replacement for the old parallax glass.
+ * interior raymarch. DoubleSide keeps panes visible from interior viewpoints.
+ * Drop-in replacement for the old parallax glass.
  */
 export function makeParallaxGlass(
   opts: { zone?: ParallaxZone; seed?: number } = {}

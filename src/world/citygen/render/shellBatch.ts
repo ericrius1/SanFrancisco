@@ -1,17 +1,10 @@
-// Batched building SHELL layer — the "whole city walls in a dozen draws" path.
+// Shared building shell arenas, grouped by material with per-building culling.
 //
-// The per-building wall/roof/trim/stoop/door geometry used to live in one
-// THREE.BundleGroup PER building (render.ts). Bundles cache the CPU encode, but
-// the GPU still EXECUTES every child draw every frame — measured 2,384 sub-draws
-// for 378 detail buildings (~12.5 ms, the frame's biggest slice, linear in
-// building count). This collapses them the same way moduleLayer.ts collapsed
-// windows: one THREE.BatchedMesh per settled MATERIAL (a handful total), each
-// holding every building's geometry for that material as a separate BatchedMesh
-// geometry+instance. On this Metal/WebGPU backend BatchedMesh's multi-draw path
-// renders N unique geometries far faster than N meshes (spike: 300 uniques at
-// 2 ms vs 21 ms), AND — unlike the frustumCulled=false bundles — it frustum-culls
-// per instance, so off-screen buildings stop being paid for. Both
-// together break the linear-in-building-count wall so the detail COUNT can grow.
+// This reduces scene traversal and material/binding setup, but it does not
+// collapse all geometry into one GPU draw per material: Three r185's WebGPU
+// backend loops BatchedMesh's visible subgeometries and calls drawIndexed for
+// each. Budget actual visible sub-draws as well as triangles; the six instanced
+// window-module draws have different submission behavior.
 //
 // Per-building CROSSFADE + body TINT ride a per-batch RGBA DataTexture indexed by
 // the batch's own indirect draw id (getIndirectIndex, exactly as three's `batch`

@@ -90,8 +90,10 @@ export class PanelBuilder {
   moduleInstances(): ModuleInstance[] { return this.#instances; }
   matTable(): string[] { return this.#matTable; }
 
-  /** a quad given four world corners in CCW order (bl, br, tr, tl) + a normal.
-   *  UVs come from the quad's own width/height so texel density stays uniform. */
+  /** A quad given four perimeter corners (bl, br, tr, tl) and its intended
+   * outward normal. The authored frame may be left- or right-handed; orient
+   * triangles to that normal so DoubleSide never inverts the exterior lighting.
+   * UVs come from the quad's own width/height so texel density stays uniform. */
   quad(matId: string, bl: Vec3, br: Vec3, tr: Vec3, tl: Vec3, n: Vec3): void {
     const p = this.#panel(matId);
     const b = p.positions.length / 3;
@@ -100,7 +102,11 @@ export class PanelBuilder {
     p.positions.push(bl[0], bl[1], bl[2], br[0], br[1], br[2], tr[0], tr[1], tr[2], tl[0], tl[1], tl[2]);
     for (let k = 0; k < 4; k++) p.normals.push(n[0], n[1], n[2]);
     p.uvs.push(0, 0, w, 0, w, h, 0, h);
-    p.indices.push(b, b + 1, b + 2, b, b + 2, b + 3);
+    const ux = br[0] - bl[0], uy = br[1] - bl[1], uz = br[2] - bl[2];
+    const vx = tr[0] - bl[0], vy = tr[1] - bl[1], vz = tr[2] - bl[2];
+    const dot = (uy * vz - uz * vy) * n[0] + (uz * vx - ux * vz) * n[1] + (ux * vy - uy * vx) * n[2];
+    if (dot >= 0) p.indices.push(b, b + 1, b + 2, b, b + 2, b + 3);
+    else p.indices.push(b, b + 2, b + 1, b, b + 3, b + 2);
   }
 
   /**

@@ -1,0 +1,91 @@
+<!doctype html><html><head><link rel="icon" href="data:,"><style>body{margin:0}canvas{display:block}</style></head><body><script type="module">
+// Isolated, same-device comparison. No world streaming or presentation governor
+// can mistake an empty/skipped frame for an optimization.
+import * as THREE from 'three/webgpu';
+import { registerRenderer } from '/src/app/rendererRegistry.ts';
+import { growTemplate } from '/src/world/nativeTreeForest/templates.ts';
+import { createNativeTreeGpuFarTiers } from '/src/world/nativeTreeForest/gpuFarTiers.ts';
+import { loadNativeTreeMaterialSet, releaseNativeTreeMaterialSet } from '/src/world/vegetation/nativeTreeAssets.ts';
+import { WILD_TREE_DESIGNS } from '/src/world/wildlands/layout.ts';
+const renderer=new THREE.Renderer(new THREE.WebGPUBackend({antialias:true}),{getFallback:null,antialias:true});
+renderer.library=new THREE.StandardNodeLibrary();
+const errors=[],templates=[],assets=[],owners=[];
+const assert=(v,m)=>{if(!v)throw new Error(m)};
+try {
+ await renderer.init();registerRenderer(renderer);renderer.setSize(1440,900);document.body.append(renderer.domElement);
+ renderer.backend.device.addEventListener('uncapturederror',e=>errors.push(e.error.message));
+ const scene=new THREE.Scene();scene.background=new THREE.Color(0xc9d9e5);
+ scene.add(new THREE.HemisphereLight(0xdce8ff,0x747858,2));
+ const sun=new THREE.DirectionalLight(0xfff4dc,3);sun.position.set(-80,160,50);scene.add(sun);
+ const camera=new THREE.PerspectiveCamera(50,1440/900,0.1,5000);
+ const slots=WILD_TREE_DESIGNS.map(()=>[]);
+ for(let z=-1000;z<=1000;z+=24)for(let x=-1000;x<=1000;x+=24){
+  if(Math.hypot(x,z)>1100||Math.hypot(x,z)<100)continue;
+  let hash=((Math.imul(x+1056,374761393)^Math.imul(z+1056,668265263))>>>0);hash=(hash^(hash>>>13))>>>0;
+  slots[hash%slots.length].push({x:x+(hash%17)-8,y:0,z:z+((hash>>>5)%17)-8,scale:0.8+(hash%100)/125,yaw:(hash%628)/100,variation:(hash%256)/256,dryness:0});
+ }
+ const started=performance.now(),designs=[];
+ for(let i=0;i<WILD_TREE_DESIGNS.length;i++){
+  const t=await growTemplate(WILD_TREE_DESIGNS[i]);templates.push(t);
+  const a=await loadNativeTreeMaterialSet(t.archetype.species,{detail:'silhouette'});assets.push(a);
+  const g=t.geometry,l=g.lods,b=g.bounds;
+  designs.push({design:i,landscapeBranch:l[2].branch,landscapeFoliage:l[2].foliage,horizonBranch:l[3].branch,horizonFoliage:l[3].foliage,impostor:g.impostor,style:t.archetype.style,assets:a,canopyCenter:g.canopy.center,canopyRadii:g.canopy.radii,boundsCenterY:b.sphereCenter[1],boundsRadius:b.sphereRadius,total:slots[i].length});
+ }
+ const prototypeMs=performance.now()-started;
+ for(const [name,visibleDistance,impostorDistance] of [['old520',520,1e6],['old1050',1050,1e6],['new1050',1050,420]]){
+  const far=createNativeTreeGpuFarTiers(designs,{name,horizonDistance:220,visibleDistance,impostorDistance,nearCardSuppressDistance:90});
+  // Indirect geometry cloning must retain the source's one interleaved buffer.
+  // This fixture has more than eight attributes: deinterleaving them exceeded
+  // the WebGPU vertex-buffer limit despite the original hull using one binding.
+  for(const design of designs){
+   const source=design.impostor.geometry;
+   const cloned=far.group.getObjectByName(`${name}_${design.design}_impostor`)?.geometry;
+   const channels=Object.entries(source.attributes);
+   assert(channels.length>8,'hull fixture exercises the vertex-buffer limit');
+   assert(cloned,'impostor indirect draw exists');
+   const buffers=new Set();
+   for(const [channel,original] of channels){
+    const copy=cloned.getAttribute(channel);
+    assert(original.isInterleavedBufferAttribute&&copy?.isInterleavedBufferAttribute,`${channel}: indirect clone retains interleaving`);
+    assert(copy.data.stride===original.data.stride&&copy.offset===original.offset&&copy.itemSize===original.itemSize,`${channel}: stride, offset and item size survive cloning`);
+    assert(copy.data!==original.data&&copy.data.array.buffer!==original.data.array.buffer,`${channel}: cloned storage is independently owned`);
+    assert(copy.data.array.length===original.data.array.length&&copy.data.array.every((v,i)=>v===original.data.array[i]),`${channel}: cloned hull values remain exact`);
+    buffers.add(copy.data);
+   }
+   assert(buffers.size===1,'all cloned hull attributes share one backing buffer');
+  }
+  for(let i=0;i<slots.length;i++)assert(far.admitChunk(i,slots[i]),'all authored fixture slots fit');
+  owners.push(far);scene.add(far.group);far.group.visible=false;
+ }
+ const views={flight:[[0,250,0],[600,15,-600]],street:[[0,20,0],[700,15,-600]],overhead:[[0,800,0],[1,0,-1]]};
+ const render=(name,view)=>{
+  const active=owners.find(o=>o.group.name.startsWith(name+'_'));
+  assert(active,'named owner exists');
+  const pose=views[view];camera.position.set(...pose[0]);camera.lookAt(...pose[1]);camera.updateMatrixWorld(true);
+  for(const owner of owners)owner.group.visible=owner===active;
+  active.dispatch(renderer,camera,0,0);renderer.render(scene,camera);
+  return active;
+ };
+ for(const name of ['old520','old1050','new1050']){for(let i=0;i<24;i++)render(name,'flight');await renderer.backend.device.queue.onSubmittedWorkDone();}
+ renderer.backend.trackTimestamp=true;
+ window.__treeProbe={ready:true,prototypeMs,authored:slots.reduce((s,a)=>s+a.length,0),errors,
+  async sample(name,view){
+   const owner=render(name,view);await renderer.backend.device.queue.onSubmittedWorkDone();
+   await renderer.resolveTimestampsAsync('render');renderer.backend.timestampQueryPool.render?.timestamps.clear();
+   const start=performance.now();
+   for(let i=0;i<12;i++)render(name,view);
+   const cpuMs=(performance.now()-start)/12;
+   await renderer.resolveTimestampsAsync('render');
+   const pool=renderer.backend.timestampQueryPool.render;
+   const gpuMs=pool?[...pool.timestamps.values()].reduce((a,b)=>a+b,0)/12:null;pool?.timestamps.clear();
+   const buffers=new Set();owner.group.traverse(o=>{if(o.geometry?.indirect)buffers.add(o.geometry.indirect)});
+   let triangles=0,instances=0,draws=0;const records=[];
+   for(const b of buffers){const values=new Uint32Array(await renderer.getArrayBufferAsync(b));for(let i=0;i<values.length;i+=5){const n=values[i+1];triangles+=values[i]*n/3;instances+=n;if(n)draws++;records.push({indices:values[i],instances:n});}}
+   assert(triangles>0,'real resident geometry is submitted');assert(!errors.length,errors.join('\n'));
+   return {name,view,cpuMs,gpuMs,triangles,instances,draws,records};
+  },
+  show:render,
+  dispose(){for(const o of owners)o.dispose();for(const t of templates)t.release();for(const a of assets)releaseNativeTreeMaterialSet(a);renderer.dispose();}
+ };
+}catch(e){window.__treeProbe={ready:false,error:e.stack,errors};}
+</script></body></html>

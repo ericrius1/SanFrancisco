@@ -289,8 +289,13 @@ function cloneToInstanced(
 ): THREE.InstancedBufferGeometry {
   const geometry = new THREE.InstancedBufferGeometry();
   if (source.index) geometry.setIndex(source.index.clone());
+  // InterleavedBufferAttribute.clone() without a shared data map deinterleaves
+  // every attribute. Besides losing the authored layout, this can exceed the
+  // WebGPU vertex-buffer limit even when the source uses a single buffer.
+  const cloneData = {};
   for (const [attributeName, attribute] of Object.entries(source.attributes)) {
-    geometry.setAttribute(attributeName, attribute.clone());
+    geometry.setAttribute(attributeName, attribute instanceof THREE.InterleavedBufferAttribute
+      ? attribute.clone(cloneData) : attribute.clone());
   }
   for (const group of source.groups) geometry.addGroup(group.start, group.count, group.materialIndex);
   // Instance data lives in storage buffers read through the visible-index

@@ -4,6 +4,7 @@
 import { floorBands, type FacadeDecorator, type Vec3 } from "../core/facade";
 import { beltCourse, cornice, windowGrid, storefront, cornerBoards, frontDoor, frontStoop, wallWithDoorway } from "./facadeKit";
 import { doorEligible } from "../core/collider";
+import { isLargeCommercial } from "./envelope";
 import { largeCommercialFacade } from "./largeCommercial";
 
 export const downtownFacade: FacadeDecorator = (e, out, rng) => {
@@ -12,8 +13,7 @@ export const downtownFacade: FacadeDecorator = (e, out, rng) => {
   // the small storefront-and-grid look, which reads as a flat window-wall at
   // this scale. "Large" = tall (height/floor count is building-wide, so every
   // face agrees) OR a long, multi-storey block face (footprint-span proxy).
-  const height = e.top - e.base;
-  if (height >= 24 || e.floors >= 7 || (e.length >= 32 && e.floors >= 4)) {
+  if (isLargeCommercial(e)) {
     largeCommercialFacade(e, out, rng);
     return;
   }

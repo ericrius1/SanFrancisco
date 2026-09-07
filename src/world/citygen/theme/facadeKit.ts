@@ -6,6 +6,7 @@ import {
   type FacadeEdge, type Vec3, PanelBuilder, pointOnWall, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
 import { MODULE_FACE_WINDOW, MODULE_FACE_WINDOW_ARCHED } from "../core/types";
+import { corniceCrown } from "./envelope";
 import { doorMetrics, doorEligible, STOOP_MAX_RISE } from "../core/collider";
 
 // ---- vector helpers ---------------------------------------------------------
@@ -256,10 +257,12 @@ export function cornice(out: PanelBuilder, e: FacadeEdge, mat: string, proj: num
   const at = (yy: number, p: number, hy: number, hx = e.length / 2 + 0.05, hz = proj) =>
     out.box(mat, [cc[0] + n3[0] * p, yy, cc[2] + n3[2] * p], [hx, hy, hz], along, UP, n3, false);
   if (style === "parapet") {
-    at(y + 0.35, proj * 0.4, 0.4, e.length / 2 + 0.08, proj * 0.7); // solid parapet band
+    const crown = corniceCrown(e, proj, true);
+    out.box(mat, crown.center, crown.half, along, UP, n3, false);
     return;
   }
-  at(y + 0.16, proj * 0.5, 0.16); // crown slab (both bracketed + tile)
+  const crown = corniceCrown(e, proj);
+  out.box(mat, crown.center, crown.half, along, UP, n3, false);
   if (style === "bracketed") {
     at(y - 0.05, proj * 0.3, 0.06, e.length / 2, proj * 0.6); // dentils
     const nB = Math.max(2, Math.round(e.length / 1.6));

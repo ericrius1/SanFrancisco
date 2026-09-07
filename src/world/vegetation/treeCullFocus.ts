@@ -12,6 +12,11 @@
 // Deliberately dependency-free: frameBody imports this from the boot chunk
 // while the vegetation runtimes stay behind their dynamic imports.
 const TREE_CULL_TETHER = 56;
+export type TreeCullFocus = { x: number; y?: number; z: number };
+
+export function copyTreeCullFocus(focus: TreeCullFocus): TreeCullFocus {
+  return { x: focus.x, z: focus.z, ...(Number.isFinite(focus.y) ? { y: focus.y } : {}) };
+}
 
 /**
  * Yaw-stable tree streaming focus: exactly `ringFocus` (the player) while the
@@ -20,13 +25,19 @@ const TREE_CULL_TETHER = 56;
  * NativeTreeForest driven per-frame from the chase camera.
  */
 export function tetherTreeCullFocus(
-  ringFocus: { x: number; z: number },
-  cullFocus: { x: number; z: number }
-): { x: number; z: number } {
+  ringFocus: TreeCullFocus,
+  cullFocus: TreeCullFocus
+): TreeCullFocus {
   const dx = cullFocus.x - ringFocus.x;
   const dz = cullFocus.z - ringFocus.z;
-  const distance = Math.hypot(dx, dz);
-  if (distance <= TREE_CULL_TETHER) return ringFocus;
+  const ringY = Number.isFinite(ringFocus.y) ? ringFocus.y : undefined;
+  const cameraY = Number.isFinite(cullFocus.y) ? cullFocus.y : undefined;
+  const dy = ringY !== undefined && cameraY !== undefined ? cameraY - ringY : 0;
+  const distance = Math.hypot(dx, dy, dz);
+  if (distance <= TREE_CULL_TETHER) {
+    return ringY === undefined && cameraY !== undefined ? { ...ringFocus, y: cameraY } : ringFocus;
+  }
   const pull = (distance - TREE_CULL_TETHER) / distance;
-  return { x: ringFocus.x + dx * pull, z: ringFocus.z + dz * pull };
+  const y = ringY !== undefined && cameraY !== undefined ? ringY + dy * pull : ringY ?? cameraY;
+  return { x: ringFocus.x + dx * pull, z: ringFocus.z + dz * pull, ...(y !== undefined ? { y } : {}) };
 }

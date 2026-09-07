@@ -24,9 +24,9 @@
 // the opaque pass, so the two systems stay visually in step. The G channel is a
 // flag byte (bit0: hide glass — the "look out a real window" hook).
 //
-// Instances are never compacted: freed ones collapse to zero size and go on a
-// free list, so population is bounded by the PEAK concurrent detail set, not by
-// travel history.
+// Live instances occupy a dense prefix. Releasing one swaps the last live
+// record into its slot and updates that record's handle, so vertex submission
+// follows current residency instead of the most detailed district ever visited.
 import * as THREE from "three/webgpu";
 import {
   float, vec3, uint, ivec2, mix, dot, normalize, smoothstep, step,
@@ -189,13 +189,14 @@ function makeGlassMaterial(fadeTex: THREE.DataTexture): THREE.MeshStandardNodeMa
 
 // ---- per-bucket instanced mesh ----------------------------------------------------
 
+type ModulePlacement = { bucket: Bucket; index: number };
+
 interface Bucket {
   mesh: THREE.Mesh;
   geo: THREE.InstancedBufferGeometry;
   capacity: number;
-  /** high-water instance count (geometry.instanceCount) */
-  used: number;
-  freeList: number[];
+  /** Dense live records; handles follow any swap on removal. */
+  placements: ModulePlacement[];
   a: THREE.InstancedBufferAttribute;
   b: THREE.InstancedBufferAttribute;
   t: THREE.InstancedBufferAttribute;
@@ -217,7 +218,7 @@ function makeBucket(kind: number, bucketId: string, material: THREE.Material, sc
     return a;
   };
   const bucket: Bucket = {
-    mesh: null as unknown as THREE.Mesh, geo, capacity: INITIAL_CAPACITY, used: 0, freeList: [],
+    mesh: null as unknown as THREE.Mesh, geo, capacity: INITIAL_CAPACITY, placements: [],
     a: mk(4), b: mk(4), t: mk(4), g: mk(3),
   };
   geo.setAttribute("aInstA", bucket.a);
@@ -293,7 +294,7 @@ export function createModuleLayer(scene: THREE.Object3D): ModuleLayer {
   // of on the first driven-up-to building.
   for (const glass of [false, true]) {
     const b = bucketFor(0, glass);
-    if (b.used === 0) { b.used = 1; b.geo.instanceCount = 1; b.freeList.push(0); }
+    b.geo.instanceCount = 1; // detached warmup only; first allocation replaces it
   }
 
   // slot allocator
@@ -311,13 +312,13 @@ export function createModuleLayer(scene: THREE.Object3D): ModuleLayer {
     fadeTex.needsUpdate = true;
   };
 
-  const takeIndex = (b: Bucket): number => {
-    const idx = b.freeList.pop();
-    if (idx !== undefined) return idx;
-    if (b.used >= b.capacity) growBucket(b);
-    const i = b.used++;
-    b.geo.instanceCount = b.used;
-    return i;
+  const takePlacement = (b: Bucket): ModulePlacement => {
+    const index = b.placements.length;
+    if (index >= b.capacity) growBucket(b);
+    const placement = { bucket: b, index };
+    b.placements.push(placement);
+    b.geo.instanceCount = b.placements.length;
+    return placement;
   };
 
   const writeInstance = (
@@ -348,17 +349,26 @@ export function createModuleLayer(scene: THREE.Object3D): ModuleLayer {
     b.g.needsUpdate = true;
   };
 
-  const releaseInstance = (b: Bucket, idx: number): void => {
-    // collapse to a zero-size module → zero-area triangles, nothing rasterizes
-    const aArr = b.a.array as Float32Array;
-    aArr[idx * 4 + 3] = 0;
-    b.a.addUpdateRange(idx * 4, 4);
-    b.a.needsUpdate = true;
-    const bArr = b.b.array as Float32Array;
-    bArr[idx * 4] = 0; bArr[idx * 4 + 1] = 0; bArr[idx * 4 + 2] = 0;
-    b.b.addUpdateRange(idx * 4, 4);
-    b.b.needsUpdate = true;
-    b.freeList.push(idx);
+  const releaseInstance = (placement: ModulePlacement): void => {
+    const b = placement.bucket;
+    const index = placement.index;
+    if (index < 0) return;
+    const last = b.placements.pop()!;
+    if (last !== placement) {
+      // Only four records move, even for a very large district. The moved
+      // building retains the same fade/flags slot and seeded lamp identity.
+      for (const attr of [b.a, b.b, b.t, b.g]) {
+        const array = attr.array as Float32Array;
+        const size = attr.itemSize;
+        array.copyWithin(index * size, last.index * size, (last.index + 1) * size);
+        attr.addUpdateRange(index * size, size);
+        attr.needsUpdate = true;
+      }
+      last.index = index;
+      b.placements[index] = last;
+    }
+    placement.index = -1;
+    b.geo.instanceCount = b.placements.length;
   };
 
   return {
@@ -374,7 +384,7 @@ export function createModuleLayer(scene: THREE.Object3D): ModuleLayer {
       if (slot < 0) return null; // slot texture full — caller falls back to baked expansion
       const zone = ZONES[opts.zone] ?? ZONES.residential;
       const jitter = rng(opts.seed, 137);
-      const placed: [Bucket, number][] = [];
+      const placed: ModulePlacement[] = [];
       const glassTint = new THREE.Color(zone.glass);
       const warm = new THREE.Color(zone.light[0]);
       const cool = new THREE.Color(zone.light[1]);
@@ -382,24 +392,24 @@ export function createModuleLayer(scene: THREE.Object3D): ModuleLayer {
       const zero = new THREE.Color(0, 0, 0);
       for (const inst of instances) {
         const tb = bucketFor(inst.module, false);
-        const ti = takeIndex(tb);
+        const tp = takePlacement(tb);
         const trimHex = MODULE_TRIM_HEX[matTable[inst.trim]] ?? MODULE_TRIM_HEX["trim.victorian"];
-        writeInstance(tb, ti, inst, opts.matrix, slot, _color.set(trimHex), zero);
-        placed.push([tb, ti]);
+        writeInstance(tb, tp.index, inst, opts.matrix, slot, _color.set(trimHex), zero);
+        placed.push(tp);
         // per-pane lit/lamp identity precomputed here (replaces the old
         // shader-side world-corner hash — same litChance/lamp mix per zone).
         // The lamp colour also carries this room's brightness draw, so the
         // shader multiplies by one shared peak and nothing else.
         const gb = bucketFor(inst.module, true);
-        const gi = takeIndex(gb);
+        const gp = takePlacement(gb);
         const lit = jitter() < zone.litChance * WINDOW_LIT_DENSITY;
         // Draw the same number of jitters either way so a pane's identity never
         // depends on its neighbours' lit/dark outcome.
         const tone = jitter(), bright = jitter();
         if (lit) lamp.copy(warm).lerp(cool, tone).multiplyScalar(windowLitBrightness(bright));
         else lamp.copy(zero);
-        writeInstance(gb, gi, inst, opts.matrix, slot, glassTint, lamp);
-        placed.push([gb, gi]);
+        writeInstance(gb, gp.index, inst, opts.matrix, slot, glassTint, lamp);
+        placed.push(gp);
       }
       liveBuildings++;
       writeSlot(slot, 0.02, 0); // born fading (the ring fades every build in)
@@ -411,7 +421,7 @@ export function createModuleLayer(scene: THREE.Object3D): ModuleLayer {
         free() {
           if (freed) return;
           freed = true;
-          for (const [b, idx] of placed) releaseInstance(b, idx);
+          for (const placement of placed) releaseInstance(placement);
           writeSlot(slot, 1, 0);
           freeSlots.push(slot);
           liveBuildings--;
@@ -422,7 +432,7 @@ export function createModuleLayer(scene: THREE.Object3D): ModuleLayer {
       let instances = 0, capacity = 0;
       for (const b of [...trimBuckets, ...glassBuckets]) {
         if (!b) continue;
-        instances += b.used - b.freeList.length;
+        instances += b.placements.length;
         capacity += b.capacity;
       }
       return { instances, capacity, buildings: liveBuildings };

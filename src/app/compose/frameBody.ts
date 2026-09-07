@@ -12,6 +12,7 @@ import {  formatInteractPrompt, localizeInteractText } from "../../core/input";
 import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "../../world/oceanBeachWaves";
 import { setSeaTime } from "../../world/heightmap";
 import { tetherTreeCullFocus } from "../../world/vegetation/treeCullFocus";
+import { WILDLANDS_CANOPY_WAKE_DISTANCE } from "../../world/wildlands/regions";
 import { renderNativeTreeForestFarCulls } from "../../world/nativeTreeForest/farCullRegistry";
 import {  SKY_TUNING } from "../../world/sky";
 import {
@@ -708,7 +709,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       // the paused orbit would pan past a frozen visibility set and grass or
       // blooms would pop out at the old frustum's edge.
       if (ctx.state.foliageOn && !worldArrival.active) {
-        core.state.wildlands?.update(player.renderPosition, camera.position, camera);
+        if (core.state.wildlands) core.state.wildlands.update(player.renderPosition, camera.position, camera);
+        else core.state.wildlandsCanopy?.update(tetherTreeCullFocus(player.renderPosition, camera.position));
       }
       applyLightFrontRamps();
       input.endFrame();
@@ -1403,6 +1405,15 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       wake();
     }
     if (
+      ctx.state.foliageOn && !worldArrival.active &&
+      core.state.wakeDeferredWildlandsCanopy &&
+      nearPrimaryWildRegion(player.position.x, player.position.z, WILDLANDS_CANOPY_WAKE_DISTANCE)
+    ) {
+      const wake = core.state.wakeDeferredWildlandsCanopy;
+      core.state.wakeDeferredWildlandsCanopy = null;
+      wake();
+    }
+    if (
       !worldArrival.active &&
       core.state.wakeDeferredWildlandsGolf &&
       (
@@ -1431,6 +1442,14 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     ) {
       const wake = core.state.wakeDeferredWildlandsGolf;
       core.state.wakeDeferredWildlandsGolf = null;
+      wake();
+    }
+    if (
+      !worldArrival.active && core.state.wakeDeferredGolf &&
+      Math.hypot(player.position.x - GOLF_XZ.x, player.position.z - GOLF_XZ.z) < 700
+    ) {
+      const wake = core.state.wakeDeferredGolf;
+      core.state.wakeDeferredGolf = null;
       wake();
     }
     // high over the city streams buildings only — no park lawns / trees uploaded.
@@ -1538,7 +1557,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       // Tree distance-culling follows the camera only once it truly leaves the
       // player (flyover/cinematics): inside the chase tether it pins to the
       // player so looking around never re-centres tree LOD/near rings.
-      core.state.wildlands?.update(player.renderPosition, camera.position, camera);
+      if (core.state.wildlands) core.state.wildlands.update(player.renderPosition, camera.position, camera);
+      else core.state.wildlandsCanopy?.update(tetherTreeCullFocus(player.renderPosition, camera.position));
       core.state.buenaVistaTrees?.update(
         tetherTreeCullFocus(player.renderPosition, camera.position)
       );

@@ -8,21 +8,20 @@
 // same NativeTreeForest runtime; layout owns only deterministic planting intent.
 
 import type * as THREE from "three/webgpu";
-import {
-  createNativeTreeForest,
-  type NativeTreeForest,
-  type NativeTreePrepareUnit
+import type {
+  NativeTreeForest,
+  NativeTreePrepareUnit
 } from "../nativeTreeForest";
 import { yieldToFrame } from "../../core/cooperativeWork";
 import { createFlowerRing, type FlowerRing } from "./flowerRing";
 import { createWildGrass, type WildGrass } from "./grassField";
-import { collectWildTrees, WILD_TREE_DESIGNS, type WildRegionId } from "./layout";
+import { createWildlandsCanopy, type WildlandsCanopy } from "./canopy";
 import type { GardenTerrain } from "../garden/layout";
 
 export { wildRegionAt, WILD_REGIONS } from "./layout";
 
 export { tetherTreeCullFocus } from "../vegetation/treeCullFocus";
-import { tetherTreeCullFocus } from "../vegetation/treeCullFocus";
+import { tetherTreeCullFocus, type TreeCullFocus } from "../vegetation/treeCullFocus";
 
 // The three wildlands layers stay separate + independently toggleable (each owns
 // its group); they only share the ground-cover infra (wind, displacers, chunked
@@ -43,7 +42,7 @@ export type Wildlands = {
   prepareVisible(prepare: NativeTreePrepareUnit): Promise<void>;
   /** Prime one boot/teleport destination without depending on the frame loop. */
   prepareAt(
-    focus: { x: number; z: number },
+    focus: TreeCullFocus,
     prepare?: NativeTreePrepareUnit,
     signal?: AbortSignal
   ): Promise<void>;
@@ -58,8 +57,8 @@ export type Wildlands = {
    * looking around never re-centres the tree rings.
    */
   update(
-    ringFocus: { x: number; z: number },
-    cullFocus?: { x: number; z: number },
+    ringFocus: TreeCullFocus,
+    cullFocus?: TreeCullFocus,
     cullCamera?: THREE.Camera
   ): void;
   /** Release all GPU resources owned by this regional foliage bundle. */
@@ -141,7 +140,8 @@ export async function prepareGroundcoverRootPipelines(
   root: THREE.Object3D,
   units: readonly THREE.Object3D[],
   prepare: NativeTreePrepareUnit,
-  registry: GroundcoverPreparationRegistry
+  registry: GroundcoverPreparationRegistry,
+  isCurrent: () => boolean = () => true,
 ): Promise<boolean> {
   const pending = units.filter((unit) => !registry.has(unit));
   if (pending.length === 0) {
@@ -164,8 +164,8 @@ export async function prepareGroundcoverRootPipelines(
     // Every input unit was non-empty when collected. Keep it locally revealable
     // while the root's master visibility remains exactly what the caller chose.
     for (const unit of pending) unit.visible = true;
-    root.visible = rootWasVisible;
-    if (parent) {
+    root.visible = isCurrent() && rootWasVisible;
+    if (parent && isCurrent()) {
       parent.add(root);
       if (parentIndex >= 0 && parentIndex < parent.children.length - 1) {
         parent.children.splice(parent.children.indexOf(root), 1);
@@ -176,35 +176,16 @@ export async function prepareGroundcoverRootPipelines(
   return true;
 }
 
-const PRIMARY_WILD_REGIONS: ReadonlySet<WildRegionId> = new Set([
-  "ggpark",
-  "presidio",
-  "marin",
-  "twinpeaks"
-]);
-
-export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusions = {}): Wildlands {
-  // Buena Vista is a separate first-approach owner because it is visible from
-  // Corona Heights while every primary Wildlands region is still distant.
-  // Keeping that canopy out of this owner prevents either side from waking the
-  // other's compiler prototypes and material sets.
-  const treeSlots = collectWildTrees(map, exclusions.trees, PRIMARY_WILD_REGIONS);
-  const trees = createNativeTreeForest(WILD_TREE_DESIGNS, treeSlots, {
-    name: "wildlands_trees",
-    chunkSize: 176,
-    // Extend only the fixed-cost silhouette annulus. Pinning the handoff avoids
-    // implicitly pushing the more expensive landscape tier out with visibility.
-    visibleDistance: 520,
-    horizonDistance: 220,
-    // Keep enough individually selected close trees beyond the landscape handoff
-    // for a stable crown silhouette. Both the near pool and chunk tier are native
-    // whole-tree batches; entry/exit hysteresis prevents boundary flicker.
-    nearRadius: 96,
-    nearExitRadius: 110,
-    // Dense wild stands put dozens of trees in a single view; undersized pools
-    // leave opaque landscape cards in personal space next to close LODs.
-    nearMax: 72
-  });
+export function createWildlands(
+  map: GardenTerrain,
+  exclusions: WildlandsExclusions = {},
+  sharedCanopy?: WildlandsCanopy,
+): Wildlands {
+  // The first distant approach already owns these trees. Groundcover borrows
+  // that exact forest instead of rebuilding its templates or taking its lifetime.
+  const canopy = sharedCanopy ?? createWildlandsCanopy(map, exclusions.trees);
+  const trees = canopy.trees;
+  let disposed = false;
   // Player-following field, placed by the same GPU ground-cover runtime as the
   // grass and paging its own baked ecology through the same frame-budget lane.
   const flowers = createFlowerRing(map, exclusions.groundcover, {
@@ -257,7 +238,7 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     const revealEpoch = groundcoverEpoch;
     unit.visible = false;
     const queued = groundcoverTail.then(async () => {
-      if (!groundcoverPreparer) return;
+      if (disposed || !groundcoverPreparer) return;
       // Several freshly completed tiles can enter the gate in one frame. The
       // first tile for a material/layout warms the pipeline; queued siblings
       // must re-check that shared registry here instead of redundantly compiling
@@ -275,10 +256,10 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
         preparedGroundcover.mark(unit);
       } finally {
         unit.visible = false;
-        if (parent) parent.add(unit);
+        if (parent && !disposed) parent.add(unit);
       }
       await yieldToFrame();
-      unit.visible = revealEpoch === groundcoverEpoch && renderableCount(unit) > 0;
+      unit.visible = !disposed && revealEpoch === groundcoverEpoch && renderableCount(unit) > 0;
     });
     let tracked: Promise<void>;
     tracked = queued.finally(() => {
@@ -323,11 +304,12 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     // gives the destination a complete far→hero surface under the cover, with
     // its blooms already placed rather than growing in after the reveal.
     await Promise.all([grass.whenCriticalReady(), flowers.whenCriticalReady()]);
+    if (disposed) throw new DOMException("Wildlands disposed", "AbortError");
     for (const root of [flowers.group, grass.group]) {
       const units = groundcoverUnits(root);
       // One detached-root compile warms every distinct layer material/layout.
       // Later field pages reuse those fixed pipelines and storage buffers.
-      if (await prepareGroundcoverRootPipelines(root, units, prepare, preparedGroundcover)) {
+      if (await prepareGroundcoverRootPipelines(root, units, prepare, preparedGroundcover, () => !disposed)) {
         await yieldToFrame();
       }
     }
@@ -393,14 +375,15 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
           await abortable(prepareCurrentGroundcover(epoch), signal);
         }
         if (signal?.aborted || epoch !== groundcoverEpoch) throw destinationSuperseded();
-        await trees.prepareAt(focus, prepare, signal);
+        await canopy.prepareAt(focus, prepare, signal);
         if (signal?.aborted || epoch !== groundcoverEpoch) throw destinationSuperseded();
       } finally {
         signal?.removeEventListener("abort", onAbort);
       }
     },
     update(ringFocus, cullFocus = ringFocus, cullCamera) {
-      trees.update(tetherTreeCullFocus(ringFocus, cullFocus));
+      if (disposed) return;
+      canopy.update(tetherTreeCullFocus(ringFocus, cullFocus));
       flowers.update(ringFocus); // rings stay centred on the player, not the camera
       grass.update(ringFocus);
       if (cullCamera) {
@@ -417,13 +400,19 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
       }
     },
     dispose() {
-      trees.dispose();
+      if (disposed) return;
+      disposed = true;
+      groundcoverEpoch++;
+      groundcoverPreparer = null;
+      if (!sharedCanopy) canopy.dispose();
+      flowers.group.removeFromParent();
+      grass.group.removeFromParent();
       flowers.dispose();
       grass.dispose();
     },
     get stats() {
       return {
-        trees: treeSlots.length,
+        trees: trees.stats.instances,
         flowers: flowers.stats.count, // live: the ring re-scatters as the player moves
         treeChunks: trees.stats.chunks
       };

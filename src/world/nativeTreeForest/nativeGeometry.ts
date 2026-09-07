@@ -3,11 +3,11 @@ import { releaseRendererAttribute } from "../../app/rendererRegistry";
 import type {
   CompiledTreeLod,
   CompiledTreeMesh,
-  CompiledTreePrototype,
   CompiledTreeStats,
   TreeBounds,
   VertexAttributeSemantic
 } from "../treeCompiler";
+import { TREE_IMPOSTOR_ELEVATIONS, TREE_IMPOSTOR_HULL_PLANES, type CompiledImpostorTree } from "./impostorBake";
 
 const ATTRIBUTE_NAMES: Record<VertexAttributeSemantic, string> = {
   position: "position",
@@ -26,6 +26,15 @@ export type NativeTreeLodGeometry = {
   triangles: number;
 };
 
+export type NativeTreeImpostor = Readonly<{
+  geometry: THREE.BufferGeometry;
+  color: THREE.DataTexture;
+  foliageOpening: number;
+  center: readonly [number, number, number];
+  size: readonly [number, number];
+  byteLength: number;
+}>;
+
 export type NativeTreeGeometryPrototype = {
   recipeName: string;
   seed: number;
@@ -35,6 +44,7 @@ export type NativeTreeGeometryPrototype = {
   /** Crown ellipsoid used only for distant beauty-pass normal shaping. */
   canopy: Readonly<{ center: readonly [number, number, number]; radii: readonly [number, number, number] }>;
   stats: CompiledTreeStats;
+  impostor: NativeTreeImpostor;
   /** Release the shared prototype buffers only when no forest can use them. */
   dispose(): void;
 };
@@ -105,9 +115,57 @@ function disposeSharedGeometry(geometry: THREE.BufferGeometry): void {
 
 /** Upload-ready geometry wrappers; the compiler skeleton can be reclaimed here. */
 export function createNativeTreeGeometryPrototype(
-  compiled: CompiledTreePrototype
+  compiled: CompiledImpostorTree
 ): NativeTreeGeometryPrototype {
   const lods = compiled.lods.map(createLodGeometry);
+  const baked = compiled.impostor;
+  const atlasTexture = (data: Uint8Array): THREE.DataTexture => {
+    const result = new THREE.DataTexture(data, baked.width, baked.height, THREE.RGBAFormat);
+    result.colorSpace = THREE.NoColorSpace;
+    result.magFilter = THREE.LinearFilter;
+    result.minFilter = THREE.LinearFilter;
+    // Frame gutters are two texels: whole-atlas mipmaps would merge unrelated
+    // capture directions. Supersampled coverage plus MSAA handles the edge.
+    result.generateMipmaps = false;
+    result.needsUpdate = true;
+    return result;
+  };
+  const hullGeometry = new THREE.BufferGeometry();
+  const count = TREE_IMPOSTOR_HULL_PLANES;
+  // All hull channels share one vertex buffer. Adding view elevations must not
+  // consume a separate binding per attribute (WebGPU defaults to eight buffers).
+  const stride = 10 + TREE_IMPOSTOR_ELEVATIONS * 2;
+  const vertexData = new Float32Array(count * stride);
+  for (let i = 0; i < count; i++) {
+    const at = i * stride;
+    const a = i / count * Math.PI * 2, b = (i + 1) / count * Math.PI * 2;
+    const determinant = Math.sin(b - a);
+    vertexData[at + 5] = 1;
+    vertexData.set([Math.sin(b) / determinant, -Math.sin(a) / determinant,
+      -Math.cos(b) / determinant, Math.cos(a) / determinant], at + 6);
+    for (let row = 0; row < TREE_IMPOSTOR_ELEVATIONS; row++) vertexData.set([
+      baked.hulls[row * count + i], baked.hulls[row * count + (i + 1) % count]
+    ], at + 10 + row * 2);
+  }
+  const interleaved = new THREE.InterleavedBuffer(vertexData, stride);
+  hullGeometry.setAttribute("position", new THREE.InterleavedBufferAttribute(interleaved, 3, 0));
+  hullGeometry.setAttribute("normal", new THREE.InterleavedBufferAttribute(interleaved, 3, 3));
+  hullGeometry.setAttribute("aHullPlanes", new THREE.InterleavedBufferAttribute(interleaved, 4, 6));
+  for (let row = 0; row < TREE_IMPOSTOR_ELEVATIONS; row++) {
+    hullGeometry.setAttribute(`aHull${row}`, new THREE.InterleavedBufferAttribute(interleaved, 2, 10 + row * 2));
+  }
+  const indices: number[] = [];
+  for (let i = 1; i < count - 1; i++) indices.push(0, i, i + 1);
+  hullGeometry.setIndex(indices);
+  const impostor: NativeTreeImpostor = {
+    geometry: hullGeometry,
+    color: atlasTexture(baked.color),
+    foliageOpening: baked.foliageOpening,
+    center: baked.center,
+    size: baked.size,
+    byteLength: baked.color.byteLength + baked.hulls.byteLength
+  };
+  applyBounds(impostor.geometry, compiled.bounds);
   const foliageBounds = compiled.lods[0]?.foliage.bounds ?? compiled.bounds;
   const canopy = Object.freeze({
     center: Object.freeze([
@@ -129,10 +187,13 @@ export function createNativeTreeGeometryPrototype(
     lods,
     bounds: compiled.bounds,
     canopy,
-    stats: compiled.stats,
+    stats: { ...compiled.stats, byteLength: compiled.stats.byteLength + impostor.byteLength },
+    impostor,
     dispose() {
       if (disposed) return;
       disposed = true;
+      impostor.color.dispose();
+      disposeSharedGeometry(impostor.geometry);
       for (const lod of lods) {
         disposeSharedGeometry(lod.branch);
         disposeSharedGeometry(lod.foliage);

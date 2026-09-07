@@ -1,6 +1,6 @@
-// Cheap building LOD geometry — a low-poly extruded prism (coloured body + roof
-// cap) with a procedural window grid + a few lit windows. The body colour rides
-// in a per-vertex `color` attribute so a WHOLE TILE of buildings shares ONE mesh
+// Merged landscape buildings preserve roof volumes, projecting bays and the
+// cornice silhouette, with filtered analytic windows instead of window modules.
+// Per-vertex body colours let a whole tile of buildings share ONE mesh
 // + ONE material (see chunkLod.ts) — the far city is a couple dozen draw calls,
 // not thousands. `appendPrism` is the shared primitive; buildBuildingLOD wraps it
 // for a single building.
@@ -15,9 +15,8 @@ import {
   WINDOW_LIT_DIM, WINDOW_LIT_EMISSIVE,
 } from "../../../config";
 import { WINDOW_GLOW_W } from "../../facade";
-import { ensureCCW, triangulate } from "../core/footprint";
-import { bodyColour } from "../render";
-import { specFor } from "../theme/archetypes";
+import { appendPrism, emptyArrays, LOD_WINDOW_STYLE_STRIDE, LOD_BASE_OFFSET, LOD_BASE_SCALE, type PrismArrays } from "./lodGeometry";
+export { appendPrism, emptyArrays, type PrismArrays, type PrismConform } from "./lodGeometry";
 import { cameraCutawayMask } from "../../../render/cameraCutaway";
 import { applyBirthFade, buildingGrowAmount } from "../../../render/materialize";
 import {
@@ -25,36 +24,16 @@ import {
   registerSharedMaterialLeakCounter,
 } from "../../../render/renderObjectRegistry";
 
-// Target window spacing; the actual grid is SNAPPED per wall (integer columns,
-// integer storeys) in appendPrism, so the shader receives UVs already in "cell"
-// units (1 unit = 1 window) and just reads fract()/floor() — no divide, and no
-// half-window is ever clipped at a wall's top or trailing edge.
-const WIN_SPACING = 2.4;   // ~metres between window centres (column target)
 // self-lit body tint — MATCHES makeWallMaterial (theme/materials.ts), both
 // carrying the exposure re-anchor factor (config.EXPOSURE_REBASE)
 const BODY_EMISSIVE = 0.3 * EXPOSURE_REBASE;
-// Window rect inside one cell (see the step() bounds below) and its area — the
+// Window rect inside one cell and its area — the
 // analytic average the grid collapses to once a cell falls under a pixel.
-const WIN_U0 = 0.22, WIN_U1 = 0.82, WIN_V0 = 0.30, WIN_V1 = 0.86;
-const WIN_AREA = (WIN_U1 - WIN_U0) * (WIN_V1 - WIN_V0);
+const WIN_U0 = 0.25, WIN_U1 = 0.75, WIN_V0 = 0.15, WIN_V1 = 0.91;
 // Authored lit fraction for the far tier, scaled by the citywide density knob.
 const LIT_FRACTION = 0.3 * WINDOW_LIT_DENSITY;
 
-// `lodVisibility` already costs one float per vertex. Pack the building's base
-// height + a stable stagger seed into that same channel so the arrival growth
-// adds zero vertex attributes/bandwidth: 0 = selectively hidden, otherwise
-// floor(value) encodes base Y and fract(value) supplies the stagger key.
-const LOD_BASE_OFFSET = 200;
-const LOD_BASE_SCALE = 16; // 6.25 cm base precision
 const LOD_BIRTH_UNSET = -1e9;
-const packLodVisibility = (baseY: number, seed: number): number => {
-  const baseCode = Math.max(
-    1,
-    Math.min(65_534, Math.round((baseY + LOD_BASE_OFFSET) * LOD_BASE_SCALE) + 1)
-  );
-  const stagger = ((((seed >>> 0) * 1664525 + 1013904223) >>> 0) + 0.5) / 4294967296;
-  return baseCode + stagger;
-};
 
 let sharedMat: THREE.MeshStandardNodeMaterial | null = null;
 
@@ -104,6 +83,13 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   const wall = float(1).sub(isRoof);
   const u = uv().x, v = uv().y;              // already in window-cell units
   const cu = fract(u), cv = fract(v);
+  const profile = tslFloor(u.div(LOD_WINDOW_STYLE_STRIDE));
+  const shaft = step(0.5, profile).sub(step(1.5, profile)).max(0);
+  const commercial = step(0.5, profile).sub(step(2.5, profile)).max(0);
+  // Match faceWindow's inset glass and the narrower Chicago shaft window.
+  // These are the common 3.4 m / 3.8 m grammar bays expressed in cell units.
+  const u0 = mix(float(WIN_U0), float(0.30), shaft), u1 = mix(float(WIN_U1), float(0.70), shaft);
+  const v0 = mix(float(WIN_V0), float(0.17), shaft), v1 = mix(float(WIN_V1), float(0.87), shaft);
   // Screen-space size of one window cell. Everything below is written against it
   // because this tier spans 150 m → 2.8 km: the same grid is a crisp rectangle on
   // the next block and a small fraction of a pixel across the bay.
@@ -112,17 +98,44 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   const halfV = dv.mul(0.5).clamp(1e-4, 0.25);
   // Pixel-wide edges instead of step(): a hard grid this small crawls badly once
   // its lit panes are bright enough to see.
-  const spanU = smoothstep(float(WIN_U0).sub(halfU), float(WIN_U0).add(halfU), cu)
-    .mul(smoothstep(float(WIN_U1).sub(halfU), float(WIN_U1).add(halfU), cu).oneMinus());
-  const spanV = smoothstep(float(WIN_V0).sub(halfV), float(WIN_V0).add(halfV), cv)
-    .mul(smoothstep(float(WIN_V1).sub(halfV), float(WIN_V1).add(halfV), cv).oneMinus());
-  const winCell = spanU.mul(spanV);
+  const spanU = smoothstep(u0.sub(halfU), u0.add(halfU), cu)
+    .mul(smoothstep(u1.sub(halfU), u1.add(halfU), cu).oneMinus());
+  const spanV = smoothstep(v0.sub(halfV), v0.add(halfV), cv)
+    .mul(smoothstep(v1.sub(halfV), v1.add(halfV), cv).oneMinus());
+  const windowRect = spanU.mul(spanV);
+  // The real faceWindow module has a 4 cm muntin cross; shaftWindow has one
+  // 6 cm vertical mullion. Keep that division analytically, including its
+  // subpixel area, so distant lit windows don't become large solid light cards.
+  const mullionHalfU = mix(float(0.006), float(0.009), shaft);
+  const mullionHalfV = float(0.006);
+  const mullionU = smoothstep(mullionHalfU.sub(halfU), mullionHalfU.add(halfU), cu.sub(0.5).abs()).oneMinus();
+  const mullionV = smoothstep(mullionHalfV.sub(halfV), mullionHalfV.add(halfV), cv.sub(v0.add(v1).mul(0.5)).abs()).oneMinus().mul(shaft.oneMinus());
+  const mullions = windowRect.mul(mullionU.oneMinus().mul(mullionV.oneMinus()).oneMinus());
+  const winCell = windowRect.sub(mullions);
+  const width = u1.sub(u0), height = v1.sub(v0);
+  const barU = mullionHalfU.mul(2), barV = mullionHalfV.mul(2).mul(shaft.oneMinus());
+  const mullionArea = barU.mul(height).add(barV.mul(width)).sub(barU.mul(barV));
+  const winArea = width.mul(height).sub(mullionArea);
+  // Painted window surrounds stay visible in the landscape tier without the
+  // close module's frame/mullion/sill boxes. Filter their area with the panes so
+  // a subpixel frame settles to a stable average instead of flickering.
+  const trimU = 0.018, trimV = 0.015;
+  const frameU = smoothstep(u0.sub(trimU).sub(halfU), u0.sub(trimU).add(halfU), cu)
+    .mul(smoothstep(u1.add(trimU).sub(halfU), u1.add(trimU).add(halfU), cu).oneMinus());
+  const frameV = smoothstep(v0.sub(trimV).sub(halfV), v0.sub(trimV).add(halfV), cv)
+    .mul(smoothstep(v1.add(trimV).sub(halfV), v1.add(trimV).add(halfV), cv).oneMinus());
+  const frameCell = frameU.mul(frameV).sub(windowRect).max(0).add(mullions);
+  const frameArea = width.add(trimU * 2).mul(height.add(trimV * 2)).sub(width.mul(height)).add(mullionArea);
   // Past ~1 cell/pixel no filter can recover the grid — dissolve to its analytic
   // average so a far district reads as an even glow, not a field of fireflies,
   // and resolves back into individual panes as you walk in.
   const resolve = smoothstep(0.4, 1.1, du.max(dv)).oneMinus();
-  const winMask = mix(float(WIN_AREA), winCell, resolve).mul(wall);
-  m.colorNode = mix(body, color(new THREE.Color(0x1b1f27)), winMask);
+  const winMask = mix(winArea, winCell, resolve).mul(wall);
+  const frameMask = mix(frameArea, frameCell, resolve).mul(wall);
+  const trim = color(new THREE.Color(0xf4efe5));
+  const painted = mix(body, trim, frameMask);
+  const glass = mix(color(new THREE.Color(0x20262b)), color(new THREE.Color(0x28323a)), commercial);
+  m.colorNode = mix(painted, glass, winMask);
   const cellId = tslFloor(u).add(tslFloor(v).mul(31.0));
   // Which panes are lit, and how brightly — a second hash so brightness doesn't
   // correlate with the lit/dark draw. Same curve as the near tiers
@@ -131,15 +144,18 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   const hb = hash(cellId.add(17.0));
   const brightness = mix(float(WINDOW_LIT_DIM), float(1), hb.mul(hb));
   const litCell = winCell.mul(litSel).mul(brightness);
-  const litAvg = float(WIN_AREA * LIT_FRACTION * WINDOW_LIT_BRIGHTNESS_MEAN);
+  const litAvg = winArea.mul(LIT_FRACTION * WINDOW_LIT_BRIGHTNESS_MEAN);
   // lit windows gate on the sky's twilight weight, same as the near facades
-  const litWin = color(new THREE.Color(0xffdca0))
+  const litWin = mix(color(new THREE.Color(0xffdca0)), color(new THREE.Color(0xeef0e6)), commercial)
     .mul(mix(litAvg, litCell, resolve).mul(wall))
     .mul(WINDOW_LIT_EMISSIVE)
     .mul(WINDOW_GLOW_W);
   // faint self-lit body tint on the SOLID wall only (not the glass) so shaded
   // façades don't read near-black — the near mesh's wall material does the same.
-  const bodyTint = body.mul(BODY_EMISSIVE).mul(float(1).sub(winMask));
+  // Negative U belongs to a solid surface and carries that material's original
+  // emissive intensity (roof .5, clay .4, trim .16), avoiding a night-time swap.
+  const surfaceEmissive = mix(float(BODY_EMISSIVE), u.negate().sub(1).mul(EXPOSURE_REBASE), step(0, u).oneMinus());
+  const bodyTint = mix(body.mul(surfaceEmissive), trim.mul(0.16 * EXPOSURE_REBASE), frameMask).mul(float(1).sub(winMask));
   m.emissiveNode = bodyTint.add(litWin);
   // M5/M6: every chunk shares this exact material. `birth` is object-scoped,
   // so a cell re-shown after a far-arrival gate can fade/grow without per-cell
@@ -148,88 +164,6 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   applyBirthFade(m, { birth });
   sharedMat = m;
   return m;
-}
-
-export interface PrismArrays { pos: number[]; nor: number[]; uvs: number[]; col: number[]; vis: number[]; idx: number[]; }
-export function emptyArrays(): PrismArrays { return { pos: [], nor: [], uvs: [], col: [], vis: [], idx: [] }; }
-
-/** sRGB hex → LINEAR rgb (THREE colour management) so the LOD's per-vertex body
- *  colour matches the near mesh, whose MeshStandardMaterial decodes the same hex
- *  to linear. Feeding raw sRGB bytes as albedo (the old path) pushed the far
- *  colour brighter/greyer than its detail twin. */
-function linRgb(hex: number): [number, number, number] {
-  const c = new THREE.Color(hex);
-  return [c.r, c.g, c.b];
-}
-
-/** Optional terrain-conform override for a merged chunk building: the windowed
- *  wall + roof are emitted from `grade` (highest ground) up, and a plain
- *  foundation skirt fills `foot` (lowest ground) → `grade`. Supplied by
- *  buildChunkLOD when it was given a live ground sampler; see render/foundation.ts.
- *  When omitted, appendPrism falls back to `spec.grade`/`spec.base` exactly as before. */
-export interface PrismConform { grade: number; foot: number; }
-
-/** Append one building's prism (walls + roof cap) into shared arrays, world space.
- *  Window UVs are emitted in CELL units, SNAPPED to an integer column/storey count
- *  per wall, so the grid fits base→top and edge→edge with no clipped half-window
- *  (the "cut-off top row" artefact). Storey count uses the archetype floor height,
- *  so the far grid lines up with the near mesh's real floors. */
-export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: PrismConform): void {
-  const poly = ensureCCW(spec.poly);
-  const n = poly.length;
-  const base = spec.base, top = spec.top;
-  // grade = highest ground under the footprint (matches core/massing). Windows are
-  // laid grade→top; foot→grade is a solid skirt so a sloped lot doesn't show a
-  // half-buried bottom row even at LOD range. `foot` is where the wall meets the
-  // ground: the live-sampled lowest ground when a `conform` override was computed
-  // from live terrain, else the spec's own host-supplied `foot` (the streaming
-  // ring stamps it), else the baked lowest `base` — so the far chunk building
-  // neither buries its uphill windows nor floats downhill.
-  const foot = conform ? conform.foot : Math.min(spec.foot ?? base, base);
-  const grade = conform
-    ? Math.min(Math.max(conform.grade, foot), top - 1.5)
-    : Math.min(Math.max(spec.grade ?? base, base), top - 1.5);
-  const lodVisibility = packLodVisibility(foot, spec.seed);
-  const [br, bg, bb] = linRgb(bodyColour(spec.seed, spec.archetype));
-  // tar-and-gravel grey roof (reads from the air/hills, not black) with a faint
-  // body tint so a block still varies. Rides the vertex colour → also self-lit
-  // via the material's bodyTint, so it stays visible in low ambient.
-  const rr = 0.28 + br * 0.10, rg = 0.27 + bg * 0.10, rb = 0.25 + bb * 0.10;
-  const floorH = specFor(spec.archetype).floorH;
-  const winFloors = Math.max(1, Math.round((top - grade) / floorH)); // storeys above grade
-  const { pos, nor, uvs, col, vis, idx } = out;
-  let v0 = pos.length / 3;
-  const pushQuad = (x0: number, z0: number, y0: number, x1: number, z1: number, y1: number, nx: number, nz: number, u1: number, v1: number): void => {
-    const c: [number, number, number, number, number][] = [
-      [x0, y0, z0, 0, 0], [x1, y0, z1, u1, 0], [x1, y1, z1, u1, v1], [x0, y1, z0, 0, v1],
-    ];
-    for (const [px, py, pz, uu, vv] of c) { pos.push(px, py, pz); nor.push(nx, 0, nz); uvs.push(uu, vv); col.push(br, bg, bb); vis.push(lodVisibility); }
-    // Outward winding must agree with (nx, nz). The previous inward order only
-    // worked because the LOD material rendered both sides, exposing its interior.
-    idx.push(v0, v0 + 2, v0 + 1, v0, v0 + 3, v0 + 2);
-    v0 += 4;
-  };
-
-  for (let e = 0; e < n; e++) {
-    const [x0, z0] = poly[e];
-    const [x1, z1] = poly[(e + 1) % n];
-    const ex = x1 - x0, ez = z1 - z0;
-    const len = Math.hypot(ex, ez) || 1e-3;
-    const nx = ez / len, nz = -ex / len; // outward (CCW)
-    const nCols = Math.max(1, Math.round(len / WIN_SPACING)); // snap → whole windows
-    // solid skirt below grade (v held at 0 → the shader draws no window band):
-    // foundation from the lowest ground `foot` up to `grade`, so the far building
-    // fills a sloped lot instead of floating on the downhill side.
-    if (grade > foot + 0.05) pushQuad(x0, z0, foot, x1, z1, grade, nx, nz, nCols, 0);
-    // windowed wall from grade up to the roof
-    pushQuad(x0, z0, grade, x1, z1, top, nx, nz, nCols, winFloors);
-  }
-  const tris = triangulate(poly);
-  const roofStart = pos.length / 3;
-  for (const [px, pz] of poly) { pos.push(px, top, pz); nor.push(0, 1, 0); uvs.push(0, 0); col.push(rr, rg, rb); vis.push(lodVisibility); }
-  // Footprints are CCW in XZ, which is downward-facing in Three's X/Y/Z basis;
-  // reverse each cap triangle so its geometric front faces +Y like its normal.
-  for (let t = 0; t + 2 < tris.length; t += 3) idx.push(roofStart + tris[t], roofStart + tris[t + 2], roofStart + tris[t + 1]);
 }
 
 /** Build a THREE geometry from accumulated arrays sharing the LOD material. */

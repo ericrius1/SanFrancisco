@@ -41,7 +41,8 @@ const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 // Live-tunable streaming params (CITYGEN_TUNING, "/" panel). Read fresh each scan.
 const CT = CITYGEN_TUNING.values;
 const DETAIL_EXIT_MARGIN = 25; // detail hands back to the chunk prism this far past detailRadius
-// detail MESH builds per scan — buildBuilding() is the expensive synchronous call here.
+// Detail requests per scan. The worker generates grammar; scene assembly
+// and GPU uploads still consume the main-thread streaming budget.
 // Adaptive on frame headroom (gauged off dt, the delta update() was just called with) so
 // rounding a corner into a dense block backfills faster instead of visibly sharpening one
 // building at a time, but only triples the worst-case per-scan cost when the frame can
@@ -49,8 +50,8 @@ const DETAIL_EXIT_MARGIN = 25; // detail hands back to the chunk prism this far 
 const DETAIL_BUDGET_FAST = 3; // dt < 1/50s (running >50fps): plenty of headroom
 const DETAIL_BUDGET_MED = 2;  // dt < 1/30s (running >30fps): some headroom
 const DETAIL_BUDGET_SLOW = 1; // else: frame is tight, stay conservative
-// The grammar worker is deliberately single-threaded and one building can take
-// 30-100 ms. Keep scheduler preparation, queued work, worker generation and
+// The grammar worker is deliberately single-threaded. Keep scheduler
+// preparation, queued work, worker generation and
 // main-thread assembly under one bounded reservation set. Only ONE request is
 // ever posted into the worker's inaccessible FIFO; the other prepared requests
 // stay in a nearest-current-first main-thread queue, where a relocation can drop
@@ -928,7 +929,6 @@ export async function createCityGenRing(
   // NEVER materialize this frame (they'd spawn around/inside the player = wedge);
   // the coll job defers with "again" until the player clears the lot.
   const lastPlayer = new THREE.Vector3();
-  let speedEma = 0; // smoothed player speed (m/s) — gates detail reach while flying
   const playerInsideBB = (e: Entry, margin: number) =>
     lastPlayer.x > e.bb.minx - margin && lastPlayer.x < e.bb.maxx + margin &&
     lastPlayer.z > e.bb.minz - margin && lastPlayer.z < e.bb.maxz + margin &&
@@ -1906,13 +1906,6 @@ export async function createCityGenRing(
         pendingCells.clear();
         accum = SCAN_EVERY;
       }
-      // Smoothed player speed (m/s) throttles only NEW detail admission below.
-      // Existing detail remains at the fixed authored quality/radius, so speeding
-      // up cannot dissolve a district and slowing down cannot rebuild-wave it.
-      if (dt > 1e-4) {
-        const inst = lastPlayer.distanceTo(playerPos) / dt;
-        if (inst < 200) speedEma += (inst - speedEma) * Math.min(1, dt * 2.5);
-      }
       lastPlayer.copy(playerPos); // read by queued coll jobs (anti-wedge) + stale-build check
       // per-frame: interior gate + chunk merging
       const previousInside = insideBuilding;
@@ -1958,11 +1951,11 @@ export async function createCityGenRing(
       // this fixes close architecture without expanding the whole 700 m tier.
       const detailCoreR = Math.min(CT.detailCoreRadius, detailR);
       const detailCoreR2 = detailCoreR * detailCoreR;
-      // Fast traversal can still avoid starting work that will be passed before
-      // it finishes. This affects candidates only; holders use detailR/detailExit.
-      const speedT = Math.min(1, Math.max(0, (speedEma - 18) / 22));
-      const admissionFloor = Math.min(160, detailR);
-      const admissionR = detailR * (1 - speedT) + admissionFloor * speedT;
+      // Flight needs the same visual eligibility as walking. Queue size,
+      // worker serialization, facade cost and maxDetail already bound work;
+      // contracting to 160 m at speed made fresh blocks refine underneath the
+      // player while previously visited detail remained visible behind them.
+      const admissionR = detailR;
       const admissionR2 = admissionR * admissionR;
       lastAdmissionRadius = admissionR;
       lastDetailCoreRadius = detailCoreR;

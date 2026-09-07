@@ -1,6 +1,7 @@
 # trim railway upload (BadRecordMac on large tarballs)
 /data/
 /feature-research/
+/output/
 /*.png
 # iOS companion sources — not needed by the server build
 /ios/

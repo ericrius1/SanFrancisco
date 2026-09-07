@@ -4,6 +4,11 @@
 
 import { BUENA_VISTA_REGION } from "../buenaVista";
 
+export const WILDLANDS_CANOPY_VISIBLE_DISTANCE = 1050;
+// Start the optional canopy while still outside its visible edge; the compact
+// distant tier can prepare during the approach without waking grass/gameplay.
+export const WILDLANDS_CANOPY_WAKE_DISTANCE = WILDLANDS_CANOPY_VISIBLE_DISTANCE + 250;
+
 export type WildRegionId = "ggpark" | "presidio" | "marin" | "twinpeaks" | "buenavista";
 
 export type WildRegion = {

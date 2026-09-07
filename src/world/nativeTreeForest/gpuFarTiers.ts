@@ -1,17 +1,9 @@
-// GPU far-tier renderer for NativeTreeForest — the landscape + horizon silhouette
-// grades, moved off per-chunk instanced draws onto the shared GPU indirect core
-// (../../render/gpuIndirect). One arena per design streams chunk root/yaw from the
-// host as residency pages in; one per-design cull compute frustum-tests every live
-// slot, picks landscape vs horizon by a hash-dithered distance band, and appends
-// survivors into that tier's indirect draw. Far draws collapse from
-// (resident chunks × designs × 2 grades × 2 meshes) to a FIXED
-// (designs × 2 tiers × 2 meshes), and the per-chunk rebin sort / LOD-transition
-// fade batches / per-residency attribute rebuilds all disappear.
-//
-// The near close pool (canopy/grove) and CPU chunk residency stay in index.ts;
-// this module owns only the far arenas, indirect meshes, cull passes and the
-// per-frame dispatch registry. WebGPU-only. Foliage never casts/receives shadows:
-// this module sets no shadow state (the indirect meshes default castShadow=false).
+// Shared GPU indirect trees: per-design arenas feed landscape and horizon
+// branch/foliage meshes, plus a capture-shaped whole-tree impostor beyond 420m.
+// CPU chunks own residency; compute picks exactly one representation per tree.
+// Far draws stay fixed at five per design regardless of resident chunk count.
+// All paths use the same compact root/yaw planes and visible-index indirection.
+// WebGPU only. Foliage never casts or receives shadows.
 
 import * as THREE from "three/webgpu";
 import { tracer } from "../../core/hitchTracer";
@@ -38,6 +30,8 @@ import {
 import type { NativeTreeMaterialAssets } from "../vegetation/nativeTreeAssets";
 import type { NativeTreeStyle } from "../vegetation/nativeTreeRecipes";
 import { NATIVE_TREE_LOD_TRANSITION_WIDTH } from "./lodTransition";
+import type { NativeTreeImpostor } from "./nativeGeometry";
+import { createTreeImpostorMaterial } from "./impostorMaterial";
 
 // Re-exported so index.ts keeps one import site; the registry itself lives in a
 // dependency-light module so frameBody can drive it without bundling this graph.
@@ -61,14 +55,10 @@ const FAR_CUTOFF_DITHER = 28;
 // allocator can page churning chunks without wedging on non-contiguous holes.
 const ARENA_HEADROOM = 1.3;
 const ARENA_MIN_CAPACITY = 64;
-// Audited footprint: the whole primary Wildlands forest is ≤15.6k authored trees
-// → ~29.7k arena slots → ~1.4 MB device (48 B/slot: one 2×vec4 arena + four
-// visible-index uints), and the per-frame full-capacity cull reads ~0.5 MB. That
-// is why the cull dispatches `capacity` with no live-count plumbing: a
-// high-water bound would buy nothing and the range allocator's `used` is NOT a
-// safe bound (first-fit + coalescing leaves live ranges above it). This ceiling
-// only exists so an order-of-magnitude denser forest surfaces as a warning
-// instead of a silent ~13 MB arena.
+// One slot costs 52B: two vec4 transform planes and five visible-index uints.
+// The regional authored total remains the allocation bound; expansion beyond
+// regional forests needs resident pages rather than a whole-world allocation.
+// This warning exposes that boundary without silently dropping live trees.
 const ARENA_CAPACITY_WARN = 262_144;
 
 function ceilPow2(value: number): number {
@@ -91,7 +81,7 @@ export type FarInstanceInput = Readonly<{
 /** Opaque token identifying one chunk-design's contiguous arena range. */
 export type FarChunkHandle = Readonly<{ design: number; base: number; count: number }>;
 
-/** What one design contributes: its two far LOD geometries, style and canopy. */
+/** What one design contributes: its far LOD geometries and baked impostor, style and canopy. */
 export type NativeTreeFarDesign = Readonly<{
   /** Index into the forest's designs array — the routing key for admit/release. */
   design: number;
@@ -99,6 +89,7 @@ export type NativeTreeFarDesign = Readonly<{
   landscapeFoliage: THREE.BufferGeometry;
   horizonBranch: THREE.BufferGeometry;
   horizonFoliage: THREE.BufferGeometry;
+  impostor: NativeTreeImpostor;
   style: NativeTreeStyle;
   assets: NativeTreeMaterialAssets;
   canopyCenter: readonly [number, number, number];
@@ -116,6 +107,8 @@ export type NativeTreeFarTiersOptions = Readonly<{
   horizonDistance: number;
   /** Beyond this (dithered) every instance extinguishes. */
   visibleDistance: number;
+  /** Whole-tree impostor starts at this 3D render-camera distance (default 420m). */
+  impostorDistance?: number;
   /**
    * Inside this radius, far instances that the near pool did not take over use
    * the smaller horizon silhouette instead of landscape's oversized opaque
@@ -140,7 +133,7 @@ export type NativeTreeGpuFarTiers = Readonly<{
   dispatch(renderer: THREE.WebGPURenderer, camera: THREE.Camera, focusX: number, focusZ: number): void;
   /** Compile the (fixed) far pipelines once, before reveal. */
   prepare(prepareObject: (unit: THREE.Object3D) => Promise<void>): Promise<void>;
-  /** Fixed far draw count = designs × 2 tiers × 2 meshes. */
+  /** Fixed far draw count = designs × 5. */
   readonly farDraws: number;
   readonly designCount: number;
   dispose(): void;
@@ -152,6 +145,7 @@ type DesignTier = {
   allocator: RangeAllocator;
   visibles: VisibleBuffer[];
   materials: NativeTreeIndirectFarMaterials;
+  impostorMaterial: THREE.Material;
   rootHost: Float32Array;
   yawHost: Float32Array;
   capacity: number;
@@ -184,8 +178,13 @@ export function createNativeTreeGpuFarTiers(
   const cullCamera: CullCamera = createCullCamera();
   const focus = new THREE.Vector2(1e9, 1e9);
   const focusU = uniform(focus);
+  const cameraPosition = new THREE.Vector3();
+  const cameraPositionU = uniform(cameraPosition);
+  // A very large finite distance also gives probes a same-device control.
+  const impostorDistance = Number.isFinite(options.impostorDistance ?? 420)
+    ? Math.max(1, options.impostorDistance ?? 420) : 1e9;
 
-  // Pass 1: per-design arena + visible buffers + materials. Every design's four
+  // Pass 1: per-design arena + visible buffers + materials. Every design's five
   // records land in ONE shared indirect draw set (pass 2) so a single drawReset
   // zeroes the whole forest's far counts each frame.
   const tiers = new Map<number, DesignTier>();
@@ -195,7 +194,7 @@ export function createNativeTreeGpuFarTiers(
     if (capacity > ARENA_CAPACITY_WARN) {
       console.warn(
         `[native trees:${options.name}] far arena for design ${design.design} is ${capacity} slots ` +
-        `(${((capacity * 48) / 1e6).toFixed(1)} MB) from ${design.total} authored trees — ` +
+        `(${((capacity * 52) / 1e6).toFixed(1)} MB) from ${design.total} authored trees — ` +
         `revisit the arena sizing`
       );
     }
@@ -207,7 +206,8 @@ export function createNativeTreeGpuFarTiers(
       createVisibleBuffer(capacity), // 0 branch landscape
       createVisibleBuffer(capacity), // 1 foliage landscape
       createVisibleBuffer(capacity), // 2 branch horizon
-      createVisibleBuffer(capacity) //  3 foliage horizon
+      createVisibleBuffer(capacity), // 3 foliage horizon
+      createVisibleBuffer(capacity) // 4 whole-tree impostor
     ];
     const materials = createNativeTreeIndirectFarMaterials(
       design.style,
@@ -222,12 +222,16 @@ export function createNativeTreeGpuFarTiers(
       design.canopyCenter,
       design.canopyRadii
     );
+    const impostorMaterial = createTreeImpostorMaterial(design.style, design.impostor, {
+      root: arena.read(ROOT), yaw: arena.read(YAW), visibleIndices: visibles[4].read
+    });
     tiers.set(design.design, {
       design: design.design,
       arena,
       allocator,
       visibles,
       materials,
+      impostorMaterial,
       rootHost: arena.hostArray(ROOT),
       yawHost: arena.hostArray(YAW),
       capacity
@@ -236,23 +240,26 @@ export function createNativeTreeGpuFarTiers(
       { geometry: design.landscapeBranch, material: materials.branch.landscape, capacity, visible: visibles[0], name: `${options.name}_${design.design}_branch_landscape` },
       { geometry: design.landscapeFoliage, material: materials.foliage.landscape, capacity, visible: visibles[1], name: `${options.name}_${design.design}_foliage_landscape` },
       { geometry: design.horizonBranch, material: materials.branch.horizon, capacity, visible: visibles[2], name: `${options.name}_${design.design}_branch_horizon` },
-      { geometry: design.horizonFoliage, material: materials.foliage.horizon, capacity, visible: visibles[3], name: `${options.name}_${design.design}_foliage_horizon` }
+      { geometry: design.horizonFoliage, material: materials.foliage.horizon, capacity, visible: visibles[3], name: `${options.name}_${design.design}_foliage_horizon` },
+      { geometry: design.impostor.geometry, material: impostorMaterial, capacity, visible: visibles[4], name: `${options.name}_${design.design}_impostor` }
     );
   }
 
   const drawSet: IndirectDrawSet = createIndirectDrawSet(entries, `${options.name}_far`);
   for (const record of drawSet.records) group.add(record.mesh);
 
-  // Pass 2: per-design cull. Reads root/yaw once, rejects hidden/free slots
-  // (scale 0), then inside the frustum branch picks a tier by a hash-dithered
-  // distance band and appends to that tier's branch + foliage records.
+  // Pass 2: read roots once, reject hidden/free slots and frustum misses, then
+  // append one representation. Render-camera distance picks the impostor even
+  // on high flyovers; focus XZ continues to control regional residency and the
+  // close landscape/horizon bands.
   const designCulls: N[] = [];
   const cullOwners: DesignTier[] = [];
   designs.forEach((design, designIndex) => {
     const tier = tiers.get(design.design);
     if (!tier) return;
-    const base = designIndex * 4;
-    const [lBranch, lFoliage, hBranch, hFoliage] = drawSet.records.slice(base, base + 4) as [
+    const base = designIndex * 5;
+    const [lBranch, lFoliage, hBranch, hFoliage, impostor] = drawSet.records.slice(base, base + 5) as [
+      IndirectDrawRecord,
       IndirectDrawRecord,
       IndirectDrawRecord,
       IndirectDrawRecord,
@@ -291,7 +298,13 @@ export function createNativeTreeGpuFarTiers(
             If(dist.lessThan(farAt), () => {
               // Near-pool overflow in personal space: horizon cards are smaller
               // than landscape's opaque triangles (see nearCardSuppressDistance).
-              If(dist.lessThan(float(nearCardSuppress)), () => {
+              const cameraDistance = center.sub(cameraPositionU as N).length();
+              const impostorAt = float(impostorDistance).add(
+                hashUnit(gx, gz, 0x4f1b).sub(0.5).mul(NATIVE_TREE_LOD_TRANSITION_WIDTH)
+              );
+              If(cameraDistance.greaterThan(impostorAt), () => {
+                impostor.append(idx);
+              }).ElseIf(dist.lessThan(float(nearCardSuppress)), () => {
                 hBranch.append(idx);
                 hFoliage.append(idx);
               }).ElseIf(dist.lessThan(horizonAt), () => {
@@ -403,6 +416,7 @@ export function createNativeTreeGpuFarTiers(
       parked = false;
       group.visible = true;
       const cameraChanged = cullCamera.update(camera);
+      camera.getWorldPosition(cameraPosition);
       if (!cullDirty && !cameraChanged && focus.x === focusX && focus.y === focusZ) return;
       if (cullDirty) {
         // Reset every draw, but dispatch only designs with allocated instances.
@@ -429,6 +443,7 @@ export function createNativeTreeGpuFarTiers(
       drawSet.dispose();
       for (const tier of tiers.values()) {
         tier.materials.dispose();
+        tier.impostorMaterial.dispose();
         for (const visible of tier.visibles) visible.dispose();
         tier.arena.dispose();
       }

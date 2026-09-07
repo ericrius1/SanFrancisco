@@ -101,18 +101,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     setVisible: (visible: boolean, focus: { x: number; z: number }) => void;
     update: (pos: THREE.Vector3, camera?: THREE.Camera) => void;
   } | null,
-    wildlands: null as {
-    groups: THREE.Group[];
-    ready: Promise<void>;
-    flowers: { refresh: () => void };
-    grass: { refresh: () => void };
-    prepareAt: (
-      focus: { x: number; z: number },
-      prepare?: (unit: THREE.Object3D) => Promise<void>,
-      signal?: AbortSignal
-    ) => Promise<void>;
-    update: (pos: THREE.Vector3, cam: THREE.Vector3, cullCamera?: THREE.Camera) => void;
-  } | null,
+    wildlands: null as import("../../world/wildlands").Wildlands | null,
+    wildlandsCanopy: null as import("../../world/wildlands/canopy").WildlandsCanopy | null,
     buenaVistaTrees: null as {
     group: THREE.Group;
     ready: Promise<void>;
@@ -157,6 +147,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     goldenGateTennis: null as (GoldenGateTennisSite | null),
     wakeDeferredGarden: null as ((() => void) | null),
     wakeDeferredBuenaVistaTrees: null as ((() => void) | null),
+    wakeDeferredWildlandsCanopy: null as ((() => void) | null),
+    wakeDeferredGolf: null as ((() => void) | null),
     wakeDeferredWildlandsGolf: null as ((() => void) | null),
     coronaHeights: null as (CoronaHeightsPark | null),
     missionDolores: null as (MissionDoloresMuseum | null),
@@ -1012,6 +1004,7 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     ctx.state.foliageOn = visible;
     state.garden?.setVisible(visible, player.position);
     if (state.wildlands) for (const g of state.wildlands.groups) g.visible = visible;
+    if (state.wildlandsCanopy) state.wildlandsCanopy.trees.group.visible = visible;
     if (state.buenaVistaTrees) state.buenaVistaTrees.group.visible = visible;
     state.goldenGateTennis?.setFoliageVisible(visible);
     ctx.late.teaGarden!.setFoliageVisible(visible);

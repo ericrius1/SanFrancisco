@@ -76,6 +76,13 @@ for (let seed = 1; seed <= 256; seed++) {
   const cap = roofPanels.find((p) => p.indices.length === 6);
   check(Boolean(bulkhead), `seed ${seed}: missing closed five-face bulkhead`);
   check(Boolean(cap), `seed ${seed}: missing roof cap`);
+  if (cap) {
+    for (let i = 0; i < cap.indices.length; i += 3) {
+      const [a, b, c] = cap.indices.slice(i, i + 3).map(v => cap.positions.slice(v * 3, v * 3 + 3));
+      const crossY = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+      check(crossY > 0, `seed ${seed}: roof cap geometric front must face +Y, matching its normal`);
+    }
+  }
   if (bulkhead) {
     const normals = faceNormals(bulkhead);
     check(hasNormal(normals, [0, 0, -1]), `seed ${seed}: bulkhead back is open`);
@@ -99,4 +106,4 @@ if (failures.length) {
   console.error(JSON.stringify({ ok: false, audited, failures: failures.slice(0, 30) }, null, 2));
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, audited, checks: ["closed vertical sides", "no coplanar bottoms", "roof cap retained"] }, null, 2));
+console.log(JSON.stringify({ ok: true, audited, checks: ["closed vertical sides", "no coplanar bottoms", "roof cap retained", "roof winding faces the sky"] }, null, 2));
