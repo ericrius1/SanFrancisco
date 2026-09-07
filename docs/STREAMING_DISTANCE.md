@@ -101,9 +101,9 @@ Keep Three.js's WebGPU renderer for now. This implementation already uses
 custom GPU compute culling, storage buffers, indirect instance counts, and
 TSL materials. These measurements do not justify replacing the renderer.
 
-The next scale boundary is data residency: forest GPU arenas are still sized
-from the authored population, and city/vegetation metadata still describes
-the whole local region. Larger coverage needs spatially tiled metadata and
+The next scale boundary is source-data residency: city/vegetation metadata still
+describes the whole local region. The follow-up below replaces the authored-size
+GPU arenas with resident pages. Larger coverage still needs spatially tiled metadata and
 placements, stable global feature IDs, bounded resident GPU pages, cancellation
 of obsolete tile requests, and an origin/coordinate strategy. Generate/cache
 tree captures and building envelopes as tile pipeline assets where practical.
@@ -112,3 +112,48 @@ Measure tile IO, CPU assembly, GPU uploads, pipeline preparation, memory, and
 actual submitted frames separately. Consider direct WebGPU work only where a
 measured Three.js limitation remains after that restructuring. A wholesale
 renderer rewrite would not solve global data residency or request scheduling.
+
+## Follow-up: resident GPU pages and local chunk lookup
+
+Far-tree storage now allocates pages of at most 4,096 slots as chunks arrive.
+Large chunks can span pages; empty pages release their buffers and draws.
+Compaction keeps each page's live records in a dense prefix, preserves near-tree
+takeover identities, and sets compute dispatch to the live count. New pages
+warm before becoming visible. Retired queued pages skip compilation, while an
+active compile finishes before its resources are freed. Arrival preparation
+waits for the current pages rather than trusting a forest-wide readiness flag.
+
+Chunk selection now queries a sparse grid, retaining the original exact edge
+distance and stable nearest-first ordering. Query bounds include actual crown
+radii and descriptor offsets; distant authored chunks no longer add work to
+every residency refresh.
+
+Verified with `native-tree-dense-slots-test.mjs`,
+`native-tree-residency-index-test.mjs`, `native-tree-pages-probe.mjs`, and the
+full-world flight probe:
+
+- An authored count of ten million allocates zero far storage before admission.
+  Admitting 5,500 actual instances uses two pages / 8,192 slots / 426,184 bytes
+  of instance, visibility, and indirect storage. Prototypes and textures are
+  separate. Releasing all instances returns this storage to zero.
+- Two hundred allocation/release cycles retain survivor identities and capacity.
+  Near hide/restore still addresses the correct tree after compaction; stale
+  handles cannot affect reused slots. Retirement during warmup cannot resurrect
+  a page or compile an obsolete queued page.
+- A local query with 20,000 distant descriptors examines none of them and makes
+  fewer than 100 sparse lookups. Boundary, negative-coordinate, offset-crown,
+  clear/reuse, and full-scan equivalence checks pass.
+- The real park flight uses three pages and 2,858 live
+  cull slots. It examines 71 of 407 authored descriptors, selects 53 chunks,
+  and submits the same 7,774 far-tree triangles as the previous implementation.
+  Clean boot, distant canopy, descent texture loading and moving city detail
+  checks pass without browser/GPU errors.
+
+This bounds GPU allocation by resident chunks and their density, not by world
+extent. It does not yet tile source placements or lazily compile prototypes
+per region. Pages also trade some draw/compilation overhead for smaller buffers;
+these changes alone are not an overall FPS guarantee. In a separate matched
+3,500-tree fixture, four alternating samples gave median render GPU times of
+0.756 ms for the previous authored-size arena and 0.616 ms for 4,096-slot pages.
+Median compute time was 0.059 versus 0.028 ms. These small local measurements
+are diagnostic, not a device-wide performance claim.

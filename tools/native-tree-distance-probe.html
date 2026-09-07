@@ -34,12 +34,13 @@ try {
  const prototypeMs=performance.now()-started;
  for(const [name,visibleDistance,impostorDistance] of [['old520',520,1e6],['old1050',1050,1e6],['new1050',1050,420]]){
   const far=createNativeTreeGpuFarTiers(designs,{name,horizonDistance:220,visibleDistance,impostorDistance,nearCardSuppressDistance:90});
+  for(let i=0;i<slots.length;i++)assert(far.admitChunk(i,slots[i]),'all authored fixture slots fit');
   // Indirect geometry cloning must retain the source's one interleaved buffer.
   // This fixture has more than eight attributes: deinterleaving them exceeded
   // the WebGPU vertex-buffer limit despite the original hull using one binding.
   for(const design of designs){
    const source=design.impostor.geometry;
-   const cloned=far.group.getObjectByName(`${name}_${design.design}_impostor`)?.geometry;
+   let cloned; far.group.traverse(o=>{if(o.name.endsWith(`_${design.design}_impostor`))cloned=o.geometry;});
    const channels=Object.entries(source.attributes);
    assert(channels.length>8,'hull fixture exercises the vertex-buffer limit');
    assert(cloned,'impostor indirect draw exists');
@@ -54,7 +55,6 @@ try {
    }
    assert(buffers.size===1,'all cloned hull attributes share one backing buffer');
   }
-  for(let i=0;i<slots.length;i++)assert(far.admitChunk(i,slots[i]),'all authored fixture slots fit');
   owners.push(far);scene.add(far.group);far.group.visible=false;
  }
  const views={flight:[[0,250,0],[600,15,-600]],street:[[0,20,0],[700,15,-600]],overhead:[[0,800,0],[1,0,-1]]};

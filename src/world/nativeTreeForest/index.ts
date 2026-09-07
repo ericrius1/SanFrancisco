@@ -37,6 +37,7 @@ import {
 } from "./lodTransition";
 import { growTemplate, type GrownTemplate, type NativeTreeDesignSpec } from "./templates";
 import { nativeTreeNearDistanceSquared, nativeTreeNearFocusMovementSquared } from "./nearDistance";
+import { NativeTreeResidencyIndex } from "./residencyIndex";
 import type { TreeCullFocus } from "../vegetation/treeCullFocus";
 import {
   createNativeTreeGpuFarTiers,
@@ -123,8 +124,8 @@ export type NativeTreeForest = {
    * of after the tens of seconds it takes to walk every design's canopy, grove
    * and branch pipeline through the background compile window.
    *
-   * Idempotent, and shares the `farPrepared` latch with `prepareVisible`, so a
-   * later full prepare skips the work rather than recompiling it.
+   * Idempotent per resident page. Later arrivals also wait for newly admitted
+   * pages; already prepared pages keep their existing pipelines.
    */
   prepareFarTiers(prepare: NativeTreePrepareUnit): Promise<void>;
   dispose(): void;
@@ -138,6 +139,8 @@ export type NativeTreeForest = {
     prototypeBytes: number;
     instanceBytes: number;
     nearActive(): number;
+    farResidency(): ReturnType<NativeTreeGpuFarTiers["residencyStats"]> | null;
+    residencyLookup: { lookups: number; examined: number; matched: number };
   };
 };
 
@@ -631,12 +634,14 @@ export function createNativeTreeForest(
     designs: 0,
     instances: 0,
     chunks: 0,
-    draws: 0,
+    get draws() { return (farTiers?.farDraws ?? 0) + nearPools.size * 4; },
     farTriangles: 0,
     horizonTriangles: 0,
     prototypeBytes: 0,
     instanceBytes: 0,
-    nearActive: () => active.size
+    nearActive: () => active.size,
+    farResidency: () => farTiers?.residencyStats() ?? null,
+    residencyLookup: { lookups: 0, examined: 0, matched: 0 }
   };
 
   const chunkSlots = new Map<string, Slot[]>();
@@ -671,8 +676,9 @@ export function createNativeTreeForest(
   const chunks: Chunk[] = [];
   const chunkDescriptors: ChunkDescriptor[] = [];
   const descriptorsByKey = new Map<string, ChunkDescriptor>();
+  const residencyIndex = new NativeTreeResidencyIndex<ChunkDescriptor>(chunkSize);
   const usedDesigns = new Set<number>();
-  // Authored instance count per design (GPU far arena sizing).
+  // Authored counts only bound the page size of tiny forests.
   const designTotals = new Map<number, number>();
   const allNearSlots: { slot: Slot; chunk: Chunk }[] = [];
   const nearPools = new Map<number, NearPool>();
@@ -696,8 +702,6 @@ export function createNativeTreeForest(
   // GPU far-tier path state (built in `ready`, driven from frameBody per frame).
   let farTiers: NativeTreeGpuFarTiers | null = null;
   let unregisterFarCull: (() => void) | null = null;
-  let farPrepared = false;
-  let farPreparation: Promise<void> | null = null;
 
   function ensureNearMaterials(design: number): Promise<void> {
     if (disposed || nearMaterials[design] || nearLoadFailures.has(design)) {
@@ -1205,10 +1209,9 @@ export function createNativeTreeForest(
 
   async function materializeRelevantChunks(epoch: number, x: number, z: number): Promise<void> {
     if (!descriptorsInitialized || !Number.isFinite(x) || !Number.isFinite(z)) return;
-    const relevant = chunkDescriptors
-      .filter((descriptor) => descriptorEdgeDistance(descriptor, x, z) < prefetchDistance)
-      .sort((a, b) => descriptorEdgeDistance(a, x, z) - descriptorEdgeDistance(b, x, z));
-    for (const descriptor of relevant) {
+    const relevant = residencyIndex.collect(x, z, prefetchDistance);
+    stats.residencyLookup = { lookups: relevant.lookups, examined: relevant.examined, matched: relevant.candidates.length };
+    for (const { descriptor } of relevant.candidates) {
       if (disposed || epoch !== residencyEpoch) return;
       if (descriptor.chunk) {
         descriptor.chunk.retireRequested = false;
@@ -1688,27 +1691,17 @@ export function createNativeTreeForest(
     rebin(1e9, 1e9, true);
   }
 
-  async function prepareFarOnce(): Promise<void> {
-    if (!GPU_FAR_TIERS || !farTiers || farPrepared || disposed) return;
-    if (!farPreparation) {
-      const owner = farTiers;
-      farPreparation = owner.prepare(prepareObject).then(() => {
-        if (!disposed && farTiers === owner) farPrepared = true;
-      }).finally(() => {
-        farPreparation = null;
-      });
-    }
-    // Concurrent callers share readiness, including a rejection. An unsuccessful
-    // compile never publishes a ready latch, so the next approach can retry.
-    await farPreparation;
+  async function prepareFarPages(): Promise<void> {
+    if (!GPU_FAR_TIERS || !farTiers || disposed) return;
+    // The manager coalesces each page's preparation. A forest-wide "prepared"
+    // flag would incorrectly skip pages created after an earlier arrival.
+    await farTiers.prepare(prepareObject);
   }
 
   async function prepareWantedUnits(expectedResidencyEpoch?: number): Promise<void> {
     if (!prepareUnit || disposed) return;
-    // GPU far path: the far tier is a fixed, always-resident set of per-design
-    // indirect meshes (no per-chunk far render objects). Compile those five
-    // pipelines once, detached, so the first reveal never stalls on them.
-    await prepareFarOnce();
+    // Wait for the current resident pages, including any added during travel.
+    await prepareFarPages();
     if (disposed) return;
     // An in-flight unit can belong to the focus that was just superseded. Loop
     // until the *current* wanted set is prepared rather than merely awaiting the
@@ -1956,16 +1949,15 @@ export function createNativeTreeForest(
       };
       chunkDescriptors.push(descriptor);
       descriptorsByKey.set(key, descriptor);
+      residencyIndex.add(descriptor);
       await assemblyCheckpoint();
       if (disposed) return;
     }
     descriptorsInitialized = true;
 
     if (GPU_FAR_TIERS && usedDesigns.size > 0) {
-      // One arena per design, sized to its authored total (+ fragmentation
-      // headroom). Built here at forest-ready — arenas allocate on forest build,
-      // never at import (massive-app loading policy). The five per-design far
-      // pipelines compile lazily on first render / prepare, not now.
+      // The page manager allocates nothing until chunks become resident. Each
+      // page holds at most 4,096 trees and warms independently before visibility.
       const farDesigns: NativeTreeFarDesign[] = [];
       for (const design of usedDesigns) {
         const template = templates[design];
@@ -2077,11 +2069,7 @@ export function createNativeTreeForest(
 
     stats.designs = usedDesigns.size;
     stats.chunks = chunkDescriptors.length;
-    // GPU far path: far draws are FIXED (designs × 5) rather than
-    // scaling with resident chunks. Near pool remains 4 batch draws per design.
-    stats.draws = (farTiers ? farTiers.farDraws : chunkDescriptors.reduce(
-      (sum, descriptor) => sum + descriptor.designs.length * 2, 0
-    )) + nearPools.size * 4;
+    // Draw count is live: resident pages can appear and retire during travel.
     stats.prototypeBytes = Array.from(usedDesigns).reduce(
       (sum, design) => sum + (
         templates[design]?.geometry.stats.lods.reduce((lodSum, lod) => lodSum + lod.byteLength, 0) ?? 0
@@ -2222,7 +2210,7 @@ export function createNativeTreeForest(
       await ready;
       if (disposed) return;
       prepareUnit = prepare;
-      await prepareFarOnce();
+      await prepareFarPages();
     },
     dispose() {
       if (disposed) return;
@@ -2241,6 +2229,7 @@ export function createNativeTreeForest(
       for (const chunk of [...chunks]) disposeResidentChunk(chunk, true);
       chunkDescriptors.length = 0;
       descriptorsByKey.clear();
+      residencyIndex.clear();
       // Frees every far arena, visible buffer, indirect draw set and cull pass.
       farTiers?.dispose();
       farTiers = null;

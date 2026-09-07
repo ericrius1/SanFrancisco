@@ -1,7 +1,7 @@
 // Shared GPU indirect trees: per-design arenas feed landscape and horizon
 // branch/foliage meshes, plus a capture-shaped whole-tree impostor beyond 420m.
 // CPU chunks own residency; compute picks exactly one representation per tree.
-// Far draws stay fixed at five per design regardless of resident chunk count.
+// Resident pages own five draws each; distant authored populations allocate nothing.
 // All paths use the same compact root/yaw planes and visible-index indirection.
 // WebGPU only. Foliage never casts or receives shadows.
 
@@ -13,14 +13,12 @@ import {
   createCullCamera,
   createIndirectDrawSet,
   createInstanceArena,
-  createRangeAllocator,
   createVisibleBuffer,
   type CullCamera,
   type IndirectDrawEntry,
   type IndirectDrawRecord,
   type IndirectDrawSet,
   type InstanceArena,
-  type RangeAllocator,
   type VisibleBuffer
 } from "../../render/gpuIndirect";
 import {
@@ -32,6 +30,7 @@ import type { NativeTreeStyle } from "../vegetation/nativeTreeRecipes";
 import { NATIVE_TREE_LOD_TRANSITION_WIDTH } from "./lodTransition";
 import type { NativeTreeImpostor } from "./nativeGeometry";
 import { createTreeImpostorMaterial } from "./impostorMaterial";
+import { createDenseSlotAllocator, type DenseSlotAllocator, type DenseSlotToken } from "./denseSlots";
 
 // Re-exported so index.ts keeps one import site; the registry itself lives in a
 // dependency-light module so frameBody can drive it without bundling this graph.
@@ -51,16 +50,10 @@ const CULL_RADIUS_SLACK = 2.2;
 // Soft per-instance far cutoff band: instead of a hard visibleDistance ring, each
 // tree extinguishes at a hash-dithered distance across this window.
 const FAR_CUTOFF_DITHER = 28;
-// Fragmentation headroom over a design's authored total so a first-fit range
-// allocator can page churning chunks without wedging on non-contiguous holes.
-const ARENA_HEADROOM = 1.3;
+// Small forests retain small buffers; large forests allocate these fixed-size
+// pages only for resident chunks. No buffer is sized to world coverage.
+const PAGE_SLOTS = 4096;
 const ARENA_MIN_CAPACITY = 64;
-// One slot costs 52B: two vec4 transform planes and five visible-index uints.
-// The regional authored total remains the allocation bound; expansion beyond
-// regional forests needs resident pages rather than a whole-world allocation.
-// This warning exposes that boundary without silently dropping live trees.
-const ARENA_CAPACITY_WARN = 262_144;
-
 function ceilPow2(value: number): number {
   let capacity = ARENA_MIN_CAPACITY;
   while (capacity < value) capacity *= 2;
@@ -78,8 +71,8 @@ export type FarInstanceInput = Readonly<{
   dryness: number;
 }>;
 
-/** Opaque token identifying one chunk-design's contiguous arena range. */
-export type FarChunkHandle = Readonly<{ design: number; base: number; count: number }>;
+/** Opaque identity: its slots may move during compaction or span pages. */
+export type FarChunkHandle = Readonly<{ design: number; count: number }>;
 
 /** What one design contributes: its far LOD geometries and baked impostor, style and canopy. */
 export type NativeTreeFarDesign = Readonly<{
@@ -97,7 +90,7 @@ export type NativeTreeFarDesign = Readonly<{
   /** Local-space bounding sphere of the whole tree (scale 1) for the cull proxy. */
   boundsCenterY: number;
   boundsRadius: number;
-  /** Authored instance count of this design across every chunk (arena sizing). */
+  /** Authored count: only used to avoid oversized pages for tiny forests. */
   total: number;
 }>;
 
@@ -123,26 +116,28 @@ export type NativeTreeGpuFarTiers = Readonly<{
   group: THREE.Group;
   /** Any live instance resident? Dispatch is skipped when false. */
   hasResident(): boolean;
-  /** Page one chunk-design's slots into its arena. Null when the arena is full. */
+  /** Admit every slot, splitting large chunks across resident pages. */
   admitChunk(design: number, slots: readonly FarInstanceInput[]): FarChunkHandle | null;
-  /** Reclaim a chunk-design's range (darkens the slots and frees them). */
+  /** Reclaim a chunk-design's slots and compact survivors. Idempotent. */
   releaseChunk(handle: FarChunkHandle): void;
   /** Near-pool takeover / restore: dark or re-show one instance the same frame. */
   setInstanceHidden(handle: FarChunkHandle, localIndex: number, scale: number, hidden: boolean): void;
   /** drawReset + every design cull against the render camera and tethered focus. */
   dispatch(renderer: THREE.WebGPURenderer, camera: THREE.Camera, focusX: number, focusZ: number): void;
-  /** Compile the (fixed) far pipelines once, before reveal. */
+  /** Prepare current pages and register the warmup callback for future pages. */
   prepare(prepareObject: (unit: THREE.Object3D) => Promise<void>): Promise<void>;
-  /** Fixed far draw count = designs × 5. */
+  /** Current resident-page draw count. */
   readonly farDraws: number;
   readonly designCount: number;
+  residencyStats(): { pages: number; capacity: number; used: number; storageBytes: number; cullSlots: number };
   dispose(): void;
 }>;
 
 type DesignTier = {
   design: number;
   arena: InstanceArena;
-  allocator: RangeAllocator;
+  allocator: DenseSlotAllocator;
+  allocations: Map<FarChunkHandle, DenseSlotToken>;
   visibles: VisibleBuffer[];
   materials: NativeTreeIndirectFarMaterials;
   impostorMaterial: THREE.Material;
@@ -168,9 +163,10 @@ const uintHash = (gx: N, gz: N, salt: number): N => {
 const hashUnit = (gx: N, gz: N, salt: number): N =>
   float(uintHash(gx, gz, salt)).mul(1 / 0x1_0000_0000);
 
-export function createNativeTreeGpuFarTiers(
+function createTreeFarArena(
   designs: readonly NativeTreeFarDesign[],
-  options: NativeTreeFarTiersOptions
+  options: NativeTreeFarTiersOptions,
+  capacity: number
 ): NativeTreeGpuFarTiers {
   const group = new THREE.Group();
   group.name = `${options.name}_far_tiers`;
@@ -190,16 +186,8 @@ export function createNativeTreeGpuFarTiers(
   const tiers = new Map<number, DesignTier>();
   const entries: IndirectDrawEntry[] = [];
   for (const design of designs) {
-    const capacity = ceilPow2(Math.ceil(Math.max(1, design.total) * ARENA_HEADROOM));
-    if (capacity > ARENA_CAPACITY_WARN) {
-      console.warn(
-        `[native trees:${options.name}] far arena for design ${design.design} is ${capacity} slots ` +
-        `(${((capacity * 52) / 1e6).toFixed(1)} MB) from ${design.total} authored trees — ` +
-        `revisit the arena sizing`
-      );
-    }
     const arena = createInstanceArena(FAR_ARENA_ATTRS, capacity);
-    const allocator = createRangeAllocator(capacity);
+    const allocator = createDenseSlotAllocator(capacity);
     // Each tier's branch + foliage keep independent visible buffers: the cull
     // appends the same survivor index to both, order-independent and correct.
     const visibles = [
@@ -229,6 +217,7 @@ export function createNativeTreeGpuFarTiers(
       design: design.design,
       arena,
       allocator,
+      allocations: new Map(),
       visibles,
       materials,
       impostorMaterial,
@@ -338,14 +327,11 @@ export function createNativeTreeGpuFarTiers(
   const admitChunk = (design: number, slots: readonly FarInstanceInput[]): FarChunkHandle | null => {
     const tier = tiers.get(design);
     if (!tier || slots.length === 0) return null;
-    const base = tier.allocator.alloc(slots.length);
-    if (base === null) {
-      console.warn(
-        `[native trees:${options.name}] far arena full for design ${design} ` +
-        `(capacity ${tier.capacity}); chunk kept out of the far tier`
-      );
-      return null;
-    }
+    const allocation = tier.allocator.allocate(slots.length);
+    if (!allocation) return null;
+    const handle = { design, count: slots.length };
+    tier.allocations.set(handle, allocation);
+    const base = allocation.indices[0];
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
       const a = (base + i) * 4;
@@ -362,18 +348,23 @@ export function createNativeTreeGpuFarTiers(
     tier.arena.uploadRange(YAW, base, base + slots.length);
     totalUsed += slots.length;
     cullDirty = true;
-    return { design, base, count: slots.length };
+    return handle;
   };
 
   const releaseChunk = (handle: FarChunkHandle): void => {
     const tier = tiers.get(handle.design);
     if (!tier) return;
-    // Darken the range (scale 0) before freeing so no stale slot survives as a
-    // ghost if the cull runs before a later admit overwrites it.
-    for (let i = 0; i < handle.count; i++) tier.rootHost[(handle.base + i) * 4 + 3] = 0;
-    tier.arena.uploadRange(ROOT, handle.base, handle.base + handle.count);
-    tier.allocator.free(handle.base, handle.count);
-    totalUsed = Math.max(0, totalUsed - handle.count);
+    const allocation = tier.allocations.get(handle);
+    if (!allocation) return;
+    tier.allocations.delete(handle);
+    tier.allocator.release(allocation, (from, to) => {
+      tier.rootHost.copyWithin(to * 4, from * 4, from * 4 + 4);
+      tier.yawHost.copyWithin(to * 4, from * 4, from * 4 + 4);
+      tier.arena.uploadRange(ROOT, to, to + 1);
+      tier.arena.uploadRange(YAW, to, to + 1);
+    });
+    // The next dispatch resets all draws and only visits the dense live prefix.
+    totalUsed -= handle.count;
     cullDirty = true;
   };
 
@@ -385,9 +376,12 @@ export function createNativeTreeGpuFarTiers(
   ): void => {
     const tier = tiers.get(handle.design);
     if (!tier || localIndex < 0 || localIndex >= handle.count) return;
-    const a = (handle.base + localIndex) * 4 + 3;
+    const allocation = tier.allocations.get(handle);
+    if (!allocation) return;
+    const index = allocation.indices[localIndex];
+    const a = index * 4 + 3;
     tier.rootHost[a] = hidden ? 0 : scale;
-    tier.arena.uploadRange(ROOT, handle.base + localIndex, handle.base + localIndex + 1);
+    tier.arena.uploadRange(ROOT, index, index + 1);
     cullDirty = true;
   };
 
@@ -421,6 +415,7 @@ export function createNativeTreeGpuFarTiers(
       if (cullDirty) {
         // Reset every draw, but dispatch only designs with allocated instances.
         // Empty designs must still have their previous draw counts cleared.
+        for (let i = 0; i < designCulls.length; i++) designCulls[i].count = cullOwners[i].allocator.used;
         cullPasses = [drawSet.drawReset, ...designCulls.filter((_, i) => cullOwners[i].allocator.used > 0)];
       }
       focus.set(focusX, focusZ);
@@ -434,6 +429,7 @@ export function createNativeTreeGpuFarTiers(
     },
     farDraws: drawSet.records.length,
     designCount: tiers.size,
+    residencyStats: () => ({ pages: 1, capacity, used: totalUsed, storageBytes: capacity * 52 + drawSet.records.length * 20, cullSlots: totalUsed }),
     dispose() {
       if (disposed) return;
       disposed = true;
@@ -448,6 +444,181 @@ export function createNativeTreeGpuFarTiers(
         tier.arena.dispose();
       }
       tiers.clear();
+      group.removeFromParent();
+      group.clear();
+    }
+  });
+}
+
+/** Page lifetimes follow resident chunks, never the authored forest's extent. */
+export function createNativeTreeGpuFarTiers(
+  designs: readonly NativeTreeFarDesign[],
+  options: NativeTreeFarTiersOptions
+): NativeTreeGpuFarTiers {
+  type Page = {
+    owner: NativeTreeGpuFarTiers;
+    container: THREE.Group;
+    capacity: number;
+    used: number;
+    prepared: boolean;
+    preparing: Promise<void> | null;
+    inPrepare: boolean;
+    destroyed: boolean;
+    retryAt: number;
+    retired: boolean;
+  };
+  const group = new THREE.Group();
+  group.name = `${options.name}_far_tiers`;
+  const byDesign = new Map(designs.map(design => [design.design, { design, pages: [] as Page[] }]));
+  const handles = new Map<FarChunkHandle, { page: Page; handle: FarChunkHandle }[]>();
+  const livePages = new Set<Page>();
+  const retired = new Set<Page>();
+  let prepareObject: ((unit: THREE.Object3D) => Promise<void>) | null = null;
+  let disposed = false;
+  let pageId = 0;
+  let preparationTail: Promise<void> = Promise.resolve();
+  const pages = () => [...livePages];
+  const destroy = (page: Page) => {
+    if (page.destroyed) return;
+    page.destroyed = true;
+    page.owner.dispose();
+    retired.delete(page);
+  };
+  const preparePage = (page: Page): Promise<void> => {
+    if (disposed || page.retired || page.prepared || !prepareObject) return Promise.resolve();
+    if (page.preparing) return page.preparing;
+    page.container.visible = false;
+    const prepare = prepareObject;
+    page.preparing = preparationTail.then(async () => {
+      if (disposed || page.retired) return;
+      page.inPrepare = true;
+      await page.owner.prepare(prepare);
+    }).then(() => {
+      if (disposed || page.retired) return;
+      page.prepared = true;
+      page.container.visible = true;
+    }).catch(error => {
+      page.retryAt = performance.now() + 1000;
+      throw error;
+    }).finally(() => {
+      page.preparing = null;
+      page.inPrepare = false;
+      if (page.retired) destroy(page);
+    });
+    preparationTail = page.preparing.catch(() => {});
+    return page.preparing;
+  };
+  const warmPage = (page: Page) => {
+    void preparePage(page).catch(error => {
+      if (!disposed && !page.retired) console.warn(`[native trees:${options.name}] page preparation failed; retrying`, error);
+    });
+  };
+  const retirePage = (page: Page) => {
+    livePages.delete(page);
+    page.retired = true;
+    page.container.visible = false;
+    page.container.removeFromParent();
+    // compileAsync may still own these buffers. Finish that operation before
+    // releasing them; a late result can never reattach the retired page.
+    if (page.inPrepare) retired.add(page);
+    else destroy(page);
+  };
+  return Object.freeze({
+    group,
+    hasResident: () => handles.size > 0,
+    admitChunk(designIndex: number, slots: readonly FarInstanceInput[]) {
+      const entry = byDesign.get(designIndex);
+      if (disposed || !entry || slots.length === 0) return null;
+      const handle = { design: designIndex, count: slots.length };
+      const parts: { page: Page; handle: FarChunkHandle }[] = [];
+      let offset = 0;
+      while (offset < slots.length) {
+        let page = entry.pages.find(p => p.used < p.capacity);
+        if (!page) {
+          const capacity = Math.min(PAGE_SLOTS, ceilPow2(Math.max(1, entry.design.total)));
+          const container = new THREE.Group();
+          container.name = `${options.name}_resident_page_${pageId}`;
+          const owner = createTreeFarArena([entry.design], { ...options, name: `${options.name}_page${pageId++}` }, capacity);
+          container.add(owner.group);
+          container.visible = !prepareObject;
+          group.add(container);
+          page = { owner, container, capacity, used: 0, prepared: false, preparing: null, inPrepare: false, destroyed: false, retryAt: 0, retired: false };
+          entry.pages.push(page);
+          livePages.add(page);
+        }
+        const count = Math.min(slots.length - offset, page.capacity - page.used);
+        const part = page.owner.admitChunk(designIndex, slots.slice(offset, offset + count));
+        if (!part) throw new Error(`Native tree page accounting mismatch: ${designIndex}`);
+        page.used += count;
+        parts.push({ page, handle: part });
+        offset += count;
+        if (prepareObject) warmPage(page);
+      }
+      handles.set(handle, parts);
+      return handle;
+    },
+    releaseChunk(handle: FarChunkHandle) {
+      const parts = handles.get(handle);
+      if (!parts) return;
+      handles.delete(handle);
+      for (const { page, handle: part } of parts) {
+        page.owner.releaseChunk(part);
+        page.used -= part.count;
+        if (page.used === 0) {
+          const list = byDesign.get(handle.design)!.pages;
+          list.splice(list.indexOf(page), 1);
+          retirePage(page);
+        }
+      }
+    },
+    setInstanceHidden(handle: FarChunkHandle, localIndex: number, scale: number, hidden: boolean) {
+      if (localIndex < 0 || localIndex >= handle.count) return;
+      for (const part of handles.get(handle) ?? []) {
+        if (localIndex < part.handle.count) {
+          part.page.owner.setInstanceHidden(part.handle, localIndex, scale, hidden);
+          return;
+        }
+        localIndex -= part.handle.count;
+      }
+    },
+    dispatch(renderer: THREE.WebGPURenderer, camera: THREE.Camera, focusX: number, focusZ: number) {
+      if (disposed) return;
+      for (const page of livePages) {
+        if (prepareObject && !page.prepared) {
+          if (!page.preparing && performance.now() >= page.retryAt) warmPage(page);
+          continue;
+        }
+        page.owner.dispatch(renderer, camera, focusX, focusZ);
+      }
+    },
+    async prepare(prepare: (unit: THREE.Object3D) => Promise<void>) {
+      prepareObject = prepare;
+      // Snapshot pages: newly admitted ones independently join the same warmup
+      // path and stay hidden until ready, without invalidating prepared pages.
+      await Promise.all(pages().map(preparePage));
+    },
+    get farDraws() { let draws = 0; for (const page of livePages) draws += page.owner.farDraws; return draws; },
+    designCount: byDesign.size,
+    residencyStats() {
+      const live = pages();
+      const held = [...live, ...retired];
+      return {
+        pages: held.length,
+        capacity: held.reduce((sum, page) => sum + page.capacity, 0),
+        used: live.reduce((sum, page) => sum + page.used, 0),
+        storageBytes: held.reduce((sum, page) => sum + page.owner.residencyStats().storageBytes, 0),
+        cullSlots: live.reduce((sum, page) => sum + page.used, 0)
+      };
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      handles.clear();
+      for (const entry of byDesign.values()) {
+        for (const page of entry.pages) retirePage(page);
+        entry.pages.length = 0;
+      }
+      byDesign.clear();
       group.removeFromParent();
       group.clear();
     }

@@ -1,0 +1,76 @@
+<!doctype html><html><head><link rel="icon" href="data:,"></head><body><script type="module">
+import * as THREE from 'three/webgpu';
+import {registerRenderer} from '/src/app/rendererRegistry.ts';
+import {growTemplate} from '/src/world/nativeTreeForest/templates.ts';
+import {createNativeTreeGpuFarTiers} from '/src/world/nativeTreeForest/gpuFarTiers.ts';
+import {loadNativeTreeMaterialSet,releaseNativeTreeMaterialSet} from '/src/world/vegetation/nativeTreeAssets.ts';
+import {WILD_TREE_DESIGNS} from '/src/world/wildlands/layout.ts';
+const check=(x,m)=>{if(!x)throw Error(m)};
+const renderer=new THREE.Renderer(new THREE.WebGPUBackend({antialias:true}),{getFallback:null});
+renderer.library=new THREE.StandardNodeLibrary();
+const errors=[];
+try {
+ await renderer.init();registerRenderer(renderer);renderer.setSize(640,480);document.body.append(renderer.domElement);
+ renderer.backend.device.addEventListener('uncapturederror',e=>errors.push(e.error.message));
+ const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(60,640/480,.1,5000);
+ camera.position.set(0,1000,1);camera.lookAt(0,0,0);camera.updateMatrixWorld(true);
+ scene.add(new THREE.HemisphereLight(0xffffff,0x777777,2));
+ const template=await growTemplate(WILD_TREE_DESIGNS[0]);
+ const assets=await loadNativeTreeMaterialSet(template.archetype.species,{detail:'silhouette'});
+ const g=template.geometry,l=g.lods,b=g.bounds;
+ const design={design:0,landscapeBranch:l[2].branch,landscapeFoliage:l[2].foliage,horizonBranch:l[3].branch,horizonFoliage:l[3].foliage,impostor:g.impostor,style:template.archetype.style,assets,canopyCenter:g.canopy.center,canopyRadii:g.canopy.radii,boundsCenterY:b.sphereCenter[1],boundsRadius:b.sphereRadius,total:10000000};
+ const options={name:'page_qa',horizonDistance:220,visibleDistance:1050,impostorDistance:1};
+ const far=createNativeTreeGpuFarTiers([design],options);scene.add(far.group);
+ const initial=far.residencyStats();check(initial.capacity===0&&far.farDraws===0,'authored extent allocates no pages');
+ const slots=n=>Array.from({length:n},(_,i)=>({x:(i%40)*8-160,y:0,z:Math.floor(i/40)*5-200,yaw:i%6,scale:1,variation:.5,dryness:0}));
+ const render=()=>{far.dispatch(renderer,camera,0,0);renderer.render(scene,camera)};
+ const visible=async()=>{render();await renderer.backend.device.queue.onSubmittedWorkDone();const buffers=new Set();far.group.traverse(o=>{if(o.geometry?.indirect)buffers.add(o.geometry.indirect)});let n=0;for(const buffer of buffers){const a=new Uint32Array(await renderer.getArrayBufferAsync(buffer));for(let i=0;i<a.length;i+=5)n+=a[i+1];}return n;};
+ let comparison;
+ const a=far.admitChunk(0,slots(5000)),c=far.admitChunk(0,slots(500));
+ check(a&&c,'oversized chunk spans pages');
+ const populated=far.residencyStats();check(populated.pages===2&&populated.capacity===8192&&populated.cullSlots===5500,'page and dispatch bounds follow residents');
+ await far.prepare(root=>renderer.compileAsync(root,camera,scene));
+ check(await visible()===5500,'all residents draw once');
+ if(new URLSearchParams(location.search).has('compare')) {
+  // Optional baseline supplied by the probe runner; no baseline code ships.
+  const {createNativeTreeGpuFarTiers:oldCreate}=await import('/.data/forest-residency/gpuFarBaseline.ts');
+  const current=createNativeTreeGpuFarTiers([{...design,total:12000}],{...options,name:'comparison_pages'});scene.add(current.group);current.admitChunk(0,slots(3000));current.admitChunk(0,slots(500));await current.prepare(root=>renderer.compileAsync(root,camera,scene));
+  const old=oldCreate([{...design,total:12000}],{...options,name:'baseline'});scene.add(old.group);old.admitChunk(0,slots(3000));old.admitChunk(0,slots(500));
+  await old.prepare(root=>renderer.compileAsync(root,camera,scene));
+  const draw=owner=>{far.group.visible=false;current.group.visible=false;old.group.visible=false;owner.group.visible=true;camera.position.x=camera.position.x===0?.1:0;camera.updateMatrixWorld(true);owner.dispatch(renderer,camera,0,0);renderer.render(scene,camera)};
+  for(const owner of [old,current]){for(let i=0;i<16;i++)draw(owner);await renderer.backend.device.queue.onSubmittedWorkDone();}
+  renderer.backend.trackTimestamp=true;comparison=[];
+  for(let trial=0;trial<4;trial++)for(const [name,owner] of (trial%2?[['pages',current],['authored',old]]:[['authored',old],['pages',current]])){
+   for(const kind of ['render','compute']){await renderer.resolveTimestampsAsync(kind);renderer.backend.timestampQueryPool[kind]?.timestamps.clear();}
+   const start=performance.now();for(let i=0;i<16;i++)draw(owner);const cpuMs=(performance.now()-start)/16;
+   await renderer.resolveTimestampsAsync('render');const pool=renderer.backend.timestampQueryPool.render;const gpuMs=pool?[...pool.timestamps.values()].reduce((a,b)=>a+b,0)/16:null;pool?.timestamps.clear();await renderer.resolveTimestampsAsync('compute');const cp=renderer.backend.timestampQueryPool.compute;const computeMs=cp?[...cp.timestamps.values()].reduce((a,b)=>a+b,0)/16:null;cp?.timestamps.clear();comparison.push({name,cpuMs,gpuMs,computeMs});
+  }
+  old.dispose();current.dispose();far.group.visible=true;camera.position.x=0;camera.updateMatrixWorld(true);
+ }
+
+ far.setInstanceHidden(c,17,1,true);check(await visible()===5499,'near takeover hides one tree');
+ far.releaseChunk(a);far.releaseChunk(a);
+ check(far.residencyStats().pages===1&&far.residencyStats().used===500,'empty page released, survivor compacted');
+ check(await visible()===499,'compaction preserves hidden survivor');
+ far.setInstanceHidden(c,17,1,false);check(await visible()===500,'moved survivor restores correct slot');
+ far.setInstanceHidden(a,17,1,true);check(await visible()===500,'stale handle cannot hide new occupant');
+ for(let i=0;i<200;i++){const h=far.admitChunk(0,slots(750));far.releaseChunk(h);}
+ check(far.residencyStats().capacity===4096,'travel churn cannot grow reserved capacity');
+ check(await visible()===500,'churn retains survivors');
+ far.releaseChunk(c);check(far.residencyStats().capacity===0&&far.farDraws===0,'empty forest releases storage and draw objects');
+ const d=far.admitChunk(0,slots(20));await far.prepare(root=>renderer.compileAsync(root,camera,scene));check(await visible()===20,'return visit warms and draws a fresh page');
+ far.releaseChunk(d);far.dispose();
+ // Retire the active compile and queued page, then resolve: no late resurrection.
+ const pending=createNativeTreeGpuFarTiers([design],options);const p=pending.admitChunk(0,slots(20));
+ let finish;let calls=0;const held=pending.prepare(()=>{calls++;return new Promise(resolve=>{finish=resolve})});
+ await Promise.resolve();await Promise.resolve();check(finish,'warmup started');
+ const q=pending.admitChunk(0,slots(5000));pending.releaseChunk(q);pending.releaseChunk(p);
+ check(pending.residencyStats().pages===1,'only in-flight compile retains retired buffers');
+ finish();await held;await Promise.resolve();await Promise.resolve();
+ check(pending.residencyStats().capacity===0&&pending.group.children.length===0,'late completion cannot reattach retired page');
+ check(calls===1,'retired queued pages never compile');pending.dispose();
+ check(!errors.length,errors.join('\n'));
+ releaseNativeTreeMaterialSet(assets);template.release();
+ window.__pageResult={ok:true,initial,populated,final:far.residencyStats(),churn:200,comparison,errors};
+} catch(error) {window.__pageResult={ok:false,error:String(error.stack??error),errors};}
+</script></body></html>
