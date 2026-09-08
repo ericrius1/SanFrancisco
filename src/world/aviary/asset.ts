@@ -11,6 +11,7 @@ export const CLIPS = ['Fly', 'Glide', 'Scatter', 'Perch'] as const;
 export interface BirdAsset {
   geometry: THREE.BufferGeometry;
   lods: THREE.BufferGeometry[];
+  lodFormatsMatch: boolean;
   atlas: THREE.DataTexture;
   textureBytes: number;
   boneCount: number;
@@ -96,6 +97,9 @@ export async function loadBirdAsset(id: BirdSpeciesId, renderer: THREE.WebGPURen
     lods.push(lod);
     await new Promise<void>(resolve => setTimeout(resolve, 0));
   }
+  // WebGPU may widen byte attributes on upload. Compare authored formats
+  // now, before some tiers have rendered and others are still CPU-only.
+  const lodFormatsMatch = lods.every(g => Object.entries(geometry.attributes).every(([name, attr]) => g.getAttribute(name).normalized === attr.normalized && g.getAttribute(name).array.constructor === attr.array.constructor));
   const atlas = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.HalfFloatType);
   atlas.magFilter = atlas.minFilter = THREE.LinearFilter;
   atlas.generateMipmaps = false; atlas.needsUpdate = true;
@@ -105,5 +109,5 @@ export async function loadBirdAsset(id: BirdSpeciesId, renderer: THREE.WebGPURen
   });
   mesh.skeleton.dispose();
   const textureBytes = data.byteLength + [map, normalMap].reduce((sum, t) => sum + (t?.mipmaps ?? []).reduce((n, mip) => n + ((mip as { data?: { byteLength: number } }).data?.byteLength ?? 0), 0), 0);
-  return { geometry, lods, atlas, map, normalMap, textureBytes, boneCount, durations, influences, dispose() { for (const lod of lods) lod.dispose(); atlas.dispose(); map?.dispose(); normalMap?.dispose(); } };
+  return { geometry, lods, lodFormatsMatch, atlas, map, normalMap, textureBytes, boneCount, durations, influences, dispose() { for (const lod of lods) lod.dispose(); atlas.dispose(); map?.dispose(); normalMap?.dispose(); } };
 }

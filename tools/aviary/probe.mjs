@@ -54,4 +54,4 @@ try{
  await page.evaluate(()=>window.__aviary.dispose());
  assert.deepEqual(errors,[],'no WebGPU validation or JS errors');
  const report={passed:true,requests,maxFear,recoveredFear,positionsFinite:true,draws:3,textureBytes:stats.textureBytes,allTexturesCompressed:stats.allTexturesCompressed,errors};await fs.writeFile(out+'/probe.json',JSON.stringify(report,null,2));console.log(report);
-}finally{await browser.close();}
+}catch(error){console.error('Aviary acceptance failed:',error);throw error;}finally{await browser.close();}
