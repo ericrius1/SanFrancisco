@@ -1,5 +1,5 @@
 """Run in background Blender: exports must preserve editing and visibility state.
-blender -b assets-src/aviary/aviary.blend --python tools/aviary/export_probe.py
+blender -b assets-src/aviary/aviary.blend --python-exit-code 1 --python tools/aviary/export_probe.py
 """
 import bpy,runpy
 from pathlib import Path
@@ -15,6 +15,7 @@ bpy.ops.object.select_all(action='DESELECT')
 rigs[2].select_set(True);bpy.context.view_layer.objects.active=rigs[2]
 bpy.ops.object.mode_set(mode='POSE');scene.frame_set(17)
 def snapshot():
+    bpy.context.view_layer.update()
     return {
         'frame':scene.frame_current,'mode':bpy.context.object.mode,
         'selected':sorted(o.name for o in bpy.context.selected_objects),
@@ -24,6 +25,14 @@ def snapshot():
     }
 before=snapshot()
 runpy.run_path(str(Path(__file__).with_name('export_blender.py')))
-assert snapshot()==before,'Export mutated the editable Blender state'
+after=snapshot()
+for key in before:
+    if after[key]!=before[key]:
+        print('Changed field:',key)
+        if key!='meshes':print('Before:',before[key],'After:',after[key])
+        else:
+            for a,b in zip(before[key],after[key]):
+                if a!=b:print(a[0],'changed components',[i for i in range(len(a)) if a[i]!=b[i]])
+assert after==before,'Export mutated the editable Blender state'
 assert len([o for o in scene.objects if o.type=='MESH' and o.parent in rigs])==3,'Temporary export copies leaked'
 print('Aviary export probe passed: hidden/excluded collections, pose mode, frame, meshes and actions restored.')

@@ -42,7 +42,7 @@ if old:
 else:
  old=bpy.data.collections.new('90  REFERENCES / GPT concept art');scene.collection.children.link(old)
 old.hide_render=True;old.hide_viewport=True
-for i,name in enumerate(['concept-v2','pearl-reference-v2','lagoon-reference-v2','ember-reference-v2']):
+for i,name in enumerate(['concept-v2','pearl-reference-v2','lagoon-reference-v2','ember-reference-v3']):
  img=bpy.data.images.load(str(ROOT/'assets-src/aviary'/(name+'.png')),check_existing=True);img.pack()
  o=bpy.data.objects.new(name,None);o.empty_display_type='IMAGE';o.data=img;o.empty_display_size=5;o.location=(i*6-9,6,2);old.objects.link(o)
 text=bpy.data.texts.get('AVIARY — READ ME');text.clear();text.write('AVIARY / GPT art direction → image-based mesh → Blender refinement & rig → compressed glTF\n\nThree numbered collections toggle each bird. Space plays Fly.\nSelect a rig and switch an area to NLA Editor: mute Fly, unmute Glide or Scatter.\nAll three animations use the same seven controls, with blended shoulder/wrist weights.\n90 REFERENCES contains the packed GPT concept sheet and individual species studies.\nThe meshes keep full detail in Blender; Game export modifier reduces geometry for shipping.\n\nExport edits without regeneration:\nexec(compile(open(\"'+str(ROOT/'tools/aviary/export_blender.py')+'\").read(), \"export_blender.py\", \"exec\"))\nThen: npm run birds:pack\n\nSource inputs and prompts are in assets-src/aviary. Do not run rebuild to export manual edits.\n')

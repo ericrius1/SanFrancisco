@@ -14,16 +14,19 @@ owned={ob for rig in rigs for ob in [rig,*rig.children]}
 layers=[]
 collections=[]
 visibility=[(ob,ob.hide_viewport,ob.hide_render,ob.hide_get()) for ob in owned]
-def reveal(layer):
-    # Only reveal paths containing birds, preserving studio/reference toggles.
+def record_layers(layer):
+    # Snapshot every path first: changing a parent's exclude flag can reset
+    # child flags in Blender, even before we visit the child.
     if any(ob in owned for ob in layer.collection.all_objects):
         layers.append((layer,layer.exclude,layer.hide_viewport))
         collections.append((layer.collection,layer.collection.hide_viewport))
-        layer.exclude=False;layer.hide_viewport=False;layer.collection.hide_viewport=False
-        for child in layer.children:reveal(child)
+        for child in layer.children:record_layers(child)
 try:
     if mode!='OBJECT':bpy.ops.object.mode_set(mode='OBJECT')
-    reveal(bpy.context.view_layer.layer_collection)
+    record_layers(bpy.context.view_layer.layer_collection)
+    for layer,_,_ in layers:
+        if layer.exclude:layer.exclude=False
+        layer.hide_viewport=False;layer.collection.hide_viewport=False
     for ob,_,_,_ in visibility:ob.hide_viewport=False;ob.hide_render=False;ob.hide_set(False)
     for rig in rigs:
         pos=rig.location.copy();rotation=rig.rotation_euler.copy();sid=rig['species_id'];tracks=rig.animation_data.nla_tracks
@@ -61,5 +64,7 @@ finally:
     if active and mode!='OBJECT':bpy.ops.object.mode_set(mode=mode)
     for ob,viewport,render,hidden in visibility:ob.hide_set(hidden);ob.hide_viewport=viewport;ob.hide_render=render
     for collection,hidden in reversed(collections):collection.hide_viewport=hidden
-    for layer,excluded,hidden in reversed(layers):layer.exclude=excluded;layer.hide_viewport=hidden
+    for layer,excluded,hidden in layers:
+        if layer.exclude!=excluded:layer.exclude=excluded
+        layer.hide_viewport=hidden
 print('Exported editable rigs:',report)

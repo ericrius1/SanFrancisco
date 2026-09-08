@@ -26,11 +26,11 @@ The independent WebGPU viewer is `/aviary.html`. It supports individual inspecti
 | --- | ---: | ---: | ---: |
 | Pearl | 15,552 | 1.62 MiB | 1 |
 | Lagoon | 16,144 | 1.71 MiB | 1 |
-| Ember | 16,207 | 1.82 MiB | 1 |
+| Ember | 15,719 | 1.78 MiB | 1 |
 
 `public/models/aviary/manifest.json` records the current exact export counts and bytes. Packing uses meshopt compression and position/normal quantization, 2048px color maps in ETC1S KTX2, and 1024px normal maps in UASTC KTX2, with mipmaps. Nearly uniform roughness is a material constant. No alpha feather cards are used; feather edges are geometry and fine vane detail is in the color/normal maps.
 
-The browser verified that both maps remain compressed on the GPU. All three species plus their animation atlases occupied 12.1 MiB on the tested Mac/Chrome configuration. Format choice varies by adapter; allow roughly 6.7 MiB of textures plus a 32 KiB animation atlas per resident species. At most two habitats are resident in the world. Detailed geometry is intended for local flocks, not thousands of full-detail birds at once.
+The browser verified that both maps remain compressed on the GPU. All three species plus their animation atlases occupied 12.1 MiB on the tested Mac/Chrome configuration. Format choice varies by adapter; allow roughly 6.7 MiB of textures plus a 32 KiB animation atlas per resident species. At most four habitats, 96 simulated birds, and two species are resident in the world. Detailed geometry is intended for local flocks, not thousands of full-detail birds at once.
 
 ## Portable runtime and world expansion
 
@@ -58,10 +58,20 @@ Each habitat has a bounded cohort of up to 64 birds. WebGPU compute handles sepa
 
 The GPU samples shared bone matrices baked from the actual Blender clips. Instances have independent phases, banking, and flight/glide/scatter blending. No per-bird CPU animation mixers or transform uploads run each frame. Nearby cohorts simulate at 30 Hz, distant cohorts at 15 Hz; draw counts fall to 24 and then 12 at distance. This is a bounded local flock system, with no terrain collision mesh or independently simulated feather cloth. Place habitat volumes above terrain and away from buildings.
 
-SF placement is in `src/app/compose/aviary.ts`: Pearl at Lands End, Lagoon in the Presidio, Ember at Corona Heights. Terrain samples lift each habitat above its local ground. Only placement metadata and the proximity gate load at boot. The runtime, models, and texture transcoder activate after arrival when a habitat is nearby. Leaving releases meshes, materials, buffers, atlases, and unused species textures. Add habitats there as the map expands, or register/unregister them from another region owner.
+SF placement is in `src/world/aviary/cityHabitats.ts`: 14 landmark habitats plus deterministic neighborhood encounters total 146 groups across the city. Coastal Pearl flocks, park-dwelling Lagoon groups, and Ember singles/pairs mix with neighborhood groups of 1, 2, 4, 7, or 12 birds. The host in `src/app/compose/aviary.ts` resolves terrain and nearby building clearance at admission. Only placement metadata and the proximity gate load at boot. The runtime, models, and texture transcoder activate after arrival has settled for five seconds and a habitat is nearby. Admission is serial, shares species assets, and favors existing residents slightly to reduce boundary churn. Leaving releases meshes, materials, buffers, atlases, and unused species textures. Add habitats as the map expands, or register/unregister them from another region owner.
 
 ## Art sources and research
 
-GPT image generation produced `assets-src/aviary/concept-v2.png` and the three species studies. The concept prompt and modeling direction are recorded in `assets-src/aviary/art-direction.md`. Tripo v3.1 converted those studies into base meshes; original inputs remain in `assets-src/aviary/source/`. `refine_blender.py` corrects orientation and shoulder centering; `rig_blender.py` binds blended shoulder/wrist weights. These are deliberate rebuild tools that replace mesh data. `build_blender.py` is the historical rig/studio bootstrap, not the normal art or export command.
+GPT image generation produced `assets-src/aviary/concept-v2.png` and the three species studies. The concept prompt and modeling direction are recorded in `assets-src/aviary/art-direction.md`. Tripo v3.1 converted those studies into base meshes; original inputs remain in `assets-src/aviary/source/`. `refine_blender.py` corrects orientation and shoulder centering; `rig_blender.py` binds blended shoulder/wrist weights. Ember now uses `ember-reference-v3.png`, regenerated with a short straight neck and forward-facing horizontal flight profile; its old raised/backward head was replaced at the source-mesh level. These are deliberate rebuild tools that replace mesh data. `build_blender.py` is the historical rig/studio bootstrap, not the normal art or export command.
 
 Behavior follows the local steering principles in [Reynolds' boids](https://www.red3d.com/cwr/boids/). The GPU execution approach was informed by the [Three.js WebGPU birds example](https://threejs.org/examples/webgpu_compute_birds.html). Shipping geometry uses [EXT_meshopt_compression](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Vendor/EXT_meshopt_compression/README.md); texture encoding uses [Khronos KTX-Software](https://github.com/KhronosGroup/KTX-Software). Image-to-mesh conversion uses the [Tripo generation API](https://platform.tripo3d.ai/docs/generation). No stock bird models were used.
+
+## Validation record
+
+- TypeScript and the production build's contract checks passed, including the world light budget. The separate studio viewer is explicitly registered as an off-world light helper.
+- The current revision passed TypeScript and an isolated production build at `.data/aviary/revision/dist`, including a separate dynamic aviary runtime chunk. An isolated output avoids interfering with other active builds in this shared checkout.
+- Headless Chrome exercised the isolated production viewer: zero model requests before selection; exactly the selected model on activation and the newly selected model afterward; all three animated birds; finite moving GPU flock positions; plane alarm and recovery; compressed color and normal maps; responsive layout; disposal; no JavaScript or WebGPU errors.
+- Headless production world testing verified zero bird code/models at downtown boot; nearby-only activation after arrival; 16 birds across two downtown groups, 43 across two Lands End groups, and 15 across three Corona groups; finite moving GPU positions; submission to the real world renderer; all 96-bird/four-group/two-species limits; and zero resident bird texture bytes after departure. Close views verified the actual models over the coastline and downtown rooftops, including the corrected Ember profile.
+- `export_probe.py` verifies hidden/excluded collections, Pose Mode, frame, original mesh coordinates, modifiers, and animation mutes survive export. Temporary export copies are removed. All 63 animation channels per species survived the export comparison; Ember was subsequently rebuilt with corrected forward-flight anatomy.
+
+Local logs and screenshots are under `.data/aviary/`. The final Blender studio render is `assets-src/aviary/preview.png`.

@@ -4,8 +4,8 @@
   "species": [
     {
       "id": "pearl-gull",
-      "bytes": 1696656,
-      "rawBytes": 2369428,
+      "bytes": 1696660,
+      "rawBytes": 2369432,
       "vertices": 10121,
       "triangles": 15552,
       "bones": 7,
@@ -18,8 +18,8 @@
     },
     {
       "id": "lagoon-jay",
-      "bytes": 1795388,
-      "rawBytes": 2650928,
+      "bytes": 1795392,
+      "rawBytes": 2650932,
       "vertices": 11617,
       "triangles": 16144,
       "bones": 7,
@@ -32,10 +32,10 @@
     },
     {
       "id": "ember-kestrel",
-      "bytes": 1904040,
-      "rawBytes": 3092652,
-      "vertices": 11318,
-      "triangles": 16207,
+      "bytes": 1867936,
+      "rawBytes": 3095712,
+      "vertices": 10766,
+      "triangles": 15719,
       "bones": 7,
       "clips": [
         "Fly",
