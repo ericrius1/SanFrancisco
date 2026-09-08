@@ -1,13 +1,13 @@
 fn resolveCloudFrame(history: texture_2d<f32>, inverseProjection: mat4x4f,
     cameraMatrix: mat4x4f, previousViewProjection: mat4x4f, coord: vec2f,
     origin: vec3f, sun: vec3f, phase: f32, coverage: f32, base: f32,
-    steps: f32, historyWeight: f32, frame: f32, resolution: vec2f) -> vec4f {
+    steps: f32, historyWeight: f32, frame: f32, resolution: vec2f, structure: vec4f, thickness: f32, drift: vec2f, morph: f32) -> vec4f {
   // WebGPU framebuffers have a top-left origin and zero-to-one clip depth.
   let view = inverseProjection * vec4f(coord.x * 2.0 - 1.0, 1.0 - coord.y * 2.0, 0.5, 1.0);
   let ray = normalize((cameraMatrix * vec4f(normalize(view.xyz / view.w), 0.0)).xyz);
-  let current = tidalClouds(origin, ray, sun, coord * resolution + vec2f(frame * 0.754877, frame * 0.569841), phase, coverage, base, steps);
+  let current = tidalClouds(origin, ray, sun, coord * resolution + vec2f(frame * 0.754877, frame * 0.569841), phase, coverage, base, steps, structure, thickness, drift, morph);
   if (historyWeight <= 0.0 || abs(ray.y) < 0.015) { return current; }
-  let distance = clamp((base + 210.0 - origin.y) / ray.y, 1.0, 18000.0);
+  let distance = clamp((base + thickness * 0.5 - origin.y) / ray.y, 1.0, 18000.0);
   let clip = previousViewProjection * vec4f(origin + ray * distance, 1.0);
   let uv = vec2f(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
   if (clip.w <= 0.0 || any(uv < vec2f(0.001)) || any(uv > vec2f(0.999))) { return current; }

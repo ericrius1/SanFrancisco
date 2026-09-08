@@ -902,7 +902,7 @@ export class DebugPanel {
       keys: ["sunDay", "hemiDay"],
       onChange: () => this.#sky.applyLightGrade()
     });
-    CLOUD_TUNING.bind(lighting);
+    CLOUD_TUNING.bind(lighting.addFolder({ title: "volumetric clouds", expanded: false }));
     await checkpoint();
 
     this.#moveFolders = addMovementTuning(advanced);

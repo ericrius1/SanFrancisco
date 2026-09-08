@@ -5,3 +5,6 @@
 /*.png
 # iOS companion sources — not needed by the server build
 /ios/
+# Editable art and agent captures are not runtime assets. Shipping GLBs stay in public/.
+/assets-src/
+/.data/

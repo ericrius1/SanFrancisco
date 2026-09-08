@@ -12,13 +12,16 @@ export function createAviary(renderer: THREE.WebGPURenderer, scene: THREE.Scene,
   const pending = new Map<string, Promise<void>>();
   const failedAt = new Map<string, number>();
   let desired = new Set<string>(), disposed = false;
+  let desiredSpecies = new Set<BirdSpeciesId>();
   // Serial admission avoids duplicate species loads and sudden shader/upload bursts.
   let admission: Promise<void> = Promise.resolve();
   function release(id: string) {
     const flock = resident.get(id); if (!flock) return;
     flock.dispose(); resident.delete(id);
     const h = habitats.get(id)!; const entry = assets.get(h.species)!;
-    if (--entry.refs === 0) { entry.asset.dispose(); assets.delete(h.species); }
+    // A neighboring encounter can reuse the same decoded textures and bone
+    // atlas while its cohort is admitted; crossing a cell must not reload it.
+    if (--entry.refs === 0 && !desiredSpecies.has(h.species)) { entry.asset.dispose(); assets.delete(h.species); }
   }
   function ensure(h: BirdHabitat) {
     if (pending.has(h.id) || resident.has(h.id) || performance.now() - (failedAt.get(h.id) ?? -Infinity) < 10000) return;
@@ -62,12 +65,14 @@ export function createAviary(renderer: THREE.WebGPURenderer, scene: THREE.Scene,
         candidates.push(c); birds += count; species.add(c.h.species);
       }
       desired = new Set(candidates.map(c => c.h.id));
+      desiredSpecies = species;
       for (const id of resident.keys()) if (!desired.has(id)) release(id);
+      for (const [id, entry] of assets) if (!entry.refs && !desiredSpecies.has(id)) { entry.asset.dispose(); assets.delete(id); }
       for (const { h, d } of candidates) { ensure(h); resident.get(h.id)?.update(dt, time, influencer, d); }
     },
     get stats() { return { habitats: habitats.size, resident: [...resident.keys()], pending: [...pending.keys()], species: [...assets.keys()], draws: resident.size, birds: [...resident.keys()].reduce((n,id)=>n+Math.min(64,habitats.get(id)!.count),0), groups: [...resident].map(([id,f])=>({id,count:habitats.get(id)!.count,center:f.mesh.position.toArray()})), textureBytes: [...assets.values()].reduce((n, e) => n + e.asset.textureBytes, 0) }; },
     async settled() { await admission; },
     async debugRead(id: string) { return resident.get(id)?.debugRead(); },
-    dispose() { if (disposed) return; disposed = true; desired.clear(); for (const id of [...resident.keys()]) release(id); habitats.clear(); },
+    dispose() { if (disposed) return; disposed = true; desired.clear(); desiredSpecies.clear(); for (const id of [...resident.keys()]) release(id); for (const entry of assets.values()) entry.asset.dispose(); assets.clear(); habitats.clear(); },
   };
 }

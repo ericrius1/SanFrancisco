@@ -1042,11 +1042,12 @@ async function boot() {
   bootMark("handoff");
   constructionDoneFlag = true;
   resolveConstructionDone();
-  // Clouds are a first-use graphics option; their code and WGSL stay absent
-  // from default boot. The selected variant warms through the compile owner.
+  // Default-on clouds stay out of arrival's critical path. Their shader warms
+  // through the compile owner once the starting space has been revealed.
   sky.configureVolumetricClouds(
     root => pipeline.prepareSceneOwner(root, true),
-    (quad,target) => pipeline.prepareOffscreenOwner(quad,quad.camera,target)
+    (quad,target) => pipeline.prepareOffscreenOwner(quad,quad.camera,target),
+    () => !worldArrival.active && ctx.state.revealed
   );
   pipeline.setSkyFrame(() => sky.renderVolumetricClouds(renderer,camera));
   for (const action of pendingStartActions.splice(0)) action();

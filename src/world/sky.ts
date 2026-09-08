@@ -335,6 +335,8 @@ export class Sky {
   #cloudLayer: ReturnType<typeof import("./volumetricClouds").createVolumetricCloudMaterial> | null = null
   #cloudPrepare: ((root: THREE.Object3D) => Promise<unknown>) | null = null
   #cloudLoading = false
+  #cloudCanActivate: () => boolean = () => false
+  #cloudSettledAt = 0
   #cloudFailed = false
 
   #cloudQuadPrepare: ((quad:THREE.QuadMesh,target:THREE.RenderTarget)=>Promise<unknown>) | null = null
@@ -342,7 +344,8 @@ export class Sky {
   renderVolumetricClouds(renderer:THREE.WebGPURenderer,camera:THREE.Camera) {
     if(CLOUD_TUNING.values.enabled) this.#cloudLayer?.render(renderer,camera,this.timeOfDay)
   }
-  configureVolumetricClouds(prepare: (root: THREE.Object3D) => Promise<unknown>, prepareQuad:(quad:THREE.QuadMesh,target:THREE.RenderTarget)=>Promise<unknown>) {
+  configureVolumetricClouds(prepare: (root: THREE.Object3D) => Promise<unknown>, prepareQuad:(quad:THREE.QuadMesh,target:THREE.RenderTarget)=>Promise<unknown>, canActivate: () => boolean) {
+    this.#cloudCanActivate = canActivate
     this.#cloudQuadPrepare=prepareQuad
     this.#cloudPrepare = prepare
     this.#clearSkyMaterial = this.mesh.material as THREE.Material
@@ -351,6 +354,11 @@ export class Sky {
 
   #syncVolumetricClouds(elapsed: number) {
     if (!this.#cloudPrepare || !this.#clearSkyMaterial) return
+    if (!this.#cloudLayer) {
+      if (!this.#cloudCanActivate()) { this.#cloudSettledAt = 0; return }
+      if (!this.#cloudSettledAt) this.#cloudSettledAt = performance.now()
+      if (performance.now() - this.#cloudSettledAt < 2000) return
+    }
     const enabled = Boolean(CLOUD_TUNING.values.enabled)
     if (!enabled) {
       this.mesh.material = this.#clearSkyMaterial
