@@ -10,6 +10,7 @@
 // clipmap cameras).
 
 import * as THREE from "three/webgpu";
+import { branchPerch, registerTreePerches } from "../vegetation/treePerches";
 import { createFrameBudgetCheckpoint, yieldToFrame } from "../../core/cooperativeWork";
 import { tracer } from "../../core/hitchTracer";
 import {
@@ -240,6 +241,7 @@ type ChunkDesign = {
 };
 
 type Chunk = {
+  releasePerches?: () => void;
   key: string;
   group: THREE.Group;
   cx: number;
@@ -1138,6 +1140,20 @@ export function createNativeTreeForest(
       chunk.group.clear();
       return null;
     }
+    let perchPoints: THREE.Vector3[] | null = null;
+    chunk.releasePerches = registerTreePerches(group, {x:chunk.cx,z:chunk.cz,radius:chunk.horizontalRadius}, () => {
+      if (perchPoints) return perchPoints;
+      perchPoints = [];
+      for (const [design, entry] of chunk.byDesign) {
+        const branch = templates[design]?.geometry.lods[0].branch;
+        const point = branch && branchPerch(branch);
+        if (!point) continue;
+        for (const slot of entry.slots) {
+          perchPoints.push(point.clone().multiplyScalar(slot.scale).applyAxisAngle(THREE.Object3D.DEFAULT_UP, slot.yaw).add(new THREE.Vector3(slot.x, slot.y, slot.z)));
+        }
+      }
+      return perchPoints;
+    }, () => !chunk.retireRequested && descriptor.chunk === chunk && hasCullFocus && descriptorEdgeDistance(descriptor, lastFocus.x, lastFocus.z) < visibleDistance);
     descriptor.chunk = chunk;
     chunks.push(chunk);
     group.add(chunk.group);
@@ -1149,6 +1165,7 @@ export function createNativeTreeForest(
       chunk.retireRequested = true;
       return false;
     }
+    chunk.releasePerches?.();
     chunk.retireRequested = false;
     chunk.wantedVisible = false;
     chunk.group.visible = false;

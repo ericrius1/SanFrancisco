@@ -29,7 +29,8 @@ export async function createGallery(host: HTMLElement) {
   const plane = new THREE.Mesh(new THREE.ConeGeometry(.5, 3, 4), new THREE.MeshStandardNodeMaterial({ color: 0xe9d4a5, roughness: .45 }));
   plane.rotation.z = -Math.PI / 2; plane.visible = false; scene.add(plane);
   let last = performance.now(), time = 0, flyThrough = -1, disposed = false, generation = 0;
-  let animation: 'Auto' | 'Fly' | 'Glide' | 'Scatter' = 'Auto';
+  let lodDistance = 0;
+  let animation: 'Auto' | 'Fly' | 'Glide' | 'Scatter' | 'Perch' = 'Auto';
   renderer.setAnimationLoop(() => {
     const now = performance.now(), dt = Math.min(.05, (now - last) / 1000); last = now; time += dt;
     if (flyThrough >= 0) {
@@ -37,7 +38,7 @@ export async function createGallery(host: HTMLElement) {
       plane.visible = true; plane.position.copy(influencer.position);
       if (flyThrough > 4.5) { flyThrough = -1; influencer.radius = 0; plane.visible = false; }
     }
-    for (const flock of flocks) flock.update(dt, time, influencer);
+    for (const flock of flocks) flock.update(dt, time, influencer, lodDistance);
     controls.update(); renderer.render(scene, camera);
   });
   const api = {
@@ -59,11 +60,12 @@ export async function createGallery(host: HTMLElement) {
       camera.position.set(flockMode ? 35 : ids.length > 1 ? .5 : .6, flockMode ? 24 : ids.length > 1 ? 5 : 2.6, flockMode ? 58 : ids.length > 1 ? 8 : 2.5);
       controls.target.set(0, 0, 0); controls.update();
     },
+    setLodDistance(distance: number) { lodDistance = distance; },
     scatter() { flyThrough = 0; },
     setAnimation(clip: typeof animation) { animation = clip; for (const f of flocks) f.setAnimation(clip); },
     async motion() { return Promise.all(flocks.map(f => f.debugMotion().then(a => Array.from(a)))); },
     async read() { return Promise.all(flocks.map(f => f.debugRead().then(a => Array.from(a)))); },
-    get stats() { return { draws: flocks.length, assets: [...assets.keys()], info: renderer.info.render, allTexturesCompressed: [...assets.values()].every(a => !!(a.map as THREE.CompressedTexture)?.isCompressedTexture && !!(a.normalMap as THREE.CompressedTexture)?.isCompressedTexture), textureBytes: [...assets.values()].reduce((n, a) => n + a.textureBytes, 0), atlasBytes: [...assets.values()].reduce((n, a) => n + a.atlas.image.data!.byteLength, 0) }; },
+    get stats() { return { lods: [...assets.values()].map(a=>a.lods.map(g=>(g.index?.count??0)/3)), geometryFormatsMatch: [...assets.values()].every(a=>a.lods.every(g=>Object.entries(a.geometry.attributes).every(([name,attr])=>g.getAttribute(name).normalized===attr.normalized&&g.getAttribute(name).array.constructor===attr.array.constructor))), draws: flocks.length, assets: [...assets.keys()], info: renderer.info.render, allTexturesCompressed: [...assets.values()].every(a => !!(a.map as THREE.CompressedTexture)?.isCompressedTexture && !!(a.normalMap as THREE.CompressedTexture)?.isCompressedTexture), textureBytes: [...assets.values()].reduce((n, a) => n + a.textureBytes, 0), atlasBytes: [...assets.values()].reduce((n, a) => n + a.atlas.image.data!.byteLength, 0) }; },
     dispose() { disposed = true; generation++; renderer.setAnimationLoop(null); observer.disconnect(); controls.dispose(); for (const f of flocks) f.dispose(); for (const a of assets.values()) a.dispose(); plane.geometry.dispose(); plane.material.dispose(); renderer.dispose(); renderer.domElement.remove(); },
   };
   (window as Window & { __aviary?: typeof api }).__aviary = api;

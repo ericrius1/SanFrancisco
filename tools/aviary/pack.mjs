@@ -24,7 +24,7 @@ for(const id of ['pearl-gull','lagoon-jay','ember-kestrel']){
    tex.setImage(new Uint8Array(await sharp(Buffer.from(tex.getImage())).resize(limit,limit,{fit:'inside',withoutEnlargement:true}).png().toBuffer())).setMimeType('image/png');
  }
  const names=r.listAnimations().map(a=>a.getName()).sort();
- if(names.join(',')!=='Fly,Glide,Scatter')throw Error(`${id}: required animations missing: ${names}`);
+ if(names.join(',')!=='Fly,Glide,Perch,Scatter')throw Error(`${id}: required animations missing: ${names}`);
  if(r.listSkins().length!==1 || r.listMeshes().length!==1 || r.listMeshes()[0].listPrimitives().length!==1)throw Error(`${id}: require one skin, one mesh, one draw primitive`);
  await doc.transform(dedup(),resample(),prune(),meshopt({encoder:MeshoptEncoder,level:'high',quantizePosition:14,quantizeNormal:10,quantizeColor:8}));
  // Build outside public/: a running preview must never see an intermediate PNG GLB.
