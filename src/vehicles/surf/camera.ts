@@ -60,6 +60,7 @@ export class SurfCameraController {
   #lineDirection: -1 | 1 = 1
   /** Smoothed boom angle in the unwrapped wave frame (see `surfBoomAngle`). */
   #boomAngle = 0
+  #rideYaw = 0
   #viewYaw = 0
   #viewPitch = 0
   #fov: number
@@ -81,6 +82,7 @@ export class SurfCameraController {
     this.#snapped = false
     this.#lineDirection = 1
     this.#boomAngle = 0
+    this.#rideYaw = 0
     this.#viewYaw = 0
     this.#viewPitch = 0
     this.#fov = this.#baseFov
@@ -134,10 +136,15 @@ export class SurfCameraController {
     const telemetry = player.surfTelemetry
     const smoothDt = Number.isFinite(dt) ? Math.min(MAX_SMOOTH_DT, Math.max(0, dt)) : 0
 
-    this.#lineDirection = telemetry.lineDirection >= 0 ? 1 : -1
     const boardYaw = Number.isFinite(telemetry.boardYaw) ? telemetry.boardYaw : 0
+    // A trick rotates the board, not the flight path. Keep the takeoff framing
+    // throughout the air and ease around only after the rider lands.
+    if (!this.#initialized || !telemetry.airborne) {
+      this.#lineDirection = telemetry.lineDirection >= 0 ? 1 : -1
+      this.#rideYaw = boardYaw
+    }
     const targetBoom = surfBoomAngle(
-      boardYaw,
+      this.#rideYaw,
       this.#lineDirection,
       tuning.boomUpSwing,
       tuning.boomDownSwing,
@@ -154,7 +161,7 @@ export class SurfCameraController {
 
     const surfaceFloor =
       Number.isFinite(telemetry.surfaceY) && telemetry.grounded
-        ? telemetry.surfaceY
+        ? anchor.y
         : waterHeight(anchor.x, anchor.z, player.time) + 0.4
     const airHeight = Math.max(0, anchor.y - surfaceFloor)
 
@@ -167,7 +174,7 @@ export class SurfCameraController {
     } else if (telemetry.tubeState === "exiting") {
       requestedTubeBlend = tubeDepth * 0.55
     }
-    requestedTubeBlend = clamp01(requestedTubeBlend)
+    requestedTubeBlend = telemetry.airborne ? 0 : clamp01(requestedTubeBlend)
     if (!this.#initialized) this.#tubeBlend = requestedTubeBlend
     else {
       const blendResponse =
@@ -207,7 +214,7 @@ export class SurfCameraController {
       eyeX = THREE.MathUtils.lerp(eyeX, tubeLineX, this.#tubeBlend)
     }
     const eyeWater = waterHeight(eyeX, eyeZ, player.time)
-    this.#desiredPosition.set(eyeX, eyeWater + height + airHeight * tuning.airFollow, eyeZ)
+    this.#desiredPosition.set(eyeX, surfaceFloor + height + airHeight * tuning.airFollow, eyeZ)
     const eyeFloor = eyeWater + activeWaterClearance
     if (this.#desiredPosition.y < eyeFloor) this.#desiredPosition.y = eyeFloor
 
@@ -230,12 +237,20 @@ export class SurfCameraController {
       this.#basePosition.copy(this.#desiredPosition)
       this.#target.copy(this.#desiredTarget)
     } else {
+      // Follow translation immediately; damp changes in the boom's framing.
+      // Damping the entire world-space position made every acceleration and
+      // landing stretch the camera/rider gap, then catch up a second time.
+      const dx = anchor.x - this.#lastAnchor.x
+      const dz = anchor.z - this.#lastAnchor.z
+      this.#basePosition.x += dx
+      this.#basePosition.z += dz
+      this.#target.x += dx
+      this.#target.z += dz
       this.#basePosition.lerp(this.#desiredPosition, expSmooth(smoothDt, tuning.positionResponse))
       this.#target.lerp(this.#desiredTarget, expSmooth(smoothDt, tuning.aimResponse))
     }
 
-    // Only the tube rig pins the eye relative to the rider; the open chase
-    // deliberately sits BELOW a rider who is high on the wall or in the air.
+    // The tube rig fits the camera into the aperture as the chase eases in.
     if (this.#tubeBlend > 0.035) {
       const minimumAnchorLift = THREE.MathUtils.lerp(MIN_ABOVE_ANCHOR, 0.15, this.#tubeBlend)
       this.#basePosition.y = Math.max(
@@ -291,8 +306,7 @@ export class SurfCameraController {
     const tubeRoof = positionSample.tubeRoofY - tuning.tubeRoofClearance
     if (this.#tubeBlend > 0.035 && tubeRoof > tubeFloor) {
       const envelopeY = THREE.MathUtils.clamp(this.#position.y, tubeFloor, tubeRoof)
-      const hardTubeClamp = telemetry.tubeState === "inside" || this.#mode === "barrel"
-      const clampBlend = hardTubeClamp ? 1 : smoothstep(clamp01((this.#tubeBlend - 0.035) / 0.685))
+      const clampBlend = smoothstep(clamp01((this.#tubeBlend - 0.035) / 0.685))
       this.#position.y = THREE.MathUtils.lerp(this.#position.y, envelopeY, clampBlend)
     }
 
@@ -308,10 +322,7 @@ export class SurfCameraController {
       const apertureRoof = targetSample.tubeRoofY - tuning.tubeRoofClearance
       if (apertureRoof > apertureFloor) {
         const apertureY = THREE.MathUtils.clamp(this.#target.y, apertureFloor, apertureRoof)
-        const hardApertureClamp = telemetry.tubeState === "inside" || this.#mode === "barrel"
-        const clampBlend = hardApertureClamp
-          ? 1
-          : smoothstep(clamp01((this.#tubeBlend - 0.035) / 0.685))
+        const clampBlend = smoothstep(clamp01((this.#tubeBlend - 0.035) / 0.685))
         this.#target.y = THREE.MathUtils.lerp(this.#target.y, apertureY, clampBlend)
       }
     }

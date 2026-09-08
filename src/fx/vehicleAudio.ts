@@ -24,10 +24,6 @@ export type VehicleSignals = {
   grounded: boolean; // board only — everything else passes true
   /** Surf-only proximity to the steep wave face/lip (0..1). */
   surfFace?: number;
-  /** Local presentation-only surf flow envelope (0..1). */
-  surfFlow?: number;
-  /** Rider motion rate; world/audio clock itself remains unscaled. */
-  surfMotionRate?: number;
   /** When mode is drive: combustion car vs electric cart (etc). */
   driveVoice?: "engine" | "electric";
   /** Drive/scooter bumper-slide + handbrake intensity (0..1) for skid bed. */
@@ -253,42 +249,15 @@ export class VehicleAudio {
   }
 
   /** One-shot surf feedback through the existing FX mix and unlock policy. */
-  surfEvent(kind: "carve" | "landing" | "wipeout" | "flow", strength = 1) {
+  surfEvent(kind: "carve" | "landing" | "wipeout", strength = 1) {
     const ctx = this.#ensure();
     if (!ctx) return;
-    audioEngine.touch(1.4); // covers the longest ("flow") tail into idle suspend
+    audioEngine.touch(0.8); // cover the longest splash tail into idle suspend
     const now = ctx.currentTime;
     const amount = clamp01(strength);
     const out = ctx.createGain();
     out.gain.setValueAtTime(0.0001, now);
     out.connect(this.#master);
-
-    if (kind === "flow") {
-      // A small sea-glass chord: whimsical lift rather than sci-fi time warp.
-      const filter = ctx.createBiquadFilter();
-      filter.type = "lowpass";
-      filter.frequency.setValueAtTime(1800, now);
-      filter.frequency.exponentialRampToValueAtTime(620, now + 1.15);
-      filter.connect(out);
-      const notes = [220, 330, 440];
-      let last: OscillatorNode | null = null;
-      for (let i = 0; i < notes.length; i++) {
-        const tone = ctx.createOscillator();
-        const voice = ctx.createGain();
-        tone.type = i === 1 ? "triangle" : "sine";
-        tone.frequency.setValueAtTime(notes[i], now);
-        tone.frequency.exponentialRampToValueAtTime(notes[i] * 0.72, now + 1.2);
-        voice.gain.value = 0.38 / (i + 1);
-        tone.connect(voice).connect(filter);
-        tone.start(now + i * 0.035);
-        tone.stop(now + 1.28);
-        last = tone;
-      }
-      out.gain.exponentialRampToValueAtTime(0.16 + amount * 0.08, now + 0.025);
-      out.gain.exponentialRampToValueAtTime(0.0001, now + 1.25);
-      if (last) this.#releaseWhenDone(last, out); // all three stop together
-      return;
-    }
 
     if (kind === "landing") {
       const thump = ctx.createOscillator();
@@ -604,13 +573,11 @@ export class VehicleAudio {
       drive: (sig) => {
         const speed = clamp01(sig.speed / 30);
         const face = clamp01(sig.surfFace ?? 0);
-        const flow = clamp01(sig.surfFlow ?? 0);
-        const rate = THREE_MATH_SQRT_RATE(sig.surfMotionRate ?? 1);
-        rail.filter.frequency.value = (680 + speed * 1250) * rate;
+        rail.filter.frequency.value = (680 + speed * 1250);
         rail.gain.gain.value = 0.08 + speed * 0.32;
-        breaker.filter.frequency.value = (300 + face * 440) * rate;
-        breaker.gain.gain.value = 0.08 + face * 0.48 + flow * 0.08;
-        return 0.12 + speed * 0.22 + face * 0.3 + flow * 0.08;
+        breaker.filter.frequency.value = (300 + face * 440);
+        breaker.gain.gain.value = 0.08 + face * 0.48;
+        return 0.12 + speed * 0.22 + face * 0.3;
       }
     };
   }
@@ -964,8 +931,4 @@ export class VehicleAudio {
       }
     };
   }
-}
-
-function THREE_MATH_SQRT_RATE(value: number): number {
-  return Math.sqrt(Math.min(1, Math.max(0.18, Number.isFinite(value) ? value : 1)));
 }

@@ -33,6 +33,8 @@ export const SURF_TUNING = tunables("movement.surf", {
   // Ceiling on how fast the nose can come around however hard the mouse is
   // whipped — the board keeps its weight, and the camera keeps up.
   maxTurnRate: { v: 3.6, min: 0.8, max: 8, step: 0.1, label: "max turn rate" },
+  turnResponse: { v: 18, min: 6, max: 30, step: 0.5, label: "steering response" },
+  turnDriveResponse: { v: 7, min: 3, max: 16, step: 0.5, label: "turn momentum" },
   // Hands off the mouse: the nose eases back onto the nearest down-the-line
   // heading. This is the whole reason surfing stays easy — you cannot get lost.
   trimAssist: { v: 1.35, min: 0, max: 6, step: 0.05, label: "auto-trim strength" },
@@ -104,19 +106,15 @@ export const SURF_TUNING = tunables("movement.surf", {
   launchCooldown: { v: 0.28, min: 0.05, max: 2, step: 0.01, label: "launch cooldown" },
   popBuffer: { v: 0.28, min: 0.05, max: 0.6, step: 0.01, label: "pop input buffer" },
   gravity: { v: 13.5, min: 6, max: 30, step: 0.25, label: "air gravity" },
-  // Airborne steering: the same mouse keeps working, scaled down so a jump is a
-  // controllable arc you can spin for style and still land clean.
-  airTurnScale: { v: 0.85, min: 0, max: 2, step: 0.05, label: "air turn scale" },
+  // Airborne steering gives a full rotation within a normal-speed high air.
+  // The camera holds the flight direction while the board spins for style.
+  airTurnScale: { v: 1.7, min: 0, max: 2, step: 0.05, label: "air turn scale" },
   airPitchInput: { v: 0.42, min: 0, max: 1, step: 0.02, label: "air nose authority" },
   airPitchScale: { v: 0.024, min: 0.005, max: 0.06, step: 0.001, label: "air pitch from lift" },
   airPitchLimit: { v: 0.55, min: 0.12, max: 0.9, step: 0.01, label: "air pitch limit" },
   airAlignResponse: { v: 7.5, min: 2, max: 18, step: 0.25, label: "air pose settle" },
-  // Big airs with a full meter drop into Flow automatically — the reward for
-  // reading the wave, with no extra button to remember.
-  flowAutoLaunchSpeed: { v: 12.5, min: 6, max: 24, step: 0.5, label: "auto-flow pop speed" },
-
   // forgiving magnetic landing + on-surface recovery
-  landingMagnet: { v: 1.35, min: 0.2, max: 2.5, step: 0.05, label: "landing magnet" },
+  landingContactSlack: { v: 0.06, min: 0.02, max: 0.15, step: 0.01, label: "touchdown clearance" },
   softLandingSpeed: { v: 13, min: 3, max: 24, step: 0.5, label: "soft landing" },
   hardLandingRange: { v: 40, min: 5, max: 50, step: 0.5, label: "landing forgiveness" },
   recoveryQuality: { v: 0.08, min: 0, max: 0.75, step: 0.01, label: "assist threshold" },
@@ -135,10 +133,4 @@ export const SURF_TUNING = tunables("movement.surf", {
   spitMinDwell: { v: 0.8, min: 0.2, max: 3, step: 0.05, label: "spit min barrel time" },
   spitBoost: { v: 6.5, min: 0, max: 14, step: 0.25, label: "spit speed boost" },
 
-  // earned local-only slow motion (world and multiplayer clocks stay normal)
-  flowChargeRate: { v: 0.105, min: 0.02, max: 0.35, step: 0.005, label: "flow charge" },
-  flowLandingBoost: { v: 0.14, min: 0, max: 0.5, step: 0.01, label: "landing flow" },
-  flowReadyThreshold: { v: 0.98, min: 0.5, max: 1, step: 0.01, label: "flow ready" },
-  flowDuration: { v: 4.6, min: 1.5, max: 9, step: 0.1, label: "flow duration" },
-  flowTimeScale: { v: 0.38, min: 0.18, max: 0.7, step: 0.01, label: "rider time rate" }
 });

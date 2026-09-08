@@ -259,6 +259,7 @@ export default defineConfig({
   build: {
     manifest: true,
     rollupOptions: {
+      input: { main: fileURLToPath(new URL("index.html", import.meta.url)), aviary: fileURLToPath(new URL("aviary.html", import.meta.url)) },
       output: {
         // Split the entry monolith so the browser can parse/cache three.js and
         // the debug tooling separately from app code. three.js changes only on

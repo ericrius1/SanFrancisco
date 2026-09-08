@@ -1,0 +1,40 @@
+/** Compress editable skeletal glTF without discarding animation or plumage. */
+import { NodeIO } from '@gltf-transform/core';
+import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
+import { dedup, prune, resample, meshopt } from '@gltf-transform/functions';
+import { MeshoptEncoder, MeshoptDecoder } from 'meshoptimizer';
+import { execFileSync } from 'node:child_process';
+import sharp from 'sharp';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
+const io=new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({'meshopt.encoder':MeshoptEncoder,'meshopt.decoder':MeshoptDecoder});
+await MeshoptEncoder.ready; await MeshoptDecoder.ready;
+const manifest={version:1,source:'assets-src/aviary/aviary.blend',species:[]};
+await mkdir(path.join(root,'public/models/aviary'),{recursive:true});
+await mkdir(path.join(root,'.data/aviary/packed'),{recursive:true});
+for(const id of ['pearl-gull','lagoon-jay','ember-kestrel']){
+ const src=path.join(root,'.data/aviary/raw',id+'.glb');const doc=await io.read(src);
+ const r=doc.getRoot();
+ const normalTextures = new Set(r.listMaterials().map(m=>m.getNormalTexture()).filter(Boolean));
+ for (const tex of r.listTextures()) {
+   if (tex.getMimeType()==='image/ktx2') continue;
+   const limit = normalTextures.has(tex) ? 1024 : 2048;
+   tex.setImage(new Uint8Array(await sharp(Buffer.from(tex.getImage())).resize(limit,limit,{fit:'inside',withoutEnlargement:true}).png().toBuffer())).setMimeType('image/png');
+ }
+ const names=r.listAnimations().map(a=>a.getName()).sort();
+ if(names.join(',')!=='Fly,Glide,Scatter')throw Error(`${id}: required animations missing: ${names}`);
+ if(r.listSkins().length!==1 || r.listMeshes().length!==1 || r.listMeshes()[0].listPrimitives().length!==1)throw Error(`${id}: require one skin, one mesh, one draw primitive`);
+ await doc.transform(dedup(),resample(),prune(),meshopt({encoder:MeshoptEncoder,level:'high',quantizePosition:14,quantizeNormal:10,quantizeColor:8}));
+ // Build outside public/: a running preview must never see an intermediate PNG GLB.
+ const file=path.join(root,'.data/aviary/packed',id+'.glb');await io.write(file,doc);
+ const toktx=process.env.TOKTX_BIN ?? path.join(root,'.data/aviary/ktx-tools/bin/toktx');
+ execFileSync(process.execPath,[path.join(root,'tools/optimize-glb-textures.mjs'),file],{env:{...process.env,TOKTX_BIN:toktx},stdio:'inherit'});
+ const prim=r.listMeshes()[0].listPrimitives()[0];
+ const entry={id,bytes:(await readFile(file)).length,rawBytes:(await readFile(src)).length,vertices:prim.getAttribute('POSITION').getCount(),triangles:prim.getIndices().getCount()/3,bones:r.listSkins()[0].listJoints().length,clips:names,textureBudgetBytes:Math.round((2048*2048+1024*1024)*4/3)};
+ if(entry.bytes>2200000 || entry.triangles>19000)throw Error(`${id}: exceeded asset budget ${JSON.stringify(entry)}`);
+ await rename(file,path.join(root,'public/models/aviary',id+'.glb'));
+ manifest.species.push(entry);console.log(entry);
+}
+await writeFile(path.join(root,'public/models/aviary/manifest.json'),JSON.stringify(manifest,null,2)+'\n');

@@ -12,8 +12,8 @@ import { tunables } from "../../core/persist"
  * camera that snaps into place.
  */
 export const SURF_CAMERA_TUNING = tunables("camera.surf", {
-  distance: { v: 7, min: 3, max: 18, step: 0.25, label: "chase distance" },
-  height: { v: 2.9, min: 0.6, max: 10, step: 0.1, label: "camera height" },
+  distance: { v: 8.2, min: 3, max: 18, step: 0.25, label: "chase distance" },
+  height: { v: 3.4, min: 0.6, max: 10, step: 0.1, label: "camera height" },
   // How far the boom may swing with the nose, in radians, measured from the
   // down-the-line axis. Up-face swings are free (they park the eye on the flat
   // shoulder); down-face swings are held short so the eye never climbs the wall.
@@ -25,12 +25,12 @@ export const SURF_CAMERA_TUNING = tunables("camera.surf", {
   // Boom follow rate. High enough to feel solid and attached, low enough that
   // a hard carve reads as the world turning under a trailing camera.
   followResponse: { v: 4.6, min: 0.5, max: 14, step: 0.1, label: "boom follow" },
-  lookAhead: { v: 4.5, min: 0.5, max: 20, step: 0.25, label: "look-ahead" },
+  lookAhead: { v: 2.8, min: 0.5, max: 20, step: 0.25, label: "look-ahead" },
   targetHeight: { v: 1.35, min: 0.4, max: 4, step: 0.05, label: "aim height" },
   // Airs are the payoff — the eye rises with the rider and the aim stays on
   // them, so a jump reads as a jump instead of the surfer leaving frame.
-  airFollow: { v: 0.62, min: 0, max: 1, step: 0.02, label: "air height follow" },
-  airAim: { v: 0.88, min: 0.1, max: 1, step: 0.02, label: "air aim follow" },
+  airFollow: { v: 0.85, min: 0, max: 1, step: 0.02, label: "air height follow" },
+  airAim: { v: 1, min: 0.1, max: 1, step: 0.02, label: "air aim follow" },
   // Extra boom length at the top of a big air so the board stays comfortably
   // inside frame instead of filling it.
   airDistance: { v: 0.16, min: 0, max: 0.6, step: 0.01, label: "air boom stretch" },
@@ -49,7 +49,7 @@ export const SURF_CAMERA_TUNING = tunables("camera.surf", {
   tubeDistance: { v: 5.4, min: 2.5, max: 14, step: 0.1, label: "tube trail distance" },
   tubeHeight: { v: 2.1, min: 0.7, max: 4, step: 0.05, label: "tube eye height" },
   tubeSideBias: { v: 0.25, min: -2, max: 3, step: 0.05, label: "tube side bias" },
-  tubeLookAhead: { v: 14, min: 6, max: 36, step: 0.25, label: "tube aperture distance" },
+  tubeLookAhead: { v: 8, min: 6, max: 36, step: 0.25, label: "tube aperture distance" },
   tubeTargetHeight: { v: 2.35, min: 0.7, max: 5, step: 0.05, label: "tube aperture height" },
   tubeWaterClearance: { v: 0.65, min: 0.25, max: 2, step: 0.05, label: "tube water clearance" },
   tubeRoofClearance: { v: 0.7, min: 0.25, max: 2, step: 0.05, label: "tube roof clearance" },

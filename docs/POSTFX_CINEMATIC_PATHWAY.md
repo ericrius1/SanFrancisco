@@ -223,11 +223,10 @@ saved overrides.
 ### The display tail's internal order
 
 ```
-uv = surfFlowLens(screenUV)                    // SURVIVOR, carried verbatim
+uv = screenUV
 c  = grade.toDisplay(colourSlot.sample(uv))
 If (sharpenAmount > 0): c = rcas(gradeAt, uv)  // 4 more grade evals, uniform branch
 c += filmGrain(c, screenCoord)                 // unconditional, zeroed identity
-c  = surfFlowGrade(c)                          // SURVIVOR, carried verbatim
 ```
 
 This document used to specify `grade → grain → sharpen`. **It ships
@@ -239,11 +238,8 @@ one constant (`GRAIN_BEFORE_SHARPEN` in `post/display/index.ts`) and costs
 nothing — grain is a pure function of screen position, so evaluating it at all
 five RCAS taps is still cheap.
 
-The surf-flow lens and grade both moved here from the old `postfx.ts`. Moving the
-lens to the *end* is strictly better than warping the beauty tap: it now warps a
-resolved image, so a UV warp the velocity buffer knows nothing about can no
-longer fight the temporal history. Gameplay's contract (`setFlowPostFx(amount,
-phase)`) is unchanged — uniforms only, never persisted, never in tweakpane.
+Surf uses the ordinary display path. The slow-motion lens warp and grade have
+been removed; jumps, barrel rides, audio and the world run at real time.
 
 ---
 

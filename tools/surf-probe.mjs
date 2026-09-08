@@ -12,7 +12,7 @@
 //     cannot move the authored surf camera,
 //   - Space is ungated — one press leaves the water from a neutral trim line,
 //   - keyboard E and gamepad Y exit onto the shack apron without abandoning a board,
-//   - standard-gamepad LS/triggers/A/X map to carve/pump/stall/jump/Flow,
+//   - standard-gamepad LS/triggers/A/X map to carve/pump/stall/jump,
 //   - the shaping room and each cosmetic image remain first-use lazy,
 //   - desktop active play and the mobile shaping panel render nonblank.
 //
@@ -260,8 +260,16 @@ async function capture(cdp, filename) {
 
 async function renderCurrentFrame(cdp) {
   await evaluate(cdp, `(async()=>{const s=window.__sf;
+    // Simulation batches can finish while a background owner holds presentation.
+    // Await the admitted compile and prove a fresh frame was submitted; entropy
+    // alone happily accepts an old picture of the shack as a barrel screenshot.
+    await s.pipeline.waitForCompileIdle();
+    s.tick(0);
     s.chase.update(0,s.player,s.input);
+    await s.pipeline.waitForCompileIdle();
+    const before=s.pipeline.frameTelemetry.submittedFrames;
     s.pipeline.render();
+    if(s.pipeline.frameTelemetry.submittedFrames<=before)throw new Error('Capture did not submit the current scene');
     await s.renderer.backend.device.queue.onSubmittedWorkDone();
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
     return true;})()`);
@@ -332,8 +340,8 @@ async function tickFrames(cdp, frames, dt = DT) {
     for(let i=0;i<${Math.max(0, Math.floor(frames))};i++)s.tick(${Number(dt)});
     const t=s.player.surfTelemetry;
     return {mode:s.player.mode,phase:t.phase,grounded:t.grounded,airborne:t.airborne,
-      speed:t.speed,flow:t.flow,flowReady:t.flowReady,flowActive:t.flowActive,
-      flowSerial:t.flowSerial,riderMotionRate:t.riderMotionRate,waveSerial:t.waveSerial,
+      speed:t.speed,
+      riderMotionRate:t.riderMotionRate,waveSerial:t.waveSerial,
       crestDistance:t.crestDistance,supportError:t.supportError,railContact:t.railContact,
       tubeState:t.tubeState,tubeDepth:t.tubeDepth,tubeCoverage:t.tubeCoverage,
       tubeClearance:t.tubeClearance,tubeDwell:t.tubeDwell,tubeSerial:t.tubeSerial};
@@ -743,7 +751,7 @@ async function main() {
         maxBlend=Math.max(maxBlend,c.tubeBlend);
         minRoofClearance=Math.min(minRoofClearance,c.roofClearance||Infinity);
         minWaterClearance=Math.min(minWaterClearance,c.waterClearance);
-        minTubeClearance=Math.min(minTubeClearance,t.tubeClearance);
+        if(t.tubeState==='inside')minTubeClearance=Math.min(minTubeClearance,t.tubeClearance);
         maxTubeDepth=Math.max(maxTubeDepth,t.tubeDepth);
         if(t.railContact)contactFrames++;
         if(t.tubeState==='inside'&&c.mode==='barrel'&&c.tubeBlend>0.78&&t.tubeDwell>1.15)break;
@@ -1058,14 +1066,14 @@ async function main() {
       maxAssistSerial: 0,
       maxLaunchSerial: 0,
       maxLandingSerial: 0,
-      maxFlow: 0
+      minMotionRate: 1
     };
     while (framesRemaining > 0) {
       const frames = Math.min(ENDURANCE_BATCH_FRAMES, framesRemaining);
       const batch = await evaluate(cdp, `(()=>{const s=window.__sf,p=s.player;
         let minClearance=Infinity,minSpeed=Infinity,minShore=Infinity,minWater=Infinity;
         let modeStable=true,forbiddenState=false,cameraInitialized=true;
-        let maxWaveSerial=0,maxAssistSerial=0,maxLaunchSerial=0,maxLandingSerial=0,maxFlow=0;
+        let maxWaveSerial=0,maxAssistSerial=0,maxLaunchSerial=0,maxLandingSerial=0,minMotionRate=1;
         const phases=new Set();
         for(let frame=0;frame<${frames};frame++){
           s.tick(${DT});
@@ -1082,11 +1090,11 @@ async function main() {
           maxAssistSerial=Math.max(maxAssistSerial,t.assistSerial);
           maxLaunchSerial=Math.max(maxLaunchSerial,t.launchSerial);
           maxLandingSerial=Math.max(maxLandingSerial,t.landingSerial);
-          maxFlow=Math.max(maxFlow,t.flow);
+          minMotionRate=Math.min(minMotionRate,t.riderMotionRate);
         }
         return {phases:[...phases],modeStable,forbiddenState,minClearance,minSpeed,
           minShore,minWater,cameraInitialized,maxWaveSerial,maxAssistSerial,
-          maxLaunchSerial,maxLandingSerial,maxFlow};})()`);
+          maxLaunchSerial,maxLandingSerial,minMotionRate};})()`);
       endurance.frames += frames;
       framesRemaining -= frames;
       for (const phase of batch.phases) endurance.phases.add(phase);
@@ -1107,7 +1115,7 @@ async function main() {
       endurance.maxAssistSerial = Math.max(endurance.maxAssistSerial, batch.maxAssistSerial);
       endurance.maxLaunchSerial = Math.max(endurance.maxLaunchSerial, batch.maxLaunchSerial);
       endurance.maxLandingSerial = Math.max(endurance.maxLandingSerial, batch.maxLandingSerial);
-      endurance.maxFlow = Math.max(endurance.maxFlow, batch.maxFlow);
+      endurance.minMotionRate = Math.min(endurance.minMotionRate, batch.minMotionRate);
       await sleep(30);
     }
     const enduranceEvidence = { ...endurance, phases: [...endurance.phases] };
@@ -1253,32 +1261,19 @@ async function main() {
       { dropState: padPump, climbState: padStall }
     );
 
-    // Earn the remaining meter with RT if neutral endurance did not quite fill
-    // it, then press physical X (standard button 2 => logical KeyX) for Flow.
-    // A (button 0) is always the jump now.
+    // Former slow-motion controls cannot alter the ride clock.
     await setProbePad(cdp, { buttons: { 7: 1 } });
-    const flowCharge = await evaluate(cdp, `(()=>{const s=window.__sf;
-      for(let i=0;i<900&&!s.player.surfTelemetry.flowReady;i++)s.tick(${DT});
-      const t=s.player.surfTelemetry;return {ready:t.flowReady,flow:t.flow,serial:t.flowSerial};})()`);
-    await setProbePad(cdp);
-    await tickFrames(cdp, 2);
-    const flowSerialBefore = await evaluate(cdp, "window.__sf.player.surfTelemetry.flowSerial");
+    await tickFrames(cdp, 900);
     await setProbePad(cdp, { buttons: { 2: 1 } });
-    await tickFrames(cdp, 2);
+    const padX = await tickFrames(cdp, 4);
     await setProbePad(cdp);
-    const padFlow = await tickFrames(cdp, 2);
-    check(
-      flowCharge.ready && padFlow.flowSerial > flowSerialBefore && padFlow.flowActive &&
-        padFlow.riderMotionRate > 0 && padFlow.riderMotionRate < 1,
-      "standard-gamepad X spends a ready meter on Flow",
-      { flowCharge, flowSerialBefore, padFlow }
-    );
+    check(padX.riderMotionRate === 1 && endurance.minMotionRate === 1,
+      "surf stays at real time through endurance, pumping and gamepad X", padX);
 
-    // A (button 0) must always jump: settle to a mid-face ride, press A, and
-    // expect a launch serial bump (chop hop) rather than a spent Flow meter.
-    await evaluate(cdp, `(()=>{const s=window.__sf;for(let i=0;i<420&&(s.player.surfTelemetry.phase!=='ride'||s.player.surfTelemetry.flowActive);i++)s.tick(${DT});return true})()`);
+    // A (button 0) always jumps, including away from the lip.
+    await evaluate(cdp, `(()=>{const s=window.__sf;for(let i=0;i<420&&s.player.surfTelemetry.phase!=='ride';i++)s.tick(${DT});return true})()`);
     const hopBefore = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
-      return {launch:t.launchSerial,flowSerial:t.flowSerial};})()`);
+      return {launch:t.launchSerial};})()`);
     // A press can coincide with a next-wave reset's launch lockout — a player
     // just presses again, so retry the tap until the hop registers.
     let hopAfter = null;

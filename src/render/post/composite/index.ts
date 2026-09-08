@@ -79,10 +79,7 @@ export function createCompositeStage(setup: PostStageSetup, deps: CompositeDeps)
   const quad = createStageQuad("post_composite")
   quad.setFragment(
     Fn(() => {
-      // ONE uv. The surf-flow lens moved to the display tail, so the old
-      // `uv` vs flow-warped `sampleUv` split that postfx.ts:339 had to
-      // navigate (contactFactorAt sampled at `uv`, the scene at `sampleUv`)
-      // does not exist here any more.
+      // Scene colour and contact samples share the same screen coordinates.
       const uv = screenUV
       const lin = slot.node.sample(uv).rgb.toVar()
 

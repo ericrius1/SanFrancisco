@@ -568,11 +568,7 @@ export class Input {
           if (!this.#padPrev[i]) this.#justPressed.add(skateCode);
         }
       } else if (i === 2 && this.#mode === "surf") {
-        // X in surf: Flow (mirrors keyboard X — Space/A is always the jump)
-        if (on) {
-          held.add("KeyX");
-          if (!this.#padPrev[i]) this.#justPressed.add("KeyX");
-        }
+        // Reserved in surf; X must not trigger a tool or alter the ride clock.
       } else if (i === 2) {
         // X: fire + map teleport
         if (on && !this.#padPrev[i]) this.firePressed = true;

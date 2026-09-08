@@ -86,6 +86,7 @@ export async function installDebugSurfaces(
       graffiti, bubbles, setTool, setColor, sky, farOcclusion: extra.farOcclusion, debugPanel, CONFIG,
       THREE, tick, splashes, sandPrints, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
       skyFlight: frameB.skyFlight,
+      aviary: frameB.aviary,
       audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
       doorAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice,
       minimap, playerLocator, boardWake, abandonedMounts, ghostShipBeacon,

@@ -86,11 +86,12 @@ import { writeDevReloadSnapshot } from "../../app/hmr/devReloadSnapshot";
 import type {  } from "../../app/systems/pickleball";
 import type { MainCtx } from "./ctx";
 import { createSkyFlightFeature } from "./skyFlight";
+import { createWorldAviary } from "./aviary";
 
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, updateWeather, updateLivingScore, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, updateSurfPresentation, birdTrails, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, updateWeather, updateLivingScore, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, birdTrails, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
 
   // One place decides what the trick HUD sees; the three frame paths (live,
   // world-frozen, fully paused) all call it right after hud.update so the combo
@@ -140,6 +141,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // wants three vectors and only one of them is interesting.
   const waveListener: WaveListener = { x: 0, z: 0, rightX: 1, rightZ: 0 };
   const skyFlight = createSkyFlightFeature(ctx, core, netW);
+  const aviary = createWorldAviary(ctx);
   const waveRight = new THREE.Vector3();
   const waveUp = new THREE.Vector3();
   const waveForward = new THREE.Vector3();
@@ -467,7 +469,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       voice.update();
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
-      updateSurfPresentation(frameDt);
+
       sky.update(ctx.state.elapsed, camera.position, player.renderPosition);
       applyLightFrontRamps();
       hud.update(frameDt);
@@ -572,7 +574,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       voice.update(); // keep talking while paused — it's a social feature
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
-      updateSurfPresentation(frameDt);
+
       // Social/remount poses can still move while the simulation clock is
       // frozen. Keep the full-rate hero map aligned before drawing this frame.
       sky.update(ctx.state.elapsed, camera.position, player.renderPosition);
@@ -595,9 +597,6 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "skate" && input.pressed("Space")) player.requestSkatePop();
       if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
         player.requestSurfJump();
-      }
-      if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
-        player.requestSurfFlow();
       }
       const pausedWalkSpace = !playingPickleball && !playingFortMasonEnsemble &&
         !input.suspended && player.mode === "walk";
@@ -674,8 +673,6 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         boost: input.down("ShiftLeft"),
         grounded: player.mode === "skate" ? player.skateState.grounded : player.mode !== "board" || player.boardGrounded,
         surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
-        surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
-        surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
         driveVoice: player.driveSpec.voice ?? "engine",
         driveSlide: player.mode === "skate" ? player.skateState.slide : player.driveSlideFeedback.intensity,
         skateGrind: player.mode === "skate" ? player.skateState.sparks : 0
@@ -706,7 +703,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       // paused-but-roaming still streams tiles/core.state.citygen — keep their deferred
       // assembly draining so the frozen city fills in around the live player
       scheduler.run(streamingBudgetMs(frameDt, true));
-      updateSurfPresentation(frameDt);
+
       // The world clock stays frozen, but the player and camera can move in this
       // branch. Keep shadow coverage and the every-frame subject map current.
       sky.update(ctx.state.elapsed, camera.position, player.renderPosition);
@@ -1320,9 +1317,6 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("Space")) {
       player.requestSurfJump();
     }
-    if (!playingPickleball && !playingFortMasonEnsemble && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) {
-      player.requestSurfFlow();
-    }
     const walkSpaceAvailable =
       !playingPickleball &&
       !playingFortMasonEnsemble &&
@@ -1521,6 +1515,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       // toggle; a few hypot tests per frame when idle).
       ctx.state.siteFoliage?.update(player.position.x, player.position.z, player.position.y);
       skyFlight.update(frameDt);
+      aviary.update(frameDt);
     }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
@@ -1778,7 +1773,9 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     } else if (ctx.state.oceanBeachWaves && !surfBreakStillLocal()) {
       releaseSurfVisual();
     }
-    underwater.update(camera, ctx.state.elapsed);
+    // Test submersion against the same wave that supports the surf camera.
+    // A different phase can tint/muffle an above-water barrel as a dive.
+    underwater.update(camera, surfaceTime);
     // GPU underwater package: drives the permanent post-FX fog/god-ray
     // uniforms and lazily loads/prewarms the marine-snow + caustics volume on
     // first near-water approach (identity + early-return while dry).
@@ -1790,7 +1787,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         map,
         renderer,
         scene,
-        time: ctx.state.elapsed,
+        time: surfaceTime,
         dt: frameDt
       })
     );
@@ -1817,7 +1814,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         2
       );
     }
-    updateSurfPresentation(frameDt);
+
     const waveEnergy = oceanWaveEnergyAt(map, player.position.x, player.position.z, ctx.state.elapsed);
     // Keep the hall's wind/steam ambience, but remove its artificial
     // noise-heavy surf bed. Generic shoreline wash returns outside the site.
@@ -1864,8 +1861,6 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       boost: input.down("ShiftLeft"),
       grounded: player.mode === "skate" ? player.skateState.grounded : player.mode !== "board" || player.boardGrounded,
       surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
-      surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
-      surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
       driveVoice: player.driveSpec.voice ?? "engine",
       driveSlide: player.mode === "skate" ? player.skateState.slide : player.driveSlideFeedback.intensity,
       skateGrind: player.mode === "skate" ? player.skateState.sparks : 0
@@ -2033,6 +2028,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   return {
     tick,
     state,
-    skyFlight
+    skyFlight,
+    aviary
   };
 }

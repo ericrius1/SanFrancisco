@@ -182,7 +182,6 @@ export class OceanBeachWaves {
   #foamVelocity: Float32Array;
   #foamLife: Float32Array;
   #lastTime = 0;
-  #tubeVisibility = 0;
   #face: THREE.Mesh;
   #barrel: THREE.Mesh;
   #mid: THREE.Mesh;
@@ -558,12 +557,9 @@ export class OceanBeachWaves {
     const dt = Math.min(0.05, Math.max(0, time - this.#lastTime));
     this.#lastTime = time;
     this.#uTime.value = time;
-    const requestedTubeVisibility = THREE.MathUtils.clamp(tubeVisibility, 0, 1);
-    const tubeResponse = requestedTubeVisibility > this.#tubeVisibility ? 1.15 : 2.4;
-    this.#tubeVisibility +=
-      (requestedTubeVisibility - this.#tubeVisibility) *
-      (1 - Math.exp(-dt * tubeResponse));
-    this.#uTubeVisibility.value = this.#tubeVisibility;
+    // The camera already eases this blend. A second spring left the opaque
+    // roof below its alpha threshold while the camera was inside the barrel.
+    this.#uTubeVisibility.value = THREE.MathUtils.clamp(tubeVisibility, 0, 1);
     const b = OCEAN_BEACH_SURF;
 
     const near =

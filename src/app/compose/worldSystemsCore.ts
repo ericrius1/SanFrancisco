@@ -81,7 +81,6 @@ import { HUD } from "../../ui/hud";
 import { WeatherDirector, type WeatherUpdate } from "../../world/weatherDirector";
 // The launcher and reader stay dynamically loaded; a reading entry may create
 // the shared reader before this game module begins.
-import { setFlowPostFx } from "../../render/post/display/surfFlow";
 import { createBuskersSystem } from "../../app/systems/buskers";
 import { createBuskerConversation } from "../../gameplay/buskers/conversation";
 import { EmbodimentController, type PassengerExitPose } from "../../app/player/embodimentController";
@@ -633,23 +632,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     gulls?.update(time, dt, player.renderPosition);
   };
 
-  let surfFlowFx = 0;
-  let surfFlowPhase = 0;
-  let surfFlowSerial = 0;
-  // (state.surfSplashSerial hoisted to the module state record)
-  const updateSurfPresentation = (dt: number) => {
-    const surf = player.surfTelemetry;
-    const active = player.mode === "surf" && surf.flowActive;
-    const response = active ? 8 : 2.6;
-    surfFlowFx += ((active ? 1 : 0) - surfFlowFx) * (1 - Math.exp(-Math.min(dt, 0.1) * response));
-    if (surf.flowSerial !== surfFlowSerial) {
-      surfFlowSerial = surf.flowSerial;
-      surfFlowPhase = 0;
-    } else {
-      surfFlowPhase += dt;
-    }
-    setFlowPostFx(surfFlowFx, surfFlowPhase);
-  };
   // The customizer module itself is deferred until the player explicitly opens
   // the shaping room. This is rebound after networking exists; the early no-op
   // keeps the mode callback safe during startup/restores.
@@ -1314,7 +1296,6 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     currentShorebreak: () => shorebreak,
     surfBreakStillLocal,
     prepareSurfEntry,
-    updateSurfPresentation,
     birdTrails,
     abandonedMounts,
     updateScatterBoats,

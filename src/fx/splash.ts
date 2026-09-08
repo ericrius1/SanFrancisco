@@ -175,11 +175,6 @@ export class WaterSplashes {
   }
 
   update(dt: number, elapsed: number, player: Player) {
-    // Flow state is composed as a rider hero shot. Keep the ring and moving
-    // spray, but make any lingering landing plume translucent so a random
-    // activation frame can never turn the surfer into a white silhouette.
-    const presentationAlpha =
-      player.mode === "surf" && player.surfTelemetry.flowActive ? 0.16 : 1;
     // particles first so a splash spawned below still gets its first full frame
     for (let i = this.#drops.length - 1; i >= 0; i--) {
       const d = this.#drops[i];
@@ -195,7 +190,7 @@ export class WaterSplashes {
       d.vel.multiplyScalar(d.drag);
       d.sprite.scale.addScalar(d.grow * dt);
       const t = d.life / d.maxLife;
-      (d.sprite.material as THREE.SpriteMaterial).opacity = Math.min(1, t * 1.8) * 0.9 * presentationAlpha;
+      (d.sprite.material as THREE.SpriteMaterial).opacity = Math.min(1, t * 1.8) * 0.9;
     }
 
     this.#cooldown -= dt;

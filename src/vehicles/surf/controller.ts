@@ -8,6 +8,7 @@ import {
   nearestOceanBeachCrest,
   oceanBeachApproxShoreX,
   oceanBeachCrestX,
+  oceanBeachOffshoreX,
   sampleOceanBeachWave,
   type OceanBeachWaveSample
 } from "../../world/oceanBeachWaves";
@@ -26,8 +27,6 @@ const V = {
   supportQ: new THREE.Quaternion(),
   supportProbe: new THREE.Vector3()
 };
-
-const FLOW_REQUEST_BUFFER = 0.45;
 
 const SURFBOARD_FOOTPRINT: Record<SurfboardShape, { halfLength: number; halfWidth: number }> = {
   shortboard: { halfLength: 1.58, halfWidth: 0.5 },
@@ -82,13 +81,7 @@ export type SurfTelemetry = {
   /** 0..1 short-lived knee/hip load after a real aerial touchdown. */
   landingCompression: number;
 
-  /** Flow is local rider time only; the world clock and waves never slow. */
-  flow: number;
-  flowReady: boolean;
-  flowActive: boolean;
-  flowSerial: number;
-  flowTimeRemaining: number;
-  flowRequestBuffered: boolean;
+  /** Surf always runs at real time, including airs and barrels. */
   riderMotionRate: number;
   shape: SurfboardShape;
 
@@ -180,12 +173,6 @@ export class SurfController implements ModeController {
     splashEnergy: 0,
     landingQuality: 1,
     landingCompression: 0,
-    flow: 0,
-    flowReady: false,
-    flowActive: false,
-    flowSerial: 0,
-    flowTimeRemaining: 0,
-    flowRequestBuffered: false,
     riderMotionRate: 1,
     shape: "shortboard",
     crestDistance: 0,
@@ -219,9 +206,8 @@ export class SurfController implements ModeController {
    *  near-perpendicular nose cannot chatter. A real turn-around flips it — that
    *  is the cutback, and it is scored as one. */
   #lineDirection = 1;
-  /** Radians of nose swing banked at frame rate by the mouse, consumed by the
-   *  next fixed step. Steering is a positional delta, not a rate, so it is
-   *  applied whole exactly once no matter how the two clocks interleave. */
+  /** Radians of nose swing banked per rendered frame and eased through fixed
+   *  steps. Every delta is consumed once, independent of render/physics cadence. */
   #pendingYaw = 0;
   /** Raw mouse-Y face intent, -1 (drop/stall) … +1 (climb), self-centring. */
   #faceInput = 0;
@@ -235,23 +221,19 @@ export class SurfController implements ModeController {
   /** Explicit stall intent (mouse down / S). Barrels never engage from neutral. */
   #stallIntent = 0;
   #lineSpeed = 0;
+  #alongLineSpeed = 0;
   #carve = 0;
   #entryAssist = 0;
   #airVy = 0;
   #airTime = 0;
   /** Signed radians rotated since takeoff — style, and the landing score. */
   #airSpin = 0;
-  /** Flow's velocity scale is applied once per air, not per step. */
-  #airFlowApplied = false;
   #landingCompression = 0;
   #lipReadiness = 0;
   #launchCooldown = 0;
-  /** Seconds a Space/A press stays pending for a lip pop (or Flow fallback). */
+  /** Seconds a Space/A press stays pending for a lip pop. */
   #popRequest = 0;
   #recoveryTimer = 0;
-  #flow = 0;
-  #flowTimer = 0;
-  #flowRequest = 0;
   #relativeFaceSpeed = 0;
   #tubeState: SurfTubeState = "outside";
   #tubeDwell = 0;
@@ -266,13 +248,6 @@ export class SurfController implements ModeController {
 
   get config(): Readonly<SurfboardConfig> {
     return this.#config;
-  }
-
-  /** Render-frame-safe request latch. Callers may invoke this before a fixed step. */
-  requestFlow(): boolean {
-    if (this.#flowTimer > 0) return false;
-    this.#flowRequest = FLOW_REQUEST_BUFFER;
-    return this.#flow >= SURF_TUNING.values.flowReadyThreshold && this.#flowTimer <= 0;
   }
 
   /** Buffer a jump. Every press leaves the water; the wall decides how high. */
@@ -291,6 +266,8 @@ export class SurfController implements ModeController {
     const tb = SURF_TUNING.values;
     if (input.suspended) {
       this.#steerRate = 0;
+      this.#pendingYaw = 0;
+      this.#faceInput = 0;
       return;
     }
     const frameDt = Math.max(1e-4, Math.min(0.1, dt));
@@ -320,15 +297,16 @@ export class SurfController implements ModeController {
     this.#faceInput *= Math.exp(-frameDt * tb.faceReturn);
   }
 
-  /** Consume the yaw banked since the last fixed step (positional, not a rate). */
-  #takePendingYaw(): number {
-    const delta = this.#pendingYaw;
-    this.#pendingYaw = 0;
+  /** Ease accumulated input through fixed steps, including frames with several steps. */
+  #takePendingYaw(dt: number): number {
+    const delta = this.#pendingYaw * (1 - Math.exp(-dt * SURF_TUNING.values.turnResponse));
+    this.#pendingYaw -= delta;
     return delta;
   }
 
   /** Combined face intent: mouse-Y plus the W/S (or left-stick) equivalent. */
   #faceIntent(input: Input): number {
+    if (input.suspended) return 0;
     return THREE.MathUtils.clamp(this.#faceInput + input.axis("KeyS", "KeyW"), -1, 1);
   }
 
@@ -363,6 +341,7 @@ export class SurfController implements ModeController {
 
     const vx = OCEAN_BEACH_SURF.speed;
     const vz = this.#lineDirection * SURF_TUNING.values.trimSpeed;
+    this.#alongLineSpeed = vz;
     this.yaw = Math.atan2(-vx, -vz);
     this.lean = 0;
     this.pitch = 0;
@@ -385,8 +364,6 @@ export class SurfController implements ModeController {
     this.#launchCooldown = 0;
     this.#popRequest = 0;
     this.#recoveryTimer = 0;
-    this.#flowTimer = 0;
-    this.#flowRequest = 0;
     this.#relativeFaceSpeed = 0;
     this.#tubeState = "outside";
     this.#tubeDwell = 0;
@@ -405,11 +382,6 @@ export class SurfController implements ModeController {
     this.telemetry.airborne = false;
     this.telemetry.boardYaw = this.yaw;
     this.telemetry.pump = 0;
-    this.telemetry.flow = this.#flow;
-    this.telemetry.flowReady = this.#flow >= SURF_TUNING.values.flowReadyThreshold;
-    this.telemetry.flowActive = false;
-    this.telemetry.flowTimeRemaining = 0;
-    this.telemetry.flowRequestBuffered = false;
     this.telemetry.riderMotionRate = 1;
     this.telemetry.shape = this.#config.shape;
     this.telemetry.tubeState = "outside";
@@ -430,35 +402,17 @@ export class SurfController implements ModeController {
     // Two-axis arcade surf: horizontal pointer motion turns the nose, vertical
     // pointer motion places the board on the wall. Both meanings are fixed in
     // screen space, so nothing inverts when the ride comes around.
-    const yawDelta = this.#takePendingYaw();
+    const yawDelta = this.#takePendingYaw(dt);
     const faceAxis = this.#faceIntent(input);
     this.#launchCooldown = Math.max(0, this.#launchCooldown - dt);
     this.#popRequest = Math.max(0, this.#popRequest - dt);
-    this.#flowRequest = Math.max(0, this.#flowRequest - dt);
     if (!input.suspended && input.pressed("Space")) this.requestJump();
-    // Explicit Flow bind (keyboard X). Space also falls through to Flow when
-    // a buffered pop cannot launch.
-    if (!input.suspended && input.pressed("KeyX")) this.requestFlow();
-    if (
-      this.#flowRequest > 0 &&
-      this.#flowTimer <= 0 &&
-      this.#flow >= SURF_TUNING.values.flowReadyThreshold
-    ) {
-      this.#flow = 0;
-      this.#flowTimer = SURF_TUNING.values.flowDuration;
-      this.#flowRequest = 0;
-      this.telemetry.flowSerial++;
-    }
-    if (this.#flowTimer > 0) this.#flowTimer = Math.max(0, this.#flowTimer - dt);
-
-    const riderRate = this.#flowTimer > 0 ? SURF_TUNING.values.flowTimeScale : 1;
-    const motionDt = dt * riderRate;
     this.#entryAssist = Math.max(0, this.#entryAssist - dt);
     this.#landingCompression *= Math.exp(-Math.max(0, dt) * 5.2);
 
-    if (this.#phase === "air") this.#updateAir(ctx, dt, motionDt, yawDelta, faceAxis, frame, riderRate);
-    else if (this.#phase === "recover") this.#updateRecovery(ctx, dt, motionDt, yawDelta, frame, riderRate);
-    else this.#updateRide(ctx, dt, motionDt, yawDelta, faceAxis, frame, riderRate);
+    if (this.#phase === "air") this.#updateAir(ctx, dt, yawDelta, faceAxis, frame);
+    else if (this.#phase === "recover") this.#updateRecovery(ctx, dt, yawDelta, frame);
+    else this.#updateRide(ctx, dt, yawDelta, faceAxis, frame);
     this.#updateTubeState(dt);
   }
 
@@ -467,11 +421,9 @@ export class SurfController implements ModeController {
   #updateRide(
     ctx: PlayerCtx,
     dt: number,
-    motionDt: number,
     yawDelta: number,
     faceAxis: number,
-    frame: ModeFrame,
-    riderRate: number
+    frame: ModeFrame
   ) {
     const tb = SURF_TUNING.values;
     const shape = surfboardHandling(this.#config);
@@ -494,13 +446,13 @@ export class SurfController implements ModeController {
     this.yaw += yawDelta * shape.carve * entryBlend;
     const trimBase = Math.abs(shortestAngle(this.yaw, 0)) <= Math.PI / 2 ? 0 : Math.PI;
     const steering = THREE.MathUtils.clamp(
-      Math.abs(this.#steerRate) / Math.max(0.01, tb.trimIdleRate),
+      Math.max(Math.abs(this.#steerRate), Math.abs(yawDelta) / Math.max(dt, 1e-4)) / Math.max(0.01, tb.trimIdleRate),
       0,
       1
     );
     this.yaw +=
       shortestAngle(trimBase, this.yaw) *
-      (1 - Math.exp(-motionDt * tb.trimAssist * (1 - steering)));
+      (1 - Math.exp(-dt * tb.trimAssist * (1 - steering)));
     // Travel direction is observed, never remembered: a real turn-around is the
     // roundhouse, and the deadband keeps a perpendicular nose from chattering.
     const alongLine = -Math.cos(this.yaw);
@@ -510,7 +462,7 @@ export class SurfController implements ModeController {
     const crestward = Math.sin(this.yaw);
     this.#carve +=
       (crestward - this.#carve) *
-      (1 - Math.exp(-motionDt * tb.carveResponse * shape.carve));
+      (1 - Math.exp(-dt * tb.carveResponse * shape.carve));
 
     // Pointer Y owns the wall position outright; aiming the nose up the face
     // also climbs, so one hand can set up a launch without thinking in axes.
@@ -521,23 +473,23 @@ export class SurfController implements ModeController {
     ) * entryBlend;
     this.#faceControl +=
       (faceTarget - this.#faceControl) *
-      (1 - Math.exp(-motionDt * tb.faceInputResponse));
+      (1 - Math.exp(-dt * tb.faceInputResponse));
     this.#stallIntent +=
       (Math.max(0, -faceAxis) - this.#stallIntent) *
-      (1 - Math.exp(-motionDt * tb.faceInputResponse));
+      (1 - Math.exp(-dt * tb.faceInputResponse));
     this.#climbEffort +=
-      (Math.max(0, faceAxis) - this.#climbEffort) * Math.min(1, motionDt * 6);
+      (Math.max(0, faceAxis) - this.#climbEffort) * Math.min(1, dt * 6);
 
     const targetSpeed = Math.min(tb.trimSpeed * shape.speed, tb.maxTrim * shape.speed);
     if (this.#lineSpeed < targetSpeed) {
       this.#lineSpeed +=
         (targetSpeed - this.#lineSpeed) *
-        Math.min(1, motionDt * tb.speedResponse * shape.acceleration);
+        Math.min(1, dt * tb.speedResponse * shape.acceleration);
     } else {
       // Above trim, earned speed bleeds gently — the trim spring must never
       // out-pull the drop gain or carving down the face would LOSE speed.
       this.#lineSpeed +=
-        (targetSpeed - this.#lineSpeed) * Math.min(1, motionDt * tb.speedDecay);
+        (targetSpeed - this.#lineSpeed) * Math.min(1, dt * tb.speedDecay);
     }
     // Horizontal carves still exchange a little height and speed, but W/S is
     // now the primary, predictable energy loop. W gives a forgiving pump;
@@ -546,7 +498,7 @@ export class SurfController implements ModeController {
       const headroom = Math.max(0, tb.maxTrim * shape.speed * 1.12 - this.#lineSpeed);
       this.#lineSpeed += Math.min(
         headroom,
-        -this.#carve * tb.dropCarveGain * motionDt * tb.steerEnergyInfluence
+        -this.#carve * tb.dropCarveGain * dt * tb.steerEnergyInfluence
       );
     } else if (this.#carve > 0) {
       this.#lineSpeed = Math.max(
@@ -554,7 +506,7 @@ export class SurfController implements ModeController {
         this.#lineSpeed -
           this.#carve *
             tb.climbCarveCost *
-            motionDt *
+            dt *
             (this.#lineSpeed / Math.max(1, tb.maxTrim)) *
             tb.steerEnergyInfluence
       );
@@ -563,22 +515,26 @@ export class SurfController implements ModeController {
       const headroom = Math.max(0, tb.maxTrim * shape.speed - this.#lineSpeed);
       this.#lineSpeed += Math.min(
         headroom,
-        this.#faceControl * tb.pumpGain * shape.acceleration * motionDt
+        this.#faceControl * tb.pumpGain * shape.acceleration * dt
       );
     }
     if (this.#stallIntent > 0) {
       this.#lineSpeed +=
         (tb.stallSpeed - this.#lineSpeed) *
-        Math.min(1, motionDt * tb.stallResponse * this.#stallIntent);
+        Math.min(1, dt * tb.stallResponse * this.#stallIntent);
     }
 
     // Board yaw authors the turn, but grounded X motion is resolved in the
     // moving crest frame. This is the rail contact the old height-only floor
     // lacked: velocity is projected back into a bounded face corridor instead
     // of crossing through the visible wall.
-    const speed = this.#lineSpeed * riderRate;
+    const speed = this.#lineSpeed;
     const authoredVx = -Math.sin(this.yaw) * speed;
-    let vz = -Math.cos(this.yaw) * speed;
+    // Preserve momentum through cutbacks and switch landings. A rotated board
+    // must not reverse the body's full velocity in one physics step.
+    this.#alongLineSpeed += (-Math.cos(this.yaw) * speed - this.#alongLineSpeed) *
+      (1 - Math.exp(-dt * tb.turnDriveResponse));
+    let vz = this.#alongLineSpeed;
     const upRange = Math.max(1, tb.faceOffset - tb.faceLineLipOffset);
     let desiredFaceOffset = tb.faceOffset +
       (this.#faceControl > 0
@@ -612,6 +568,7 @@ export class SurfController implements ModeController {
       this.#steerRate = 0;
       this.#lineDirection = beyondNorth ? 1 : -1;
       vz = beyondNorth ? Math.abs(vz) : -Math.abs(vz);
+      this.#alongLineSpeed = vz;
       this.telemetry.assistSerial++;
       this.#emitSplash(0.7);
     }
@@ -625,7 +582,7 @@ export class SurfController implements ModeController {
       -tb.maxFaceCorrection,
       tb.maxFaceCorrection
     );
-    const railBlend = 1 - Math.exp(-motionDt * tb.railGrip * shape.grip);
+    const railBlend = 1 - Math.exp(-dt * tb.railGrip * shape.grip);
     // Cross-face velocity is stateful. Blending anew from authored yaw every
     // frame made rail grip frame-rate dependent and unable to overcome the
     // crest's own 9 m/s translation; the board slowly leaked through the lip.
@@ -670,22 +627,16 @@ export class SurfController implements ModeController {
     if (this.#popRequest > 0 && this.#launchCooldown <= 0) {
       this.#popRequest = 0;
       this.#beginJump(launchSpeed, this.#lipReadiness, shape, climbVertical);
-      this.#orientRide(ctx, motionDt, vx, vz, vy, sample);
-      this.#commit(ctx, y, vx, this.#airVy * riderRate, vz);
-      this.#syncTelemetry(ctx, frame, sample, totalSpeed, y, riderRate);
+      this.#orientRide(ctx, dt, vx, vz, vy, sample);
+      this.#commit(ctx, y, vx, this.#airVy, vz);
+      this.#syncTelemetry(ctx, frame, sample, totalSpeed, y);
       return;
     }
 
-    this.#chargeFlow(
-      dt,
-      totalSpeed,
-      sample.face,
-      Math.max(Math.abs(this.#carve), Math.abs(this.#faceControl))
-    );
     this.grounded = true;
-    this.#orientRide(ctx, motionDt, vx, vz, vy, sample);
+    this.#orientRide(ctx, dt, vx, vz, vy, sample);
     this.#commit(ctx, y, vx, vy, vz);
-    this.#syncTelemetry(ctx, frame, sample, totalSpeed, y, riderRate);
+    this.#syncTelemetry(ctx, frame, sample, totalSpeed, y);
   }
 
   /** 0 on the spent flats … 1 sitting under the lip. Height bonus + HUD meter. */
@@ -726,20 +677,6 @@ export class SurfController implements ModeController {
         climbVertical * tb.launchClimbLift) *
         shape.launch
     );
-    // A big, earned pop with a full meter drops straight into Flow — the reward
-    // for reading the wave, without another button to remember.
-    if (
-      this.#airVy >= tb.flowAutoLaunchSpeed &&
-      this.#flowTimer <= 0 &&
-      this.#flow >= tb.flowReadyThreshold
-    ) {
-      this.#flow = 0;
-      this.#flowTimer = tb.flowDuration;
-      this.#flowRequest = 0;
-      this.telemetry.flowSerial++;
-    }
-    // Launching during Flow: the ride commit already carried the scaled speed.
-    this.#airFlowApplied = this.#flowTimer > 0;
     this.#lipReadiness = 0;
     this.#launchCooldown = tb.launchCooldown;
     this.telemetry.launchSerial++;
@@ -751,11 +688,9 @@ export class SurfController implements ModeController {
   #updateAir(
     ctx: PlayerCtx,
     dt: number,
-    motionDt: number,
     yawDelta: number,
     faceAxis: number,
-    frame: ModeFrame,
-    riderRate: number
+    frame: ModeFrame
   ) {
     const tb = SURF_TUNING.values;
     const shape = surfboardHandling(this.#config);
@@ -767,25 +702,11 @@ export class SurfController implements ModeController {
       this.#crestSlot ?? undefined
     );
     this.#airTime += dt;
-    this.#airVy -= tb.gravity * motionDt;
+    this.#airVy -= tb.gravity * dt;
 
-    // Preserve horizontal momentum from the body. Flow scales only the rider's
-    // velocity, so observers see a long, dreamy arc while the ocean stays live.
+    // Preserve takeoff momentum while the board rotates independently for tricks.
     let vx = frame.v.linear[0];
-    let vz = frame.v.linear[2];
-    // Flow slows only rider-authored motion, applied ONCE per transition: the
-    // body already holds last step's scaled commit, so rescaling every fixed
-    // step decayed the arc geometrically (0.38^n) to a dead stop in ~0.15 s.
-    if (riderRate < 1 && !this.#airFlowApplied) {
-      vx = OCEAN_BEACH_SURF.speed + (vx - OCEAN_BEACH_SURF.speed) * riderRate;
-      vz *= riderRate;
-      this.#airFlowApplied = true;
-    } else if (riderRate >= 1 && this.#airFlowApplied) {
-      const scale = Math.max(0.05, SURF_TUNING.values.flowTimeScale);
-      vx = OCEAN_BEACH_SURF.speed + (vx - OCEAN_BEACH_SURF.speed) / scale;
-      vz /= scale;
-      this.#airFlowApplied = false;
-    }
+    const vz = frame.v.linear[2];
     // Stay in the moving frame of the crest that launched us. This preserves a
     // real arc while preventing a faceward takeoff from crossing through the
     // wave or snapping to a neighbouring set during landing.
@@ -799,7 +720,7 @@ export class SurfController implements ModeController {
       const relativeVx = vx - crestVx;
       vx = crestVx + THREE.MathUtils.lerp(relativeVx, targetRelativeVx, Math.min(1, dt * 1.7));
     }
-    const vy = this.#airVy * riderRate;
+    const vy = this.#airVy;
     // The same pointer keeps working in the air. Neutral input leaves a natural
     // surfer's pop — takeoff heading held, rail shed, nose up on the climb and
     // down on the descent. Steering spins the board around that arc for style
@@ -807,7 +728,7 @@ export class SurfController implements ModeController {
     const travelYaw = Math.atan2(-vx, -vz);
     this.yaw += yawDelta;
     this.#airSpin += yawDelta;
-    const airAlign = 1 - Math.exp(-motionDt * tb.airAlignResponse);
+    const airAlign = 1 - Math.exp(-dt * tb.airAlignResponse);
     this.lean += (0 - this.lean) * airAlign;
     const pitchTarget = THREE.MathUtils.clamp(
       this.#airVy * tb.airPitchScale + faceAxis * tb.airPitchInput,
@@ -819,12 +740,12 @@ export class SurfController implements ModeController {
     let y = this.#safeY(ctx, tb.railHeight);
     const nx = p.x + vx * dt;
     const nz = p.z + vz * dt;
-    const landingFloor = this.#surface(nx, nz, ctx.time, tb.railHeight);
+    const landingFloor = this.#contactFloor(nx, nz, ctx.time + dt, tb.railHeight);
     const predictedY = y + vy * dt;
-    const magnet = tb.landingMagnet * shape.landingAssist + Math.min(0.8, Math.hypot(vx, vz) * 0.018);
+    const contactSlack = tb.landingContactSlack * shape.landingAssist;
     const descending = this.#airVy <= 0;
 
-    if (descending && predictedY <= landingFloor + magnet) {
+    if (descending && predictedY <= landingFloor + contactSlack) {
       // Landing switch is landing: a completed half or full rotation is square
       // with the line, so only a half-committed board sideways to its own
       // momentum costs anything.
@@ -845,7 +766,6 @@ export class SurfController implements ModeController {
       this.telemetry.landingQuality = quality;
       this.#landingCompression = THREE.MathUtils.clamp(0.48 + impact / 22, 0.55, 1);
       this.telemetry.landingSerial++;
-      this.#flow = Math.min(1, this.#flow + this.#airTime * tb.flowLandingBoost * (0.5 + quality * 0.5));
       this.#emitSplash(THREE.MathUtils.clamp(0.35 + impact / 18 + this.#airTime * 0.18, 0.3, 1.6));
 
       y = this.#contactFloor(p.x, p.z, ctx.time, tb.railHeight);
@@ -863,16 +783,16 @@ export class SurfController implements ModeController {
       // Ride away on the heading you actually landed on — a committed spin
       // sends you back down the line, and the trim spring settles the rest.
       this.#lineDirection = -Math.cos(this.yaw) >= 0 ? 1 : -1;
-      this.lean *= 0.35;
-      this.pitch = 0;
+      this.#alongLineSpeed = vz;
+      // Keep the touchdown attitude; the ride solver settles it continuously.
       this.#commit(ctx, y, vx, trackVy, vz);
-      this.#syncTelemetry(ctx, frame, sample, Math.hypot(vx, vz), y, riderRate);
+      this.#syncTelemetry(ctx, frame, sample, Math.hypot(vx, vz), y);
       return;
     }
 
     this.grounded = false;
     this.#commit(ctx, y, vx, vy, vz);
-    this.#syncTelemetry(ctx, frame, sample, Math.hypot(vx, vz), y, riderRate);
+    this.#syncTelemetry(ctx, frame, sample, Math.hypot(vx, vz), y);
   }
 
   // --- surface-skimming auto-save --------------------------------------------
@@ -890,10 +810,8 @@ export class SurfController implements ModeController {
   #updateRecovery(
     ctx: PlayerCtx,
     dt: number,
-    motionDt: number,
     yawDelta: number,
-    frame: ModeFrame,
-    riderRate: number
+    frame: ModeFrame
   ) {
     const tb = SURF_TUNING.values;
     const p = ctx.position;
@@ -904,11 +822,11 @@ export class SurfController implements ModeController {
     const recoveryTrimYaw = Math.abs(shortestAngle(this.yaw, 0)) <= Math.PI / 2 ? 0 : Math.PI;
     this.yaw +=
       shortestAngle(recoveryTrimYaw, this.yaw) *
-      (1 - Math.exp(-motionDt * tb.yawResponse * 0.7));
+      (1 - Math.exp(-dt * tb.yawResponse * 0.7));
     const crestward = Math.sin(this.yaw);
-    this.#carve += (crestward - this.#carve) * (1 - Math.exp(-motionDt * tb.carveResponse));
+    this.#carve += (crestward - this.#carve) * (1 - Math.exp(-dt * tb.carveResponse));
     const sample = this.#sampleLockedCrest(p.x, p.z, ctx.time);
-    const speed = tb.recoverySpeed * riderRate;
+    const speed = tb.recoverySpeed;
     const authoredVx = -Math.sin(this.yaw) * speed;
     let vz = -Math.cos(this.yaw) * speed;
     const desiredFaceOffset = tb.faceOffset - this.#carve * tb.faceLineDropRange * 0.2;
@@ -925,7 +843,7 @@ export class SurfController implements ModeController {
     );
     this.#relativeFaceSpeed +=
       (targetRelativeVx - this.#relativeFaceSpeed) *
-      (1 - Math.exp(-motionDt * tb.railGrip));
+      (1 - Math.exp(-dt * tb.railGrip));
     let vx = crestVx + this.#relativeFaceSpeed;
     let nx = p.x + vx * dt;
     const predictedFaceDistance = nx - nextCrestX;
@@ -944,11 +862,11 @@ export class SurfController implements ModeController {
     const rawVy = (nextFloor - y) / Math.max(dt, 1e-4);
     const vy = THREE.MathUtils.clamp(rawVy, -tb.maxSurfaceVy, tb.maxSurfaceVy);
 
-    this.#orientRide(ctx, motionDt, vx, vz, vy, sample);
+    this.#orientRide(ctx, dt, vx, vz, vy, sample);
     this.grounded = true;
     if (this.#recoveryTimer <= 0) this.#phase = "ride";
     this.#commit(ctx, y, vx, vy, vz);
-    this.#syncTelemetry(ctx, frame, sample, Math.hypot(vx, vz), y, riderRate);
+    this.#syncTelemetry(ctx, frame, sample, Math.hypot(vx, vz), y);
   }
 
   // --- helpers ----------------------------------------------------------------
@@ -958,7 +876,7 @@ export class SurfController implements ModeController {
     // face is still optically dense; waiting for the mask to reach zero leaves
     // several seconds of flat water at the end of an otherwise live ride.
     if (x > OCEAN_BEACH_SURF.maxX - waveResetMargin) return true;
-    if (x < OCEAN_BEACH_SURF.minX + 18) return true;
+    if (x < oceanBeachOffshoreX(z) + 18) return true;
     const shore = oceanBeachApproxShoreX(z);
     return x > shore - waveResetMargin;
   }
@@ -1099,7 +1017,7 @@ export class SurfController implements ModeController {
 
   #orientRide(
     ctx: PlayerCtx,
-    motionDt: number,
+    dt: number,
     vx: number,
     vz: number,
     vy: number,
@@ -1142,18 +1060,11 @@ export class SurfController implements ModeController {
     // Cap well short of horizontal: a planted surfer cants into the wall, never
     // rolls onto their side (which read as a prone rider bleeding into the face).
     const targetLean = THREE.MathUtils.clamp(surfaceBank + carveBank, -0.9, 0.9);
-    this.lean += (targetLean - this.lean) * Math.min(1, motionDt * tb.leanResponse * shape.stability);
+    this.lean += (targetLean - this.lean) * Math.min(1, dt * tb.leanResponse * shape.stability);
 
     const slopePitch = Math.atan(slopeForward) * tb.pitchFollow;
     const pitchTarget = THREE.MathUtils.clamp(slopePitch + vy * 0.004, -0.58, 0.58);
-    this.pitch += (pitchTarget - this.pitch) * Math.min(1, motionDt * tb.pitchResponse);
-  }
-
-  #chargeFlow(dt: number, speed: number, face: number, carve: number) {
-    if (this.#flowTimer > 0) return;
-    const tb = SURF_TUNING.values;
-    const speedK = THREE.MathUtils.clamp((speed - tb.stallSpeed) / Math.max(1, tb.maxTrim - tb.stallSpeed), 0, 1);
-    this.#flow = Math.min(1, this.#flow + dt * tb.flowChargeRate * (0.25 + speedK * 0.55 + face * 0.35 + carve * 0.2));
+    this.pitch += (pitchTarget - this.pitch) * Math.min(1, dt * tb.pitchResponse);
   }
 
   #updateTubeState(dt: number) {
@@ -1221,24 +1132,24 @@ export class SurfController implements ModeController {
     // Prefer the player's local crest. On wash-in, step one slot offshore so the
     // reset is a nearby next-wave hop rather than a jump to entryX's pocket.
     let crest = nearestOceanBeachCrest(keepZ ? p.x : b.entryX, z, ctx.time);
-    // A fresh entry starts on a fully developed offshore set, never the nearest
-    // crest after it has already entered the shoreline attenuation band.
+    const faceOffset = nextWave
+      ? THREE.MathUtils.clamp(crest.distance, tb.faceCorridorMin, tb.faceCorridorMax)
+      : tb.faceOffset;
+    // Pick a crest inside this stretch's actual strip. The northern shoreline
+    // bends west of minX: using that fixed bound and always subtracting a slot
+    // sent every reset farther offshore until no wave remained.
     const cleanCrestLimit = oceanBeachApproxShoreX(z) - tb.waveResetMargin - tb.faceOffset;
-    if (!nextWave && crest.crestX > cleanCrestLimit) {
-      const slot = crest.slot - 1;
-      const crestX = oceanBeachCrestX(slot, z, ctx.time);
-      crest = { slot, crestX, distance: p.x - crestX };
-    }
-    if (nextWave && keepZ && p.x > crest.crestX + tb.faceOffset * 0.35) {
-      const slot = crest.slot - 1;
-      crest = {
-        slot,
-        crestX: oceanBeachCrestX(slot, z, ctx.time),
-        distance: p.x - oceanBeachCrestX(slot, z, ctx.time)
-      };
-    }
+    const minimumCrestX = oceanBeachOffshoreX(z) + 70 - tb.faceOffset;
+    const minSlot = Math.ceil(crest.slot + (minimumCrestX - crest.crestX) / b.spacing);
+    const maxSlot = Math.floor(crest.slot + (cleanCrestLimit - crest.crestX) / b.spacing);
+    const desiredSlot = nextWave && p.x > cleanCrestLimit + tb.faceOffset
+      ? crest.slot - 1
+      : crest.slot;
+    const slot = THREE.MathUtils.clamp(desiredSlot, minSlot, Math.max(minSlot, maxSlot));
+    const crestX = oceanBeachCrestX(slot, z, ctx.time);
+    crest = { slot, crestX, distance: p.x - crestX };
     this.#crestSlot = crest.slot;
-    const x = crest.crestX + tb.faceOffset;
+    const x = crest.crestX + faceOffset;
     if (!nextWave) {
       const northRun = z - (b.minZ + tb.boundaryMargin);
       const southRun = b.maxZ - tb.boundaryMargin - z;
@@ -1247,31 +1158,37 @@ export class SurfController implements ModeController {
     this.#lineSpeed = nextWave
       ? Math.max(tb.trimSpeed, this.#lineSpeed * 0.82)
       : tb.trimSpeed;
-    this.#climbEffort = 0;
-    this.#faceControl = 0;
-    this.#stallIntent = 0;
-    this.#pendingYaw = 0;
-    this.#faceInput = 0;
-    this.#steerRate = 0;
-    this.#carve = 0;
-    this.#entryAssist = tb.entryAssistDuration;
+    if (!nextWave) {
+      this.#climbEffort = 0;
+      this.#faceControl = 0;
+      this.#stallIntent = 0;
+      this.#pendingYaw = 0;
+      this.#faceInput = 0;
+      this.#steerRate = 0;
+      this.#carve = 0;
+      this.#entryAssist = tb.entryAssistDuration;
+      this.#popRequest = 0;
+      this.#relativeFaceSpeed = 0;
+    }
     this.#phase = "ride";
     this.#airVy = 0;
     this.#airTime = 0;
     this.#airSpin = 0;
     this.#landingCompression = 0;
     this.#lipReadiness = 0;
-    this.#launchCooldown = Math.max(this.#launchCooldown, nextWave ? 0.45 : 0);
-    this.#popRequest = 0;
-    this.#relativeFaceSpeed = 0;
     this.#tubeState = "outside";
     this.#tubeDwell = 0;
     this.#tubeExit = 0;
-    const vx = b.speed;
-    const vz = this.#lineDirection * this.#lineSpeed;
-    this.yaw = Math.atan2(-vx, -vz);
-    this.lean = 0;
-    this.pitch = 0;
+    const vx = b.speed + this.#relativeFaceSpeed;
+    const vz = nextWave ? this.#alongLineSpeed : this.#lineDirection * this.#lineSpeed;
+    if (!nextWave) {
+      this.#alongLineSpeed = vz;
+      this.yaw = Math.atan2(-vx, -vz);
+      this.lean = 0;
+      this.pitch = 0;
+    }
+    // A wave handoff relocates the pocket, not the player's steering. Preserve
+    // the heading, face intent and buffered jump through the whitewater wash.
     this.grounded = true;
     const y = this.#contactFloor(x, z, ctx.time, tb.railHeight);
     p.set(x, y, z);
@@ -1321,7 +1238,7 @@ export class SurfController implements ModeController {
       this.#emitSplash(1.05);
     }
     if (ctx.body) {
-      const q = ctx.quaternion.setFromEuler(V.euler.set(0, this.yaw, 0, "YXZ"));
+      const q = ctx.quaternion.setFromEuler(V.euler.set(this.pitch, this.yaw, this.lean, "YXZ"));
       ctx.physics.world.setBodyTransform(ctx.body, [p.x, p.y, p.z], [q.x, q.y, q.z, q.w]);
       ctx.physics.world.setBodyVelocity(ctx.body, [vx, 0, vz], [0, 0, 0]);
     }
@@ -1333,8 +1250,7 @@ export class SurfController implements ModeController {
     _frame: ModeFrame,
     sample: ReturnType<typeof sampleOceanBeachWave>,
     speed: number,
-    _committedY: number,
-    riderRate: number
+    _committedY: number
   ) {
     const tm = this.telemetry;
     const clearance = SURF_TUNING.values.railHeight;
@@ -1360,12 +1276,7 @@ export class SurfController implements ModeController {
     tm.faceLine = -this.#faceControl;
     tm.stalling = this.#phase === "ride" && this.#stallIntent > 0.35;
     tm.lipReadiness = this.#lipReadiness;
-    tm.flow = this.#flow;
-    tm.flowReady = this.#flow >= SURF_TUNING.values.flowReadyThreshold;
-    tm.flowActive = this.#flowTimer > 0;
-    tm.flowTimeRemaining = this.#flowTimer;
-    tm.flowRequestBuffered = this.#flowRequest > 0;
-    tm.riderMotionRate = riderRate;
+    tm.riderMotionRate = 1;
     tm.shape = this.#config.shape;
     tm.crestDistance = sample.crestDistance;
     tm.slopeX = sample.slopeX;

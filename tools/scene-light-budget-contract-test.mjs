@@ -38,9 +38,11 @@ if (!/export const POOL_SIZE = 1\b/.test(pool)) {
 
 // These helpers construct lights outside the main scene-light set: the ocean
 // lab is a standalone two-light page, the clipmap creates shadow-only metadata,
-// and piano god rays use an off-scene shadow-camera source.
+// piano god rays use an off-scene shadow-camera source, and the standalone
+// aviary HTML viewer has its own studio scene (never imported by the world).
 const utilityConstructors = new Map([
   ["src/world/ocean/lab.ts", ["DirectionalLight", "HemisphereLight"]],
+  ["src/world/aviary/galleryScene.ts", ["HemisphereLight", "DirectionalLight", "DirectionalLight"]],
   ["src/world/shadows/clipmapShadowNode.ts", ["DirectionalLight"]],
   ["src/render/pianoGodRays.ts", ["DirectionalLight"]]
 ]);

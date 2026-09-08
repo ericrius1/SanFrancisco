@@ -1,0 +1,22 @@
+# Aviary art direction
+
+Generated with the built-in GPT image generator. The concept plate is the visual authority; the earlier geometric blockout is superseded.
+
+## Concept plate prompt
+
+Use case: stylized-concept
+Asset type: art-direction reference sheet for three premium game-ready 3D birds that will be sculpted and rigged in Blender.
+Create one exceptionally beautiful wide concept plate with three clearly separated full-body birds in flight, each seen from a dorsal three-quarter view so its full feather design, face, tail and both wings can be modeled. Each occupies one third of the sheet, no overlap. Deep desaturated blue-black background, refined museum natural-history illustration meets sculptural contemporary fantasy art. Polished painterly 3D concept art, believable avian anatomy with sophisticated stylization. Small intelligent eyes, slender sculpted heads transitioning naturally into chest, aerodynamic bodies, long anatomically articulated wings with overlapping feather vanes; precise tapered primaries with delicate shafts and subtle vane striations. Feathers should form coherent, flowing imbricated surfaces, not isolated scales or petals. Visible shoulder-elbow-wrist structure and asymmetrical layered wing fans. Subtle satin light across richly colored plumage.
+LEFT: PEARL, a graceful storm-coast gull/tern, long narrow swept wings, elongated ivory head and neck, sharp ochre beak, silvery pearl mantle transitioning through dusty steel blue to dark midnight primary tips, tiny warm gold accents at shoulder, luminous cream underside, elegant deeply parted tail with two fine extensions. Restrained, windswept, noble.
+CENTER: LAGOON, an exquisitely elegant crested jay inspired by kingfishers and paradise flycatchers, midnight navy crown and face mask, a modest swept-back tapered crest, iridescent teal neck and turquoise mantle, ultramarine wing fans with fine pale celadon edging, dark slender pointed beak, warm off-white throat, narrow elongated body and a long layered graduated tail with two delicate azure streamers. Rich jewel-like color without looking metallic or plastic.
+RIGHT: EMBER, a refined copper kestrel with falcon anatomy, slim alert head with hooked horn beak, amber iris and dark tear stripe, warm buff breast with fine dark speckling, cinnamon and burnt sienna coverts, layered copper/russet flight feathers with graphite tips and subtle gold margins, blue-gray shoulders, long elegant barred tail. Poised and powerful.
+Soft directional gallery lighting, gorgeous pigment variation within individual feathers, graceful natural proportions, excellent silhouette readability, high-end art book quality. The design must be translatable into a medium-poly 3D mesh with layered feather geometry.
+Avoid: chibi, cute cartoon, round oversized heads, huge eyes, plush toys, spherical bodies, chunky beaks, dragon scales, separate puffy leaf feathers, candy colors, flat icon shapes, photorealistic wildlife photography. No scenery, props, pedestal or lettering. All three full bodies and wing tips must fit within the canvas.
+
+## Modeling reference prompts
+
+Each species reference was generated from `concept-v2.png` with the built-in image tool, isolating that species in a full-body open-wing rest pose on neutral gray. Pearl keeps its slender ivory head, ochre beak, graphite primaries and forked white streamers. Lagoon keeps its navy face/crest, celadon throat, turquoise mantle, ultramarine wing fans and long azure tail streamers. Ember keeps its amber eyes, dark tear stripes, copper speckles, slate shoulders and barred tail. All prompts explicitly excluded toy proportions, oversized heads/eyes, puffy leaf feathers, plastic, text, props and platforms.
+
+The images were then converted to base meshes with Tripo v3.1-20260211, 30,000 face target, texture/PBR enabled. Generated source GLBs are retained in `source/`. Blender scripts correct axes and wing-plane pitch, center the shoulder, bind normalized blended skin weights, retain the three flight actions, and expose an export-only decimation modifier. Source textures stay packed in the `.blend`; shipping textures are resized and encoded to mipmapped KTX2.
+
+No third-party bird models or stock bird imagery were used.

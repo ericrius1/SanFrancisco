@@ -64,7 +64,7 @@ export function applySharpenParams(): void {
  *   because the tail has it in a var and a 5th grade evaluation would be pure
  *   waste.
  * @param sampleGraded re-evaluates the graded colour at an arbitrary UV.
- * @param uv the centre UV (post surf-flow lens).
+ * @param uv the centre screen UV.
  * @param texelSize 1/size of the texture being sampled.
  * @returns a display-referred vec3 node. At `amount: 0` this returns `colour`
  *   untouched — see the identity note below.

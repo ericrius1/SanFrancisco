@@ -136,7 +136,10 @@
     "assets:heal": "node tools/assets-check.mjs --heal",
     "assets:list": "node tools/assets-check.mjs --list",
     "test:sky-flight": "node tools/sky-flight-physics-probe.mjs",
-    "test:sky-flight:browser": "node tools/sky-flight-browser-probe.mjs"
+    "test:sky-flight:browser": "node tools/sky-flight-browser-probe.mjs",
+    "birds:export": "node tools/aviary/export.mjs && npm run birds:pack",
+    "birds:pack": "node tools/aviary/pack.mjs",
+    "test:aviary": "node tools/aviary/probe.mjs"
   },
   "dependencies": {
     "@litertjs/core": "^2.5.3",

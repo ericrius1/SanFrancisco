@@ -3,7 +3,7 @@ import type { SurfTelemetry } from "../../vehicles/surf";
 import type { VehicleAudio } from "../../fx/vehicleAudio";
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
-type SurfStatusTone = "" | "good" | "air" | "bad" | "flow" | "tube";
+type SurfStatusTone = "" | "good" | "air" | "bad" | "tube";
 
 /** Score/combo bridge for the surf controller. Simulation stays in the vehicle;
  * this class owns rewards, feedback, HUD pulses and audio events. */
@@ -13,7 +13,6 @@ export class SurfExperience {
   #scoreEl: HTMLElement;
   #comboEl: HTMLElement;
   #statusEl: HTMLElement;
-  #meterEl: HTMLElement;
   #launchEl: HTMLElement;
   #score = 0;
   #combo = 1;
@@ -24,8 +23,6 @@ export class SurfExperience {
   #landingSerial = 0;
   #assistSerial = 0;
   #waveSerial = 0;
-  #flowSerial = 0;
-  #flowDuration = 1;
   #launchSerial = 0;
   #tubeSerial = 0;
   #cutbackSerial = 0;
@@ -46,13 +43,11 @@ export class SurfExperience {
       <div class="surf-score"><span data-surf-score>0</span><small>POINTS</small></div>
       <div class="surf-combo" data-surf-combo>x1</div>
       <div class="surf-status" data-surf-status>DROP IN</div>
-      <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>X</b></div>
       <div class="surf-meter surf-launch-meter"><span>POP</span><i data-surf-launch></i><b>SPACE</b></div>
-      <div class="surf-controls">MOUSE ↔ CARVE · MOUSE ↕ CLIMB / STALL · SPACE JUMP · E EXIT</div>`;
+      <div class="surf-controls">A / D OR MOUSE ↔ CARVE · W CLIMB · S BARREL · SPACE JUMP · E EXIT</div>`;
     this.#scoreEl = this.root.querySelector("[data-surf-score]")!;
     this.#comboEl = this.root.querySelector("[data-surf-combo]")!;
     this.#statusEl = this.root.querySelector("[data-surf-status]")!;
-    this.#meterEl = this.root.querySelector("[data-surf-meter]")!;
     this.#launchEl = this.root.querySelector("[data-surf-launch]")!;
     document.getElementById("hud")!.append(this.transition, this.root);
   }
@@ -115,17 +110,17 @@ export class SurfExperience {
       if (surf.landedAirTime > 0.24) {
         // A committed rotation renames the trick — spinning the board on the way
         // down is the reason to steer in the air at all.
-        const spins = Math.floor((Math.abs(surf.landedSpin) + 0.45) / (Math.PI * 2));
-        const label = spins > 0
-          ? `${spins * 360} SPIN`
+        const halfTurns = Math.floor((Math.abs(surf.landedSpin) + 0.35) / Math.PI);
+        const label = halfTurns > 0
+          ? `${halfTurns * 180} SPIN`
           : surf.landedAirTime > 0.85
             ? "BIG AIR"
             : "CLEAN LANDING";
         const points = Math.round(
-          (180 + surf.landedAirTime * 420 + spins * 320) *
+          (180 + surf.landedAirTime * 420 + halfTurns * 180) *
             (0.55 + surf.landingQuality * 0.45)
         );
-        this.#award(points, label, "landing", spins > 0 ? "air" : "good");
+        this.#award(points, label, "landing", halfTurns > 0 ? "air" : "good");
       }
     }
     if (surf.cutbackSerial !== this.#cutbackSerial) {
@@ -140,16 +135,6 @@ export class SurfExperience {
     // sit, the faster it pays.
     if (surf.tubeState === "inside") {
       this.#score += dt * (40 + surf.tubeDepth * 160) * this.#combo;
-    }
-    if (surf.flowSerial !== this.#flowSerial) {
-      this.#flowSerial = surf.flowSerial;
-      this.#flowDuration = Math.max(0.001, surf.flowTimeRemaining);
-      this.#status("FLOW STATE", "flow");
-      this.#eventTimer = 1.1;
-      this.#audio.surfEvent("flow", 1);
-      this.root.classList.remove("flow-on");
-      void this.root.offsetWidth;
-      this.root.classList.add("flow-on");
     }
     if (surf.launchSerial !== this.#launchSerial) {
       this.#launchSerial = surf.launchSerial;
@@ -188,23 +173,19 @@ export class SurfExperience {
     } else if (surf.tubeState === "exiting") {
       this.#status("DRIVE THROUGH THE EXIT", "tube");
     } else if (surf.tubeCoverage > 0.18 && surf.tubeClearance > 0 && surf.tubeDepth < 0.5) {
-      this.#status("CARVE UP INTO THE TUBE", "tube");
+      this.#status("S / MOUSE DOWN — ENTER THE BARREL", "tube");
     } else if (surf.tubeCoverage > 0.18 && surf.tubeClearance > 0) {
       this.#status("RIDE THE POCKET — BARREL", "tube");
     } else if (surf.barrelAhead > 0.4) {
-      this.#status("BARREL AHEAD — HOLD THE POCKET", "tube");
-    } else if (surf.flowActive) {
-      this.#status(`FLOW  ${surf.riderMotionRate.toFixed(2)}×`, "flow");
+      this.#status("BARREL AHEAD — S / MOUSE DOWN", "tube");
     } else if (surf.airborne) {
       this.#status(`AIR ${surf.airTime.toFixed(1)}s`, "air");
     } else if (surf.lipReadiness > 0.72) {
       // The actionable prompt wins over the meter notice: being up here with a
       // full pop bar is exactly the moment to teach the jump.
       this.#status("SPACE — LAUNCH IT", "air");
-    } else if (surf.flowReady) {
-      this.#status("FLOW READY — GO BIG", "flow");
     } else if (surf.stalling) {
-      this.#status("MOUSE DOWN — DROP FOR SPEED", "");
+      this.#status("S / MOUSE DOWN — HOLD THE BARREL", "");
     } else if (surf.lip > 0.56) {
       this.#status("ON THE LIP", "air");
     } else if (surf.face > 0.34) {
@@ -216,13 +197,7 @@ export class SurfExperience {
     this.#scoreEl.textContent = Math.floor(this.#score).toLocaleString();
     this.#comboEl.textContent = `x${this.#combo}`;
     this.#comboEl.classList.toggle("hot", this.#combo > 1);
-    const flowFill = surf.flowActive
-      ? clamp01(surf.flowTimeRemaining / this.#flowDuration)
-      : surf.flow;
-    this.#meterEl.style.transform = `scaleX(${clamp01(flowFill)})`;
     this.#launchEl.style.transform = `scaleX(${clamp01(surf.lipReadiness)})`;
-    this.root.classList.toggle("flow-ready", surf.flowReady && !surf.flowActive);
-    this.root.classList.toggle("flow-active", surf.flowActive);
     this.root.classList.toggle(
       "tube-active",
       surf.tubeState === "entering" || surf.tubeState === "inside" || surf.tubeState === "exiting"

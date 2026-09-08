@@ -1202,11 +1202,6 @@ export class Player {
     this.#controller("surf").steerSurf(input, dt);
   }
 
-  requestSurfFlow() {
-    if (this.mode === "surf") return this.#controller("surf").requestFlow();
-    return false;
-  }
-
   get surfTelemetry(): SurfTelemetry {
     return this.#modes.surf?.telemetry ?? IDLE_SURF;
   }

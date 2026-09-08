@@ -10,11 +10,10 @@
 // and app/renderCore.ts:63 sets renderer.toneMapping = NoToneMapping so nothing
 // applies a second one.
 //
-//   uv    = surfFlowLens(screenUV)                 // SURVIVOR, verbatim
+//   uv    = screenUV
 //   c     = grade.toDisplay(colourSlot.sample(uv)) // exposure x guard x shaper x LUT
 //   If (uSharpen > 0): c = rcas(...)               // 4 more grade evals, uniform branch
 //   c    += filmGrain(c, screenCoord)              // unconditional, zeroed identity
-//   c     = surfFlowGrade(c)                       // SURVIVOR, verbatim
 //   ui   = worldUi.sample(screenUV)                // in-world UI after TAA/grain
 //   c    = c*(1-ui.a) + ui.rgb                     // premultiplied over
 import * as THREE from "three/webgpu"
@@ -25,9 +24,6 @@ import { sharpenRcas } from "../sharpen"
 import type { GradeAdapter } from "../grade"
 import type { N, PostFrameContext, PostStage, PostStageSetup, TextureSlot } from "../types"
 import { DISPLAY_TUNING } from "./tuning"
-import { surfFlowGrade, surfFlowLens } from "./surfFlow"
-
-export { setFlowPostFx } from "./surfFlow"
 
 /**
  * Optional full-res overlay drawn AFTER grade/sharpen/grain. Used for in-world
@@ -82,8 +78,7 @@ export function createDisplayStage(setup: PostStageSetup, deps: DisplayDeps): Di
   const gradedAt = (uv: N): N => deps.grade.toDisplay(slot.node.sample(uv).rgb)
 
   pipeline.outputNode = Fn(() => {
-    const lens = surfFlowLens(screenUV)
-    const c = gradedAt(lens.sampleUv).toVar()
+    const c = gradedAt(screenUV).toVar()
 
     // Grain is applied to `c`; sharpen REPLACES it, reading the graded
     // neighbourhood through `gradedAt`. Flipping the flag therefore also decides
@@ -91,13 +86,12 @@ export function createDisplayStage(setup: PostStageSetup, deps: DisplayDeps): Di
     // which is the point.
     if (GRAIN_BEFORE_SHARPEN) {
       c.assign(filmGrain(c, screenCoordinate.xy))
-      c.assign(sharpenRcas(c, gradedAt, lens.sampleUv, slot.texelSize))
+      c.assign(sharpenRcas(c, gradedAt, screenUV, slot.texelSize))
     } else {
-      c.assign(sharpenRcas(c, gradedAt, lens.sampleUv, slot.texelSize))
+      c.assign(sharpenRcas(c, gradedAt, screenUV, slot.texelSize))
       c.assign(filmGrain(c, screenCoordinate.xy))
     }
 
-    surfFlowGrade(c, lens)
     // After every look treatment: world-UI stays sharp and out of TAA history.
     // Premultiplied over — opaque signs write coverage in `a`; additive-only
     // content (aim cursor) writes `a = 0` so this reduces to `c + rgb`.

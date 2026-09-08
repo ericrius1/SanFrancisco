@@ -17,7 +17,6 @@ export { createGBufferDecoders, beautyGBufferAttachment, writeSsrMask } from "./
 export { cameraJitter, type CameraJitter } from "./jitter"
 export { godRaysControls, type GodRaysControls, type GodRaysState } from "./godrays"
 export { setUnderwaterPostFx } from "./composite"
-export { setFlowPostFx } from "./display"
 export type {
   N,
   PostChain,
