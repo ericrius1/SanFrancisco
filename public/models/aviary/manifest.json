@@ -15,7 +15,8 @@
         "Perch",
         "Scatter"
       ],
-      "textureBudgetBytes": 6990507
+      "textureBudgetBytes": 6990507,
+      "sha256": "7a255f5c3eca7679a48de50ea52718cab66ef67cc64fef406416262a5d991dd4"
     },
     {
       "id": "lagoon-jay",
@@ -30,7 +31,8 @@
         "Perch",
         "Scatter"
       ],
-      "textureBudgetBytes": 6990507
+      "textureBudgetBytes": 6990507,
+      "sha256": "a441409e6883569579231f429ddd763bc9c74308ba04bdf844feb423b5e157b1"
     },
     {
       "id": "ember-kestrel",
@@ -45,7 +47,8 @@
         "Perch",
         "Scatter"
       ],
-      "textureBudgetBytes": 6990507
+      "textureBudgetBytes": 6990507,
+      "sha256": "40e85bfc966a4f26cd5e2e2283e65f44202df72259485f8012b9dc90adae4eb4"
     }
   ]
 }

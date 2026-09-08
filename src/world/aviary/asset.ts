@@ -3,6 +3,7 @@ import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { MeshoptSimplifier } from 'meshoptimizer/simplifier';
+import { BIRD_ASSET_VERSIONS } from './assetVersions';
 import type { BirdSpeciesId } from './catalog';
 
 export const CLIP_FRAMES = 48;
@@ -27,7 +28,7 @@ export async function loadBirdAsset(id: BirdSpeciesId, renderer: THREE.WebGPURen
   const ktx = new KTX2Loader().setTranscoderPath(transcoderPath).setWorkerLimit(1).detectSupport(renderer);
   const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).setKTX2Loader(ktx);
   let gltf;
-  try { gltf = await loader.loadAsync(`${baseUrl}${id}.glb`); } finally { ktx.dispose(); }
+  try { gltf = await loader.loadAsync(`${baseUrl}${id}.glb?v=${BIRD_ASSET_VERSIONS[id]}`); } finally { ktx.dispose(); }
   const meshes: THREE.SkinnedMesh[] = [];
   gltf.scene.traverse(o => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) meshes.push(o as THREE.SkinnedMesh); });
   if (meshes.length !== 1) throw new Error(`[aviary] ${id}: expected one skinned mesh`);

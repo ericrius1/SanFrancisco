@@ -16,7 +16,7 @@ npm run birds:export
 
 This opens the saved master in background Blender, exports each species, and rebuilds the compressed game assets. It does not regenerate the models or overwrite manual art edits. Blender defaults to the macOS application; set `BLENDER_BIN` for another installation. Texture packing requires Khronos `toktx`; set `TOKTX_BIN` to its executable. This workspace also has a local KTX 4.4.2 tool under `.data/aviary/ktx-tools/`. Install the official [KTX tools](https://github.com/KhronosGroup/KTX-Software/releases) when moving the project elsewhere.
 
-For unsaved Blender edits, run `tools/aviary/export_blender.py` through Blender's Python console/MCP, then `npm run birds:pack`. Save the master as well to retain those edits. Intermediate files live under `.data/aviary/`; each finished GLB is validated before atomically replacing its public version.
+For unsaved Blender edits, run `tools/aviary/export_blender.py` through Blender's Python console/MCP, then `npm run birds:pack`. Save the master as well to retain those edits. Intermediate files live under `.data/aviary/`; each finished GLB is validated before atomically replacing its public version. Packing also regenerates `assetVersions.ts` from SHA-256 content hashes. Model URLs include those versions, so returning players receive new Blender exports despite long-lived world-asset caches.
 
 The independent WebGPU viewer is `/aviary.html`. It supports individual inspection, all three together, orbit/zoom, animation selection, a 48-bird flock, and a moving plane obstacle. Models load on selection. `npm run test:aviary` runs the headless viewer acceptance test; `node tools/aviary/game-probe.mjs` checks real-world loading and unloading. Set `SF_PROBE_URL` if the preview is on a different port.
 
@@ -34,7 +34,7 @@ The browser verified that both maps remain compressed on the GPU. All three spec
 
 ## Portable runtime and world expansion
 
-`src/world/aviary/{catalog,asset,flock,runtime}.ts` has no SF map/player dependency. Copy those modules and `public/models/aviary/` to another Three.js WebGPU project. Supply a compatible Basis transcoder directory from the same Three.js release (this project uses r185), then register habitats:
+`src/world/aviary/{catalog,asset,assetVersions,flock,runtime}.ts` has no SF map/player dependency. Copy those modules and `public/models/aviary/` to another Three.js WebGPU project. Supply a compatible Basis transcoder directory from the same Three.js release (this project uses r185), then register habitats:
 
 ```ts
 const aviary = createAviary(renderer, scene, {

@@ -1,16 +1,17 @@
 /** Real headless WebGPU acceptance: lazy requests, articulated animation,
  * bounded flocking, swept-plane response and recovery, switching/disposal. */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 const base=process.env.SF_PROBE_URL??'http://localhost:5255';
 const out='.data/aviary';await fs.mkdir(out,{recursive:true});
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BIN??'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',args:['--enable-unsafe-webgpu','--use-angle=metal','--enable-features=WebGPU']});
 const page=await browser.newPage({viewport:{width:1500,height:1000}});
-const errors=[],requests=[];
+const errors=[],requests=[],assetUrls=[];
 page.on('pageerror',e=>errors.push(String(e)));
 page.on('console',m=>{if(m.type()==='error'&&!m.text().includes('404'))errors.push(m.text());});
-page.on('request',r=>{if(r.url().includes('/models/aviary/'))requests.push(r.url().split('/').pop());});
+page.on('request',r=>{if(r.url().includes('/models/aviary/')){assetUrls.push(r.url());requests.push(r.url().split('/').pop().split('?')[0]);}});
 const ready=()=>page.waitForFunction(()=>window.__aviary?.stats.draws>0&&!document.querySelector('#status').textContent.includes('Preparing'),{},{timeout:60000});
 try{
  await page.goto(base+'/aviary.html?autostart=1');
@@ -45,6 +46,11 @@ try{
  await page.screenshot({path:out+'/web-lineup.png'});
  const stats=await page.evaluate(()=>window.__aviary.stats);
  assert.equal(stats.draws,3);
+ for(const value of new Set(assetUrls)) {
+   const url=new URL(value),name=url.pathname.split('/').pop();
+   const digest=createHash('sha256').update(await fs.readFile('public/models/aviary/'+name)).digest('hex').slice(0,16);
+   assert.equal(url.searchParams.get('v'),digest,'each model URL must invalidate caches when the exported bytes change');
+ }
  assert(stats.geometryFormatsMatch,'LOD swaps must preserve quantized vertex formats');
  assert(stats.lods.every(l=>l.length===3&&l[1]<2300&&l[2]<500),'distant geometry must stay bounded');
  assert.equal(stats.allTexturesCompressed,true,'color and normal maps must remain GPU compressed');

@@ -6,7 +6,7 @@ const base=process.env.SF_PROBE_URL??'http://localhost:5255';
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BIN??'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',args:['--enable-unsafe-webgpu','--use-angle=metal','--enable-features=WebGPU']});
 const page=await browser.newPage({viewport:{width:1280,height:800}});
 const assets=[],chunks=[],errors=[];
-page.on('request',r=>{const u=r.url();if(u.includes('/models/aviary/'))assets.push(u.split('/').pop());if(/(?:\/world\/aviary\/(?:runtime|flock|asset)\.|\/assets\/(?:runtime|flock|asset)-)/.test(u))chunks.push(u);});
+page.on('request',r=>{const u=r.url();if(u.includes('/models/aviary/'))assets.push(u.split('/').pop().split('?')[0]);if(/(?:\/world\/aviary\/(?:runtime|flock|asset)\.|\/assets\/(?:runtime|flock|asset)-)/.test(u))chunks.push(u);});
 page.on('pageerror',e=>errors.push(String(e)));
 page.on('console',m=>{if(m.type()==='error'&&(m.text().includes('[aviary]')||/validation|GPU/i.test(m.text())))errors.push(m.text());});
 const stats=()=>page.evaluate(()=>window.__sf.aviary.stats);
