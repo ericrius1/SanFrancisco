@@ -8,3 +8,10 @@
 # Editable art and agent captures are not runtime assets. Shipping GLBs stay in public/.
 /assets-src/
 /.data/
+
+/.env
+/.env.*
+/.vite-cache/
+/node_modules/
+/dist/
+/tools/deploy/node_modules/

@@ -110,6 +110,7 @@ async function main() {
   const page = await context.newPage();
   const records = [];
   const errors = [];
+  const warnings = [];
   const checks = [];
   let phase = "boot";
   const check = (id, pass, detail) => checks.push({ id, pass, detail });
@@ -118,12 +119,19 @@ async function main() {
     if (kind) records.push({ phase, kind, url: request.url(), status: null });
   });
   page.on("response", (response) => {
-    const record = [...records].reverse().find((entry) => entry.url === response.url() && entry.status === null);
+    if (response.status() >= 400) errors.push(`HTTP ${response.status()}: ${response.url()}`);
+    // R2 delivery redirects an unversioned name to an immutable object URL.
+    // Attribute the final HTTP result to that logical asset request.
+    if (response.status() >= 300 && response.status() < 400) return;
+    let request = response.request();
+    while (request.redirectedFrom()) request = request.redirectedFrom();
+    const record = [...records].reverse().find((entry) => entry.url === request.url() && entry.status === null);
     if (record) record.status = response.status();
   });
   page.on("pageerror", (error) => errors.push(`page: ${error}`));
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
+    if (message.type() === "warning") warnings.push(message.text());
   });
 
   try {
@@ -132,10 +140,11 @@ async function main() {
       timeout: 120_000
     });
     await page.waitForFunction(
-      () => window.__sf?.player && document.body.classList.contains("started") && !window.__sf.worldArrival.active,
+      () => document.body.innerText.includes("boot failed:") || (window.__sf?.player && document.body.classList.contains("started") && !window.__sf.worldArrival.active),
       undefined,
       { timeout: 180_000 }
     );
+    if (await page.evaluate(() => document.body.innerText.includes("boot failed:"))) throw new Error("App boot failed; see failure.json");
     await sleep(2500);
     const boot = records.filter((entry) => entry.phase === "boot");
     check("clean-boot-no-car-art", !boot.some((entry) => entry.kind === "texture" || entry.kind === "decal"), boot);
@@ -362,6 +371,7 @@ async function main() {
       checks,
       requests: records,
       errors,
+      warnings,
       artifacts: [
         path.join(OUT, "car-road-desktop.png"),
         path.join(OUT, "car-atelier-desktop.png"),
@@ -371,6 +381,11 @@ async function main() {
     await writeFile(path.join(OUT, "report.json"), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
     if (!report.ok) process.exitCode = 1;
+  } catch (error) {
+    await writeFile(path.join(OUT, "failure.json"), JSON.stringify({ error: String(error), errors, warnings, requests: records,
+      state: await page.evaluate(() => ({ text: document.body.innerText.slice(-6000), started: document.body.classList.contains("started"), arrival: window.__sf?.worldArrival?.active })).catch(() => null)
+    }, null, 2));
+    throw error;
   } finally {
     await context.close();
     await browser.close();

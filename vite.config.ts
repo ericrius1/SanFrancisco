@@ -257,6 +257,7 @@ export default defineConfig({
     include: ["camera-controls", "three/webgpu", "three/tsl", "lil-gui", "tweakpane"]
   },
   build: {
+    reportCompressedSize: false, // The release compression stage measures actual wire sizes.
     manifest: true,
     rollupOptions: {
       input: { main: fileURLToPath(new URL("index.html", import.meta.url)), aviary: fileURLToPath(new URL("aviary.html", import.meta.url)) },

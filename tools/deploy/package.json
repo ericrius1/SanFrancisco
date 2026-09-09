@@ -1,0 +1,14 @@
+{
+  "name": "sf-deployment-tools",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1128.0"
+  },
+  "devDependencies": {
+    "miniflare": "5.20260908.0-alpha"
+  },
+  "overrides": {
+    "sharp": "^0.35.4"
+  }
+}

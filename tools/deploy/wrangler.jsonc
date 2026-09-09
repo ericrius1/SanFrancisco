@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "sanfrancisco-assets",
+  "main": "asset-worker.mjs",
+  "compatibility_date": "2026-09-08",
+  "workers_dev": true,
+  "r2_buckets": [
+    { "binding": "ASSETS", "bucket_name": "sanfrancisco-assets" }
+  ]
+}

@@ -1,10 +1,13 @@
 /* Bump the version to invalidate every cached asset after a breaking layout change. */
-const CACHE = "sf-world-v4";
+const CACHE = "sf-world-v5";
 const MAX_ENTRIES = 500;
 
-/* Content-hashed or content-stable between rebakes: safe to serve from cache forever. */
-const CACHE_FIRST = ["/assets/", "/fonts/", "/audio/", "/models/", "/citygen/"];
-/* Rebaked in place under the same URL: serve cached, revalidate in the background. */
+/* Vite content-hashed code is safe to serve from cache forever. */
+const CACHE_FIRST = ["/assets/"];
+// Public names may point at a different immutable R2 object in the next release.
+// Let HTTP revalidate these names; only hashed URLs are safe to cache forever.
+const NETWORK_FIRST = ["/fonts/", "/audio/", "/models/", "/citygen/"];
+/* Rebaked in place under the same URL: validate the release before reuse. */
 const REVALIDATE = ["/tiles/", "/data/"];
 
 self.addEventListener("install", () => {
@@ -45,27 +48,6 @@ async function cacheFirst(event, request) {
   return response;
 }
 
-async function cacheFirstRevalidate(event, request) {
-  const cache = await caches.open(CACHE);
-  const hit = await cache.match(request, { ignoreVary: true });
-  if (hit) {
-    event.waitUntil(
-      fetch(request)
-        .then(async (response) => {
-          if (cacheable(response)) {
-            await cache.put(request, response.clone());
-            await trimCache(cache);
-          }
-        })
-        .catch(() => {})
-    );
-    return hit;
-  }
-  const response = await fetch(request);
-  if (cacheable(response)) putInBackground(event, cache, request, response);
-  return response;
-}
-
 async function networkFirst(event, request) {
   const cache = await caches.open(CACHE);
   try {
@@ -96,9 +78,10 @@ self.addEventListener("fetch", (event) => {
   if (path === "/ws" || path === "/healthz") return;
   let handler = null;
   if (path === "/native-foliage/manifest.json") handler = networkFirst;
-  else if (path.startsWith("/native-foliage/")) handler = cacheFirst;
+  else if (path.startsWith("/native-foliage/")) handler = networkFirst;
+  else if (NETWORK_FIRST.some((prefix) => path.startsWith(prefix))) handler = networkFirst;
   else if (CACHE_FIRST.some((prefix) => path.startsWith(prefix))) handler = cacheFirst;
-  else if (REVALIDATE.some((prefix) => path.startsWith(prefix))) handler = cacheFirstRevalidate;
+  else if (REVALIDATE.some((prefix) => path.startsWith(prefix))) handler = networkFirst;
   if (!handler) return;
   event.respondWith(
     handler(event, request)

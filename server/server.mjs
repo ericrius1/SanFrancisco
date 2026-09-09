@@ -24,6 +24,7 @@ import { WebSocketServer } from "ws";
 import { weatherNumber } from "./weather-utils.mjs";
 import { starlinkGpPayload } from "./starlink.mjs";
 import { createCompanionHub } from "./companion.mjs";
+import { loadRemoteAssets } from "./remote-assets.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -56,6 +57,7 @@ const WEATHER_USER_AGENT =
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(ROOT, "..", "dist");
+const remoteAssets = await loadRemoteAssets(path.join(ROOT, "asset-manifest.json"));
 
 /* ---------------------------------------------------------- live fog weather */
 
@@ -390,7 +392,7 @@ const server = http.createServer(async (req, res) => {
 
   if (urlPath === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, players: players.size }));
+    res.end(JSON.stringify({ ok: true, players: players.size, release: remoteAssets.release }));
     return;
   }
   if (urlPath.startsWith("/companion/")) {
@@ -459,6 +461,7 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  if (remoteAssets.handle(req, res, urlPath)) return;
   if (!existsSync(DIST)) {
     res.writeHead(503, { "content-type": "text/plain" });
     res.end("No dist/ build found — run `npm run build`. (WebSocket endpoint /ws is live.)");

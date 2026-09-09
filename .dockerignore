@@ -22,3 +22,9 @@ rl
 docs
 *.md
 .gitattributes
+
+# Local configuration and optimizer caches never belong in build contexts.
+.env
+.env.*
+.vite-cache
+tools/deploy/node_modules

@@ -37,3 +37,6 @@ ios/**/xcuserdata/
 ios/**/*.xcworkspace/xcshareddata/swiftpm/
 
 ios/SFCompanion/build/
+
+# Deployment credentials stay local; artifacts and caches live in .data/.
+.env.deploy

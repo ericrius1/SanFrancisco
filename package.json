@@ -12,7 +12,7 @@
     "predev:play": "node tools/copy-litert-webgpu-runtime.mjs",
     "dev:play": "SF_HMR=0 vite",
     "prebuild": "node tools/copy-litert-webgpu-runtime.mjs",
-    "build": "node tools/assets-check.mjs --heal && node tools/scene-light-budget-contract-test.mjs && node tools/ambient-bird-removal-contract-test.mjs && node tools/foliage-shadow-contract-test.mjs && node tools/terrain-tiles-contract-test.mjs && node tools/city-tile-grounding-contract-test.mjs && node tools/building-facade-contract-test.mjs && node --experimental-strip-types tools/citygen-detail-policy-test.mjs && node tools/post-chain-contract-test.mjs && tsc --noEmit && vite build && node tools/precompress-dist.mjs",
+    "build": "node tools/build.mjs",
     "bake:terrain-tiles": "node tools/bake-terrain-tiles.mjs",
     "build:native-foliage-textures": "node tools/build-native-foliage-textures.mjs",
     "check:native-foliage-textures": "node tools/build-native-foliage-textures.mjs --check",
@@ -141,7 +141,11 @@
     "test:sky-flight:browser": "node tools/sky-flight-browser-probe.mjs",
     "birds:export": "node tools/aviary/export.mjs && npm run birds:pack",
     "birds:pack": "node tools/aviary/pack.mjs",
-    "test:aviary": "node tools/aviary/probe.mjs"
+    "test:aviary": "node tools/aviary/probe.mjs",
+    "deploy": "node --env-file-if-exists=.env.deploy tools/deploy/deploy.mjs",
+    "deploy:prepare": "node --env-file-if-exists=.env.deploy tools/deploy/release.mjs",
+    "deploy:publish": "node --env-file-if-exists=.env.deploy tools/deploy/publish.mjs",
+    "test:deployment": "node --test tools/deploy/deployment.test.mjs tools/deploy/worker-runtime.test.mjs"
   },
   "dependencies": {
     "@litertjs/core": "^2.5.3",

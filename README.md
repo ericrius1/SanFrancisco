@@ -426,6 +426,8 @@ WebCodecs review backend, archival capture, camera preflight, audio and QA.
 
 # Hosting & deployment
 
+For frequent releases, use the [cached local build + incremental R2 deployment](docs/DEPLOYMENT.md). `npm run deploy` publishes changed assets and sends Railway a ready-to-run bundle.
+
 Everything below is for running your own server or rebuilding the world. You
 don't need any of it just to play.
 
