@@ -169,4 +169,12 @@ test('public verification caches immutable objects, samples each encoding, and r
   assert.equal(calls, new Set(plan.objects.map((o) => o.encoding)).size);
   fail = true;
   await assert.rejects(verifyPublicAssets(plan, options), /public verification failed/);
+  fail = false;
+  const partial = path.join(root, 'partial');
+  await assert.rejects(verifyPublicAssets(plan, { ...options, cacheDir: partial, fetcher: async (url, request) => {
+    if (String(url).endsWith('-second')) throw new Error('temporary connection failure');
+    return options.fetcher(url, request);
+  } }), /temporary connection failure/);
+  const saved = JSON.parse(await readFile((await filesIn(partial))[0], 'utf8'));
+  assert.equal(Object.keys(saved).length, plan.objects.length - 1);
 });

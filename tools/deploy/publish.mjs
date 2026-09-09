@@ -3,7 +3,22 @@ import { S3Client, ListObjectsV2Command, PutObjectCommand, HeadObjectCommand } f
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setDefaultResultOrder } from 'node:dns';
 import { parallel, sha256, atomicWrite } from '../precompress-dist.mjs';
+
+// The local builder may have DNS IPv6 records without an IPv6 route.
+setDefaultResultOrder('ipv4first');
+async function fetchWithRetry(url, options) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch(url, { ...options, signal: AbortSignal.timeout(15000) });
+      if (attempt < 2 && (response.status === 429 || response.status >= 500)) {
+        await response.body?.cancel();
+      } else return response;
+    } catch (error) { if (attempt >= 2) throw error; }
+    await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt));
+  }
+}
 
 export function r2Client(env = process.env) {
   for (const key of ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET']) if (!env[key]) throw new Error(`Missing ${key}; see docs/DEPLOYMENT.md`);
@@ -54,7 +69,7 @@ export async function publishAssets(plan, { client = r2Client(), bucket = proces
   return result;
 }
 
-export async function verifyPublicAssets(plan, { fetcher = fetch, cacheDir = fileURLToPath(new URL('../../.data/cache/r2-public/', import.meta.url)) } = {}) {
+export async function verifyPublicAssets(plan, { fetcher = fetchWithRetry, cacheDir = fileURLToPath(new URL('../../.data/cache/r2-public/', import.meta.url)) } = {}) {
   // Content-addressed objects are immutable. Validate new destinations once and
   // recheck one of each representation on every release to detect endpoint drift.
   const cacheFile = path.join(cacheDir, `${sha256(plan.origin)}.json`);
@@ -69,7 +84,7 @@ export async function verifyPublicAssets(plan, { fetcher = fetch, cacheDir = fil
     return sample || verified[object.key] !== signature(object);
   });
   let checked = 0, progress = performance.now();
-  await parallel(pending, 32, async (object) => {
+  try { await parallel(pending, 32, async (object) => {
     const response = await fetcher(new URL(object.key, plan.origin), {
       method: 'HEAD', headers: { origin: 'https://sanfrancisco.up.railway.app', 'accept-encoding': object.encoding },
       redirect: 'error', signal: AbortSignal.timeout(30000)
@@ -86,8 +101,11 @@ export async function verifyPublicAssets(plan, { fetcher = fetch, cacheDir = fil
       progress = performance.now();
       console.log(`[r2] public verification ${checked}/${pending.length}`);
     }
-  });
-  await atomicWrite(cacheFile, JSON.stringify(verified));
+  }); } finally {
+    // Retain successful object checks even if a different connection fails.
+    // Only the release-level marker below authorizes a deployment.
+    await atomicWrite(cacheFile, JSON.stringify(verified));
+  }
   await atomicWrite(path.join(plan.output, 'assets-verified.json'), JSON.stringify({ release: plan.release, origin: plan.origin }));
   console.log(`[r2] verified ${checked} public objects, reused ${plan.objects.length - checked} immutable verifications (size, compression, MIME, CORS)`);
 }
