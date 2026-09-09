@@ -26,6 +26,12 @@ try{
  await page.locator('[data-yacht] button').first().click();
  await page.waitForTimeout(1500);
  assert.ok(await page.evaluate(()=>window.__sf.player.yachtExploring));
+ const avatarOnDeck = await page.evaluate(() => {
+   const yacht = window.__sf.player.meshes.yacht;
+   const avatar = yacht.getObjectByName('yacht_local_avatar');
+   return { attached: Boolean(avatar && avatar.parent === yacht), visible: Boolean(avatar?.visible) };
+ });
+ assert.deepEqual(avatarOnDeck, { attached: true, visible: true }, 'the selected avatar is attached to the yacht deck while exploring');
  await page.screenshot({path:out+'/yacht-deck.png'});
  const status=()=>page.evaluate(()=>window.__sf.player.yachtStatus);
  const act=async()=>{await page.waitForFunction(()=>!window.__sf.worldArrival.active&&!window.__sf.input.suspended);await page.keyboard.press('e');await page.waitForTimeout(650);};

@@ -8,6 +8,7 @@ import { yachtEntry } from './entry';
 import { DECKS, STAIRS, moveOnDeck } from './navigation';
 import { PASSENGERS } from './stories';
 import { addYachtPassengers } from './index';
+import type { Rig } from '../../player/rig';
 
 const tuning = { ...BOAT_TUNING, values: { ...BOAT_TUNING.values,
   maxSpeed: 12, boostMaxSpeed: 18, reverseMax: 4, accel: 1.8, boostAccel: 2.5,
@@ -24,6 +25,7 @@ export class YachtController implements ModeController {
   deck = 0;
   secret = false;
   #heli: THREE.Object3D;
+  #root: THREE.Group;
   #rotor: THREE.Object3D;
   #door: THREE.Object3D;
   #heliHome: THREE.Vector3;
@@ -44,7 +46,11 @@ export class YachtController implements ModeController {
   #flight = new THREE.Vector3();
   #tmp = new THREE.Vector3();
   #inverse = new THREE.Quaternion();
+  #avatarRig: Rig | null = null;
+  #avatarHome: THREE.Group | null = null;
+  #avatarSpeed = 0;
   constructor(root: THREE.Group) {
+    this.#root=root;
     this.#heli=root.getObjectByName('Helicopter')!;
     this.#rotor=root.getObjectByName('HelicopterRotor')!;
     this.#door=root.getObjectByName('SecretDoor')!;
@@ -60,18 +66,48 @@ export class YachtController implements ModeController {
     this.#panel.append(this.#heading,this.#copy,this.#action,this.#return);document.body.append(this.#panel);
   }
   get status() { return { exploring:this.exploring, flying:this.flying, deck:this.deck, secret:this.secret, foot:this.foot.toArray(), eye:this.eye.toArray(), helicopter:this.#heli.position.toArray(), target:this.#target }; }
-  setActive(active: boolean) { this.#active=active;this.#panel.hidden=!active; if(!active)this.returnToHelm(); }
+  get avatarSpeed() { return this.#avatarSpeed; }
+  /** The player's shared avatar rig is reparented here only while exploring. */
+  setAvatarRig(rig: Rig, home: THREE.Group) {
+    this.#avatarRig = rig;
+    this.#avatarHome = home;
+    rig.group.name = 'yacht_local_avatar';
+    rig.group.visible = false;
+  }
+  setAvatarExploring(exploring: boolean) {
+    if (!this.#avatarRig || !this.#avatarHome) return;
+    if (exploring) {
+      if (this.#avatarRig.group.parent !== this.#root) this.#root.add(this.#avatarRig.group);
+      this.#avatarRig.group.visible = true;
+    } else {
+      if (this.#avatarRig.group.parent !== this.#avatarHome) this.#avatarHome.add(this.#avatarRig.group);
+      this.#avatarRig.group.position.set(0, 0, 0);
+      this.#avatarRig.group.rotation.set(0, 0, 0);
+      this.#avatarRig.group.visible = false;
+    }
+  }
+  setActive(active: boolean) {
+    this.#active=active;
+    this.#panel.hidden=!active;
+    this.setAvatarExploring(active && this.exploring);
+    if(!active)this.returnToHelm();
+  }
   spawnBody(ctx: PlayerCtx,facing: number) { this.returnToHelm();return this.boat.spawnBody(ctx,facing); }
   enter(ctx: PlayerCtx) {
     const spot = yachtEntry(ctx);
     ctx.position.set(spot.x,0,spot.z);
   }
   returnToHelm() {
-    this.exploring=false;this.flying=false;this.deck=0;this.eye.set(0,9.25,-9.2);
+    this.exploring=false;this.flying=false;this.#avatarSpeed=0;this.deck=0;this.eye.set(0,9.25,-9.2);
+    this.setAvatarExploring(false);
     this.#heli.visible=true;this.#heli.position.copy(this.#heliHome);this.#heli.quaternion.copy(this.#heliRest);this.#message='';this.refresh();
   }
   interact() {
-    if(!this.exploring){this.exploring=true;this.foot.set(0,3.3,12);this.deck=0;this.eye.copy(this.foot).y+=1.65;this.refresh();return;}
+    if(!this.exploring){
+      this.exploring=true;this.flying=false;this.#avatarSpeed=0;this.foot.set(0,3.3,12);this.deck=0;this.eye.copy(this.foot).y+=1.65;
+      this.setAvatarExploring(true);
+      this.refresh();return;
+    }
     if(this.flying){
       const nearest=[{x:0,y:3.45,z:-29},{x:0,y:11.5,z:18}].find(p=>Math.hypot(this.#flight.x-p.x,this.#flight.z-p.z)<5&&Math.abs(this.#flight.y-p.y)<4);
       if(nearest){this.flying=false;this.#heli.visible=true;this.deck=nearest.z<0?0:2;this.#heli.position.set(nearest.x,nearest.y,nearest.z);this.foot.set(3.5,DECKS[this.deck].y,nearest.z);this.say('Moth is safely down. The cake survived.');}
@@ -133,13 +169,16 @@ export class YachtController implements ModeController {
     const r=input.down('KeyR');if(r&&!this.#rHeld)this.returnToHelm();this.#rHeld=r;
     this.boat.update(ctx,dt,this.exploring?idle:input,frame);
     if(this.exploring){
+      this.setAvatarExploring(true);
       // Anchored while people walk; the same buoyancy still supplies gentle heave.
       const v=ctx.physics.world.getBodyVelocity(ctx.body);
       ctx.physics.world.setBodyVelocity(ctx.body,[0,v.linear[1],0],[0,0,0]);
       const forward=input.axis('KeyS','KeyW'),right=input.axis('KeyA','KeyD');
       this.#tmp.set(right*Math.cos(frame.camYaw)-forward*Math.sin(frame.camYaw),0,-right*Math.sin(frame.camYaw)-forward*Math.cos(frame.camYaw));
       this.#inverse.copy(ctx.quaternion).invert();this.#tmp.applyQuaternion(this.#inverse);this.#tmp.y=0;
-      if(this.#tmp.length()>1)this.#tmp.normalize();this.#tmp.multiplyScalar(dt*(this.flying?22:input.down('ShiftLeft')?5:3));
+      const requestedSpeed = this.flying ? 22 : input.down('ShiftLeft') ? 5 : 3;
+      const requestedDistance = this.#tmp.length();
+      if(this.#tmp.length()>1)this.#tmp.normalize();this.#tmp.multiplyScalar(dt*requestedSpeed);
       if(this.flying){
         this.#flight.add(this.#tmp);this.#flight.y+=((input.down('Space')?1:0)-(input.down('KeyQ')?1:0))*dt*9;
         const world=ctx.position.clone().add(this.#flight.clone().applyQuaternion(ctx.quaternion));
@@ -162,6 +201,18 @@ export class YachtController implements ModeController {
         moveOnDeck(this.foot,this.#tmp.x,this.#tmp.z,this.deck,this.secret);
         this.eye.copy(this.foot).y+=1.65;
       }
+      this.#avatarSpeed = this.flying ? 0 : Math.min(5, requestedDistance / Math.max(dt, 1e-4));
+      if (this.#avatarRig) {
+        this.#avatarRig.group.visible = true;
+        this.#avatarRig.group.position.set(this.foot.x, this.foot.y + 1.1, this.foot.z);
+        if (requestedDistance > 0.0001) {
+          const heading = Math.atan2(this.#tmp.x, this.#tmp.z);
+          this.#avatarRig.group.rotation.y = heading;
+        }
+      }
+    } else {
+      this.#avatarSpeed = 0;
+      this.setAvatarExploring(false);
     }
     // glTF bakes the rotor into the game's Y-up coordinate frame.
     if(this.flying)this.#rotor.rotateY(dt*35);

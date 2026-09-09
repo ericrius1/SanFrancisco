@@ -537,7 +537,7 @@ export class Player {
       case "scooter": { const m=vehicleRuntime(mode); attach(m.buildScooterMesh(this.#configs.scooter)); this.#modes.scooter=new m.ScooterController(); seat(this.#scooterRig); break; }
       case "plane": { const m=vehicleRuntime(mode); attach(m.buildPlaneMesh()); this.#modes.plane=new m.FlyController(); seat(this.#pilotRig); this.#planeAnim=m.collectPlaneAnim(root); break; }
       case "boat": { const m=vehicleRuntime(mode); attach(m.buildBoatMesh()); this.#modes.boat=new m.BoatController(); seat(this.#helmRig,this.#helmWheel,(root.userData.sail as BoatSailRig).heel); break; }
-      case "yacht": { const m=vehicleRuntime(mode); attach(m.buildYachtMesh()); this.#modes.yacht=new m.YachtController(root); break; }
+      case "yacht": { const m=vehicleRuntime(mode); attach(m.buildYachtMesh()); this.#modes.yacht=new m.YachtController(root); this.#modes.yacht.setAvatarRig(this.#walkRig, this.meshes.walk); break; }
       case "speedboat": { const m=vehicleRuntime(mode); attach(m.buildSpeedboatMesh()); this.#modes.speedboat=new m.BoatController(m.SPEEDBOAT_TUNING,m.SPEEDBOAT_HULL); seat(this.#speedRig,this.#speedWheel); break; }
       case "drone": { const m=vehicleRuntime(mode); attach(m.buildDroneMesh()); this.#modes.drone=new m.DroneController(root); break; }
       case "board": { const m=vehicleRuntime(mode); attach(m.buildBoardMesh(this.#configs.board,{deferSurface:true})); this.#modes.board=new m.BoardController(); this.#riderRig.group.rotation.order="ZYX"; this.#riderRig.group.rotation.set(0,1.05,0); this.#riderRig.group.position.set(0,0.93,0); root.add(this.#riderRig.group); break; }
@@ -782,6 +782,9 @@ export class Player {
       !(active && this.mode === "drive");
     this.#helmRig.group.visible = !(active && this.mode === "boat");
     this.#speedRig.group.visible = !(active && this.mode === "speedboat");
+    if (this.mode === "yacht" && this.#modes.yacht) {
+      this.#modes.yacht.setAvatarExploring(this.#modes.yacht.exploring);
+    }
     this.#pilotRig.group.visible = !(active && this.mode === "plane");
     this.#phoenixRiderRig.group.visible =
       Boolean(this.meshes.bird.userData.phoenixAsset) &&
@@ -2412,6 +2415,21 @@ export class Player {
       const steer = this.#controller("speedboat").steerVis;
       poseDrive(this.#speedRig, steer, this.#animT, true);
       this.#speedWheel.spin.rotation.z = steer * 2.3;
+    } else if (this.mode === "yacht") {
+      const yacht = this.#controller("yacht");
+      if (yacht.exploring && !yacht.flying) {
+        const speed = yacht.avatarSpeed;
+        if (speed > 0.2) {
+          this.#strideT += dt * (3 + speed * 1.05);
+          poseWalk(this.#walkRig, this.#strideT, THREE.MathUtils.clamp((speed - 3) / 2, 0, 1));
+        } else {
+          poseIdle(this.#walkRig, this.#animT);
+        }
+        setHandPose(this.#walkRig, "L", 0);
+        setHandPose(this.#walkRig, "R", 0);
+      } else if (yacht.flying) {
+        poseDrive(this.#walkRig, 0, this.#animT, false);
+      }
     } else if (this.mode === "bird" && this.#phoenixRiderRig.group.visible) {
       poseDrive(this.#phoenixRiderRig, 0, this.#animT, false);
     }

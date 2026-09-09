@@ -3,7 +3,7 @@
 Select **Yacht** in the vehicle bar or press **0**. Existing vehicle shortcuts 1–9 are preserved. The 76 m yacht enters deep open water and shares the existing boat buoyancy controller with a larger collision hull, wider wave probes, slower acceleration and broad turns.
 
 - W/S throttle, A/D steering, Shift cruise.
-- E or the yacht panel starts first-person deck exploration. WASD walks; Shift runs.
+- E or the yacht panel starts first-person deck exploration. Your selected avatar comes along on deck and uses the shared walk pose; WASD walks and Shift runs.
 - E talks to nearby passengers, reads art, uses the promenade stairs, or boards Moth on a helipad.
 - Moth: WASD horizontal flight, Space climb, Q descend. Approach either landing circle and press E to land. Flight stays within 1.2 km of the anchored yacht.
 - R or **Return to helm** returns you and Moth to the helm/top pad. Choosing another vehicle leaves the yacht activity; choosing Walk disembarks.
