@@ -34,6 +34,8 @@ function requestImage(url: string): AssetRecord {
       return;
     }
     const image = new Image();
+    // Public URLs can redirect to the asset CDN; keep canvas/WebGPU images origin-clean.
+    image.crossOrigin = "anonymous";
     image.decoding = "async";
     image.onload = () => {
       record.image = image;

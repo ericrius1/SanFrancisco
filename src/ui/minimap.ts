@@ -482,6 +482,8 @@ export class Minimap {
     if (this.#historicalOverviewStarted) return;
     this.#historicalOverviewStarted = true;
     const image = new Image();
+    // Public URLs can redirect to the asset CDN; keep canvas/WebGPU images origin-clean.
+    image.crossOrigin = "anonymous";
     image.decoding = "async";
     image.addEventListener(
       "load",
@@ -501,6 +503,8 @@ export class Minimap {
     if (this.#historicalRegionsStarted.has(tile.id)) return;
     this.#historicalRegionsStarted.add(tile.id);
     const image = new Image();
+    // Public URLs can redirect to the asset CDN; keep canvas/WebGPU images origin-clean.
+    image.crossOrigin = "anonymous";
     image.decoding = "async";
     image.addEventListener(
       "load",
@@ -519,6 +523,8 @@ export class Minimap {
     if (this.#historicalDetailStarted) return;
     this.#historicalDetailStarted = true;
     const image = new Image();
+    // Public URLs can redirect to the asset CDN; keep canvas/WebGPU images origin-clean.
+    image.crossOrigin = "anonymous";
     image.decoding = "async";
     image.addEventListener(
       "load",

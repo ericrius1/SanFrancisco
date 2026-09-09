@@ -178,6 +178,21 @@ async function main() {
       activatedArt
     );
     check("activation-keeps-editor-cold", !activated.some((entry) => entry.kind === "ui-chunk"), activated);
+    const checkCarCanvases = async (id) => {
+      const result = await page.evaluate(() => {
+        const canvases = new Set();
+        window.__sf.player.meshes.drive.traverse((object) => {
+          for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+            if (material?.map?.image instanceof HTMLCanvasElement) canvases.add(material.map.image);
+          }
+        });
+        return { count: canvases.size, readable: [...canvases].every(canvas => {
+          try { canvas.getContext('2d').getImageData(0, 0, 1, 1); return true; } catch { return false; }
+        }) };
+      });
+      check(id, result.count >= 2 && result.readable, result);
+    };
+    await checkCarCanvases('selected-car-images-origin-clean');
 
     const groundingSnapshot = async (label) => page.evaluate((snapshotLabel) => {
       const sf = window.__sf;
@@ -364,6 +379,8 @@ async function main() {
     );
     await page.screenshot({ path: path.join(OUT, "car-atelier-mobile.png"), fullPage: false, timeout: 120_000 });
 
+    await checkCarCanvases('changed-car-images-origin-clean');
+    check("webgpu-image-upload-valid", !warnings.some(message => message.includes('CopyExternalImageToTexture')), warnings.filter(message => message.includes('CopyExternalImageToTexture')));
     check("runtime-no-errors", errors.length === 0, errors);
     const report = {
       ok: checks.every((entry) => entry.pass),
