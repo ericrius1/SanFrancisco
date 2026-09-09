@@ -42,7 +42,7 @@ export class BoatController implements ModeController {
 
   // the sailboat and the speedboat share this controller — only the tunables
   // and the hull dimensions differ, so pass the right pair in
-  constructor(tuning: typeof BOAT_TUNING = BOAT_TUNING, hull: HullSpec = SAILBOAT_HULL) {
+  constructor(tuning: typeof BOAT_TUNING = BOAT_TUNING, hull: HullSpec = SAILBOAT_HULL, private readonly bodyHalfExtents: [number, number, number] = [1.3, .75, 3.2]) {
     this.#tuning = tuning;
     this.#hull = hull;
   }
@@ -58,7 +58,7 @@ export class BoatController implements ModeController {
     ctx.body = w.createBox({
       type: BodyType.Dynamic,
       position: [p.x, waterHeight(p.x, p.z, seaTime()) + 0.4, p.z],
-      halfExtents: [1.3, 0.75, 3.2],
+      halfExtents: this.bodyHalfExtents,
       density: 40,
       friction: 0.2,
       restitution: 0.1
@@ -110,8 +110,9 @@ export class BoatController implements ModeController {
     const bite = THREE.MathUtils.clamp(float.sternSub, 0, 1);
 
     // shore handling: hard-stop only for actual land ahead; shallows just slow you
-    const aheadX = px + fwd.x * 6;
-    const aheadZ = pz + fwd.z * 6;
+    const lookAhead = Math.max(6, this.#hull.halfLength * 1.2);
+    const aheadX = px + fwd.x * lookAhead;
+    const aheadZ = pz + fwd.z * lookAhead;
     const aheadGround = ctx.map.groundHeight(aheadX, aheadZ);
     const beached = aheadGround > 0.05 && throttle > 0;
     const shallowFactor = aheadGround > -1.0 ? tb.shallowFactor : 1;

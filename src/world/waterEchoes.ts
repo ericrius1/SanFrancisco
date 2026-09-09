@@ -412,6 +412,7 @@ const EMBODIMENT_ECHOES: Partial<Record<PlayerMode, Omit<WaterEchoSource, "posit
   scooter: { color: 0x78ffd4, width: 2.2, length: 4.8, strength: 0.5, glow: 0.18, style: "streak" },
   plane: { color: 0xa8cfff, width: 14, length: 18, strength: 0.72, glow: 0.12, importance: 3, style: "wing" },
   boat: { color: 0xffd39a, width: 7.5, length: 13, strength: 0.65, glow: 0.16, importance: 2, style: "streak" },
+  yacht: { color: 0x9deaff, width: 21, length: 80, strength: .8, glow: .16, importance: 2, style: "streak" },
   speedboat: { color: 0x9deaff, width: 6.5, length: 17, strength: 0.68, glow: 0.24, importance: 2, style: "streak" },
   drone: { color: 0x9efcff, width: 5, length: 5, strength: 0.5, glow: 0.34, importance: 2, style: "burst" },
   board: { color: 0x64ffe0, width: 2.8, length: 6.5, strength: 0.48, glow: 0.16, style: "streak" },

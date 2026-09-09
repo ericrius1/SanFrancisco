@@ -1,12 +1,14 @@
 import type { PlayerMode } from "../player/types";
 export type VehicleMode = Exclude<PlayerMode, "walk">;
 export type VehicleModules = {
+  yacht: typeof import("./yacht");
   drive: typeof import("./car"); scooter: typeof import("./scooter");
   plane: typeof import("./plane"); boat: typeof import("./boat"); speedboat: typeof import("./boat");
   drone: typeof import("./drone"); board: typeof import("./board");
   skate: typeof import("./skate"); surf: typeof import("./surf"); bird: typeof import("./bird");
 };
 const factories = {
+  yacht: () => import("./yacht"),
   drive: () => import("./car"), scooter: () => import("./scooter"), plane: () => import("./plane"),
   boat: () => import("./boat"), speedboat: () => import("./boat"), drone: () => import("./drone"),
   board: () => import("./board"), skate: () => import("./skate"), surf: () => import("./surf"), bird: () => import("./bird")

@@ -33,6 +33,7 @@ const MARKER_Y: Record<PlayerMode, number> = {
   drive: 2.9,
   scooter: 3.0,
   plane: 3.3,
+  yacht: 18,
   boat: 8.4,
   speedboat: 2.6,
   drone: 2.2,

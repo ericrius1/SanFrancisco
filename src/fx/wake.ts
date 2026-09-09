@@ -226,7 +226,7 @@ export class WakeRipples {
     }
 
     // shed new rings by distance travelled, so boost naturally packs the wake
-    if (boat.mode !== "boat" || h < MIN_SPEED || (boat.hullSub ?? 1) < 0.15) {
+    if ((boat.mode !== "boat" && boat.mode !== "yacht") || h < MIN_SPEED || (boat.hullSub ?? 1) < 0.15) {
       this.#boatDistAcc = 0;
       return;
     }
@@ -239,10 +239,11 @@ export class WakeRipples {
     const p = boat.renderPosition;
     // off the stern (3.4m astern of centre), alternating shoulder to shoulder
     this.#side = -this.#side;
-    const lat = this.#side * 0.8 + (Math.random() - 0.5) * 0.6;
-    const x = p.x - dx * 3.4 - dz * lat;
-    const z = p.z - dz * 3.4 + dx * lat;
-    this.#spawn(x, z, elapsed, 6 + boat.speed * 0.15);
+    const stern = boat.mode === "yacht" ? 38 : 3.4;
+    const lat = this.#side * (boat.mode === "yacht" ? 7 : 0.8) + (Math.random() - 0.5) * 0.6;
+    const x = p.x - dx * stern - dz * lat;
+    const z = p.z - dz * stern + dx * lat;
+    this.#spawn(x, z, elapsed, (boat.mode === "yacht" ? 15 : 6) + boat.speed * 0.15);
   }
 }
 

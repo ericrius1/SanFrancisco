@@ -377,7 +377,7 @@ export class VehicleAudio {
     }
     const wantsVoice = !!sig && (
       sig.mode === "board" || sig.mode === "surf" || sig.mode === "drive" ||
-      sig.mode === "plane" || sig.mode === "boat" || sig.mode === "drone" ||
+      sig.mode === "plane" || sig.mode === "boat" || sig.mode === "yacht" || sig.mode === "drone" ||
       sig.mode === "bird" || sig.mode === "skate"
     );
     const wantsSkid = !!sig &&
@@ -483,6 +483,7 @@ export class VehicleAudio {
         }
         break;
       case "plane": key = "plane"; build = () => this.#buildPlane(ctx); break;
+      case "yacht":
       case "boat": key = "boat"; build = () => this.#buildBoat(ctx); break;
       case "drone": key = "drone"; build = () => this.#buildDrone(ctx); break;
       case "bird": key = "bird"; build = () => this.#buildBird(ctx); break;

@@ -43,6 +43,12 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["E"], label: "return · get out" },
     { c: ["Click"], label: "shoot" }
   ],
+  yacht: [
+    { c: ["W", "A", "S", "D"], label: "sail · explore · fly" },
+    { c: ["E"], label: "explore · talk · stairs · helicopter" },
+    { c: ["R"], label: "return to helm" },
+    { c: ["Space", "Q"], label: "helicopter up · down" }
+  ],
   boat: [
     { c: ["Mouse"], label: "look" },
     { c: ["W", "S"], label: "throttle" },
@@ -145,6 +151,12 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["A"], label: "air brake" },
     { c: ["Y"], label: "return · get out" },
     { c: ["X"], label: "shoot" }
+  ],
+  yacht: [
+    { c: ["W", "A", "S", "D"], label: "sail · explore · fly" },
+    { c: ["E"], label: "explore · talk · stairs · helicopter" },
+    { c: ["R"], label: "return to helm" },
+    { c: ["Space", "Q"], label: "helicopter up · down" }
   ],
   boat: [
     { c: ["RS"], label: "look" },

@@ -1,3 +1,4 @@
+import { YACHT_HULL } from "../vehicles/yacht/dimensions";
 import { vehicleRuntime } from "../vehicles/runtime";
 import { localCarConfig } from "../vehicles/car/config";
 import { SAILBOAT_HULL } from "../vehicles/boat/buoyancy";
@@ -110,6 +111,7 @@ export const ABANDONED_MOUNT_PROMPT: Record<MountMode, string> = {
   drive: "board the car",
   scooter: "hop on the scooter",
   plane: "board the plane",
+  yacht: "board the yacht",
   boat: "board the boat",
   speedboat: "board the speedboat",
   drone: "board the drone",
@@ -160,6 +162,11 @@ const SPECS: Record<MountMode, MountSpec> = {
     linearDrag: 0.035,
     angularDrag: 0.45,
     maxSpeed: 180
+  },
+  yacht: {
+    build: () => vehicleRuntime("yacht").buildYachtMesh(true),
+    halfExtents: [9.5, 2.6, 37], density: 40, friction: .2, restitution: .1,
+    gravityScale: 0, linearDrag: .8, angularDrag: 2, maxSpeed: 18
   },
   boat: {
     build: buildBoatMesh,
@@ -420,7 +427,13 @@ export class AbandonedMounts {
     let bestD = radius;
     for (const item of this.#items) {
       const t = this.#physics.world.getBodyTransform(item.handle);
-      const d = Math.hypot(t.position[0] - x, t.position[2] - z);
+      let d = Math.hypot(t.position[0] - x, t.position[2] - z);
+      if (item.mode === "yacht") {
+        V.pos.set(x-t.position[0],0,z-t.position[2]);
+        V.quat.set(t.rotation[0],t.rotation[1],t.rotation[2],t.rotation[3]).invert();
+        V.pos.applyQuaternion(V.quat);
+        d = Math.hypot(Math.max(0,Math.abs(V.pos.x)-10),Math.max(0,Math.abs(V.pos.z)-38));
+      }
       if (d < bestD) {
         bestD = d;
         best = item;
@@ -510,7 +523,7 @@ export class AbandonedMounts {
       item.flapPhase = 0;
       item.animT = 0;
     }
-    if (mode === "boat" || mode === "speedboat") {
+    if (mode === "boat" || mode === "speedboat" || mode === "yacht") {
       // scattered bay boats sail themselves: seed a heading from the release
       // facing (persistent ones actually wander). No bob clock — the swell
       // itself desyncs them now that they float on real buoyancy.
@@ -546,7 +559,7 @@ export class AbandonedMounts {
       w.setBodyAwake(item.handle, true);
 
       // scattered bay boats sail themselves around the water on their own
-      if ((item.mode === "boat" || item.mode === "speedboat") && item.persistent) {
+      if ((item.mode === "boat" || item.mode === "speedboat" || item.mode === "yacht") && item.persistent) {
         if (!item.farHidden) this.#sailBoat(item, dt);
         continue;
       }
@@ -557,7 +570,7 @@ export class AbandonedMounts {
       let vy = vel.linear[1];
       let vz = vel.linear[2] * linearDamp;
 
-      if (item.mode === "boat" || item.mode === "speedboat") {
+      if (item.mode === "boat" || item.mode === "speedboat" || item.mode === "yacht") {
         // A drifting hull is buoyant, not sprung: she rides the swell, and the
         // solver keeps whatever roll the last wave left her with.
         vy = this.#floatHull(item, t, vy, dt);
@@ -588,7 +601,7 @@ export class AbandonedMounts {
    * a moored hull and a driven one answer the same wave the same way.
    */
   #floatHull(item: AbandonedMount, t: { position: number[]; rotation: number[] }, vy: number, dt: number): number {
-    const hull = item.mode === "speedboat" ? SPEEDBOAT_HULL : SAILBOAT_HULL;
+    const hull = item.mode === "yacht" ? YACHT_HULL : item.mode === "speedboat" ? SPEEDBOAT_HULL : SAILBOAT_HULL;
     V.pos.set(t.position[0], t.position[1], t.position[2]);
     V.quat.set(t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]);
     // seaTime(), not #time: an unmanned hull must bob on the same rendered sea

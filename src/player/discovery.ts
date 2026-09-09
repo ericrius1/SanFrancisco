@@ -9,7 +9,8 @@ export const MENU_MODES: PlayerMode[] = [
   "plane",
   "boat",
   "drone",
-  "bird"
+  "bird",
+  "yacht"
 ];
 
 /** Every switchable mode (surf / speedboat are location-gated — never on the roster). */
@@ -20,6 +21,7 @@ export const MODE_META: Record<PlayerMode, { icon: string; label: string }> = {
   drive: { icon: "🚗", label: "Drive" },
   scooter: { icon: "🛵", label: "Scooter" },
   plane: { icon: "✈️", label: "Plane" },
+  yacht: { icon: "🛥️", label: "Yacht" },
   boat: { icon: "⛵", label: "Boat" },
   speedboat: { icon: "🚤", label: "Speedboat" },
   drone: { icon: "🛸", label: "Drone" },

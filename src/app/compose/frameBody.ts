@@ -72,6 +72,7 @@ import {
   setLocalSurfboardConfig,
   type SurfboardConfig,
 } from "../../vehicles/surf/config";
+import { YACHT_CABIN_MIN, YACHT_CABIN_MAX } from "../../vehicles/yacht/dimensions";
 import { MENU_MODES } from "../../player/discovery";
 import { SkateCoach } from "../../vehicles/skate/coach";
 import { SKATE_PLAZA_CENTER } from "../../world/skatePlaza/meta";
@@ -885,8 +886,9 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     const numberPressed = (i: number) => input.pressed(`Digit${i}`) || input.pressed(`Numpad${i}`);
     const ctrlNumberPress = (i: number) => input.ctrlPressed(`Digit${i}`) || input.ctrlPressed(`Numpad${i}`);
     const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
-    for (let i = 1; i <= 9; i++) {
-      if (!numberPressed(i)) continue;
+    for (let i = 1; i <= Math.max(9, MENU_MODES.length); i++) {
+      const digit = i % 10;
+      if (!numberPressed(digit)) continue;
       if (playingPickleball || playingFortMasonEnsemble) break;
       if (core.state.golf?.capturesDigits) break; // core.state.golf swing UI owns the number row (club picks)
       // An open emote wheel owns the number row — it IS the legend for it.
@@ -894,13 +896,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         emoteWheel.pick(i - 1);
         continue;
       }
-      if (ctrlNumberPress(i)) {
+      if (ctrlNumberPress(digit)) {
         toolCycle.pickByIndex(i - 1);
         continue;
       }
       // Snapshot Shift from the digit's keydown event; a stale held-key entry
       // should never turn a plain number press into a player-slot teleport.
-      if (shiftedNumberPress(i)) {
+      if (shiftedNumberPress(digit)) {
         const target = playerLocator.targetForDigit(i);
         if (target) teleportToTarget(target.x, target.z, target.name, target.id);
         else hud.message(`No player in slot ${i}`, 1.9);
@@ -957,7 +959,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // reached on a vehicle or creature, the same press dismounts and is handed
     // back to the conversation once the player is on foot; requiring a second
     // press made Hiro's visible prompt appear unresponsive.
-    const interactPressed = !worldArrival.active && !pickleballEConsumed && input.pressed("KeyE");
+    const yachtEConsumed = !worldArrival.active && player.mode === "yacht" && input.pressed("KeyE") && player.interactYacht();
+    const interactPressed = !yachtEConsumed && !worldArrival.active && !pickleballEConsumed && input.pressed("KeyE");
     // Use the same position the tea-core.state.garden prompt distance is measured against
     // (renderPosition), so a visible "Talk" prompt always accepts the matching E.
     let teaGardenEConsumed = interactPressed
@@ -1768,6 +1771,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // The base sheet yields to the high-res surf overlay whenever that overlay
     // exists — it now persists for the beach walk-up too, not just mode==="surf",
     // and leaving both drawn doubles the same transparent wall.
+    water.setHullExclusion(player.mode === "yacht" ? player.meshes.yacht : null, YACHT_CABIN_MIN, YACHT_CABIN_MAX);
     water.update(surfaceTime, camera.position, player.renderPosition, ctx.state.oceanBeachWaves !== null);
     // The roof materializes with the CAMERA's barrel blend, not the gameplay
     // tube state: state-driven visibility drew the roof while the camera was

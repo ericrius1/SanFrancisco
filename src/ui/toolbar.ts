@@ -76,9 +76,10 @@ export class Toolbar {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "tool vehicle";
-      b.title = `${meta.label} (${i + 1})`;
+      const shortcut = (i + 1) % 10;
+      b.title = `${meta.label} (${shortcut})`;
       b.setAttribute("aria-label", meta.label);
-      b.innerHTML = `<span class="ic">${meta.icon}</span><span>${meta.label}</span><span class="num">${i + 1}</span>`;
+      b.innerHTML = `<span class="ic">${meta.icon}</span><span>${meta.label}</span><span class="num">${shortcut}</span>`;
       b.addEventListener("click", () => {
         this.#focusRow = "vehicles";
         this.#onVehicle(mode);

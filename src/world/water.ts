@@ -1,5 +1,7 @@
 import * as THREE from "three/webgpu";
 import {
+  Fn,
+  If,
   cameraPosition,
   positionLocal,
   positionWorld,
@@ -332,6 +334,36 @@ export class Water {
   readonly echoes: WaterEchoes;
 
   #uTime = uniform(0);
+  #uHullExclusion = uniform(0);
+  #uHullInverse = uniform(new THREE.Matrix4());
+  #uHullMin = uniform(new THREE.Vector3());
+  #uHullMax = uniform(new THREE.Vector3());
+
+  /** A watertight moving cabin excludes the ocean, independently of buoyancy.
+   * The uniform branch skips volume arithmetic when no local hull is active. */
+  #hullCoverage() {
+    return Fn(() => {
+      const coverage = float(1).toVar();
+      If(this.#uHullExclusion.greaterThan(.5), () => {
+        const p = this.#uHullInverse.mul(vec4(positionWorld, 1)).xyz;
+        const lo = this.#uHullMin, hi = this.#uHullMax;
+        const inside = p.x.greaterThan(lo.x).and(p.x.lessThan(hi.x))
+          .and(p.y.greaterThan(lo.y)).and(p.y.lessThan(hi.y))
+          .and(p.z.greaterThan(lo.z)).and(p.z.lessThan(hi.z));
+        If(inside, () => { coverage.assign(0); });
+      });
+      return coverage;
+    })();
+  }
+
+  setHullExclusion(root: THREE.Object3D | null, minimum?: readonly [number, number, number], maximum?: readonly [number, number, number]) {
+    this.#uHullExclusion.value = root && minimum && maximum ? 1 : 0;
+    if (!root || !minimum || !maximum) return;
+    root.updateWorldMatrix(true, false);
+    this.#uHullInverse.value.copy(root.matrixWorld).invert();
+    this.#uHullMin.value.set(...minimum);
+    this.#uHullMax.value.set(...maximum);
+  }
   // Void-realm reveal (docs/VOID_STREAM_REWRITE.md M2): 1 = normal water,
   // 0 = fully hidden in the holo void. A plain opacity multiply on every
   // sheet — same pipelines, driven by VoidRealm.update(). M5 multiplies the
@@ -575,6 +607,7 @@ export class Water {
       // the analytic sky IBL and the fog graph.
       const coverage = waterVisibility
         .mul(dry.oneMinus())
+        .mul(this.#hullCoverage())
         .mul(this.#uReveal)
         .mul(materializeAmount()) // spatial front sweep (collapses to 1 once revealed)
         .toVar();
@@ -1014,6 +1047,7 @@ export class Water {
       // before the cascade fetch and the shared fog/IBL path.
       const coverage = outer
         .mul(dry.oneMinus())
+        .mul(this.#hullCoverage())
         .mul(this.#uReveal)
         .mul(materializeAmount()) // spatial front sweep
         .toVar();

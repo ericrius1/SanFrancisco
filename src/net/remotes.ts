@@ -159,6 +159,7 @@ const TAG_Y: Record<PlayerMode, number> = {
   drive: 2.8,
   scooter: 2.4,
   plane: 2.6,
+  yacht: 18,
   boat: 7.6, // above the mast
   speedboat: 2.4,
   drone: 1.6,
@@ -835,6 +836,7 @@ export class RemotePlayers {
       }
       return g;
     }
+    if (mode === "yacht") return vehicleRuntime("yacht").buildYachtMesh();
     const proto = this.#protos[mode] ??= mode === "plane" ? buildPlaneMesh() : mode === "boat" ? buildBoatMesh() : mode === "speedboat" ? buildSpeedboatMesh() : buildDroneMesh();
     const g = proto.clone(true);
     if (mode === "plane" || mode === "boat" || mode === "speedboat") {

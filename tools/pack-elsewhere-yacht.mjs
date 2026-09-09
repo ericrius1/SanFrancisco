@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {NodeIO} from '@gltf-transform/core';
+import {ALL_EXTENSIONS} from '@gltf-transform/extensions';
+import {dedup,prune,weld,meshopt} from '@gltf-transform/functions';
+import {MeshoptEncoder} from 'meshoptimizer';
+import {stat,writeFile} from 'node:fs/promises';
+await MeshoptEncoder.ready;
+const io=new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({'meshopt.encoder':MeshoptEncoder});
+const source='.data/yacht/elsewhere-raw.glb',out='public/models/yacht/elsewhere.glb';
+const doc=await io.read(source);
+await doc.transform(dedup(),weld(),prune(),meshopt({encoder:MeshoptEncoder,level:'high'}));
+for (const name of ['Helicopter','HelicopterRotor','SecretDoor']) assert.ok(doc.getRoot().listNodes().some(n=>n.getName()===name), `Missing interactive node: ${name}`);
+await io.write(out,doc);
+const report={sourceBytes:(await stat(source)).size,bytes:(await stat(out)).size,meshes:doc.getRoot().listMeshes().length,materials:doc.getRoot().listMaterials().length,textures:doc.getRoot().listTextures().length,triangles:doc.getRoot().listMeshes().reduce((n,m)=>n+m.listPrimitives().reduce((p,v)=>p+(v.getIndices()?.getCount()??0)/3,0),0)};
+assert.ok(report.bytes<750000&&report.meshes<=32&&report.materials<=16&&report.triangles<120000,'Yacht asset exceeds its runtime budget');
+await writeFile('.data/yacht/asset-report.json',JSON.stringify(report,null,2));console.log(report);

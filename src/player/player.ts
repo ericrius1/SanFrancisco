@@ -227,6 +227,7 @@ type ModeControllers = {
     plane: FlyController;
     boat: BoatController;
     speedboat: BoatController;
+    yacht: import("../vehicles/yacht/controller").YachtController;
     drone: DroneController;
     board: BoardController;
     skate: SkateController;
@@ -250,6 +251,10 @@ export class Player {
     this.environmentTime = value; // explicit cinematic/probe clock reset
   }
   readonly skyFlight = new SkyFlightController();
+
+  get yachtStatus() { return this.#modes.yacht?.status ?? null; }
+  get yachtExploring(): boolean { return this.mode === "yacht" && this.#controller("yacht").exploring; }
+  interactYacht(): boolean { if (this.mode !== "yacht") return false; this.#controller("yacht").interact(); return true; }
 
   get personalFlying(): boolean {
     return this.mode === "walk" && (this.skyFlight.active || this.skyFlight.currentIsland !== null) && !this.riding;
@@ -421,7 +426,7 @@ export class Player {
     this.#ballProp.visible = false;
     this.#walkRig.handR.add(this.#ballProp);
     this.#configs = { board, scooter, surfboard, car };
-    this.meshes = { walk: walkGroup, drive: new THREE.Group(), scooter: new THREE.Group(), plane: new THREE.Group(), boat: new THREE.Group(), speedboat: new THREE.Group(), drone: new THREE.Group(), board: new THREE.Group(), skate: new THREE.Group(), surf: new THREE.Group(), bird: new THREE.Group() };
+    this.meshes = { walk: walkGroup, drive: new THREE.Group(), scooter: new THREE.Group(), plane: new THREE.Group(), boat: new THREE.Group(), speedboat: new THREE.Group(), yacht: new THREE.Group(), drone: new THREE.Group(), board: new THREE.Group(), skate: new THREE.Group(), surf: new THREE.Group(), bird: new THREE.Group() };
     this.#modes.walk = new WalkController();
     this.#riderRig = buildRig(this.#avatar);
     this.#surfRig = buildRig(this.#avatar);
@@ -484,6 +489,7 @@ export class Player {
     if (pending) return pending;
     if (mode === "walk") return Promise.resolve();
     const loading = loadVehicleRuntime(mode).then(async () => {
+      if (mode === "yacht") await vehicleRuntime("yacht").prepareYachtAsset();
       const retry = !!this.#modes[mode];
       this.#buildMode(mode);
       // A rejected compile leaves a hidden shell. Its configuration may have
@@ -531,6 +537,7 @@ export class Player {
       case "scooter": { const m=vehicleRuntime(mode); attach(m.buildScooterMesh(this.#configs.scooter)); this.#modes.scooter=new m.ScooterController(); seat(this.#scooterRig); break; }
       case "plane": { const m=vehicleRuntime(mode); attach(m.buildPlaneMesh()); this.#modes.plane=new m.FlyController(); seat(this.#pilotRig); this.#planeAnim=m.collectPlaneAnim(root); break; }
       case "boat": { const m=vehicleRuntime(mode); attach(m.buildBoatMesh()); this.#modes.boat=new m.BoatController(); seat(this.#helmRig,this.#helmWheel,(root.userData.sail as BoatSailRig).heel); break; }
+      case "yacht": { const m=vehicleRuntime(mode); attach(m.buildYachtMesh()); this.#modes.yacht=new m.YachtController(root); break; }
       case "speedboat": { const m=vehicleRuntime(mode); attach(m.buildSpeedboatMesh()); this.#modes.speedboat=new m.BoatController(m.SPEEDBOAT_TUNING,m.SPEEDBOAT_HULL); seat(this.#speedRig,this.#speedWheel); break; }
       case "drone": { const m=vehicleRuntime(mode); attach(m.buildDroneMesh()); this.#modes.drone=new m.DroneController(root); break; }
       case "board": { const m=vehicleRuntime(mode); attach(m.buildBoardMesh(this.#configs.board,{deferSurface:true})); this.#modes.board=new m.BoardController(); this.#riderRig.group.rotation.order="ZYX"; this.#riderRig.group.rotation.set(0,1.05,0); this.#riderRig.group.position.set(0,0.93,0); root.add(this.#riderRig.group); break; }
@@ -701,6 +708,7 @@ export class Player {
    * wave, flight, and rider motion instead of hovering at the physics centre.
    */
   firstPersonViewPosition(out: THREE.Vector3): THREE.Vector3 {
+    if (this.mode === "yacht") return this.meshes.yacht.localToWorld(out.copy(this.#controller("yacht").eye));
     let rig: Rig | null = null;
     switch (this.mode) {
       case "walk":
@@ -815,6 +823,7 @@ export class Player {
     this.#destroyBody();
     this.#dropEmote(); // the walk rig is about to stop being what you look like
     this.riding = false; // any body spawn ends a passenger ride
+    this.#modes.yacht?.setActive(mode === "yacht");
     this.mode = mode;
     const q: [number, number, number, number] = [0, Math.sin(facing / 2), 0, Math.cos(facing / 2)];
     // the controller creates its body shape at p and resets its per-mode state

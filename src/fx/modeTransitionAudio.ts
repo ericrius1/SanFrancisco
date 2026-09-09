@@ -48,6 +48,7 @@ const signatureFor = (mode: PlayerMode): Exclude<Signature, "none" | "warm-dismo
     case "skate":
       return "mechanical-mount";
     case "boat":
+    case "yacht":
     case "speedboat":
     case "surf":
       return "water-mount";
@@ -212,6 +213,7 @@ export class ModeTransitionAudio {
         this.#electricMount(voice, out.input, t, mode);
         break;
       case "boat":
+      case "yacht":
       case "speedboat":
       case "surf":
         this.#waterMount(voice, out.input, t, mode);
@@ -266,7 +268,7 @@ export class ModeTransitionAudio {
     voice: GameplaySfxVoiceBus,
     out: AudioNode,
     t: number,
-    mode: "boat" | "speedboat" | "surf"
+    mode: "boat" | "speedboat" | "yacht" | "surf"
   ): void {
     const slap = mode === "surf" ? 0.13 : mode === "speedboat" ? 0.115 : 0.09;
     this.#tone(voice.ctx, out, t + 0.07, mode === "surf" ? 190 : 155, 82, 0.2, 0.12, "triangle", 0.01);

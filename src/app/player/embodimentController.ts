@@ -1,3 +1,4 @@
+import { vehicleRuntime } from "../../vehicles/runtime";
 import type { Physics } from "../../core/physics";
 import type { AbandonedMounts } from "../../gameplay/abandonedMounts";
 import type { AnimalKind, Forest } from "../../gameplay/forest";
@@ -155,8 +156,8 @@ export class EmbodimentController {
       });
     }
 
-    if (exitMode === "boat" || exitMode === "speedboat") {
-      const side = 2.2;
+    if (exitMode === "boat" || exitMode === "speedboat" || exitMode === "yacht") {
+      const side = exitMode === "yacht" ? 42 : 2.2;
       player.position.x += Math.sin(player.heading) * side;
       player.position.z += Math.cos(player.heading) * side;
       player.position.y = waterHeight(player.position.x, player.position.z, seaTime()) + 0.45;
@@ -220,6 +221,11 @@ export class EmbodimentController {
     const p = player.position;
     if (mode === "surf") {
       return { ...oceanBeachSurfEntryPose(p.x, p.z, player.time), label: "Ocean Beach" };
+    }
+    if (mode === "yacht") {
+      const spot = vehicleRuntime("yacht").yachtEntry(player);
+      if (spot.x === p.x && spot.z === p.z) return null;
+      return { x:spot.x, y:waterHeight(spot.x,spot.z,seaTime())+.5, z:spot.z, label:"The Elsewhere · open water" };
     }
     if (mode === "boat" || mode === "speedboat") {
       const openHere =

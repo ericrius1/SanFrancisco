@@ -1283,6 +1283,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     plane: { r: 3.2, y: 1.0 },
     boat: { r: 4.5, y: 1.8 },
     speedboat: { r: 3.2, y: 1.2 },
+    yacht: { r: 35, y: 5 },
     drone: { r: 0.9, y: 0.3 },
     bird: { r: 3.0, y: 1.5 }
   };

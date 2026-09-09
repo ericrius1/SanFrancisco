@@ -23,6 +23,7 @@ const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> =
     drive: { back: 9.5, up: 3.2, look: 1.2 },
     scooter: { back: 7.8, up: 2.8, look: 1.25 },
     plane: { back: 17, up: 4.6, look: 0 },
+    yacht: { back: 83, up: 33, look: 5 },
     boat: { back: 12, up: 4.2, look: 0.8 },
     speedboat: { back: 11, up: 3.6, look: 0.7 },
     drone: { back: 7, up: 1.9, look: 0.4 },
@@ -85,6 +86,7 @@ const OCCLUSION: Record<
   drive: { radius: 0.62, comfort: 5.0, cutRadius: 3.1 },
   scooter: { radius: 0.46, comfort: 3.6, cutRadius: 2.2 },
   plane: { radius: 0.9, comfort: 9.0, cutRadius: 5.2 },
+  yacht: { radius: 1, comfort: 45, cutRadius: 12 },
   boat: { radius: 0.68, comfort: 6.0, cutRadius: 3.8 },
   speedboat: { radius: 0.68, comfort: 5.5, cutRadius: 3.6 },
   drone: { radius: 0.42, comfort: 3.4, cutRadius: 2.0 },
@@ -245,7 +247,7 @@ export class ChaseCamera {
   /** Blend the avatar's third-person muzzle into the actual eye in first person. */
   viewOrigin(out: THREE.Vector3, player: Player): THREE.Vector3 {
     out.copy(player.aimOrigin)
-    const blend = this.manualFirstPerson || player.mode === "walk"
+    const blend = this.manualFirstPerson || player.yachtExploring || player.mode === "walk"
       ? this.firstPersonBlend
       : 0
     return out.lerp(this.camera.position, blend)
@@ -254,7 +256,7 @@ export class ChaseCamera {
   /** Exact rendered direction during an indoor handoff; canonical look outdoors. */
   interactionDir(out: THREE.Vector3, player: Player): THREE.Vector3 {
     if (
-      (this.manualFirstPerson || player.mode === "walk") &&
+      (this.manualFirstPerson || player.yachtExploring || player.mode === "walk") &&
       this.firstPersonBlend > 0.001
     )
       return this.camera.getWorldDirection(out)
@@ -488,7 +490,7 @@ export class ChaseCamera {
       this.#surfCamera?.reset()
     }
     const indoorTarget =
-      this.manualFirstPerson ||
+      this.manualFirstPerson || player.yachtExploring ||
       (player.mode === "walk" && (this.indoor || this.activityFirstPerson))
         ? 1
         : 0
@@ -498,7 +500,7 @@ export class ChaseCamera {
     // Indoor/activity eye requests belong to walking only. A vehicle switch
     // therefore clears that automatic eye immediately, while an explicit C-cycle
     // selection remains active across every embodiment.
-    const firstPersonBlend = this.manualFirstPerson || player.mode === "walk"
+    const firstPersonBlend = this.manualFirstPerson || player.yachtExploring || player.mode === "walk"
       ? this.firstPersonBlend
       : 0
     this.#applyFov(firstPersonBlend)

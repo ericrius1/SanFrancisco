@@ -41,6 +41,7 @@ export function addMovementTuning(pane: Pane | FolderApi): Record<PlayerMode, Fo
     drive: movement.addFolder({ title: "car", expanded: false }),
     scooter: movement.addFolder({ title: "scooter", expanded: false }),
     plane: movement.addFolder({ title: "plane", expanded: false }),
+    yacht: movement.addFolder({ title: "yacht", expanded: false }),
     boat: movement.addFolder({ title: "boat", expanded: false }),
     speedboat: movement.addFolder({ title: "speedboat", expanded: false }),
     drone: movement.addFolder({ title: "drone", expanded: false }),
