@@ -47,7 +47,7 @@ export async function prepareRelease({ root = ROOT, origin = process.env.SF_ASSE
   }
   const ws = path.join(root, 'node_modules/ws');
   for (const file of await filesIn(ws)) fingerprints.push([`ws/${path.relative(ws, file)}`, sha256(await readFile(file))]);
-  const release = sha256(JSON.stringify({ origin, fingerprints }));
+  const release = sha256(JSON.stringify({ format: 2, origin, fingerprints }));
   output ||= path.join(root, '.data/releases', release);
   // Never replace an existing deployment artifact: retrying the same release is safe.
   await mkdir(output, { recursive: true });
@@ -57,11 +57,11 @@ export async function prepareRelease({ root = ROOT, origin = process.env.SF_ASSE
     await cp(file, target);
   }
   await cp(path.join(root, 'server'), path.join(output, 'server'), { recursive: true });
-  await cp(ws, path.join(output, 'node_modules/ws'), { recursive: true, dereference: true });
+  await cp(ws, path.join(output, 'runtime-deps/ws'), { recursive: true, dereference: true });
   const manifest = { version: 1, origin, release, assets };
   await atomicWrite(path.join(output, 'server/asset-manifest.json'), JSON.stringify(manifest));
-  await atomicWrite(path.join(output, 'Dockerfile'), 'FROM node:22-alpine\nWORKDIR /app\nENV NODE_ENV=production\nCOPY dist ./dist\nCOPY server ./server\nCOPY node_modules/ws ./node_modules/ws\nEXPOSE 8787\nCMD ["node", "server/server.mjs"]\n');
-  await atomicWrite(path.join(output, '.dockerignore'), '**\n!Dockerfile\n!dist\n!dist/**\n!server\n!server/**\n!node_modules\n!node_modules/ws\n!node_modules/ws/**\n');
+  await atomicWrite(path.join(output, 'Dockerfile'), 'FROM node:22-alpine\nWORKDIR /app\nENV NODE_ENV=production\nCOPY dist ./dist\nCOPY server ./server\nCOPY runtime-deps/ws ./node_modules/ws\nEXPOSE 8787\nCMD ["node", "server/server.mjs"]\n');
+  await atomicWrite(path.join(output, '.dockerignore'), '**\n!Dockerfile\n!dist\n!dist/**\n!server\n!server/**\n!runtime-deps\n!runtime-deps/ws\n!runtime-deps/ws/**\n');
   await atomicWrite(path.join(output, '.railwayignore'), '/release-plan.json\n/assets-published.json\n/assets-verified.json\n');
   await atomicWrite(path.join(output, 'railway.json'), JSON.stringify({ $schema: 'https://railway.com/railway.schema.json', build: { builder: 'DOCKERFILE', dockerfilePath: 'Dockerfile' }, deploy: { healthcheckPath: '/healthz', healthcheckTimeout: 120 } }, null, 2));
   let commit = null;

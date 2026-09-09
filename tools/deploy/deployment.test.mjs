@@ -55,6 +55,8 @@ test('release keeps code local, versions changed assets, routes compression and 
   await assert.rejects(stat(path.join(plan.output, 'dist/models/model.glb')), { code: 'ENOENT' });
   await stat(path.join(plan.output, 'dist/assets/app.js'));
   assert.ok(!(await readFile(path.join(plan.output, 'Dockerfile'), 'utf8')).includes('RUN'));
+  assert.equal(await readFile(path.join(plan.output, 'runtime-deps/ws/index.js'), 'utf8'), '/* fixture */');
+  assert.match(await readFile(path.join(plan.output, 'Dockerfile'), 'utf8'), /COPY runtime-deps\/ws \.\/node_modules\/ws/);
   const routes = await loadRemoteAssets(path.join(plan.output, 'server/asset-manifest.json'));
   const server = createServer((req, res) => { if (!routes.handle(req, res, new URL(req.url, 'http://localhost').pathname)) { res.writeHead(404); res.end(); } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');

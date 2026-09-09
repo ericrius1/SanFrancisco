@@ -2,6 +2,8 @@
 
 `npm run build` keeps every existing asset/contract/typecheck gate, prints timings for each stage, and creates the complete standalone `dist/` build. Brotli quality 5 and gzip level 6 run with up to four parallel jobs. Compressed outputs are cached by source SHA-256, codec version, and settings under `.data/cache/compression`; cache hits are checked for corruption. TypeScript uses an incremental cache under `.data/cache`. Neither cache belongs in git or the runtime image.
 
+GitHub auto-deploy is disabled for this service so a source push cannot replace a verified R2 release. Use `npm run deploy` for production releases; the GitHub repository remains connected for source history.
+
 The fast deployment path builds on your machine (or a CI runner), publishes only missing immutable R2 objects, verifies public access, and uploads a small runtime directory to Railway. Railway's Dockerfile only copies files: no install, TypeScript, Vite, asset bake, or compression. This avoids needing a Docker daemon or private image registry. Railway's normal source-build Dockerfile remains usable for standalone deployments.
 
 ## Setup
@@ -52,7 +54,7 @@ The command fails before uploading to Railway unless every asset is present in R
 
 `npm run deploy -- --prepare-only` runs the build and prepares a release without uploading it. `npm run deploy:prepare` packages an already completed build. Artifacts are retained under `.data/releases/<release-hash>/`; `release-plan.json` records build commit, files, sizes, and expected hashes. Do not rebuild `dist/` while publishing a prepared plan: the publisher rejects assets that changed after preparation.
 
-For a prepared release, `npm run deploy:publish -- /absolute/path/to/release-plan.json` uploads and verifies assets without touching Railway. The release directory contains only local code/runtime files, a server-side asset map, the tiny Dockerfile, and health-check configuration. The app never fetches this map at boot; server redirects happen only when the browser actually requests an asset. WebSocket and API routes stay on Railway.
+For a prepared release, `npm run deploy:publish -- /absolute/path/to/release-plan.json` uploads and verifies assets without touching Railway. The WebSocket dependency is staged as `runtime-deps/ws` because Railway upload filtering excludes `node_modules`; Docker copies it to `node_modules/ws` inside the image. The release directory contains only local code/runtime files, a server-side asset map, the tiny Dockerfile, and health-check configuration. The app never fetches this map at boot; server redirects happen only when the browser actually requests an asset. WebSocket and API routes stay on Railway.
 
 After the CLI finishes the image build, the deploy script polls `/healthz` for the exact release hash for up to three minutes. A build alone is not reported as deployment success. Set SF_APP_ORIGIN if deploying to another hostname.
 
