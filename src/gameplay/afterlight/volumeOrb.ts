@@ -1,3 +1,4 @@
+import { worldAnimationTime as time } from "../../core/worldTimeUniform";
 import * as THREE from "three/webgpu";
 import {
   cameraPosition,
@@ -6,7 +7,6 @@ import {
   modelWorldMatrixInverse,
   positionLocal,
   screenCoordinate,
-  time,
   vec4,
   wgslFn
 } from "three/tsl";

@@ -1,10 +1,10 @@
+import { worldAnimationTime as time } from "../../core/worldTimeUniform";
 import * as THREE from "three/webgpu";
 import {
   color,
   float,
   mix,
   oscSine,
-  time,
   uniform
 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";

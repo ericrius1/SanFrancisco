@@ -1,3 +1,5 @@
+import { worldAnimationTime as time } from "../core/worldTimeUniform";
+import { worldTime } from "../core/worldTime";
 import * as THREE from "three/webgpu"
 import {
   Fn,
@@ -22,7 +24,6 @@ import {
   sin,
   smoothstep,
   step,
-  time,
   uniform,
   vec3,
   vec4
@@ -416,7 +417,7 @@ export class Sky {
     return sfCivilScalarDays({ ...n, hour: SKY_TUNING.values.timeOfDay })
   })()
   #simulatedUtcOffsetHours = (() => {
-    const now = sanFranciscoCivilNow()
+    const now = sanFranciscoCivilNow(new Date(worldTime.nowMs()))
     return sfUtcOffsetHours({ ...now, hour: 12 })
   })()
   // Real-clock read cadence. sanFranciscoCivilNow() is Intl.formatToParts — ~4 µs
@@ -1670,7 +1671,7 @@ export class Sky {
     this.#timeAuthority = null
     this.realTime = true
     this.cycleEnabled = false
-    const now = sanFranciscoCivilNow()
+    const now = sanFranciscoCivilNow(new Date(worldTime.nowMs()))
     // this IS the 4 Hz sample, so update() does not immediately repeat it
     this.#lastRealClockMs = performance.now()
     this.#simulatedUtcOffsetHours = sfUtcOffsetHours({ ...now, hour: 12 })
@@ -1892,7 +1893,7 @@ export class Sky {
       const nowMs = performance.now()
       if (nowMs - this.#lastRealClockMs >= 250) {
         this.#lastRealClockMs = nowMs
-        const now = sanFranciscoCivilNow()
+        const now = sanFranciscoCivilNow(new Date(worldTime.nowMs()))
         this.#civilDay = sfCivilScalarDays(now)
         this.timeOfDay = now.hour
         this.#applySun() // the analytic env reads #uSun, so the IBL tracks for free

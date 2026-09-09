@@ -528,13 +528,13 @@ export class Physics {
   }
 
   /** Advance only the deterministic stepped physics world. */
-  step(dt: number): void {
+  step(dt: number, localBody = 0, timeScale = 1): void {
     // 2 solver substeps: every mover here is velocity-driven (cars, player,
     // boat springs), so the solver only reconciles contacts — 4 substeps was
     // a 240 Hz solver nobody could see, at double the wasm cost. A crash into a
     // wall/vehicle is resolved entirely by the contact solver — it just stops
     // you; there are no crash effects, projectiles, or building damage.
-    this.world.step(dt, 2);
+    this.world.stepDilated(dt, localBody, timeScale);
   }
 
   // ------------------------------------------------------------------ ground

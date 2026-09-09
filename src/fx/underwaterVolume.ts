@@ -1,3 +1,4 @@
+import { worldAnimationTime as time } from "../core/worldTimeUniform";
 import * as THREE from "three/webgpu";
 import {
   instanceIndex,
@@ -5,7 +6,6 @@ import {
   positionWorld,
   saturate,
   smoothstep,
-  time,
   uniform,
   uv,
   vec3,

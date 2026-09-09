@@ -1,3 +1,4 @@
+import { worldTime } from "../../core/worldTime";
 import * as THREE from "three/webgpu";
 import { BodyType } from "../../core/physics";
 import type { Input } from "../../core/input";
@@ -327,7 +328,7 @@ export class SurfController implements ModeController {
     this.lean = 0;
     this.pitch = 0;
     this.#crestSlot = null;
-    const y = this.#contactFloor(p.x, p.z, ctx.time, SURF_TUNING.values.railHeight);
+    const y = this.#contactFloor(p.x, p.z, (ctx.environmentTime ?? ctx.time), SURF_TUNING.values.railHeight);
     p.y = y;
     ctx.body = w.createBox({
       type: BodyType.Dynamic,
@@ -431,7 +432,7 @@ export class SurfController implements ModeController {
     if (this.#shouldResetWave(p.x, p.z, tb.waveResetMargin)) {
       this.#placeOnWave(ctx, true, true);
     }
-    const sample = this.#sampleLockedCrest(p.x, p.z, ctx.time);
+    const sample = this.#sampleLockedCrest(p.x, p.z, (ctx.environmentTime ?? ctx.time));
 
     const entryBlend =
       tb.entryAssistDuration > 0
@@ -574,7 +575,7 @@ export class SurfController implements ModeController {
     }
 
     const nz = p.z + vz * dt;
-    const nextCrestX = this.#stepCrestX(nz, ctx.time + dt, sample.crestX);
+    const nextCrestX = this.#stepCrestX(nz, (ctx.environmentTime ?? ctx.time) + worldTime.delta(dt), sample.crestX);
     const crestVx = (nextCrestX - sample.crestX) / Math.max(dt, 1e-4);
     const authoredRelativeVx = authoredVx - crestVx;
     const targetRelativeVx = THREE.MathUtils.clamp(
@@ -606,7 +607,7 @@ export class SurfController implements ModeController {
     this.#relativeFaceSpeed = vx - crestVx;
 
     const y = this.#safeY(ctx, tb.railHeight);
-    const nextFloor = this.#contactFloor(nx, nz, ctx.time + dt, tb.railHeight);
+    const nextFloor = this.#contactFloor(nx, nz, (ctx.environmentTime ?? ctx.time) + worldTime.delta(dt), tb.railHeight);
     const rawVy = (nextFloor - y) / Math.max(dt, 1e-4);
     const vy = THREE.MathUtils.clamp(rawVy, -tb.maxSurfaceVy, tb.maxSurfaceVy);
     const totalSpeed = Math.hypot(vx, vz);
@@ -698,7 +699,7 @@ export class SurfController implements ModeController {
     const sample = sampleOceanBeachWave(
       p.x,
       p.z,
-      ctx.time,
+      (ctx.environmentTime ?? ctx.time),
       this.#crestSlot ?? undefined
     );
     this.#airTime += dt;
@@ -712,8 +713,8 @@ export class SurfController implements ModeController {
     // wave or snapping to a neighbouring set during landing.
     if (this.#crestSlot != null) {
       const nextZ = p.z + vz * dt;
-      const crestNow = oceanBeachCrestX(this.#crestSlot, p.z, ctx.time);
-      const crestNext = this.#stepCrestX(nextZ, ctx.time + dt, crestNow);
+      const crestNow = oceanBeachCrestX(this.#crestSlot, p.z, (ctx.environmentTime ?? ctx.time));
+      const crestNext = this.#stepCrestX(nextZ, (ctx.environmentTime ?? ctx.time) + worldTime.delta(dt), crestNow);
       const crestVx = (crestNext - crestNow) / Math.max(dt, 1e-4);
       const predictedD = p.x + vx * dt - crestNext;
       const targetRelativeVx = THREE.MathUtils.clamp((3.8 - predictedD) * 0.9, -2.2, 2.2);
@@ -740,7 +741,7 @@ export class SurfController implements ModeController {
     let y = this.#safeY(ctx, tb.railHeight);
     const nx = p.x + vx * dt;
     const nz = p.z + vz * dt;
-    const landingFloor = this.#contactFloor(nx, nz, ctx.time + dt, tb.railHeight);
+    const landingFloor = this.#contactFloor(nx, nz, (ctx.environmentTime ?? ctx.time) + worldTime.delta(dt), tb.railHeight);
     const predictedY = y + vy * dt;
     const contactSlack = tb.landingContactSlack * shape.landingAssist;
     const descending = this.#airVy <= 0;
@@ -768,7 +769,7 @@ export class SurfController implements ModeController {
       this.telemetry.landingSerial++;
       this.#emitSplash(THREE.MathUtils.clamp(0.35 + impact / 18 + this.#airTime * 0.18, 0.3, 1.6));
 
-      y = this.#contactFloor(p.x, p.z, ctx.time, tb.railHeight);
+      y = this.#contactFloor(p.x, p.z, (ctx.environmentTime ?? ctx.time), tb.railHeight);
       const trackVy = THREE.MathUtils.clamp(
         (landingFloor - y) / Math.max(dt, 1e-4),
         -tb.maxSurfaceVy,
@@ -825,7 +826,7 @@ export class SurfController implements ModeController {
       (1 - Math.exp(-dt * tb.yawResponse * 0.7));
     const crestward = Math.sin(this.yaw);
     this.#carve += (crestward - this.#carve) * (1 - Math.exp(-dt * tb.carveResponse));
-    const sample = this.#sampleLockedCrest(p.x, p.z, ctx.time);
+    const sample = this.#sampleLockedCrest(p.x, p.z, (ctx.environmentTime ?? ctx.time));
     const speed = tb.recoverySpeed;
     const authoredVx = -Math.sin(this.yaw) * speed;
     let vz = -Math.cos(this.yaw) * speed;
@@ -833,7 +834,7 @@ export class SurfController implements ModeController {
     const faceError = desiredFaceOffset - sample.crestDistance;
     this.#lineDirection = vz >= 0 ? 1 : -1;
     const nz = p.z + vz * dt;
-    const nextCrestX = this.#stepCrestX(nz, ctx.time + dt, sample.crestX);
+    const nextCrestX = this.#stepCrestX(nz, (ctx.environmentTime ?? ctx.time) + worldTime.delta(dt), sample.crestX);
     const crestVx = (nextCrestX - sample.crestX) / Math.max(dt, 1e-4);
     const authoredRelativeVx = authoredVx - crestVx;
     const targetRelativeVx = THREE.MathUtils.clamp(
@@ -858,7 +859,7 @@ export class SurfController implements ModeController {
     }
     this.#relativeFaceSpeed = vx - crestVx;
     const y = this.#safeY(ctx, tb.railHeight);
-    const nextFloor = this.#contactFloor(nx, nz, ctx.time + dt, tb.railHeight);
+    const nextFloor = this.#contactFloor(nx, nz, (ctx.environmentTime ?? ctx.time) + worldTime.delta(dt), tb.railHeight);
     const rawVy = (nextFloor - y) / Math.max(dt, 1e-4);
     const vy = THREE.MathUtils.clamp(rawVy, -tb.maxSurfaceVy, tb.maxSurfaceVy);
 
@@ -982,13 +983,13 @@ export class SurfController implements ModeController {
   /** Immediate correction for any stale/low body pose before the next physics step. */
   #safeY(ctx: PlayerCtx, clearance: number): number {
     if (this.#phase === "air") {
-      const floor = this.#surface(ctx.position.x, ctx.position.z, ctx.time, clearance);
+      const floor = this.#surface(ctx.position.x, ctx.position.z, (ctx.environmentTime ?? ctx.time), clearance);
       return Math.max(ctx.position.y, floor);
     }
     // Grounded surf is a constrained contact, not a hover spring. Pin the root
     // to the footprint solve every fixed step so descending the face cannot
     // leave the board visibly floating above it.
-    return this.#contactFloor(ctx.position.x, ctx.position.z, ctx.time, clearance);
+    return this.#contactFloor(ctx.position.x, ctx.position.z, (ctx.environmentTime ?? ctx.time), clearance);
   }
 
   #commit(ctx: PlayerCtx, y: number, vx: number, vy: number, vz: number) {
@@ -1003,7 +1004,7 @@ export class SurfController implements ModeController {
     const floor = this.#contactFloor(
       ctx.position.x,
       ctx.position.z,
-      ctx.time,
+      (ctx.environmentTime ?? ctx.time),
       SURF_TUNING.values.railHeight
     );
     const safeY = this.#phase === "air" ? Math.max(y, floor) : floor;
@@ -1046,12 +1047,12 @@ export class SurfController implements ModeController {
     const eps = 0.55;
     const epsZ = 0.8;
     const slopeX =
-      (waterHeight(ctx.position.x + eps, ctx.position.z, ctx.time) -
-        waterHeight(ctx.position.x - eps, ctx.position.z, ctx.time)) /
+      (waterHeight(ctx.position.x + eps, ctx.position.z, (ctx.environmentTime ?? ctx.time)) -
+        waterHeight(ctx.position.x - eps, ctx.position.z, (ctx.environmentTime ?? ctx.time))) /
       (2 * eps);
     const slopeZ =
-      (waterHeight(ctx.position.x, ctx.position.z + epsZ, ctx.time) -
-        waterHeight(ctx.position.x, ctx.position.z - epsZ, ctx.time)) /
+      (waterHeight(ctx.position.x, ctx.position.z + epsZ, (ctx.environmentTime ?? ctx.time)) -
+        waterHeight(ctx.position.x, ctx.position.z - epsZ, (ctx.environmentTime ?? ctx.time))) /
       (2 * epsZ);
     const slopeRight = slopeX * rightX + slopeZ * rightZ;
     const slopeForward = slopeX * forwardX + slopeZ * forwardZ;
@@ -1131,7 +1132,7 @@ export class SurfController implements ModeController {
       : b.entryZ;
     // Prefer the player's local crest. On wash-in, step one slot offshore so the
     // reset is a nearby next-wave hop rather than a jump to entryX's pocket.
-    let crest = nearestOceanBeachCrest(keepZ ? p.x : b.entryX, z, ctx.time);
+    let crest = nearestOceanBeachCrest(keepZ ? p.x : b.entryX, z, (ctx.environmentTime ?? ctx.time));
     const faceOffset = nextWave
       ? THREE.MathUtils.clamp(crest.distance, tb.faceCorridorMin, tb.faceCorridorMax)
       : tb.faceOffset;
@@ -1146,7 +1147,7 @@ export class SurfController implements ModeController {
       ? crest.slot - 1
       : crest.slot;
     const slot = THREE.MathUtils.clamp(desiredSlot, minSlot, Math.max(minSlot, maxSlot));
-    const crestX = oceanBeachCrestX(slot, z, ctx.time);
+    const crestX = oceanBeachCrestX(slot, z, (ctx.environmentTime ?? ctx.time));
     crest = { slot, crestX, distance: p.x - crestX };
     this.#crestSlot = crest.slot;
     const x = crest.crestX + faceOffset;
@@ -1190,9 +1191,9 @@ export class SurfController implements ModeController {
     // A wave handoff relocates the pocket, not the player's steering. Preserve
     // the heading, face intent and buffered jump through the whitewater wash.
     this.grounded = true;
-    const y = this.#contactFloor(x, z, ctx.time, tb.railHeight);
+    const y = this.#contactFloor(x, z, (ctx.environmentTime ?? ctx.time), tb.railHeight);
     p.set(x, y, z);
-    const sample = sampleOceanBeachWave(x, z, ctx.time, crest.slot);
+    const sample = sampleOceanBeachWave(x, z, (ctx.environmentTime ?? ctx.time), crest.slot);
     const tm = this.telemetry;
     // Camera and HUD read telemetry before the first fixed step on entry. Keep
     // their very first frame on the same side/phase/speed as the body instead of
@@ -1255,8 +1256,8 @@ export class SurfController implements ModeController {
     const tm = this.telemetry;
     const clearance = SURF_TUNING.values.railHeight;
     const surfaceY = this.#phase === "air"
-      ? this.#surface(ctx.position.x, ctx.position.z, ctx.time, clearance)
-      : this.#contactFloor(ctx.position.x, ctx.position.z, ctx.time, clearance);
+      ? this.#surface(ctx.position.x, ctx.position.z, (ctx.environmentTime ?? ctx.time), clearance)
+      : this.#contactFloor(ctx.position.x, ctx.position.z, (ctx.environmentTime ?? ctx.time), clearance);
     const rootY = ctx.position.y;
     tm.speed = speed;
     tm.face = sample.face;
@@ -1285,7 +1286,7 @@ export class SurfController implements ModeController {
       ctx.position.x,
       rootY,
       ctx.position.z,
-      ctx.time,
+      (ctx.environmentTime ?? ctx.time),
       clearance
     );
     tm.supportError = tm.hullClearance;
@@ -1307,7 +1308,7 @@ export class SurfController implements ModeController {
         ? sampleOceanBeachWave(
             ctx.position.x,
             ctx.position.z + this.#lineDirection * 55,
-            ctx.time,
+            (ctx.environmentTime ?? ctx.time),
             this.#crestSlot ?? undefined
           ).barrel
         : 0;

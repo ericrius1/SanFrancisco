@@ -1,5 +1,6 @@
+import { worldAnimationTime as time } from "../core/worldTimeUniform";
 import * as THREE from "three/webgpu";
-import { float, hash, instanceIndex, positionLocal, sin, time, uniform, vec3 } from "three/tsl";
+import { float, hash, instanceIndex, positionLocal, sin, uniform, vec3 } from "three/tsl";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { WorldMap } from "../world/heightmap";
 import type { Cockpit, DriveSpec } from "../player/types";

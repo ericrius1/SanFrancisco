@@ -1,3 +1,4 @@
+import { worldTime } from "../core/worldTime";
 import { loadVehicleRuntime, vehicleRuntime, activateVehicleRuntime, type VehicleMode } from "../vehicles/runtime";
 import { IDLE_LANDING, IDLE_SLIDE, IDLE_JUMP, IDLE_SURF, IDLE_HANG, IDLE_ROCKET } from "./idleTelemetry";
 import * as THREE from "three/webgpu";
@@ -241,7 +242,13 @@ export class Player {
   velocity = new THREE.Vector3();
   heading = 0;
   speed = 0;
-  time = 0; // sim seconds, advanced by fixed steps (controllers read this)
+  environmentTime = 0; // world seconds for surf contact; the rider keeps real-time controls
+  #time = 0;
+  get time() { return this.#time; }
+  set time(value: number) {
+    this.#time = value;
+    this.environmentTime = value; // explicit cinematic/probe clock reset
+  }
   readonly skyFlight = new SkyFlightController();
 
   get personalFlying(): boolean {
@@ -1106,7 +1113,8 @@ export class Player {
       this.#applyArrivalHold();
       return;
     }
-    this.time += dt;
+    this.#time += dt;
+    this.environmentTime += worldTime.delta(dt);
     const w = this.physics.world;
     // keep the player body hot: box3d silently drops velocity writes on sleeping
     // bodies (their state lives only in the awake solver set)

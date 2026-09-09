@@ -188,6 +188,10 @@ export class PhysicsWorld {
   #world: b3WorldId;
   #types: [b3BodyType, b3BodyType, b3BodyType];
   #bodies = new Map<number, b3BodyId>();
+  #movers = new Set<number>();
+  #dilationScratch = new Map<number, {
+    velocity: BodyVelocity; transform: Transform; gravity: number; awake: boolean; sleepThreshold: number;
+  }>();
   // Triangle-mesh shapes retain their b3MeshData pointer for their whole
   // lifetime. Keep it beside the owning body and free it immediately after the
   // body/shape is destroyed (hull data, by contrast, is copied at creation).
@@ -219,6 +223,7 @@ export class PhysicsWorld {
   #register(id: b3BodyId): number {
     const handle = this.#next++;
     this.#bodies.set(handle, id);
+    if (this.#m.b3Body_GetType(id).value !== this.#types[0].value) this.#movers.add(handle);
     const key = bodyKey(id);
     this.#keyToHandle.set(key, handle);
     this.#handleKey.set(handle, key);
@@ -343,6 +348,8 @@ export class PhysicsWorld {
       this.#meshes.delete(bodyHandle);
     }
     this.#bodies.delete(bodyHandle);
+    this.#movers.delete(bodyHandle);
+    this.#dilationScratch.delete(bodyHandle);
     const key = this.#handleKey.get(bodyHandle);
     if (key !== undefined) {
       this.#handleKey.delete(bodyHandle);
@@ -354,6 +361,57 @@ export class PhysicsWorld {
 
   step(timeStep: number = this.fixedTimeStep, substeps: number = this.substeps): void {
     this.#m.b3World_Step(this.#world, timeStep, substeps);
+  }
+
+  /** Keep the local body's real-time step while other bodies run in world time.
+   * Convert velocities and gravity into the solver's real-time units, then
+   * restore world units for controllers. Zero restores the exact held pose and
+   * momentum, with no division by zero and no accumulated gravity on resume. */
+  stepDilated(timeStep: number, localBody: number, scale: number): void {
+    if (scale === 1) { this.step(timeStep, 2); return; }
+    const m = this.#m;
+    for (const handle of this.#movers) {
+      if (handle === localBody) continue;
+      const id = this.#bodies.get(handle)!;
+      let state = this.#dilationScratch.get(handle);
+      if (!state) {
+        state = { velocity: { linear: [0, 0, 0], angular: [0, 0, 0] },
+          transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1] }, gravity: 1, awake: false, sleepThreshold: 0 };
+        this.#dilationScratch.set(handle, state);
+      }
+      state.awake = this.isBodyAwake(handle);
+      state.gravity = m.b3Body_GetGravityScale(id);
+      // Slow motion must not make a moving body look stationary to the sleep
+      // heuristic, or it loses its momentum after half a real-time second.
+      state.sleepThreshold = m.b3Body_GetSleepThreshold(id);
+      m.b3Body_SetSleepThreshold(id, state.sleepThreshold * scale);
+      this.getBodyVelocity(handle, state.velocity);
+      if (scale === 0) this.getBodyTransform(handle, state.transform);
+      const { linear: v, angular: w } = state.velocity;
+      this.setBodyVelocity(handle, [v[0] * scale, v[1] * scale, v[2] * scale],
+        [w[0] * scale, w[1] * scale, w[2] * scale]);
+      m.b3Body_SetGravityScale(id, state.gravity * scale * scale);
+    }
+    try {
+      this.step(timeStep, 2);
+    } finally {
+      for (const handle of this.#movers) {
+        if (handle === localBody) continue;
+        const state = this.#dilationScratch.get(handle)!;
+        const id = this.#bodies.get(handle)!;
+        m.b3Body_SetGravityScale(id, state.gravity);
+        m.b3Body_SetSleepThreshold(id, state.sleepThreshold);
+        if (scale === 0) {
+          this.setBodyTransform(handle, state.transform.position, state.transform.rotation);
+          this.setBodyVelocity(handle, state.velocity.linear, state.velocity.angular);
+          this.setBodyAwake(handle, state.awake);
+        } else {
+          const { linear: v, angular: w } = this.getBodyVelocity(handle, state.velocity);
+          this.setBodyVelocity(handle, [v[0] / scale, v[1] / scale, v[2] / scale],
+            [w[0] / scale, w[1] / scale, w[2] / scale]);
+        }
+      }
+    }
   }
 
   // -- spatial queries ------------------------------------------------------
@@ -765,6 +823,8 @@ export class PhysicsWorld {
     for (const mesh of this.#meshes.values()) this.#m.b3DestroyMesh(mesh);
     this.#meshes.clear();
     this.#bodies.clear();
+    this.#movers.clear();
+    this.#dilationScratch.clear();
     this.#joints.clear();
     this.#keyToHandle.clear();
     this.#handleKey.clear();

@@ -2,13 +2,17 @@ import * as THREE from 'three/webgpu';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { MeshoptSimplifier } from 'meshoptimizer/simplifier';
+import { BIRD_ASSET_VERSIONS } from './assetVersions';
 import type { BirdSpeciesId } from './catalog';
 
 export const CLIP_FRAMES = 48;
 export const CLIP_ROWS = CLIP_FRAMES + 1;
-export const CLIPS = ['Fly', 'Glide', 'Scatter'] as const;
+export const CLIPS = ['Fly', 'Glide', 'Scatter', 'Perch'] as const;
 export interface BirdAsset {
   geometry: THREE.BufferGeometry;
+  lods: THREE.BufferGeometry[];
+  lodFormatsMatch: boolean;
   atlas: THREE.DataTexture;
   textureBytes: number;
   boneCount: number;
@@ -19,12 +23,12 @@ export interface BirdAsset {
   dispose(): void;
 }
 /** Once per resident species: sample the edited Blender rig, including quantization
- * transforms. The GPU shares this 33 KB atlas across every instance and habitat. */
+ * transforms. The GPU shares this 43 KB atlas across every instance and habitat. */
 export async function loadBirdAsset(id: BirdSpeciesId, renderer: THREE.WebGPURenderer, baseUrl = '/models/aviary/', transcoderPath = '/native-foliage/basis-r185/'): Promise<BirdAsset> {
   const ktx = new KTX2Loader().setTranscoderPath(transcoderPath).setWorkerLimit(1).detectSupport(renderer);
   const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).setKTX2Loader(ktx);
   let gltf;
-  try { gltf = await loader.loadAsync(`${baseUrl}${id}.glb`); } finally { ktx.dispose(); }
+  try { gltf = await loader.loadAsync(`${baseUrl}${id}.glb?v=${BIRD_ASSET_VERSIONS[id]}`); } finally { ktx.dispose(); }
   const meshes: THREE.SkinnedMesh[] = [];
   gltf.scene.traverse(o => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) meshes.push(o as THREE.SkinnedMesh); });
   if (meshes.length !== 1) throw new Error(`[aviary] ${id}: expected one skinned mesh`);
@@ -65,6 +69,38 @@ export async function loadBirdAsset(id: BirdSpeciesId, renderer: THREE.WebGPURen
   for (let i = 0; i < weights.count; i++) for (let k = 1; k < 4; k++) {
     if (weights.getComponent(i, k) > 0) influences = Math.max(influences, k + 1);
   }
+  // Index-only LODs retain the authored silhouette, UVs and skin weights. The
+  // small tiers compact vertices; no additional model/texture requests.
+  await MeshoptSimplifier.ready;
+  const sourcePosition = geometry.getAttribute('position');
+  const points = new Float32Array(sourcePosition.count * 3);
+  for (let i = 0; i < sourcePosition.count; i++) points.set([sourcePosition.getX(i), sourcePosition.getY(i), sourcePosition.getZ(i)], i * 3);
+  const indices = new Uint32Array(geometry.index!.array);
+  const lods = [geometry];
+  for (const triangles of [2200, 420]) {
+    const [reduced] = MeshoptSimplifier.simplifySloppy(indices, points, 3, null, triangles * 3, 1);
+    const remap = new Map<number, number>();
+    const compact = Uint32Array.from(reduced, index => { if (!remap.has(index)) remap.set(index, remap.size); return remap.get(index)!; });
+    const lod = new THREE.BufferGeometry();
+    for (const [name, attribute] of Object.entries(geometry.attributes)) {
+      // Preserve the source vertex formats. Sharing one material across LODs
+      // must not change normalized integer joint/weight/position layouts.
+      const source = attribute as THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
+      const ArrayType = source.array.constructor as typeof Float32Array;
+      const values = new ArrayType(remap.size * source.itemSize);
+      const interleaved = source as THREE.InterleavedBufferAttribute;
+      const stride = interleaved.isInterleavedBufferAttribute ? interleaved.data.stride : source.itemSize;
+      const offset = interleaved.isInterleavedBufferAttribute ? interleaved.offset : 0;
+      for (const [old, index] of remap) for (let k = 0; k < source.itemSize; k++) values[index * source.itemSize + k] = source.array[old * stride + offset + k];
+      lod.setAttribute(name, new THREE.BufferAttribute(values, source.itemSize, source.normalized));
+    }
+    lod.setIndex(new THREE.BufferAttribute(compact, 1));
+    lods.push(lod);
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+  }
+  // WebGPU may widen byte attributes on upload. Compare authored formats
+  // now, before some tiers have rendered and others are still CPU-only.
+  const lodFormatsMatch = lods.every(g => Object.entries(geometry.attributes).every(([name, attr]) => g.getAttribute(name).normalized === attr.normalized && g.getAttribute(name).array.constructor === attr.array.constructor));
   const atlas = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.HalfFloatType);
   atlas.magFilter = atlas.minFilter = THREE.LinearFilter;
   atlas.generateMipmaps = false; atlas.needsUpdate = true;
@@ -74,5 +110,5 @@ export async function loadBirdAsset(id: BirdSpeciesId, renderer: THREE.WebGPURen
   });
   mesh.skeleton.dispose();
   const textureBytes = data.byteLength + [map, normalMap].reduce((sum, t) => sum + (t?.mipmaps ?? []).reduce((n, mip) => n + ((mip as { data?: { byteLength: number } }).data?.byteLength ?? 0), 0), 0);
-  return { geometry, atlas, map, normalMap, textureBytes, boneCount, durations, influences, dispose() { geometry.dispose(); atlas.dispose(); map?.dispose(); normalMap?.dispose(); } };
+  return { geometry, lods, lodFormatsMatch, atlas, map, normalMap, textureBytes, boneCount, durations, influences, dispose() { for (const lod of lods) lod.dispose(); atlas.dispose(); map?.dispose(); normalMap?.dispose(); } };
 }

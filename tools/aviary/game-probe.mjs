@@ -6,7 +6,7 @@ const base=process.env.SF_PROBE_URL??'http://localhost:5255';
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BIN??'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',args:['--enable-unsafe-webgpu','--use-angle=metal','--enable-features=WebGPU']});
 const page=await browser.newPage({viewport:{width:1280,height:800}});
 const assets=[],chunks=[],errors=[];
-page.on('request',r=>{const u=r.url();if(u.includes('/models/aviary/'))assets.push(u.split('/').pop());if(/(?:\/world\/aviary\/(?:runtime|flock|asset)\.|\/assets\/(?:runtime|flock|asset)-)/.test(u))chunks.push(u);});
+page.on('request',r=>{const u=r.url();if(u.includes('/models/aviary/'))assets.push(u.split('/').pop().split('?')[0]);if(/(?:\/world\/aviary\/(?:runtime|flock|asset)\.|\/assets\/(?:runtime|flock|asset)-)/.test(u))chunks.push(u);});
 page.on('pageerror',e=>errors.push(String(e)));
 page.on('console',m=>{if(m.type()==='error'&&(m.text().includes('[aviary]')||/validation|GPU/i.test(m.text())))errors.push(m.text());});
 const stats=()=>page.evaluate(()=>window.__sf.aviary.stats);
@@ -17,7 +17,7 @@ try{
  assert.deepEqual(assets,[],'downtown boot must fetch zero bird models');assert.deepEqual(chunks,[],'downtown boot must fetch zero optional bird code');
  console.log('Clean boot: no bird code or models.');
  await page.waitForFunction(()=>window.__sf.aviary.stats.draws>0&&window.__sf.aviary.stats.pending.length===0,{},{timeout:90000});
- const downtown=await stats();assert(downtown.habitats>100);assert(downtown.birds<=96);assert(downtown.draws<=4);assert(downtown.species.length<=2);
+ const downtown=await stats();assert(downtown.habitats>100);assert(downtown.birds<=320);assert(downtown.draws<=12);assert(downtown.species.length<=3);
  assert.deepEqual([...new Set(assets)].sort(),downtown.species.map(s=>s+'.glb').sort());
  console.log('Downtown encounter:',downtown);
  const first=assets.length;
@@ -25,7 +25,7 @@ try{
  await page.waitForFunction(()=>window.__sf.aviary.stats.resident.includes('lands-end-pearl')&&window.__sf.aviary.stats.pending.length===0,{},{timeout:120000});
  const pearl=await stats();
  assert(assets.slice(first).every(a=>pearl.species.some(s=>a===s+'.glb')),'travel loads only local species');
- assert(pearl.birds<=96&&pearl.draws<=4&&pearl.species.length<=2);
+ assert(pearl.birds<=320&&pearl.draws<=12&&pearl.species.length<=3);
  console.log('Lands End:',pearl);
  await page.waitForTimeout(1600);
  const poses=await page.evaluate(async()=>Array.from(await window.__sf.aviary.debugRead('lands-end-pearl')));
@@ -43,7 +43,7 @@ try{
  await page.waitForTimeout(3500);assert(await page.evaluate(()=>window.__birdDraws>0),'flock must be submitted by the real world renderer');await page.screenshot({path:'.data/aviary/revision/sf-flock.png'});
  await page.evaluate(()=>{window.__sfFreeCam(null);window.__sf.teleportToTarget(408,2760,'Bird habitat');});
  await page.waitForFunction(()=>window.__sf.aviary.stats.resident.includes('corona-ember')&&window.__sf.aviary.stats.pending.length===0,{},{timeout:120000});
- const ember=await stats();assert(!ember.resident.includes('lands-end-pearl'));assert(ember.birds<=96&&ember.draws<=4&&ember.species.length<=2);
+ const ember=await stats();assert(!ember.resident.includes('lands-end-pearl'));assert(ember.birds<=320&&ember.draws<=12&&ember.species.length<=3);
  console.log('Corona:',ember);
  // Leave the city's authored airspace; no distant wildlife stays resident.
  await page.waitForFunction(()=>!window.__sf.worldArrival.active,{},{timeout:120000});

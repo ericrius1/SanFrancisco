@@ -431,9 +431,9 @@ export class Input {
     el.addEventListener("contextmenu", (e) => e.preventDefault());
 
     window.addEventListener("mousemove", (e) => {
-      // Pointer-lock look, or Z/N-held scrub (works unlocked in camera-orbit
+      // Pointer-lock look, or Z/X/N-held scrub (works unlocked in camera-orbit
       // mode where the chase cam has released the pointer).
-      const holdScrub = this.keys.has("KeyZ") || this.keys.has("KeyN");
+      const holdScrub = this.keys.has("KeyZ") || this.keys.has("KeyX") || this.keys.has("KeyN");
       if (this.suspended && !holdScrub) return;
       if (this.locked || holdScrub) {
         // Surf owns a locked authored camera. Pointer lock stays captured and the
@@ -469,7 +469,7 @@ export class Input {
     el.addEventListener(
       "wheel",
       (e) => {
-        const holdScrub = this.keys.has("KeyZ") || this.keys.has("KeyN");
+        const holdScrub = this.keys.has("KeyZ") || this.keys.has("KeyX") || this.keys.has("KeyN");
         if (this.suspended && !holdScrub) {
           e.preventDefault();
           return;
