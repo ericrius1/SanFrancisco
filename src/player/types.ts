@@ -48,6 +48,7 @@ export interface PlayerCtx {
   velocity: THREE.Vector3;
   speed: number;
   heading: number; // storage convention: facing + π
+  environmentTime?: number;
   time: number; // sim seconds, advanced by fixed steps
   /** True while inside a building — walk/run use indoorSpeed. */
   indoor: boolean;

@@ -1,3 +1,4 @@
+import { worldTime } from "../../core/worldTime";
 import { CLOUD_TUNING } from "../../world/cloudSettings";
 // __sf debug surface + dev demo harness, extracted from main.ts's P4 tail
 // (docs/MAIN_DECOMPOSITION.md). Pure exposure — no boot-order coupling; main
@@ -85,6 +86,7 @@ export async function installDebugSurfaces(
       CLOUD_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks,
       graffiti, bubbles, setTool, setColor, sky, farOcclusion: extra.farOcclusion, debugPanel, CONFIG,
       THREE, tick, splashes, sandPrints, vehicleAudio, swimAudio, waveAudio, gameplaySfxBus,
+      worldTime,
       skyFlight: frameB.skyFlight,
       aviary: frameB.aviary,
       audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,

@@ -426,6 +426,7 @@ export class HUD {
         ]
       : [
           { c: ["Z"], label: "hold — time of day" },
+          { c: ["X"], label: "hold + ↔ — world speed" },
           { c: ["N"], label: "hold — look / speed" },
           { c: ["P"], label: "pause" },
           { c: ["C"], label: "view" },

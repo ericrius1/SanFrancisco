@@ -1,3 +1,4 @@
+import { worldTime } from "../../../core/worldTime";
 // Citywide CityGen streaming ring — CHUNKED LOD with atomic visual ownership.
 //
 // The whole visible city is OURS. Buildings are grouped by tile cell; each cell
@@ -1911,7 +1912,7 @@ export async function createCityGenRing(
       const previousInside = insideBuilding;
       insideBuilding = null;
       for (const e of detailSet) gateInterior(e, playerPos, e === previousInside);
-      advanceDoors(dt);
+      advanceDoors(worldTime.delta(dt));
       if (building.length && !destinationChanged) {
         const cell = building[0]; // one cell slice per frame (bounded, no hitch)
         cell.chunk!.pump(CHUNK_BUDGET);

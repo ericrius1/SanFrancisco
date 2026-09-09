@@ -1,7 +1,8 @@
-// Z-hold time-of-day scrub + N-hold look/speed adjust (trackpad gestures that
+// Z-hold time-of-day scrub + X-hold world speed + N-hold look/speed adjust (trackpad gestures that
 // consume mouse/wheel input before the fly controller and chase camera see it).
 // Extracted from main.ts per docs/MAIN_DECOMPOSITION.md: self-contained input
 // wiring over sky/input/hud, one update call per live frame.
+import { worldTime } from "../../core/worldTime";
 import * as THREE from "three/webgpu";
 import { INPUT_TUNING } from "../../config";
 import { saveTweak } from "../../core/persist";
@@ -20,6 +21,7 @@ const clock12 = (t: number) => {
  * accumulates raw input; the sky eases toward it each frame so fast swipes
  * glide instead of stepping. The cycle pauses while scrubbing and resumes
  * (from the new time) on release.
+ * X (hold): horizontal trackpad → world speed, 0 (frozen) to 1 (normal).
  * N (hold): horizontal trackpad → look sensitivity; vertical → move speed.
  */
 export function createTimeScrubAndTuningGestures({
@@ -30,9 +32,17 @@ export function createTimeScrubAndTuningGestures({
   input: Input;
   sky: Sky;
   hud: HUD;
-}): { update: (dt: number, scrubHeld: boolean, adjustHeld: boolean) => void } {
+}): { update: (dt: number, scrubHeld: boolean, adjustHeld: boolean, dilateHeld?: boolean) => void } {
   let timeScrub: { target: number; wasCycling: boolean } | null = null;
-  const update = (frameDt: number, scrubHeld: boolean, adjustHeld: boolean) => {
+  const update = (frameDt: number, scrubHeld: boolean, adjustHeld: boolean, dilateHeld?: boolean) => {
+    // X takes precedence over Z/N, consumes both axes, and keeps the chosen
+    // value on release. Direct accumulation reaches an exact freeze at zero.
+    if (dilateHeld) {
+      worldTime.scale += input.mouseDX * 0.002 + input.wheelX * 0.001;
+      input.mouseDX = input.mouseDY = input.wheelX = input.wheel = 0;
+      hud.message(`World time ${worldTime.scale.toFixed(2)}× · You move normally`, 0.8);
+      scrubHeld = adjustHeld = false;
+    }
     if (scrubHeld && !timeScrub) timeScrub = { target: sky.timeOfDay, wasCycling: sky.cycleEnabled };
     if (timeScrub) {
       if (scrubHeld) {

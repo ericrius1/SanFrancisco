@@ -1,3 +1,5 @@
+import { worldAnimationTime } from "../../core/worldTimeUniform";
+import { worldTime } from "../../core/worldTime";
 // AUTO-EXTRACTED from src/main.ts (P3 FRAME block, lines 3486-5003) — see
 // docs/MAIN_DECOMPOSITION.md. Behavior-identical move: crossing consts are
 // returned on the record; crossing lets live on `state`.
@@ -164,7 +166,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // flashing mid-sky on a corrupted frame.
   const GHOST_SHIP_PROXY_VIEW_DISTANCE = 3200;
   const updateGhostShip = (dt: number) => {
-    const pose = ghostShipBeacon.update(Date.now());
+    const pose = ghostShipBeacon.update(worldTime.nowMs());
     minimap.moveLandmark(GHOST_SHIP_LANDMARK_NAME, pose.x, pose.z);
     const distance = ghostShipBeacon.horizontalDistanceTo(player.renderPosition);
     ghostShipBeacon.farHidden = distance > GHOST_SHIP_PROXY_VIEW_DISTANCE;
@@ -207,7 +209,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // the held-still city (the old default, now opt-in).
   let freezePlayer = true;
   let immersive = false;
-  // Z-hold time scrub + N-hold look/speed adjust — extracted per docs/MAIN_DECOMPOSITION.md.
+  // Z-hold time scrub + X-hold world speed + N-hold look/speed adjust — extracted per docs/MAIN_DECOMPOSITION.md.
   const timeScrubGestures = createTimeScrubAndTuningGestures({ input, sky, hud });
 
   // Immersive mode snapshots HUD + debug visibility and restores them on exit.
@@ -312,7 +314,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // (active, map-open, paused, and the reading-overlay freeze; voice keeps
     // running while paused).
     audioEngine.update(frameDt, camera);
-    const weather = updateWeather(frameDt, {
+    const weather = updateWeather(worldTime.delta(frameDt), {
       civil: sky.civilTime,
       x: player.renderPosition.x,
       z: player.renderPosition.z,
@@ -413,7 +415,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // Wall-clock route remains shared even when the local simulation/sky clock
     // is paused or scrubbed. This runs before remotes so world passengers glue
     // to the current deck transform in every branch below.
-    updateGhostShip(frameDt);
+    updateGhostShip(worldTime.delta(frameDt));
   };
 
   // Expanded map: gamepad pan / zoom / select / teleport / pin cycle.
@@ -532,11 +534,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     pickleballEConsumed =
       worldArrival.active || !sites.perfAllowed("goldman")
         ? false
-        : updatePickleballGameplay(frameDt);
+        : updatePickleballGameplay(worldTime.delta(frameDt));
     playingPickleball = netW.state.pickleballController?.playing ?? false;
     playingFortMasonEnsemble =
       !worldArrival.active && sites.perfAllowed("fort-mason-ensemble")
-        ? netW.state.fortMasonEnsemble?.update(frameDt, ctx.state.elapsed, player.renderPosition, camera) ?? false
+        ? netW.state.fortMasonEnsemble?.update(worldTime.delta(frameDt), ctx.state.elapsed, player.renderPosition, camera) ?? false
         : false;
     applyPickleballPlayerPose();
 
@@ -616,7 +618,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         if (playingPickleball) input.setSuspensionHold("pickleball-step", true);
         player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
         if (playingPickleball) input.setSuspensionHold("pickleball-step", false);
-        physics.step(physics.world.fixedTimeStep);
+        physics.step(physics.world.fixedTimeStep, player.body, worldTime.scale);
         ctx.state.accumulator -= physics.world.fixedTimeStep;
         steps++;
       }
@@ -870,7 +872,6 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   };
 
   const liveInput = (frameDt: number) => {
-    ctx.state.elapsed += frameDt;
     ctx.state.accumulator += frameDt;
     if (!input.suspended && !worldArrival.active && !playingPickleball && !playingFortMasonEnsemble &&
         !core.state.golf?.active && player.mode === "walk" && !player.riding && input.pressed("KeyG")) {
@@ -1182,12 +1183,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         hud.message(songIndex === 1 ? "Pianist · Fogline Nocturne" : "Pianist · Sunset Jam", 2.2);
       }
     }
-    updateCrownDisplay(frameDt);
-    updateBayLights(frameDt);
-    updateGoldenGateLights(frameDt);
+    updateCrownDisplay(worldTime.delta(frameDt));
+    updateBayLights(worldTime.delta(frameDt));
+    updateGoldenGateLights(worldTime.delta(frameDt));
     // Sutro's beacons are visible city-wide (that's the point) — keep the tiny
     // sprite set resident and just advance its blink clock every frame.
-    updateSutroTower(frameDt);
+    updateSutroTower(worldTime.delta(frameDt));
 
     // left-click tools, all along the true view direction: the ball launches
     // from the hand, paint sticks to whatever the center-screen ray lands on,
@@ -1290,11 +1291,13 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // mouseDX/wheelX before the fly controller and chase camera see them, so
     // the view holds still while the light sweeps. Uses holding() so it still
     // works in camera-orbit mode (where input is otherwise suspended).
+    // X (hold): horizontal trackpad → world speed; the player stays at 1×.
     // N (hold): horizontal trackpad → look sensitivity; vertical → move speed.
+    const dilateHeld = !worldArrival.active && input.holding("KeyX");
     const scrubHeld = !worldArrival.active && input.holding("KeyZ");
     const adjustHeld = !worldArrival.active && input.holding("KeyN");
     const flipping = core.state.orbitFlip !== null;
-    if (inOrbit()) orbit.enabled = !scrubHeld && !adjustHeld && !flipping; // don't let orbit eat the drag/wheel
+    if (inOrbit()) orbit.enabled = !scrubHeld && !adjustHeld && !dilateHeld && !flipping; // don't let orbit eat the drag/wheel
     if (core.state.orbitFlip) {
       core.state.orbitFlip.t += frameDt;
       const u = Math.min(1, core.state.orbitFlip.t / core.state.orbitFlip.duration);
@@ -1303,7 +1306,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       orbit.distance = core.state.orbitFlip.startDist + (core.state.orbitFlip.endDist - core.state.orbitFlip.startDist) * eased;
       if (u >= 1) core.state.orbitFlip = null;
     }
-    timeScrubGestures.update(frameDt, scrubHeld, adjustHeld);
+    timeScrubGestures.update(frameDt, scrubHeld, adjustHeld, dilateHeld);
+    worldTime.advance(frameDt);
+    worldAnimationTime.value += worldTime.delta(frameDt);
+    ctx.state.elapsed += worldTime.delta(frameDt);
 
     // fly: mouse steers the plane at frame rate; W/S throttle happens in the fixed step
     if (player.mode === "plane") player.steerFly(input, frameDt);
@@ -1345,8 +1351,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       if (playingPickleball) input.setSuspensionHold("pickleball-step", true);
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
       if (playingPickleball) input.setSuspensionHold("pickleball-step", false);
-      abandonedMounts.prePhysics(physics.world.fixedTimeStep);
-      physics.step(physics.world.fixedTimeStep);
+      abandonedMounts.prePhysics(worldTime.delta(physics.world.fixedTimeStep));
+      physics.step(physics.world.fixedTimeStep, player.body, worldTime.scale);
       ctx.state.accumulator -= physics.world.fixedTimeStep;
       steps++;
     }
@@ -1356,6 +1362,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
   // The full world update. gameLoop.ts brackets this with the "world" tracer
   // phase. Camera commit, water/fx, entity proxies, cursor, HUD/debug all here.
   const updateWorld = (frameDt: number) => {
+
+    const worldDt = worldTime.delta(frameDt);
 
     // everyone else's interpolation advances BEFORE my pose settles: a
     // passenger's seat is glued to this frame's view of the driver's car
@@ -1460,18 +1468,18 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // turbo while the loading cover is still up (see the settle gate)
     if (!worldArrival.active) authoredRegions.update(player.position.x, player.position.z);
     tiles.update(player.position.x, player.position.z, core.state.highUp, !ctx.state.revealed);
-    core.state.trafficLights?.update(player.position, performance.now() / 1000);
+    core.state.trafficLights?.update(player.position, ctx.state.elapsed);
     if (!worldArrival.active && ringCoordinator.state === "settled") {
       tracer.begin("cityLife");
-      core.updateCityLife(frameDt, ctx.state.elapsed);
+      core.updateCityLife(worldDt, ctx.state.elapsed);
       tracer.end("cityLife");
     }
     refreshCarHeadlightUniforms();
     if (ctx.zoneBoot.cityWoken) core.updateScatterBoats(player.position, player.mode);
-    abandonedMounts.update(frameDt, player.position);
+    abandonedMounts.update(worldDt, player.position);
     if (!worldArrival.active) {
       core.state.creatures?.update(ctx.state.elapsed, camera.position);
-      core.state.forest?.update(frameDt, camera.position);
+      core.state.forest?.update(worldDt, camera.position);
     }
     // Night ball glow amount from the current sun elevation (park / fetch / held /
     // pickleball all read BALL_GLOW_NIGHT). Uses last sky.update's elevation —
@@ -1479,12 +1487,12 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     syncBallGlowNight(sky.sunElevation);
     if (!worldArrival.active) {
       if (sites.perfAllowed("corona")) {
-        core.state.coronaHeights?.update(frameDt, ctx.state.elapsed, camera.position);
+        core.state.coronaHeights?.update(worldDt, ctx.state.elapsed, camera.position);
       } else if (core.state.coronaHeights) {
         core.state.coronaHeights.group.visible = false;
       }
       if (sites.perfAllowed("lands-end")) {
-        core.state.landsEnd?.update(frameDt, ctx.state.elapsed, player.position, camera, windGustValue());
+        core.state.landsEnd?.update(worldDt, ctx.state.elapsed, player.position, camera, windGustValue());
         if (core.state.landsEnd && player.mode === "walk") {
           core.state.landsEnd.keeper.updatePrompt(player.position.x, player.position.z, hud);
         }
@@ -1493,7 +1501,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       }
       if (sites.perfAllowed("wave-organ")) {
         // hud only while on foot — walking is how you put an ear to a pipe.
-        core.state.waveOrgan?.update(frameDt, ctx.state.elapsed, player.position, player.mode === "walk" ? hud : null);
+        core.state.waveOrgan?.update(worldDt, ctx.state.elapsed, player.position, player.mode === "walk" ? hud : null);
       } else if (core.state.waveOrgan) {
         core.state.waveOrgan.group.visible = false;
       }
@@ -1507,7 +1515,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       }
       if (sites.perfAllowed("beach-pianist")) {
         ctx.state.beachPianist?.setPerfSuppressed(false);
-        ctx.state.beachPianist?.update(frameDt, ctx.state.elapsed, player.position, camera, windGustValue());
+        ctx.state.beachPianist?.update(worldDt, ctx.state.elapsed, player.position, camera, windGustValue());
       } else if (ctx.state.beachPianist) {
         ctx.state.beachPianist.setPerfSuppressed(true);
       }
@@ -1515,7 +1523,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       // toggle; a few hypot tests per frame when idle).
       ctx.state.siteFoliage?.update(player.position.x, player.position.z, player.position.y);
       skyFlight.update(frameDt);
-      aviary.update(frameDt);
+      aviary.update(worldDt);
     }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
@@ -1523,20 +1531,20 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     const petSeat = player.mode === "scooter" && !remotes.hasPassenger(net.selfId)
       ? (player.meshes.scooter.userData.petSeat as THREE.Object3D | undefined) ?? null
       : null;
-    if (!worldArrival.active) core.state.fetchBall?.update(frameDt, ctx.state.elapsed, player.position, petSeat);
+    if (!worldArrival.active) core.state.fetchBall?.update(worldDt, ctx.state.elapsed, player.position, petSeat);
     if (toolCycle.tool === "ball" && core.state.fetchBall) hud.setToolVerb(core.state.fetchBall.verb());
     gardenDisplacer.x = player.renderPosition.x;
     gardenDisplacer.z = player.renderPosition.z;
-    updateVegetationEnvironment(frameDt, ctx.state.foliageOn ? gardenDisplacers : undefined);
-    oceanKite.update(frameDt, ctx.state.elapsed, ctx.state.revealed);
-    buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
+    updateVegetationEnvironment(worldDt, ctx.state.foliageOn ? gardenDisplacers : undefined);
+    oceanKite.update(worldDt, ctx.state.elapsed, ctx.state.revealed);
+    buskers.update(worldDt, camera, windGustValue(), sky.sunElevation);
     buskerTalk.update(player.renderPosition);
     if (!worldArrival.active) {
       if (sites.perfAllowed("sutro-baths")) {
-        core.state.sutroBaths?.update(frameDt, ctx.state.elapsed, player.renderPosition, camera, windGustValue());
+        core.state.sutroBaths?.update(worldDt, ctx.state.elapsed, player.renderPosition, camera, windGustValue());
       }
       teaGarden.update(
-        frameDt,
+        worldDt,
         ctx.state.elapsed,
         player.renderPosition,
         camera,
@@ -1591,7 +1599,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       allowNewLoads: !worldArrival.active
     });
     // live loop only: the dogs freeze during pause, so barking there would lie
-    dogParkAudio.update(frameDt, player.renderPosition);
+    dogParkAudio.update(worldDt, player.renderPosition);
     // keeps the shared context awake for the magic-echo tail + applies live echo
     // tuning; balls keep flying tool-agnostically, so run it every live frame
     ballImpactAudio.update(frameDt);
@@ -1604,29 +1612,29 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     if (!worldArrival.active && ringCoordinator.state === "settled") {
       citygenRing.current?.update(player.position, frameDt);
     }
-    if (!worldArrival.active) core.state.golf?.update(frameDt, ctx.state.elapsed, { player, input, hud, chase, camera });
+    if (!worldArrival.active) core.state.golf?.update(worldDt, ctx.state.elapsed, { player, input, hud, chase, camera });
     if (!worldArrival.active && sites.perfAllowed("palace")) {
-      core.state.palaceReverie?.update(frameDt, ctx.state.elapsed, player.position, hud);
+      core.state.palaceReverie?.update(worldDt, ctx.state.elapsed, player.position, hud);
       const welcome = core.state.palaceReverie?.takeWelcome();
       if (welcome) hud.message(welcome, 6.2);
     }
     if (!worldArrival.active) {
       tracer.begin("tidalChoir");
-      sites.updateTidalChoir(frameDt, ctx.state.elapsed);
+      sites.updateTidalChoir(worldDt, ctx.state.elapsed);
       tracer.end("tidalChoir");
     }
     // Archery: site-gated, one boolean early-return when asleep with nothing live
     if (!worldArrival.active && sites.perfAllowed("archery")) {
-      core.state.archery?.update(frameDt, ctx.state.elapsed, { player, input, hud, chase, camera });
+      core.state.archery?.update(worldDt, ctx.state.elapsed, { player, input, hud, chase, camera });
     }
     // Biscuit the RL pup: site-gated, one boolean early-return when asleep
     if (!worldArrival.active && sites.perfAllowed("pup")) {
-      core.state.pup?.update(frameDt, camera);
+      core.state.pup?.update(worldDt, camera);
     }
     // Afterlight: proximity collectibles, return flights, quest clock and the
     // completed sky performance; site-gated to a single asleep early return.
     if (!worldArrival.active && sites.perfAllowed("afterlight")) {
-      core.state.afterlight?.update(frameDt, ctx.state.elapsed, player, hud);
+      core.state.afterlight?.update(worldDt, ctx.state.elapsed, player, hud);
     }
     // Sutro Tower's Skyline Glide: the fixed-step plane controller owns the
     // air; this lazy site owns gates, thermals, scoring and landing evaluation.
@@ -1640,16 +1648,16 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     }
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
     if (!worldArrival.active && sites.perfAllowed("goldman")) {
-      core.state.goldenGateTennis?.update(frameDt, ctx.state.elapsed, player.position);
+      core.state.goldenGateTennis?.update(worldDt, ctx.state.elapsed, player.position);
     }
     // Mission Dolores: dynamic code gate first, then shell/art proximity gates.
     if (!worldArrival.active) ensureMissionDolores(player.position);
-    if (!worldArrival.active) core.state.missionDolores?.update(frameDt, ctx.state.elapsed, player.position, player.mode, hud);
+    if (!worldArrival.active) core.state.missionDolores?.update(worldDt, ctx.state.elapsed, player.position, player.mode, hud);
     // Grace Cathedral: the authored GLB owns the physical glass; this nested
     // runtime only animates bounded colored shafts while a visitor is inside.
     if (!worldArrival.active) core.state.graceCathedral?.update(player.position, ctx.state.elapsed);
     // St Mary's: interior god rays plus the plaza projection rave and crowd.
-    if (!worldArrival.active) core.state.stMarys?.update(player.position, ctx.state.elapsed, frameDt);
+    if (!worldArrival.active) core.state.stMarys?.update(player.position, ctx.state.elapsed, worldDt);
     const museumFloorHandoff = worldArrival.active
       ? null
       : core.state.missionDolores?.takeFloorHandoffHeight(player.position, player.mode);
@@ -1739,7 +1747,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // exact clock to the displaced ocean and lazy face/roof too; using render
     // ctx.state.elapsed here let the visible crest and barrel envelope drift away after
     // loading, pause, or deterministic headless stepping.
-    const surfaceTime = state.seaTimePin ?? (player.mode === "surf" ? player.time : ctx.state.elapsed);
+    const surfaceTime = state.seaTimePin ?? (player.mode === "surf" ? player.environmentTime : ctx.state.elapsed);
     // Publish the sea clock: everything that physically rides the surface
     // (hull buoyancy, swim waterline, camera wave clearance) samples
     // waterHeight at exactly this t — the one the water is displaced with.
@@ -1764,7 +1772,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     ctx.state.oceanBeachWaves?.update(surfaceTime, player.renderPosition, surfTubeVisibility);
     // Waves running up the sand. Same clock as the break offshore, so the wave
     // you watched stand up is the one that washes over your feet.
-    core.updateShorebreak(frameDt, surfaceTime);
+    core.updateShorebreak(worldDt, surfaceTime);
     // Safety net for restored/direct surf transitions. Entry preparation keeps
     // its newly constructed mesh alive until the mode switch commits; otherwise
     // the activity visual is disposed on the first non-surf frame.
@@ -1788,17 +1796,17 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         renderer,
         scene,
         time: surfaceTime,
-        dt: frameDt
+        dt: worldDt
       })
     );
-    fx.update(frameDt);
-    bubbles.update(frameDt, ctx.state.elapsed);
-    wake.update(frameDt, surfaceTime, player);
-    boardWake.update(frameDt, surfaceTime, player);
-    skidMarks.update(frameDt, ctx.state.elapsed, player);
-    sandPrints.update(frameDt, ctx.state.elapsed, player);
+    fx.update(worldDt);
+    bubbles.update(worldDt, ctx.state.elapsed);
+    wake.update(worldDt, surfaceTime, player);
+    boardWake.update(worldDt, surfaceTime, player);
+    skidMarks.update(worldDt, ctx.state.elapsed, player);
+    sandPrints.update(worldDt, ctx.state.elapsed, player);
     birdTrails.update(ctx.state.elapsed, player);
-    splashes.update(frameDt, surfaceTime, player);
+    splashes.update(worldDt, surfaceTime, player);
     core.state.surfExperience?.update(frameDt, player.mode, player.surfTelemetry);
     if (player.mode === "surf" && player.surfTelemetry.splashSerial !== core.state.surfSplashSerial) {
       core.state.surfSplashSerial = player.surfTelemetry.splashSerial;
@@ -1873,7 +1881,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     updatePlayerFoley(frameDt, true);
     // Keep the sim ticking for remotes / drone salvo / future area shows — no
     // player hold-to-fire binding (keyboard B / pad face B retired).
-    fireworks.update(frameDt, {
+    fireworks.update(worldDt, {
       hold: false,
       origin: player.renderPosition,
       yaw: chase.yaw,
@@ -1931,8 +1939,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       });
     }
     entityProxies.end();
-    paintballs.update(frameDt, worldQueries, graffiti, paintSkins);
-    paintSkins.update(frameDt, scene);
+    paintballs.update(worldDt, worldQueries, graffiti, paintSkins);
+    paintSkins.update(worldDt, scene);
 
     // The in-world cursor: a glowing orb that rests where you're pointing. It
     // sits centre-screen while the mouse is captured (a soft aim reticle too),

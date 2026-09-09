@@ -194,7 +194,7 @@ export class AmbientCity {
             if (a.active && simulate) {
                 let advance = a.speed * simDt;
                 if (!a.walker) {
-                    const signal = this.roads.signals.query(a.seg, a.s, a.dir, performance.now() / 1000, 25);
+                    const signal = this.roads.signals.query(a.seg, a.s, a.dir, elapsed, 25);
                     if (signal.stopRequired)
                         advance = Math.min(advance, Math.max(0, signal.distance - 4));
                     for (const other of this.agents)

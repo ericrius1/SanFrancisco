@@ -1,3 +1,4 @@
+import { worldAnimationTime as time } from "../../core/worldTimeUniform";
 // One-draw WebGPU/TSL material for the Beach Pianist's small coastal birds.
 // Static instance data describes each orbit AND its perch cycle while the
 // vertex stage owns the path, heading, wing beat and landings. The CPU
@@ -14,7 +15,6 @@ import {
   positionLocal,
   sin,
   smoothstep,
-  time,
   varying,
   vec3
 } from "three/tsl";

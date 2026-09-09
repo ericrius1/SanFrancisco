@@ -1,3 +1,4 @@
+import { worldTime } from "../core/worldTime";
 import type { BladeApi, FolderApi, Pane } from "tweakpane";
 import * as THREE from "three/webgpu";
 import {
@@ -762,6 +763,10 @@ export class DebugPanel {
       onChange: () => this.#sky.applyFogParams()
     });
 
+    this.#lightingBindings.push(meta.addBinding(worldTime, "scale", {
+      label: "world time · X + ↔", min: 0, max: 1, step: 0.01
+    }));
+
     // proxy so tweakpane's slider step never quantizes the live cycle clock
     const lightingView = {
       timeOfDay: this.#sky.timeOfDay,
@@ -804,11 +809,11 @@ export class DebugPanel {
         return;
       }
     };
-    this.#lightingBindings = SKY_TUNING.bind(meta, {
+    this.#lightingBindings.push(...SKY_TUNING.bind(meta, {
       target: lightingView,
       keys: ["timeOfDay", "realTime", "dayCycleSeconds", "nightBrightness"],
       onChange: onSkyChange
-    });
+    }));
 
     // Shell + metta are enough to show the pane; yield before the heavy folders.
     await yieldToFrame();
