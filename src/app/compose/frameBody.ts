@@ -91,7 +91,7 @@ import { createWorldAviary } from "./aviary";
 
 export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<typeof import("./worldSystemsCore").composeWorldSystemsCore>>, netW: Awaited<ReturnType<typeof import("./worldSystemsNet").composeWorldSystemsNet>>) {
   const { player, input, camera, scene, worldArrival, chase, map, physics, renderer, sky, aim, tiles, rayOrigin, scheduler, pipeline, authoredRegions, applyLightFrontRamps, voidRealm, audioEngine, renderFrame, timer, bootArrivalTick, backgroundAdmission, voidRevealCheck, ringCoordinator, constructionSlice } = ctx;
-  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, updateWeather, updateLivingScore, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, birdTrails, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
+  const { water, underwater, hud, skateHud, fx, wake, boardWake, skidMarks, sandPrints, splashes, fireworks, graffiti, paintballs, paintSkins, bubbles, worldCursor, ensurePaintAudio, ensureBubbleAudio, toolCycle, toolbar, vehicleAudio, swimAudio, doorAudio, nature, updateWeather, updateLivingScore, waveAudio, ballImpactAudio, updatePlayerFoley, ensureSurfRuntime, releaseSurfVisual, surfBreakStillLocal, prepareSurfEntry, birdTrails, abandonedMounts, embodiments, exitToWalk, inOrbit, siteGate, ensureMissionDolores, gardenDisplacer, gardenDisplacers, setFoliageVisible, worldQueries, citygenRing, dogParkAudio, buskers, buskerTalk, cityStories, carLanding, orbit, BUSKER_PICK_ID, BUSKER_PICK_R, cycleViewMode } = core;
 
   // One place decides what the trick HUD sees; the three frame paths (live,
   // world-frozen, fully paused) all call it right after hud.update so the combo
@@ -930,7 +930,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
         ? ctx.state.beachPianist
         : buskerTalk.choosing
           ? buskerTalk
-          : null;
+          : cityStories.choosing ? cityStories : null;
       if (choosingTalk) {
         if (dy) choosingTalk.navigate(dy);
       } else if (dx || dy) {
@@ -947,7 +947,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       ? ctx.state.beachPianist
       : buskerTalk.active
         ? buskerTalk
-        : null;
+        : cityStories.active ? cityStories : null;
     if (activeTalk && (input.pressed("Enter") || input.pressed("NumpadEnter"))) {
       activeTalk.confirm();
     }
@@ -985,6 +985,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       !exitedToWalk &&
       !(ctx.state.beachPianist?.tryInteract(player.renderPosition, player.mode) ?? false) &&
       !buskerTalk.tryInteract(player.renderPosition, player.mode) &&
+      !cityStories.tryInteract(player.renderPosition, player.mode) &&
       !core.state.golf?.tryStartAtTee(player, hud) &&
       !core.state.archery?.tryInteract(player, hud, chase) &&
       !netW.state.fortMasonEnsemble?.tryInteract(player.renderPosition, player.mode) &&
@@ -1531,6 +1532,10 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     oceanKite.update(frameDt, ctx.state.elapsed, ctx.state.revealed);
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
     buskerTalk.update(player.renderPosition);
+    cityStories.update(frameDt, player.renderPosition,
+      !worldArrival.active && ctx.state.revealed,
+      player.mode === "walk" && !input.suspended && !buskerTalk.active && !(ctx.state.beachPianist?.active ?? false)
+      && !playingPickleball && !playingFortMasonEnsemble);
     if (!worldArrival.active) {
       if (sites.perfAllowed("sutro-baths")) {
         core.state.sutroBaths?.update(frameDt, ctx.state.elapsed, player.renderPosition, camera, windGustValue());
@@ -1727,6 +1732,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     // left Hiro's card one camera frame behind and visibly jittering.
     teaGarden.project(camera);
     buskerTalk.project(camera);
+    cityStories.project(camera);
     ctx.state.beachPianist?.project(camera);
     // Ring-coordinator front driver + materialize front animation + void-realm
     // coupling (uniform writes only).

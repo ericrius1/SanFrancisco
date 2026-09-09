@@ -83,6 +83,7 @@ import { WeatherDirector, type WeatherUpdate } from "../../world/weatherDirector
 // the shared reader before this game module begins.
 import { createBuskersSystem } from "../../app/systems/buskers";
 import { createBuskerConversation } from "../../gameplay/buskers/conversation";
+import { CityStories } from "../../gameplay/cityStories/gate";
 import { EmbodimentController, type PassengerExitPose } from "../../app/player/embodimentController";
 import { createCarLandingFeedback } from "../../app/compose/carLanding";
 import { createToolCycle } from "../../app/compose/toolCycle";
@@ -1131,6 +1132,17 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
   // Summit dialogue: the trio chills until you walk up, press E and ask for a
   // song (shared NPC conversation system — gameplay/agents/conversation.ts).
   const buskerTalk = createBuskerConversation(buskers);
+  const cityStories = new CityStories({
+    scene, map, input, ready: ctx.worldReady,
+    placeReady: (id) => id === "sutro" ? !!state.sutroBaths
+      : id === "skate-plaza" ? !!state.skatePlaza : true,
+    prepare: (root) => warmHiddenRoot(renderer, camera, scene, root),
+    blocked: (x, y, z) => physics.pointInBuilding(x, y, z, 0.5),
+    visit: (x, z, name) => cityStoriesVisit?.(x, z, name)
+  });
+  let cityStoriesVisit: ((x: number, z: number, name: string) => void) | null = null;
+  const setCityStoriesVisit = (visit: (x: number, z: number, name: string) => void) => { cityStoriesVisit = visit; };
+  import.meta.hot?.dispose(() => cityStories.dispose());
   await constructionSlice();
   // (state.ridePromptKey hoisted to the module state record)
   // (state.doorPromptShown hoisted to the module state record)
@@ -1314,6 +1326,8 @@ export async function composeWorldSystemsCore(ctx: MainCtx) {
     dogParkAudio,
     buskers,
     buskerTalk,
+    cityStories,
+    setCityStoriesVisit,
     carLanding,
     orbit,
     BUSKER_PICK_ID,

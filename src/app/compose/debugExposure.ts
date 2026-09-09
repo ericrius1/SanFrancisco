@@ -94,7 +94,7 @@ export async function installDebugSurfaces(
       tutorial, teleportToTarget, citygenRing, worldCursor, worldQueries,
       buildingRayRefiner, underwater, water, ensureSurfRuntime, debugOverlays,
       calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING,
-      setFoliageVisible, buskers, buskerTalk, ensureCarCustomizer, siteGate,
+      setFoliageVisible, buskers, buskerTalk, cityStories: core.cityStories, ensureCarCustomizer, siteGate,
       siteFoliage: ctx.state.siteFoliage, TSL, worldArrival, lazyRegionTimings, voidRealm, motionGate,
       // Materialize front debug surface (docs/VOID_STREAM_REWRITE.md M2):
       // holo() collapses the front at the player (whole world holo), sweep()

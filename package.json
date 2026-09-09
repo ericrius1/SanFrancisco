@@ -53,6 +53,8 @@
     "test:grade": "node --experimental-strip-types tools/grade-probe.mjs --check",
     "test:golf": "node --experimental-strip-types tools/golf-logic-probe.mjs",
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
+    "test:city-stories": "node --experimental-strip-types tools/city-stories-probe.mjs",
+    "test:city-stories:browser": "node tools/city-stories-browser-probe.mjs",
     "test:tea-garden": "node --experimental-strip-types tools/tea-garden-probe.mjs",
     "test:multiplayer-rake": "node tools/multiplayer-rake-probe.mjs",
     "test:phoenix-passengers": "node tools/phoenix-passenger-flap-probe.mjs",

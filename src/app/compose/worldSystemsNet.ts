@@ -771,6 +771,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     embodiments,
     arrival: worldArrival,
     resolveAuthoredArrival: (x, z, label) =>
+      core.cityStories.arrivalForDestination(x, z, label) ??
       marinRocketArrivalForDestination(map, x, z, label) ??
       sutroTowerArrivalForDestination(x, z, label) ??
       authoredRegions.arrivalForDestination(x, z, label),
@@ -909,7 +910,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     minimap,
     chat,
     emoteWheel,
-    closeConversation: () => ctx.state.beachPianist?.close() || buskerTalk.close(),
+    closeConversation: () => core.cityStories.close() || ctx.state.beachPianist?.close() || buskerTalk.close(),
     getMissionDolores: () => core.state.missionDolores,
     markChatEscapeBlur: () => { skipChatRelock = true; }
   });
@@ -2192,6 +2193,8 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   // The old settle gate is gone: reveal happened back in P2 the moment the
   // void was ready (bootArrivalTick owns the boot-arrival lifecycle now), and
   // the timer/ctx.state.elapsed/ctx.state.accumulator frame clock lives in P1.
+  core.setCityStoriesVisit(teleportToTarget);
+
   return {
     net,
     remotes,

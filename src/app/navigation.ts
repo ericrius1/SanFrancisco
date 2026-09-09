@@ -11,7 +11,8 @@ import type { ResolvedWorldArrival, WorldArrivalCoordinator } from "./worldArriv
 
 type AuthoredArrivalPose = {
   x: number;
-  y: number;
+  /** Omit for outdoor anchors so respawn samples destination ground at commit. */
+  y?: number;
   z: number;
   heading: number;
 };
