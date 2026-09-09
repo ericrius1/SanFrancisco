@@ -58,7 +58,7 @@ The command fails before uploading to Railway unless every asset is present in R
 
 For a prepared release, `npm run deploy:publish -- /absolute/path/to/release-plan.json` uploads and verifies assets without touching Railway. The WebSocket dependency is staged as `runtime-deps/ws` because Railway upload filtering excludes `node_modules`; Docker copies it to `node_modules/ws` inside the image. The release directory contains only local code/runtime files, a server-side asset map, the tiny Dockerfile. The app never fetches this map at boot; server redirects happen only when the browser actually requests an asset. WebSocket and API routes stay on Railway.
 
-After the CLI finishes the image build, the deploy script polls `/healthz` for the exact release hash for up to three minutes. A build alone is not reported as deployment success. Set SF_APP_ORIGIN if deploying to another hostname.
+After the CLI finishes the image build, the deploy script polls `/healthz` for the exact release hash for up to three minutes. The live `/data/meta.json` and `/data/manifest.json` responses must also decode as JSON through the production redirect path. A build alone is not reported as deployment success. Set SF_APP_ORIGIN if deploying to another hostname.
 
 ## Rollback
 
@@ -70,6 +70,6 @@ Use Railway's deployment history to roll back to the previous successful image. 
 npm run test:deployment
 ```
 
-These tests exercise lossless compression, cache reuse/invalidation/corruption, immutable release maps, HTTP encoding negotiation and ranges, incremental uploads, failed-upload handling, and the R2 delivery Worker. Browser QA uses a fresh headless WebGPU context and checks actual asset requests at boot, feature activation, and subsequent selection. The worker and server must never fetch optional assets to hydrate a hidden UI or render a catalog.
+These tests exercise lossless compression, cache reuse/invalidation/corruption, immutable release maps, HTTP encoding negotiation and ranges, incremental uploads, failed-upload handling, and the R2 delivery Worker. Browser QA uses a fresh headless WebGPU context and checks actual asset requests at boot, feature activation, and subsequent selection. Canvas/WebGPU image loaders must set `image.crossOrigin = "anonymous"` before assigning `src`, including when a same-origin URL redirects to R2. Browser checks verify that selected and changed car canvases remain readable and produce no GPU image-upload warnings. The worker and server must never fetch optional assets to hydrate a hidden UI or render a catalog.
 
 Tuning (optional): `SF_BROTLI_QUALITY=0..11`, `SF_COMPRESS_JOBS=1..16`, and `SF_COMPRESS_CACHE=/persistent/cache/path`. Defaults favor frequent releases. A persistent builder can share the compression cache between checkouts because keys include content and codec settings. Keep TypeScript caches separate per checkout. No OS service is installed by the deploy tooling.

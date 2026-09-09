@@ -42,4 +42,10 @@ while (Date.now() < deadline) {
   await new Promise((resolve) => setTimeout(resolve, 2000));
 }
 if (!healthy) throw new Error(`Railway did not serve release ${plan.release} within 3 minutes; inspect deployment logs before retrying`);
+// Exercise the live redirect and decompression path used by the browser's boot.
+for (const asset of ['/data/meta.json', '/data/manifest.json']) {
+  const response = await fetch(new URL(asset, healthUrl), { cache: 'no-store', signal: AbortSignal.timeout(30000) });
+  if (!response.ok) throw new Error(`Live boot asset failed: ${asset} (${response.status})`);
+  await response.json();
+}
 console.log(`[deploy] healthy release ${plan.release}; retained artifact: ${plan.output}`);
