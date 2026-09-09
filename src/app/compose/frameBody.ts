@@ -1540,7 +1540,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     oceanKite.update(worldDt, ctx.state.elapsed, ctx.state.revealed);
     buskers.update(worldDt, camera, windGustValue(), sky.sunElevation);
     buskerTalk.update(player.renderPosition);
-    cityStories.update(frameDt, player.renderPosition,
+    cityStories.update(worldDt, player.renderPosition,
       !worldArrival.active && ctx.state.revealed,
       player.mode === "walk" && !input.suspended && !buskerTalk.active && !(ctx.state.beachPianist?.active ?? false)
       && !playingPickleball && !playingFortMasonEnsemble);
