@@ -66,11 +66,11 @@ test('release keeps code local, versions changed assets, routes compression and 
     return fetch(url + pathname, { method, headers, redirect: 'manual' });
   }
   const br = await request({ 'accept-encoding': 'br,gzip' });
-  assert.equal(br.status, 307); assert.match(br.headers.get('location'), /\.br$/); assert.equal(br.headers.get('cache-control'), 'no-cache');
+  assert.equal(br.status, 307); assert.match(br.headers.get('location'), /\.br\?delivery=2$/); assert.equal(br.headers.get('cache-control'), 'no-cache');
   const gz = await request({ 'accept-encoding': 'br;q=0, gzip;q=1' });
-  assert.match(gz.headers.get('location'), /\.gz$/);
+  assert.match(gz.headers.get('location'), /\.gz\?delivery=2$/);
   const raw = await request({ 'accept-encoding': 'br;q=0,gzip;q=0' });
-  assert.match(raw.headers.get('location'), /model\.glb$/);
+  assert.match(raw.headers.get('location'), /model\.glb\?delivery=2$/);
   const range = await request({ 'accept-encoding': 'br,gzip', range: 'bytes=0-99' });
   assert.equal(range.headers.get('location'), raw.headers.get('location'));
   assert.equal((await request({}, 'HEAD')).status, 307);
@@ -157,26 +157,36 @@ test('public verification caches immutable objects, samples each encoding, and r
   let calls = 0, fail = false;
   const options = { cacheDir: path.join(root, 'verified'), fetcher: async (url, request) => {
     calls++;
-    const object = plan.objects.find((o) => new URL(o.key, plan.origin).href === String(url));
+    const object = plan.objects.find((o) => new URL(o.key, plan.origin).pathname === new URL(url).pathname);
     assert.equal(request.headers['accept-encoding'], object.encoding);
-    return new Response(null, { status: fail ? 404 : 200, headers: {
+    let body = null;
+    if (request.method === 'GET') {
+      const bytes = await readFile(object.file);
+      body = object.encoding === 'br' ? brotliDecompressSync(bytes) : object.encoding === 'gzip' ? gunzipSync(bytes) : bytes;
+    }
+    return new Response(body, { status: fail ? 404 : 200, headers: {
       'content-length': String(object.size), 'content-type': object.contentType,
       'content-encoding': object.encoding, 'access-control-allow-origin': '*'
     } });
   } };
   await verifyPublicAssets(plan, options);
-  assert.equal(calls, plan.objects.length);
+  assert.equal(calls, plan.objects.length + 6);
   calls = 0;
   await verifyPublicAssets(plan, options);
-  assert.equal(calls, new Set(plan.objects.map((o) => o.encoding)).size);
+  assert.equal(calls, new Set(plan.objects.map((o) => o.encoding)).size + 6);
   fail = true;
   await assert.rejects(verifyPublicAssets(plan, options), /public verification failed/);
   fail = false;
   const partial = path.join(root, 'partial');
   await assert.rejects(verifyPublicAssets(plan, { ...options, cacheDir: partial, fetcher: async (url, request) => {
-    if (String(url).endsWith('-second')) throw new Error('temporary connection failure');
+    if (new URL(url).pathname.endsWith('-second')) throw new Error('temporary connection failure');
     return options.fetcher(url, request);
   } }), /temporary connection failure/);
   const saved = JSON.parse(await readFile((await filesIn(partial))[0], 'utf8'));
   assert.equal(Object.keys(saved).length, plan.objects.length - 1);
+  await assert.rejects(verifyPublicAssets(plan, { ...options, fetcher: async (url, request) => {
+    const object = plan.objects.find(o => new URL(o.key, plan.origin).pathname === new URL(url).pathname);
+    if (request.method === 'GET' && object.encoding === 'br') return new Response(await readFile(object.file));
+    return options.fetcher(url, request);
+  } }), /downloaded content verification failed/);
 });

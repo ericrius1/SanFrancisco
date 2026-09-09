@@ -32,6 +32,8 @@ test('real Workers runtime sends one Brotli encoding and correct range/CORS head
   assert.deepEqual(br.body, compressed);
   assert.deepEqual(brotliDecompressSync(br.body), source);
   assert.equal(br.headers['access-control-allow-origin'], '*');
+  const repeat = await get(brKey, { 'accept-encoding': 'br' });
+  assert.deepEqual(repeat.body, compressed, 'a repeated download must not compress the Brotli bytes again');
   const head = await get(brKey, { 'accept-encoding': 'identity' }, 'HEAD');
   assert.equal(head.status, 200); assert.equal(+head.headers['content-length'], compressed.length);
   const range = await get(rawKey, { range: 'bytes=10-39' });

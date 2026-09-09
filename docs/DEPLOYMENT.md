@@ -28,6 +28,8 @@ RAILWAY_SERVICE_ID=a5360ede-d049-45f0-85d3-e8d9429df6d3
 RAILWAY_ENVIRONMENT_ID=3c821965-db09-4c59-8d72-789cb767b60c
 ```
 
+Set the Railway service health-check path to `/healthz` in its settings (already configured for this service). The runtime Dockerfile is detected automatically; the pipeline does not depend on Railway’s deprecated Config as Code files.
+
 The R2 token needs Object Read & Write on **sanfrancisco-assets only**. It stays on the builder; Railway receives no R2 credentials. Sign in to Railway with `npx @railway/cli@5.49.6 login`, or set a project-scoped `RAILWAY_TOKEN` in CI.
 
 ### Asset endpoint
@@ -36,13 +38,13 @@ The public endpoint serves `objects/<sha256>/<filename>`; original, Brotli, and 
 
 When a domain is managed by this Cloudflare account, connect a dedicated subdomain directly to R2, enable CORS for GET/HEAD from the game and local previews, and create a cache rule for all objects at that hostname (Cloudflare's default extension list excludes some model/data formats). Set `SF_ASSET_ORIGIN` to that HTTPS origin.
 
-Without a managed domain, deploy the read-only Worker in `tools/deploy/asset-worker.mjs` with the ASSETS binding to this bucket. It supplies CORS, MIME/encoding metadata, conditional reads, ranges, and an optional edge cache. Deployment configuration is in `tools/deploy/wrangler.jsonc`:
+Without a managed domain, deploy the read-only Worker in `tools/deploy/asset-worker.mjs` with the ASSETS binding to this bucket. It supplies CORS, MIME/encoding metadata, conditional reads and ranges. It forwards stored compressed bytes without an additional Worker cache layer. Deployment configuration is in `tools/deploy/wrangler.jsonc`:
 
 ```bash
 npx wrangler@4.130.0 deploy --config tools/deploy/wrangler.jsonc
 ```
 
-Use its returned workers.dev origin. Browser immutable caching works there, but Cloudflare's Cache API requires a custom domain; workers.dev has no Cache API edge caching. The Worker runs under the account's Workers plan and request limits. A managed domain can be attached later without changing asset keys. R2's rate-limited r2.dev development URL is not the production endpoint.
+Use its returned workers.dev origin. Browser immutable caching works there; use a managed custom domain for edge-cache configuration. The Worker runs under the account's Workers plan and request limits. A managed domain can be attached later without changing asset keys. R2's rate-limited r2.dev development URL is not the production endpoint.
 
 ## Deploy
 
@@ -50,11 +52,11 @@ Use its returned workers.dev origin. Browser immutable caching works there, but 
 npm run deploy
 ```
 
-The command fails before uploading to Railway unless every asset is present in R2. New public URLs must pass HEAD checks for size, MIME, encoding, and CORS; successful checks for immutable objects are cached by origin under `.data/cache/r2-public`. Every deployment rechecks one object of each encoding to detect endpoint changes. Remove that cache to force a complete public recheck. Uploads use conditional writes and content hashes; retries cannot replace an older release's objects. A changed asset uploads only its new representations. An unchanged asset is reused. Typecheck and all release gates remain required.
+The command fails before uploading to Railway unless every asset is present in R2. New public URLs must pass HEAD checks for size, MIME, encoding, and CORS; successful checks for immutable objects are cached by origin under `.data/cache/r2-public`. Every deployment rechecks one object of each encoding to detect endpoint changes, and downloads each encoding twice to verify decoded content hashes. Remove that cache to force a complete public recheck. Uploads use conditional writes and content hashes; retries cannot replace an older release's objects. A changed asset uploads only its new representations. An unchanged asset is reused. Typecheck and all release gates remain required.
 
 `npm run deploy -- --prepare-only` runs the build and prepares a release without uploading it. `npm run deploy:prepare` packages an already completed build. Artifacts are retained under `.data/releases/<release-hash>/`; `release-plan.json` records build commit, files, sizes, and expected hashes. Do not rebuild `dist/` while publishing a prepared plan: the publisher rejects assets that changed after preparation.
 
-For a prepared release, `npm run deploy:publish -- /absolute/path/to/release-plan.json` uploads and verifies assets without touching Railway. The WebSocket dependency is staged as `runtime-deps/ws` because Railway upload filtering excludes `node_modules`; Docker copies it to `node_modules/ws` inside the image. The release directory contains only local code/runtime files, a server-side asset map, the tiny Dockerfile, and health-check configuration. The app never fetches this map at boot; server redirects happen only when the browser actually requests an asset. WebSocket and API routes stay on Railway.
+For a prepared release, `npm run deploy:publish -- /absolute/path/to/release-plan.json` uploads and verifies assets without touching Railway. The WebSocket dependency is staged as `runtime-deps/ws` because Railway upload filtering excludes `node_modules`; Docker copies it to `node_modules/ws` inside the image. The release directory contains only local code/runtime files, a server-side asset map, the tiny Dockerfile. The app never fetches this map at boot; server redirects happen only when the browser actually requests an asset. WebSocket and API routes stay on Railway.
 
 After the CLI finishes the image build, the deploy script polls `/healthz` for the exact release hash for up to three minutes. A build alone is not reported as deployment success. Set SF_APP_ORIGIN if deploying to another hostname.
 

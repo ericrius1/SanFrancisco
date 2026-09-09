@@ -19,22 +19,14 @@ const cors = {
 const problem = (status, extra = {}) => new Response(null, { status, headers: { ...cors, 'cache-control': 'no-store', ...extra } });
 const fresh = (req, etag) => String(req.headers.get('if-none-match') || '').split(',').some((value) => value.trim() === '*' || value.trim().replace(/^W\//, '') === etag);
 export default {
-  async fetch(request, env, context) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (!['GET', 'HEAD'].includes(request.method)) return problem(405, { allow: 'GET, HEAD, OPTIONS' });
     if (url.pathname === '/healthz') return Response.json({ ok: true, service: 'sanfrancisco-assets' }, { headers: { ...cors, 'cache-control': 'no-store' } });
     const key = url.pathname.slice(1);
     if (!/^objects\/[a-f0-9]{64}\/[a-zA-Z0-9_.%~-]+$/.test(key)) return problem(404);
-    // Cache API operates once a custom domain is attached. Browser immutable
-    // caching works on workers.dev too; that hostname has no edge Cache API.
-    const cache = globalThis.caches?.default;
-    const cacheKey = new Request(`${url.origin}/${key}`, { method: 'GET' });
     const rangeHeader = request.headers.get('range');
-    if (cache && request.method === 'GET' && !rangeHeader && !request.headers.has('if-none-match')) {
-      const cached = await cache.match(cacheKey);
-      if (cached) return cached;
-    }
     try {
       let object, range;
       if (rangeHeader) {
@@ -64,7 +56,6 @@ export default {
       headers.set('content-length', String(range ? range.length : object.size));
       if (range) headers.set('content-range', `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`);
       const response = new Response(request.method === 'HEAD' ? null : object.body, { status: range ? 206 : 200, headers, encodeBody: 'manual' });
-      if (cache && request.method === 'GET' && !range) context.waitUntil(cache.put(cacheKey, response.clone()).catch(() => {}));
       return response;
     } catch {
       return problem(503);

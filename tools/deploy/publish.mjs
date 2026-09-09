@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setDefaultResultOrder } from 'node:dns';
 import { parallel, sha256, atomicWrite } from '../precompress-dist.mjs';
+import { assetDeliveryUrl } from '../../server/remote-assets.mjs';
 
 // The local builder may have DNS IPv6 records without an IPv6 route.
 setDefaultResultOrder('ipv4first');
@@ -85,7 +86,7 @@ export async function verifyPublicAssets(plan, { fetcher = fetchWithRetry, cache
   });
   let checked = 0, progress = performance.now();
   try { await parallel(pending, 32, async (object) => {
-    const response = await fetcher(new URL(object.key, plan.origin), {
+    const response = await fetcher(assetDeliveryUrl(object.key, plan.origin), {
       method: 'HEAD', headers: { origin: 'https://sanfrancisco.up.railway.app', 'accept-encoding': object.encoding },
       redirect: 'error', signal: AbortSignal.timeout(30000)
     });
@@ -106,6 +107,21 @@ export async function verifyPublicAssets(plan, { fetcher = fetchWithRetry, cache
     // Only the release-level marker below authorizes a deployment.
     await atomicWrite(cacheFile, JSON.stringify(verified));
   }
+  // HEAD cannot detect a cache accidentally compressing already-compressed bytes.
+  // Fetch each representation twice and verify the decoded content hash as well.
+  const originals = new Map(plan.objects.filter(o => o.encoding === 'identity').map(o => [o.file, o.hash]));
+  const downloads = [...new Set(plan.objects.map(o => o.encoding))].map(encoding => plan.objects.find(o => o.encoding === encoding));
+  await parallel(downloads, 3, async object => {
+    const original = object.encoding === 'identity' ? object.file : object.file.replace(/\.(br|gz)$/, '');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetcher(assetDeliveryUrl(object.key, plan.origin), {
+        method: 'GET', headers: { 'accept-encoding': object.encoding, origin: 'https://sanfrancisco.up.railway.app' }, redirect: 'error'
+      });
+      if (response.status !== 200 || sha256(new Uint8Array(await response.arrayBuffer())) !== originals.get(original)) {
+        throw new Error(`R2 downloaded content verification failed: ${object.key}`);
+      }
+    }
+  });
   await atomicWrite(path.join(plan.output, 'assets-verified.json'), JSON.stringify({ release: plan.release, origin: plan.origin }));
   console.log(`[r2] verified ${checked} public objects, reused ${plan.objects.length - checked} immutable verifications (size, compression, MIME, CORS)`);
 }

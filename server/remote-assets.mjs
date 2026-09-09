@@ -1,6 +1,13 @@
 // Release-local routing only: no network access and no client manifest preload.
 import { readFile } from 'node:fs/promises';
 
+export function assetDeliveryUrl(key, origin) {
+  const destination = new URL(key, origin);
+  // Version delivery semantics independently of the immutable object bytes.
+  destination.searchParams.set('delivery', '2');
+  return destination;
+}
+
 export function accepts(header, encoding) {
   const entries = String(header || '').toLowerCase().split(',').map((part) => {
     const [name, ...params] = part.trim().split(';');
@@ -45,7 +52,7 @@ export async function loadRemoteAssets(filename) {
       // Never cache the unversioned redirect permanently. The destination IS immutable.
       // Range requests always select the original bytes, preserving audio seeking.
       res.writeHead(307, {
-        location: new URL(asset[encoding].key, origin).href,
+        location: assetDeliveryUrl(asset[encoding].key, origin).href,
         'cache-control': 'no-cache', vary: 'Accept-Encoding, Range',
         'content-length': '0'
       });

@@ -165,8 +165,8 @@ async function main() {
     await page.keyboard.press("Digit2");
     await page.waitForFunction(() => window.__sf.player.mode === "drive" && !window.__sf.worldArrival.active && !window.__sf.player.worldArrivalHeld, undefined, { timeout: 120_000 });
     await waitFor(
-      () => records.some((entry) => entry.phase === "activate" && entry.url.includes("fogline-graphite.webp")) &&
-        records.some((entry) => entry.phase === "activate" && entry.url.includes("coastal-gull.webp")),
+      () => records.some((entry) => entry.phase === "activate" && entry.url.includes("fogline-graphite.webp") && entry.status === 200) &&
+        records.some((entry) => entry.phase === "activate" && entry.url.includes("coastal-gull.webp") && entry.status === 200),
       "selected finish/decal did not load on car activation"
     );
     await sleep(500);
