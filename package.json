@@ -52,6 +52,7 @@
     "audit:traffic": "node --experimental-strip-types tools/audit-traffic-system.mjs",
     "test:grade": "node --experimental-strip-types tools/grade-probe.mjs --check",
     "test:golf": "node --experimental-strip-types tools/golf-logic-probe.mjs",
+    "test:touch-input": "node tools/touch-input-test.mjs",
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
     "test:city-stories": "node --experimental-strip-types tools/city-stories-probe.mjs",
     "test:city-stories:browser": "node tools/city-stories-browser-probe.mjs",

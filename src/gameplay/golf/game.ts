@@ -800,7 +800,7 @@ export class GolfGame {
         this.#charge = Math.min(1, this.#charge + dt / CHARGE_TIME);
       } else {
         // Losing focus/pointer lock cancels instead of firing an accidental shot.
-        const cancelled = input.device === "kb" && (!input.locked || !document.hasFocus());
+        const cancelled = input.pointerCaptureLost;
         if (cancelled) {
           this.#phase = "aim";
           this.#charge = 0;

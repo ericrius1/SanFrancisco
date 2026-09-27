@@ -503,7 +503,7 @@ export class ArcheryGame {
 
     // sprinting out of the stance (or losing kb focus) cancels, never fires
     const moving = Math.hypot(player.velocity.x, player.velocity.z) > 2;
-    const focusLost = input.device === "kb" && (!input.locked || !document.hasFocus());
+    const focusLost = input.pointerCaptureLost;
     if (moving || focusLost || !this.#nearLine) {
       this.#drawing = false;
       player.setArcherPose(false);

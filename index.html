@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script>
       (() => {
+        // Phones and tablets get the touch HUD (src/ui/touchControls.ts). Decided
+        // here, before first paint, so the start screen never flashes keyboard
+        // hints at a thumb. `?touch=1` / `?touch=0` force it either way for QA.
+        const touch = new URLSearchParams(location.search).get("touch");
+        if (touch === "1" || (touch !== "0" && matchMedia("(hover: none) and (pointer: coarse)").matches)) {
+          document.documentElement.classList.add("touch-ui");
+        }
         const read = new URLSearchParams(location.search).get("read") || "";
         const readingEntry = read === "bts" || read.startsWith("bts.");
         if (readingEntry) document.documentElement.classList.add("reading-entry");

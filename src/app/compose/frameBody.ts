@@ -1230,8 +1230,7 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       // earlier stows. Hands empty afterward — pick balls back up with E.
       if (core.state.fetchBall) {
         chase.interactionDir(aim, player);
-        const cancelled =
-          input.suspended || (input.device === "kb" && (!input.locked || !document.hasFocus()));
+        const cancelled = input.suspended || input.pointerCaptureLost;
         core.state.fetchBall.driveThrow(frameDt, input.firing && !input.suspended, aim, cancelled);
       }
     } else if (input.firing) {

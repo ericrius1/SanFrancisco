@@ -206,6 +206,13 @@ export class Input {
   #activityCaptured = false;
   padConnected = false;
   device: "kb" | "pad" = "kb";
+  /**
+   * True while the on-screen touch controls were the last thing touched. Kept
+   * beside `device` rather than inside it: prompts and help labels keep their
+   * keyboard glyphs (the touch buttons wear the same E / Space captions), but a
+   * touch player never holds pointer lock, so lock-loss cancels must not apply.
+   */
+  touchActive = false;
 
   // L tap toggles this: free in-world cursor (mouseNDC is the live screen
   // position, -1..1) vs pointer-lock mouselook. A canvas press (not UI) exits
@@ -490,10 +497,25 @@ export class Input {
   }
 
   #setDevice(device: "kb" | "pad") {
+    this.touchActive = false;
     if (this.device === device) return;
     this.device = device;
     lastInputDevice = device;
     this.onDeviceChange(device);
+  }
+
+  /** The touch controls were used; a key, mouse press or pad clears it. */
+  noteTouch(): void {
+    this.touchActive = true;
+  }
+
+  /**
+   * A keyboard/mouse hold (golf swing, bow draw, ball wind-up) should cancel
+   * when the pointer is released or the tab loses focus. A pad or touch player
+   * never had the pointer captured, so for them nothing was lost.
+   */
+  get pointerCaptureLost(): boolean {
+    return this.device === "kb" && !this.touchActive && (!this.locked || !document.hasFocus());
   }
 
   /** Per-mode pad routing: fly → ↑/↓ throttle, bird → LB/RB twirl, drone → Q/U vertical. */
@@ -804,6 +826,8 @@ export class Input {
   requestLock() {
     // Free-cursor mode owns the pointer until L toggles it off.
     if (this.freeCursor) return;
+    // A finger has nothing to capture; look comes from the touch driver.
+    if (this.touchActive) return;
     // A subsystem may ask to capture while Command is held. Defer that intent
     // until release so the cursor remains free for the full physical hold.
     if (this.#metaHeld.size > 0) {
