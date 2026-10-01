@@ -255,6 +255,11 @@ async function boot() {
   // frame-budget-sliced construction UNDER the live void render.
   progress(58, "entering the void");
   const input = new Input(renderer.domElement);
+  // Phones/tablets only (index.html tags the page before first paint): the
+  // on-screen stick, look drag and buttons feed Input's driver channel.
+  if (document.documentElement.classList.contains("touch-ui")) {
+    void import("./ui/touchControls").then(({ installTouchControls }) => installTouchControls(input));
+  }
   const modeDiscovery = new ModeDiscovery();
   // Avatar identity: a saved avatar means the player chose one in the editor;
   // otherwise leave it to the server's per-id seed (adopted on welcome below) so

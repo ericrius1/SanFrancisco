@@ -1,0 +1,354 @@
+/*
+ * Phone / tablet HUD. Every rule is scoped to html.touch-ui (set by index.html
+ * only when the primary pointer is a finger, or ?touch=1), and this sheet ships
+ * in the touch-controls chunk, so desktop never downloads or matches any of it.
+ *
+ * Lanes, so nothing stacks on anything else:
+ *   top-left      minimap, then mute/mic, then the last few chat lines
+ *   top-right     avatar, People / Share spot, then Travel · Emote · Map · Chat
+ *   bottom-left   move stick (appears under the thumb)
+ *   bottom-right  Jump / E / Run / Tool
+ *   middle        the world, and hud.message toasts
+ * Keyboard-only furniture (controls legend, Alt-arrow history, key chips,
+ * "hold Space" / "click the mic" nudges, the keyboard tutorial) is hidden.
+ */
+
+html.touch-ui {
+  --tc-top: max(10px, env(safe-area-inset-top));
+  --tc-left: max(10px, env(safe-area-inset-left));
+  --tc-right: max(10px, env(safe-area-inset-right));
+  --tc-bottom: max(12px, env(safe-area-inset-bottom));
+  --tc-map: 116px;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  /* No double-tap zoom on HUD buttons; drag surfaces opt into none. */
+  touch-action: manipulation;
+}
+html.touch-ui body {
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ---------------------------------------------------------- keyboard-only */
+html.touch-ui #hud .br-stack .help,
+html.touch-ui #hud .place-history,
+html.touch-ui #hud .toolbar .hint,
+html.touch-ui #hud .toolbar .vnav,
+html.touch-ui #hud .toolbar .num,
+html.touch-ui #hud .chat-hint,
+html.touch-ui #hud .emote-slot .num,
+html.touch-ui #hud .emote-hint-sub,
+html.touch-ui #hud .mic-nudge,
+html.touch-ui #hud .tutorial-ui,
+html.touch-ui #hud .tutorial-panel,
+html.touch-ui #hud .links-ui,
+html.touch-ui #hud .mocap-btn,
+html.touch-ui #sky-flight-launch,
+html.touch-ui #hud .sf-sky-flight,
+html.touch-ui #loading .controls-hint {
+  display: none !important;
+}
+
+/* ------------------------------------------------------------ top-left */
+html.touch-ui #hud .minimap {
+  top: var(--tc-top);
+  left: var(--tc-left);
+  width: var(--tc-map);
+}
+html.touch-ui #hud .minimap canvas {
+  width: var(--tc-map) !important;
+  height: var(--tc-map) !important;
+}
+html.touch-ui #hud .minimap .mm-expand {
+  display: none;
+}
+html.touch-ui #hud .audio {
+  top: calc(var(--tc-top) + var(--tc-map) + 34px);
+  bottom: auto;
+  left: var(--tc-left);
+  padding: 4px;
+}
+html.touch-ui #hud .audio .label {
+  display: none;
+}
+html.touch-ui #hud .audio-actions button {
+  min-width: 40px;
+  min-height: 40px;
+  justify-content: center;
+}
+/* Folded chat: a read-only glance at the last lines, never in the way. */
+html.touch-ui #hud .chat {
+  top: calc(var(--tc-top) + var(--tc-map) + 88px);
+  bottom: auto;
+  left: var(--tc-left);
+  width: min(60vw, 260px);
+  padding: 0;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  pointer-events: none;
+}
+html.touch-ui #hud .chat .chat-head,
+html.touch-ui #hud .chat .chat-input {
+  display: none;
+}
+html.touch-ui #hud .chat .chat-log {
+  max-height: 4.2em;
+  font-size: 12px;
+}
+html.touch-ui #hud .chat .chat-toasts {
+  bottom: auto;
+  top: 100%;
+}
+/* Open chat: a full-width sheet at the top, clear of the on-screen keyboard. */
+html.touch-ui.touch-chat-open #hud .chat {
+  top: var(--tc-top);
+  left: var(--tc-left);
+  right: var(--tc-right);
+  width: auto;
+  z-index: var(--z-panel);
+  padding: 10px;
+  background: var(--surface-strong);
+  border: 1px solid var(--hairline-2);
+  border-radius: 12px;
+  pointer-events: auto;
+}
+html.touch-ui.touch-chat-open #hud .chat .chat-head,
+html.touch-ui.touch-chat-open #hud .chat .chat-input {
+  display: flex;
+}
+html.touch-ui.touch-chat-open #hud .chat .chat-log {
+  max-height: 30vh;
+}
+/* 16px keeps iOS from zooming the page when the field takes focus. */
+html.touch-ui #hud .chat .chat-input {
+  font-size: 16px;
+  min-height: 40px;
+}
+
+/* ----------------------------------------------------------- top-right */
+html.touch-ui #hud .avatar-ui {
+  top: var(--tc-top);
+  right: var(--tc-right);
+}
+html.touch-ui #hud .share-ui {
+  top: calc(var(--tc-top) + 56px);
+  right: var(--tc-right);
+}
+html.touch-ui #hud .share-btn {
+  height: 40px;
+}
+
+/* -------------------------------------------- travel / tools, as a sheet */
+html.touch-ui #hud .toolbar {
+  display: none;
+  bottom: var(--tc-bottom);
+  left: var(--tc-left);
+  right: var(--tc-right);
+  z-index: var(--z-panel);
+}
+html.touch-ui.touch-toolbar-open #hud .toolbar {
+  display: flex;
+}
+html.touch-ui #hud .toolbar::before,
+html.touch-ui #hud .toolbar::after {
+  min-width: 0;
+}
+html.touch-ui #hud .toolbar .primary {
+  padding: 10px;
+  border-radius: 14px;
+  background: var(--surface-strong);
+  border: 1px solid var(--hairline-2);
+}
+html.touch-ui #hud .toolbar .vehicles,
+html.touch-ui #hud .toolbar .tools,
+html.touch-ui #hud .toolbar .swatches {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+html.touch-ui #hud .toolbar .tool,
+html.touch-ui #hud .toolbar .vehicle {
+  min-width: 44px;
+  min-height: 44px;
+  justify-content: center;
+  opacity: 1;
+}
+html.touch-ui #hud .toolbar .vehicle .ic {
+  font-size: 20px;
+}
+html.touch-ui #hud .toolbar .swatch {
+  width: 30px;
+  height: 30px;
+}
+
+/* ------------------------------------------------------------- toasts */
+html.touch-ui #hud .center {
+  max-width: 86vw;
+  font-size: 14px;
+}
+/* A minigame's exit button sits above the action cluster, not under it. */
+html.touch-ui #hud .br-stack {
+  right: var(--tc-right);
+  bottom: calc(var(--tc-bottom) + 190px);
+}
+html.touch-ui #hud .minigame-exit {
+  min-height: 44px;
+}
+
+/* ------------------------------------------------------ touch controls */
+.touch-controls {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+/* Move and look zones (a touch on either while the Travel sheet is open
+   closes the sheet instead of steering — see touchControls.ts). */
+.touch-controls .tc-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: auto;
+  touch-action: none;
+}
+.touch-controls .tc-move {
+  left: 0;
+  width: 50%;
+}
+.touch-controls .tc-look {
+  right: 0;
+  width: 50%;
+}
+.touch-controls .tc-stick {
+  position: absolute;
+  width: 112px;
+  height: 112px;
+  margin: -56px 0 0 -56px;
+  border-radius: 50%;
+  border: 2px solid rgba(220, 240, 255, 0.4);
+  background: rgba(8, 20, 30, 0.22);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.touch-controls .tc-stick.active {
+  opacity: 1;
+}
+.touch-controls .tc-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 48px;
+  height: 48px;
+  margin: -24px 0 0 -24px;
+  border-radius: 50%;
+  background: rgba(230, 245, 255, 0.72);
+  box-shadow: 0 2px 10px rgba(0, 10, 20, 0.35);
+}
+
+.touch-controls .tc-btn {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 1px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(210, 235, 250, 0.42);
+  background: rgba(8, 22, 34, 0.55);
+  color: #eef8ff;
+  font: 700 13px/1 var(--font, system-ui);
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.touch-controls .tc-btn.down {
+  background: rgba(120, 200, 230, 0.55);
+  border-color: rgba(220, 245, 255, 0.85);
+}
+.touch-controls .tc-cap {
+  font-size: 9px;
+  font-weight: 600;
+  opacity: 0.62;
+  letter-spacing: 0.03em;
+}
+
+/* Thumb arc, bottom-right: Jump in the corner, E / Run / Tool around it. */
+.touch-controls .tc-actions {
+  position: absolute;
+  right: var(--tc-right);
+  bottom: var(--tc-bottom);
+  width: 172px;
+  height: 172px;
+  pointer-events: none;
+}
+.touch-controls .tc-actions .tc-btn {
+  position: absolute;
+  width: 58px;
+  height: 58px;
+}
+.touch-controls .tc-jump {
+  right: 0;
+  bottom: 0;
+  width: 76px !important;
+  height: 76px !important;
+  font-size: 15px;
+}
+.touch-controls .tc-use {
+  right: 90px;
+  bottom: 6px;
+  font-size: 20px;
+}
+.touch-controls .tc-run {
+  right: 82px;
+  bottom: 80px;
+}
+.touch-controls .tc-fire {
+  right: 8px;
+  bottom: 96px;
+}
+
+/* Menu row: under People / Share spot in portrait. */
+.touch-controls .tc-top {
+  position: absolute;
+  top: calc(var(--tc-top) + 106px);
+  right: var(--tc-right);
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+.touch-controls .tc-top .tc-btn {
+  width: 50px;
+  height: 50px;
+  border-radius: 14px;
+  font-size: 11px;
+}
+html.touch-toolbar-open .touch-controls .tc-travel,
+html.touch-chat-open .touch-controls .tc-chat {
+  background: rgba(120, 200, 230, 0.55);
+}
+
+/* Landscape phone: short screen, wide lanes. Mute/mic sit beside a smaller
+   minimap, and the menu row joins the top edge left of the avatar so the
+   action arc keeps the whole right-hand height. */
+@media (orientation: landscape) and (max-height: 500px) {
+  html.touch-ui {
+    --tc-map: 92px;
+  }
+  html.touch-ui #hud .audio {
+    top: var(--tc-top);
+    left: calc(var(--tc-left) + var(--tc-map) + 10px);
+  }
+  html.touch-ui #hud .chat {
+    top: calc(var(--tc-top) + var(--tc-map) + 34px);
+    width: min(34vw, 260px);
+  }
+  .touch-controls .tc-top {
+    top: var(--tc-top);
+    right: calc(var(--tc-right) + 56px);
+  }
+  html.touch-ui #hud .br-stack {
+    bottom: calc(var(--tc-bottom) + 180px);
+    right: calc(var(--tc-right) + 190px);
+  }
+}
