@@ -63,6 +63,33 @@ html.touch-ui #hud .minimap canvas {
 html.touch-ui #hud .minimap .mm-expand {
   display: none;
 }
+/* Expanded map actions must be usable without Enter/Escape on a keyboard. */
+html.touch-ui .bigmap-teleport,
+html.touch-ui .bigmap-close {
+  min-width: 72px;
+  min-height: 44px;
+  padding: 10px 14px;
+  color: var(--text);
+  font: 600 14px var(--font);
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+html.touch-ui .bigmap-teleport {
+  justify-content: center;
+}
+html.touch-ui .bigmap-close {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  right: 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  background: var(--surface-strong);
+}
+html.touch-ui .bigmap-recenter {
+  min-width: 44px;
+  min-height: 44px;
+}
 html.touch-ui #hud .audio {
   top: calc(var(--tc-top) + var(--tc-map) + 34px);
   bottom: auto;

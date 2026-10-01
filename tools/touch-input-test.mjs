@@ -146,6 +146,20 @@ lockInput.noteTouch();
 lockInput.requestLock();
 check(lockRequests === 1, "a touch player's requestLock should not ask the browser for pointer lock");
 
+// iOS has no Pointer Lock API. Opening the map must finish the frame rather
+// than throw and replay the same KeyM edge on the following frame.
+document.exitPointerLock = undefined;
+driver.press("KeyM");
+driver.release("KeyM");
+frame(() => {
+  check(input.pressedRaw("KeyM"), "map tap should raise its UI edge");
+  input.suspended = true;
+  input.releaseLock();
+});
+frame(() => check(!input.pressedRaw("KeyM"), "map opening must not replay after releasing unsupported pointer lock"));
+input.suspended = false;
+document.exitPointerLock = noop;
+
 if (failures.length) {
   console.error(`touch input: ${failures.length} failure(s)\n - ${failures.join("\n - ")}`);
   process.exit(1);

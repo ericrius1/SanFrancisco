@@ -1931,6 +1931,7 @@ export class Minimap {
   }
 
   #buildBig() {
+    const touch = document.documentElement.classList.contains("touch-ui");
     const wrap = document.createElement("div");
     wrap.className = "bigmap";
     const inner = document.createElement("div");
@@ -1939,7 +1940,7 @@ export class Minimap {
     mapFrame.className = "bigmap-frame";
     const canvas = document.createElement("canvas");
     canvas.dataset.bigMap = "";
-    canvas.title = "Drag to pan · scroll to zoom · click to select";
+    canvas.title = touch ? "Drag to pan · tap to select" : "Drag to pan · scroll to zoom · click to select";
     const recenter = document.createElement("button");
     recenter.type = "button";
     recenter.className = "bigmap-recenter";
@@ -1990,7 +1991,23 @@ export class Minimap {
     const pinHint = document.createElement("div");
     pinHint.className = "bigmap-pin-hint";
     pinHint.hidden = true;
-    pinHint.setAttribute("aria-hidden", "true");
+    pinHint.setAttribute("aria-hidden", touch ? "false" : "true");
+    if (touch) {
+      pinHint.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.padTeleport();
+      });
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "bigmap-close";
+      close.setAttribute("aria-label", "Close map");
+      close.textContent = "Close";
+      close.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.setExpanded(false);
+      });
+      mapFrame.appendChild(close);
+    }
     mapFrame.append(canvas, sideControls, pinHint);
     inner.append(layers, mapFrame);
     wrap.appendChild(inner);
@@ -2437,9 +2454,10 @@ export class Minimap {
         this.#device === "pad"
           ? `<span class="k f fx">X</span>`
           : `<span class="k">Enter</span>`;
-      el.innerHTML =
-        `<div class="bigmap-pin-hint-inner">${chip}` +
-        `<span class="bigmap-pin-hint-lbl">to teleport</span></div>`;
+      el.innerHTML = document.documentElement.classList.contains("touch-ui")
+        ? `<button type="button" class="bigmap-pin-hint-inner bigmap-teleport" aria-label="Teleport to selected location">Teleport</button>`
+        : `<div class="bigmap-pin-hint-inner">${chip}` +
+          `<span class="bigmap-pin-hint-lbl">to teleport</span></div>`;
       el.classList.remove("pop");
       // Retrigger the entrance animation on a new selection.
       void el.offsetWidth;

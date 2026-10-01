@@ -907,7 +907,9 @@ export class Input {
     this.#lockRequestGeneration++;
     this.#wantLocked = false;
     this.#expectingUnlock = document.pointerLockElement === this.#el;
-    document.exitPointerLock();
+    // Mobile Safari has no Pointer Lock API. Map/focus handoffs must still
+    // finish their input frame, otherwise the opening key edge repeats.
+    document.exitPointerLock?.();
   }
 
   down(code: string) {
