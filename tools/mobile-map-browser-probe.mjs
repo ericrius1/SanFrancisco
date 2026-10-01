@@ -91,7 +91,115 @@ try {
   assert.equal(await page.evaluate(() => probe.minimap.expanded), false, "close must work without a keyboard");
   assert.deepEqual(errors, []);
   assert.deepEqual(atlas, ["/map/historical-atlas/city-overview.webp"], "selecting, teleporting, and reopening must reuse the overview");
-  console.log(`mobile map (${engine}): stable open, touch selection, teleport, close, and lazy atlas passed`);
+  // Chromium delivers real multitouch through the browser input pipeline.
+  // Playwright WebKit exposes taps only; exercise its PointerEvent handlers
+  // with a capture shim, then finish with a native tap to verify selection.
+  const cdp = engine === "chromium" ? await page.context().newCDPSession(page) : null;
+  let fingers = [];
+  if (!cdp) await canvas.evaluate(el => {
+    const captured = new Set();
+    el.setPointerCapture = id => captured.add(id);
+    el.hasPointerCapture = id => captured.has(id);
+    el.releasePointerCapture = id => captured.delete(id);
+  });
+  const touch = async (type, points) => {
+    if (cdp) await cdp.send("Input.dispatchTouchEvent", {
+      type,
+      // CDP touchEnd lists the fingers being lifted; the helper takes those
+      // remaining on the glass, matching a native TouchEvent.touches list.
+      touchPoints:type === "touchEnd" && points.length
+        ? fingers.filter(p=>!points.some(a=>a.id===p.id)) : points
+    });
+    else {
+      await canvas.evaluate((el, {type, points, previous}) => {
+        const emit = (name, point) => el.dispatchEvent(new PointerEvent(name, {
+          bubbles:true, cancelable:true, pointerType:"touch", pointerId:point.id,
+          isPrimary:point.id===1, clientX:point.x, clientY:point.y,
+          button:0, buttons:name==="pointerup"||name==="pointercancel"?0:1
+        }));
+        if (type === "touchStart") for (const p of points) {
+          if (!previous.some(a=>a.id===p.id)) emit("pointerdown", p);
+        }
+        if (type === "touchMove") for (const p of points) emit("pointermove", p);
+        if (type === "touchEnd" || type === "touchCancel") for (const p of previous) {
+          if (!points.some(a=>a.id===p.id)) emit(type==="touchCancel"?"pointercancel":"pointerup", p);
+        }
+      }, {type,points,previous:fingers});
+    }
+    fingers = points;
+    // Native touch moves may be coalesced until the next browser frame.
+    if (cdp) await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  };
+  const read = () => page.evaluate(()=>probe.minimap.debugState());
+  await page.evaluate(()=>probe.minimap.focusWorldPoint(0,0,6000));
+  const r = await canvas.boundingBox();
+  const cx = r.x+r.width*.58, cy = r.y+r.height*.54;
+  const pair = (distance, dx=0, dy=0) => [
+    {id:1,x:cx+dx-distance/2,y:cy+dy}, {id:2,x:cx+dx+distance/2,y:cy+dy}
+  ];
+  const worldAt = (state,x,y) => ({
+    x:state.center.x+((x-r.x)/r.width-.5)*state.spanX,
+    z:state.center.z+((y-r.y)/r.height-.5)*state.spanZ
+  });
+  const near = (a,b,message) => assert.ok(Math.abs(a-b)<1,`${message}: ${a} vs ${b}`);
+  const before = await read(), anchor = worldAt(before,cx,cy);
+  await touch("touchStart",pair(80).slice(0,1));
+  await touch("touchStart",pair(80));
+  await touch("touchMove",pair(160));
+  const zoomed = await read();
+  near(zoomed.spanX,before.spanX/2,"spreading fingers doubles magnification");
+  near(worldAt(zoomed,cx,cy).x,anchor.x,"pinch preserves horizontal focal point");
+  near(worldAt(zoomed,cx,cy).z,anchor.z,"pinch preserves vertical focal point");
+  await touch("touchMove",pair(160,12,15));
+  const panned = await read();
+  near(worldAt(panned,cx+12,cy+15).x,anchor.x,"two fingers also pan horizontally");
+  near(worldAt(panned,cx+12,cy+15).z,anchor.z,"two fingers also pan vertically");
+  const remaining = pair(160,12,15).slice(1);
+  await touch("touchEnd",remaining);
+  near((await read()).center.x,panned.center.x,"lifting one finger must not jump");
+  await touch("touchMove",remaining.map(p=>({...p,x:p.x+20})));
+  near((await read()).center.x,panned.center.x-20/r.width*panned.spanX,"remaining finger continues panning");
+  await touch("touchEnd",[]);
+  assert.equal((await read()).selection,null,"pinch must not select a teleport destination");
+  await page.waitForTimeout(80);
+  await canvas.dispatchEvent("click",{clientX:cx,clientY:cy});
+  assert.equal((await read()).selection,null,"late compatibility click must also be suppressed");
+  assert.equal(await page.evaluate(()=>visualViewport.scale),1,"pinch zooms the map, not the browser page");
+  await page.touchscreen.tap(cx,cy);
+  assert.notEqual((await read()).selection,null,"first tap after a pinch must still select");
+
+  await page.evaluate(()=>probe.minimap.focusWorldPoint(0,0,4000));
+  await touch("touchStart",pair(160));
+  await touch("touchMove",pair(80));
+  near((await read()).spanX,8000,"bringing fingers together zooms out");
+  await touch("touchMove",pair(2));
+  near((await read()).spanX,16000,"zoom out respects map bounds");
+  await touch("touchCancel",[]);
+  await page.evaluate(()=>probe.minimap.focusWorldPoint(0,0,4000));
+  await touch("touchStart",pair(40));
+  await touch("touchMove",pair(240));
+  near((await read()).spanX,1200,"zoom in respects the closest detail level");
+  await touch("touchCancel",[]);
+  await page.touchscreen.tap(cx,cy);
+  assert.notEqual((await read()).selection,null,"cancelled pinch must not leave fingers stuck");
+  // Closing while two fingers are down must release their state on reopen.
+  await page.evaluate(()=>probe.minimap.focusWorldPoint(0,0,4000));
+  await touch("touchStart",pair(80));
+  await page.evaluate(()=>probe.minimap.setExpanded(false));
+  await touch("touchEnd",[]);
+  await page.locator(".tc-map").tap();
+  await page.waitForFunction(()=>probe.minimap.expanded);
+  await page.touchscreen.tap(cx,cy);
+  assert.notEqual((await read()).selection,null,"reopened map accepts a fresh tap");
+  // Mouse/trackpad zoom still uses the same span and selection rules.
+  const wheelBefore = (await read()).spanX;
+  await page.mouse.move(cx,cy);
+  if (cdp) await page.mouse.wheel(0,-150);
+  else await canvas.dispatchEvent("wheel",{deltaY:-150,clientX:cx,clientY:cy});
+  await page.waitForFunction(span=>probe.minimap.debugState().spanX<span,wheelBefore);
+  assert.deepEqual(errors,[]);
+  assert.equal(await page.evaluate(()=>probe.teleports.length),1,"gestures must never teleport");
+  console.log(`mobile map (${engine}): open/select/teleport, pinch in/out, focal point, two-finger pan, finger handoff, bounds, cancellation, reopen and wheel passed`);
 } finally {
   await browser.close();
 }

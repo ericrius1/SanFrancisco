@@ -294,6 +294,8 @@ export class Minimap {
         moved: boolean;
       }
     | null = null;
+  #bigPointers = new Map<number, { x: number; y: number }>();
+  #bigPinch: { distance: number; span: number; worldX: number; worldZ: number } | null = null;
   #bigSuppressClick = false;
   // Gamepad selection crosshair on the expanded map, in normalized canvas
   // coordinates (−0.5..0.5). It stays centered while the view can pan, then
@@ -1727,6 +1729,7 @@ export class Minimap {
 
   setExpanded(on: boolean) {
     if (on === this.expanded) return;
+    this.#resetBigGesture();
     this.expanded = on;
     if (on) {
       this.#cancelHistoricalTrim();
@@ -1930,6 +1933,52 @@ export class Minimap {
     this.#drawBig();
   }
 
+  /** Rebase whenever fingers join/leave, so pinch → one-finger pan never jumps. */
+  #beginBigGesture(canvas: HTMLCanvasElement) {
+    this.#bigDrag = null;
+    this.#bigPinch = null;
+    const points = [...this.#bigPointers.entries()];
+    if (!points.length) {
+      canvas.classList.remove("dragging");
+      return;
+    }
+    const [pointerId, a] = points[0];
+    const { center, spanX, spanZ } = this.#bigView();
+    if (points.length >= 2) {
+      const b = points[1][1];
+      const rect = canvas.getBoundingClientRect();
+      const nx = ((a.x + b.x) / 2 - rect.left) / rect.width - 0.5;
+      const ny = ((a.y + b.y) / 2 - rect.top) / rect.height - 0.5;
+      this.#bigPinch = {
+        distance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+        span: spanX,
+        worldX: center.x + nx * spanX,
+        worldZ: center.z + ny * spanZ
+      };
+      // Even a stationary second finger makes this a gesture, never a pin tap.
+      this.#bigSuppressClick = true;
+    } else {
+      this.#bigDrag = {
+        pointerId, startX: a.x, startY: a.y,
+        centerX: center.x, centerZ: center.z, spanZ,
+        moved: this.#bigSuppressClick
+      };
+    }
+    canvas.classList.add("dragging");
+  }
+
+  #resetBigGesture() {
+    const ids = [...this.#bigPointers.keys()];
+    this.#bigPointers.clear();
+    this.#bigDrag = null;
+    this.#bigPinch = null;
+    if (ids.length) this.#bigSuppressClick = true;
+    this.#big?.classList.remove("dragging");
+    for (const id of ids) {
+      if (this.#big?.hasPointerCapture(id)) this.#big.releasePointerCapture(id);
+    }
+  }
+
   #buildBig() {
     const touch = document.documentElement.classList.contains("touch-ui");
     const wrap = document.createElement("div");
@@ -1940,7 +1989,7 @@ export class Minimap {
     mapFrame.className = "bigmap-frame";
     const canvas = document.createElement("canvas");
     canvas.dataset.bigMap = "";
-    canvas.title = touch ? "Drag to pan · tap to select" : "Drag to pan · scroll to zoom · click to select";
+    canvas.title = touch ? "Pinch to zoom · drag to pan · tap to select" : "Drag to pan · scroll to zoom · click to select";
     const recenter = document.createElement("button");
     recenter.type = "button";
     recenter.className = "bigmap-recenter";
@@ -2017,8 +2066,7 @@ export class Minimap {
       if (e.target === wrap) this.setExpanded(false);
     });
     canvas.addEventListener("click", (e) => {
-      if (this.#bigSuppressClick) {
-        this.#bigSuppressClick = false;
+      if (this.#bigSuppressClick || this.#bigPointers.size > 0) {
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -2051,26 +2099,38 @@ export class Minimap {
       { passive: false }
     );
     canvas.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || !this.expanded) return;
       this.#cancelBigRecenterAnim();
-      const { center, spanZ } = this.#bigView();
-      this.#bigDrag = {
-        pointerId: e.pointerId,
-        startX: e.clientX,
-        startY: e.clientY,
-        centerX: center.x,
-        centerZ: center.z,
-        spanZ,
-        moved: false
-      };
+      // Reset on the next independent touch, rather than a timer: iOS can send
+      // a compatibility click after the final pointerup has already returned.
+      if (!this.#bigPointers.size) this.#bigSuppressClick = false;
+      this.#bigPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      this.#beginBigGesture(canvas);
       canvas.setPointerCapture(e.pointerId);
-      canvas.classList.add("dragging");
       e.stopPropagation();
     });
     canvas.addEventListener("pointermove", (e) => {
+      if (!this.#bigPointers.has(e.pointerId)) return;
+      this.#bigPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const rect = canvas.getBoundingClientRect();
+      const pinch = this.#bigPinch;
+      if (pinch) {
+        const [a, b] = [...this.#bigPointers.values()];
+        const distance = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+        const nx = ((a.x + b.x) / 2 - rect.left) / rect.width - 0.5;
+        const ny = ((a.y + b.y) / 2 - rect.top) / rect.height - 0.5;
+        this.#bigSpan = this.#clampBigSpan(pinch.span * pinch.distance / distance);
+        this.#bigCenter = this.#clampBigCenter({
+          x: pinch.worldX - nx * this.#bigSpan,
+          z: pinch.worldZ - ny * (this.#bigSpan / this.#bigAspect())
+        });
+        this.#drawBig();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       const drag = this.#bigDrag;
       if (!drag || e.pointerId !== drag.pointerId) return;
-      const rect = canvas.getBoundingClientRect();
       const dx = e.clientX - drag.startX;
       const dy = e.clientY - drag.startY;
       if (!drag.moved && Math.hypot(dx, dy) >= MINI_DRAG_PX) drag.moved = true;
@@ -2083,20 +2143,23 @@ export class Minimap {
       e.stopPropagation();
     });
     const endDrag = (e: PointerEvent) => {
-      const drag = this.#bigDrag;
-      if (!drag || e.pointerId !== drag.pointerId) return;
-      this.#bigDrag = null;
-      canvas.classList.remove("dragging");
-      if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-      if (drag.moved && e.type === "pointerup") {
+      if (!this.#bigPointers.delete(e.pointerId)) return;
+      if (this.#bigPinch || this.#bigDrag?.moved || e.type !== "pointerup") {
         this.#bigSuppressClick = true;
-        window.setTimeout(() => (this.#bigSuppressClick = false), 0);
         e.preventDefault();
       }
+      this.#beginBigGesture(canvas);
+      if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
       e.stopPropagation();
     };
     canvas.addEventListener("pointerup", endDrag);
     canvas.addEventListener("pointercancel", endDrag);
+    canvas.addEventListener("lostpointercapture", endDrag);
+    window.addEventListener("blur", () => this.#resetBigGesture());
+    window.addEventListener("resize", () => this.#resetBigGesture());
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) this.#resetBigGesture();
+    });
     this.#big = canvas;
     this.#bigWrap = wrap;
     this.#bigRecenter = recenter;

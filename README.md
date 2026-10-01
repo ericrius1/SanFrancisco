@@ -146,7 +146,8 @@ and mixer value to its source default.
 ### Phone and tablet
 
 Drag the left side to move and the right side to look. The on-screen buttons
-cover travel, actions, chat, and the map; select a map destination and tap
+cover travel, actions, chat, and the map. Pinch with two fingers to zoom the
+expanded map, or drag to pan; select a map destination and tap
 **Teleport** to go there.
 
 The clock below the menu is always available: **drag it left or right to scrub
