@@ -9,6 +9,7 @@ import { build } from "esbuild";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = `
 export { Input } from './src/core/input.ts';
+export { createTimeScrubAndTuningGestures } from './src/app/compose/timeScrub.ts';
 export { TouchDriver, stickFromOffset, STICK_RADIUS } from './src/ui/touchDriver.ts';
 `;
 const bundled = await build({
@@ -33,7 +34,7 @@ globalThis.localStorage = {
   removeItem: (k) => store.delete(k)
 };
 
-const { Input, TouchDriver, stickFromOffset, STICK_RADIUS } = await import(
+const { Input, TouchDriver, stickFromOffset, STICK_RADIUS, createTimeScrubAndTuningGestures } = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
 );
 
@@ -160,8 +161,50 @@ frame(() => check(!input.pressedRaw("KeyM"), "map opening must not replay after 
 input.suspended = false;
 document.exitPointerLock = noop;
 
+// The clock shares desktop easing and wrapping, but never the camera/surf rail.
+const sky = {
+  timeOfDay: 23, cycleEnabled: true,
+  advanceCivilHours(h) { this.timeOfDay = (this.timeOfDay + h + 24) % 24; }
+};
+const gestures = createTimeScrubAndTuningGestures({ input, sky, hud: { message: noop } });
+const scrubFrame = (allow = true, keyboard = false) => frame(() => gestures.update(1 / 60, keyboard, false, false, allow));
+input.setMode("surf");
+driver.scrubTime(true, 2);
+scrubFrame();
+check(sky.timeOfDay > 23 && sky.timeOfDay < 24, "clock must ease toward target, not jump");
+check(!sky.cycleEnabled, "clock holds the day cycle while dragging");
+check(input.mouseDX === 0 && input.surfDX === 0, "clock must not steer the camera or surfboard");
+driver.scrubTime(false);
+for (let i = 0; i < 100; i++) scrubFrame();
+check(Math.abs(sky.timeOfDay - 1) < .01, "clock must wrap forward across midnight");
+check(sky.cycleEnabled, "clock must restore a running day cycle after settling");
+sky.cycleEnabled = false;
+// An entire reverse swipe before the next frame must not disappear.
+driver.scrubTime(true, -2);
+driver.scrubTime(false);
+for (let i = 0; i < 100; i++) scrubFrame();
+check(Math.abs(sky.timeOfDay - 23) < .02, "sub-frame swipe must rewind across midnight");
+check(!sky.cycleEnabled, "clock must preserve a previously paused day cycle");
+const beforeBlocked = sky.timeOfDay;
+driver.scrubTime(true, 4);
+scrubFrame(false);
+driver.releaseAll();
+for (let i = 0; i < 100; i++) scrubFrame();
+check(near(sky.timeOfDay, beforeBlocked), "map/arrival must discard scrub deltas rather than replay later");
+driver.scrubTime(true, 4);
+driver.look(30, 40);
+driver.releaseAll();
+scrubFrame();
+check(!input.timeScrubHeld && near(sky.timeOfDay, beforeBlocked), "backgrounding must clear pending time gestures");
+check(input.surfDX === 0, "backgrounding must clear pending look gestures");
+input.setMode("walk");
+input.mouseDX = 100;
+scrubFrame(true, true);
+for (let i = 0; i < 100; i++) scrubFrame();
+check(Math.abs((((sky.timeOfDay - beforeBlocked) % 24) + 24) % 24 - 1) < .01, "desktop Z scrub must still advance one hour per 100 pixels");
+
 if (failures.length) {
   console.error(`touch input: ${failures.length} failure(s)\n - ${failures.join("\n - ")}`);
   process.exit(1);
 }
-console.log("touch input: stick, buttons, look, fire, surf routing, suspension and lock-cancel rails OK");
+console.log("touch input: stick, buttons, look, fire, surf routing, suspension lock-cancel rails, and smooth day/night gestures OK");

@@ -1309,7 +1309,8 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
       orbit.distance = core.state.orbitFlip.startDist + (core.state.orbitFlip.endDist - core.state.orbitFlip.startDist) * eased;
       if (u >= 1) core.state.orbitFlip = null;
     }
-    timeScrubGestures.update(frameDt, scrubHeld, adjustHeld, dilateHeld);
+    timeScrubGestures.update(frameDt, scrubHeld, adjustHeld, dilateHeld,
+      !worldArrival.active && (!input.suspended || inOrbit()));
     worldTime.advance(frameDt);
     worldAnimationTime.value += worldTime.delta(frameDt);
     ctx.state.elapsed += worldTime.delta(frameDt);

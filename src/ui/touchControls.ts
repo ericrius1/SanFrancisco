@@ -59,7 +59,7 @@ export type TouchControls = {
   root: HTMLElement;
 };
 
-export function installTouchControls(input: Input): TouchControls {
+export function installTouchControls(input: Input, getTimeOfDay: () => number = () => 12): TouchControls {
   const hud = document.getElementById("hud")!;
   const driver = new TouchDriver();
 
@@ -88,7 +88,69 @@ export function installTouchControls(input: Input): TouchControls {
   const travelBtn = top.querySelector<HTMLButtonElement>(".tc-travel")!;
   const chatBtn = top.querySelector<HTMLButtonElement>(".tc-chat")!;
 
-  root.append(moveZone, lookZone, actions, top);
+  // Always in reach: relative dragging lets the finger leave the clock without
+  // hitting an endpoint. A 240px swipe advances twelve hours; reverse to rewind.
+  const clock = document.createElement("div");
+  clock.className = "tc-clock";
+  clock.tabIndex = 0;
+  clock.setAttribute("role", "slider");
+  clock.setAttribute("aria-label", "Time of day. Drag left or right");
+  clock.setAttribute("aria-valuemin", "0");
+  clock.setAttribute("aria-valuemax", "24");
+  clock.innerHTML = '<span class="tc-clock-face"><span class="tc-clock-icon" aria-hidden="true">☀</span><span class="tc-clock-time"></span></span><span class="tc-clock-hint" aria-hidden="true">‹ DAY / NIGHT ›</span>';
+  const clockTime = clock.querySelector<HTMLElement>(".tc-clock-time")!;
+  const clockIcon = clock.querySelector<HTMLElement>(".tc-clock-icon")!;
+  let lastMinute = -1;
+  const syncClock = () => {
+    const hour = ((getTimeOfDay() % 24) + 24) % 24;
+    const minute = Math.floor(hour * 60);
+    if (minute === lastMinute) return;
+    lastMinute = minute;
+    const h = Math.floor(minute / 60);
+    const label = `${h % 12 || 12}:${String(minute % 60).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+    clockTime.textContent = label;
+    clockIcon.textContent = hour >= 6 && hour < 18 ? "☀" : "☾";
+    clock.setAttribute("aria-valuenow", String(minute / 60));
+    clock.setAttribute("aria-valuetext", label);
+  };
+  driver.onUpdate = syncClock;
+  syncClock();
+  let clockPointer: number | null = null;
+  let clockX = 0;
+  const endClock = () => {
+    clockPointer = null;
+    clock.classList.remove("scrubbing");
+    driver.scrubTime(false);
+  };
+  clock.addEventListener("pointerdown", (e) => {
+    if (clockPointer !== null) return;
+    e.preventDefault();
+    input.noteTouch();
+    clockPointer = e.pointerId;
+    clockX = e.clientX;
+    clock.setPointerCapture(e.pointerId);
+    clock.classList.add("scrubbing");
+    driver.scrubTime(true);
+  });
+  clock.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== clockPointer) return;
+    driver.scrubTime(true, (e.clientX - clockX) * 0.05);
+    clockX = e.clientX;
+  });
+  for (const event of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
+    clock.addEventListener(event, (e) => {
+      if (e.pointerId === clockPointer) endClock();
+    });
+  }
+  clock.addEventListener("contextmenu", (e) => e.preventDefault());
+  clock.addEventListener("keydown", (e) => {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    driver.scrubTime(false, e.key === "ArrowRight" || e.key === "ArrowUp" ? 0.25 : -0.25);
+  });
+
+  root.append(moveZone, lookZone, actions, top, clock);
   // First child of #hud: every HUD panel after it paints above the zones.
   hud.prepend(root);
 
@@ -214,9 +276,17 @@ export function installTouchControls(input: Input): TouchControls {
   });
 
   // A backgrounded tab never sees the pointerup of a finger it lost.
-  window.addEventListener("blur", () => driver.releaseAll());
+  const releaseTouches = () => {
+    endClock();
+    movePointer = null;
+    lookLast.clear();
+    stick.classList.remove("active");
+    root.querySelectorAll(".down").forEach(button => button.classList.remove("down"));
+    driver.releaseAll();
+  };
+  window.addEventListener("blur", releaseTouches);
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) driver.releaseAll();
+    if (document.hidden) releaseTouches();
   });
 
   input.setDriver(driver);

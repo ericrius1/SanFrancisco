@@ -91,6 +91,11 @@ const VOICE_BOOST = 1.35;
 // is the easy case for an echo canceller (intermittent, band-limited, and it is
 // what AEC3 is tuned for); a sustained synthetic bed is the hard one.
 const OPEN_MIC_PLAYBACK_DUCK = 0.72;
+// A phone's mic and loudspeaker sit centimetres apart. Give its canceller more
+// headroom while transmitting, especially against the sustained world audio.
+// Keep both directions of the conversation live; never gate a talker's track.
+const MOBILE_WORLD_DUCK = 0.12;
+const MOBILE_PLAYBACK_DUCK = 0.5;
 
 type EchoCancellationMode = boolean | "all" | "remote-only";
 
@@ -111,7 +116,7 @@ async function preferAllPlaybackEchoCancellation(track: MediaStreamTrack) {
   const capabilities = track.getCapabilities?.() as MediaTrackCapabilities & {
     echoCancellation?: EchoCancellationMode[];
   };
-  if (!capabilities.echoCancellation?.includes("all")) return;
+  if (!capabilities?.echoCancellation?.includes("all")) return;
   try {
     await track.applyConstraints({
       echoCancellation: { exact: "all" }
@@ -145,6 +150,7 @@ type Peer = {
   pc: RTCPeerConnection;
   polite: boolean; // higher id yields (only lower id ever offers first)
   audioEl: HTMLAudioElement | null;
+  source: MediaStreamAudioSourceNode | null;
   compressor: DynamicsCompressorNode | null;
   gain: GainNode | null;
   analyser: AnalyserNode | null;
@@ -177,6 +183,8 @@ export class Voice {
   #posOf: (id: number) => THREE.Vector3 | null;
   #selfPos: () => THREE.Vector3;
   #peers = new Map<number, Peer>();
+  #mobileSpeaker = document.documentElement.classList.contains("touch-ui") ||
+    window.matchMedia("(pointer: coarse)").matches;
   // One engine hold, live while the mic is on OR ≥1 peer is wired. It is a
   // BACKGROUND hold: unlike every other feature's, it outlives page suspension
   // and keeps the voice group audible out of frame.
@@ -399,7 +407,24 @@ export class Voice {
    * re-pushed per frame so live tuning of worldDuck takes effect immediately.
    */
   #syncMicDuck() {
-    audioEngine.setMicDuck(this.micOn ? VOICE_TUNING.values.worldDuck : 1);
+    const worldDuck = this.#mobileSpeaker
+      ? Math.min(VOICE_TUNING.values.worldDuck, MOBILE_WORLD_DUCK)
+      : VOICE_TUNING.values.worldDuck;
+    audioEngine.setMicDuck(this.micOn ? worldDuck : 1);
+    // A phone can stop rendering during a live conversation. Apply protection
+    // at the mic edge as well as per frame, and ease it on the audio clock.
+    const level = this.#playbackLevel();
+    for (const p of this.#peers.values()) {
+      if (p.gain) p.gain.gain.setTargetAtTime(level, p.gain.context.currentTime, 0.025);
+    }
+  }
+
+  #playbackLevel() {
+    const volume = VOICE_TUNING.values.volume;
+    if (!this.micOn) return volume * VOICE_BOOST;
+    return this.#mobileSpeaker
+      ? Math.min(volume, 1) * VOICE_BOOST * MOBILE_PLAYBACK_DUCK
+      : volume * VOICE_BOOST * OPEN_MIC_PLAYBACK_DUCK;
   }
 
   /** Put the current mic track (or silence) on a peer's one audio m-line. */
@@ -419,6 +444,7 @@ export class Voice {
       pc,
       polite: this.#net.selfId > id,
       audioEl: null,
+      source: null,
       compressor: null,
       gain: null,
       analyser: null,
@@ -471,10 +497,11 @@ export class Voice {
     }
     p.audioEl.srcObject = stream;
     void p.audioEl.play().catch(() => {}); // muted play is allowed pre-gesture
+    p.source?.disconnect();
     p.compressor?.disconnect();
     p.gain?.disconnect();
     p.analyser?.disconnect();
-    const src = ctx.createMediaStreamSource(stream);
+    const src = p.source = ctx.createMediaStreamSource(stream);
     // Voice leveler: browser AGC output varies a lot between mics, so close the
     // spread between a loud talker and a quiet one, then make the level back up
     // in #gain (a DynamicsCompressorNode has no makeup stage of its own).
@@ -498,7 +525,7 @@ export class Voice {
     });
     p.gain = ctx.createGain();
     // No voiceAudioLevel() here — the engine's voice group gain applies it.
-    p.gain.gain.value = VOICE_TUNING.values.volume * VOICE_BOOST;
+    p.gain.gain.value = this.#playbackLevel();
     p.analyser = ctx.createAnalyser();
     p.analyser.fftSize = 256;
     p.analyserBuf = new Float32Array(p.analyser.fftSize);
@@ -535,6 +562,7 @@ export class Voice {
     if (p.speakingUntil > performance.now()) this.onSpeaking(id, false);
     p.pc.onicecandidate = p.pc.onnegotiationneeded = p.pc.onconnectionstatechange = p.pc.ontrack = null;
     p.pc.close();
+    p.source?.disconnect();
     p.compressor?.disconnect();
     p.gain?.disconnect();
     p.analyser?.disconnect();
@@ -563,11 +591,8 @@ export class Voice {
 
     // Per-peer gain drops voiceAudioLevel() — the engine's voice group applies
     // it. voiceAudioLevel() survives only as a cheap gate on the speaking meter.
-    const playbackDuck = this.micOn ? OPEN_MIC_PLAYBACK_DUCK : 1;
-    const level = VOICE_TUNING.values.volume * VOICE_BOOST * playbackDuck;
     const audible = voiceAudioLevel() > 0;
     for (const p of this.#peers.values()) {
-      if (p.gain) p.gain.gain.value = level;
       // speaking indicator: RMS over a short window, with hold
       if (p.analyser && p.analyserBuf && audible) {
         p.analyser.getFloatTimeDomainData(p.analyserBuf);
@@ -668,13 +693,16 @@ export class Voice {
       ctx: audioEngine.debugState.ctx,
       // 1 = world at full level, <1 = ducked because we are transmitting
       worldDuck: audioEngine.debugState.micDuck,
+      mobileSpeakerProtection: this.#mobileSpeaker,
+      playbackLevel: this.#playbackLevel(),
       audibleCount: Math.max(1, Math.round(VOICE_TUNING.values.audibleCount)),
       peers: [...this.#peers.values()].map((p) => ({
         id: p.id,
         conn: p.pc.connectionState,
         ice: p.pc.iceConnectionState,
         speaking: p.speakingUntil > performance.now(),
-        hasAudio: !!p.gain
+        hasAudio: !!p.gain,
+        playbackGain: p.gain?.gain.value ?? null
       }))
     };
   }

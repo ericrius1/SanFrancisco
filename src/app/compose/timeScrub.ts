@@ -32,9 +32,9 @@ export function createTimeScrubAndTuningGestures({
   input: Input;
   sky: Sky;
   hud: HUD;
-}): { update: (dt: number, scrubHeld: boolean, adjustHeld: boolean, dilateHeld?: boolean) => void } {
-  let timeScrub: { target: number; wasCycling: boolean } | null = null;
-  const update = (frameDt: number, scrubHeld: boolean, adjustHeld: boolean, dilateHeld?: boolean) => {
+}): { update: (dt: number, scrubHeld: boolean, adjustHeld: boolean, dilateHeld?: boolean, allowTouchScrub?: boolean) => void } {
+  let timeScrub: { target: number; wasCycling: boolean; showToast: boolean } | null = null;
+  const update = (frameDt: number, scrubHeld: boolean, adjustHeld: boolean, dilateHeld?: boolean, allowTouchScrub = true) => {
     // X takes precedence over Z/N, consumes both axes, and keeps the chosen
     // value on release. Direct accumulation reaches an exact freeze at zero.
     if (dilateHeld) {
@@ -43,10 +43,21 @@ export function createTimeScrubAndTuningGestures({
       hud.message(`World time ${worldTime.scale.toFixed(2)}× · You move normally`, 0.8);
       scrubHeld = adjustHeld = false;
     }
-    if (scrubHeld && !timeScrub) timeScrub = { target: sky.timeOfDay, wasCycling: sky.cycleEnabled };
+    const touchHours = allowTouchScrub && !dilateHeld ? input.timeScrubHours : 0;
+    const touchHeld = allowTouchScrub && !dilateHeld && input.timeScrubHeld;
+    // Keep even a swipe completed between two frames; the delta is a one-frame
+    // impulse, independent of mouse look (including surf and orbit modes).
+    const scrubbing = scrubHeld || touchHeld || touchHours !== 0;
+    if (scrubbing && !timeScrub) timeScrub = {
+      target: sky.timeOfDay, wasCycling: sky.cycleEnabled, showToast: scrubHeld
+    };
     if (timeScrub) {
-      if (scrubHeld) {
+      if (scrubbing) {
         sky.cycleEnabled = false;
+        timeScrub.target += touchHours;
+      }
+      if (scrubHeld) {
+        timeScrub.showToast = true;
         timeScrub.target += input.mouseDX * 0.01 + input.wheelX * 0.005;
         input.mouseDX = 0;
         input.mouseDY = 0;
@@ -56,8 +67,9 @@ export function createTimeScrubAndTuningGestures({
       // shortest way around the 24h wrap, critically-damped ease
       const d = ((((timeScrub.target - sky.timeOfDay) % 24) + 36) % 24) - 12;
       sky.advanceCivilHours(d * (1 - Math.exp(-frameDt * 10)));
-      hud.message(clock12(sky.timeOfDay), 0.8);
-      if (!scrubHeld && Math.abs(d) < 0.01) {
+      // Touch already has its persistent clock; keep the world view clear.
+      if (timeScrub.showToast) hud.message(clock12(sky.timeOfDay), 0.8);
+      if (!scrubbing && Math.abs(d) < 0.01) {
         sky.cycleEnabled = timeScrub.wasCycling;
         timeScrub = null;
       }

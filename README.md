@@ -143,6 +143,20 @@ Dev keys: `/` opens the tuning panel and three.js inspector, `R` toggles
 wireframe, `H` writes a high-res still to a local folder, `.` resets every tweak
 and mixer value to its source default.
 
+### Phone and tablet
+
+Drag the left side to move and the right side to look. The on-screen buttons
+cover travel, actions, chat, and the map; select a map destination and tap
+**Teleport** to go there.
+
+The clock below the menu is always available: **drag it left or right to scrub
+day and night**. The light eases smoothly, including across midnight; lift your
+finger to resume the previous day-cycle setting. No panel needs opening.
+
+With the microphone on, phones lower game audio and incoming voice playback
+to reduce speaker spill into the mic. Echo cancellation stays enabled, both
+people can speak at once, and normal playback levels return when the mic is off.
+
 ### Gamepad
 
 An Xbox-standard controller rides the same rails as the keyboard — `pollPad()`

@@ -126,6 +126,8 @@ export interface ScriptedControls {
   axis(pair: string, value: number): void;
   /** Mouse-pixel-equivalent look deltas for this frame. */
   look(dx: number, dy: number): void;
+  /** Dedicated time gesture: never feeds camera look or surf steering. */
+  scrubTime(held: boolean, hours: number): void;
   /** Tool fire (mouse-hold equivalent); edge=true also fires the pressed edge. */
   fire(held: boolean, edge?: boolean): void;
   /** Release every held code, zero every axis, drop fire. */
@@ -172,6 +174,8 @@ export type MapPadAxes = { lx: number; ly: number; rx: number; ry: number; lt: n
 export class Input {
   keys = new Set<string>();
   mouseDX = 0;
+  timeScrubHeld = false;
+  timeScrubHours = 0;
   mouseDY = 0;
   /**
    * Surf steers with the mouse itself, so its deltas ride a dedicated rail
@@ -301,6 +305,10 @@ export class Input {
       this.mouseDX += dx;
       this.mouseDY += dy;
     },
+    scrubTime: (held, hours) => {
+      this.timeScrubHeld = held;
+      this.timeScrubHours += hours;
+    },
     fire: (held, edge = false) => {
       this.#scriptFireHeld = held;
       if (edge && !this.suspended) this.firePressed = true;
@@ -309,6 +317,8 @@ export class Input {
       this.#scriptHeld.clear();
       this.#scriptAxes.clear();
       this.#scriptFireHeld = false;
+      this.timeScrubHeld = false;
+      this.timeScrubHours = 0;
     }
   };
   #mapPadAxes: MapPadAxes = { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
@@ -1005,6 +1015,7 @@ export class Input {
   /** Call once per frame after consuming state. */
   endFrame() {
     this.#activityCaptured = false;
+    this.timeScrubHours = 0;
     this.mouseDX = 0;
     this.mouseDY = 0;
     this.surfDX = 0;

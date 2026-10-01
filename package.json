@@ -54,6 +54,8 @@
     "test:golf": "node --experimental-strip-types tools/golf-logic-probe.mjs",
     "test:touch-input": "node tools/touch-input-test.mjs",
     "test:touch-map": "node tools/mobile-map-browser-probe.mjs",
+    "test:touch-time": "node tools/mobile-time-browser-probe.mjs",
+    "test:voice-mobile": "node tools/mobile-voice-browser-probe.mjs",
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
     "test:city-stories": "node --experimental-strip-types tools/city-stories-probe.mjs",
     "test:city-stories:browser": "node tools/city-stories-browser-probe.mjs",

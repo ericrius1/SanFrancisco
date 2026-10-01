@@ -23,6 +23,10 @@ export class TouchDriver implements InputDriver {
   moveY = 0;
   #lookDX = 0;
   #lookDY = 0;
+  #scrubHeld = false;
+  #scrubHours = 0;
+  /** Refresh the small HUD readout from the same frame cadence as input. */
+  onUpdate: () => void = () => {};
   /** Codes whose button is currently under a finger. */
   #held = new Set<string>();
   /** Codes pressed since the last update — kept so a tap shorter than a frame still lands. */
@@ -52,14 +56,27 @@ export class TouchDriver implements InputDriver {
     this.#lookDY += dy * LOOK_SCALE;
   }
 
+  scrubTime(held: boolean, hours = 0): void {
+    this.#scrubHeld = held;
+    this.#scrubHours += hours;
+  }
+
   releaseAll(): void {
     this.#held.clear();
     this.#fireHeld = false;
+    this.#fireEdge = false;
+    this.#pressed.clear();
+    this.#lookDX = this.#lookDY = 0;
+    this.#scrubHeld = false;
+    this.#scrubHours = 0;
     this.moveX = 0;
     this.moveY = 0;
   }
 
   update(_dt: number, c: ScriptedControls): void {
+    this.onUpdate();
+    c.scrubTime(this.#scrubHeld, this.#scrubHours);
+    this.#scrubHours = 0;
     c.axis("KeyA|KeyD", this.moveX);
     c.axis("KeyS|KeyW", this.moveY);
     // hold() raises the pressed() edge only for a code not already held, so a

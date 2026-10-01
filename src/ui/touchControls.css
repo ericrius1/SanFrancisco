@@ -355,6 +355,46 @@ html.touch-chat-open .touch-controls .tc-chat {
   background: rgba(120, 200, 230, 0.55);
 }
 
+/* Drag the clock itself; no panel or slider needs opening. */
+.touch-controls .tc-clock {
+  position: absolute;
+  top: calc(var(--tc-top) + 164px);
+  right: var(--tc-right);
+  width: 140px;
+  min-height: 48px;
+  display: grid;
+  place-content: center;
+  gap: 4px;
+  border: 1px solid rgba(210, 235, 250, 0.42);
+  border-radius: 16px;
+  background: rgba(8, 22, 34, 0.62);
+  color: #eef8ff;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: ew-resize;
+  font: 600 13px/1 var(--font, system-ui);
+  font-variant-numeric: tabular-nums;
+}
+.touch-controls .tc-clock-face {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.touch-controls .tc-clock-icon { color: #ffe6ad; font-size: 18px; }
+.touch-controls .tc-clock-hint {
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-align: center;
+  opacity: 0.7;
+}
+.touch-controls .tc-clock.scrubbing,
+.touch-controls .tc-clock:focus-visible {
+  border-color: #ffe6ad;
+  background: rgba(38, 49, 57, 0.88);
+  outline: 2px solid rgba(255, 230, 173, 0.2);
+}
+
 /* Landscape phone: short screen, wide lanes. Mute/mic sit beside a smaller
    minimap, and the menu row joins the top edge left of the avatar so the
    action arc keeps the whole right-hand height. */
@@ -373,6 +413,10 @@ html.touch-chat-open .touch-controls .tc-chat {
   .touch-controls .tc-top {
     top: var(--tc-top);
     right: calc(var(--tc-right) + 56px);
+  }
+  .touch-controls .tc-clock {
+    top: calc(var(--tc-top) + 106px);
+    right: var(--tc-right);
   }
   html.touch-ui #hud .br-stack {
     bottom: calc(var(--tc-bottom) + 180px);

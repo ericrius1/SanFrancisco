@@ -245,11 +245,20 @@ export class AudioEngine {
   /**
    * How far to pull the world down while the local microphone is live; 1 while
    * it is off. Voice owns the policy and the number (net/voice.ts), the engine
-   * owns the mix, so this is a plain setter — update() eases the group gains
-   * toward it, which is what makes turning the mic on a fade rather than a step.
+   * owns the mix. Schedule the fade on the audio clock immediately, so a slow
+   * or parked render loop cannot leave speaker spill high after capture starts.
    */
   setMicDuck(factor: number): void {
-    this.#micDuck = factor > 0 ? (factor < 1 ? factor : 1) : 0;
+    const next = factor > 0 ? (factor < 1 ? factor : 1) : 0;
+    if (next === this.#micDuck) return;
+    this.#micDuck = next;
+    const ctx = this.#ctx;
+    if (!ctx || ctx.state === "closed") return;
+    const targets = this.#groupTargets();
+    for (const g of ["music", "effects", "world"] as const) {
+      this.#levels[g] = targets[g];
+      this.#groups[g].gain.setTargetAtTime(targets[g], ctx.currentTime, 0.025);
+    }
   }
 
   /** Advance group gains, the idle-suspend policy, and the listener once/frame. */
