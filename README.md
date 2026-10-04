@@ -126,7 +126,7 @@ pressing `E` on a racked board at the Ocean Beach surf shack, and a bay-only
 | `M` | **Full-city map** — drag/scroll to pan/zoom, click a pin, press Enter to teleport |
 | `T` | Text chat |
 | `V` | Voice chat mic on/off |
-| `J` | Emote wheel (wave, dance, clap, cheer, bow, point, flex, sit) — on foot |
+| `J` | Emote wheel (wave, dance, clap, cheer, bow, point, flex, sit, high five, twirl) — on foot; `1`–`9`, `0` pick |
 | `C` | Cycle camera: third person → first person → free orbit |
 | `Z` (hold) | Scrub the time of day |
 | `N` (hold) | Look / speed modifier |
@@ -271,7 +271,10 @@ Everyone shares one world. No accounts, no login — connect and you're in.
   never touches the server. You hear the closest few players at full volume at
   any distance, and hearing is kept mutual so two friends always hear each
   other. It's the one system that keeps running while the tab is hidden.
-- **Text chat** (`T`) and **emotes** (`J`) relay to everyone nearby.
+- **Text chat** (`T`) and **emotes** (`J`) relay to everyone nearby. Two
+  players who **high five** (`J` then `9`) within arm's reach get a spark burst
+  and a palm slap on every client — no extra wire traffic, each client judges
+  the pair from the same relayed emotes (`src/gameplay/highFive.ts`).
 - **Shared toys.** Paintballs, fireworks and thrown balls relay. **Golf** shares
   balls, swings and score (the striker's sim is authoritative). **Pickleball**
   reserves two sides and picks one match authority. The **ghost ship** carries
@@ -376,6 +379,17 @@ in [`AGENTS.md`](AGENTS.md), which is what automated contributors read.
    grove. Regions own botanical intent only (positions, archetype, yaw, scale);
    the shared runtime owns compilation, instancing, wind, LOD and culling.
    Exhibit-site foliage streams through `SiteFoliageStreamer`.
+### Showcase clips
+
+`npm run clips` records a reel of ~10-second clips on this machine's GPU: the
+new cars cruising and in an orbit showroom, sailing the Pacific ground swell,
+flyovers of the new park and island groves, emotes, and a two-player high five
+(a second "friend" page joins the local relay). It starts its own dev server,
+records the WebGPU canvas directly (no HUD) and converts to MP4 with `ffmpeg`
+when available. Output lands in `.data/clips/`; `--only <ids>` filters,
+`--seconds <n>` shortens takes, `--publish` copies the MP4s to the cinematics
+folder. Run it on a real GPU — software adapters render too slowly to record.
+
 ### Verifying changes
 
 There is no unit-test suite. Verification is **contract tests** (pure Node
