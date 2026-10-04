@@ -12,6 +12,7 @@
 // re-sync those aliases and refresh `__sf` in one place. Every `await import`
 // stays inside a load function, so the lazy code-splitting boundaries and the
 // WHEN of each fetch are byte-for-byte the prior behavior.
+import { CITY_PARK_GROUPS, cityParkGroupBounds } from "../../world/cityParks/layout";
 import * as THREE from "three/webgpu";
 import { warmRootPaced } from "../../render/warmStaticRegion";
 import { SiteFoliageStreamer, SiteFoliageYieldError } from "../../world/vegetation/siteFoliage";
@@ -1034,9 +1035,28 @@ export function createOptionalSites({
   // Under a zone allowlist only the matching zone's entries register at boot;
   // the rest are held and registered by liftZoneRestriction() at wake.
   const siteFoliageRegistrations: Array<{
-    zone: OptionalSiteId;
+    /** null = citywide landscape: registered only when no zone allowlist is active. */
+    zone: OptionalSiteId | null;
     entry: Parameters<SiteFoliageStreamer["register"]>[0];
   }> = [
+    // City parks and the bay islands (world/cityParks): landscape groves that
+    // belong to no exhibit. Residency reaches past each group's visible edge so
+    // LOD fade, never streaming, decides when they appear.
+    ...CITY_PARK_GROUPS.map((group) => {
+      const bounds = cityParkGroupBounds(group);
+      const loadDistance = bounds.reach + group.visibleDistance + 150;
+      return {
+        zone: null,
+        entry: {
+          id: group.id,
+          x: bounds.x,
+          z: bounds.z,
+          loadDistance,
+          unloadDistance: loadDistance + 450,
+          build: async () => (await import("../../world/cityParks/vegetation")).createCityParkFoliage(map, group.id)
+        }
+      };
+    }),
     { zone: "tidal-choir", entry: {
       id: "tidal-choir-garden", ...TIDAL_CHOIR_CENTER, loadDistance: 750, unloadDistance: 1000,
       build: async () => (await import("../../gameplay/tidalChoir/vegetation")).createChoirVegetation(map)
@@ -1098,7 +1118,7 @@ export function createOptionalSites({
     }
   ];
   const deferredFoliageRegistrations = siteFoliageRegistrations.filter((registration) => {
-    if (zoneAllowed(registration.zone)) {
+    if (registration.zone === null ? !zoneRestriction : zoneAllowed(registration.zone)) {
       siteFoliage!.register(registration.entry);
       return false;
     }

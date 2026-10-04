@@ -105,9 +105,62 @@ function boxGeo(w: number, h: number, d: number): THREE.BoxGeometry {
   const key = `${w}_${h}_${d}`;
   let g = geoCache.get(key);
   if (!g) {
-    g = new THREE.BoxGeometry(w, h, d);
+    g = softBox(w, h, d);
     geoCache.set(key, g);
   }
+  return g;
+}
+
+/**
+ * A box with rounded edges and corners: every rig part reads as a soft vinyl
+ * figure instead of a hard-edged block, and silhouettes stop aliasing into
+ * stair-steps at chase-camera distance. Built from a subdivided BoxGeometry
+ * whose grid is warped toward the edges (so the rounding arc gets samples),
+ * then each vertex is pushed onto the rounded shell: clamp to the inner box,
+ * re-extend by the radius. Normals come from the same offset, so face seams
+ * between BoxGeometry's split vertices stay smooth. Tiny parts (fingers,
+ * straps) stay plain boxes — their edges are sub-pixel anyway.
+ */
+function softBox(w: number, h: number, d: number): THREE.BoxGeometry {
+  const minDim = Math.min(w, h, d);
+  const maxDim = Math.max(w, h, d);
+  if (maxDim < 0.07) return new THREE.BoxGeometry(w, h, d);
+  const r = Math.min(minDim * 0.32, 0.055);
+  const seg = maxDim >= 0.2 ? 6 : 4;
+  const g = new THREE.BoxGeometry(w, h, d, seg, seg, seg);
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const nor = g.attributes.normal as THREE.BufferAttribute;
+  const half = [w / 2, h / 2, d / 2];
+  const inner = half.map((e) => Math.max(0, e - r));
+  const p = [0, 0, 0];
+  const warp = (u: number) => Math.sign(u) * (1 - Math.pow(Math.max(0, 1 - Math.abs(u)), 2.2));
+  for (let i = 0; i < pos.count; i++) {
+    p[0] = pos.getX(i);
+    p[1] = pos.getY(i);
+    p[2] = pos.getZ(i);
+    for (let k = 0; k < 3; k++) p[k] = warp(p[k] / half[k]) * half[k];
+    let dx = 0, dy = 0, dz = 0;
+    const cx = Math.max(-inner[0], Math.min(inner[0], p[0]));
+    const cy = Math.max(-inner[1], Math.min(inner[1], p[1]));
+    const cz = Math.max(-inner[2], Math.min(inner[2], p[2]));
+    dx = p[0] - cx;
+    dy = p[1] - cy;
+    dz = p[2] - cz;
+    const len = Math.hypot(dx, dy, dz);
+    if (len > 1e-9) {
+      dx /= len;
+      dy /= len;
+      dz /= len;
+      pos.setXYZ(i, cx + dx * r, cy + dy * r, cz + dz * r);
+      nor.setXYZ(i, dx, dy, dz);
+    } else {
+      pos.setXYZ(i, p[0], p[1], p[2]);
+    }
+  }
+  pos.needsUpdate = true;
+  nor.needsUpdate = true;
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
   return g;
 }
 

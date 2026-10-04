@@ -520,15 +520,18 @@ type MatrixSpec = {
 };
 const MATRIX: Partial<Record<WildRegionId, MatrixSpec>> = {
   ggpark: {
-    density: 0.46,
-    standThresh: 0.57,
+    // Real GG Park is a closed forest broken by meadows; the old 0.46/0.57 read
+    // as open woodland from the air. Far tiers are GPU-culled and indirect, so
+    // the added stems cost instances, not draws.
+    density: 0.54,
+    standThresh: 0.52,
     // east park (x>-1750) leans oak/eucalyptus; the long body is eucalyptus →
     // cypress → redwood pockets. Fir kept a minority (poliest far-tier species).
     species: (zone, x) => (x > -1750 ? (zone < 0.5 ? 2 : 3) : zone < 0.42 ? 3 : zone < 0.8 ? 1 : 0)
   },
   presidio: {
-    density: 0.4,
-    standThresh: 0.6, // wooded hills, but the post + Crissy stay open (compact region — keep GPU sane)
+    density: 0.47,
+    standThresh: 0.55, // wooded hills, but the post + Crissy stay open (compact region — keep GPU sane)
     species: (zone) => (zone < 0.48 ? 1 : zone < 0.82 ? 3 : 0) // cypress / eucalyptus / fir
   },
   twinpeaks: {
