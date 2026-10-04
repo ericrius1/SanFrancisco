@@ -270,7 +270,7 @@ async function main() {
       const mesh = sf.player.meshes.drive;
       const wheel = mesh.getObjectByName("car_wheel_fl");
       let spokeCount = 0;
-      mesh.traverse((object) => { if (object.name.startsWith("car_spoke_")) spokeCount++; });
+      mesh.traverse((object) => { if (object.name.startsWith("car_spokes_")) spokeCount += object.userData.spokeCount ?? 0; });
       const ground = sf.map.rideGround(sf.player.renderPosition.x, sf.player.renderPosition.z, sf.player.renderPosition.y);
       return {
         rotationDelta: Math.abs((wheel?.rotation.x ?? 0) - before),

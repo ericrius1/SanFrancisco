@@ -831,7 +831,7 @@ export class RemotePlayers {
       if (cockpit && !cockpit.hide) {
         const rig = buildRig(a.avatar);
         rig.group.position.set(...cockpit.seat);
-        g.add(rig.group);
+        ((g.userData.cockpitParent as THREE.Object3D | undefined) ?? g).add(rig.group);
         g.userData.remoteRig = rig;
       }
       return g;
@@ -1054,7 +1054,7 @@ export class RemotePlayers {
     }
     if (mode === "drive") {
       const body = a.bodies.drive;
-      if (body) animateCar(body, dt, a.speed, 0);
+      if (body) animateCar(body, dt, a.speed);
     }
     if (mode === "bird") this.#animateBird(a, dt);
     const rig = a.rig;

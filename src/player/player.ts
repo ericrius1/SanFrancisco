@@ -2121,11 +2121,14 @@ export class Player {
     this.#driverRig.group.visible = true;
     this.#driverRig.group.position.set(c.seat[0], c.seat[1], c.seat[2]);
     this.#driverRig.group.rotation.set(0, 0, 0);
-    mesh.add(this.#driverRig.group);
+    // Sprung vehicles (the car) expose their body group so the driver rolls
+    // and pitches with the cabin instead of hanging off the rigid root.
+    const seatParent = (mesh.userData.cockpitParent as THREE.Object3D | undefined) ?? mesh;
+    seatParent.add(this.#driverRig.group);
     if (c.wheel) {
       this.#hasWheel = true;
       this.#wheel.group.position.set(c.wheel[0], c.wheel[1], c.wheel[2]);
-      mesh.add(this.#wheel.group);
+      seatParent.add(this.#wheel.group);
     }
   }
 
