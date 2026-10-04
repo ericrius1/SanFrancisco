@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { oceanBeachWaveHeight } from "./oceanBeachWaves";
 import { heroWaveHeight } from "./ocean/heroWaves";
+import { pacificSwellHeight } from "./ocean/pacificSwell";
 
 type BridgeDef = {
   name: string;
@@ -714,6 +715,9 @@ export function waterHeight(x: number, z: number, t: number): number {
   // Pacific surf zone: a directional shoaling train. Kept separate from the
   // generic bay chop so it is easy to sample for board rails and foam/lip FX.
   h += oceanBeachWaveHeight(x, z, t);
+  // Open-Pacific ground swell outside the Golden Gate (ocean/pacificSwell):
+  // zero in the bay, the lagoon and the authored surf strip.
+  h += pacificSwellHeight(x, z, t);
   const lagoon = palaceLagoonMask(x, z);
   if (lagoon > 0.001) return PALACE_LAGOON.surfaceY + h * (0.35 + lagoon * 0.3);
   // Spectral physics band (ocean/heroWaves): the exact sparse-FFT waves the

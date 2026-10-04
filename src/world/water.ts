@@ -40,6 +40,8 @@ import { bumpNormal, chopZoneMask, oceanBeachSurfField, oceanBeachSwell, swellBa
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 import { WaterEchoes } from "./waterEchoes";
 import { OceanCascades, oceanDetail, cascadeUv, CASCADE_FADE_DIST, HERO_STRIP_GATE } from "./ocean/oceanSim";
+import { setPacificSwellFloor } from "./ocean/pacificSwell";
+import { pacificSwellNode } from "./ocean/pacificSwellNode";
 import { setHeroFocus } from "./ocean/heroWaves";
 import { SUN_DIR, SUN_STATE, type Sky } from "./sky";
 import { causticWeb, oceanSurfaceRadiance, twilightDirection, twilightFoamRadiance } from "./waterShadingTSL";
@@ -439,6 +441,8 @@ export class Water {
     this.#sky = sky;
     this.ocean = new OceanCascades();
     const { tex, scale } = map.buildFloorTexture();
+    // The physics twin of the Pacific swell shoals on the same bathymetry.
+    setPacificSwellFloor((x, z) => map.groundHeight(x, z));
     this.#buildWaterField(map);
     const g = map.meta.grid;
     const w = g.width * g.cellSize + 8000;
@@ -519,8 +523,14 @@ export class Water {
         for (const c of this.ocean.cascades.slice(1, heroRes ? 3 : 2)) {
           fftDisp = fftDisp.add(textureLevel(c.dispTex, cascadeUv(wxz, c.spec), float(0)).xyz);
         }
+        // Open-Pacific ground swell: physics-visible (CPU twin in heightmap
+        // waterHeight), so it rides at full amplitude and only the patch rim
+        // fades it into the flat far sheet — where the shading normal below
+        // keeps the crests readable.
+        const swellFloor = textureLevel(tex, vec2(lx, lz).sub(vec2(scale.x, scale.y)).div(vec2(scale.z, scale.w)), float(0)).r;
+        const pacific = pacificSwellNode(lx, lz, t, swellFloor).height.mul(surfRim);
         mat.positionNode = positionLocal
-          .add(vec3(0, swell.mul(displace), 0))
+          .add(vec3(0, swell.mul(displace).add(pacific), 0))
           .add(physDisp)
           .add(fftDisp.mul(detailAmp));
       }
@@ -728,10 +738,18 @@ export class Water {
       // Chop zones dig the slopes a little harder, like the old ripple did.
       // NO If() gates here (see the branch-hazard note above).
       const slopeK = zoneF.mul(0.35).add(1);
+      // Pacific ground-swell slope rides on top of the spectral slopes on EVERY
+      // sheet: the near patches displace the swell, and the flat far sheets
+      // still show its long crests in the reflection.
+      const swellSlope = pacificSwellNode(pxz.x, pxz.y, t, floorH).slope;
       // WORLD space now (the BRDF reflects in world space and the sky is a
       // world-direction function), so the old cameraViewMatrix multiply is gone.
       const rippleNormal = normalize(
-        vec3(det.slope.x.mul(slopeK).negate(), 1, det.slope.y.mul(slopeK).negate())
+        vec3(
+          det.slope.x.mul(slopeK).add(swellSlope.x).negate(),
+          1,
+          det.slope.y.mul(slopeK).add(swellSlope.y).negate()
+        )
       ).toVar();
 
       // LEADR-lite roughness: whatever spectral slope energy was faded out of
