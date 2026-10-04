@@ -7,7 +7,7 @@ import {
   mix,
   modelWorldMatrix,
   normalize,
-  normalView,
+  normalFlat,
   positionLocal,
   positionWorld,
   smoothstep,
@@ -946,7 +946,13 @@ export class TerrainClipmap {
     // 1 while the drape hugs the terrain (lifts are 0.15-0.45 m), fading to 0
     // by ~2.4 m of separation. Edges ordered low->high (reversed edges emit 0).
     const conform = smoothstep(1.4, 2.4, world.y.sub(terrainY).abs()).oneMinus();
-    return mix(normalView as N, transformNormalToView(fieldWorld) as N, conform);
+    // Off the terrain (piers, bridge decks and their ramps) the drape keeps its
+    // own facet normal. These batches carry position+colour only, so the old
+    // `normalView` read a missing attribute: three warns and substitutes local
+    // +Y, which lit every sloped deck, ramp and pier edge as if it were flat.
+    // The CDT drapes are flat-shaded by construction, so the screen-derivative
+    // facet normal IS their geometric normal.
+    return mix(normalFlat as N, transformNormalToView(fieldWorld) as N, conform);
   }
 
   /**
