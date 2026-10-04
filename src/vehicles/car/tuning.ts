@@ -38,6 +38,19 @@ export const CAR_TUNING = tunables("movement.drive", {
   slideBoostMinTime: { v: 0.28, min: 0, max: 1.5, step: 0.02, label: "snap hold" },
   slideBoostDecay: { v: 3.2, min: 0.5, max: 12, step: 0.1, label: "snap decay" },
 
+  // Wall / obstacle impacts. An impact is read from the contact solver itself:
+  // the horizontal velocity it removed between the speed we commanded and the
+  // speed we got back. Glancing hits swing the nose along the wall instead of
+  // grinding into it; head-on hits push back a little instead of a dead stop.
+  impactMinDv: { v: 2.6, min: 0.5, max: 10, step: 0.1, label: "impact threshold" },
+  impactHeadOn: { v: 0.78, min: 0.3, max: 1, step: 0.01, label: "head-on cos" },
+  impactBounce: { v: 0.3, min: 0, max: 1, step: 0.02, label: "head-on bounce" },
+  impactBounceTime: { v: 0.28, min: 0.05, max: 1, step: 0.01, label: "bounce time" },
+  // The solver-derived normal leans ~20° toward the travel direction (wall
+  // friction rides in the same velocity delta), so align gently.
+  impactAlign: { v: 4.5, min: 0, max: 20, step: 0.5, label: "wall align" },
+  impactAlignTime: { v: 0.32, min: 0.05, max: 1, step: 0.01, label: "align time" },
+
   // Jump state hysteresis. Clearance is measured from the chassis centre to the
   // current ride target (road + rideHeight), not from the centre to raw terrain.
   // This keeps the nose-on-ramp phase supported, then latches one clean takeoff.

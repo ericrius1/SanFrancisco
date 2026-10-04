@@ -49,6 +49,20 @@ export type CarLandingFeedback = {
   yaw: number;
 };
 
+/** One-shot wall/obstacle impact, consumed once per serial by presentation. */
+export type CarImpactFeedback = {
+  serial: number;
+  /** 0..1 after threshold, weighted toward head-on hits. */
+  strength: number;
+  /** Contact point (approx: the bumper on the side that hit). */
+  x: number;
+  y: number;
+  z: number;
+  /** Outward obstacle normal on the ground plane. */
+  nx: number;
+  nz: number;
+};
+
 /** Continuous slide presentation for skid marks + audio (0..1). */
 export type CarSlideFeedback = {
   /** Bumper-slide engage blend (0..1). */
@@ -84,6 +98,16 @@ export class CarController implements ModeController {
   #skidTrack = 0.9;
   #skidRear = 1.6;
   #supportClearance = 0;
+  /** Horizontal velocity commanded last grounded frame (impact reference). */
+  #cmdVx = 0;
+  #cmdVz = 0;
+  #cmdValid = false;
+  #impactCooldown = 0;
+  #bounceLeft = 0;
+  #bounceSpeed = 0;
+  #alignLeft = 0;
+  #alignRate = 0;
+  #impactFeedback: CarImpactFeedback = { serial: 0, strength: 0, x: 0, y: 0, z: 0, nx: 0, nz: 0 };
   #positionYForDebug = 0;
   #jumpPeakY = 0;
   #jumpMaxClearance = 0;
@@ -147,6 +171,11 @@ export class CarController implements ModeController {
     return this.#landingFeedback;
   }
 
+  /** Stable, read-only wall-impact event buffer for camera/audio/VFX. */
+  get impactFeedback(): Readonly<CarImpactFeedback> {
+    return this.#impactFeedback;
+  }
+
   /** Brake-light glow amount (0..1), consumed by the car mesh's taillight lerp. */
   get brakeLevel(): number {
     return this.#brakeLevel;
@@ -181,6 +210,10 @@ export class CarController implements ModeController {
     this.#landingFeedback.height = 0;
     this.#landingFeedback.fallDistance = 0;
     this.#landingFeedback.strength = 0;
+    this.#cmdValid = false;
+    this.#impactCooldown = 0;
+    this.#bounceLeft = 0;
+    this.#alignLeft = 0;
     this.#sampleGroundNormal(ctx, p.x, p.z, this.#groundNormal);
     // Vertical half-extent is clamped so underbody clearance never drops below
     // MIN_DRIVE_GROUND_CLEARANCE — scooters and future low vehicles inherit the
@@ -258,6 +291,84 @@ export class CarController implements ModeController {
     event.yaw = yaw;
   }
 
+  #facadeCheckLeft = 0;
+  #facadeAheadCached = false;
+
+  /** Is a building collider standing just past the nose at chest height? */
+  #facadeAhead(ctx: PlayerCtx, fwd: THREE.Vector3, travel: number, nose: number, dt: number): boolean {
+    this.#facadeCheckLeft -= dt;
+    if (this.#facadeCheckLeft > 0) return this.#facadeAheadCached;
+    this.#facadeCheckLeft = 0.25;
+    const reach = nose + 0.5;
+    const x = ctx.position.x + fwd.x * reach * travel;
+    const z = ctx.position.z + fwd.z * reach * travel;
+    this.#facadeAheadCached = ctx.physics.pointInBuilding(x, ctx.position.y + 0.6, z, 0.25);
+    return this.#facadeAheadCached;
+  }
+
+  /**
+   * Read a wall/obstacle hit off the contact solver: the horizontal velocity it
+   * took away between what we commanded last frame and what came back. On flat
+   * road friction removes a few cm/s per step; anything past `impactMinDv` is a
+   * collision, and the removed component points straight out of the obstacle.
+   */
+  #detectImpact(
+    ctx: PlayerCtx,
+    dt: number,
+    linear: readonly number[],
+    fwd: THREE.Vector3,
+    td: (typeof CAR_TUNING)["values"]
+  ): void {
+    this.#impactCooldown = Math.max(0, this.#impactCooldown - dt);
+    if (!this.#cmdValid || this.#jump.airborne) return;
+    // Only a real crash counts: nudging a wall at grind speed (or re-touching it
+    // after a recoil) must stay silent, or held throttle ping-pongs off it.
+    const cmdSpeed = Math.hypot(this.#cmdVx, this.#cmdVz);
+    if (cmdSpeed < 7) return;
+    const dvx = linear[0] - this.#cmdVx;
+    const dvz = linear[2] - this.#cmdVz;
+    const dv = Math.hypot(dvx, dvz);
+    if (dv < td.impactMinDv || this.#impactCooldown > 0) return;
+    const nx = dvx / dv;
+    const nz = dvz / dv;
+    const mx = this.#cmdVx / cmdSpeed;
+    const mz = this.#cmdVz / cmdSpeed;
+    // 1 = straight into it, 0 = a scrape along it.
+    const into = Math.max(0, -(mx * nx + mz * nz));
+    if (into < 0.08) return;
+    this.#impactCooldown = 0.25;
+    const forwardTravel = mx * fwd.x + mz * fwd.z >= 0 ? 1 : -1;
+    if (into >= td.impactHeadOn) {
+      // Recoil only off a hard hit; a firm bump just stops.
+      this.#bounceLeft = dv >= 8 ? td.impactBounceTime : 0;
+      this.#bounceSpeed = -forwardTravel * Math.min(6, dv * td.impactBounce);
+      this.#alignLeft = 0;
+    } else {
+      // Tangent along the obstacle in the direction we were travelling.
+      let tx = mx - nx * (mx * nx + mz * nz);
+      let tz = mz - nz * (mx * nx + mz * nz);
+      const tl = Math.hypot(tx, tz) || 1;
+      tx /= tl;
+      tz /= tl;
+      // Signed yaw from the car's travel heading to that tangent (+ = left).
+      const hx = fwd.x * forwardTravel;
+      const hz = fwd.z * forwardTravel;
+      const angle = Math.atan2(hz * tx - hx * tz, hx * tx + hz * tz);
+      // Turning the body turns the travel heading by the same rate, forward or reverse.
+      this.#alignRate = THREE.MathUtils.clamp(angle * td.impactAlign, -4, 4);
+      this.#alignLeft = td.impactAlignTime;
+    }
+    const e = this.#impactFeedback;
+    e.serial += 1;
+    e.strength = THREE.MathUtils.clamp((dv - td.impactMinDv) / 14, 0, 1) * (0.45 + 0.55 * into);
+    const reach = ctx.driveSpec.halfExtents[2];
+    e.x = ctx.position.x - nx * reach * 0.6 + mx * reach * 0.4;
+    e.y = ctx.position.y;
+    e.z = ctx.position.z - nz * reach * 0.6 + mz * reach * 0.4;
+    e.nx = nx;
+    e.nz = nz;
+  }
+
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {
     const w = ctx.physics.world;
     const v = frame.v;
@@ -318,6 +429,7 @@ export class CarController implements ModeController {
     this.#skidRear = spec.halfExtents[2] * 0.72;
     const ground = this.#ground(ctx, ctx.position.x, ctx.position.z);
     const fwdSpeed = ctx.velocity.dot(fwd);
+    this.#detectImpact(ctx, dt, v.linear, fwd, td);
     const maxSpeed = (boost ? td.boostMaxSpeed : td.maxSpeed) * spec.maxFactor;
     const speedOk = Math.abs(fwdSpeed) >= td.slideMinSpeed;
     const bumperSlide = slideHeld && speedOk;
@@ -364,6 +476,14 @@ export class CarController implements ModeController {
     } else targetSpeed = fwdSpeed * (1 - td.coastDrag * dt);
     if (this.#slideBoost > 0) {
       targetSpeed = Math.min(td.boostMaxSpeed * spec.maxFactor, targetSpeed + this.#slideBoost);
+    }
+    if (this.#bounceLeft > 0) {
+      // Head-on recoil: hold a short back-off unless the driver is already
+      // reversing harder, then hand control straight back.
+      this.#bounceLeft -= dt;
+      targetSpeed = Math.sign(this.#bounceSpeed) === Math.sign(targetSpeed) && Math.abs(targetSpeed) > Math.abs(this.#bounceSpeed)
+        ? targetSpeed
+        : this.#bounceSpeed;
     }
 
     const latSpeed = ctx.velocity.dot(right);
@@ -474,7 +594,15 @@ export class CarController implements ModeController {
           targetSpeed >= td.grindSpeed - 0.01;
         if (pinned && rise > riseThreshold) {
           requestedVy = Math.max(requestedVy, rise * 5 + 4);
-        } else if (pinned && Math.abs(fwdSpeed) < Math.abs(targetSpeed) * 0.35) {
+        } else if (
+          pinned &&
+          Math.abs(fwdSpeed) < Math.abs(targetSpeed) * 0.35 &&
+          // `pinned` implies forward throttle: probe ahead of the nose even while
+          // the solver jiggles the car backwards off the face.
+          !this.#facadeAhead(ctx, fwd, 1, nose, dt)
+        ) {
+          // Escape hop for lips and posts the heightmap cannot see — but never
+          // against a building face, where it only bounced the car up the wall.
           requestedVy = Math.max(requestedVy, 3.2 + clearance * 4);
         }
       }
@@ -499,6 +627,12 @@ export class CarController implements ModeController {
         steerRate += yawBias;
       }
 
+      if (this.#alignLeft > 0) {
+        // Glancing hit: swing the nose along the wall so the car slides off it
+        // instead of grinding its corner into the facade.
+        this.#alignLeft -= dt;
+        steerRate += this.#alignRate * Math.max(0, this.#alignLeft / Math.max(td.impactAlignTime, 1e-3));
+      }
       V.qa.setFromAxisAngle(V.up, yaw);
       V.qb.setFromUnitVectors(V.up, this.#groundNormal).multiply(V.qa);
       V.qa.copy(q).invert().premultiply(V.qb);
@@ -518,7 +652,11 @@ export class CarController implements ModeController {
           THREE.MathUtils.lerp(v.angular[2], wz, blend)
         ]
       );
+      this.#cmdVx = THREE.MathUtils.lerp(v.linear[0], newVx, blend);
+      this.#cmdVz = THREE.MathUtils.lerp(v.linear[2], newVz, blend);
+      this.#cmdValid = true;
     } else {
+      this.#cmdValid = false;
       // The phase is latched even if the car rolls past the upright threshold.
       // Linear momentum remains purely ballistic; only attitude gets an arcade
       // assist, after a brief hold that lets the ramp's nose-up launch read.

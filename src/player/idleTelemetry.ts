@@ -2,6 +2,7 @@ import type { CarController } from "../vehicles/car/controller";
 import type { SurfTelemetry } from "../vehicles/surf/controller";
 import type { FlyController } from "../vehicles/plane/controller";
 export const IDLE_LANDING: CarController["landingFeedback"] = Object.freeze({serial:0,height:0,fallDistance:0,strength:0,x:0,y:0,z:0,yaw:0});
+export const IDLE_IMPACT: CarController["impactFeedback"] = Object.freeze({serial:0,strength:0,x:0,y:0,z:0,nx:0,nz:0});
 export const IDLE_SLIDE: CarController["slideFeedback"] = Object.freeze({blend:0,intensity:0,dir:0,track:0.9,rear:1.6});
 export const IDLE_JUMP: CarController["jumpDebug"] = Object.freeze({airborne:false,airTime:0,supportClearance:0,landingSteps:0,readyForTakeoff:true,jumpHeight:0,jumpFallDistance:0,landingSerial:0,landingStrength:0});
 export const IDLE_SURF: SurfTelemetry = {

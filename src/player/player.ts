@@ -1,6 +1,6 @@
 import { worldTime } from "../core/worldTime";
 import { loadVehicleRuntime, vehicleRuntime, activateVehicleRuntime, type VehicleMode } from "../vehicles/runtime";
-import { IDLE_LANDING, IDLE_SLIDE, IDLE_JUMP, IDLE_SURF, IDLE_HANG, IDLE_ROCKET } from "./idleTelemetry";
+import { IDLE_LANDING, IDLE_IMPACT, IDLE_SLIDE, IDLE_JUMP, IDLE_SURF, IDLE_HANG, IDLE_ROCKET } from "./idleTelemetry";
 import * as THREE from "three/webgpu";
 import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
@@ -1263,6 +1263,11 @@ export class Player {
   /** One-shot landing telemetry; main owns the camera/audio/VFX consumers. */
   get driveLandingFeedback() {
     return this.#modes.drive?.landingFeedback ?? IDLE_LANDING;
+  }
+
+  /** One-shot wall/obstacle impact telemetry (drive mode). */
+  get driveImpactFeedback() {
+    return this.#modes.drive?.impactFeedback ?? IDLE_IMPACT;
   }
 
   /** Continuous skid intensity for tire marks + audio (drive or scooter). */

@@ -57,5 +57,32 @@ export function createCarLandingFeedback({
       tuning.smokeLife
     );
   };
-  return { consume };
+  // Wall/obstacle impacts ride the same consumer: a jolt of shake, the landing
+  // thump pitched as a crunch, and a dust/grit puff at the bumper that hit.
+  let consumedImpactSerial = player.driveImpactFeedback.serial;
+  const impactPosition = new THREE.Vector3();
+  const consumeImpact = () => {
+    const impact = player.driveImpactFeedback;
+    if (impact.serial === consumedImpactSerial) return;
+    consumedImpactSerial = impact.serial;
+    if (player.mode !== "drive" || embodiments.currentAnimal || impact.strength <= 0.02) return;
+    const amount = THREE.MathUtils.clamp(impact.strength, 0, 1);
+    chase.shake(0.12 + amount * 0.7);
+    vehicleAudio.carLanding(0.35 + amount * 0.65, 0.7 + amount * 0.9);
+    impactPosition.set(impact.x, impact.y, impact.z);
+    fx.impactPuff(impactPosition);
+    if (amount > 0.35) {
+      // Hard hits throw a second puff off the obstacle face.
+      impactPosition.x += impact.nx * 0.6;
+      impactPosition.z += impact.nz * 0.6;
+      impactPosition.y += 0.4;
+      fx.impactPuff(impactPosition);
+    }
+  };
+  return {
+    consume: () => {
+      consume();
+      consumeImpact();
+    }
+  };
 }
