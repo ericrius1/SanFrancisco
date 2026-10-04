@@ -886,8 +886,11 @@ export async function composeFrameBody(ctx: MainCtx, core: Awaited<ReturnType<ty
     const numberPressed = (i: number) => input.pressed(`Digit${i}`) || input.pressed(`Numpad${i}`);
     const ctrlNumberPress = (i: number) => input.ctrlPressed(`Digit${i}`) || input.ctrlPressed(`Numpad${i}`);
     const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
-    for (let i = 1; i <= Math.max(9, MENU_MODES.length); i++) {
+    for (let i = 1; i <= Math.max(10, MENU_MODES.length); i++) {
       const digit = i % 10;
+      // Digit 0 is only ever the tenth emote; outside the wheel it stays inert
+      // unless the mode menu itself grows to ten entries.
+      if (i > Math.max(9, MENU_MODES.length) && !emoteWheel.open) continue;
       if (!numberPressed(digit)) continue;
       if (playingPickleball || playingFortMasonEnsemble) break;
       if (core.state.golf?.capturesDigits) break; // core.state.golf swing UI owns the number row (club picks)

@@ -56,7 +56,7 @@ export class EmoteWheel {
 
     const hint = document.createElement("div");
     hint.className = "emote-hint";
-    hint.innerHTML = `<span class="emote-hint-title">Emotes</span><span class="emote-hint-sub">1–8 · J closes</span>`;
+    hint.innerHTML = `<span class="emote-hint-title">Emotes</span><span class="emote-hint-sub">1–9 · 0 · J closes</span>`;
     this.#ring.appendChild(hint);
     this.#root.appendChild(this.#ring);
     hud.appendChild(this.#root);

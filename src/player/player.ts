@@ -1381,6 +1381,11 @@ export class Player {
     this.onEmote(null);
   }
 
+  /** The on-foot character rig, for presentation consumers (high-five sparks). */
+  get walkRig(): Rig {
+    return this.#walkRig;
+  }
+
   /** The emote being held right now (a fading-out one already reads null). */
   get activeEmote(): EmoteId | null {
     return this.#emote.playing ? this.#emote.id : null;

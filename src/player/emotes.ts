@@ -20,7 +20,7 @@ import { HAND_FIST, HAND_OPEN, HAND_POINT, HAND_RELAXED, setHandPose, type HandP
  * here allocates.
  */
 
-export type EmoteId = "wave" | "dance" | "clap" | "cheer" | "bow" | "point" | "flex" | "sit";
+export type EmoteId = "wave" | "dance" | "clap" | "cheer" | "bow" | "point" | "flex" | "sit" | "highfive" | "twirl";
 
 export type EmoteDef = {
   id: EmoteId;
@@ -264,6 +264,52 @@ function poseSit(r: Rig, t: number) {
  * Wire order — the index into this array is what goes over the socket, so this
  * is APPEND-ONLY. Reordering it would make one client's wave another's dance.
  */
+/**
+ * High five. The right arm rises forward-and-up, the body steps into it and
+ * the palm drives through the meeting point at HIGH_FIVE_CONTACT_T (0.55 s);
+ * gameplay/highFive.ts fires the slap there when someone answers in reach.
+ * A short recoil after contact sells the impact even when nobody does.
+ */
+function poseHighFive(r: Rig, t: number) {
+  const rise = ease(clamp01(t / 0.4));
+  const drive = Math.exp(-((t - 0.55) ** 2) / 0.012); // peaks at contact
+  const recoil = clamp01((t - 0.58) / 0.25) * clamp01((1.2 - t) / 0.4);
+  r.hips.position.y = drive * 0.03;
+  set(r.hips, 0.04, 0.08, 0);
+  set(r.torso, -0.06 - drive * 0.12 + recoil * 0.05, 0.12, 0.02);
+  set(r.head, -0.12 - drive * 0.08, 0.1, 0);
+  set(r.legL, 0.28 * rise, 0, 0.04);
+  set(r.legR, -0.1 * rise, 0, -0.04);
+  set(r.shinL, -0.18 * rise, 0, 0);
+  set(r.shinR, -0.05, 0, 0);
+  set(r.armR, 2.35 * rise + drive * 0.22 - recoil * 0.18, 0, -0.32 * rise);
+  set(r.foreR, -0.25 * rise + drive * 0.2, 0, 0);
+  set(r.armL, 0.05, 0, 0.18 + drive * 0.12);
+  set(r.foreL, 0.35, 0, 0);
+}
+
+/**
+ * Twirl: arms out, one full turn on the spot with a little hop at the start.
+ * The turn completes before the fade-out begins and lands back on 0 (2π mod
+ * 2π), so the blend back to the base pose never unwinds the spin.
+ */
+function poseTwirl(r: Rig, t: number) {
+  const k = ease(clamp01((t - 0.12) / 1.05));
+  const hop = Math.sin(clamp01(t / 0.45) * Math.PI);
+  r.hips.position.y = hop * 0.07;
+  set(r.hips, 0, (Math.PI * 2 * k) % (Math.PI * 2), 0);
+  set(r.torso, -0.1, 0, Math.sin(k * Math.PI * 2) * 0.06);
+  set(r.head, -0.22, 0, 0.1);
+  set(r.legL, hop * 0.3, 0, 0.06);
+  set(r.legR, hop * 0.1, 0, -0.06);
+  set(r.shinL, -hop * 0.5, 0, 0);
+  set(r.shinR, -hop * 0.2, 0, 0);
+  set(r.armL, 0.1, 0, 1.35 + Math.sin(t * 9) * 0.06);
+  set(r.armR, 0.1, 0, -1.35 - Math.sin(t * 9) * 0.06);
+  set(r.foreL, 0.2, 0, 0.25);
+  set(r.foreR, 0.2, 0, -0.25);
+}
+
 export const EMOTES: readonly EmoteDef[] = [
   {
     id: "wave",
@@ -360,6 +406,32 @@ export const EMOTES: readonly EmoteDef[] = [
     handL: HAND_RELAXED,
     handR: HAND_RELAXED,
     pose: poseSit
+  },
+  // Appended, never inserted: the wire carries catalog indices, and a client
+  // from before these entries must still map 0–7 to the same gestures.
+  {
+    id: "highfive",
+    label: "high five",
+    icon: "✋",
+    duration: 1.5,
+    loop: false,
+    fadeIn: 0.16,
+    fadeOut: 0.38,
+    handL: HAND_RELAXED,
+    handR: HAND_OPEN,
+    pose: poseHighFive
+  },
+  {
+    id: "twirl",
+    label: "twirl",
+    icon: "💃",
+    duration: 1.65,
+    loop: false,
+    fadeIn: 0.12,
+    fadeOut: 0.3,
+    handL: HAND_OPEN,
+    handR: HAND_OPEN,
+    pose: poseTwirl
   }
 ];
 

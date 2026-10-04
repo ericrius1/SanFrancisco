@@ -92,7 +92,7 @@ export async function installDebugSurfaces(
       audioEngine, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio,
       doorAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice,
       minimap, playerLocator, boardWake, abandonedMounts, ghostShipBeacon,
-      embodiments, switchMode, paintballs, paintSkins, buildShareUrl, wakeCity: netW.wakeCity,
+      embodiments, switchMode, paintballs, paintSkins, buildShareUrl, wakeCity: netW.wakeCity, highFives: netW.highFives,
       tutorial, teleportToTarget, citygenRing, worldCursor, worldQueries,
       buildingRayRefiner, underwater, water, ensureSurfRuntime, debugOverlays,
       calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, PROCEDURAL_LAMP_TUNING,

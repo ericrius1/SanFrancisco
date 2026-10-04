@@ -30,7 +30,8 @@ import {  ProxySet } from "../../core/worldQueries";
 import { createLazySelector } from "../../app/compose/selectorHub";
 import { Chat } from "../../ui/chat";
 import { EmoteWheel } from "../../ui/emoteWheel";
-import { emoteById, emoteIndex } from "../../player/emotes";
+import { emoteById, emoteByIndex, emoteIndex } from "../../player/emotes";
+import { HighFives } from "../../gameplay/highFive";
 import {    BALL_IMPACT_AUDIO_TUNING } from "../../audio";
 import type {  } from "../../gameplay/creatures";
 import type {  } from "../../gameplay/forest";
@@ -580,12 +581,28 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
   const EMOTE_KEEPALIVE_SEC = 2.5;
   const emoteWheel = new EmoteWheel((id) => player.playEmote(id));
   let emoteKeepAlive = 0;
+  // High fives: every client judges pairs from the same relayed emotes, so
+  // no extra wire traffic (gameplay/highFive.ts).
+  const highFives = new HighFives({
+    scene,
+    sfx: core.gameplaySfxBus,
+    positionOf: (key, out) => {
+      const rig = key === "self" ? player.walkRig : remotes.avatars.get(Number(key))?.rig;
+      if (!rig || (key === "self" && player.mode !== "walk")) return false;
+      rig.group.getWorldPosition(out);
+      // Rig origin sits at the hips; palms meet about a metre above them.
+      out.y += 0.95;
+      return true;
+    }
+  });
   player.onEmote = (id) => {
     emoteWheel.setActive(id);
     emoteKeepAlive = 0;
     net.sendEmote(id ? emoteIndex(id) : -1);
+    if (id === "highfive") highFives.raise("self");
   };
   const updateEmoteKeepAlive = (dt: number) => {
+    highFives.update(dt);
     const id = player.activeEmote;
     if (!id || !emoteById(id)?.loop) return;
     emoteKeepAlive += dt;
@@ -593,7 +610,10 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     emoteKeepAlive = 0;
     net.sendEmote(emoteIndex(id));
   };
-  net.onEmote = (id, index) => remotes.setEmote(id, index);
+  net.onEmote = (id, index) => {
+    remotes.setEmote(id, index);
+    if (emoteByIndex(index)?.id === "highfive") highFives.raise(String(id));
+  };
   // presence toast above the chat panel when someone new enters the world
   net.onJoin = (_id, name) => chat.showJoin(name);
   // golf: friends' swings/balls/scores replay here (owner-simulated snapshots)
@@ -2210,6 +2230,7 @@ export async function composeWorldSystemsNet(ctx: MainCtx, core: Awaited<ReturnT
     ensureCarCustomizer,
     chat,
     emoteWheel,
+    highFives,
     updateEmoteKeepAlive,
     ridePos,
     rideQuat,
